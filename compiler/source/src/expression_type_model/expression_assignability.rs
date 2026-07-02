@@ -518,6 +518,7 @@ fn substitute_std_type_params_in_ir(
             return_type: Box::new(substitute_std_type_params_in_ir(return_type, substitutions)),
         },
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }

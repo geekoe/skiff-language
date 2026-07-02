@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ExecutableKind, FileIrUnit, InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
+    type_ref_abi_key, ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    LiteralIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
@@ -716,6 +717,7 @@ fn service_dependency_projection_facts(
 fn entrypoint_abi_index_from_file_ir_units(
     file_ir_units: &[FileIrUnit],
 ) -> ProjectionEntrypointAbiIndex {
+    let publication_type_names = file_ir_publication_type_names(file_ir_units);
     ProjectionEntrypointAbiIndex::new(
         file_ir_units
             .iter()
@@ -731,7 +733,12 @@ fn entrypoint_abi_index_from_file_ir_units(
                                 .get(declaration.executable_index as usize)?;
                             Some((
                                 name.clone(),
-                                entry_function_signature_from_executable(unit, name, executable),
+                                entry_function_signature_from_executable(
+                                    unit,
+                                    name,
+                                    executable,
+                                    &publication_type_names,
+                                ),
                             ))
                         })
                         .collect(),
@@ -792,6 +799,7 @@ fn entry_function_signature_from_executable(
     unit: &FileIrUnit,
     name: &str,
     executable: &skiff_artifact_model::ExecutableIr,
+    publication_type_names: &BTreeMap<(String, u32), String>,
 ) -> EntryFunctionSignature {
     let params = if executable.kind == ExecutableKind::ImplMethod
         && executable
@@ -808,26 +816,132 @@ fn entry_function_signature_from_executable(
         name: name.to_string(),
         params: params
             .iter()
-            .map(|param| EntryParamSpec {
-                name: param.name.clone(),
-                ty: EntryTypeSpec {
-                    name: type_ref_ir_source_text_with_local_types(&param.ty, &|type_index| {
-                        local_type_names.get(&type_index).cloned()
-                    }),
-                    ir: param.ty.clone(),
-                    local_type_names: local_type_names.clone(),
-                },
+            .map(|param| {
+                let ir = projection_visible_type_ref(&param.ty, publication_type_names);
+                EntryParamSpec {
+                    name: param.name.clone(),
+                    ty: EntryTypeSpec {
+                        name: type_ref_ir_source_text_with_local_types(&ir, &|type_index| {
+                            local_type_names.get(&type_index).cloned()
+                        }),
+                        ir,
+                        local_type_names: local_type_names.clone(),
+                    },
+                }
             })
             .collect(),
-        return_type: EntryTypeSpec {
-            name: type_ref_ir_source_text_with_local_types(
-                &executable.return_type,
-                &|type_index| local_type_names.get(&type_index).cloned(),
-            ),
-            ir: executable.return_type.clone(),
-            local_type_names: local_type_names.clone(),
+        return_type: {
+            let ir = projection_visible_type_ref(&executable.return_type, publication_type_names);
+            EntryTypeSpec {
+                name: type_ref_ir_source_text_with_local_types(&ir, &|type_index| {
+                    local_type_names.get(&type_index).cloned()
+                }),
+                ir,
+                local_type_names: local_type_names.clone(),
+            }
         },
         local_type_names,
+    }
+}
+
+fn file_ir_publication_type_names(file_ir_units: &[FileIrUnit]) -> BTreeMap<(String, u32), String> {
+    file_ir_units
+        .iter()
+        .flat_map(|unit| {
+            unit.type_table
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| ((unit.module_path.clone(), index as u32), ty.name.clone()))
+        })
+        .collect()
+}
+
+fn projection_visible_type_ref(
+    ty: &TypeRefIr,
+    publication_type_names: &BTreeMap<(String, u32), String>,
+) -> TypeRefIr {
+    match ty {
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => publication_type_names
+            .get(&(module_path.clone(), *type_index))
+            .map(|symbol| TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: module_path.clone(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| ty.clone()),
+        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| projection_visible_type_ref(arg, publication_type_names))
+                .collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        projection_visible_type_ref(ty, publication_type_names),
+                    )
+                })
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items
+                .iter()
+                .map(|item| projection_visible_type_ref(item, publication_type_names))
+                .collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(projection_visible_type_ref(inner, publication_type_names)),
+        },
+        TypeRefIr::AnyInterface { interface } => {
+            let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map(|identity| {
+                    type_ref_abi_key(&projection_visible_type_ref(
+                        &identity,
+                        publication_type_names,
+                    ))
+                })
+                .unwrap_or_else(|_| interface.interface_abi_id.clone());
+            TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(|arg| projection_visible_type_ref(arg, publication_type_names))
+                        .collect(),
+                },
+            }
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| FunctionTypeParamIr {
+                    name: param.name.clone(),
+                    ty: projection_visible_type_ref(&param.ty, publication_type_names),
+                })
+                .collect(),
+            return_type: Box::new(projection_visible_type_ref(
+                return_type,
+                publication_type_names,
+            )),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
     }
 }
 
@@ -859,6 +973,9 @@ fn type_ref_ir_source_text_with_named_types(
             &local_type_name(*type_index)
                 .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
         ),
+        TypeRefIr::PublicationType { module_path, .. } => {
+            named_type(&format!("root.{module_path}"))
+        }
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             let name = if symbol.module_path.is_empty() {
                 symbol.symbol.clone()

@@ -140,6 +140,26 @@ fn service_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
+        CallTargetIr::PublicationExecutable {
+            module_path,
+            executable_index,
+        } => {
+            let (target_unit, declaration_name, declaration) =
+                publication_executable_declaration_for_index(
+                    file_ir_units,
+                    module_path,
+                    *executable_index,
+                    "service",
+                )?;
+            let target_identity = format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", declaration.symbol);
+            Ok(Some(function_spawn_target_from_declaration(
+                target_unit,
+                declaration_name,
+                declaration.executable_index,
+                target_identity,
+                service_protocol_identity,
+            )?))
+        }
         CallTargetIr::ExternalServiceSymbol { symbol } => {
             let target_identity = format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path());
             Ok(Some(service_function_spawn_target(
@@ -194,6 +214,26 @@ fn package_spawn_target_for_call(
             let target_identity = package_handler_target(&package.package_id, &executable.symbol);
             Ok(Some(function_spawn_target_from_declaration(
                 unit,
+                declaration_name,
+                declaration.executable_index,
+                target_identity,
+                service_protocol_identity,
+            )?))
+        }
+        CallTargetIr::PublicationExecutable {
+            module_path,
+            executable_index,
+        } => {
+            let (target_unit, declaration_name, declaration) =
+                publication_executable_declaration_for_index(
+                    &package.file_ir_units,
+                    module_path,
+                    *executable_index,
+                    &format!("package {}", package.package_id),
+                )?;
+            let target_identity = package_handler_target(&package.package_id, &declaration.symbol);
+            Ok(Some(function_spawn_target_from_declaration(
+                target_unit,
                 declaration_name,
                 declaration.executable_index,
                 target_identity,
@@ -412,6 +452,35 @@ fn executable_declaration_for_index(
         .executables
         .iter()
         .find(|(_, declaration)| declaration.executable_index == executable_index)
+}
+
+fn publication_executable_declaration_for_index<'a>(
+    file_ir_units: &'a [FileIrUnit],
+    module_path: &str,
+    executable_index: u32,
+    publication_context: &str,
+) -> Result<(&'a FileIrUnit, &'a String, &'a ExecutableDeclarationIr)> {
+    let mut matching_units = file_ir_units
+        .iter()
+        .filter(|unit| unit.module_path == module_path);
+    let Some(target_unit) = matching_units.next() else {
+        return Err(error(format!(
+            "spawn target executable index {executable_index} references missing {publication_context} module {module_path}"
+        )));
+    };
+    if matching_units.next().is_some() {
+        return Err(error(format!(
+            "spawn target executable index {executable_index} references duplicate {publication_context} module {module_path}"
+        )));
+    }
+    let Some((declaration_name, declaration)) =
+        executable_declaration_for_index(target_unit, executable_index)
+    else {
+        return Err(error(format!(
+            "spawn target executable index {executable_index} is not declared in {publication_context} module {module_path}"
+        )));
+    };
+    Ok((target_unit, declaration_name, declaration))
 }
 
 fn operation_target_ref(

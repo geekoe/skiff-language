@@ -625,6 +625,47 @@ mod tests {
             .clone()
     }
 
+    fn lowered_units(sources: Vec<(&str, &str, &str)>) -> Vec<FileIrUnit> {
+        let root = PathBuf::from("/test");
+        let production_sources = sources
+            .into_iter()
+            .map(|(relative_path, module_path, source_text)| {
+                CompilerSourceFile::parse(
+                    PathBuf::from(relative_path),
+                    module_path.to_string(),
+                    false,
+                    false,
+                    source_text.to_string(),
+                    relative_path,
+                )
+                .expect("test source should parse")
+            })
+            .collect::<Vec<_>>();
+        let parsed_sources = parse_publication_sources(&root, &production_sources)
+            .expect("test source facts should build");
+        let package_aliases = BTreeMap::new();
+        let package_dependencies = Vec::<PackageDependency>::new();
+        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+            parsed_sources,
+            production_sources: Vec::new(),
+            diagnostic_root: &root,
+            publication_api: None,
+            package_aliases: &package_aliases,
+            package_dependencies: &package_dependencies,
+            package_facts: None,
+            service_dependencies: ResolvedServiceDependencies::default(),
+            service_ingress: None,
+            policy: PublicationCompilePolicy::Package {
+                package_id: "example.com/publication-local-refs",
+            },
+        })
+        .expect("source model should build");
+        crate::lower(&model)
+            .expect("publication should lower")
+            .file_ir_units()
+            .to_vec()
+    }
+
     fn lowered_unit_with_package_facts(source_text: &str) -> FileIrUnit {
         let package_root = PathBuf::from("/package");
         let package_source = CompilerSourceFile::parse(
@@ -746,6 +787,92 @@ mod tests {
     }
 
     #[test]
+    fn lowers_cross_module_publication_refs_to_direct_addresses() {
+        let units = lowered_units(vec![
+            (
+                "internal/worker.skiff",
+                "internal.worker",
+                r#"
+                  type DrainResult {
+                    value: string,
+                  }
+
+                  function drain() -> DrainResult {
+                    return DrainResult { value: "ok" }
+                  }
+                "#,
+            ),
+            (
+                "internal/runner.skiff",
+                "internal.runner",
+                r#"
+                  function run() -> root.internal.worker.DrainResult {
+                    return root.internal.worker.drain()
+                  }
+                "#,
+            ),
+        ]);
+        let worker = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.worker")
+            .expect("worker unit should be emitted");
+        let runner = units
+            .iter()
+            .find(|unit| unit.module_path == "internal.runner")
+            .expect("runner unit should be emitted");
+        let result_type_index = worker
+            .declarations
+            .types
+            .get("DrainResult")
+            .expect("DrainResult declaration should exist")
+            .type_index;
+        let drain_executable_index = worker
+            .declarations
+            .executables
+            .get("drain")
+            .expect("drain declaration should exist")
+            .executable_index;
+        let run = runner
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "internal.runner.run")
+            .expect("run executable should exist");
+
+        assert!(matches!(
+            &run.return_type,
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } if module_path == "internal.worker" && *type_index == result_type_index
+        ));
+        assert!(
+            run.body.expressions.iter().any(|expr| matches!(
+                expr,
+                ExprIr::Call {
+                    call
+                } if matches!(
+                    &call.target,
+                    CallTargetIr::PublicationExecutable {
+                        module_path,
+                        executable_index,
+                    } if module_path == "internal.worker"
+                        && *executable_index == drain_executable_index
+                )
+            )),
+            "cross-module function call should lower to PublicationExecutable"
+        );
+        assert!(
+            runner.external_refs.service_symbols.is_empty(),
+            "publication-local refs must not remain in external_refs: {:?}",
+            runner.external_refs.service_symbols
+        );
+        assert!(runner.link_targets.types.is_empty());
+        assert!(runner.link_targets.executables.is_empty());
+        assert!(worker.link_targets.types.is_empty());
+        assert!(worker.link_targets.executables.is_empty());
+    }
+
+    #[test]
     fn lowers_interface_box_to_local_method_table() {
         let unit = lowered_unit(any_interface_source());
         let make_box = executable(&unit, "make_box");
@@ -858,11 +985,17 @@ mod tests {
         };
         let interface_ty = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
             .expect("interface ABI id should decode");
-        let TypeRefIr::ServiceSymbol { symbol } = interface_ty else {
-            panic!("local interface selector should use a stable service symbol identity");
+        let TypeRefIr::LocalType { type_index } = interface_ty else {
+            panic!("local interface selector should use direct local type identity");
         };
-        assert_eq!(symbol.module_path, MODULE);
-        assert_eq!(symbol.symbol, "Provider");
+        assert_eq!(
+            type_index,
+            unit.declarations
+                .types
+                .get("Provider")
+                .expect("Provider declaration should exist")
+                .type_index
+        );
         assert!(interface.canonical_type_args.is_empty());
     }
 

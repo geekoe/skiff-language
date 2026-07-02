@@ -91,6 +91,13 @@ impl ContractProjection {
                 .type_binding_by_module_type_index(module_path, *type_index)
                 .map(|binding| self.schema_for_source_type_binding(index, binding, seen))
                 .unwrap_or_else(JsonSchema::any),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => index
+                .type_binding_by_module_type_index(module_path, *type_index)
+                .map(|binding| self.schema_for_source_type_binding(index, binding, seen))
+                .unwrap_or_else(JsonSchema::any),
             TypeRefIr::ServiceSymbol { symbol } => {
                 if let Some(source_key) =
                     index.source_key_for_reference_symbol(&symbol.module_path, &symbol.symbol)
@@ -899,6 +906,7 @@ impl ContractProjection {
             TypeRefIr::TypeParam { name } => substitutions.get(name).cloned(),
             TypeRefIr::AnyInterface { .. } => Some(boundary_rejected_type_schema()),
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::Function { .. } => Some(JsonSchema::any()),
@@ -1312,6 +1320,15 @@ impl ContractProjection {
                         "{module_path}.__invalid_local_type_{type_index}"
                     ))
                 }),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => index
+                .type_binding_by_module_type_index(module_path, *type_index)
+                .map(|binding| {
+                    self.runtime_descriptor_for_source_type_binding(index, binding, seen)
+                })
+                .unwrap_or_else(|| RuntimeTypeDescriptorIr::named(format!("root.{module_path}"))),
             TypeRefIr::ServiceSymbol { symbol } => {
                 if let Some(source_key) =
                     index.source_key_for_reference_symbol(&symbol.module_path, &symbol.symbol)
@@ -1844,6 +1861,7 @@ impl ContractProjection {
             TypeRefIr::TypeParam { name } => substitutions.get(name).cloned(),
             TypeRefIr::AnyInterface { .. } => Some(boundary_rejected_runtime_type_descriptor()),
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::Function { .. } => Some(RuntimeTypeDescriptorIr::named(
@@ -1928,6 +1946,13 @@ fn source_type_ref_display_text(
             .type_binding_by_module_type_index(module_path, *type_index)
             .map(|binding| binding.local_name.to_string())
             .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => index
+            .type_binding_by_module_type_index(module_path, *type_index)
+            .map(|binding| binding.local_name.to_string())
+            .unwrap_or_else(|| format!("root.{module_path}")),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             if symbol.module_path.is_empty() {
                 symbol.symbol.clone()
@@ -2055,6 +2080,7 @@ fn standard_library_type_ref_display_text(ty: &TypeRefIr) -> String {
             }
         },
         TypeRefIr::TypeParam { name } => name.clone(),
+        TypeRefIr::PublicationType { module_path, .. } => format!("root.{module_path}"),
         TypeRefIr::LocalType { type_index } => format!("__invalid_local_type_{type_index}"),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             if symbol.module_path.is_empty() {
@@ -2219,11 +2245,7 @@ fn contract_type_key_name(key: &ContractTypeKey) -> Option<String> {
     match key {
         ContractTypeKey::Builtin { name, args } if args.is_empty() => Some(name.clone()),
         ContractTypeKey::Named(name) => Some(name.canonical_symbol()),
-        ContractTypeKey::PackageSymbol {
-            package,
-            symbol_path,
-            ..
-        } => Some(
+        ContractTypeKey::PackageSymbol { symbol_path, .. } => Some(
             compiler_owned_type_symbol(symbol_path)
                 .map(str::to_string)
                 .unwrap_or_else(|| symbol_path.clone()),

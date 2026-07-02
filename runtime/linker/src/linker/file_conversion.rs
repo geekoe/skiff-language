@@ -817,6 +817,13 @@ fn linked_call(call: &artifact::CallIr) -> CallIr {
                     executable_index: *executable_index,
                 }
             }
+            artifact::CallTargetIr::PublicationExecutable {
+                module_path,
+                executable_index,
+            } => LinkedCallTarget::PublicationExecutable {
+                module_path: module_path.clone(),
+                executable_index: *executable_index,
+            },
             artifact::CallTargetIr::ExternalServiceSymbol { symbol } => {
                 LinkedCallTarget::ExternalServiceSymbol {
                     symbol: symbol.clone(),
@@ -875,6 +882,13 @@ fn linked_type_ref(ty: &artifact::TypeRefIr) -> LinkedTypeRef {
             args: args.iter().map(linked_type_ref).collect(),
         },
         artifact::TypeRefIr::LocalType { type_index } => LinkedTypeRef::LocalType {
+            type_index: *type_index as TypeIndex,
+        },
+        artifact::TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => LinkedTypeRef::PublicationType {
+            module_path: module_path.clone(),
             type_index: *type_index as TypeIndex,
         },
         artifact::TypeRefIr::ServiceSymbol { symbol } => LinkedTypeRef::ServiceSymbol {

@@ -373,6 +373,7 @@ fn remote_type_boundary_unsafe_reason(ty: &TypeRefIr) -> Option<String> {
         TypeRefIr::Union { items } => items.iter().find_map(remote_type_boundary_unsafe_reason),
         TypeRefIr::Nullable { inner } => remote_type_boundary_unsafe_reason(inner),
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }

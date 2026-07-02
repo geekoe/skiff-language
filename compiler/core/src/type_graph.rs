@@ -8,6 +8,7 @@ use crate::type_ref::{walk_type_ref_with_path, TypeRefVisitPath};
 pub enum TypeGraphNodeKind {
     Native { name: String },
     LocalType,
+    PublicationType,
     ServiceSymbol,
     PackageSymbol,
     DbObjectSymbol,
@@ -102,6 +103,7 @@ impl TypeGraphAnalyzer {
         match ty {
             TypeRefIr::Native { name, .. } => TypeGraphNodeKind::Native { name: name.clone() },
             TypeRefIr::LocalType { .. } => TypeGraphNodeKind::LocalType,
+            TypeRefIr::PublicationType { .. } => TypeGraphNodeKind::PublicationType,
             TypeRefIr::ServiceSymbol { .. } => TypeGraphNodeKind::ServiceSymbol,
             TypeRefIr::PackageSymbol { .. } => TypeGraphNodeKind::PackageSymbol,
             TypeRefIr::DbObjectSymbol { .. } => TypeGraphNodeKind::DbObjectSymbol,
@@ -124,6 +126,10 @@ impl TypeGraphAnalyzer {
                 }
             }
             TypeRefIr::LocalType { .. } => {
+                facts.contains_local_type = true;
+                facts.schema_projectable_plain_data = false;
+            }
+            TypeRefIr::PublicationType { .. } => {
                 facts.contains_local_type = true;
                 facts.schema_projectable_plain_data = false;
             }

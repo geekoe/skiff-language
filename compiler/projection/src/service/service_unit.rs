@@ -170,6 +170,7 @@ fn type_ref_references_package(ty: &TypeRefIr, package_id: &str) -> bool {
                 || type_ref_references_package(return_type, package_id)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
@@ -704,6 +705,7 @@ fn collect_package_used_symbols_from_call(
             )?;
         }
         CallTargetIr::LocalExecutable { .. }
+        | CallTargetIr::PublicationExecutable { .. }
         | CallTargetIr::ExternalServiceSymbol { .. }
         | CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::Native { .. }
@@ -1122,6 +1124,7 @@ fn collect_package_used_symbols_from_type_ref(
             )?;
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
@@ -1434,6 +1437,19 @@ fn service_symbol_for_nominal_type_ref(
                 .get(*type_index as usize)?;
             Some(ServiceSymbolRef {
                 module_path: module_path.to_string(),
+                symbol: decl.name.clone(),
+            })
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let decl = index
+                .unit_by_module_path(module_path)?
+                .type_table
+                .get(*type_index as usize)?;
+            Some(ServiceSymbolRef {
+                module_path: module_path.clone(),
                 symbol: decl.name.clone(),
             })
         }
@@ -1806,7 +1822,7 @@ fn canonical_service_interface_type_arg(
                 .map(|arg| canonical_service_interface_type_arg(index, context_module, arg))
                 .collect(),
         },
-        TypeRefIr::LocalType { .. } => {
+        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {
             service_symbol_for_nominal_type_ref(index, context_module, ty)
                 .map(|symbol| TypeRefIr::ServiceSymbol { symbol })
                 .unwrap_or_else(|| ty.clone())

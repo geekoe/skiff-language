@@ -22,7 +22,14 @@ fn root_path_resolves_internal_module_type_reference() {
         .as_str()
         .unwrap()
         .starts_with("skiff-source-ast-v1:sha256:"));
-    assert_json_contains_service_symbol(&artifact_value, "internal.helpers", "Helper");
+    let helper_artifact = source_artifact(&published, "internal/helpers.skiff");
+    let helper_type_index = declared_type_index(&helper_artifact.value(), "Helper");
+    assert_json_contains_publication_type(&artifact_value, "internal.helpers", helper_type_index);
+    assert!(!json_contains_service_symbol(
+        &artifact_value,
+        "internal.helpers",
+        "Helper"
+    ));
     assert!(!artifact_value
         .to_string()
         .contains("root.internal.helpers.Helper"));
@@ -40,7 +47,14 @@ fn root_path_canonical_type_beats_local_same_name() {
     let published = build_temp_service_publication(temp.root());
     let artifact = source_artifact(&published, "internal/example.skiff");
     let artifact_value = artifact.value();
-    assert_json_contains_service_symbol(&artifact_value, "internal.helpers", "Helper");
+    let helper_artifact = source_artifact(&published, "internal/helpers.skiff");
+    let helper_type_index = declared_type_index(&helper_artifact.value(), "Helper");
+    assert_json_contains_publication_type(&artifact_value, "internal.helpers", helper_type_index);
+    assert!(!json_contains_service_symbol(
+        &artifact_value,
+        "internal.helpers",
+        "Helper"
+    ));
     assert!(!artifact_value
         .to_string()
         .contains("root.internal.helpers.Helper"));
@@ -84,7 +98,13 @@ fn root_path_resolves_internal_attached_db_object_as_type_reference() {
 
     let consumer_artifact = source_artifact(&published, "internal/example.skiff");
     let consumer_value = consumer_artifact.value();
-    assert_json_contains_service_symbol(&consumer_value, "internal.models", "Thread");
+    let thread_type_index = declared_type_index(&model_value, "Thread");
+    assert_json_contains_publication_type(&consumer_value, "internal.models", thread_type_index);
+    assert!(!json_contains_service_symbol(
+        &consumer_value,
+        "internal.models",
+        "Thread"
+    ));
     assert!(!consumer_value
         .to_string()
         .contains("root.internal.models.Thread"));
@@ -329,14 +349,138 @@ fn root_path_resolves_unexported_internal_symbol() {
     );
     let published = build_temp_service_publication(temp.root());
     let artifact = source_artifact(&published, "internal/example.skiff");
-    assert_json_contains_service_symbol(&artifact.value(), "internal.helpers", "Helper");
+    let helper_artifact = source_artifact(&published, "internal/helpers.skiff");
+    let helper_type_index = declared_type_index(&helper_artifact.value(), "Helper");
+    assert_json_contains_publication_type(&artifact.value(), "internal.helpers", helper_type_index);
+    assert!(!json_contains_service_symbol(
+        &artifact.value(),
+        "internal.helpers",
+        "Helper"
+    ));
 }
 
-fn assert_json_contains_service_symbol(value: &serde_json::Value, module_path: &str, symbol: &str) {
-    assert!(
-        json_contains_service_symbol(value, module_path, symbol),
-        "expected typed service symbol {module_path}.{symbol}: {value}"
+#[test]
+fn publication_direct_refs_do_not_leak_into_public_projection() {
+    let temp = ServiceProjectBuilder::new("publication-direct-ref-public-projection")
+        .write_root_file(
+            "service.yml",
+            r#"
+id: example.com/example
+version: 1.0.0
+"#,
+        )
+        .write_root_file(
+            "api.yml",
+            r#"
+ExampleService: internal.runner.ExampleService
+api:
+  example:
+    Input: internal.types.Payload
+    Output: internal.types.Payload
+    ExampleService: api.example.ExampleService
+"#,
+        )
+        .write_source(
+            "api/example.skiff",
+            r#"
+interface ExampleService {
+  function run(input: root.internal.types.Payload) -> root.internal.types.Payload
+}
+"#,
+        )
+        .write_source(
+            "internal/types.skiff",
+            r#"
+type Payload {
+  value: string
+}
+"#,
+        )
+        .write_source(
+            "internal/runner.skiff",
+            r#"
+type ExampleService {}
+
+impl ExampleService {
+  function run(self: ExampleService, input: root.internal.types.Payload) -> root.internal.types.Payload {
+    return input
+  }
+}
+"#,
+        );
+
+    let published = build_temp_service_publication(temp.root());
+    let runner_artifact = source_artifact(&published, "internal/runner.skiff");
+    let types_artifact = source_artifact(&published, "internal/types.skiff");
+    let payload_type_index = declared_type_index(&types_artifact.value(), "Payload");
+    assert_json_contains_publication_type(
+        &runner_artifact.value(),
+        "internal.types",
+        payload_type_index,
     );
+
+    let publication_abi = &published.artifacts.service_unit.value["publicationAbi"];
+    let publication_abi_text = publication_abi.to_string();
+    assert!(
+        !publication_abi_text.contains("publicationType"),
+        "publication ABI leaked publicationType: {publication_abi}"
+    );
+    assert!(
+        !publication_abi_text.contains("$type"),
+        "publication ABI leaked raw type placeholder: {publication_abi}"
+    );
+    assert!(
+        !publication_abi_text.contains("__unresolved_publication_type"),
+        "publication ABI leaked unresolved placeholder: {publication_abi}"
+    );
+    assert!(
+        json_contains_service_symbol(publication_abi, "internal.types", "Payload"),
+        "publication ABI should use stable source symbol identity: {publication_abi}"
+    );
+
+    let service_assembly_text = published.artifacts.service_assembly.value.to_string();
+    assert!(!service_assembly_text.contains("$type"));
+    assert!(!service_assembly_text.contains("__unresolved_publication_type"));
+}
+
+fn declared_type_index(value: &serde_json::Value, symbol: &str) -> u64 {
+    value["declarations"]["types"][symbol]["typeIndex"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("missing type declaration index for {symbol}: {value}"))
+}
+
+fn assert_json_contains_publication_type(
+    value: &serde_json::Value,
+    module_path: &str,
+    type_index: u64,
+) {
+    assert!(
+        json_contains_publication_type(value, module_path, type_index),
+        "expected publication type {module_path}#{type_index}: {value}"
+    );
+}
+
+fn json_contains_publication_type(
+    value: &serde_json::Value,
+    module_path: &str,
+    type_index: u64,
+) -> bool {
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("publicationType")
+        && value.get("modulePath").and_then(serde_json::Value::as_str) == Some(module_path)
+        && value.get("typeIndex").and_then(serde_json::Value::as_u64) == Some(type_index)
+    {
+        return true;
+    }
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_contains_publication_type(item, module_path, type_index)),
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(|item| json_contains_publication_type(item, module_path, type_index)),
+        _ => false,
+    }
 }
 
 fn json_contains_service_symbol(

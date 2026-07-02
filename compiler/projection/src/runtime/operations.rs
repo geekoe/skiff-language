@@ -536,6 +536,7 @@ fn public_instance_interface_name(operation: &PublicInstanceOperation) -> Option
         }
         TypeRefIr::Native { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -608,6 +609,7 @@ fn type_ref_display_name(ty: &TypeRefIr) -> String {
     match ty {
         TypeRefIr::ServiceSymbol { symbol } => symbol.symbol.clone(),
         TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
+        TypeRefIr::PublicationType { module_path, .. } => format!("root.{module_path}"),
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
         TypeRefIr::DbObjectSymbol { symbol } => symbol.symbol_path(),
         TypeRefIr::Native { name, .. } => name.clone(),

@@ -57,6 +57,9 @@ fn type_ref_ir_source_text_with_named_types(
             &local_type_name(*type_index)
                 .unwrap_or_else(|| format!("__invalid_local_type_{type_index}")),
         ),
+        TypeRefIr::PublicationType { module_path, .. } => {
+            named_type(&format!("root.{module_path}"))
+        }
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             let name = if symbol.module_path.is_empty() {
                 symbol.symbol.clone()

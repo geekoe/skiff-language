@@ -382,6 +382,10 @@ pub enum LinkedTypeRef {
     LocalType {
         type_index: TypeIndex,
     },
+    PublicationType {
+        module_path: String,
+        type_index: TypeIndex,
+    },
     ServiceSymbol {
         symbol: ServiceSymbolRef,
     },
@@ -1000,6 +1004,10 @@ pub enum LinkedCallTarget {
     LocalExecutable {
         executable_index: u32,
     },
+    PublicationExecutable {
+        module_path: String,
+        executable_index: u32,
+    },
     Executable {
         addr: ExecutableAddr,
     },
@@ -1072,6 +1080,21 @@ impl<'de> Deserialize<'de> for LinkedTypeRef {
                 let fields =
                     serde_json::from_value::<LocalTypeFields>(value).map_err(D::Error::custom)?;
                 Ok(Self::LocalType {
+                    type_index: fields.type_index,
+                })
+            }
+            "publicationType" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct PublicationTypeFields {
+                    module_path: String,
+                    type_index: TypeIndex,
+                }
+
+                let fields = serde_json::from_value::<PublicationTypeFields>(value)
+                    .map_err(D::Error::custom)?;
+                Ok(Self::PublicationType {
+                    module_path: fields.module_path,
                     type_index: fields.type_index,
                 })
             }

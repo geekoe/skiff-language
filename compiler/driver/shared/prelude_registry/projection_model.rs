@@ -238,6 +238,7 @@ fn substitute_prelude_type_params_in_ir(ty: &mut TypeRefIr, type_params: &BTreeS
             substitute_prelude_type_params_in_ir(return_type, type_params);
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }

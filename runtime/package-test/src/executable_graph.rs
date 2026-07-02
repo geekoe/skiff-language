@@ -457,6 +457,22 @@ impl<'a> PackageTestGraphValidator<'a> {
                 };
                 self.scan_executable_addr(origin, &addr, "package-test local executable call")?;
             }
+            LinkedCallTarget::PublicationExecutable {
+                module_path,
+                executable_index,
+            } => {
+                let file_identity = self.publication_file_identity(&scope.unit, module_path)?;
+                let addr = ExecutableAddr {
+                    unit: scope.unit.clone(),
+                    file: FileAddr::file_ir_identity(file_identity),
+                    executable: *executable_index as usize,
+                };
+                self.scan_executable_addr(
+                    origin,
+                    &addr,
+                    "package-test publication executable call",
+                )?;
+            }
             LinkedCallTarget::Executable { addr } => {
                 self.scan_executable_addr(origin, addr, "package-test direct executable call")?;
             }
@@ -507,6 +523,18 @@ impl<'a> PackageTestGraphValidator<'a> {
                     type_index: *type_index,
                 };
                 self.scan_type_addr(origin, &addr, "package-test local type ref")?;
+            }
+            LinkedTypeRef::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let file_identity = self.publication_file_identity(&scope.unit, module_path)?;
+                let addr = TypeAddr {
+                    unit: scope.unit.clone(),
+                    file: FileAddr::file_ir_identity(file_identity),
+                    type_index: *type_index,
+                };
+                self.scan_type_addr(origin, &addr, "package-test publication type ref")?;
             }
             LinkedTypeRef::Address { addr } => {
                 self.scan_type_addr(origin, addr, "package-test direct type ref")?;
@@ -825,6 +853,30 @@ impl<'a> PackageTestGraphValidator<'a> {
         Self::file_identity_in_files(&format!("package[{slot}]"), files.as_slice(), file)
     }
 
+    fn publication_file_identity(
+        &self,
+        unit: &UnitAddr,
+        module_path: &str,
+    ) -> anyhow::Result<String> {
+        match unit {
+            UnitAddr::Service => Self::module_path_file_identity_in_files(
+                "service",
+                self.image.service_files.as_slice(),
+                module_path,
+            ),
+            UnitAddr::Package(slot) => {
+                let files = self.image.package_files.get(*slot).ok_or_else(|| {
+                    anyhow::anyhow!("package-test graph package slot {slot} is not loaded")
+                })?;
+                Self::module_path_file_identity_in_files(
+                    &format!("package[{slot}]"),
+                    files.as_slice(),
+                    module_path,
+                )
+            }
+        }
+    }
+
     fn file_identity_in_files(
         label: &str,
         files: &[Arc<LinkedFileUnit>],
@@ -852,5 +904,29 @@ impl<'a> PackageTestGraphValidator<'a> {
                 }
             }
         }
+    }
+
+    fn module_path_file_identity_in_files(
+        label: &str,
+        files: &[Arc<LinkedFileUnit>],
+        module_path: &str,
+    ) -> anyhow::Result<String> {
+        let mut matches = files
+            .iter()
+            .filter(|file| file.module_path == module_path)
+            .map(Arc::as_ref);
+        let Some(file) = matches.next() else {
+            anyhow::bail!(
+                "package-test graph {label} module path {} is not loaded",
+                module_path
+            );
+        };
+        if matches.next().is_some() {
+            anyhow::bail!(
+                "package-test graph {label} module path {} resolves to multiple files",
+                module_path
+            );
+        }
+        Ok(file.file_ir_identity.clone())
     }
 }

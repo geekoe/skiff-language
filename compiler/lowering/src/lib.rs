@@ -9,6 +9,7 @@ mod external_refs;
 pub mod file_ir;
 mod function_lowering;
 pub mod lowered;
+mod publication_local_refs;
 pub mod source_file_lowering;
 pub mod source_metadata;
 mod source_unit_lowering;

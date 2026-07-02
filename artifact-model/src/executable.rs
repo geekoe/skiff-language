@@ -629,6 +629,10 @@ pub enum CallTargetIr {
     LocalExecutable {
         executable_index: u32,
     },
+    PublicationExecutable {
+        module_path: String,
+        executable_index: u32,
+    },
     ExternalServiceSymbol {
         symbol: ServiceSymbolRef,
     },

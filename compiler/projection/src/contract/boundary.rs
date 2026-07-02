@@ -250,6 +250,14 @@ impl<'a> BoundaryTypeRefClosureValidator<'a> {
                 .and_then(|unit| unit.type_table.get(*type_index as usize))
                 .map(|decl| decl.name.clone())
                 .unwrap_or_else(|| format!("<missing:{module_path}:{type_index}>")),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .unit_by_module_path(module_path)
+                .and_then(|unit| unit.type_table.get(*type_index as usize))
+                .map(|decl| decl.name.clone())
+                .unwrap_or_else(|| format!("<missing publication type:{module_path}>")),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let source_module = self
                     .index
@@ -458,6 +466,19 @@ impl<'a> BoundaryTypeRefClosureValidator<'a> {
                             decl,
                         })
                 }),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .package_unit_by_module_path(module_path)
+                .and_then(|unit| {
+                    unit.type_table
+                        .get(*type_index as usize)
+                        .map(|decl| ResolvedBoundaryTypeDecl {
+                            module_path: unit.module_path.as_str(),
+                            decl,
+                        })
+                }),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let unit = self.package_unit_by_module_path(&symbol.module_path)?;
                 let declaration = unit.declarations.types.get(&symbol.symbol)?;
@@ -568,6 +589,15 @@ fn contract_index_type_decl_for_type_ref<'a>(
 ) -> Option<(&'a str, &'a TypeDeclIr)> {
     match ty {
         TypeRefIr::LocalType { type_index } => {
+            let unit = index.unit_by_module_path(module_path)?;
+            unit.type_table
+                .get(*type_index as usize)
+                .map(|decl| (unit.module_path.as_str(), decl))
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
             let unit = index.unit_by_module_path(module_path)?;
             unit.type_table
                 .get(*type_index as usize)
@@ -782,6 +812,12 @@ impl ContractBoundaryValidator<'_> {
             TypeRefIr::LocalType { type_index } => self
                 .type_decl_by_module_index(module_path, *type_index)
                 .is_some_and(|decl| module_path == expected_module && decl.name == expected_type),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .type_decl_by_module_index(module_path, *type_index)
+                .is_some_and(|decl| module_path == expected_module && decl.name == expected_type),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 self.source_key_for_reference_symbol(&symbol.module_path, &symbol.symbol)
                     .is_some_and(|source_key| {
@@ -940,6 +976,19 @@ impl ContractBoundaryValidator<'_> {
                 );
             }
             TypeRefIr::LocalType { type_index } => {
+                let Some(decl) = self.type_decl_by_module_index(module_path, *type_index) else {
+                    self.violations.push(format!(
+                        "unknown type {} cannot be used in service boundary schema",
+                        self.display_type_ref(module_path, ty)
+                    ));
+                    return;
+                };
+                let _ = decl;
+            }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
                 let Some(decl) = self.type_decl_by_module_index(module_path, *type_index) else {
                     self.violations.push(format!(
                         "unknown type {} cannot be used in service boundary schema",
@@ -1149,6 +1198,7 @@ impl ContractBoundaryValidator<'_> {
                 }
             }
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
@@ -1216,7 +1266,9 @@ impl ContractBoundaryValidator<'_> {
             TypeRefIr::Union { items } => items.iter().all(|item| {
                 self.type_ref_is_builtin_string(item) || self.type_ref_is_string_literal(item)
             }),
-            TypeRefIr::LocalType { .. } | TypeRefIr::ServiceSymbol { .. } => {
+            TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::ServiceSymbol { .. } => {
                 self.is_nominal_string_map_key_type(module_path, ty, seen)
             }
             TypeRefIr::Literal { .. } => false,
@@ -1579,6 +1631,7 @@ impl ContractBoundaryValidator<'_> {
             TypeRefIr::Union { items } if items.len() > 1 => Some(items),
             TypeRefIr::Native { .. }
             | TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
@@ -1628,6 +1681,7 @@ impl ContractBoundaryValidator<'_> {
             } => Some(value.clone()),
             TypeRefIr::Native { .. }
             | TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
@@ -1661,6 +1715,19 @@ impl ContractBoundaryValidator<'_> {
                     .unwrap_or_else(|| format!("{module_path}.{}", decl.name))
                 })
                 .unwrap_or_else(|| format!("<missing:{module_path}:{type_index}>")),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .type_decl_by_module_index(module_path, *type_index)
+                .map(|decl| {
+                    self.public_symbol_for_source_key(&ProjectionSourceSymbolKey::new(
+                        module_path,
+                        &decl.name,
+                    ))
+                    .unwrap_or_else(|| format!("{module_path}.{}", decl.name))
+                })
+                .unwrap_or_else(|| format!("<missing publication type:{module_path}>")),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let source_key = self
                     .source_key_for_reference_symbol(&symbol.module_path, &symbol.symbol)
@@ -1791,7 +1858,9 @@ fn collect_boundary_nominal_type_refs_with_guard(
     refs: &mut Vec<BoundaryCollectedTypeRef>,
 ) {
     walk_boundary_type_ref_with_guard(ty, guarded, &mut |visit, guarded| match visit.ty {
-        TypeRefIr::LocalType { .. } | TypeRefIr::ServiceSymbol { .. } => {
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. } => {
             if let Some((next_module, next_name)) = resolve(module_path, visit.ty) {
                 refs.push(BoundaryCollectedTypeRef {
                     module_path: next_module,
@@ -1822,6 +1891,7 @@ fn collect_boundary_policy_nominal_type_refs(
 ) {
     walk_boundary_type_ref_with_guard(ty, false, &mut |visit, guarded| match visit.ty {
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::PackageSymbol { .. } => {
@@ -1955,6 +2025,7 @@ fn walk_boundary_type_ref_with_guard_at<'a>(
             }
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -1999,6 +2070,9 @@ fn display_policy_type_ref(ty: &TypeRefIr) -> String {
                 .join(", ")
         ),
         TypeRefIr::LocalType { type_index } => format!("<local type {type_index}>"),
+        TypeRefIr::PublicationType { module_path, .. } => {
+            format!("<publication type {module_path}>")
+        }
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             symbol.symbol_path()
         }
@@ -2169,6 +2243,10 @@ mod tests {
             TypeRefIr::LocalType { type_index } => {
                 Some((module_path.to_string(), format!("Type{type_index}")))
             }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => Some((module_path.clone(), format!("Type{type_index}"))),
             TypeRefIr::ServiceSymbol { .. } => None,
             TypeRefIr::Native { .. }
             | TypeRefIr::PackageSymbol { .. }

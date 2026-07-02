@@ -292,6 +292,20 @@ fn package_interface_type_ref(
                 })?;
             Ok(package_symbol_type_ref(package_id, symbol_path, None))
         }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let symbol_path = type_symbols
+                .local_types
+                .get(&(module_path.clone(), *type_index))
+                .ok_or_else(|| {
+                    format!(
+                        "package {package_id} exported interface method {context} references non-exported publication type index {type_index} in {module_path}"
+                    )
+                })?;
+            Ok(package_symbol_type_ref(package_id, symbol_path, None))
+        }
         TypeRefIr::ServiceSymbol { symbol } => {
             if let Some(symbol_path) = type_symbols
                 .service_symbols

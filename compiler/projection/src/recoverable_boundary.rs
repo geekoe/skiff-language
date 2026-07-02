@@ -363,6 +363,7 @@ impl RecoverableMetadataBuilder {
     ) {
         match ty {
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::PackageSymbol { .. } => {
@@ -597,6 +598,7 @@ impl RecoverableMetadataBuilder {
 
         match ty {
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::PackageSymbol { .. } => {
@@ -1010,6 +1012,7 @@ impl RecoverableMetadataBuilder {
         match ty {
             TypeRefIr::AnyInterface { .. } => true,
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::PackageSymbol { .. } => {
@@ -1215,6 +1218,7 @@ impl RecoverableMetadataBuilder {
     ) -> Option<RecoverableCustomRestorePlanRef> {
         match ty {
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::PackageSymbol { .. } => {
@@ -1312,6 +1316,7 @@ impl RecoverableMetadataBuilder {
                     })
                 }),
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::PackageSymbol { .. } => {
@@ -1445,6 +1450,16 @@ impl RecoverableMetadataBuilder {
     ) -> Option<(&str, &TypeDeclIr)> {
         match ty {
             TypeRefIr::LocalType { type_index } => self
+                .file_ir_unit_by_module_path(module_path)
+                .and_then(|unit| {
+                    unit.type_table
+                        .get(*type_index as usize)
+                        .map(|decl| (unit.module_path.as_str(), decl))
+                }),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
                 .file_ir_unit_by_module_path(module_path)
                 .and_then(|unit| {
                     unit.type_table
@@ -1722,6 +1737,7 @@ fn schema_projectable_recoverable_type(ty: &TypeRefIr) -> bool {
         TypeRefIr::Nullable { inner } => schema_projectable_recoverable_type(inner),
         TypeRefIr::Literal { .. } => true,
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -1740,6 +1756,7 @@ fn recoverable_behavior_nodes(ty: &TypeRefIr) -> bool {
         TypeRefIr::AnyInterface { .. }
         | TypeRefIr::Function { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. } => true,
@@ -1812,6 +1829,9 @@ fn recoverable_closure_error(context: &str, trace: &[String], message: String) -
 fn recoverable_nominal_type_label(ty: &TypeRefIr) -> String {
     match ty {
         TypeRefIr::LocalType { type_index } => format!("local type index {type_index}"),
+        TypeRefIr::PublicationType { module_path, .. } => {
+            format!("publication type in module {module_path}")
+        }
         TypeRefIr::ServiceSymbol { symbol } => {
             format!("service symbol {}", symbol.symbol_path())
         }
@@ -1864,6 +1884,9 @@ fn display_policy_type_ref_for_recoverable(ty: &TypeRefIr) -> String {
     match ty {
         TypeRefIr::Native { name, args } => display_native_type_ref(name, args),
         TypeRefIr::LocalType { type_index } => format!("local type index {type_index}"),
+        TypeRefIr::PublicationType { module_path, .. } => {
+            format!("publication type in module {module_path}")
+        }
         TypeRefIr::ServiceSymbol { symbol } => symbol.symbol_path(),
         TypeRefIr::DbObjectSymbol { symbol } => symbol.symbol_path(),
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
