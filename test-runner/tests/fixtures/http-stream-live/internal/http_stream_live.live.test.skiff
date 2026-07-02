@@ -1,0 +1,54 @@
+import std
+
+test defaultRun false
+
+function request() -> std.http.HttpRequest {
+  return std.http.HttpRequest {
+    method: "POST",
+    url: "https://http-stream-live.example.test/bailian-stream",
+    path: "/bailian-stream",
+    query: Array.empty<std.http.HttpQueryParam>(),
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("{\"model\":\"qwen-plus\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly one short sentence for a transport smoke test.\"}],\"max_tokens\":32}"),
+  }
+}
+
+test "live raw http stream route forwards OpenAI-compatible SSE" {
+  let sawStart = false
+  let sawChunk = false
+  let sawSseData = false
+  let sawDone = false
+  let sawOpenAiChunk = false
+  let sawEnd = false
+
+  for event in root.internal.http_stream_live.bailianStream(request()) {
+    if event.tag == "start" {
+      sawStart = true
+      assert event.status >= 200 && event.status < 300
+    }
+
+    if event.tag == "chunk" {
+      sawChunk = true
+      const text = event.value.toUtf8String()
+      if text.contains("data:") {
+        sawSseData = true
+      }
+      if text.contains("[DONE]") {
+        sawDone = true
+      }
+      if text.contains("\"choices\"") && text.contains("\"delta\"") {
+        sawOpenAiChunk = true
+      }
+    }
+
+    if event.tag == "end" {
+      sawEnd = true
+    }
+  }
+
+  assert sawStart
+  assert sawChunk
+  assert sawSseData
+  assert sawDone || sawOpenAiChunk
+  assert sawEnd
+}

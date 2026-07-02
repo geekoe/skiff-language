@@ -1,0 +1,15 @@
+function debug(message: string, attrs: JsonObject?) -> void {
+  (root.telemetry.emit)("debug", message, attrs)
+}
+
+function info(message: string, attrs: JsonObject?) -> void {
+  (root.telemetry.emit)("info", message, attrs)
+}
+
+function warn(message: string, attrs: JsonObject?) -> void {
+  (root.telemetry.emit)("warn", message, attrs)
+}
+
+function error(message: string, attrs: JsonObject?) -> void {
+  (root.telemetry.emit)("error", message, attrs)
+}

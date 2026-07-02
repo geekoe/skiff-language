@@ -1,0 +1,25 @@
+native type Array<T>
+
+impl Array<T> {
+  native static function empty<T>() -> Array<T>
+  native function length() -> number
+  native function push(item: T) -> void
+  native function set(index: number, item: T) -> void
+  native function pop() -> T?
+  native function clone() -> Array<T>
+  native function map<R>(f: fn(item: T) -> R) -> Array<R>
+  native function filter(f: fn(item: T) -> bool) -> Array<T>
+}
+
+native type Map<K, V>
+
+impl Map<K, V> {
+  native static function empty<K, V>() -> Map<K, V>
+  native function length() -> number
+  native function get(key: K) -> V?
+  native function has(key: K) -> bool
+  native function set(key: K, value: V) -> void
+  native function delete(key: K) -> bool
+  native function keys() -> Array<K>
+  native function clone() -> Map<K, V>
+}

@@ -1,0 +1,18 @@
+[package]
+name = "skiff-runtime-linked-type-plan"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+serde_json = "1.0"
+skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-boundary = { path = "../boundary" }
+skiff-runtime-linked-program = { path = "../linked-program" }
+skiff-runtime-model = { path = "../model" }
+skiff-runtime-native-contract = { path = "../native-contract" }
+thiserror = "2.0"

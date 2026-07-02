@@ -1,0 +1,158 @@
+{
+  "defaults": {
+    "protocol": "skiff-telemetry-v1",
+    "topics": ["log", "trace", "metric", "health", "debug"],
+    "queueMaxEvents": 10000,
+    "batchMaxEvents": 200,
+    "batchMaxBytes": 262144,
+    "flushIntervalMs": 1000,
+    "enabled": true
+  },
+  "valid": {
+    "routerControl": {
+      "type": "router.control",
+      "artifactRoot": "/var/lib/skiff/artifacts",
+      "generation": "fixture-generation-1",
+      "telemetry": {
+        "endpoint": "ws://127.0.0.1:4002/telemetry",
+        "protocol": "skiff-telemetry-v1",
+        "topics": ["log", "trace", "metric", "health", "debug"],
+        "queueMaxEvents": 10000,
+        "batchMaxEvents": 200,
+        "batchMaxBytes": 262144,
+        "flushIntervalMs": 1000,
+        "enabled": true
+      }
+    },
+    "register": {
+      "type": "telemetry.register",
+      "protocol": "skiff-telemetry-v1",
+      "producerId": "runtime-fixture-1:proc:018f5e6e",
+      "source": "runtime",
+      "runtimeId": "runtime-fixture-1",
+      "topics": ["log", "trace", "metric", "health", "debug"]
+    },
+    "batch": {
+      "type": "telemetry.batch",
+      "producerId": "runtime-fixture-1:proc:018f5e6e",
+      "seq": 1,
+      "events": [
+        {
+          "topic": "log",
+          "ts": "2026-05-06T12:00:00.000Z",
+          "source": "runtime",
+          "serviceId": "hello",
+          "revisionId": "revision-fixture-1",
+          "buildId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "activationIdentity": "skiff-runtime-activation-v1:opaque:activation-fixture",
+          "runtimeId": "runtime-fixture-1",
+          "traceId": "trace-fixture-1",
+          "requestId": "request-fixture-1",
+          "spanId": "span-fixture-1",
+          "target": "service.hello.HelloApi.hello",
+          "level": "info",
+          "message": "hello saved",
+          "attrs": {
+            "helloId": "hello-1"
+          }
+        },
+        {
+          "topic": "trace",
+          "ts": "2026-05-06T12:00:00.125Z",
+          "source": "runtime",
+          "serviceId": "hello",
+          "runtimeId": "runtime-fixture-1",
+          "traceId": "trace-fixture-1",
+          "requestId": "request-fixture-1",
+          "spanId": "span-fixture-1",
+          "target": "service.hello.HelloApi.hello",
+          "name": "request.end",
+          "durationMs": 125
+        },
+        {
+          "topic": "health",
+          "ts": "2026-05-06T12:00:01.000Z",
+          "source": "runtime",
+          "runtimeId": "runtime-fixture-1",
+          "name": "telemetry.queue",
+          "dropped": {
+            "debug": 0,
+            "log": 0,
+            "trace": 0,
+            "metric": 0,
+            "health": 0
+          }
+        }
+      ]
+    }
+  },
+  "invalidCases": [
+    {
+      "name": "telemetry-control-missing-endpoint",
+      "payload": {
+        "type": "router.control",
+        "artifactRoot": "/var/lib/skiff/artifacts",
+        "telemetry": {
+          "protocol": "skiff-telemetry-v1",
+          "topics": ["log"],
+          "queueMaxEvents": 10000,
+          "batchMaxEvents": 200,
+          "batchMaxBytes": 262144,
+          "flushIntervalMs": 1000,
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "telemetry-control-unknown-topic",
+      "payload": {
+        "type": "router.control",
+        "artifactRoot": "/var/lib/skiff/artifacts",
+        "telemetry": {
+          "endpoint": "ws://127.0.0.1:4002/telemetry",
+          "protocol": "skiff-telemetry-v1",
+          "topics": ["log", "audit"],
+          "queueMaxEvents": 10000,
+          "batchMaxEvents": 200,
+          "batchMaxBytes": 262144,
+          "flushIntervalMs": 1000,
+          "enabled": true
+        }
+      }
+    },
+    {
+      "name": "telemetry-batch-log-missing-level",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 2,
+        "events": [
+          {
+            "topic": "log",
+            "ts": "2026-05-06T12:00:02.000Z",
+            "source": "runtime",
+            "message": "missing level"
+          }
+        ]
+      }
+    },
+    {
+      "name": "telemetry-batch-attrs-not-object",
+      "payload": {
+        "type": "telemetry.batch",
+        "producerId": "runtime-fixture-1:proc:018f5e6e",
+        "seq": 3,
+        "events": [
+          {
+            "topic": "log",
+            "ts": "2026-05-06T12:00:03.000Z",
+            "source": "runtime",
+            "level": "info",
+            "message": "attrs must be object",
+            "attrs": ["not", "object"]
+          }
+        ]
+      }
+    }
+  ]
+}

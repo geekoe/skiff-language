@@ -1,0 +1,4 @@
+schemaVersion: skiff-std-registry-v1
+packages:
+  - id: skiff.run/std
+    path: .

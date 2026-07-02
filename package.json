@@ -1,0 +1,14 @@
+{
+  "name": "skiff",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "skiff": "scripts/skiff.mjs"
+  },
+  "scripts": {
+    "skiff": "node scripts/skiff.mjs",
+    "type-check": "node --check scripts/skiff.mjs && node --check scripts/skiff-instance.mjs && node --check scripts/skiff-dev-sync.mjs && node --check scripts/test-all.mjs && node --check scripts/check-compiler-boundaries.mjs && node --check scripts/check-operation-abi-identity-single-source.mjs && node --check scripts/check-compiler-crate-dag.mjs && node --check scripts/check-runtime-crate-dag.mjs && node --check scripts/check-runtime-eval-error-boundary.mjs && node --check scripts/check-crate-public-api.mjs && node --check scripts/check-skiff-source-layout.mjs && node --check scripts/build-dev-runtime.mjs && node --check scripts/build-runtime-stack.mjs && node --check scripts/deploy-runtime-stack.mjs && node --check scripts/lib/source-key.mjs && node --check scripts/lib/cargo-target-dir.mjs && node --check scripts/lib/dev-runtime-paths.mjs && node --check scripts/lib/publication-id.mjs && node --check scripts/lib/simple-yaml.mjs && node --check scripts/lib/dev-sync-args.mjs && node --check scripts/lib/runtime-stack-config.mjs && node --check scripts/lib/project-config.mjs && node --check scripts/lib/local-instance-config.mjs && node scripts/check-operation-abi-identity-single-source.mjs && node scripts/check-runtime-crate-dag.mjs --self-test && node scripts/check-runtime-crate-dag.mjs && node scripts/check-runtime-eval-error-boundary.mjs && pnpm --dir telemetry run type-check",
+    "test": "node scripts/test-all.mjs"
+  }
+}

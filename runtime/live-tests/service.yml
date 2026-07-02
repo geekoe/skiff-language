@@ -1,0 +1,28 @@
+id: skiff.run/runtime-live
+version: 0.1.0
+packages:
+  - id: example.com/runtime-live-kit
+    version: 1.0.0
+    alias: runtimeKit
+http:
+  routes:
+    - method: POST
+      path: /runtime-live/echo
+      handler: internal.http_adapter.rawEcho
+    - method: POST
+      path: /runtime-live/json
+      handler: internal.http_adapter.typedJsonEcho
+    - method: POST
+      path: /runtime-live/binary
+      handler: internal.http_adapter.binaryEcho
+    - method: GET
+      path: /runtime-live/guarded
+      handler: internal.http_adapter.guardedPost
+    - method: POST
+      path: /runtime-live/stream
+      handler: internal.http_adapter.streamEcho
+    - method: POST
+      path: /runtime-live/package
+      handler: runtimeKit.packageEcho
+timeout:
+  default: 120000

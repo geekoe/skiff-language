@@ -1,0 +1,65 @@
+import std
+
+type TextConnectionMessage {
+  tag: "text",
+  text: string,
+}
+
+type BinaryConnectionMessage {
+  tag: "binary",
+  base64: string,
+}
+
+type ConnectionMessage discriminator "tag" =
+  { tag: "text", text: string }
+  | { tag: "binary", base64: string }
+
+type WebSocketConnectRequest {
+  connectionId: string,
+  url: string,
+  query: Array<std.http.HttpQueryParam>,
+  headers: Array<std.http.HttpHeader>,
+  cookies: Array<std.http.HttpHeader>,
+  version: string?,
+}
+
+type WebSocketConnection<Context> {
+  id: string,
+  businessIdentity: string?,
+  context: Context,
+}
+
+type WebSocketReceiveEvent<Context> {
+  connection: WebSocketConnection<Context>,
+  message: ConnectionMessage,
+}
+
+type WebSocketCloseEvent {
+  connectionId: string,
+  code: integer,
+  reason: string,
+}
+
+type WebSocketConnectionPolicy {
+  maxConnections: integer,
+  overflow: "close-oldest" | "reject-new",
+  closeCode: integer?,
+  closeReason: string?,
+}
+
+type WebSocketConnectResult<Context> discriminator "tag" =
+  { tag: "accept", context: Context, businessIdentity: string?, connectionPolicy: WebSocketConnectionPolicy? }
+  | { tag: "reject", code: integer, reason: string }
+
+native function sendTextToConnection(connectionId: string, text: string) -> void
+native function sendBinaryToConnection(connectionId: string, value: bytes) -> void
+native function sendTextToBusinessIdentity(businessIdentity: string, text: string) -> void
+native function sendBinaryToBusinessIdentity(businessIdentity: string, value: bytes) -> void
+
+function sendJsonToConnection<T>(connectionId: string, value: T) -> void {
+  return sendTextToConnection(connectionId, std.json.encode<T>(value))
+}
+
+function sendJsonToBusinessIdentity<T>(businessIdentity: string, value: T) -> void {
+  return sendTextToBusinessIdentity(businessIdentity, std.json.encode<T>(value))
+}

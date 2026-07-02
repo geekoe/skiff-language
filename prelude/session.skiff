@@ -1,0 +1,2 @@
+native type ClientSessionRef
+native type ClientCapability

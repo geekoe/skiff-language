@@ -1,0 +1,61 @@
+profile: dev
+host: 127.0.0.1
+artifactRoots:
+  - ../var/skiff-artifacts
+devReload: true
+# Published version routing reads versions/services/<service>/<version>.json
+# and builds/services/<service>/<build-hash>.json instead of dev/services.
+manifest: fixtures/hello/manifest.json
+# For a shared local router, use `manifests:` instead:
+# manifests:
+#   - ../var/skiff-artifacts/manifests/example.json
+#   - ../../sample/server/build/router-manifest.json
+# Router rewrite rules select a service by Host and optional exact pathname on
+# the same HTTP listener. When a rule matches, it overrides selector
+# headers/query parameters.
+rewrite:
+  - host: hello.localhost
+    service: skiff.run/hello
+    # version: 1.0.0
+  # - host: account.localhost
+  #   path: /api
+  #   service: skiff.run/account
+  #   version: 0.1.0
+requestTimeoutMs: 20000
+
+http:
+  port: 4000
+  # Optional. Defaults to 67108864 when omitted.
+  # bodyLimitBytes: 67108864
+
+runtime:
+  port: 4001
+  path: /runtime
+
+# Optional platform-managed serviceDb for `db collection` declarations. Services
+# do not configure mongoUrl themselves; the runtime receives this through router
+# control activation and uses each service id's storage projection as the database name.
+# serviceDb:
+#   mongoUrl: mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false
+
+# Optional platform-managed immutable file blob backend for std.file. Services
+# cannot read this config. If local and OSS are both configured, runtime uses
+# local first; use OSS as the deployment backend once implemented.
+# fileBackend:
+#   local:
+#     root: ../var/skiff-file-blobs
+#   oss:
+#     endpoint: https://oss-cn-hangzhou.aliyuncs.com
+#     bucket: skiff-files
+#     region: cn-hangzhou
+#     accessKeyIdEnv: SKIFF_OSS_ACCESS_KEY_ID
+#     accessKeySecretEnv: SKIFF_OSS_ACCESS_KEY_SECRET
+#     # Direct values are accepted for private local configs, but env refs are
+#     # preferred so example configs do not force plaintext secrets.
+#     # accessKeyId: local-only-access-key-id
+#     # accessKeySecret: local-only-access-key-secret
+
+# Runtime telemetry is best-effort. Start skiff-telemetry on 127.0.0.1:4002
+# to persist logs/traces, or remove this block to keep runtimes local-only.
+telemetry:
+  endpoint: ws://127.0.0.1:4002/telemetry

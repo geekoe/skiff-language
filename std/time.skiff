@@ -1,0 +1,8 @@
+type DecodeError implements ErrorPayload {
+  target: string,
+  message: string,
+}
+
+type Duration = integer
+
+native function sleep(duration: Duration) -> void

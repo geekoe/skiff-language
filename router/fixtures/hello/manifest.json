@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "skiff-runtime-manifest-v1",
+  "service": {
+    "id": "skiff.run/hello",
+    "revisionId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "protocolIdentity": "skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000001"
+  },
+  "operations": [
+    {
+      "operation": "HelloHttpApi.handle",
+      "operationAbiId": "operation:test:service.skiff~run~~hello.HelloHttpApi.handle",
+      "target": "service.skiff~run~~hello.HelloHttpApi.handle",
+      "mode": "unary",
+      "parameters": [
+        {
+          "name": "request",
+          "schema": {
+            "type": "object",
+            "required": ["method", "url", "path", "query", "headers", "body"],
+            "properties": {
+              "method": { "type": "string" },
+              "url": { "type": "string" },
+              "path": { "type": "string" },
+              "query": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "value"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "value": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "headers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "value"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "value": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "body": {
+                "type": "string",
+                "contentEncoding": "base64",
+                "xSkiffSymbol": "std.bytes.bytes"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ],
+      "response": {
+        "type": "object",
+        "required": ["status", "headers", "body"],
+        "properties": {
+          "status": { "type": "integer" },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "value"],
+              "properties": {
+                "name": { "type": "string" },
+                "value": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "body": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "xSkiffSymbol": "std.bytes.bytes"
+          }
+        },
+        "additionalProperties": false
+      },
+      "timeoutMs": 2000
+    }
+  ],
+  "gateway": {
+    "http": {
+      "raw": {
+        "operation": "HelloHttpApi.handle",
+        "target": "gateway.skiff~run~~hello.http.raw"
+      }
+    }
+  },
+  "timeout": {
+    "defaultMs": 5000
+  }
+}

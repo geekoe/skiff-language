@@ -1,0 +1,5 @@
+native function split(value: string, separator: string) -> Array<string>
+native function isAsciiDigits(value: string) -> bool
+native function truncateUtf8Bytes(value: string, maxBytes: number) -> string
+native function encodeQueryComponent(value: string) -> string
+native function encodePath(value: string) -> string

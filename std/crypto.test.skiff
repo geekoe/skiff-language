@@ -1,0 +1,17 @@
+import std
+
+test "hmac sha1 base64 matches known vector" {
+  const signature = std.crypto.hmacSha1Base64("Jefe", "what do ya want for nothing?")
+  assert signature == "7/zfauXrL6LSdBbV8YTfnCWafHk="
+}
+
+test "sha256 matches known vector" {
+  const digest = std.crypto.sha256("hello")
+  assert digest == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+}
+
+test "uuid and random token return non-empty strings" {
+  assert std.crypto.uuid() != ""
+  assert std.crypto.uuidSimple() != ""
+  assert std.crypto.randomToken() != ""
+}

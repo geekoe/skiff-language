@@ -1,0 +1,9 @@
+id: example.com/http-stream-live
+version: 0.1.0
+http:
+  routes:
+    - method: POST
+      path: /bailian-stream
+      handler: internal.http_stream_live.bailianStream
+timeout:
+  default: 120000

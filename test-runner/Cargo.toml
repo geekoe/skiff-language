@@ -1,0 +1,46 @@
+[package]
+name = "skiff-test-runner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+autotests = false
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[[bin]]
+name = "skiff-test-runner"
+path = "src/main.rs"
+
+[[test]]
+name = "test_runner_doubles"
+path = "tests/test_runner_doubles.rs"
+
+[[test]]
+name = "test_runner_live_smoke"
+path = "tests/test_runner_live_smoke.rs"
+
+[[test]]
+name = "test_runner_package"
+path = "tests/test_runner_package.rs"
+
+[[test]]
+name = "test_runner_package_visibility"
+path = "tests/test_runner_package_visibility.rs"
+
+[[test]]
+name = "test_runner_service"
+path = "tests/test_runner_service.rs"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2.0"
+skiff-compiler = { path = "../compiler" }
+skiff-artifact-model = { path = "../artifact-model" }
+skiff-artifact-identity = { path = "../artifact-identity" }
+skiff-compiler-core = { path = "../compiler/core" }
+skiff-syntax = { path = "../syntax" }

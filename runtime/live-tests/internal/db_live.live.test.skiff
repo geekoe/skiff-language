@@ -1,0 +1,177 @@
+import std
+
+test defaultRun false
+
+type RuntimeLiveDoc {
+  id: string,
+  value: string,
+  visits: number,
+  rank: number,
+}
+
+type RuntimeLiveRollbackError implements ErrorPayload {
+  message: string,
+}
+
+db object RuntimeLiveDoc {
+  name "runtime_live_doc"
+  primary key(id)
+  lease drain ttl 60000 max 1800000
+}
+
+function rollbackProbe(id: string) -> bool {
+  db transaction value {
+    db update RuntimeLiveDoc(id) { visits += 100 }
+    throw RuntimeLiveRollbackError { message: "rollback" }
+    true
+  }
+}
+
+function requireLiveDbProbe(condition: bool, message: string) -> void {
+  if !condition {
+    throw std.db.DecodeError { target: "runtime.live.db", message: message }
+  }
+}
+
+function claimAndUpdateProbe(id: string) -> bool {
+  return db claim RuntimeLiveDoc(id).drain as doc {
+    const slot = db lease RuntimeLiveDoc(id).drain
+    requireLiveDbProbe(slot != null, "lease slot should be readable inside claim")
+    requireLiveDbProbe(slot.owner != "", "lease owner should be present")
+    requireLiveDbProbe(slot.requestId != "", "lease request id should be present")
+    requireLiveDbProbe(slot.expiresAt != "", "lease expiresAt should be present")
+
+    const updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    requireLiveDbProbe(updated != null, "leased update should return updated row")
+    requireLiveDbProbe(updated.id == doc.id, "leased update should target claimed row")
+    requireLiveDbProbe(updated.visits == doc.visits + 1, "leased update should increment visits")
+  }
+}
+
+function dynamicTransactionClaimProbe(id: string) -> bool {
+  return db claim RuntimeLiveDoc(id).drain {
+    const updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    requireLiveDbProbe(updated != null, "leased update should return updated row")
+  }
+}
+
+test "live service db persists object db operations" {
+  const marker = config.require<string>("runtimeLive.db")
+  const docId = "runtime-live-db-".concat(std.crypto.uuidSimple())
+
+  const inserted = db insert RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
+  assert inserted.id == docId
+  assert inserted.value == marker
+  assert inserted.visits == 1
+  assert inserted.rank == 10
+
+  const read = db require RuntimeLiveDoc(docId)
+  assert read.id == docId
+  assert read.value == marker
+
+  const found = db find RuntimeLiveDoc(docId)
+  assert found != null
+  assert found.id == docId
+
+  const updated = db update RuntimeLiveDoc(docId) { visits += 1 }
+  assert updated != null
+  assert updated.visits == 2
+  assert db exists RuntimeLiveDoc(docId)
+  assert db count RuntimeLiveDoc { where id == docId } == 1
+
+  const deleted = db delete RuntimeLiveDoc(docId)
+  assert deleted
+  assert !db exists RuntimeLiveDoc(docId)
+}
+
+test "live service db supports find order offset replace upsert and transaction" {
+  const marker = config.require<string>("runtimeLive.db")
+  const prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+  const firstId = prefix.concat("-a")
+  const secondId = prefix.concat("-b")
+  const thirdId = prefix.concat("-c")
+  const upsertId = prefix.concat("-upsert")
+  const rollbackId = prefix.concat("-rollback")
+
+  db insert RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
+  db insert RuntimeLiveDoc { id = secondId value = marker.concat("-second") visits = 2 rank = 20 }
+  db insert RuntimeLiveDoc { id = thirdId value = marker.concat("-third") visits = 3 rank = 30 }
+
+  const ordered = db find many RuntimeLiveDoc { where id != null order rank asc offset 1 limit 1 }
+  assert ordered.length() == 1
+  for row in ordered {
+    assert row.id == secondId
+    assert row.rank == 20
+  }
+
+  const replaced = db replace RuntimeLiveDoc(secondId) { value = marker.concat("-replaced") visits = 22 rank = 25 }
+  assert replaced != null
+  assert replaced.id == secondId
+  assert replaced.value == marker.concat("-replaced")
+  assert replaced.visits == 22
+
+  const upsertInserted = db upsert RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
+  assert upsertInserted.inserted
+  assert upsertInserted.value.id == upsertId
+  assert upsertInserted.value.visits == 1
+
+  const upsertUpdated = db upsert RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
+  assert !upsertUpdated.inserted
+  assert upsertUpdated.value.visits == 2
+
+  db transaction {
+    db update RuntimeLiveDoc(firstId) { visits += 10 }
+    db delete RuntimeLiveDoc(thirdId)
+  }
+
+  assert db require RuntimeLiveDoc(firstId).visits == 11
+  assert !db exists RuntimeLiveDoc(thirdId)
+
+  const committed = db transaction value {
+    db require RuntimeLiveDoc(upsertId)
+  }
+  assert committed.visits == 2
+
+  db insert RuntimeLiveDoc { id = rollbackId value = marker.concat("-rollback") visits = 1 rank = 50 }
+  const beforeRollback = db require RuntimeLiveDoc(firstId).visits
+  const rollback = catch<RuntimeLiveRollbackError>(rollbackProbe(firstId))
+  assert rollback.tag == "err"
+  assert db require RuntimeLiveDoc(firstId).visits == beforeRollback
+
+  db delete RuntimeLiveDoc(firstId)
+  db delete RuntimeLiveDoc(secondId)
+  db delete RuntimeLiveDoc(upsertId)
+  db delete RuntimeLiveDoc(rollbackId)
+}
+
+test "live service db claim reads releases and fences writes" {
+  const marker = config.require<string>("runtimeLive.db")
+  const docId = "runtime-live-lease-".concat(std.crypto.uuidSimple())
+
+  db insert RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
+
+  const firstClaim = claimAndUpdateProbe(docId)
+  assert firstClaim
+  assert db require RuntimeLiveDoc(docId).visits == 2
+  assert db lease RuntimeLiveDoc(docId).drain == null
+
+  const secondClaim = claimAndUpdateProbe(docId)
+  assert secondClaim
+  assert db require RuntimeLiveDoc(docId).visits == 3
+
+  db delete RuntimeLiveDoc(docId)
+}
+
+test "live service db dynamically rejects claim inside transaction" {
+  const marker = config.require<string>("runtimeLive.db")
+  const docId = "runtime-live-lease-tx-".concat(std.crypto.uuidSimple())
+
+  db insert RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
+  const rejected = catch<std.db.DecodeError>(db transaction value {
+    dynamicTransactionClaimProbe(docId)
+  })
+
+  assert rejected.tag == "err"
+  assert db require RuntimeLiveDoc(docId).visits == 1
+  db delete RuntimeLiveDoc(docId)
+}

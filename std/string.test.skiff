@@ -1,0 +1,24 @@
+import std
+
+test "truncateUtf8Bytes truncates ASCII by byte limit" {
+  assert std.string.truncateUtf8Bytes("abcdef", 3) == "abc"
+}
+
+test "truncateUtf8Bytes keeps exact byte limit unchanged" {
+  assert std.string.truncateUtf8Bytes("hello", 5) == "hello"
+}
+
+test "truncateUtf8Bytes does not split Chinese UTF-8 code point" {
+  assert std.string.truncateUtf8Bytes("你好", 4) == "你"
+  assert std.string.truncateUtf8Bytes("你好", 2) == ""
+}
+
+test "truncateUtf8Bytes does not split emoji UTF-8 code point" {
+  assert std.string.truncateUtf8Bytes("a🙂b", 4) == "a"
+  assert std.string.truncateUtf8Bytes("a🙂b", 5) == "a🙂"
+}
+
+test "truncateUtf8Bytes returns empty for non-positive limit" {
+  assert std.string.truncateUtf8Bytes("abc", 0) == ""
+  assert std.string.truncateUtf8Bytes("abc", 0 - 1) == ""
+}

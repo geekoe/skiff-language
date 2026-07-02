@@ -1,0 +1,158 @@
+import std
+
+test defaultRun false
+
+function localRequest(marker: string) -> std.http.HttpRequest {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "x-runtime-live-marker", value: marker })
+  return std.http.HttpRequest {
+    method: "POST",
+    url: "https://runtime-live.example.test/runtime-live/echo",
+    path: "/runtime-live/echo",
+    query: Array.empty<std.http.HttpQueryParam>(),
+    headers: headers,
+    body: bytes.fromUtf8("adapter-live-direct"),
+  }
+}
+
+function requestWithBody(method: string, path: string, body: bytes, headers: Array<std.http.HttpHeader>) -> std.http.HttpRequest {
+  return std.http.HttpRequest {
+    method: method,
+    url: "https://runtime-live.example.test".concat(path),
+    path: path,
+    query: Array.empty<std.http.HttpQueryParam>(),
+    headers: headers,
+    body: body,
+  }
+}
+
+function routerUrl(path: string) -> string {
+  const base = config.require<string>("runtimeLive.routerHttpUrl")
+  if base.endsWith("/") {
+    return base.concat(path)
+  }
+  return base.concat("/").concat(path)
+}
+
+function routerHeaders(marker: string) -> Array<std.http.HttpHeader> {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "x-skiff-service", value: config.require<string>("runtimeLive.serviceId") })
+  headers.push(std.http.HttpHeader { name: "x-skiff-version", value: config.require<string>("runtimeLive.version") })
+  headers.push(std.http.HttpHeader { name: "x-runtime-live-marker", value: marker })
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  return headers
+}
+
+function liveRawRouterRoundTrip(marker: string) -> bool {
+  const base = config.optional<string>("runtimeLive.routerHttpUrl")
+  if base == null || base == "" {
+    return true
+  }
+
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "POST",
+    url: routerUrl("runtime-live/echo"),
+    headers: routerHeaders(marker),
+    body: bytes.fromUtf8("adapter-live-router"),
+    timeoutMs: 15000,
+  })
+  return response.status == 200 && response.body.toUtf8String().contains(marker)
+}
+
+function livePackageRouterRoundTrip(marker: string) -> bool {
+  const base = config.optional<string>("runtimeLive.routerHttpUrl")
+  if base == null || base == "" {
+    return true
+  }
+
+  const response = std.http.request(std.http.HttpClientRequest {
+    method: "POST",
+    url: routerUrl("runtime-live/package"),
+    headers: routerHeaders(marker),
+    body: bytes.fromUtf8("package-router"),
+    timeoutMs: 15000,
+  })
+  return response.status == 202 && response.body.toUtf8String().contains("runtime-live-package:package-router")
+}
+
+test "live raw http adapter handles runtime http envelope" {
+  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const response = root.internal.http_adapter.rawEcho(localRequest(marker))
+
+  assert response.status == 200
+  assert response.body.toUtf8String().contains("runtime-live-http:".concat(marker))
+  assert response.body.toUtf8String().contains("/runtime-live/echo")
+  assert response.body.toUtf8String().contains("adapter-live-direct")
+  assert liveRawRouterRoundTrip(marker)
+}
+
+test "live http adapter decodes typed json and returns json body" {
+  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "application/json" })
+  const response = root.internal.http_adapter.typedJsonEcho(requestWithBody(
+    "POST",
+    "/runtime-live/json",
+    bytes.fromUtf8("{\"marker\":\"".concat(marker).concat("\",\"count\":3}")),
+    headers
+  ))
+
+  assert response.status == 200
+  assert response.body.toUtf8String().contains(marker)
+  assert response.body.toUtf8String().contains("\"count\":4")
+  assert response.body.toUtf8String().contains("\"bodyKind\":\"json\"")
+}
+
+test "live http adapter returns binary payload and guard short circuits" {
+  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const headers = Array.empty<std.http.HttpHeader>()
+  const binary = root.internal.http_adapter.binaryEcho(requestWithBody(
+    "POST",
+    "/runtime-live/binary",
+    bytes.fromUtf8(marker),
+    headers
+  ))
+  assert binary.status == 201
+  assert binary.body.toUtf8String() == "runtime-live-binary:".concat(marker)
+
+  const guarded = root.internal.http_adapter.guardedPost(requestWithBody(
+    "GET",
+    "/runtime-live/guarded",
+    bytes.fromUtf8(""),
+    headers
+  ))
+  assert guarded.status == 405
+}
+
+test "live http adapter streams response events and package route dispatches through router" {
+  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const headers = Array.empty<std.http.HttpHeader>()
+  let sawStart = false
+  let sawChunk = false
+  let sawEnd = false
+  let body = ""
+  for event in root.internal.http_adapter.streamEcho(requestWithBody(
+    "POST",
+    "/runtime-live/stream",
+    bytes.fromUtf8(marker),
+    headers
+  )) {
+    if event.tag == "start" {
+      sawStart = true
+      assert event.status == 200
+    }
+    if event.tag == "chunk" {
+      sawChunk = true
+      body = body.concat(event.value.toUtf8String())
+    }
+    if event.tag == "end" {
+      sawEnd = true
+    }
+  }
+
+  assert sawStart
+  assert sawChunk
+  assert sawEnd
+  assert body == "runtime-live-stream:".concat(marker)
+  assert livePackageRouterRoundTrip(marker)
+}

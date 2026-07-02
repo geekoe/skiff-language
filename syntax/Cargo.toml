@@ -1,0 +1,13 @@
+[package]
+name = "skiff-syntax"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "2.0"

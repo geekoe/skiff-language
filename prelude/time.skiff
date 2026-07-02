@@ -1,0 +1,5 @@
+impl Duration {
+  native static function milliseconds(value: integer) -> Duration
+  native static function seconds(value: integer) -> Duration
+  native function toMilliseconds() -> integer
+}

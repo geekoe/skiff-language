@@ -1,0 +1,12 @@
+[package]
+name = "skiff-runtime-activation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = "1.0"
+serde_json = "1.0"
+skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-linked-program = { path = "../linked-program" }
+skiff-runtime-linker = { path = "../linker" }

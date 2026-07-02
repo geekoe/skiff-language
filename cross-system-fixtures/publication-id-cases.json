@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "encoding": "url-like-with-storage-safe-projection",
+  "maxBytes": 63,
+  "valid": [
+    {
+      "canonicalId": "skiff.run/std",
+      "displayForm": "skiff.run/std",
+      "authority": "skiff.run",
+      "runtimeTargetComponent": "skiff~run~~std",
+      "appliesTo": ["compiler", "runtime", "router"]
+    },
+    {
+      "canonicalId": "skiff.run/http_session",
+      "displayForm": "skiff.run/http_session",
+      "authority": "skiff.run",
+      "runtimeTargetComponent": "skiff~run~~http_session",
+      "appliesTo": ["compiler", "runtime", "router"]
+    },
+    {
+      "canonicalId": "api.skiff.run/chat",
+      "displayForm": "api.skiff.run/chat",
+      "authority": "api.skiff.run",
+      "runtimeTargetComponent": "api~skiff~run~~chat",
+      "appliesTo": ["compiler", "runtime", "router"]
+    },
+    {
+      "canonicalId": "example.com/billing_worker/events-v2",
+      "displayForm": "example.com/billing_worker/events-v2",
+      "authority": "example.com",
+      "runtimeTargetComponent": "example~com~~billing_worker~~events-v2",
+      "appliesTo": ["compiler", "runtime", "router"]
+    }
+  ],
+  "invalid": [
+    { "id": "Std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "billing", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff.run", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~~std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~~std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~Std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~9std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "-skiff~run~~std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff-~run~~std", "appliesTo": ["compiler", "runtime", "router"] },
+    { "id": "skiff~run~~std$", "appliesTo": ["compiler", "runtime", "router"] }
+  ]
+}

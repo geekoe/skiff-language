@@ -1,0 +1,20 @@
+[package]
+name = "skiff-compiler-compiled"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+skiff-artifact-model = { path = "../../artifact-model" }
+skiff-compiler-core = { path = "../core" }
+skiff-compiler-lowering = { path = "../lowering" }
+skiff-compiler-projection-input = { path = "../projection-input" }
+skiff-compiler-source = { path = "../source" }
+serde_json = { version = "1.0", features = ["preserve_order"] }

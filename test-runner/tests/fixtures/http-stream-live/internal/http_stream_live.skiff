@@ -1,0 +1,57 @@
+import std
+
+function defaultBailianBaseUrl() -> string {
+  return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+}
+
+function appendPath(baseUrl: string, path: string) -> string {
+  if baseUrl.endsWith("/") {
+    return baseUrl.concat(path)
+  }
+  return baseUrl.concat("/").concat(path)
+}
+
+function liveApiKey() -> string {
+  const direct = config.optional<string>("bailian.apiKey")
+  if direct != null && direct != "" {
+    return direct
+  }
+  return config.require<string>("service.bailian.apiKey")
+}
+
+function liveBaseUrl() -> string {
+  const direct = config.optional<string>("bailian.baseUrl")
+  if direct != null && direct != "" {
+    return direct
+  }
+
+  const serviceValue = config.optional<string>("service.bailian.baseUrl")
+  if serviceValue != null && serviceValue != "" {
+    return serviceValue
+  }
+
+  return defaultBailianBaseUrl()
+}
+
+function bailianStream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "authorization", value: "Bearer ".concat(liveApiKey()) })
+  headers.push(std.http.HttpHeader { name: "content-type", value: "application/json" })
+  headers.push(std.http.HttpHeader { name: "accept", value: "text/event-stream" })
+
+  const upstream = std.http.HttpClientRequest {
+    method: "POST",
+    url: appendPath(liveBaseUrl(), "chat/completions"),
+    headers: headers,
+    body: request.body,
+    timeoutMs: 60000,
+  }
+
+  const response = std.http.stream(upstream)
+  emit(std.http.streamStart(response.status, response.headers))
+  for chunk in response.body {
+    emit(std.http.streamChunk(chunk))
+  }
+  emit(std.http.streamEnd())
+  return null
+}

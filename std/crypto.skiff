@@ -1,0 +1,5 @@
+native function hmacSha1Base64(key: string, text: string) -> string
+native function sha256(text: string) -> string
+native function randomToken() -> string
+native function uuid() -> string
+native function uuidSimple() -> string

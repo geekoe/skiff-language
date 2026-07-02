@@ -1,0 +1,55 @@
+{
+  "name": "skiff-vscode",
+  "displayName": "Skiff",
+  "description": "Syntax highlighting and editor support for the Skiff language.",
+  "version": "0.1.0",
+  "publisher": "skiff-language",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:skiff"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "skiff",
+        "aliases": [
+          "Skiff",
+          "skiff"
+        ],
+        "extensions": [
+          ".skiff"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "skiff",
+        "scopeName": "source.skiff",
+        "path": "./syntaxes/skiff.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test:grammar": "node ./scripts/test-grammar.mjs",
+    "package": "vsce package --allow-star-activation --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/vscode": "1.105.0",
+    "@vscode/vsce": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.2.1"
+  }
+}

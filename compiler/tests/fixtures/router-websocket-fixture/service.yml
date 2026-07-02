@@ -1,0 +1,7 @@
+id: example.com/websocket_fixture
+version: 1.0.0
+
+websocket: internal.websocket_fixture_service.WebSocketFixtureService
+
+timeout:
+  default: 120000

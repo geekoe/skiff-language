@@ -1,0 +1,33 @@
+import std
+
+type WebSocketFixtureService {}
+
+type ConnectionContext {
+  userId: string,
+  deviceId: string,
+  platform: string,
+  clientVersion: string,
+  language: string,
+  store: string?,
+}
+
+impl WebSocketFixtureService {
+  function connect(self: WebSocketFixtureService, request: std.websocket.WebSocketConnectRequest) -> std.websocket.WebSocketConnectResult<ConnectionContext> {
+    return {
+      tag: "accept",
+      context: ConnectionContext {
+        userId: request.connectionId,
+        deviceId: request.connectionId,
+        platform: "web",
+        clientVersion: "1.0.0",
+        language: "en",
+        store: null,
+      },
+      businessIdentity: request.connectionId,
+    }
+  }
+
+  function receive(self: WebSocketFixtureService, context: ConnectionContext, message: std.websocket.ConnectionMessage) -> null {
+    return null
+  }
+}

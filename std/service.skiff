@@ -1,0 +1,9 @@
+type ProviderUnavailableError implements ErrorPayload {
+  target: string,
+  reason: string,
+}
+
+type ProtocolError implements ErrorPayload {
+  target: string,
+  message: string,
+}

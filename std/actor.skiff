@@ -1,0 +1,10 @@
+// Frozen legacy surface. Do not add new consumers or new capabilities.
+// Thread/run coordination must use db leases plus function spawn instead.
+interface Actor<Id> {}
+
+native type ActorRef<T>
+
+native function put<T, Id>(id: Id, object: T) -> ActorRef<T>
+native function get<T, Id>(id: Id) -> ActorRef<T>
+native function find<T, Id>(id: Id) -> ActorRef<T>?
+native function remove<T, Id>(id: Id) -> bool

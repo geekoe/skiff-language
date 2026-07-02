@@ -1,0 +1,25 @@
+[package]
+name = "skiff-compiler-source"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+skiff-artifact-identity = { path = "../../artifact-identity" }
+skiff-artifact-model = { path = "../../artifact-model" }
+skiff-compiler-core = { path = "../core" }
+compiler-input-model = { package = "skiff-compiler-input-model", path = "../input-model" }
+skiff-syntax = { path = "../../syntax" }
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2.0"

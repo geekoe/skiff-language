@@ -1,0 +1,16 @@
+native type Date
+
+impl Date {
+  native static function now() -> Date
+  native static function fromEpochMilliseconds(ms: integer) -> Date
+  native static function parse(value: string) -> Date?
+  native static function requireParse(value: string) -> Date
+
+  native function toEpochMilliseconds() -> integer
+  native function toISOString() -> string
+  native function addMilliseconds(ms: integer) -> Date
+  native function diffMilliseconds(other: Date) -> integer
+  native function compare(other: Date) -> integer
+  native function isBefore(other: Date) -> bool
+  native function isAfter(other: Date) -> bool
+}

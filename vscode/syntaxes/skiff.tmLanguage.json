@@ -1,0 +1,659 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Skiff",
+  "scopeName": "source.skiff",
+  "fileTypes": [
+    "skiff"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#imports"
+    },
+    {
+      "include": "#provider-capability"
+    },
+    {
+      "include": "#tests"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#paths"
+    },
+    {
+      "include": "#control-forms"
+    },
+    {
+      "include": "#fields"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.skiff",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.skiff",
+          "begin": "/\\*",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.begin.skiff"
+            }
+          },
+          "end": "\\*/",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.end.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.skiff",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.skiff"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.skiff"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.skiff",
+              "match": "\\\\(?:[\"\\\\nrt]|u[0-9A-Fa-f]{4})"
+            }
+          ]
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "name": "meta.import.skiff",
+          "match": "^\\s*(import)\\s+([a-z][A-Za-z0-9_]*)(?=\\s*;?\\s*(?://.*)?$)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.skiff"
+            },
+            "2": {
+              "name": "entity.name.namespace.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.function.declaration.skiff",
+          "begin": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.skiff"
+            },
+            "2": {
+              "name": "entity.name.function.skiff"
+            }
+          },
+          "end": "(?=\\{)|(?=$)",
+          "patterns": [
+            {
+              "include": "#type-parameter-list"
+            },
+            {
+              "include": "#parameter-declarations"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#paths"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "name": "meta.function.anonymous.skiff",
+          "begin": "\\b(fn)\\b(?=\\s*\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.skiff"
+            }
+          },
+          "end": "(?=\\{)|(?=$)",
+          "patterns": [
+            {
+              "include": "#parameter-declarations"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#paths"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "name": "meta.type.declaration.skiff",
+          "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.skiff"
+            },
+            "2": {
+              "name": "entity.name.type.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.alias.declaration.skiff",
+          "match": "\\b(alias)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.alias.skiff"
+            },
+            "2": {
+              "name": "entity.name.type.alias.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.interface.declaration.skiff",
+          "match": "\\b(interface)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.interface.skiff"
+            },
+            "2": {
+              "name": "entity.name.type.interface.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.impl.declaration.skiff",
+          "match": "\\b(impl)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.impl.skiff"
+            },
+            "2": {
+              "name": "entity.name.type.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.binding.declaration.skiff",
+          "match": "\\b(const|let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.variable.skiff"
+            },
+            "2": {
+              "name": "variable.other.readwrite.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "provider-capability": {
+      "patterns": [
+        {
+          "name": "meta.provider-capability.skiff",
+          "match": "^\\s*(provider)\\s+(?!function\\b)([a-z][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.other.provider.skiff"
+            },
+            "2": {
+              "name": "entity.name.namespace.provider.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "tests": {
+      "patterns": [
+        {
+          "name": "meta.test.directive.skiff",
+          "match": "^\\s*(test)\\s+(defaultRun)\\s+(true|false)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.other.test.skiff"
+            },
+            "2": {
+              "name": "support.variable.test.directive.skiff"
+            },
+            "3": {
+              "name": "constant.language.boolean.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.test.declaration.skiff",
+          "match": "^\\s*(test)\\s+(\"(?:\\\\[\"\\\\nrt]|\\\\u[0-9A-Fa-f]{4}|[^\"\\\\\\n])*\")",
+          "captures": {
+            "1": {
+              "name": "keyword.other.test.skiff"
+            },
+            "2": {
+              "name": "string.quoted.double.skiff"
+            }
+          }
+        },
+        {
+          "name": "keyword.other.test.skiff",
+          "match": "\\b(assert)\\b"
+        }
+      ]
+    },
+    "control-forms": {
+      "patterns": [
+        {
+          "name": "meta.control.timeout.skiff",
+          "match": "\\b(timeout)(\\s*)(\\()(\\s*[1-9][0-9]*(?:ms|s|m|h|d)\\s*)(\\))",
+          "captures": {
+            "1": {
+              "name": "keyword.control.timeout.skiff"
+            },
+            "3": {
+              "name": "punctuation.section.group.skiff"
+            },
+            "4": {
+              "name": "constant.numeric.duration.skiff"
+            },
+            "5": {
+              "name": "punctuation.section.group.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.catch.type.skiff",
+          "begin": "\\b(catch)(<)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.catch.skiff"
+            },
+            "2": {
+              "name": "punctuation.definition.typeparameters.begin.skiff"
+            }
+          },
+          "end": "(>)(?=\\s*(?:\\(|value\\b))",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.typeparameters.end.skiff"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#paths"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "name": "meta.nominal-construct.skiff",
+          "match": "\\b([A-Z][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*|[a-z][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+)\\s*(?=(?:<[^\\n{}]*>)?\\{)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.construct.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "type-parameter-list": {
+      "patterns": [
+        {
+          "name": "meta.type-parameters.skiff",
+          "begin": "<",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.typeparameters.begin.skiff"
+            }
+          },
+          "end": ">",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.typeparameters.end.skiff"
+            }
+          },
+          "patterns": [
+            {
+              "name": "variable.parameter.type.skiff",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        }
+      ]
+    },
+    "parameter-declarations": {
+      "patterns": [
+        {
+          "name": "meta.parameter.skiff",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.skiff"
+            },
+            "2": {
+              "name": "punctuation.separator.type.annotation.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "fields": {
+      "patterns": [
+        {
+          "name": "meta.object-literal.key.computed.skiff",
+          "begin": "(\\[)(?=\\s*[^\\]]+\\s*\\]\\s*:)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.section.array.begin.skiff"
+            }
+          },
+          "end": "(\\])\\s*(:)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.array.end.skiff"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.skiff"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#constants"
+            },
+            {
+              "include": "#paths"
+            },
+            {
+              "name": "variable.other.member.computed-key.skiff",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "name": "meta.field-name.skiff",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "variable.other.member.field.skiff"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.skiff"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.import.skiff",
+          "match": "\\bimport\\b"
+        },
+        {
+          "name": "keyword.control.flow.skiff",
+          "match": "\\b(return|break|continue|throw|rethrow|emit)\\b"
+        },
+        {
+          "name": "keyword.control.conditional.skiff",
+          "match": "\\b(if|else)\\b"
+        },
+        {
+          "name": "keyword.control.loop.skiff",
+          "match": "\\b(for|while)\\b"
+        },
+        {
+          "name": "keyword.control.match.skiff",
+          "match": "\\bmatch\\b"
+        },
+        {
+          "name": "keyword.control.catch.skiff",
+          "match": "\\bcatch\\b"
+        },
+        {
+          "name": "keyword.control.block.skiff",
+          "match": "\\b(concurrent|serial|value|with)\\b"
+        },
+        {
+          "name": "keyword.control.timeout.skiff",
+          "match": "\\btimeout\\b(?=\\s*\\()"
+        },
+        {
+          "name": "keyword.operator.context.skiff",
+          "match": "\\b(in|as|implements)\\b"
+        },
+        {
+          "name": "keyword.other.modifier.skiff",
+          "match": "\\b(export|native|provider|static)\\b"
+        },
+        {
+          "name": "keyword.other.test.skiff",
+          "match": "\\b(test|assert|defaultRun)\\b"
+        },
+        {
+          "name": "storage.type.function.skiff",
+          "match": "\\bfn\\b"
+        },
+        {
+          "name": "support.variable.root.skiff",
+          "match": "\\b(std|root|config)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.skiff",
+          "match": "\\b(string|number|integer|bool|unknown|void|never|bytes)\\b"
+        },
+        {
+          "name": "support.type.primitive.legacy.skiff",
+          "match": "\\b(boolean)\\b"
+        },
+        {
+          "name": "support.type.core.skiff",
+          "match": "\\b(Array|Map|Stream|Config|Json|JsonObject|CatchResult|ErrorPayload|Exception|SourceLocation|StackTrace|StackFrame|TimeoutError|CancelError|InternalError|WebSocketConnectResult|ConnectionMessage|TextConnectionMessage|BinaryConnectionMessage|ActorRef|ActorBinding|ClientSessionRef|ClientCapability|HttpHeader|HttpQueryParam|HttpRequest|HttpResponse|HttpClientRequest|HttpClientResponse|HttpClientStreamHandle|HttpSseEvent|ImmutableFile|CreateOptions|FileInfo)\\b"
+        },
+        {
+          "name": "support.type.self.skiff",
+          "match": "\\bSelf\\b"
+        },
+        {
+          "name": "entity.name.type.skiff",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.numeric.duration.skiff",
+          "match": "\\b[1-9][0-9]*(?:ms|s|m|h|d)\\b"
+        },
+        {
+          "name": "constant.numeric.skiff",
+          "match": "\\b(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.language.boolean.skiff",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.skiff",
+          "match": "\\bnull\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.skiff",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.logical.skiff",
+          "match": "\\|\\||&&"
+        },
+        {
+          "name": "keyword.operator.comparison.skiff",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.skiff",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.assignment.skiff",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.union.skiff",
+          "match": "\\|"
+        },
+        {
+          "name": "keyword.operator.optional.skiff",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.unary.skiff",
+          "match": "!"
+        }
+      ]
+    },
+    "paths": {
+      "patterns": [
+        {
+          "name": "meta.path.root.skiff",
+          "match": "\\b(std|root|config)(\\.)",
+          "captures": {
+            "1": {
+              "name": "support.variable.root.skiff"
+            },
+            "2": {
+              "name": "punctuation.accessor.dot.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.path.primitive.skiff",
+          "match": "\\b(string|number|integer|bool|bytes)(\\.)",
+          "captures": {
+            "1": {
+              "name": "support.type.primitive.skiff"
+            },
+            "2": {
+              "name": "punctuation.accessor.dot.skiff"
+            }
+          }
+        },
+        {
+          "name": "meta.path.skiff",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\.)",
+          "captures": {
+            "1": {
+              "name": "variable.other.object.skiff"
+            },
+            "2": {
+              "name": "punctuation.accessor.dot.skiff"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.qualified.skiff",
+          "match": "(?<=\\.)[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "variable.other.property.skiff",
+          "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.block.skiff",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.group.skiff",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.array.skiff",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.separator.skiff",
+          "match": "[,:;]"
+        }
+      ]
+    }
+  }
+}

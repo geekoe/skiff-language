@@ -1,0 +1,26 @@
+{
+  "runtimeLive": {
+    "operation": "operation-marker",
+    "db": "db-marker",
+    "file": "file-marker",
+    "httpAdapter": "http-marker",
+    "routerHttpUrl": ""
+  },
+  "configs": {
+    "live operation dispatch crosses runtime binary payload boundary": {
+      "runtimeLive": {
+        "requestPayload": "runtime-live-payload:operation-marker"
+      }
+    },
+    "live file runtime rejects stream above file guard limit": {
+      "runtimeLive": {
+        "expectedError": {
+          "code": "ResourceLimitExceeded"
+        }
+      }
+    }
+  },
+  "serviceDb": {
+    "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true"
+  }
+}

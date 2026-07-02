@@ -1,0 +1,32 @@
+type FileError implements ErrorPayload {
+  message: string,
+}
+
+type ImmutableFile {
+  id: string,
+  size: integer,
+  sha256: string,
+  contentType: string?,
+}
+
+type CreateOptions {
+  contentType: string?,
+  purpose: string?,
+}
+
+type FileInfo {
+  id: string,
+  size: integer,
+  sha256: string,
+  contentType: string?,
+  purpose: string?,
+  createdAt: string,
+}
+
+native function create(content: bytes, options: CreateOptions?) -> ImmutableFile
+native function createText(content: string, options: CreateOptions?) -> ImmutableFile
+native function read(file: ImmutableFile) -> bytes
+native function readText(file: ImmutableFile) -> string
+native function info(file: ImmutableFile) -> FileInfo
+native function delete(file: ImmutableFile) -> void
+native function createFromStream(source: Stream<bytes>, options: CreateOptions?) -> ImmutableFile

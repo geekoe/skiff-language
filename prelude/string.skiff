@@ -1,0 +1,10 @@
+impl string {
+  native function length() -> number
+  native function contains(needle: string) -> bool
+  native function replaceAll(needle: string, replacement: string) -> string
+  native function concat(value: string) -> string
+  native function lowercase() -> string
+  native function startsWith(prefix: string) -> bool
+  native function endsWith(suffix: string) -> bool
+  native static function join(items: Array<string>, separator: string) -> string
+}

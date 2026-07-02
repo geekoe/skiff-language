@@ -1,0 +1,76 @@
+import std
+
+type RuntimeLiveJsonInput {
+  marker: string,
+  count: number,
+}
+
+type RuntimeLiveJsonOutput {
+  marker: string,
+  count: number,
+  bodyKind: string,
+}
+
+function textResponse(status: integer, body: string) -> std.http.HttpResponse {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  return std.http.HttpResponse {
+    status: status,
+    headers: headers,
+    body: bytes.fromUtf8(body),
+  }
+}
+
+function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const marker = config.require<string>("runtimeLive.httpAdapter")
+  const header = std.http.header(request, "x-runtime-live-marker")
+  if header == null {
+    return textResponse(400, "missing x-runtime-live-marker")
+  }
+
+  const bodyText = request.body.toUtf8String()
+  return textResponse(
+    200,
+    "runtime-live-http:".concat(marker).concat(":").concat(header).concat(":").concat(request.path).concat(":").concat(bodyText)
+  )
+}
+
+function typedJsonEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<RuntimeLiveJsonInput>(request)
+  return std.http.json(200, RuntimeLiveJsonOutput {
+    marker: input.marker,
+    count: input.count + 1,
+    bodyKind: "json"
+  })
+}
+
+function binaryEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "application/octet-stream" })
+  const parts = Array.empty<bytes>()
+  parts.push(bytes.fromUtf8("runtime-live-binary:"))
+  parts.push(request.body)
+  return std.http.HttpResponse {
+    status: 201,
+    headers: headers,
+    body: bytes.concat(parts)
+  }
+}
+
+function guardedPost(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const guard = std.http.requireMethod(request, "POST")
+  if guard != null {
+    return guard
+  }
+  return textResponse(200, "guard-passed")
+}
+
+function streamEcho(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  emit(std.http.streamStart(200, headers))
+  emit(std.http.streamChunk(bytes.fromUtf8("runtime-live-stream:")))
+  emit(std.http.streamChunk(request.body))
+  emit(std.http.streamEnd())
+  return null
+}

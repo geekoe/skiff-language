@@ -1,0 +1,30 @@
+[package]
+name = "skiff-runtime-eval"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+test-support = ["skiff-runtime-capability-context/test-support"]
+
+[dependencies]
+async-recursion = "1.1"
+bytes = "1.10"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-activation = { path = "../activation" }
+skiff-runtime-boundary = { path = "../boundary" }
+skiff-runtime-capability-context = { path = "../capability-context" }
+skiff-runtime-linked-program = { path = "../linked-program" }
+skiff-runtime-linked-type-plan = { path = "../linked-type-plan" }
+skiff-runtime-model = { path = "../model" }
+skiff-runtime-native = { path = "../native" }
+skiff-runtime-native-contract = { path = "../native-contract" }
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }

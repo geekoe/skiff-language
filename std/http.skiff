@@ -1,0 +1,80 @@
+type HttpHeader {
+  name: string,
+  value: string,
+}
+
+type HttpQueryParam {
+  name: string,
+  value: string,
+}
+
+type HttpRequest {
+  method: string,
+  url: string,
+  path: string,
+  query: Array<HttpQueryParam>,
+  headers: Array<HttpHeader>,
+  body: bytes,
+}
+
+type HttpResponse {
+  status: integer,
+  headers: Array<HttpHeader>,
+  body: bytes,
+}
+
+type HttpResponseStreamEvent discriminator "tag" =
+  { tag: "start", status: integer, headers: Array<HttpHeader> }
+  | { tag: "chunk", value: bytes }
+  | { tag: "end" }
+
+type HttpClientRequest {
+  method: string,
+  url: string,
+  headers: Array<HttpHeader>,
+  body: bytes?,
+  timeoutMs: integer?,
+}
+
+type HttpClientResponse {
+  status: integer,
+  headers: Array<HttpHeader>,
+  body: bytes,
+}
+
+type HttpClientStreamHandle {
+  status: integer,
+  headers: Array<HttpHeader>,
+  body: Stream<bytes>,
+}
+
+type HttpSseEvent discriminator "tag" =
+  { tag: "response", status: integer, headers: Array<HttpHeader> }
+  | { tag: "body", value: bytes }
+  | { tag: "event", event: string?, id: string?, data: string }
+
+type HttpError implements ErrorPayload {
+  message: string,
+  detail: Json?,
+}
+
+native function request(input: HttpClientRequest) -> HttpClientResponse
+native function stream(input: HttpClientRequest) -> HttpClientStreamHandle
+native function sse(input: HttpClientRequest) -> Stream<HttpSseEvent>
+native function header(request: HttpRequest, name: string) -> string?
+native function headers(request: HttpRequest, name: string) -> Array<string>
+native function query(request: HttpRequest, name: string) -> string?
+native function cookie(request: HttpRequest, name: string) -> string?
+native function json<T>(status: integer, value: T) -> HttpResponse
+native function jsonWithHeaders<T>(status: integer, value: T, headers: Array<HttpHeader>) -> HttpResponse
+native function errorResponse(status: integer, code: string, message: string, detail: Json?) -> HttpResponse
+native function noContent() -> HttpResponse
+native function methodNotAllowed(allow: string) -> HttpResponse
+native function decodeJson<T>(request: HttpRequest) -> T
+native function requireMethod(request: HttpRequest, method: string) -> HttpResponse?
+native function forwardableHeaders(headers: Array<HttpHeader>) -> Array<HttpHeader>
+native function sseHeaders() -> Array<HttpHeader>
+native function streamStart(status: integer, headers: Array<HttpHeader>) -> HttpResponseStreamEvent
+native function streamChunk(value: bytes) -> HttpResponseStreamEvent
+native function streamEnd() -> HttpResponseStreamEvent
+native function emitResponseStream(event: HttpResponseStreamEvent) -> void

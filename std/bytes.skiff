@@ -1,0 +1,4 @@
+type DecodeError implements ErrorPayload {
+  target: string,
+  message: string,
+}

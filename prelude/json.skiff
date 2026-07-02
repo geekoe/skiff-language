@@ -1,0 +1,2 @@
+native type Json
+native type JsonObject

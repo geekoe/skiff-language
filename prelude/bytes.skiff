@@ -1,0 +1,12 @@
+native type bytes
+
+impl bytes {
+  native static function concat(parts: Array<bytes>) -> bytes
+  native static function fromBase64(value: string) -> bytes
+  native static function fromHex(value: string) -> bytes
+  native static function fromUtf8(value: string) -> bytes
+  native function length() -> number
+  native function toBase64() -> string
+  native function toHex() -> string
+  native function toUtf8String() -> string
+}

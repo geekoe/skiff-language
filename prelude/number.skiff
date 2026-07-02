@@ -1,0 +1,9 @@
+impl number {
+  native function floor() -> number
+  native function ceil() -> number
+  native function round() -> number
+  native static function parse(value: string) -> number?
+  native static function isInteger(value: number) -> bool
+  native static function isSafeInteger(value: number) -> bool
+  native static function assertSafeInteger(value: number) -> integer
+}

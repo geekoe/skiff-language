@@ -1,0 +1,11 @@
+test defaultRun false
+
+test "live operation dispatch executes runtime-owned fixture" {
+  const marker = config.require<string>("runtimeLive.operation")
+  assert root.internal.operation.echo(marker) == "runtime-live:".concat(marker)
+}
+
+test "live operation dispatch crosses runtime binary payload boundary" {
+  const marker = config.require<string>("runtimeLive.operation")
+  assert root.internal.operation.payloadRoundTrip(__skiffPayload, marker)
+}

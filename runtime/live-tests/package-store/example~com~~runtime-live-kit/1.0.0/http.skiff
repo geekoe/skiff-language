@@ -1,0 +1,11 @@
+import std
+
+function packageEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const headers = Array.empty<std.http.HttpHeader>()
+  headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
+  return std.http.HttpResponse {
+    status: 202,
+    headers: headers,
+    body: bytes.fromUtf8("runtime-live-package:".concat(request.body.toUtf8String())),
+  }
+}

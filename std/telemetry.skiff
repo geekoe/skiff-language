@@ -1,0 +1,1 @@
+native function emit(level: string, message: string, attrs: JsonObject?) -> void

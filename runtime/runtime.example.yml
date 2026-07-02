@@ -1,0 +1,4 @@
+router: ws://127.0.0.1:4001/runtime
+runtime-home: .runtime-home
+artifactRoots:
+  - /var/lib/skiff/artifacts

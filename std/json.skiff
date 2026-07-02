@@ -1,0 +1,18 @@
+type DecodeError implements ErrorPayload {
+  target: string,
+  message: string,
+}
+
+native function encode<T>(value: T) -> string
+native function decode<T>(input: string) -> T
+
+// Shallow object overlay merge: returns a new object where overlay's top-level
+// keys override base's same-named keys, base-only keys are kept, and overlay-only
+// keys are appended. Overlay null values are kept as null (they do NOT delete the
+// key). If overlay is not an object, it replaces base entirely unless overlay is
+// null, in which case base is returned unchanged.
+native function merge(base: Json, overlay: Json) -> Json
+
+function encodeJson<T>(value: T) -> Json {
+  return decode<Json>(encode<T>(value))
+}

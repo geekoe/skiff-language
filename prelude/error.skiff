@@ -1,0 +1,9 @@
+native type ErrorPayload
+native type Exception<E>
+native type CatchResult<T, E>
+native type SourceLocation
+native type StackTrace
+native type StackFrame
+native type TimeoutError
+native type CancelError
+native type InternalError

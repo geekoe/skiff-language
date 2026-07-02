@@ -1,0 +1,121 @@
+[package]
+name = "skiff-compiler"
+version = "0.1.0"
+edition = "2021"
+publish = false
+autotests = false
+
+[lib]
+path = "driver/lib.rs"
+
+[[bin]]
+name = "skiff-compiler"
+path = "driver/main.rs"
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[features]
+default = []
+
+[[test]]
+name = "artifact_output"
+path = "tests/artifact_output.rs"
+
+[[test]]
+name = "compiler_command"
+path = "tests/compiler_command.rs"
+
+[[test]]
+name = "config_shape"
+path = "tests/config_shape.rs"
+
+[[test]]
+name = "connect_mongo_package"
+path = "tests/connect_mongo_package.rs"
+
+[[test]]
+name = "db_process_metadata"
+path = "tests/db_process_metadata.rs"
+
+[[test]]
+name = "http_routes"
+path = "tests/http_routes.rs"
+
+[[test]]
+name = "package_imports"
+path = "tests/package_imports.rs"
+
+[[test]]
+name = "package_std_schema"
+path = "tests/package_std_schema.rs"
+
+[[test]]
+name = "prelude_std_schema"
+path = "tests/prelude_std_schema.rs"
+
+[[test]]
+name = "profile_overlay"
+path = "tests/profile_overlay.rs"
+
+[[test]]
+name = "provider_connect_packages"
+path = "tests/provider_connect_packages.rs"
+
+[[test]]
+name = "provider_function_syntax"
+path = "tests/provider_function_syntax.rs"
+
+[[test]]
+name = "root_path_references"
+path = "tests/root_path_references.rs"
+
+[[test]]
+name = "artifact_model_conformance"
+path = "tests/artifact_model_conformance.rs"
+
+[[test]]
+name = "runtime_slots"
+path = "tests/runtime_slots.rs"
+
+[[test]]
+name = "service_config_overlay"
+path = "tests/service_config_overlay.rs"
+
+[[test]]
+name = "service_conformance"
+path = "tests/service_conformance.rs"
+
+[[test]]
+name = "std_package_imports"
+path = "tests/std_package_imports.rs"
+
+[[test]]
+name = "streams_emit"
+path = "tests/streams_emit.rs"
+
+[[test]]
+name = "test_artifact_identity"
+path = "tests/test_artifact_identity.rs"
+
+[dependencies]
+skiff-compiler-core = { path = "core" }
+skiff-compiler-input = { path = "input" }
+skiff-compiler-input-model = { path = "input-model" }
+skiff-compiler-lowering = { path = "lowering" }
+skiff-compiler-compiled = { path = "compiled" }
+skiff-compiler-emission = { path = "emission" }
+skiff-compiler-projection = { path = "projection" }
+skiff-compiler-projection-input = { path = "projection-input" }
+skiff-compiler-source = { path = "source" }
+skiff-syntax = { path = "../syntax" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+thiserror = "2.0"
+
+[dev-dependencies]
+hex = "0.4"
+sha2 = "0.10"
+skiff-compiler-compiled = { path = "compiled", features = ["test-support"] }
+skiff-compiler-source = { path = "source", features = ["test-support"] }

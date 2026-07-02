@@ -1,0 +1,37 @@
+{
+  "name": "@skiff/telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts",
+    "./main": "./src/main.ts",
+    "./config": "./src/config.ts",
+    "./protocol": "./src/protocol.ts",
+    "./queryApi": "./src/queryApi.ts"
+  },
+  "types": "./src/server.ts",
+  "bin": {
+    "skiff": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/src/main.js",
+    "test": "vitest run --exclude 'dist/**'",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "mongodb": "^6.21.0",
+    "ws": "^8.18.3",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.24",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

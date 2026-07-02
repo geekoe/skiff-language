@@ -1,0 +1,77 @@
+[package]
+name = "runtime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "driver/lib.rs"
+
+[[bin]]
+name = "runtime"
+path = "driver/main.rs"
+
+[lints.clippy]
+too_many_lines = "warn"
+
+[features]
+default = []
+test-support = [
+  "skiff-runtime-capability-context/test-support",
+  "skiff-runtime-eval/test-support",
+  "skiff-runtime-host/test-support",
+  "skiff-runtime-linker/test-support",
+  "skiff-runtime-linked-type-plan/test-support",
+]
+
+[dependencies]
+anyhow = "1.0"
+async-recursion = "1.1"
+bytes = "1.10"
+skiff-artifact-identity = { path = "../artifact-identity" }
+skiff-artifact-model = { path = "../artifact-model" }
+clap = { version = "4.5", features = ["derive"] }
+futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+sha1 = "0.10"
+sha2 = "0.10"
+skiff-runtime-loader = { path = "loader" }
+skiff-runtime-linked-type-plan = { path = "linked-type-plan" }
+skiff-runtime-linked-program = { path = "linked-program" }
+skiff-runtime-linker = { path = "linker" }
+skiff-runtime-activation = { path = "activation" }
+skiff-runtime-boundary = { path = "boundary" }
+skiff-runtime-capability-context = { path = "capability-context" }
+skiff-runtime-eval = { path = "eval" }
+skiff-runtime-host = { path = "host" }
+skiff-runtime-model = { path = "model" }
+skiff-runtime-native = { path = "native" }
+skiff-runtime-native-contract = { path = "native-contract" }
+skiff-runtime-package-test = { path = "package-test" }
+skiff-runtime-request = { path = "request" }
+skiff-runtime-service-db = { path = "service-db" }
+skiff-runtime-transport = { path = "transport" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2.5"
+thiserror = "2.0"
+time = { version = "0.3.47", features = ["formatting", "parsing"] }
+tokio = { version = "1.44", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = "0.26"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.16", features = ["v4"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+serde_json = "1.0"
+skiff-runtime-boundary = { path = "boundary", features = ["test-support"] }
+skiff-runtime-eval = { path = "eval", features = ["test-support"] }
+skiff-runtime-host = { path = "host", features = ["test-support"] }
+skiff-runtime-linker = { path = "linker", features = ["test-support"] }
+
+[[bench]]
+name = "interpreter_budget"
+harness = false
