@@ -379,7 +379,8 @@ fn router_control_envelope_deserializes_service_config_only() {
                     ]
                 },
                 "serviceDb": {
-                    "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true"
+                    "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true",
+                    "storageServiceId": "example.com/service-a"
                 },
                 "packageConfigs": [
                     {
@@ -427,6 +428,14 @@ fn router_control_envelope_deserializes_service_config_only() {
             .expect("serviceDb should deserialize")
             .mongo_url,
         "mongodb://127.0.0.1:27017/?directConnection=true"
+    );
+    assert_eq!(
+        value.service_config[0]
+            .service_db
+            .as_ref()
+            .expect("serviceDb should deserialize")
+            .storage_service_id,
+        "example.com/service-a"
     );
     assert_eq!(value.service_config[0].package_configs.len(), 1);
     assert_eq!(

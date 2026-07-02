@@ -8,7 +8,7 @@ import {
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
   type FileBackendControlConfig,
-  type RuntimeServiceDbActivationPayload,
+  type RuntimeServiceDbConfigInput,
   type TelemetryControlConfig,
   type TelemetryTopic
 } from '../protocol/envelope.js';
@@ -38,7 +38,7 @@ export interface RouterConfig {
   runtimePath: string;
   runtimePort: number;
   fileBackend?: FileBackendControlConfig;
-  serviceDb?: RuntimeServiceDbActivationPayload;
+  serviceDb?: RuntimeServiceDbConfigInput;
   telemetry?: TelemetryControlConfig;
   websocketPath: string;
 }
@@ -198,7 +198,7 @@ export async function loadRouterConfig(
   return config;
 }
 
-function readServiceDbConfig(value: unknown): RuntimeServiceDbActivationPayload | undefined {
+function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }

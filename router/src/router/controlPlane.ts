@@ -6,7 +6,7 @@ import {
   type DispatchMode,
   type PackageTestStartFrameHeader,
   type RouterControlEnvelope,
-  type RuntimeServiceDbActivationPayload,
+  type RuntimeServiceDbConfigInput,
   type RequestStartFrameHeader
 } from '../protocol/envelope.js';
 import { validateRouterToRuntimeFrameHeader } from '../protocol/runtimeProtocol.js';
@@ -37,7 +37,7 @@ export interface ControlPlaneOptions {
 export interface ReloadArtifactsOverrides {
   artifactRoots?: string[];
   configProfile?: string;
-  serviceDb?: RuntimeServiceDbActivationPayload;
+  serviceDb?: RuntimeServiceDbConfigInput;
 }
 
 type TestEffectDoubles = Record<string, Array<{
@@ -47,6 +47,7 @@ type TestEffectDoubles = Record<string, Array<{
 
 interface ServiceTestDispatchRequest {
   kind?: 'service';
+  activationIdentity?: string;
   buildId: string;
   mode?: DispatchMode;
   operation?: string;
@@ -351,13 +352,13 @@ export class RouterControlPlane {
         'operationAbiId is required when target is not present in the active manifest'
       );
     }
-    const activationIdentity = explicitRuntimeAddress
+    const activationIdentity = body.activationIdentity ?? (explicitRuntimeAddress
       ? undefined
       : snapshot.activationByServiceOperation.get({
           serviceId,
           buildId: body.buildId,
           target: body.target
-        });
+        }));
     return {
       activationIdentity,
       mode,
@@ -474,7 +475,7 @@ async function readOptionalReloadArtifactsOverrides(
       };
 }
 
-function optionalReloadServiceDb(value: unknown): RuntimeServiceDbActivationPayload | undefined {
+function optionalReloadServiceDb(value: unknown): RuntimeServiceDbConfigInput | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -570,6 +571,7 @@ async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
 
 const SERVICE_TEST_DISPATCH_FIELDS = [
   'serviceId',
+  'activationIdentity',
   'buildId',
   'serviceProtocolIdentity',
   'operation',
@@ -638,6 +640,7 @@ function parseServiceTestDispatchRequest(
     'service test dispatch'
   );
   const buildId = requireBodyString(value, 'buildId');
+  const activationIdentity = optionalBodyString(value, 'activationIdentity');
   const serviceProtocolIdentity = requireBodyString(value, 'serviceProtocolIdentity');
   const target = requireBodyString(value, 'target');
   const mode = optionalDispatchMode(value, 'mode');
@@ -651,6 +654,7 @@ function parseServiceTestDispatchRequest(
   const websocketEntryId = optionalBodyString(value, 'websocketEntryId');
   return {
     ...(kind !== undefined ? { kind } : {}),
+    ...(activationIdentity !== undefined ? { activationIdentity } : {}),
     buildId,
     serviceProtocolIdentity,
     target,

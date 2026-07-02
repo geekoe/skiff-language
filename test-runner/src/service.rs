@@ -1,11 +1,13 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::Path,
 };
 
-use skiff_compiler::read_service_config_with_profile;
+use sha2::{Digest, Sha256};
+use skiff_compiler::{read_service_config_with_profile, ServiceConfig};
 
+use super::types::TestEffectDouble;
 use super::{
     artifacts::service_dependency_artifacts,
     doubles::{
@@ -15,10 +17,14 @@ use super::{
     },
     root_paths::{resolve_parsed_root_paths_with_exports, resolve_service_test_root_paths},
     runtime_process::{
-        drop_test_service_databases, execute_dev_synced_service_test, synthetic_test_service_id,
-        RuntimeExpectedError,
+        drop_test_service_databases, execute_dev_synced_service_test_case_with_context,
+        prepare_dev_synced_service_test_suite, synthetic_test_service_id, RuntimeExpectedError,
+        ServiceTestSuiteActivationInput,
     },
-    service_publish::{build_service_publication_runtime_test, ServiceRuntimePublicationInput},
+    service_publish::{
+        build_service_publication_runtime_test_suite, ServiceRuntimeSuiteCaseInput,
+        ServiceRuntimeSuitePublicationInput,
+    },
     sources::{
         collect_test_cases, find_service_root, is_test_file_path, read_root_sources,
         service_test_runtime_module_path,
@@ -28,8 +34,8 @@ use super::{
         private_visibility_error_in_test_body, service_function_return_types,
         service_production_exports, ALL_PRIVATE_MODULES,
     },
-    PrivateVisibilityScope, ResolvedPublicationTestInputs, SkiffTestError, SkiffTestOptions,
-    SkiffTestResult, SkiffTestSummary,
+    ParsedSource, PrivateVisibilityScope, ResolvedPublicationTestInputs, SkiffTestError,
+    SkiffTestOptions, SkiffTestResult, SkiffTestSummary, TestCase,
 };
 
 pub(super) fn run_service_tests(
@@ -111,7 +117,9 @@ pub(super) fn run_resolved_publication_tests(
         disallowed_import_modules,
     } = inputs;
     let tests = collect_test_cases(&test_sources)?;
-    let mut results = Vec::with_capacity(tests.len());
+    let test_count = tests.len();
+    let mut results = (0..test_count).map(|_| None).collect::<Vec<_>>();
+    let mut ready_tests = Vec::new();
     // Per-test service ids whose Mongo database must be dropped after the run,
     // grouped by mongo url. Each test uses a unique service id (=> unique
     // database), so dropping them prevents test databases from accumulating
@@ -120,12 +128,12 @@ pub(super) fn run_resolved_publication_tests(
     // db may live behind a slow remote tunnel where 32 extra connections would
     // worsen contention.
     let mut databases_to_drop: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for test in tests {
+    for (result_index, test) in tests.into_iter().enumerate() {
         // Mint a fresh service id per test so each test runs against its own
         // Mongo database namespace (the runtime derives the storage database
         // name from the service id). Reusing one id across the run let a global
         // `db find` in one test observe sibling tests' rows.
-        let service_id = synthetic_test_service_id(&service_id_scope);
+        let storage_service_id = synthetic_test_service_id(&service_id_scope);
         let visibility_error = if test.source.source.is_test_file {
             private_visibility_error_in_ast(
                 &test.source.ast,
@@ -150,7 +158,7 @@ pub(super) fn run_resolved_publication_tests(
             )
         };
         if let Some(message) = visibility_error {
-            results.push(SkiffTestResult {
+            results[result_index] = Some(SkiffTestResult {
                 module_path: test.module_path,
                 name: test.name,
                 passed: false,
@@ -188,30 +196,6 @@ pub(super) fn run_resolved_publication_tests(
         } else {
             None
         };
-        let publication =
-            match build_service_publication_runtime_test(ServiceRuntimePublicationInput {
-                service_config: &service_config,
-                service_id: &service_id,
-                production_sources: &production_sources,
-                test_source: &test.source,
-                test_index: test.test_index,
-                function_name: &test.function_name,
-                operation_module: &operation_module,
-                request_payload_param: request_payload.is_some(),
-                options,
-            }) {
-                Ok(publication) => publication,
-                Err(error) => {
-                    results.push(SkiffTestResult {
-                        module_path: test.module_path,
-                        name: test.name,
-                        passed: false,
-                        skipped: false,
-                        message: Some(error.to_string()),
-                    });
-                    continue;
-                }
-            };
         let service_db_mongo_url = service_db_mongo_url_for_runtime_test(
             test_doubles.service_db_mongo_url.as_deref(),
             &test_config,
@@ -229,58 +213,36 @@ pub(super) fn run_resolved_publication_tests(
                 &test.name,
             ))
         };
-        let result = execute_dev_synced_service_test(
-            &publication,
-            &package_aliases,
+        let activation_identity =
+            service_test_activation_identity(&storage_service_id, &test.function_name);
+        ready_tests.push(ReadyServiceTest {
+            result_index,
+            test,
+            operation_module,
             test_config,
-            service_db_mongo_url.as_deref(),
             doubles,
-            request_payload.as_deref(),
-            expected_error.as_ref(),
-            options,
-        );
-        // Record this test's per-test database for batched teardown after the
-        // run. Skipped in `live` mode, which runs against the real, persistent
-        // service id that must not be dropped.
-        if !options.live {
-            if let Some(mongo_url) = service_db_mongo_url.as_deref() {
-                databases_to_drop
-                    .entry(mongo_url.to_string())
-                    .or_default()
-                    .push(service_id.clone());
-            }
-        }
-        match result {
-            Ok(()) => results.push(SkiffTestResult {
-                module_path: test.module_path,
-                name: test.name,
-                passed: true,
-                skipped: false,
-                message: None,
-            }),
-            Err(message) => {
-                if options.live {
-                    if let Some(message) = live_missing_config_skip_message(&message) {
-                        results.push(SkiffTestResult {
-                            module_path: test.module_path,
-                            name: test.name,
-                            passed: false,
-                            skipped: true,
-                            message: Some(message),
-                        });
-                        continue;
-                    }
-                }
-                results.push(SkiffTestResult {
-                    module_path: test.module_path,
-                    name: test.name,
-                    passed: false,
-                    skipped: false,
-                    message: Some(message),
-                });
-            }
-        }
+            request_payload,
+            expected_error,
+            service_db_mongo_url,
+            activation_identity,
+            storage_service_id,
+        });
     }
+
+    run_ready_service_tests(
+        &ready_tests,
+        &service_config,
+        &service_id_scope,
+        &production_sources,
+        &package_aliases,
+        options,
+        &mut results,
+        &mut databases_to_drop,
+    );
+    let results = results
+        .into_iter()
+        .map(|result| result.expect("service test result should be populated before collection"))
+        .collect::<Vec<_>>();
 
     // Best-effort teardown of every per-test database created by this run.
     // Failures (e.g. mongosh unavailable) are intentionally ignored: leaving a
@@ -301,6 +263,235 @@ pub(super) fn run_resolved_publication_tests(
         failed,
         results,
     })
+}
+
+struct ReadyServiceTest {
+    result_index: usize,
+    test: TestCase,
+    operation_module: String,
+    test_config: serde_json::Value,
+    doubles: Option<HashMap<String, Vec<TestEffectDouble>>>,
+    request_payload: Option<String>,
+    expected_error: Option<RuntimeExpectedError>,
+    service_db_mongo_url: Option<String>,
+    activation_identity: String,
+    storage_service_id: String,
+}
+
+fn run_ready_service_tests(
+    ready_tests: &[ReadyServiceTest],
+    service_config: &ServiceConfig,
+    service_id_scope: &str,
+    production_sources: &[ParsedSource],
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    options: &SkiffTestOptions,
+    results: &mut [Option<SkiffTestResult>],
+    databases_to_drop: &mut BTreeMap<String, Vec<String>>,
+) {
+    for batch in ready_service_test_owner_batches(ready_tests) {
+        run_ready_service_test_batch(
+            ready_tests,
+            &batch,
+            service_config,
+            service_id_scope,
+            production_sources,
+            package_aliases,
+            options,
+            results,
+            databases_to_drop,
+        );
+    }
+}
+
+fn run_ready_service_test_batch(
+    ready_tests: &[ReadyServiceTest],
+    batch: &[usize],
+    service_config: &ServiceConfig,
+    service_id_scope: &str,
+    production_sources: &[ParsedSource],
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    options: &SkiffTestOptions,
+    results: &mut [Option<SkiffTestResult>],
+    databases_to_drop: &mut BTreeMap<String, Vec<String>>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let suite_service_id = synthetic_test_service_id(service_id_scope);
+    let case_inputs = batch
+        .iter()
+        .map(|ready_index| {
+            let ready = &ready_tests[*ready_index];
+            ServiceRuntimeSuiteCaseInput {
+                test_source: &ready.test.source,
+                test_index: ready.test.test_index,
+                function_name: &ready.test.function_name,
+                operation_module: &ready.operation_module,
+                request_payload_param: ready.request_payload.is_some(),
+                activation_identity: &ready.activation_identity,
+                storage_service_id: &ready.storage_service_id,
+            }
+        })
+        .collect::<Vec<_>>();
+    let publication =
+        match build_service_publication_runtime_test_suite(ServiceRuntimeSuitePublicationInput {
+            service_config,
+            service_id: &suite_service_id,
+            production_sources,
+            cases: &case_inputs,
+            options,
+        }) {
+            Ok(publication) => publication,
+            Err(error) => {
+                for ready_index in batch {
+                    record_service_test_failure(
+                        &ready_tests[*ready_index],
+                        error.to_string(),
+                        results,
+                    );
+                }
+                return;
+            }
+        };
+    if publication.cases.len() != batch.len() {
+        let message = format!(
+            "service test suite returned {} case(s) for {} selected test(s)",
+            publication.cases.len(),
+            batch.len()
+        );
+        for ready_index in batch {
+            record_service_test_failure(&ready_tests[*ready_index], message.clone(), results);
+        }
+        return;
+    }
+    let activation_inputs = batch
+        .iter()
+        .zip(publication.cases.iter())
+        .map(|(ready_index, case)| {
+            let ready = &ready_tests[*ready_index];
+            ServiceTestSuiteActivationInput {
+                case: case.clone(),
+                values: ready.test_config.clone(),
+                service_db_mongo_url: ready.service_db_mongo_url.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let prepared = match prepare_dev_synced_service_test_suite(
+        &publication,
+        package_aliases,
+        &activation_inputs,
+        options,
+    ) {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            for ready_index in batch {
+                record_service_test_failure(&ready_tests[*ready_index], message.clone(), results);
+            }
+            return;
+        }
+    };
+    let dispatch_context = prepared.dispatch_context();
+    for (ready_index, case) in batch.iter().zip(publication.cases.iter()) {
+        let ready = &ready_tests[*ready_index];
+        let result = execute_dev_synced_service_test_case_with_context(
+            &dispatch_context,
+            case,
+            ready.doubles.clone(),
+            ready.request_payload.as_deref(),
+            ready.expected_error.as_ref(),
+            options,
+        );
+        if !options.live {
+            if let Some(mongo_url) = ready.service_db_mongo_url.as_deref() {
+                databases_to_drop
+                    .entry(mongo_url.to_string())
+                    .or_default()
+                    .push(ready.storage_service_id.clone());
+            }
+        }
+        record_service_test_runtime_result(ready, result, options, results);
+    }
+}
+
+fn ready_service_test_owner_batches(ready_tests: &[ReadyServiceTest]) -> Vec<Vec<usize>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    for (ready_index, ready) in ready_tests.iter().enumerate() {
+        if let Some(batch) = batches
+            .iter_mut()
+            .find(|batch| same_service_test_owner(&ready_tests[batch[0]].test, &ready.test))
+        {
+            batch.push(ready_index);
+        } else {
+            batches.push(vec![ready_index]);
+        }
+    }
+    batches
+}
+
+fn same_service_test_owner(left: &TestCase, right: &TestCase) -> bool {
+    left.source.source.file_path == right.source.source.file_path
+        && left.source.source.module_path == right.source.source.module_path
+}
+
+fn record_service_test_runtime_result(
+    ready: &ReadyServiceTest,
+    result: Result<(), String>,
+    options: &SkiffTestOptions,
+    results: &mut [Option<SkiffTestResult>],
+) {
+    match result {
+        Ok(()) => {
+            results[ready.result_index] = Some(SkiffTestResult {
+                module_path: ready.test.module_path.clone(),
+                name: ready.test.name.clone(),
+                passed: true,
+                skipped: false,
+                message: None,
+            });
+        }
+        Err(message) => {
+            if options.live {
+                if let Some(message) = live_missing_config_skip_message(&message) {
+                    results[ready.result_index] = Some(SkiffTestResult {
+                        module_path: ready.test.module_path.clone(),
+                        name: ready.test.name.clone(),
+                        passed: false,
+                        skipped: true,
+                        message: Some(message),
+                    });
+                    return;
+                }
+            }
+            record_service_test_failure(ready, message, results);
+        }
+    }
+}
+
+fn record_service_test_failure(
+    ready: &ReadyServiceTest,
+    message: String,
+    results: &mut [Option<SkiffTestResult>],
+) {
+    results[ready.result_index] = Some(SkiffTestResult {
+        module_path: ready.test.module_path.clone(),
+        name: ready.test.name.clone(),
+        passed: false,
+        skipped: false,
+        message: Some(message),
+    });
+}
+
+fn service_test_activation_identity(storage_service_id: &str, function_name: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(storage_service_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(function_name.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("skiff-runtime-activation-v1:opaque:service-test-{hash}")
 }
 
 pub(crate) fn runtime_live_request_payload(

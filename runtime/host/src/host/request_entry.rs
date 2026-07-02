@@ -376,6 +376,10 @@ impl RuntimeHost {
                 service_id, build_id
             )));
         }
+        let has_control_config = load_state
+            .service_config
+            .iter()
+            .any(|config| config.service_id == service_id && config.build_id == build_id);
         let mut services = match load_service_build_from_artifact_roots_with_caches(
             &load_state.artifact_roots,
             service_id,
@@ -384,6 +388,7 @@ impl RuntimeHost {
             self.default_http_response_max_bytes,
             &load_state.load_options,
             &self.artifact_caches,
+            has_control_config,
         )
         .await
         {

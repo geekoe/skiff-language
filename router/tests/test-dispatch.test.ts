@@ -295,7 +295,8 @@ describe('router test dispatch control endpoint', () => {
       revisionId: manifest.service.revisionId,
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [target]
+      targets: [target],
+      activationIdentity: 'skiff-runtime-activation-v1:opaque:explicit-test-dispatch'
     });
     runtime.respondWithBinaryJsonPayload({ ok: true });
     const requestFrames = runtime.collectRequestFrames(1, 'explicit test dispatch request');
@@ -313,6 +314,7 @@ describe('router test dispatch control endpoint', () => {
         target,
         operationAbiId: `operation:test:${target}`,
         mode: 'unary',
+        activationIdentity: 'skiff-runtime-activation-v1:opaque:explicit-test-dispatch',
         timeoutMs: 1234
       })
     });
@@ -321,7 +323,8 @@ describe('router test dispatch control endpoint', () => {
     const [requestFrame] = await requestFrames;
     expect(requestFrame!.header).toMatchObject({
       target,
-      mode: 'unary'
+      mode: 'unary',
+      activationIdentity: 'skiff-runtime-activation-v1:opaque:explicit-test-dispatch'
     });
     expect(requestFrame!.header.deadline?.timeoutMs).toBe(1234);
   });

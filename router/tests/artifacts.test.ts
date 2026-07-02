@@ -2228,6 +2228,143 @@ describe("router artifact root", () => {
     ).toBe(serviceConfig.activationIdentity);
   });
 
+  it("loads service-test sidecar activations for separate operation targets", async () => {
+    const root = await createArtifactRoot();
+    await mkdir(join(root, "assemblies", "services"), { recursive: true });
+    await mkdir(join(root, "files"), { recursive: true });
+    await writeContractFile(root);
+
+    const assembly = serviceAssembly(SERVICE_ID) as any;
+    assembly.configShape = {
+      schemaVersion: "skiff-config-shape-v1",
+      entries: [{ path: "caseName", type: "string", required: true }],
+    };
+    assembly.configUses = ["caseName"];
+    const writtenAssembly = await writeServiceAssembly(root, assembly);
+    const pointer = serviceAssemblyIndex(writtenAssembly);
+    const pointerBuildId = fixtureIdentity(
+      "skiff-service-build-v1",
+      stableStringify(pointer),
+    );
+    await writeIndexPointer(root, pointer);
+
+    const servicePath = publicationStorageSegment(SERVICE_ID);
+    const pointerHash = identityHash(pointerBuildId);
+    const firstConfigPath =
+      `configs/service-test-activations/${servicePath}/${pointerHash}/first/config.yml`;
+    const secondConfigPath =
+      `configs/service-test-activations/${servicePath}/${pointerHash}/second/config.yml`;
+    await mkdir(dirname(join(root, firstConfigPath)), { recursive: true });
+    await mkdir(dirname(join(root, secondConfigPath)), { recursive: true });
+    await writeFile(join(root, firstConfigPath), "service:\n  caseName: first\n");
+    await writeFile(join(root, secondConfigPath), "service:\n  caseName: second\n");
+
+    const sidecarPath = join(
+      root,
+      "dev",
+      "service-test-activations",
+      servicePath,
+      `${pointerHash}.json`,
+    );
+    await mkdir(dirname(sidecarPath), { recursive: true });
+    await writeFile(
+      sidecarPath,
+      JSON.stringify(
+        {
+          schemaVersion: "skiff-service-test-activations-v1",
+          serviceId: SERVICE_ID,
+          pointerBuildId,
+          cases: [
+            {
+              activationIdentity:
+                "skiff-runtime-activation-v1:opaque:service-test-first",
+              operationTarget: testServiceRouteTarget(
+                SERVICE_ID,
+                "WebSocketFixtureConnection.connect",
+              ),
+              storageServiceId: "example.com/test-first",
+              configPath: firstConfigPath,
+              serviceDb: {
+                mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true",
+              },
+            },
+            {
+              activationIdentity:
+                "skiff-runtime-activation-v1:opaque:service-test-second",
+              operationTarget: testServiceRouteTarget(
+                SERVICE_ID,
+                "WebSocketFixtureConnection.receive",
+              ),
+              storageServiceId: "example.com/test-second",
+              configPath: secondConfigPath,
+              serviceDb: {
+                mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true",
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const loaded = await loadRouterArtifactRoot(root);
+
+    expect(loaded.control.serviceConfig).toHaveLength(2);
+    expect(loaded.control.serviceConfig).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activationIdentity:
+            "skiff-runtime-activation-v1:opaque:service-test-first",
+          resolvedConfig: { caseName: "first" },
+          serviceDb: {
+            mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true",
+            storageServiceId: "example.com/test-first",
+          },
+        }),
+        expect.objectContaining({
+          activationIdentity:
+            "skiff-runtime-activation-v1:opaque:service-test-second",
+          resolvedConfig: { caseName: "second" },
+          serviceDb: {
+            mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true",
+            storageServiceId: "example.com/test-second",
+          },
+        }),
+      ]),
+    );
+    const first = loaded.control.serviceConfig!.find(
+      (config) =>
+        config.activationIdentity ===
+        "skiff-runtime-activation-v1:opaque:service-test-first",
+    )!;
+    const second = loaded.control.serviceConfig!.find(
+      (config) =>
+        config.activationIdentity ===
+        "skiff-runtime-activation-v1:opaque:service-test-second",
+    )!;
+    expect(
+      loaded.activationByServiceOperation.get({
+        serviceId: SERVICE_ID,
+        target: testServiceRouteTarget(
+          SERVICE_ID,
+          "WebSocketFixtureConnection.connect",
+        ),
+        buildId: first.buildId,
+      }),
+    ).toBe(first.activationIdentity);
+    expect(
+      loaded.activationByServiceOperation.get({
+        serviceId: SERVICE_ID,
+        target: testServiceRouteTarget(
+          SERVICE_ID,
+          "WebSocketFixtureConnection.receive",
+        ),
+        buildId: second.buildId,
+      }),
+    ).toBe(second.activationIdentity);
+  });
+
   it("mints a deterministic activation identity that is stable across reloads of an unchanged build", async () => {
     async function loadServiceConfig(model: string) {
       const root = await createArtifactRoot();
@@ -2451,6 +2588,7 @@ describe("router artifact root", () => {
       redactedResolvedConfig: {},
       serviceDb: {
         mongoUrl: "mongodb://127.0.0.1:27017/?directConnection=true",
+        storageServiceId: SERVICE_ID,
       },
     });
     expect(

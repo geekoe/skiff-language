@@ -115,6 +115,7 @@ pub(crate) async fn load_service_build_from_artifact_roots_with_caches(
     runtime_http_response_max_bytes: usize,
     options: &ArtifactLoadOptions,
     artifact_caches: &RuntimeArtifactCaches,
+    allow_missing_local_config: bool,
 ) -> anyhow::Result<Vec<RuntimeServiceConfig>> {
     if artifact_roots.is_empty() {
         anyhow::bail!("at least one artifacts root is required");
@@ -160,6 +161,7 @@ pub(crate) async fn load_service_build_from_artifact_roots_with_caches(
         runtime_http_response_max_bytes,
         candidates,
         artifact_caches,
+        allow_missing_local_config,
     )
     .await?;
     let matches = services

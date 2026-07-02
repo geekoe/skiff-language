@@ -400,6 +400,7 @@ pub(crate) fn apply_control_config(
             activated.service_db = config.service_db.as_ref().map(|service_db| {
                 DbProviderConfig::opaque(json!({
                     "mongoUrl": service_db.mongo_url.clone(),
+                    "storageServiceId": service_db.storage_service_id.clone(),
                 }))
             });
             if !activated.runtime_id.contains(&config.activation_identity) {
@@ -424,10 +425,9 @@ fn apply_package_control_config(
     }
     while package_configs.len() < service.linked_image.packages.len() {
         let slot = package_configs.len();
-        package_configs.push(RuntimeConfigView::from_resolved_config(
-            Value::Object(Map::new()),
+        package_configs.push(RuntimeConfigView::empty_unvalidated_with_shape(
             package_config_shape_for_slot(service.linked_image.as_ref(), slot)?,
-        )?);
+        ));
     }
 
     let mut seen_slots = HashSet::new();

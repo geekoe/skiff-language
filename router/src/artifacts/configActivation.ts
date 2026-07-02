@@ -14,8 +14,8 @@ import {
 import type {
   RuntimeConfigActivationPayload,
   RuntimePackageConfigActivationPayload,
+  RuntimeServiceDbConfigInput,
 } from "../protocol/envelope.js";
-import type { RuntimeServiceDbActivationPayload } from "../protocol/envelope.js";
 import { serviceIdPath, serviceIdPathSegments } from "./pathProjection.js";
 
 export interface ConfigActivation {
@@ -38,31 +38,63 @@ export async function buildServiceConfigActivation(input: {
   buildId: string;
   configShape: ConfigShape;
   configActivation: ConfigActivation;
-  packageConfigs?: PackageConfigActivationInput[];
+  packageConfigs?: readonly PackageConfigActivationInput[];
   configProfile?: string;
-  serviceDb?: RuntimeServiceDbActivationPayload;
+  serviceDb?: RuntimeServiceDbConfigInput;
 }): Promise<RuntimeConfigActivationPayload | undefined> {
   const sources = await readExistingConfigSources(
     input.root,
     input.serviceId,
     input.configProfile,
   );
+  return buildServiceConfigActivationFromSources({
+    indexPath: input.indexPath,
+    serviceId: input.serviceId,
+    buildId: input.buildId,
+    configShape: input.configShape,
+    configActivation: input.configActivation,
+    sources,
+    ...(input.packageConfigs !== undefined
+      ? { packageConfigs: input.packageConfigs }
+      : {}),
+    ...(input.serviceDb !== undefined ? { serviceDb: input.serviceDb } : {}),
+    storageServiceId: input.serviceId,
+    ...(input.configProfile !== undefined
+      ? { configProfile: input.configProfile }
+      : {}),
+  });
+}
+
+export function buildServiceConfigActivationFromSources(input: {
+  indexPath: string;
+  serviceId: string;
+  buildId: string;
+  configShape: ConfigShape;
+  configActivation: ConfigActivation;
+  packageConfigs?: readonly PackageConfigActivationInput[];
+  sources: readonly ConfigSource[];
+  serviceDb?: RuntimeServiceDbConfigInput;
+  storageServiceId: string;
+  activationIdentity?: string;
+  configProfile?: string;
+}): RuntimeConfigActivationPayload | undefined {
   const packageConfigs = input.packageConfigs ?? [];
   validatePackageAliases(packageConfigs, input.indexPath);
-  validateConfigSourceNamespaces(sources, input.indexPath);
-  const serviceSources = sources.flatMap((source) =>
+  validateConfigSourceNamespaces(input.sources, input.indexPath);
+  const serviceSources = input.sources.flatMap((source) =>
     sourceForService(source, input.indexPath),
   );
   const packagePayloads = buildPackageConfigActivations({
     indexPath: input.indexPath,
-    sources,
+    sources: input.sources,
     packageConfigs,
   });
   if (
     input.configShape.entries.length === 0 &&
     input.configActivation.hasPaths.length === 0 &&
     input.serviceDb === undefined &&
-    packagePayloads.length === 0
+    packagePayloads.length === 0 &&
+    input.activationIdentity === undefined
   ) {
     return undefined;
   }
@@ -93,17 +125,21 @@ export async function buildServiceConfigActivation(input: {
     resolvedConfig: resolved.resolvedConfig,
     configShape: serviceConfigShape,
   });
-
-  const payload: RuntimeConfigActivationPayload = {
-    serviceId: input.serviceId,
-    buildId: input.buildId,
-    activationIdentity: activationIdentity({
+  const activationIdentity =
+    input.activationIdentity ??
+    serviceActivationIdentity({
       serviceId: input.serviceId,
       buildId: input.buildId,
       resolvedConfigIdentity: resolvedConfigId,
       serviceDb: input.serviceDb,
+      storageServiceId: input.storageServiceId,
       packageConfigs: packagePayloads,
-    }),
+    });
+
+  const payload: RuntimeConfigActivationPayload = {
+    serviceId: input.serviceId,
+    buildId: input.buildId,
+    activationIdentity,
     resolvedConfigIdentity: resolvedConfigId,
     resolvedConfig: resolved.resolvedConfig,
     redactedResolvedConfig: resolved.redactedResolvedConfig,
@@ -113,6 +149,7 @@ export async function buildServiceConfigActivation(input: {
   if (input.serviceDb !== undefined) {
     payload.serviceDb = {
       mongoUrl: input.serviceDb.mongoUrl,
+      storageServiceId: input.storageServiceId,
     };
   }
   if (packagePayloads.length > 0) {
@@ -152,11 +189,12 @@ function resolvedConfigIdentity(input: {
 // repeated reloads instead of accumulating activations. A genuine config
 // change produces a different resolvedConfigIdentity and therefore a different
 // activation identity.
-function activationIdentity(input: {
+function serviceActivationIdentity(input: {
   serviceId: string;
   buildId: string;
   resolvedConfigIdentity: string;
-  serviceDb: RuntimeServiceDbActivationPayload | undefined;
+  serviceDb: RuntimeServiceDbConfigInput | undefined;
+  storageServiceId: string;
   packageConfigs: readonly RuntimePackageConfigActivationPayload[];
 }): string {
   return `skiff-runtime-activation-v1:opaque:${sha256Hex(
@@ -166,7 +204,10 @@ function activationIdentity(input: {
       resolvedConfigIdentity: input.resolvedConfigIdentity,
       serviceDb:
         input.serviceDb !== undefined
-          ? { mongoUrl: input.serviceDb.mongoUrl }
+          ? {
+              mongoUrl: input.serviceDb.mongoUrl,
+              storageServiceId: input.storageServiceId,
+            }
           : null,
       packageConfigs: input.packageConfigs.map((packageConfig) => ({
         packageId: packageConfig.packageId,

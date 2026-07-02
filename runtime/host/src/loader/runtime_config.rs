@@ -67,6 +67,7 @@ pub(super) async fn load_services_from_rooted_artifact_pointers(
         runtime_http_response_max_bytes,
         pointer_files,
         &artifact_caches,
+        false,
     )
     .await
 }
@@ -76,6 +77,7 @@ pub(super) async fn load_services_from_rooted_artifact_pointers_with_caches(
     runtime_http_response_max_bytes: usize,
     pointer_files: Vec<RootedArtifactPointerFile>,
     artifact_caches: &RuntimeArtifactCaches,
+    allow_missing_local_config: bool,
 ) -> anyhow::Result<Vec<RuntimeServiceConfig>> {
     let mut services = Vec::new();
     let mut seen_contracts = HashSet::new();
@@ -181,6 +183,7 @@ pub(super) async fn load_services_from_rooted_artifact_pointers_with_caches(
             &service_unit,
             &program_parts,
             config_shape,
+            allow_missing_local_config,
         )?;
 
         services.push(RuntimeServiceConfig {
@@ -225,12 +228,23 @@ fn load_local_service_artifact_config(
     service_unit: &ServiceUnit,
     program_parts: &LoadedRuntimeProgramParts,
     config_shape: ConfigShape,
+    allow_missing_local_config: bool,
 ) -> anyhow::Result<LocalServiceArtifactConfig> {
     let config_paths = local_service_config_paths(artifact_root, service_id)?;
     let Some(config_label_path) = config_paths.last() else {
+        let service_config = if allow_missing_local_config {
+            RuntimeConfigView::empty_unvalidated_with_shape(config_shape)
+        } else {
+            RuntimeConfigView::empty_with_shape(config_shape)?
+        };
+        let package_configs = if allow_missing_local_config {
+            package_runtime_config_placeholder_views_from_program_parts(program_parts)?
+        } else {
+            package_runtime_config_views_from_program_parts(program_parts)?
+        };
         return Ok(LocalServiceArtifactConfig {
-            service_config: RuntimeConfigView::empty_with_shape(config_shape)?,
-            package_configs: package_runtime_config_views_from_program_parts(program_parts)?,
+            service_config,
+            package_configs,
             service_db: None,
         });
     };
@@ -845,6 +859,17 @@ fn package_config_views_from_values_for_program_parts(
     values: Vec<Value>,
 ) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
     package_config_views_from_values_for_image(program_parts.image.as_ref(), values)
+}
+
+fn package_runtime_config_placeholder_views_from_program_parts(
+    program_parts: &LoadedRuntimeProgramParts,
+) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    (0..program_parts.image.packages.len())
+        .map(|slot| {
+            let config_shape = package_config_shape_from_image(program_parts.image.as_ref(), slot)?;
+            Ok(crate::config_view::RuntimeConfigView::empty_unvalidated_with_shape(config_shape))
+        })
+        .collect()
 }
 
 fn package_config_views_from_values_for_image(

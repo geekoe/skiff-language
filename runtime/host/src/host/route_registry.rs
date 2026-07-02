@@ -143,8 +143,7 @@ fn service_context_from_config(
     let runtime_program_identity = service.runtime_program_identity.clone();
     let linked_image = service.linked_image.clone();
     let runtime_activation = service.runtime_activation.clone();
-    let service_db = build_service_db_source(
-        service_id.clone(),
+    let service_db = build_control_service_db_source(
         service.service_db.clone(),
         runtime_activation.as_ref(),
         db_provider,
@@ -512,7 +511,7 @@ pub(super) fn apply_default_http_response_limits(
 }
 
 pub(super) fn build_service_db_source(
-    service_id: String,
+    storage_service_id: String,
     service_db: Option<DbProviderConfig>,
     runtime_activation: &RuntimeActivation,
     db_provider: &DbProviderSource,
@@ -522,11 +521,55 @@ pub(super) fn build_service_db_source(
     };
     db_provider
         .build(DbProviderBuildInput {
-            service_id,
+            service_id: storage_service_id,
             config: service_db,
             runtime_program_db: runtime_activation.db.clone(),
         })
         .map_err(anyhow::Error::new)
+}
+
+fn build_control_service_db_source(
+    service_db: Option<DbProviderConfig>,
+    runtime_activation: &RuntimeActivation,
+    db_provider: &DbProviderSource,
+) -> anyhow::Result<DbCapabilitySource> {
+    let Some(service_db) = service_db else {
+        return Ok(DbCapabilitySource::unavailable());
+    };
+    let storage_service_id = control_service_db_storage_service_id(&service_db)?;
+    let provider_config = control_service_db_provider_config(service_db)?;
+    build_service_db_source(
+        storage_service_id,
+        Some(provider_config),
+        runtime_activation,
+        db_provider,
+    )
+}
+
+fn control_service_db_storage_service_id(service_db: &DbProviderConfig) -> anyhow::Result<String> {
+    service_db
+        .as_value()
+        .get("storageServiceId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("runtime serviceDb.storageServiceId is required"))
+}
+
+fn control_service_db_provider_config(
+    service_db: DbProviderConfig,
+) -> anyhow::Result<DbProviderConfig> {
+    let value = service_db.into_value();
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("runtime serviceDb must be a JSON object"))?;
+    let mongo_url = object
+        .get("mongoUrl")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("runtime serviceDb.mongoUrl is required"))?;
+    Ok(DbProviderConfig::opaque(serde_json::json!({
+        "mongoUrl": mongo_url,
+    })))
 }
 
 pub(super) fn is_service_build_id(value: &str) -> bool {

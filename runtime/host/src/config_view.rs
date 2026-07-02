@@ -36,6 +36,14 @@ impl RuntimeConfigView {
         Self::from_resolved_config(Value::Object(Map::new()), config_shape)
     }
 
+    pub(crate) fn empty_unvalidated_with_shape(config_shape: ConfigShape) -> Self {
+        Self {
+            resolved_config: Value::Object(Map::new()),
+            _redacted_resolved_config: None,
+            config_shape,
+        }
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_value(value: Value) -> Self {
         let resolved_config = match value {

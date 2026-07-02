@@ -284,9 +284,10 @@ const routerControlProperties = {
         configShape: configShapeProtocolSchema,
         serviceDb: {
           type: 'object',
-          required: ['mongoUrl'],
+          required: ['mongoUrl', 'storageServiceId'],
           properties: {
-            mongoUrl: { type: 'string' }
+            mongoUrl: { type: 'string' },
+            storageServiceId: { type: 'string' }
           },
           additionalProperties: false
         },
@@ -2718,6 +2719,12 @@ function validateServiceConfig(envelope: Record<string, unknown>): string | null
       }
       if (typeof item.serviceDb.mongoUrl !== 'string' || item.serviceDb.mongoUrl.trim().length === 0) {
         return `invalid router.control envelope: ${label}.serviceDb.mongoUrl must be a non-empty string`;
+      }
+      if (
+        typeof item.serviceDb.storageServiceId !== 'string' ||
+        !isPublicationId(item.serviceDb.storageServiceId)
+      ) {
+        return `invalid router.control envelope: ${label}.serviceDb.storageServiceId must be a publication id`;
       }
       if (Object.prototype.hasOwnProperty.call(item.serviceDb, 'storageNamespace')) {
         return `invalid router.control envelope: ${label}.serviceDb.storageNamespace is no longer supported`;

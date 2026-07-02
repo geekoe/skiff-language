@@ -6,9 +6,9 @@ import {
   loadManifest,
   mergeLoadedManifests,
 } from "../manifest/loadManifest.js";
-import type { RuntimeConfigActivationPayload } from "../protocol/envelope.js";
 import {
   buildActivationLookup,
+  serviceConfigActivations,
   validateServingManifestUniqueness,
 } from "./activationLookup.js";
 import { readActiveArtifactPointers } from "./pointers.js";
@@ -113,12 +113,9 @@ export async function loadRouterArtifactRoot(
   });
   const manifest =
     manifests.length === 1 ? manifests[0]! : mergeLoadedManifests(manifests);
-  const serviceConfig = artifacts
-    .map((artifact) => artifact.activation?.payload)
-    .filter(
-      (payload): payload is RuntimeConfigActivationPayload =>
-        payload !== undefined,
-    );
+  const serviceConfig = artifacts.flatMap((artifact) =>
+    serviceConfigActivations(artifact).map((activation) => activation.payload),
+  );
   const activationByServiceOperation = buildActivationLookup(artifacts);
   const firstGeneration = firstCommonValue(
     pointers.map((pointer) => pointer.generation),

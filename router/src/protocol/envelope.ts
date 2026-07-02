@@ -256,8 +256,12 @@ export interface RuntimeControlServiceBuild {
   sourcePath: string;
 }
 
-export interface RuntimeServiceDbActivationPayload {
+export interface RuntimeServiceDbConfigInput {
   mongoUrl: string;
+}
+
+export interface RuntimeServiceDbActivationPayload extends RuntimeServiceDbConfigInput {
+  storageServiceId: string;
 }
 
 export interface RuntimePackageConfigActivationPayload {

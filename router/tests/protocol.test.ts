@@ -317,7 +317,8 @@ describe('runtime protocol fixtures and schemas', () => {
             ]
           },
           serviceDb: {
-            mongoUrl: 'mongodb://127.0.0.1:27017/?directConnection=true'
+            mongoUrl: 'mongodb://127.0.0.1:27017/?directConnection=true',
+            storageServiceId: 'example.com/hello'
           },
           packageConfigs: [
             {
@@ -408,7 +409,8 @@ describe('runtime protocol fixtures and schemas', () => {
               entries: []
             },
             serviceDb: {
-              mongoUrl: ''
+              mongoUrl: '',
+              storageServiceId: 'example.com/hello'
             }
           }
         ]
@@ -417,6 +419,36 @@ describe('runtime protocol fixtures and schemas', () => {
       ok: false,
       error:
         'invalid router.control envelope: serviceConfig[0].serviceDb.mongoUrl must be a non-empty string'
+    });
+
+    expect(
+      validateRouterToRuntimeFrameHeader({
+        ...runtimeFrameHeaderFixtures['router.control'],
+        serviceConfig: [
+          {
+            serviceId: 'example.com/hello',
+            buildId:
+              'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333',
+            activationIdentity: 'skiff-runtime-activation-v1:opaque:activation-fixture',
+            resolvedConfigIdentity: 'skiff-config-resolved-v1:opaque:config-fixture',
+            resolvedConfig: {},
+            redactedResolvedConfig: {},
+            redactionProjectionIdentity:
+              'skiff-config-redaction-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444',
+            configShape: {
+              schemaVersion: 'skiff-config-shape-v1',
+              entries: []
+            },
+            serviceDb: {
+              mongoUrl: 'mongodb://127.0.0.1:27017'
+            }
+          }
+        ]
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid router.control envelope: serviceConfig[0].serviceDb.storageServiceId must be a publication id'
     });
 
     expect(
@@ -466,6 +498,7 @@ describe('runtime protocol fixtures and schemas', () => {
             },
             serviceDb: {
               mongoUrl: 'mongodb://127.0.0.1:27017',
+              storageServiceId: 'example.com/hello',
               storageNamespace: 'hello'
             }
           }
@@ -497,6 +530,7 @@ describe('runtime protocol fixtures and schemas', () => {
             },
             serviceDb: {
               mongoUrl: 'mongodb://127.0.0.1:27017',
+              storageServiceId: 'example.com/hello',
               storageNamespace: 'aaaaaaaaaaaaaaaaaaaa'
             }
           }

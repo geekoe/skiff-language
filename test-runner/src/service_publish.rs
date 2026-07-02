@@ -27,7 +27,6 @@ const TEST_API_MODULE: &str = "skiff_test_entry";
 const TEST_OPERATION_PUBLIC_PATH: &str = "__skiff_test_operation";
 const TEST_PACKAGE_HTTP_ROUTES_MODULE: &str = "skiff_test_package_http_routes";
 const TEST_ENTRY_TYPE: &str = "__SkiffTestEntry";
-const TEST_ENTRY_METHOD: &str = "run";
 const TEST_REQUEST_PAYLOAD_PARAM: &str = "__skiffPayload";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +34,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(super) struct ServiceRuntimePublication {
     temp: TempServiceRoot,
     pub(super) service_id: String,
+    pub(super) dependency_service_ids: Vec<String>,
     pub(super) operation_name: String,
     pub(super) operation_abi_id: String,
     pub(super) target: String,
@@ -55,6 +55,47 @@ pub(super) struct ServiceRuntimePublicationInput<'a> {
     pub(super) function_name: &'a str,
     pub(super) operation_module: &'a str,
     pub(super) request_payload_param: bool,
+    pub(super) options: &'a SkiffTestOptions,
+}
+
+pub(super) struct ServiceRuntimeSuitePublication {
+    temp: TempServiceRoot,
+    pub(super) service_id: String,
+    pub(super) dependency_service_ids: Vec<String>,
+    pub(super) cases: Vec<ServiceRuntimeSuiteCase>,
+}
+
+impl ServiceRuntimeSuitePublication {
+    pub(super) fn root(&self) -> &Path {
+        &self.temp.path
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ServiceRuntimeSuiteCase {
+    pub(super) function_name: String,
+    pub(super) operation_name: String,
+    pub(super) operation_abi_id: String,
+    pub(super) target: String,
+    pub(super) activation_identity: String,
+    pub(super) storage_service_id: String,
+}
+
+pub(super) struct ServiceRuntimeSuiteCaseInput<'a> {
+    pub(super) test_source: &'a ParsedSource,
+    pub(super) test_index: usize,
+    pub(super) function_name: &'a str,
+    pub(super) operation_module: &'a str,
+    pub(super) request_payload_param: bool,
+    pub(super) activation_identity: &'a str,
+    pub(super) storage_service_id: &'a str,
+}
+
+pub(super) struct ServiceRuntimeSuitePublicationInput<'a> {
+    pub(super) service_config: &'a ServiceConfig,
+    pub(super) service_id: &'a str,
+    pub(super) production_sources: &'a [ParsedSource],
+    pub(super) cases: &'a [ServiceRuntimeSuiteCaseInput<'a>],
     pub(super) options: &'a SkiffTestOptions,
 }
 
@@ -94,6 +135,41 @@ impl Drop for TempServiceRoot {
 pub(super) fn build_service_publication_runtime_test(
     input: ServiceRuntimePublicationInput<'_>,
 ) -> Result<ServiceRuntimePublication, SkiffTestError> {
+    let suite_case = ServiceRuntimeSuiteCaseInput {
+        test_source: input.test_source,
+        test_index: input.test_index,
+        function_name: input.function_name,
+        operation_module: input.operation_module,
+        request_payload_param: input.request_payload_param,
+        activation_identity: "skiff-runtime-activation-v1:opaque:single-service-test",
+        storage_service_id: input.service_id,
+    };
+    let suite =
+        build_service_publication_runtime_test_suite(ServiceRuntimeSuitePublicationInput {
+            service_config: input.service_config,
+            service_id: input.service_id,
+            production_sources: input.production_sources,
+            cases: std::slice::from_ref(&suite_case),
+            options: input.options,
+        })?;
+    let case = suite
+        .cases
+        .first()
+        .expect("single service test suite should contain one case")
+        .clone();
+    Ok(ServiceRuntimePublication {
+        temp: suite.temp,
+        service_id: suite.service_id,
+        dependency_service_ids: suite.dependency_service_ids,
+        operation_name: case.operation_name,
+        operation_abi_id: case.operation_abi_id,
+        target: case.target,
+    })
+}
+
+pub(super) fn build_service_publication_runtime_test_suite(
+    input: ServiceRuntimeSuitePublicationInput<'_>,
+) -> Result<ServiceRuntimeSuitePublication, SkiffTestError> {
     let temp = TempServiceRoot::new()?;
     write_service_config(&temp.path, &input)?;
     write_runtime_test_sources(&temp.path, &input)?;
@@ -107,30 +183,55 @@ pub(super) fn build_service_publication_runtime_test(
         package_dirs,
         service_dependency_artifact_roots: &input.options.service_artifact_roots,
     })?;
-    let (operation_name, operation_abi_id, target) = service_operation_for_test(
-        &published,
-        TEST_API_MODULE,
-        &format!("{TEST_ENTRY_TYPE}.{TEST_ENTRY_METHOD}"),
-    )?;
-    Ok(ServiceRuntimePublication {
+    let cases = input
+        .cases
+        .iter()
+        .map(|case| {
+            let (operation_name, operation_abi_id, target) = service_operation_for_test(
+                &published,
+                TEST_API_MODULE,
+                &format!("{TEST_ENTRY_TYPE}.{}", case.function_name),
+            )?;
+            Ok(ServiceRuntimeSuiteCase {
+                function_name: case.function_name.to_string(),
+                operation_name,
+                operation_abi_id,
+                target,
+                activation_identity: case.activation_identity.to_string(),
+                storage_service_id: case.storage_service_id.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, SkiffTestError>>()?;
+    Ok(ServiceRuntimeSuitePublication {
         temp,
         service_id: input.service_id.to_string(),
-        operation_name,
-        operation_abi_id,
-        target,
+        dependency_service_ids: input
+            .service_config
+            .publication
+            .service_dependencies
+            .iter()
+            .map(|dependency| dependency.id.clone())
+            .collect(),
+        cases,
     })
 }
 
 fn write_service_config(
     root: &Path,
-    input: &ServiceRuntimePublicationInput<'_>,
+    input: &ServiceRuntimeSuitePublicationInput<'_>,
 ) -> Result<String, SkiffTestError> {
     let source_modules = runtime_test_source_modules(input);
+    let test_source_text = input
+        .cases
+        .iter()
+        .map(|case| case.test_source.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let text = runtime_test_service_config_text(
         input.service_config,
         input.service_id,
         &source_modules,
-        input.test_source.text.as_str(),
+        &test_source_text,
     )?;
     write_source(root, skiff_compiler::SERVICE_CONFIG_FILE, &text)?;
     Ok(text)
@@ -138,23 +239,31 @@ fn write_service_config(
 
 fn read_runtime_test_service_config(
     root: &Path,
-    _input: &ServiceRuntimePublicationInput<'_>,
+    _input: &ServiceRuntimeSuitePublicationInput<'_>,
 ) -> Result<ServiceConfig, SkiffTestError> {
     Ok(read_service_config(root)?)
 }
 
-fn runtime_test_source_modules(input: &ServiceRuntimePublicationInput<'_>) -> BTreeSet<String> {
+fn runtime_test_source_modules(
+    input: &ServiceRuntimeSuitePublicationInput<'_>,
+) -> BTreeSet<String> {
     let mut modules = input
         .production_sources
         .iter()
         .filter(|source| !source.source.is_test_file)
         .map(|source| source.source.module_path.clone())
         .collect::<BTreeSet<_>>();
-    modules.insert(runtime_test_operation_module(input));
+    modules.extend(
+        input
+            .cases
+            .iter()
+            .map(|case| flat_runtime_test_module_name(case.operation_module)),
+    );
     modules.insert(TEST_API_MODULE.to_string());
-    if !package_http_route_wrappers_for_runtime_test(input.service_config, &input.test_source.text)
-        .is_empty()
-    {
+    if input.cases.iter().any(|case| {
+        !package_http_route_wrappers_for_runtime_test(input.service_config, &case.test_source.text)
+            .is_empty()
+    }) {
         modules.insert(TEST_PACKAGE_HTTP_ROUTES_MODULE.to_string());
     }
     modules
@@ -586,20 +695,19 @@ fn yaml_u64_map(values: &BTreeMap<String, u64>) -> serde_yaml::Value {
 
 fn write_runtime_test_sources(
     root: &Path,
-    input: &ServiceRuntimePublicationInput<'_>,
+    input: &ServiceRuntimeSuitePublicationInput<'_>,
 ) -> Result<(), SkiffTestError> {
     let source_modules = runtime_test_source_modules(input);
-    let operation_module = runtime_test_operation_module(input);
     write_runtime_test_api_yml(root, input, &source_modules)?;
     for source in input
         .production_sources
         .iter()
         .filter(|source| !source.source.is_test_file)
     {
-        if !source.source.is_test_file
-            && source.source.module_path == input.test_source.source.module_path
-            && !input.test_source.source.is_test_file
-        {
+        if input.cases.iter().any(|case| {
+            !case.test_source.source.is_test_file
+                && source.source.module_path == case.test_source.source.module_path
+        }) {
             continue;
         }
         write_source(
@@ -608,28 +716,50 @@ fn write_runtime_test_sources(
             &normalize_root_refs(&source.text),
         )?;
     }
-    let test_path = module_path_to_relative_path(&operation_module);
-    let test_text = runtime_test_source_text(
-        input.test_source,
-        input.test_index,
-        input.function_name,
-        input.request_payload_param,
-    )?;
-    write_source(root, &test_path, &test_text)?;
+    for (operation_module, cases) in runtime_test_cases_by_operation_module(input)? {
+        let test_path = module_path_to_relative_path(&operation_module);
+        let test_text = runtime_test_source_text_for_cases(&cases)?;
+        write_source(root, &test_path, &test_text)?;
+    }
     let wrapper_path = module_path_to_relative_path(TEST_API_MODULE);
-    let wrapper_text = runtime_test_api_wrapper_text(
-        &operation_module,
-        input.function_name,
-        input.request_payload_param,
-    );
+    let wrapper_text = runtime_test_api_wrapper_text(input.cases);
     write_source(root, &wrapper_path, &wrapper_text)?;
     write_package_http_route_wrapper_source(root, input)?;
     Ok(())
 }
 
+fn runtime_test_cases_by_operation_module<'a>(
+    input: &'a ServiceRuntimeSuitePublicationInput<'a>,
+) -> Result<BTreeMap<String, Vec<&'a ServiceRuntimeSuiteCaseInput<'a>>>, SkiffTestError> {
+    let mut cases_by_module: BTreeMap<String, Vec<&ServiceRuntimeSuiteCaseInput<'_>>> =
+        BTreeMap::new();
+    for case in input.cases {
+        let operation_module = flat_runtime_test_module_name(case.operation_module);
+        if let Some(existing) = cases_by_module
+            .get(&operation_module)
+            .and_then(|cases| cases.first())
+        {
+            if existing.test_source.source.file_path != case.test_source.source.file_path {
+                return Err(SkiffTestError::RuntimeSetup {
+                    message: format!(
+                        "service test sources {} and {} map to the same generated module {operation_module}",
+                        existing.test_source.source.file_path.display(),
+                        case.test_source.source.file_path.display()
+                    ),
+                });
+            }
+        }
+        cases_by_module
+            .entry(operation_module)
+            .or_default()
+            .push(case);
+    }
+    Ok(cases_by_module)
+}
+
 fn write_runtime_test_api_yml(
     root: &Path,
-    input: &ServiceRuntimePublicationInput<'_>,
+    input: &ServiceRuntimeSuitePublicationInput<'_>,
     source_modules: &BTreeSet<String>,
 ) -> Result<(), SkiffTestError> {
     let mut api = serde_yaml::Mapping::new();
@@ -652,15 +782,17 @@ fn write_runtime_test_api_yml(
         TEST_API_MODULE,
         TEST_ENTRY_TYPE,
     );
-    insert_api_yml_entry(
-        &mut api,
-        &[
-            TEST_OPERATION_PUBLIC_PATH.to_string(),
-            input.function_name.to_string(),
-        ],
-        &runtime_test_operation_module(input),
-        input.function_name,
-    );
+    for case in input.cases {
+        insert_api_yml_entry(
+            &mut api,
+            &[
+                TEST_OPERATION_PUBLIC_PATH.to_string(),
+                case.function_name.to_string(),
+            ],
+            &flat_runtime_test_module_name(case.operation_module),
+            case.function_name,
+        );
+    }
     let text = serde_yaml::to_string(&serde_yaml::Value::Mapping(api)).map_err(|source| {
         SkiffTestError::RuntimeSetup {
             message: format!("failed to serialize temporary api.yml: {source}"),
@@ -700,10 +832,20 @@ fn insert_api_yml_entry(
 
 fn write_package_http_route_wrapper_source(
     root: &Path,
-    input: &ServiceRuntimePublicationInput<'_>,
+    input: &ServiceRuntimeSuitePublicationInput<'_>,
 ) -> Result<(), SkiffTestError> {
-    let wrappers =
-        package_http_route_wrappers_for_runtime_test(input.service_config, &input.test_source.text);
+    let wrappers = input
+        .cases
+        .iter()
+        .flat_map(|case| {
+            package_http_route_wrappers_for_runtime_test(
+                input.service_config,
+                &case.test_source.text,
+            )
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     if wrappers.is_empty() {
         return Ok(());
     }
@@ -774,7 +916,45 @@ fn runtime_test_source_text(
     function_name: &str,
     request_payload_param: bool,
 ) -> Result<String, SkiffTestError> {
-    let body = function_body_text_for_test(source, test_index)?;
+    runtime_test_source_text_for_case_specs(
+        source,
+        [RuntimeTestCaseFunctionSpec {
+            test_index,
+            function_name,
+            request_payload_param,
+        }],
+    )
+}
+
+fn runtime_test_source_text_for_cases(
+    cases: &[&ServiceRuntimeSuiteCaseInput<'_>],
+) -> Result<String, SkiffTestError> {
+    let Some(first) = cases.first() else {
+        return Err(SkiffTestError::RuntimeSetup {
+            message: "service test source group did not contain any cases".to_string(),
+        });
+    };
+    runtime_test_source_text_for_case_specs(
+        first.test_source,
+        cases.iter().map(|case| RuntimeTestCaseFunctionSpec {
+            test_index: case.test_index,
+            function_name: case.function_name,
+            request_payload_param: case.request_payload_param,
+        }),
+    )
+}
+
+struct RuntimeTestCaseFunctionSpec<'a> {
+    test_index: usize,
+    function_name: &'a str,
+    request_payload_param: bool,
+}
+
+fn runtime_test_source_text_for_case_specs<'a>(
+    source: &ParsedSource,
+    cases: impl IntoIterator<Item = RuntimeTestCaseFunctionSpec<'a>>,
+) -> Result<String, SkiffTestError> {
+    let cases = cases.into_iter().collect::<Vec<_>>();
 
     let mut ranges = source
         .ast
@@ -799,35 +979,43 @@ fn runtime_test_source_text(
             text.replace_range(start..end, "");
         }
     }
-    let params = if request_payload_param {
-        format!("{TEST_REQUEST_PAYLOAD_PARAM}: string")
-    } else {
-        String::new()
-    };
-    text.push_str(&format!(
-        "\nfunction {function_name}({params}) -> void {body}\n"
-    ));
+    for case in cases {
+        let body = function_body_text_for_test(source, case.test_index)?;
+        let params = if case.request_payload_param {
+            format!("{TEST_REQUEST_PAYLOAD_PARAM}: string")
+        } else {
+            String::new()
+        };
+        text.push_str(&format!(
+            "\nfunction {}({params}) -> void {body}\n",
+            case.function_name
+        ));
+    }
     Ok(text)
 }
 
-fn runtime_test_api_wrapper_text(
-    operation_module: &str,
-    function_name: &str,
-    request_payload_param: bool,
-) -> String {
-    let params = if request_payload_param {
-        format!(", {TEST_REQUEST_PAYLOAD_PARAM}: string")
-    } else {
-        String::new()
-    };
-    let args = if request_payload_param {
-        TEST_REQUEST_PAYLOAD_PARAM.to_string()
-    } else {
-        String::new()
-    };
-    format!(
-        "type {TEST_ENTRY_TYPE} {{}}\n\nimpl {TEST_ENTRY_TYPE} {{\n  function {TEST_ENTRY_METHOD}(self: {TEST_ENTRY_TYPE}{params}) -> bool {{\n    root.{operation_module}.{function_name}({args})\n    return true\n  }}\n}}\n"
-    )
+fn runtime_test_api_wrapper_text(cases: &[ServiceRuntimeSuiteCaseInput<'_>]) -> String {
+    let mut text = format!("type {TEST_ENTRY_TYPE} {{}}\n\nimpl {TEST_ENTRY_TYPE} {{\n");
+    for case in cases {
+        let params = if case.request_payload_param {
+            format!(", {TEST_REQUEST_PAYLOAD_PARAM}: string")
+        } else {
+            String::new()
+        };
+        let args = if case.request_payload_param {
+            TEST_REQUEST_PAYLOAD_PARAM.to_string()
+        } else {
+            String::new()
+        };
+        text.push_str(&format!(
+            "  function {}(self: {TEST_ENTRY_TYPE}{params}) -> bool {{\n    root.{}.{}({args})\n    return true\n  }}\n",
+            case.function_name,
+            flat_runtime_test_module_name(case.operation_module),
+            case.function_name
+        ));
+    }
+    text.push_str("}\n");
+    text
 }
 
 fn function_body_text_for_test(
@@ -1149,11 +1337,14 @@ mod tests {
             request_payload_param: false,
             options,
         };
+        let case_input = suite_case_input(&input);
+        let case_inputs = [case_input];
+        let suite_input = suite_input(&input, &case_inputs);
         let temp = TempServiceRoot::new().expect("temporary service root should be created");
-        write_service_config(&temp.path, &input).expect("temporary service config writes");
-        write_runtime_test_sources(&temp.path, &input).expect("temporary test sources write");
+        write_service_config(&temp.path, &suite_input).expect("temporary service config writes");
+        write_runtime_test_sources(&temp.path, &suite_input).expect("temporary test sources write");
         let source_tree = collect_source_tree(&temp.path).expect("temporary sources collect");
-        let config = read_runtime_test_service_config(&temp.path, &input)
+        let config = read_runtime_test_service_config(&temp.path, &suite_input)
             .expect("temporary service config parses");
         let package_dirs = options.package_resolution_dirs_for(&temp.path);
         build_service_publication(ServicePublicationBuildInput {
@@ -1164,6 +1355,33 @@ mod tests {
             service_dependency_artifact_roots: &options.service_artifact_roots,
         })
         .expect("temporary runtime test publication should build")
+    }
+
+    fn suite_case_input<'a>(
+        input: &'a ServiceRuntimePublicationInput<'a>,
+    ) -> ServiceRuntimeSuiteCaseInput<'a> {
+        ServiceRuntimeSuiteCaseInput {
+            test_source: input.test_source,
+            test_index: input.test_index,
+            function_name: input.function_name,
+            operation_module: input.operation_module,
+            request_payload_param: input.request_payload_param,
+            activation_identity: "skiff-runtime-activation-v1:opaque:test-fixture",
+            storage_service_id: input.service_id,
+        }
+    }
+
+    fn suite_input<'a>(
+        input: &'a ServiceRuntimePublicationInput<'a>,
+        cases: &'a [ServiceRuntimeSuiteCaseInput<'a>],
+    ) -> ServiceRuntimeSuitePublicationInput<'a> {
+        ServiceRuntimeSuitePublicationInput {
+            service_config: input.service_config,
+            service_id: input.service_id,
+            production_sources: input.production_sources,
+            cases,
+            options: input.options,
+        }
     }
 
     #[test]
@@ -1334,10 +1552,13 @@ test "runtime api yml wrapper" {
             options: &SkiffTestOptions::default(),
         };
         let generated_operation_module = runtime_test_operation_module(&input);
+        let case_input = suite_case_input(&input);
+        let case_inputs = [case_input];
+        let suite_input = suite_input(&input, &case_inputs);
         let temp = TempServiceRoot::new().expect("temporary service root should be created");
         write_runtime_test_api_yml(
             &temp.path,
-            &input,
+            &suite_input,
             &source_modules(&["test.wrapper", generated_operation_module.as_str()]),
         )
         .expect("temporary api.yml should write");
@@ -1512,7 +1733,10 @@ function packageEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
             options: &options,
         };
         let generated_operation_module = runtime_test_operation_module(&input);
-        let source_modules = runtime_test_source_modules(&input);
+        let case_input = suite_case_input(&input);
+        let case_inputs = [case_input];
+        let suite_input = suite_input(&input, &case_inputs);
+        let source_modules = runtime_test_source_modules(&suite_input);
         assert!(source_modules.contains(&generated_operation_module));
         assert!(source_modules.contains(TEST_PACKAGE_HTTP_ROUTES_MODULE));
         assert!(

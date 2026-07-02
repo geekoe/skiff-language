@@ -5,7 +5,7 @@ import type {
 import type {
   RuntimeConfigActivationPayload,
   FileBackendControlConfig,
-  RuntimeServiceDbActivationPayload,
+  RuntimeServiceDbConfigInput,
   TelemetryControlConfig,
 } from "../protocol/envelope.js";
 import type { ActivationLookup } from "./activationLookup.js";
@@ -47,6 +47,12 @@ export interface ServiceVersionBuildBinding {
   version: string;
 }
 
+export interface LoadedServiceConfigActivation {
+  operationTargets: string[];
+  serviceId: string;
+  payload: RuntimeConfigActivationPayload;
+}
+
 export interface LoadRouterArtifactRootOptions {
   devReload?: boolean;
   identityCliPath?: string;
@@ -54,7 +60,7 @@ export interface LoadRouterArtifactRootOptions {
   telemetry?: TelemetryControlConfig;
   fileBackend?: FileBackendControlConfig;
   configProfile?: string;
-  serviceDb?: RuntimeServiceDbActivationPayload;
+  serviceDb?: RuntimeServiceDbConfigInput;
 }
 
 export interface LoadedServiceAssemblyArtifact {
@@ -63,11 +69,8 @@ export interface LoadedServiceAssemblyArtifact {
   pointerBuildId?: string;
   serviceVersion: string;
   sourcePath: string;
-  activation?: {
-    operationTargets: string[];
-    serviceId: string;
-    payload: RuntimeConfigActivationPayload;
-  };
+  activation?: LoadedServiceConfigActivation;
+  activations?: LoadedServiceConfigActivation[];
 }
 
 export interface ArtifactPointer {

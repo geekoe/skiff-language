@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
     io::{Read, Write},
     net::TcpStream,
@@ -24,8 +24,11 @@ use skiff_compiler::test_support::{
 };
 
 use super::{
-    service_publish::ServiceRuntimePublication, types::TestEffectDouble, RuntimeTestArtifact,
-    SkiffTestOptions,
+    service_publish::{
+        ServiceRuntimePublication, ServiceRuntimeSuiteCase, ServiceRuntimeSuitePublication,
+    },
+    types::TestEffectDouble,
+    RuntimeTestArtifact, SkiffTestOptions,
 };
 
 const DEFAULT_CONTROL_BASE_URL: &str = "http://127.0.0.1:4001";
@@ -372,7 +375,11 @@ pub(super) fn execute_dev_synced_service_test(
         }),
         false,
     )?;
-    sync_service_dependency_artifact_roots(&artifact_root, options)?;
+    sync_service_dependency_artifact_roots(
+        &artifact_root,
+        options,
+        Some(&publication.dependency_service_ids),
+    )?;
     sync_dev_service_artifacts(publication.root(), &artifact_root, options)?;
     let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
     let _artifact_cleanup =
@@ -407,6 +414,307 @@ pub(super) fn execute_dev_synced_service_test(
         runtime_dispatch_bool_true_payload(&response)?;
     }
     Ok(())
+}
+
+pub(super) struct ServiceTestSuiteActivationInput {
+    pub(super) case: ServiceRuntimeSuiteCase,
+    pub(super) values: JsonValue,
+    pub(super) service_db_mongo_url: Option<String>,
+}
+
+pub(super) struct PreparedServiceTestSuite {
+    _runtime_artifact_guard: MutexGuard<'static, ()>,
+    _artifact_cleanup: ServiceTestSuiteArtifactCleanup,
+    pub(super) control_base_url: String,
+    pub(super) service_id: String,
+    pub(super) build_id: String,
+    pub(super) service_protocol_identity: String,
+}
+
+pub(super) struct PreparedServiceTestSuiteDispatchContext<'a> {
+    control_base_url: &'a str,
+    service_id: &'a str,
+    build_id: &'a str,
+    service_protocol_identity: &'a str,
+}
+
+impl PreparedServiceTestSuite {
+    pub(super) fn dispatch_context(&self) -> PreparedServiceTestSuiteDispatchContext<'_> {
+        PreparedServiceTestSuiteDispatchContext {
+            control_base_url: &self.control_base_url,
+            service_id: &self.service_id,
+            build_id: &self.build_id,
+            service_protocol_identity: &self.service_protocol_identity,
+        }
+    }
+}
+
+struct ServiceTestSuiteArtifactCleanup {
+    _pointer_cleanup: TestArtifactCleanup,
+    activation_sidecar_dir: PathBuf,
+    activation_config_dir: PathBuf,
+}
+
+impl ServiceTestSuiteArtifactCleanup {
+    fn new(artifact_root: &Path, service_id: &str, pointer_build_id: &str) -> Self {
+        let service_path = service_id_artifact_path(service_id);
+        let pointer_hash = pointer_build_id_hash(pointer_build_id);
+        Self {
+            _pointer_cleanup: TestArtifactCleanup::new(artifact_root, service_id, pointer_build_id),
+            activation_sidecar_dir: artifact_root
+                .join("dev")
+                .join("service-test-activations")
+                .join(&service_path),
+            activation_config_dir: artifact_root
+                .join("configs")
+                .join("service-test-activations")
+                .join(service_path)
+                .join(pointer_hash),
+        }
+    }
+}
+
+impl Drop for ServiceTestSuiteArtifactCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.activation_sidecar_dir);
+        let _ = fs::remove_dir_all(&self.activation_config_dir);
+    }
+}
+
+pub(super) fn prepare_dev_synced_service_test_suite(
+    publication: &ServiceRuntimeSuitePublication,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    activations: &[ServiceTestSuiteActivationInput],
+    options: &SkiffTestOptions,
+) -> Result<PreparedServiceTestSuite, String> {
+    let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
+        .lock()
+        .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
+    let control_base_url = router_control_base_url(options)?;
+    let health = health_check(&control_base_url)?;
+    let artifact_root = test_artifact_root(&health)?;
+    sync_service_dependency_artifact_roots(
+        &artifact_root,
+        options,
+        Some(&publication.dependency_service_ids),
+    )?;
+    sync_dev_service_artifacts(publication.root(), &artifact_root, options)?;
+    let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
+    write_service_test_suite_activation_artifacts(
+        &artifact_root,
+        &publication.service_id,
+        &pointer.build_id,
+        package_aliases.keys().map(String::as_str),
+        activations,
+        options,
+    )?;
+    let artifact_cleanup = ServiceTestSuiteArtifactCleanup::new(
+        &artifact_root,
+        &publication.service_id,
+        &pointer.build_id,
+    );
+    let reload_url = control_url_with_path(&control_base_url, "/__skiff/reload-artifacts")?;
+    let reload_response = post_json(&reload_url, &json!({}))
+        .map_err(|error| dev_reload_error_message(error, options.live))?;
+    let build_id =
+        reloaded_dynamic_build_id(&reload_response, &publication.service_id, &pointer.build_id)?;
+
+    Ok(PreparedServiceTestSuite {
+        _runtime_artifact_guard: runtime_artifact_guard,
+        _artifact_cleanup: artifact_cleanup,
+        control_base_url,
+        service_id: publication.service_id.clone(),
+        build_id,
+        service_protocol_identity: pointer.protocol_identity,
+    })
+}
+
+pub(super) fn execute_dev_synced_service_test_case_with_context(
+    prepared: &PreparedServiceTestSuiteDispatchContext<'_>,
+    case: &ServiceRuntimeSuiteCase,
+    doubles: Option<HashMap<String, Vec<TestEffectDouble>>>,
+    request_payload: Option<&str>,
+    expected_error: Option<&RuntimeExpectedError>,
+    options: &SkiffTestOptions,
+) -> Result<(), String> {
+    let dispatch_url = control_url_with_path(prepared.control_base_url, "/__skiff/test-dispatch")?;
+    let payload_base64 = runtime_test_payload_base64(request_payload)?;
+    let mut dispatch_body = json!({
+            "buildId": prepared.build_id,
+            "mode": "unary",
+            "serviceId": prepared.service_id,
+            "serviceProtocolIdentity": prepared.service_protocol_identity,
+            "operation": case.operation_name,
+            "operationAbiId": case.operation_abi_id,
+            "target": case.target,
+            "activationIdentity": case.activation_identity,
+            "payloadBase64": payload_base64,
+            "testEffectsEnabled": !options.live,
+            "testEffectDoubles": doubles.unwrap_or_default(),
+    });
+    dispatch_body["websocketEntryId"] =
+        JsonValue::String(synthetic_websocket_entry_id(&case.storage_service_id));
+    let response = post_dispatch_json(&dispatch_url, &dispatch_body)
+        .map_err(|error| format!("router test dispatch failed: {error}"))?;
+    runtime_dispatch_result(&response, expected_error)?;
+    if expected_error.is_none() && request_payload.is_some() {
+        runtime_dispatch_bool_true_payload(&response)?;
+    }
+    Ok(())
+}
+
+fn write_service_test_suite_activation_artifacts<'a>(
+    artifact_root: &Path,
+    service_id: &str,
+    pointer_build_id: &str,
+    package_aliases: impl IntoIterator<Item = &'a str>,
+    activations: &[ServiceTestSuiteActivationInput],
+    options: &SkiffTestOptions,
+) -> Result<(), String> {
+    let service_path = service_id_artifact_path(service_id);
+    let pointer_hash = pointer_build_id_hash(pointer_build_id);
+    let package_aliases = package_aliases.into_iter().collect::<Vec<_>>();
+    let mut cases = Vec::with_capacity(activations.len());
+    for activation in activations {
+        let activation_hash = sha256_hex(activation.case.activation_identity.as_bytes());
+        let config_path = PathBuf::from("configs")
+            .join("service-test-activations")
+            .join(&service_path)
+            .join(&pointer_hash)
+            .join(&activation_hash)
+            .join("config.yml");
+        let runtime_live = options.live.then_some(RuntimeLiveMetadata {
+            service_id,
+            version: TEST_SERVICE_VERSION,
+        });
+        write_runtime_config_at_artifact_path(
+            artifact_root,
+            &config_path,
+            &activation.values,
+            activation.service_db_mongo_url.as_deref(),
+            package_aliases.iter().copied(),
+            runtime_live,
+        )?;
+        let mut case = JsonMap::new();
+        case.insert(
+            "activationIdentity".to_string(),
+            json!(activation.case.activation_identity),
+        );
+        case.insert("operationTarget".to_string(), json!(activation.case.target));
+        case.insert(
+            "storageServiceId".to_string(),
+            json!(activation.case.storage_service_id),
+        );
+        case.insert(
+            "configPath".to_string(),
+            json!(artifact_relative_path(&config_path)),
+        );
+        if let Some(mongo_url) = activation.service_db_mongo_url.as_deref() {
+            case.insert(
+                "serviceDb".to_string(),
+                json!({
+                    "mongoUrl": mongo_url,
+                }),
+            );
+        }
+        cases.push(JsonValue::Object(case));
+    }
+    let sidecar = json!({
+        "schemaVersion": "skiff-service-test-activations-v1",
+        "serviceId": service_id,
+        "pointerBuildId": pointer_build_id,
+        "cases": cases,
+    });
+    let sidecar_path = PathBuf::from("dev")
+        .join("service-test-activations")
+        .join(&service_path)
+        .join(format!("{pointer_hash}.json"));
+    write_json_at_artifact_path(artifact_root, &sidecar_path, &sidecar)
+}
+
+fn write_runtime_config_at_artifact_path<'a>(
+    artifact_root: &Path,
+    relative_path: &Path,
+    values: &JsonValue,
+    service_db_mongo_url: Option<&str>,
+    package_aliases: impl IntoIterator<Item = &'a str>,
+    runtime_live: Option<RuntimeLiveMetadata<'_>>,
+) -> Result<(), String> {
+    let config = config_wrapped_for_router_with_package_defaults(
+        values,
+        service_db_mongo_url,
+        package_aliases,
+        runtime_live,
+        false,
+    );
+    let path = artifact_root.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create service-test runtime config directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let text = serde_yaml::to_string(&config)
+        .map_err(|error| format!("failed to serialize service-test runtime config: {error}"))?;
+    fs::write(&path, text).map_err(|error| {
+        format!(
+            "failed to write service-test runtime config {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn write_json_at_artifact_path(
+    artifact_root: &Path,
+    relative_path: &Path,
+    value: &JsonValue,
+) -> Result<(), String> {
+    let path = artifact_root.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create service-test activation directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("failed to serialize service-test activations: {error}"))?;
+    fs::write(&path, text).map_err(|error| {
+        format!(
+            "failed to write service-test activations {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn artifact_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn pointer_build_id_hash(pointer_build_id: &str) -> String {
+    pointer_build_id
+        .strip_prefix("skiff-service-build-v1:sha256:")
+        .filter(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
+        .to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(super) struct PreparedPackageTestArtifact {
@@ -459,7 +767,7 @@ pub(super) fn prepare_dev_synced_package_test(
     let artifact_root = test_artifact_root(&health)?;
     let package_config_aliases = package_config_aliases(&artifact_input.package_dependencies);
     artifact_input.artifact_root = artifact_root.clone();
-    sync_service_dependency_artifact_roots(&artifact_root, options)?;
+    sync_service_dependency_artifact_roots(&artifact_root, options, None)?;
     let written = write_package_test_artifact_root(artifact_input)
         .map_err(|error| format!("failed to write package test artifacts: {error}"))?;
     ensure_package_test_dependency_configs_are_objects(&artifact_root, &written.assembly_path)?;
@@ -1046,7 +1354,10 @@ fn sync_dev_service_artifacts(
 fn sync_service_dependency_artifact_roots(
     artifact_root: &Path,
     options: &SkiffTestOptions,
+    service_ids: Option<&[String]>,
 ) -> Result<(), String> {
+    let requested_service_paths = requested_service_artifact_paths(service_ids);
+    let mut copied_service_paths = BTreeSet::new();
     for dependency_root in &options.service_artifact_roots {
         if !dependency_root.is_dir() {
             return Err(format!(
@@ -1054,7 +1365,23 @@ fn sync_service_dependency_artifact_roots(
                 dependency_root.display()
             ));
         }
-        copy_service_dependency_artifact_root(dependency_root, artifact_root)?;
+        copied_service_paths.extend(copy_service_dependency_artifact_root(
+            dependency_root,
+            artifact_root,
+            requested_service_paths.as_ref(),
+        )?);
+    }
+    if let Some(requested) = requested_service_paths {
+        let missing = requested
+            .difference(&copied_service_paths)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "service artifact root(s) did not contain dev pointers for required service dependencies: {}",
+                missing.join(", ")
+            ));
+        }
     }
     Ok(())
 }
@@ -1062,7 +1389,8 @@ fn sync_service_dependency_artifact_roots(
 fn copy_service_dependency_artifact_root(
     dependency_root: &Path,
     artifact_root: &Path,
-) -> Result<(), String> {
+    requested_service_paths: Option<&BTreeSet<String>>,
+) -> Result<BTreeSet<String>, String> {
     for directory in SERVICE_DEPENDENCY_SHARED_ARTIFACT_DIRS {
         let source = dependency_root.join(directory);
         if !source.exists() {
@@ -1114,8 +1442,12 @@ fn copy_service_dependency_artifact_root(
             *overwrite_existing,
         )?;
     }
-    for service_path in dependency_service_artifact_paths(dependency_root)? {
+    let service_paths =
+        dependency_service_artifact_paths(dependency_root, requested_service_paths)?;
+    let mut copied_service_paths = BTreeSet::new();
+    for service_path in service_paths {
         copy_service_dependency_pointer(dependency_root, artifact_root, &service_path)?;
+        copied_service_paths.insert(service_path.clone());
         for (directory, child, overwrite_existing) in SERVICE_DEPENDENCY_SERVICE_ARTIFACT_DIRS {
             let source = dependency_root
                 .join(directory)
@@ -1140,10 +1472,17 @@ fn copy_service_dependency_artifact_root(
             )?;
         }
     }
-    Ok(())
+    Ok(copied_service_paths)
 }
 
-fn dependency_service_artifact_paths(dependency_root: &Path) -> Result<Vec<String>, String> {
+fn requested_service_artifact_paths(service_ids: Option<&[String]>) -> Option<BTreeSet<String>> {
+    service_ids.map(|ids| ids.iter().map(|id| service_id_artifact_path(id)).collect())
+}
+
+fn dependency_service_artifact_paths(
+    dependency_root: &Path,
+    requested_service_paths: Option<&BTreeSet<String>>,
+) -> Result<Vec<String>, String> {
     let dev_services = dependency_root.join("dev").join("services");
     if !dev_services.exists() {
         return Ok(Vec::new());
@@ -1154,6 +1493,16 @@ fn dependency_service_artifact_paths(dependency_root: &Path) -> Result<Vec<Strin
             dev_services.display()
         ));
     }
+    if let Some(requested) = requested_service_paths {
+        let mut service_paths = requested
+            .iter()
+            .filter(|service_path| dev_services.join(format!("{service_path}.json")).is_file())
+            .cloned()
+            .collect::<Vec<_>>();
+        service_paths.sort();
+        return Ok(service_paths);
+    }
+
     let mut service_paths = Vec::new();
     for entry in fs::read_dir(&dev_services).map_err(|error| {
         format!(
@@ -1895,7 +2244,7 @@ fn current_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
 
     use serde_json::json;
 
@@ -2106,6 +2455,56 @@ mod tests {
                 }
             }
         })));
+    }
+
+    #[test]
+    fn service_dependency_sync_filters_requested_service_pointers() {
+        let dir = std::env::temp_dir().join(format!(
+            "skiff-service-dependency-sync-test-{}-{}",
+            std::process::id(),
+            current_nanos()
+        ));
+        let dependency_root = dir.join("dependency");
+        let artifact_root = dir.join("artifact");
+        std::fs::create_dir_all(dependency_root.join("dev").join("services"))
+            .expect("dependency dev services dir should be created");
+        std::fs::write(
+            dependency_root
+                .join("dev")
+                .join("services")
+                .join("example~com~~needed.json"),
+            r#"{"serviceId":"example.com/needed"}"#,
+        )
+        .expect("needed pointer should be written");
+        std::fs::write(
+            dependency_root
+                .join("dev")
+                .join("services")
+                .join("example~com~~unrelated.json"),
+            r#"{"serviceId":"example.com/unrelated"}"#,
+        )
+        .expect("unrelated pointer should be written");
+
+        let requested = BTreeSet::from(["example~com~~needed".to_string()]);
+        let copied = super::copy_service_dependency_artifact_root(
+            &dependency_root,
+            &artifact_root,
+            Some(&requested),
+        )
+        .expect("dependency artifacts should copy");
+
+        assert_eq!(copied, requested);
+        assert!(artifact_root
+            .join("dev")
+            .join("services")
+            .join("example~com~~needed.json")
+            .is_file());
+        assert!(!artifact_root
+            .join("dev")
+            .join("services")
+            .join("example~com~~unrelated.json")
+            .exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

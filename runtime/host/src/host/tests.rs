@@ -1018,6 +1018,7 @@ async fn applies_control_config_by_service_id_and_build_id_without_crossing_buil
                 config.service_db =
                     Some(skiff_runtime_transport::protocol::RouterControlServiceDb {
                         mongo_url: "mongodb://127.0.0.1:27017/?directConnection=true".to_string(),
+                        storage_service_id: "example.com/service-a".to_string(),
                         extra: serde_json::Map::new(),
                     });
                 config
@@ -1096,7 +1097,10 @@ async fn configured_service_db_without_provider_fails_provider_unavailable() {
     )
     .await;
     service.service_db = Some(skiff_runtime_capability_context::DbProviderConfig::opaque(
-        json!({ "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true" }),
+        json!({
+            "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true",
+            "storageServiceId": "service-db-unavailable",
+        }),
     ));
 
     let error = match RuntimeHost::new(RuntimeConfig {
@@ -1116,6 +1120,40 @@ async fn configured_service_db_without_provider_fails_provider_unavailable() {
     let message = format!("{error:#}");
     assert!(message.contains("provider unavailable for service-db-unavailable"));
     assert!(message.contains("serviceDb provider is not configured for this runtime host"));
+}
+
+#[tokio::test]
+async fn configured_service_db_requires_explicit_storage_service_id() {
+    let mut service = service_config(
+        "runtime-base:service-db-missing-storage",
+        "service-db-missing-storage",
+        PROTOCOL_A,
+        "service.target",
+    )
+    .await;
+    service.service_db = Some(skiff_runtime_capability_context::DbProviderConfig::opaque(
+        json!({ "mongoUrl": "mongodb://127.0.0.1:27017/?directConnection=true" }),
+    ));
+
+    let error = match RuntimeHost::new(RuntimeConfig {
+        db_provider: test_db_provider(),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-base".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
+        artifact_roots: Vec::new(),
+        http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        http_egress_proxy: None,
+        services: vec![service],
+    }) {
+        Ok(_) => panic!("configured serviceDb without storageServiceId should fail"),
+        Err(error) => error,
+    };
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("runtime serviceDb.storageServiceId is required"),
+        "unexpected error: {message}"
+    );
 }
 
 #[tokio::test]
@@ -1257,6 +1295,51 @@ fn control_config_rejects_missing_required_package_config_at_activation_time() {
     assert!(
         message.contains("required value is missing or null"),
         "{message}"
+    );
+}
+
+#[test]
+fn control_config_applies_required_package_config_without_local_placeholder_validation() {
+    let mut program = runtime_program_for_service("service-a", BUILD_A, "shared.target");
+    program.packages = vec![Arc::new(package_unit("skiff.run/http-session"))];
+    program.package_configs = Vec::new();
+    let build_a =
+        runtime_program_service_config("runtime-base:service-a:build-a", Arc::new(program));
+    let mut config = control_service_config(
+        "service-a",
+        BUILD_A,
+        "activation-a",
+        "config-a",
+        "service-model",
+    );
+    config.package_configs = vec![RouterControlPackageConfig {
+        package_id: "skiff.run/http-session".to_string(),
+        package_slot: Some(0),
+        alias: "httpSession".to_string(),
+        resolved_config_identity: "skiff-config-resolved-v1:opaque:http-session-config".to_string(),
+        resolved_config: json!({
+            "cookieName": "sid"
+        }),
+        redacted_resolved_config: Value::Null,
+        redaction_projection_identity: None,
+        config_shape: Some(config_shape_with_entries(json!([
+            { "path": "cookieName", "type": "string", "required": true }
+        ]))),
+        extra: serde_json::Map::new(),
+    }];
+
+    let services = apply_control_config(vec![build_a], &[config])
+        .expect("control package config should satisfy required package shape");
+
+    assert_eq!(
+        services[0].package_configs[0]
+            .dispatch_typed_config_target(
+                "config.require",
+                &[json!("cookieName")],
+                Some(&type_plan("string")),
+            )
+            .unwrap(),
+        json!("sid")
     );
 }
 

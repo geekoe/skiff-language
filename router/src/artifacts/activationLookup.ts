@@ -73,19 +73,27 @@ export function buildActivationLookup(
 ): ActivationLookup {
   const lookup = new ActivationLookup();
   for (const artifact of artifacts) {
-    if (!artifact.activation) {
-      continue;
-    }
-    for (const target of artifact.activation.operationTargets) {
-      lookup.set({
-        serviceId: artifact.activation.serviceId,
-        target,
-        buildId: artifact.buildId,
-        activationIdentity: artifact.activation.payload.activationIdentity,
-      });
+    for (const activation of serviceConfigActivations(artifact)) {
+      for (const target of activation.operationTargets) {
+        lookup.set({
+          serviceId: activation.serviceId,
+          target,
+          buildId: artifact.buildId,
+          activationIdentity: activation.payload.activationIdentity,
+        });
+      }
     }
   }
   return lookup;
+}
+
+export function serviceConfigActivations(
+  artifact: LoadedServiceAssemblyArtifact,
+): readonly NonNullable<LoadedServiceAssemblyArtifact["activation"]>[] {
+  if (artifact.activations !== undefined) {
+    return artifact.activations;
+  }
+  return artifact.activation !== undefined ? [artifact.activation] : [];
 }
 
 export function validateServingManifestUniqueness(

@@ -1370,6 +1370,7 @@ pub struct RouterControlServiceConfig {
 #[serde(rename_all = "camelCase")]
 pub struct RouterControlServiceDb {
     pub mongo_url: String,
+    pub storage_service_id: String,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }

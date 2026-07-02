@@ -37,6 +37,7 @@ import {
   readConfigActivation,
   type PackageConfigActivationInput,
 } from "./configActivation.js";
+import { readServiceTestConfigActivations } from "./serviceTestActivations.js";
 
 export async function readRouterArtifactValue(
   pointer: SourcedArtifactPointer,
@@ -202,32 +203,50 @@ async function routerManifestFromServiceAssembly(
   if (timeout !== undefined) {
     manifest.timeout = timeout;
   }
-  const activation = await buildServiceConfigActivation({
+  const packageConfigs = await packageConfigActivationInputs(
+    root,
+    serviceUnit.value,
+    pointer.indexPath,
+    serviceUnit.path,
+  );
+  const serviceTestActivations = await readServiceTestConfigActivations({
     root,
     indexPath: pointer.indexPath,
     serviceId,
     buildId: dynamicBuildId,
+    pointerBuildId,
+    operationTargets: operations.map((operation) => operation.target),
     configShape,
     configActivation,
-    packageConfigs: await packageConfigActivationInputs(
-      root,
-      serviceUnit.value,
-      pointer.indexPath,
-      serviceUnit.path,
-    ),
-    ...(options.configProfile !== undefined
-      ? { configProfile: options.configProfile }
-      : {}),
-    ...(options.serviceDb !== undefined
-      ? { serviceDb: options.serviceDb }
-      : {}),
+    packageConfigs,
   });
+  const activation =
+    serviceTestActivations.length > 0
+      ? undefined
+      : await buildServiceConfigActivation({
+          root,
+          indexPath: pointer.indexPath,
+          serviceId,
+          buildId: dynamicBuildId,
+          configShape,
+          configActivation,
+          packageConfigs,
+          ...(options.configProfile !== undefined
+            ? { configProfile: options.configProfile }
+            : {}),
+          ...(options.serviceDb !== undefined
+            ? { serviceDb: options.serviceDb }
+            : {}),
+        });
   return {
     buildId: dynamicBuildId,
     pointerBuildId,
     serviceVersion,
     sourcePath: pointer.indexPath,
     manifestValue: manifest,
+    ...(serviceTestActivations.length > 0
+      ? { activations: serviceTestActivations }
+      : {}),
     ...(activation
       ? {
           activation: {
