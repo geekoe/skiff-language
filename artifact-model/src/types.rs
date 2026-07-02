@@ -46,6 +46,10 @@ pub enum TypeRefIr {
     LocalType {
         type_index: u32,
     },
+    PublicationType {
+        module_path: String,
+        type_index: u32,
+    },
     ServiceSymbol {
         symbol: ServiceSymbolRef,
     },

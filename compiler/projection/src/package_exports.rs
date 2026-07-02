@@ -601,6 +601,17 @@ impl<'a> PackageApiTypeIndex<'a> {
         self.resolve_source_key(source_key)
     }
 
+    fn resolve_publication_type(
+        &self,
+        module_path: &str,
+        type_index: u32,
+    ) -> Option<PackageApiTypeBinding<'a>> {
+        let source_key = self
+            .by_module_type_index
+            .get(&(module_path.to_string(), type_index))?;
+        self.resolve_source_key(source_key)
+    }
+
     fn resolve_service_symbol(
         &self,
         symbol: &ServiceSymbolRef,
@@ -904,6 +915,25 @@ fn collect_package_type_ref_abi_violations(
             type_index: local_type_index,
         } => {
             if let Some(binding) = type_index.resolve_local_type(unit, *local_type_index) {
+                collect_package_type_binding_reference_abi_violations(
+                    manifest,
+                    type_index,
+                    binding,
+                    public_symbol,
+                    context,
+                    boundary_kind,
+                    visited,
+                    violations,
+                );
+            }
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index: publication_type_index,
+        } => {
+            if let Some(binding) =
+                type_index.resolve_publication_type(module_path, *publication_type_index)
+            {
                 collect_package_type_binding_reference_abi_violations(
                     manifest,
                     type_index,

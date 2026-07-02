@@ -193,6 +193,10 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
             type_ref_ir_type_text(return_type)
         ),
         TypeRefIr::LocalType { type_index } => format!("$localType{type_index}"),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("publicationType({module_path}:{type_index})"),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             symbol.symbol_path()
         }

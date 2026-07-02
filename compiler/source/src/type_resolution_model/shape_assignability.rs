@@ -323,6 +323,13 @@ impl TypeResolutionModel {
                 .local_type_resolution(context.module_path, *type_index)
                 .filter(|resolution| matches!(resolution.kind, SourceTypeKind::Record { .. }))
                 .map(|resolution| SourceSymbolKey::new(&resolution.module_path, &resolution.name)),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .local_type_resolution(module_path, *type_index)
+                .filter(|resolution| matches!(resolution.kind, SourceTypeKind::Record { .. }))
+                .map(|resolution| SourceSymbolKey::new(&resolution.module_path, &resolution.name)),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let module_path = symbol
                     .module_path
@@ -555,6 +562,14 @@ impl TypeResolutionModel {
                 .and_then(|resolution| {
                     self.source_type_shape_ir(resolution, context, None, context.module_path)
                 }),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .local_type_resolution(module_path, *type_index)
+                .and_then(|resolution| {
+                    self.source_type_shape_ir(resolution, context, None, module_path)
+                }),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 let key = SourceSymbolKey::new(&symbol.module_path, &symbol.symbol);
                 self.source_types
@@ -759,6 +774,25 @@ impl TypeResolutionModel {
                     },
                 })
                 .unwrap_or_else(|| ty.clone()),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .modules
+                .get(module_path)
+                .and_then(|module| {
+                    module
+                        .type_indices
+                        .iter()
+                        .find_map(|(symbol, index)| (*index == *type_index).then_some(symbol))
+                })
+                .map(|symbol| TypeRefIr::ServiceSymbol {
+                    symbol: ServiceSymbolRef {
+                        module_path: module_path.clone(),
+                        symbol: symbol.clone(),
+                    },
+                })
+                .unwrap_or_else(|| ty.clone()),
             TypeRefIr::Native { name, args } => TypeRefIr::Native {
                 name: name.clone(),
                 args: args
@@ -827,6 +861,15 @@ impl TypeResolutionModel {
                 .local_type_resolution(context.module_path, *type_index)
                 .and_then(|resolution| {
                     self.transparent_source_type_ir(resolution, context, None, context.module_path)
+                })
+                .unwrap_or_else(|| ty.clone()),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .local_type_resolution(module_path, *type_index)
+                .and_then(|resolution| {
+                    self.transparent_source_type_ir(resolution, context, None, module_path)
                 })
                 .unwrap_or_else(|| ty.clone()),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
@@ -1001,6 +1044,7 @@ fn replace_self_type_ref(ty: TypeRefIr, concrete_self: &TypeRefIr) -> TypeRefIr 
         TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. } => ty,

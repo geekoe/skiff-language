@@ -1118,6 +1118,7 @@ fn substitute_requirement_type(
         },
         TypeRefIr::TypeParam { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -1155,6 +1156,7 @@ fn contains_self_type(ty: &TypeRefIr) -> bool {
                 || contains_self_type(return_type)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -1638,6 +1640,10 @@ fn type_ref_display(ty: &TypeRefIr) -> String {
                 .join(", ")
         ),
         TypeRefIr::LocalType { type_index } => format!("$localType{type_index}"),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("publicationType({module_path}:{type_index})"),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             symbol.symbol_path()
         }

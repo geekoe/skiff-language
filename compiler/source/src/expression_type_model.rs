@@ -2822,6 +2822,7 @@ fn type_contains_type_param(ty: &TypeRefIr) -> bool {
         }
         TypeRefIr::Literal { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::PackageSymbol { .. } => false,
@@ -3214,6 +3215,10 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
         } => "null".to_string(),
         TypeRefIr::Literal { .. } => "<literal>".to_string(),
         TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("{module_path}#{type_index}"),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             symbol.symbol_path()
         }

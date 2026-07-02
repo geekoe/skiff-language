@@ -487,6 +487,7 @@ fn expand_db_storage_type_ref(
             )?),
         }),
         TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::TypeParam { .. }

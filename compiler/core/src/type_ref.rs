@@ -10,7 +10,7 @@ pub fn walk_type_ref(ty: &TypeRefIr, visit: &mut impl FnMut(&TypeRefIr)) {
                 walk_type_ref(arg, visit);
             }
         }
-        TypeRefIr::LocalType { .. } => {}
+        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {}
         TypeRefIr::ServiceSymbol { .. } => {}
         TypeRefIr::PackageSymbol { .. } => {}
         TypeRefIr::DbObjectSymbol { .. } => {}
@@ -50,7 +50,7 @@ pub fn any_type_ref(ty: &TypeRefIr, predicate: &mut impl FnMut(&TypeRefIr) -> bo
     }
     match ty {
         TypeRefIr::Native { args, .. } => args.iter().any(|arg| any_type_ref(arg, predicate)),
-        TypeRefIr::LocalType { .. } => false,
+        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => false,
         TypeRefIr::ServiceSymbol { .. } => false,
         TypeRefIr::PackageSymbol { .. } => false,
         TypeRefIr::DbObjectSymbol { .. } => false,
@@ -84,6 +84,13 @@ pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr)
             args: args.into_iter().map(|arg| map_type_ref(arg, map)).collect(),
         },
         TypeRefIr::LocalType { type_index } => TypeRefIr::LocalType { type_index },
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
@@ -142,6 +149,13 @@ pub fn substitute_type_params_in_type_ref(
             .unwrap_or(TypeRefIr::TypeParam { name }),
         TypeRefIr::Native { name, args } => TypeRefIr::Native { name, args },
         TypeRefIr::LocalType { type_index } => TypeRefIr::LocalType { type_index },
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        },
         TypeRefIr::ServiceSymbol { symbol } => TypeRefIr::ServiceSymbol { symbol },
         TypeRefIr::PackageSymbol { symbol } => TypeRefIr::PackageSymbol { symbol },
         TypeRefIr::DbObjectSymbol { symbol } => TypeRefIr::DbObjectSymbol { symbol },
@@ -239,7 +253,7 @@ fn walk_type_ref_with_path_at(
                 );
             }
         }
-        TypeRefIr::LocalType { .. } => {}
+        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {}
         TypeRefIr::ServiceSymbol { .. } => {}
         TypeRefIr::PackageSymbol { .. } => {}
         TypeRefIr::DbObjectSymbol { .. } => {}
@@ -452,6 +466,7 @@ mod tests {
                 TypeRefIr::TypeParam { name } => visited.push(format!("param:{name}")),
                 TypeRefIr::Native { name, .. } => visited.push(format!("native:{name}")),
                 TypeRefIr::LocalType { .. } => visited.push("local".to_string()),
+                TypeRefIr::PublicationType { .. } => visited.push("publication".to_string()),
                 TypeRefIr::ServiceSymbol { .. } => visited.push("service".to_string()),
                 TypeRefIr::PackageSymbol { .. } => visited.push("package".to_string()),
                 TypeRefIr::DbObjectSymbol { .. } => visited.push("db".to_string()),

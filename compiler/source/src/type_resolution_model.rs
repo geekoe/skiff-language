@@ -814,6 +814,7 @@ impl TypeResolutionModel {
                 }) || self.contains_interface_type_ref_inner(return_type, None, context, visited)
             }
             TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
@@ -1835,6 +1836,21 @@ impl TypeResolutionModel {
         match ty {
             TypeRefIr::LocalType { type_index } => {
                 let resolution = self.local_type_resolution(context.module_path, *type_index)?;
+                Some(ResolvedNamedType {
+                    resolution,
+                    source_module_path: resolution.module_path.clone(),
+                    package_root: None,
+                    visit_key: InterfaceTypeVisitKey::Source(SourceSymbolKey::new(
+                        &resolution.module_path,
+                        &resolution.name,
+                    )),
+                })
+            }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let resolution = self.local_type_resolution(module_path, *type_index)?;
                 Some(ResolvedNamedType {
                     resolution,
                     source_module_path: resolution.module_path.clone(),
@@ -2920,6 +2936,10 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
         } => "null".to_string(),
         TypeRefIr::Literal { .. } => "<literal>".to_string(),
         TypeRefIr::LocalType { type_index } => format!("#{type_index}"),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => format!("{module_path}#{type_index}"),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             symbol.symbol_path()
         }
@@ -3047,6 +3067,7 @@ fn type_ref_contains_self(ty: &TypeRefIr) -> bool {
                 || type_ref_contains_self(return_type)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -3072,6 +3093,7 @@ fn type_ref_contains_any_interface(ty: &TypeRefIr) -> bool {
                 || type_ref_contains_any_interface(return_type)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }

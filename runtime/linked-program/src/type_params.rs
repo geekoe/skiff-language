@@ -51,6 +51,7 @@ fn collect_type_ref_type_params(type_ref: &LinkedTypeRef, names: &mut Vec<String
             collect_type_ref_type_params(return_type, names);
         }
         LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
         | LinkedTypeRef::Address { .. }

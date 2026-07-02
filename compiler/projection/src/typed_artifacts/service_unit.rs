@@ -1,18 +1,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{CompileError, Result};
+use crate::publication_visible_types::{
+    projection_visible_executable_signature, publication_type_names_from_file_units,
+};
 use skiff_compiler_core::file_ir_identity::file_ir_identity;
 
 pub use skiff_artifact_model::service_unit::{PublicInstanceExport, PublicInstanceOperation};
 #[allow(unused_imports)]
 pub use skiff_artifact_model::{
-    interface_instantiation_ref_for_type_ref, CanonicalPublicCallableSignature,
-    ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, GatewayConfig, GatewayRoute,
-    GatewayWebSocket, InterfaceInstantiationRef, OperationAbiRef, OperationConstReceiverRef,
-    OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding, OperationTargetRef,
-    PublicationAbiUnit, PublicationOperationKind, PublicationPublicInstanceExport,
-    RecoverableArtifactMetadata, ServiceConfigMetadata, ServiceDependencyConstraint, ServiceMeta,
-    ServiceOperation, ServiceUnit, SERVICE_UNIT_SCHEMA_VERSION,
+    interface_instantiation_ref_for_type_ref, type_ref_abi_key, CanonicalPublicCallableSignature,
+    ExecutableIr, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, GatewayConfig,
+    GatewayRoute, GatewayWebSocket, InterfaceInstantiationRef, OperationAbiRef,
+    OperationConstReceiverRef, OperationIngressKind, OperationMode, OperationParam,
+    OperationRouteBinding, OperationTargetRef, ParamIr, PublicationAbiUnit,
+    PublicationOperationKind, PublicationPublicInstanceExport, RecoverableArtifactMetadata,
+    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceMeta, ServiceOperation,
+    ServiceSymbolRef, ServiceUnit, TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
 };
 
 use super::identity::assign_publication_abi_identity;
@@ -521,6 +525,9 @@ fn service_file_refs_from_units(
     let mut refs = Vec::with_capacity(units.len());
     let mut executable_link_targets = BTreeMap::new();
     let mut executable_signatures = BTreeMap::new();
+    let publication_type_names = publication_type_names_from_file_units(
+        units.iter().map(|unit| (unit.module_path.as_str(), unit)),
+    );
 
     for unit in units {
         let module_path = unit.module_path.clone();
@@ -543,12 +550,7 @@ fn service_file_refs_from_units(
         for (index, executable) in unit.executables.iter().enumerate() {
             executable_signatures.insert(
                 (module_path.clone(), index as u32),
-                ExecutableSignatureIr {
-                    params: executable.params.clone(),
-                    return_type: executable.return_type.clone(),
-                    self_type: executable.self_type.clone(),
-                    may_suspend: executable.may_suspend,
-                },
+                projection_visible_executable_signature(executable, &publication_type_names),
             );
         }
         if executable_link_targets

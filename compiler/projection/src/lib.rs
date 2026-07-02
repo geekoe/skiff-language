@@ -7,6 +7,7 @@ pub mod package_exports;
 pub mod package_unit_artifacts;
 pub mod prelude;
 pub mod prelude_metadata;
+mod publication_visible_types;
 pub mod recoverable_boundary;
 pub mod runtime;
 pub mod runtime_manifest;

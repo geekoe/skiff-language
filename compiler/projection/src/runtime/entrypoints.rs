@@ -1420,7 +1420,9 @@ fn service_visible_package_type_ir(
                 mappings,
             )),
         },
-        TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => ty.clone(),
+        TypeRefIr::PublicationType { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
     }
 }
 

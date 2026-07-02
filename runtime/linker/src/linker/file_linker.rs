@@ -391,6 +391,15 @@ impl<'a> RuntimeFileLinker<'a> {
                     executable,
                 })
             }
+            LinkedCallTarget::PublicationExecutable {
+                module_path,
+                executable_index,
+            } => Some(self.resolve_publication_executable(
+                context,
+                &current_addr.unit,
+                module_path,
+                *executable_index,
+            )?),
             LinkedCallTarget::ExternalServiceSymbol { symbol } => {
                 Some(self.resolve_service_executable(context, current_addr, symbol)?)
             }
@@ -452,6 +461,92 @@ impl<'a> RuntimeFileLinker<'a> {
         Ok(())
     }
 
+    fn resolve_publication_executable(
+        &self,
+        context: &str,
+        unit: &UnitAddr,
+        module_path: &str,
+        executable_index: u32,
+    ) -> ProgramResult<ExecutableAddr> {
+        let (file_index, file) = self.publication_file(context, unit, module_path)?;
+        let executable = executable_index as usize;
+        if executable >= file.executables.len() {
+            return Err(ProgramError::ExecutableIndexOutOfBounds {
+                unit: unit.clone(),
+                file: FileAddr::LoadedFileIndex(file_index),
+                index: executable,
+                executable_count: file.executables.len(),
+            });
+        }
+        Ok(ExecutableAddr {
+            unit: unit.clone(),
+            file: FileAddr::LoadedFileIndex(file_index),
+            executable,
+        })
+    }
+
+    fn resolve_publication_type(
+        &self,
+        context: &str,
+        unit: &UnitAddr,
+        module_path: &str,
+        type_index: usize,
+    ) -> ProgramResult<TypeAddr> {
+        let (file_index, file) = self.publication_file(context, unit, module_path)?;
+        if type_index >= file.types.len() {
+            return Err(ProgramError::TypeIndexOutOfBounds {
+                unit: unit.clone(),
+                file: FileAddr::LoadedFileIndex(file_index),
+                index: type_index,
+                type_count: file.types.len(),
+            });
+        }
+        Ok(TypeAddr {
+            unit: unit.clone(),
+            file: FileAddr::LoadedFileIndex(file_index),
+            type_index,
+        })
+    }
+
+    fn publication_file(
+        &self,
+        context: &str,
+        unit: &UnitAddr,
+        module_path: &str,
+    ) -> ProgramResult<(usize, &LinkedFileUnit)> {
+        let files = match unit {
+            UnitAddr::Service => self.service_files,
+            UnitAddr::Package(package_slot) => {
+                self.package_files.get(*package_slot).ok_or_else(|| {
+                    ProgramError::PackageSlotOutOfBounds {
+                        slot: *package_slot,
+                        package_count: self.package_files.len(),
+                    }
+                })?
+            }
+        };
+        let mut matches = files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.module_path == module_path);
+        let Some((file_index, file)) = matches.next() else {
+            return Err(ProgramError::LinkSymbolUnresolved {
+                context: context.to_string(),
+                symbol: module_path.to_string(),
+                expected_kind: "publication module",
+            });
+        };
+        if matches.next().is_some() {
+            return Err(ProgramError::LinkSymbolKindMismatch {
+                context: context.to_string(),
+                symbol: module_path.to_string(),
+                expected_kind: "unique publication module",
+                actual_kind: "duplicate module",
+            });
+        }
+        Ok((file_index, file.as_ref()))
+    }
+
     pub(super) fn link_type_ref(
         &self,
         scope: &TypeRefLinkScope<'_>,
@@ -461,6 +556,18 @@ impl<'a> RuntimeFileLinker<'a> {
             LinkedTypeRef::LocalType { type_index } => {
                 let addr = scope.local_type_addr(*type_index);
                 self.validate_type_addr(&addr)?;
+                *type_ref = LinkedTypeRef::Address { addr };
+            }
+            LinkedTypeRef::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let addr = self.resolve_publication_type(
+                    scope.context,
+                    scope.unit,
+                    module_path,
+                    *type_index,
+                )?;
                 *type_ref = LinkedTypeRef::Address { addr };
             }
             LinkedTypeRef::ServiceSymbol { symbol } => {
@@ -554,6 +661,18 @@ impl<'a> RuntimeFileLinker<'a> {
             LinkedTypeRef::LocalType { type_index } => {
                 let addr = scope.local_type_addr(*type_index);
                 self.validate_type_addr(&addr)?;
+                self.public_package_type_ref_for_addr(&addr)?
+            }
+            LinkedTypeRef::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let addr = self.resolve_publication_type(
+                    scope.context,
+                    scope.unit,
+                    module_path,
+                    *type_index,
+                )?;
                 self.public_package_type_ref_for_addr(&addr)?
             }
             LinkedTypeRef::Address { addr } => {
@@ -860,6 +979,121 @@ mod tests {
         );
     }
 
+    #[test]
+    fn links_package_publication_direct_refs_without_link_targets() {
+        let service = ServiceUnit::empty("svc", "dev", "protocol:test");
+        let service_files = Vec::new();
+        let package_files = vec![vec![
+            Arc::new(package_caller_file_with_publication_refs()),
+            Arc::new(package_target_file_for_publication_refs()),
+        ]];
+        let packages = vec![Arc::new(PackageUnit::empty(
+            PACKAGE_ID,
+            "0.1.0",
+            "build:test",
+            "abi:test",
+        ))];
+        let overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let linker = RuntimeFileLinker::new(
+            &service,
+            &overlay,
+            &types,
+            &packages,
+            &service_files,
+            &package_files,
+        );
+
+        assert!(package_files[0][0].link_targets.types.is_empty());
+        assert!(package_files[0][0].link_targets.executables.is_empty());
+        assert!(package_files[0][1].link_targets.types.is_empty());
+        assert!(package_files[0][1].link_targets.executables.is_empty());
+
+        let linked_files = linker
+            .link_files(UnitAddr::Package(0), &package_files[0])
+            .expect("package publication-local direct refs should link");
+        let caller = &linked_files[0].executables[0];
+
+        assert_eq!(
+            caller.return_type,
+            Some(LinkedTypeRef::Address {
+                addr: TypeAddr {
+                    unit: UnitAddr::Package(0),
+                    file: FileAddr::LoadedFileIndex(1),
+                    type_index: 0,
+                },
+            }),
+        );
+        let LinkedExprIr::Call { call } = &caller.body.expressions[0] else {
+            panic!("expected caller body to contain a call");
+        };
+        assert_eq!(
+            call.target,
+            LinkedCallTarget::Executable {
+                addr: ExecutableAddr {
+                    unit: UnitAddr::Package(0),
+                    file: FileAddr::LoadedFileIndex(1),
+                    executable: 0,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn links_service_publication_direct_refs_without_link_targets() {
+        let service = ServiceUnit::empty("svc", "dev", "protocol:test");
+        let service_files = vec![
+            Arc::new(package_caller_file_with_publication_refs()),
+            Arc::new(package_target_file_for_publication_refs()),
+        ];
+        let package_files = Vec::new();
+        let packages = Vec::new();
+        let overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let linker = RuntimeFileLinker::new(
+            &service,
+            &overlay,
+            &types,
+            &packages,
+            &service_files,
+            &package_files,
+        );
+
+        assert!(service_files[0].link_targets.types.is_empty());
+        assert!(service_files[0].link_targets.executables.is_empty());
+        assert!(service_files[1].link_targets.types.is_empty());
+        assert!(service_files[1].link_targets.executables.is_empty());
+
+        let linked_files = linker
+            .link_files(UnitAddr::Service, &service_files)
+            .expect("service publication-local direct refs should link");
+        let caller = &linked_files[0].executables[0];
+
+        assert_eq!(
+            caller.return_type,
+            Some(LinkedTypeRef::Address {
+                addr: TypeAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::LoadedFileIndex(1),
+                    type_index: 0,
+                },
+            }),
+        );
+        let LinkedExprIr::Call { call } = &caller.body.expressions[0] else {
+            panic!("expected caller body to contain a call");
+        };
+        assert_eq!(
+            call.target,
+            LinkedCallTarget::Executable {
+                addr: ExecutableAddr {
+                    unit: UnitAddr::Service,
+                    file: FileAddr::LoadedFileIndex(1),
+                    executable: 0,
+                },
+            },
+        );
+    }
+
     fn file_with_db_declaration() -> LinkedFileUnit {
         let mut declarations = FileDeclarations::default();
         declarations.types.insert(
@@ -927,6 +1161,72 @@ mod tests {
             constants: Vec::new(),
             executables: Vec::new(),
             external_refs: Default::default(),
+        }
+    }
+
+    fn package_caller_file_with_publication_refs() -> LinkedFileUnit {
+        let mut file = empty_file("file:agent.runner", "runner");
+        file.executables.push(LinkedExecutable {
+            symbol: "runner.run".to_string(),
+            return_type: Some(LinkedTypeRef::PublicationType {
+                module_path: "drain".to_string(),
+                type_index: 0,
+            }),
+            body: LinkedExecutableBody {
+                expressions: vec![LinkedExprIr::Call {
+                    call: crate::program::CallIr {
+                        target: LinkedCallTarget::PublicationExecutable {
+                            module_path: "drain".to_string(),
+                            executable_index: 0,
+                        },
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                }],
+                ..Default::default()
+            },
+            ..empty_executable("runner.run")
+        });
+        file
+    }
+
+    fn package_target_file_for_publication_refs() -> LinkedFileUnit {
+        let mut file = empty_file("file:agent.drain", "drain");
+        file.types.push(type_decl("DrainResult"));
+        file.executables.push(empty_executable("drain.run"));
+        file
+    }
+
+    fn empty_file(file_ir_identity: &str, module_path: &str) -> LinkedFileUnit {
+        LinkedFileUnit {
+            schema_version: "skiff-file-ir-v3".to_string(),
+            file_ir_identity: file_ir_identity.to_string(),
+            source_ast_hash: format!("source:{module_path}"),
+            module_path: module_path.to_string(),
+            ir_format_version: None,
+            opcode_table_version: None,
+            source_map: SourceMapDto::default(),
+            declarations: FileDeclarations::default(),
+            link_targets: FileLinkTargets::default(),
+            types: Vec::new(),
+            constants: Vec::new(),
+            executables: Vec::new(),
+            external_refs: Default::default(),
+        }
+    }
+
+    fn empty_executable(symbol: &str) -> LinkedExecutable {
+        LinkedExecutable {
+            kind: crate::program::ExecutableKind::Function,
+            symbol: symbol.to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: None,
+            self_type: None,
+            slots: Default::default(),
+            may_suspend: false,
+            body: LinkedExecutableBody::default(),
         }
     }
 

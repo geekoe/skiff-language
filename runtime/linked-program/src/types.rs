@@ -112,6 +112,14 @@ pub fn type_ref_to_value(type_ref: &LinkedTypeRef) -> Value {
             "kind": "localType",
             "typeIndex": type_index,
         }),
+        LinkedTypeRef::PublicationType {
+            module_path,
+            type_index,
+        } => json!({
+            "kind": "publicationType",
+            "modulePath": module_path,
+            "typeIndex": type_index,
+        }),
         LinkedTypeRef::ServiceSymbol { symbol } => json!({
             "kind": "serviceSymbol",
             "symbol": symbol,

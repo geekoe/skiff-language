@@ -195,6 +195,7 @@ fn canonicalize_inner(
             },
         },
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }

@@ -138,6 +138,7 @@ impl<'a> ContractProjectionIndex<'a> {
                 }
                 TypeRefIr::Native { .. }
                 | TypeRefIr::LocalType { .. }
+                | TypeRefIr::PublicationType { .. }
                 | TypeRefIr::PackageSymbol { .. }
                 | TypeRefIr::Record { .. }
                 | TypeRefIr::Union { .. }
@@ -156,6 +157,14 @@ impl<'a> ContractProjectionIndex<'a> {
     ) -> Option<ProjectionSourceSymbolKey> {
         match ty {
             TypeRefIr::LocalType { type_index } => self
+                .unit_by_module_path(module_path)?
+                .type_table
+                .get(*type_index as usize)
+                .map(|decl| ProjectionSourceSymbolKey::new(module_path, &decl.name)),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
                 .unit_by_module_path(module_path)?
                 .type_table
                 .get(*type_index as usize)
@@ -205,6 +214,10 @@ impl<'a> ContractProjectionIndex<'a> {
             TypeRefIr::LocalType { type_index } => {
                 self.canonical_local_type(module_path, *type_index, alias_stack)
             }
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self.canonical_local_type(module_path, *type_index, alias_stack),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
                 self.canonical_service_symbol(symbol, alias_stack)
             }

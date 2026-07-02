@@ -527,6 +527,86 @@ ChatEnvelope: schema_impl.ChatEnvelope
 }
 
 #[test]
+fn package_publication_direct_refs_do_not_leak_into_publication_abi() {
+    let temp = ServiceProjectBuilder::package_model(
+        "package-publication-direct-ref-public-abi",
+        "import app",
+        "return {}",
+    );
+    temp.add_service_package_dependency("example.com/direct-ref", Some("app"));
+    write_package_manifest(
+        temp.root(),
+        "example.com/direct-ref",
+        r#"
+id: example.com/direct-ref
+version: 0.1.0
+"#,
+    );
+    write_package_api_yml(
+        temp.root(),
+        "example.com/direct-ref",
+        r#"
+echo: api.echo
+"#,
+    );
+    write_package_source(
+        temp.root(),
+        "example.com/direct-ref",
+        "api.skiff",
+        r#"
+          function echo(input: root.models.Payload) -> root.models.Payload {
+            return input
+          }
+        "#,
+    );
+    write_package_source(
+        temp.root(),
+        "example.com/direct-ref",
+        "models.skiff",
+        r#"
+          type Payload {
+            value: string,
+          }
+        "#,
+    );
+
+    let published = build_temp_service_publication(temp.root());
+    let api_artifact = package_source_artifact(&published, "api.skiff");
+    let models_artifact = package_source_artifact(&published, "models.skiff");
+    let payload_type_index = declared_type_index(&models_artifact.value(), "Payload");
+    assert!(
+        json_contains_publication_type(&api_artifact.value(), "models", payload_type_index),
+        "package file IR should exercise a sibling-module PublicationType: {}",
+        api_artifact.value()
+    );
+
+    let package_unit = published
+        .artifacts
+        .package_units
+        .iter()
+        .find(|unit| unit.value["packageId"] == "example.com/direct-ref")
+        .expect("example.com/direct-ref package unit should be published");
+    let publication_abi = &package_unit.value["publicationAbi"];
+    let publication_abi_text = publication_abi.to_string();
+    assert!(
+        !publication_abi_text.contains("publicationType"),
+        "package publication ABI leaked publicationType: {publication_abi}"
+    );
+    assert!(
+        !publication_abi_text.contains("$type"),
+        "package publication ABI leaked raw type placeholder: {publication_abi}"
+    );
+    assert!(
+        !publication_abi_text.contains("__unresolved_publication_type"),
+        "package publication ABI leaked unresolved placeholder: {publication_abi}"
+    );
+    assert!(
+        json_contains_service_symbol(publication_abi, "models", "Payload"),
+        "package publication ABI should use stable source symbol identity: {publication_abi}"
+    );
+}
+
+#[test]
 fn package_source_std_discriminator_union_field_access_passes_with_import() {
     let temp = ServiceProjectBuilder::package_model(
         "package-std-discriminator-union-field-access",
@@ -603,6 +683,66 @@ fn assert_direct_service_package_only(service_unit: &serde_json::Value, id: &str
                 && dependency["id"] != "example.com/models"),
         "Service Unit should not flatten transitive package dependencies"
     );
+}
+
+fn declared_type_index(value: &serde_json::Value, symbol: &str) -> u64 {
+    value["declarations"]["types"][symbol]["typeIndex"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("missing type declaration index for {symbol}: {value}"))
+}
+
+fn json_contains_publication_type(
+    value: &serde_json::Value,
+    module_path: &str,
+    type_index: u64,
+) -> bool {
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("publicationType")
+        && value.get("modulePath").and_then(serde_json::Value::as_str) == Some(module_path)
+        && value.get("typeIndex").and_then(serde_json::Value::as_u64) == Some(type_index)
+    {
+        return true;
+    }
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_contains_publication_type(item, module_path, type_index)),
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(|item| json_contains_publication_type(item, module_path, type_index)),
+        _ => false,
+    }
+}
+
+fn json_contains_service_symbol(
+    value: &serde_json::Value,
+    module_path: &str,
+    symbol: &str,
+) -> bool {
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("serviceSymbol")
+        && value
+            .get("symbol")
+            .and_then(|symbol| symbol.get("modulePath"))
+            .and_then(serde_json::Value::as_str)
+            == Some(module_path)
+        && value
+            .get("symbol")
+            .and_then(|symbol| symbol.get("symbol"))
+            .and_then(serde_json::Value::as_str)
+            == Some(symbol)
+    {
+        return true;
+    }
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_contains_service_symbol(item, module_path, symbol)),
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(|item| json_contains_service_symbol(item, module_path, symbol)),
+        _ => false,
+    }
 }
 
 #[test]

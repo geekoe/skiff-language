@@ -199,6 +199,22 @@ fn package_runtime_schema_for_type_ref_inner(
             .unwrap_or_else(|| {
                 contract_projection.schema_for_source_type_ref(projection_index, source_module, ty)
             }),
+        TypeRefIr::PublicationType { .. } => projection_index
+            .source_symbol_for_type_ref(source_module, ty)
+            .and_then(|name| {
+                package_runtime_schema_for_named_type(
+                    contract_projection,
+                    projection_index,
+                    source_module,
+                    &name,
+                    schema_types,
+                    service_type_names,
+                    seen,
+                )
+            })
+            .unwrap_or_else(|| {
+                contract_projection.schema_for_source_type_ref(projection_index, source_module, ty)
+            }),
         TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
             package_runtime_schema_for_named_type(
                 contract_projection,

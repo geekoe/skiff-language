@@ -624,6 +624,25 @@ fn package_test_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
+        CallTargetIr::PublicationExecutable {
+            module_path,
+            executable_index,
+        } => {
+            let (target_file, declaration_name, declaration) =
+                package_test_publication_executable_declaration_for_index(
+                    production_files,
+                    module_path,
+                    *executable_index,
+                )?;
+            let target_identity = format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", declaration.symbol);
+            Ok(Some(function_spawn_target_from_declaration(
+                target_file,
+                declaration_name,
+                declaration.executable_index,
+                target_identity,
+                service_protocol_identity,
+            )?))
+        }
         CallTargetIr::ExternalServiceSymbol { symbol } => {
             let target_identity = format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path());
             Ok(Some(package_test_service_function_spawn_target(
@@ -645,6 +664,37 @@ fn package_test_spawn_target_for_call(
         )?)),
         _ => Ok(None),
     }
+}
+
+fn package_test_publication_executable_declaration_for_index<'a>(
+    production_files: &'a [Arc<FileIrUnit>],
+    module_path: &str,
+    executable_index: u32,
+) -> anyhow::Result<(
+    &'a FileIrUnit,
+    &'a String,
+    &'a skiff_artifact_model::ExecutableDeclarationIr,
+)> {
+    let mut matching_files = production_files
+        .iter()
+        .filter(|file| file.module_path == module_path);
+    let Some(target_file) = matching_files.next() else {
+        anyhow::bail!(
+            "spawn target executable index {executable_index} references missing package-test production module {module_path}"
+        );
+    };
+    if matching_files.next().is_some() {
+        anyhow::bail!(
+            "spawn target executable index {executable_index} references duplicate package-test production module {module_path}"
+        );
+    }
+    let (declaration_name, declaration) =
+        executable_declaration_for_index(target_file, executable_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "spawn target executable index {executable_index} is not declared in package-test production module {module_path}"
+            )
+        })?;
+    Ok((target_file.as_ref(), declaration_name, declaration))
 }
 
 fn package_test_service_function_spawn_target(
@@ -1450,6 +1500,56 @@ mod tests {
         assert_eq!(targets[0].kind, SpawnTargetKindIr::Function);
         assert_eq!(targets[0].executable_target.file_ref.module_path, "runner");
         assert_eq!(targets[0].executable_target.executable_index, 0);
+        assert_eq!(
+            targets[0].executable_target.callable_kind,
+            OperationCallableKind::InternalFunction
+        );
+        assert_eq!(targets[0].return_type, None);
+    }
+
+    #[test]
+    fn package_test_spawn_targets_project_owner_publication_executable_routes() {
+        let production_unit = package_unit_fixture(
+            "example.com/agent",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        );
+        let wake_file = Arc::new(file_ir_with_publication_spawn_call(
+            "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "thread",
+            "wakeThreadDrain",
+            "runner",
+            0,
+            "function:runner.runThreadDrain",
+        ));
+        let runner_file = Arc::new(file_ir_with_function(
+            "skiff-file-ir-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "runner",
+            "runThreadDrain",
+        ));
+
+        let targets = package_test_spawn_targets(
+            &production_unit,
+            &[wake_file, runner_file],
+            &[],
+            &[],
+            "package-test-protocol",
+        )
+        .expect("owner publication executable spawn targets should project");
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target_identity, "function:runner.runThreadDrain");
+        assert_eq!(targets[0].kind, SpawnTargetKindIr::Function);
+        assert_eq!(targets[0].executable_target.file_ref.module_path, "runner");
+        assert_eq!(
+            targets[0].executable_target.file_ref.file_ir_identity,
+            "skiff-file-ir-v3:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(targets[0].executable_target.executable_index, 0);
+        assert_eq!(
+            targets[0].executable_target.callable_abi_id,
+            "callable:runner.runThreadDrain"
+        );
         assert_eq!(
             targets[0].executable_target.callable_kind,
             OperationCallableKind::InternalFunction
@@ -2318,6 +2418,55 @@ mod tests {
                                 module_path: target_module_path.to_string(),
                                 symbol: target_symbol.to_string(),
                             },
+                        },
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::from([(
+                            SPAWN_SUBMIT_METADATA_KEY.to_string(),
+                            ArtifactMetadataValue::Object(BTreeMap::from([
+                                (
+                                    "targetKind".to_string(),
+                                    ArtifactMetadataValue::String("function".to_string()),
+                                ),
+                                (
+                                    "target".to_string(),
+                                    ArtifactMetadataValue::String(metadata_target.to_string()),
+                                ),
+                            ])),
+                        )]),
+                    },
+                }],
+                ..ArtifactExecutableBody::default()
+            },
+        ));
+        file
+    }
+
+    fn file_ir_with_publication_spawn_call(
+        file_ir_identity: impl Into<String>,
+        module_path: impl Into<String>,
+        declaration_name: &str,
+        target_module_path: &str,
+        target_executable_index: u32,
+        metadata_target: &str,
+    ) -> FileIrUnit {
+        let module_path = module_path.into();
+        let symbol = format!("{module_path}.{declaration_name}");
+        let mut file = FileIrUnit::empty(&module_path, "source-ast:test");
+        file.file_ir_identity = file_ir_identity.into();
+        file.declarations.executables.insert(
+            declaration_name.to_string(),
+            artifact_executable_declaration(&symbol, 0),
+        );
+        file.executables.push(artifact_function(
+            &symbol,
+            TypeRefIr::native("void"),
+            ArtifactExecutableBody {
+                expressions: vec![ArtifactExprIr::Call {
+                    call: ArtifactCallIr {
+                        target: CallTargetIr::PublicationExecutable {
+                            module_path: target_module_path.to_string(),
+                            executable_index: target_executable_index,
                         },
                         args: Vec::new(),
                         type_args: BTreeMap::new(),
