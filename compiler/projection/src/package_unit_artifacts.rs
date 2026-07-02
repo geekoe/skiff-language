@@ -3,6 +3,11 @@ use std::collections::{BTreeMap as StdBTreeMap, BTreeSet};
 use crate::context::ProjectedPackageDependency;
 use crate::error::ProjectionError;
 use crate::package_exports::PackageExports;
+use crate::publication_visible_types::{
+    projection_visible_executable_signature, projection_visible_interface_method_signature,
+    projection_visible_type_descriptor, projection_visible_type_ref,
+    publication_type_names_from_file_units, PublicationVisibleTypeNames,
+};
 use crate::typed_artifacts::{
     assign_package_unit_identities, canonical_interface_method_abi_id,
     interface_methods::{package_interface_method_signatures, PackageTypeSymbolIndex},
@@ -154,6 +159,11 @@ fn package_unit_export_index(
         .iter()
         .map(|artifact| (artifact.module_path.as_str(), &artifact.unit))
         .collect::<StdBTreeMap<_, _>>();
+    let publication_type_names = publication_type_names_from_file_units(
+        file_ir_units
+            .iter()
+            .map(|artifact| (artifact.module_path.as_str(), &artifact.unit)),
+    );
     let type_symbols = package_type_symbol_index(package, &file_units_by_module, dependencies)?;
     let mut exports = PackageExportIndex::default();
 
@@ -191,14 +201,22 @@ fn package_unit_export_index(
                     .map_err(|message| package_export_error(package, public_symbol, message))
                 })
                 .transpose()?
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .map(|method| {
+                    projection_visible_interface_method_signature(&method, &publication_type_names)
+                })
+                .collect();
             exports.types.insert(
                 package_symbol.clone(),
                 TypeExport {
                     file: file_ref,
                     type_index,
                     symbol: package_symbol.clone(),
-                    descriptor: Some(ty.descriptor.clone()),
+                    descriptor: Some(projection_visible_type_descriptor(
+                        &ty.descriptor,
+                        &publication_type_names,
+                    )),
                     type_params: ty.type_params.clone(),
                     interface_methods,
                 },
@@ -214,7 +232,7 @@ fn package_unit_export_index(
                     file: file_ref,
                     const_index,
                     symbol: package_symbol.clone(),
-                    ty: constant.ty.clone(),
+                    ty: projection_visible_type_ref(&constant.ty, &publication_type_names),
                 },
             );
             continue;
@@ -231,7 +249,10 @@ fn package_unit_export_index(
                 file: file_ref,
                 executable_index,
                 symbol: executable.symbol.clone(),
-                signature: executable_signature(executable),
+                signature: projection_visible_executable_signature(
+                    executable,
+                    &publication_type_names,
+                ),
             };
             // An exported public type carries its impl methods into the public
             // contract (api.rs `insert_public_callable(..Method..)`). An INSTANCE
@@ -266,6 +287,7 @@ fn package_unit_export_index(
         &files_by_module,
         &file_units_by_module,
         &type_symbols,
+        &publication_type_names,
         &mut exports,
     )?;
 
@@ -277,6 +299,7 @@ fn project_package_public_instances(
     files_by_module: &StdBTreeMap<String, FileIrRef>,
     file_units_by_module: &StdBTreeMap<&str, &FileIrUnit>,
     type_symbols: &PackageTypeSymbolIndex,
+    publication_type_names: &PublicationVisibleTypeNames,
     exports: &mut PackageExportIndex,
 ) -> Result<(), ProjectionError> {
     let mut seen_instances = StdBTreeMap::<String, String>::new();
@@ -368,6 +391,7 @@ fn project_package_public_instances(
             package,
             file_units_by_module,
             type_symbols,
+            publication_type_names,
             &public_path,
             &receiver,
             &public_instance.interfaces,
@@ -379,6 +403,7 @@ fn project_package_public_instances(
             &receiver,
             &receiver_const,
             &implemented_interfaces,
+            publication_type_names,
             exports,
         )?;
         exports.public_instances.push(PublicInstanceExport {
@@ -458,6 +483,7 @@ fn package_public_instance_interfaces(
     package: &PackageIrProjectionSource<'_>,
     file_units_by_module: &StdBTreeMap<&str, &FileIrUnit>,
     type_symbols: &PackageTypeSymbolIndex,
+    publication_type_names: &PublicationVisibleTypeNames,
     public_path: &str,
     receiver: &PackagePublicInstanceReceiver<'_>,
     interfaces: &[crate::package_exports::PackageExportPublicInstanceInterface],
@@ -524,10 +550,12 @@ fn package_public_instance_interfaces(
         }
         let interface_ty =
             package_public_interface_type_ref(package, &interface.module, &interface.symbol);
-        let interface_ref = interface_instantiation_ref(
-            interface_ty.clone(),
-            interface.canonical_type_args.clone(),
-        );
+        let canonical_type_args = interface
+            .canonical_type_args
+            .iter()
+            .map(|arg| projection_visible_type_ref(arg, publication_type_names))
+            .collect();
+        let interface_ref = interface_instantiation_ref(interface_ty.clone(), canonical_type_args);
         let interface_key =
             serde_json::to_string(&interface_ref).expect("interface ref must serialize");
         if !seen.insert(interface_key) {
@@ -564,7 +592,12 @@ fn package_public_instance_interfaces(
                     error.actual_type_args
                 ),
             )
-        })?;
+        })?
+        .into_iter()
+        .map(|method| {
+            projection_visible_interface_method_signature(&method, publication_type_names)
+        })
+        .collect();
         projected.push(PackagePublicInstanceInterface {
             ty: interface_ty,
             instantiation: interface_ref,
@@ -581,6 +614,7 @@ fn package_public_instance_operations(
     receiver: &PackagePublicInstanceReceiver<'_>,
     receiver_const: &OperationConstReceiverRef,
     interfaces: &[PackagePublicInstanceInterface],
+    publication_type_names: &PublicationVisibleTypeNames,
     exports: &mut PackageExportIndex,
 ) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
     let mut operations = Vec::new();
@@ -626,7 +660,8 @@ fn package_public_instance_operations(
                         ),
                     )
                 })?;
-            let executable_signature = executable_signature(executable);
+            let executable_signature =
+                projection_visible_executable_signature(executable, publication_type_names);
             let public_signature =
                 public_signature_from_receiver_executable_signature(&executable_signature);
             let interface_signature = public_callable_signature_from_interface_method(method);
@@ -804,6 +839,17 @@ fn package_nominal_service_symbol(
                 symbol: decl.name.clone(),
             })
         }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let unit = file_units_by_module.get(module_path.as_str()).copied()?;
+            let decl = unit.type_table.get(*type_index as usize)?;
+            Some(ServiceSymbolRef {
+                module_path: module_path.clone(),
+                symbol: decl.name.clone(),
+            })
+        }
         TypeRefIr::ServiceSymbol { symbol } => {
             package_type_decl_by_module_local_name(
                 file_units_by_module,
@@ -850,6 +896,13 @@ fn package_type_ref_matches_interface_selector(
             .is_some_and(|decl| {
                 decl.name == interface_symbol && context_module == interface_module
             }),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => file_units_by_module
+            .get(module_path.as_str())
+            .and_then(|unit| unit.type_table.get(*type_index as usize))
+            .is_some_and(|decl| decl.name == interface_symbol && module_path == interface_module),
         TypeRefIr::ServiceSymbol { symbol } => {
             symbol.module_path == interface_module && symbol.symbol == interface_symbol
         }
@@ -1040,18 +1093,6 @@ fn executable_has_self_receiver(executable: &ExecutableIr) -> bool {
             .is_some_and(|param| param.name == "self")
 }
 
-/// Project the public signature of a package executable directly from its typed
-/// declaration. `ExecutableIr` already carries the params/return/self type as
-/// `TypeRefIr`s, so no JSON reparsing is needed.
-fn executable_signature(executable: &ExecutableIr) -> ExecutableSignatureIr {
-    ExecutableSignatureIr {
-        params: executable.params.clone(),
-        return_type: executable.return_type.clone(),
-        self_type: executable.self_type.clone(),
-        may_suspend: executable.may_suspend,
-    }
-}
-
 pub fn package_unit_dependency_constraints(
     dependencies: &[ProjectedPackageDependency],
     file_ir_units: &[PackageFileIrProjection],
@@ -1167,6 +1208,7 @@ fn type_ref_references_package(ty: &TypeRefIr, package_id: &str) -> bool {
                 || type_ref_references_package(return_type, package_id)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
