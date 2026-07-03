@@ -39,8 +39,8 @@ try {
 
   const loaded = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
   assert.deepEqual(instanceSummary(loaded).components, {
-    runtime: 'stable',
-    identityCli: 'stable',
+    runtime: 'installed',
+    identityCli: 'installed',
     router: 'worktree',
     telemetry: 'worktree',
     mongo: 'disabled',

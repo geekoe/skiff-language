@@ -29,10 +29,11 @@ export const instanceDevSyncOptions = Object.freeze([
   '--service-id',
   '--poll-interval-ms',
   '--packages-dir',
+  '--default-packages-dir',
   '--service-artifact-root',
 ]);
 
-const repeatableDevSyncOptions = new Set(['--packages-dir', '--service-artifact-root']);
+const repeatableDevSyncOptions = new Set(['--packages-dir', '--default-packages-dir', '--service-artifact-root']);
 const forwardOptionOrder = Object.freeze([
   ['profile', '--profile'],
   ['artifactRoot', '--artifact-root'],
@@ -128,6 +129,9 @@ export function renderDevSyncOptions(options) {
   }
   for (const packageDir of options.packagesDir ?? []) {
     result.push('--packages-dir', packageDir);
+  }
+  for (const packageDir of options.defaultPackagesDir ?? []) {
+    result.push('--default-packages-dir', packageDir);
   }
   for (const serviceArtifactRoot of options.serviceArtifactRoot ?? []) {
     result.push('--service-artifact-root', serviceArtifactRoot);
