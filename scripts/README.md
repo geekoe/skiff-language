@@ -4,13 +4,21 @@ These scripts assume the Skiff router and runtime are already running. They do n
 
 ## Service Dev CLI
 
-The stable local service environment is a Skiff instance. It uses
-`~/.skiff/instances/stable/config.yml`, `~/.skiff/dev`, and ports
-`4000/4001/4002`. macOS LaunchAgent `run.skiff.instance.stable` starts it at
-login and keeps a foreground supervisor running.
+The stable local service environment is the main Skiff worktree's local
+instance. It uses `.skiff-instance/config.yml`, `.skiff-instance/dev-home`, and
+ports `4000/4001/4002`. macOS LaunchAgent `run.skiff.instance.stable` should
+run the instance CLI once at login and then exit:
+
+```bash
+cd /Users/geek/workspace/skiff &&
+node scripts/skiff.mjs instance up .skiff-instance/config.yml --repair-owned-conflicts
+```
+
+The LaunchAgent should use `RunAtLoad=true` and `KeepAlive=false`; process
+lifecycle is owned by `skiff instance up/down/restart/status/doctor/repair`.
 
 ```text
-~/.skiff/dev/
+.skiff-instance/dev-home/
   artifacts/
   bin/
   build/
@@ -22,20 +30,27 @@ login and keeps a foreground supervisor running.
 
 From a service directory, `skiff service dev sync` and `skiff service dev watch`
 use the current service root and `service.yml`/`service.<profile>.yml`, then
-write artifacts to `~/.skiff/dev/artifacts`. `skiff check <root>` runs the same
-compile validation without syncing stable artifacts or reloading the router.
+write artifacts to the selected dev home. For the main worktree instance that is
+`.skiff-instance/dev-home/artifacts`. `skiff check <root>` runs the same compile
+validation without syncing stable artifacts or reloading the router.
 `service.<profile>.yml` is a service definition / build / dev overlay; it is not
 a secret source. The stable control endpoint is
 `http://127.0.0.1:4001/__skiff/reload-artifacts`; override with
 `--artifact-root`, `--reload-url`, `SKIFF_ARTIFACT_ROOT`, or
 `SKIFF_DEV_RELOAD_URL` only for explicit non-standard service-dev environments.
 
-`SKIFF_DEV_HOME` sets the dev environment root directory (default `~/.skiff/dev`). It is a single path, not a list. Dev artifacts, service build cache, runtime config, runtime home, and the installed local runtime binary live under this one directory. Package source resolution is project-scoped through `skiff.yml`, not `SKIFF_DEV_HOME`. `CARGO_TARGET_DIR` is only a Cargo build-cache override.
+`SKIFF_DEV_HOME` sets the dev environment root directory for non-instance
+service-dev commands. Instance commands set it from the selected instance config.
+It is a single path, not a list. Dev artifacts, service build cache, runtime
+config, runtime home, and the installed local runtime binary live under this one
+directory. Package source resolution is project-scoped through `skiff.yml`, not
+`SKIFF_DEV_HOME`. `CARGO_TARGET_DIR` is only a Cargo build-cache override.
 
 Stable instance status:
 
 ```bash
-node scripts/skiff.mjs instance status ~/.skiff/instances/stable/config.yml
+node scripts/skiff.mjs instance status .skiff-instance/config.yml
+node scripts/skiff.mjs instance doctor .skiff-instance/config.yml
 launchctl print gui/$(id -u)/run.skiff.instance.stable
 ```
 
@@ -65,7 +80,7 @@ strictly. Rewrite rules run before client-provided `X-Skiff-Service`,
 `X-Skiff-Version`, `X-Skiff-Release`, and `service` / `version` query
 selectors.
 
-Per-service build output (the intermediate `service-assembly.json`, `router-manifest.json`, and generated `artifacts/`) is written to `~/.skiff/dev/build/<storage-projected-service-id>/`, with a sibling `<storage-projected-service-id>.lock` build lock. This keeps the service source tree clean — build output is no longer written into a `build/` directory under the project root. `skiff service dev clean` removes the current service's build dir and lock under the dev home, and also clears any legacy in-tree `build/` and `build.lock/` left by older builds.
+Per-service build output (the intermediate `service-assembly.json`, `router-manifest.json`, and generated `artifacts/`) is written under the selected dev home, for example `.skiff-instance/dev-home/build/<storage-projected-service-id>/`, with a sibling `<storage-projected-service-id>.lock` build lock. This keeps the service source tree clean — build output is no longer written into a `build/` directory under the project root. `skiff service dev clean` removes the current service's build dir and lock under the dev home, and also clears any legacy in-tree `build/` and `build.lock/` left by older builds.
 
 Dev sync also copies service-root runtime config sources into the local artifact root under `configs/services/<storage-projected-service-id>/`: `config.yml`, `config.<profile>.yml`, and `config.<profile>.secret.yml` when present. That copy is local runtime state for activation. `config.<profile>.secret.yml` should be ignored by default, should not be committed, and must not be treated as something that can enter a production source snapshot or code publish artifact.
 
@@ -111,8 +126,8 @@ by an explicit config file:
 ```bash
 node scripts/skiff.mjs instance init .skiff-instance/config.yml
 node scripts/skiff.mjs instance up .skiff-instance/config.yml
-node scripts/skiff.mjs instance run .skiff-instance/config.yml
 node scripts/skiff.mjs instance status .skiff-instance/config.yml
+node scripts/skiff.mjs instance doctor .skiff-instance/config.yml
 node scripts/skiff.mjs instance down .skiff-instance/config.yml
 ```
 
@@ -130,8 +145,9 @@ node scripts/skiff.mjs instance paths .skiff-instance/config.yml
 node scripts/skiff.mjs instance paths .skiff-instance/config.yml --json
 ```
 
-The generated config can reuse stable binaries from `~/.skiff/dev/bin` by
-copying them into `.skiff-instance/dev-home/bin` and running those local copies.
+The generated config can reuse the configured `installed.runtimeBinary` and
+`installed.identityCli` sources by copying them into `.skiff-instance/dev-home/bin`
+and running those local copies.
 To test current repository runtime or identity changes, update the relevant
 component source in `.skiff-instance/config.yml` and run:
 
@@ -148,9 +164,12 @@ node scripts/skiff.mjs instance sync .skiff-instance/config.yml ../example-servi
 node scripts/skiff.mjs instance watch .skiff-instance/config.yml ../example-service
 ```
 
-`skiff instance up` starts detached local processes and records pids/logs under
-the instance directory. `skiff instance run` keeps a foreground supervisor and is
-the mode used by launchd.
+`skiff instance up` starts detached local processes and records structured pid
+metadata plus logs under the instance directory. `skiff instance down` stops
+component process groups, `skiff instance restart [component]` restarts all or
+one managed component, and `skiff instance supervise` is the explicit foreground
+debug supervisor. `skiff instance run` remains only as a deprecated alias for
+`supervise`; launchd should call `up --repair-owned-conflicts`.
 
 ## Runtime Stack Deploy
 

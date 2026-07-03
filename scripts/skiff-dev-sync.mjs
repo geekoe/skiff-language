@@ -262,16 +262,21 @@ function compilerBuildArgs(config, service, paths) {
 }
 
 function effectivePackageDirs(config, service) {
+  // Keep instance defaults as the last fallback: CLI > service config > project config > dev config default > instance default.
   if (config.packageDirSource === 'cli') {
     return config.packageDirs;
   }
   if ((service.packageDirs?.length ?? 0) > 0) {
     return service.packageDirs;
   }
-  if (config.packageDirSource === 'config') {
-    return config.packageDirs;
+  const projectPackageDirs = service.projectPackageDirs ?? [];
+  if (projectPackageDirs.length > 0) {
+    return projectPackageDirs;
   }
-  return service.projectPackageDirs ?? config.packageDirs;
+  if (config.configPackageDirs.length > 0) {
+    return config.configPackageDirs;
+  }
+  return config.defaultPackageDirs;
 }
 
 async function withBuildLock(service, lockDir, action) {
@@ -1129,17 +1134,13 @@ async function loadConfig(cli) {
     ...readSharedInputs(raw, configLabel, configDir),
   ];
   const cliPackageDirs = cli.packageDirs.map((path) => resolve(process.cwd(), path));
+  const defaultPackageDirs = uniquePaths(cli.defaultPackageDirs.map((path) => resolve(process.cwd(), path)));
   const configPackageDirs = readPackageDirs(raw, configLabel, configDir);
-  const packageDirSource = cliPackageDirs.length > 0
-    ? 'cli'
-    : configPackageDirs.length > 0
-      ? 'config'
-      : 'project';
-  const packageDirs = uniquePaths(packageDirSource === 'cli'
-    ? cliPackageDirs
-    : packageDirSource === 'config'
-      ? configPackageDirs
-      : await defaultProjectPackageDirsForServices(services));
+  const packageDirSource = cliPackageDirs.length > 0 ? 'cli' : 'project';
+  if (packageDirSource !== 'cli') {
+    await defaultProjectPackageDirsForServices(services);
+  }
+  const packageDirs = uniquePaths(packageDirSource === 'cli' ? cliPackageDirs : []);
   const cliServiceArtifactRoots = cli.serviceArtifactRoots.map((path) => resolve(process.cwd(), path));
   const configServiceArtifactRoots = readServiceArtifactRoots(raw, configLabel, configDir);
   const serviceArtifactRoots = uniquePaths(cliServiceArtifactRoots.length > 0
@@ -1149,6 +1150,8 @@ async function loadConfig(cli) {
     artifactRoot,
     compilerManifest: resolveConfigPath(cli.compilerManifest !== undefined ? process.cwd() : configDir, compilerManifestValue),
     configPath,
+    configPackageDirs,
+    defaultPackageDirs,
     packageDirSource,
     packageDirs,
     reloadUrl: cli.reloadUrl ?? process.env.SKIFF_DEV_RELOAD_URL ?? optionalString(raw.reloadUrl, `${configLabel} reloadUrl`) ?? defaultReloadUrl,
@@ -1358,6 +1361,7 @@ function parseCli(args) {
     config: undefined,
     artifactRoot: undefined,
     compilerManifest: undefined,
+    defaultPackageDirs: [],
     noReload: false,
     packageDirs: [],
     profile: undefined,
@@ -1421,6 +1425,11 @@ function parseCli(args) {
       index += 1;
     } else if (arg.startsWith('--packages-dir=')) {
       result.packageDirs.push(arg.slice('--packages-dir='.length));
+    } else if (arg === '--default-packages-dir') {
+      result.defaultPackageDirs.push(requireNextArg(args, index, '--default-packages-dir'));
+      index += 1;
+    } else if (arg.startsWith('--default-packages-dir=')) {
+      result.defaultPackageDirs.push(arg.slice('--default-packages-dir='.length));
     } else if (arg === '--service-artifact-root') {
       result.serviceArtifactRoots.push(requireNextArg(args, index, '--service-artifact-root'));
       index += 1;
@@ -1464,7 +1473,7 @@ function parsePositiveInteger(value, label) {
 }
 
 function printUsage() {
-  console.log('usage: node skiff-dev-sync.mjs [root] [--watch|--check|--check-sync] [--root <service-dir>] [--profile <name>] [--artifact-root <dir>] [--service-artifact-root <dir>]... [--reload-url <url>] [--no-reload] [--config <path>] [--packages-dir <dir>]... [--poll-interval-ms <ms>]');
+  console.log('usage: node skiff-dev-sync.mjs [root] [--watch|--check|--check-sync] [--root <service-dir>] [--profile <name>] [--artifact-root <dir>] [--service-artifact-root <dir>]... [--reload-url <url>] [--no-reload] [--config <path>] [--packages-dir <dir>]... [--default-packages-dir <dir>]... [--poll-interval-ms <ms>]');
 }
 
 function run(command, runArgs, cwd, env = process.env) {

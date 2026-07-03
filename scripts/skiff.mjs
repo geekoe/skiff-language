@@ -60,9 +60,13 @@ const usage = `usage:
   skiff instance init <config> [--force]
   skiff instance paths <config> [--json]
   skiff instance status <config> [--json]
+  skiff instance doctor <config>
+  skiff instance repair <config>
   skiff instance build <config>
-  skiff instance up <config>
-  skiff instance run <config>
+  skiff instance up <config> [--repair-owned-conflicts]
+  skiff instance restart <config> [component]
+  skiff instance supervise <config>
+  skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
   skiff instance reload <config>
   skiff instance sync <config> [root] [--profile <name>] [--service-id <id>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--check|--check-sync]
