@@ -171,7 +171,7 @@ async function buildAll(config, options) {
   const syncRoot = options.syncRoot ?? config.artifactRoot;
   const results = [];
   for (const service of config.services) {
-    const targetDir = options.targetDirForService?.(service) ?? defaultServiceBuildDir(service);
+    const targetDir = options.targetDirForService?.(service) ?? defaultServiceBuildDir(config, service);
     results.push(await buildService(config, service, targetDir, {
       syncRoot,
       syncShared: options.syncShared,
@@ -375,8 +375,8 @@ function serviceIdPathSegments(serviceId) {
   return [publicationStorageSegment(serviceId)];
 }
 
-function defaultServiceBuildDir(service) {
-  return join(defaultBuildRoot, publicationStorageSegment(service.serviceId));
+function defaultServiceBuildDir(config, service) {
+  return join(config.buildRoot, publicationStorageSegment(service.serviceId));
 }
 
 function serviceIdJsonPath(root, prefixSegments, serviceId) {
@@ -1125,6 +1125,11 @@ async function loadConfig(cli) {
   const artifactRoot = artifactRootValue === undefined
     ? undefined
     : resolveConfigPath(cli.artifactRoot !== undefined || process.env.SKIFF_ARTIFACT_ROOT !== undefined ? process.cwd() : configDir, artifactRootValue);
+  const buildRootValue =
+    cli.buildRoot ??
+    optionalString(raw.buildRoot, `${configLabel} buildRoot`) ??
+    defaultBuildRoot;
+  const buildRoot = resolveConfigPath(cli.buildRoot !== undefined ? process.cwd() : configDir, buildRootValue);
   const compilerManifestValue =
     cli.compilerManifest ??
     optionalString(raw.compilerManifest, `${configLabel} compilerManifest`) ??
@@ -1148,6 +1153,7 @@ async function loadConfig(cli) {
     : configServiceArtifactRoots);
   return {
     artifactRoot,
+    buildRoot,
     compilerManifest: resolveConfigPath(cli.compilerManifest !== undefined ? process.cwd() : configDir, compilerManifestValue),
     configPath,
     configPackageDirs,
@@ -1360,6 +1366,7 @@ function parseCli(args) {
     checkSync: false,
     config: undefined,
     artifactRoot: undefined,
+    buildRoot: undefined,
     compilerManifest: undefined,
     defaultPackageDirs: [],
     noReload: false,
@@ -1410,6 +1417,11 @@ function parseCli(args) {
       index += 1;
     } else if (arg.startsWith('--artifact-root=')) {
       result.artifactRoot = arg.slice('--artifact-root='.length);
+    } else if (arg === '--build-root') {
+      result.buildRoot = requireNextArg(args, index, '--build-root');
+      index += 1;
+    } else if (arg.startsWith('--build-root=')) {
+      result.buildRoot = arg.slice('--build-root='.length);
     } else if (arg === '--reload-url') {
       result.reloadUrl = requireNextArg(args, index, '--reload-url');
       index += 1;
@@ -1473,7 +1485,7 @@ function parsePositiveInteger(value, label) {
 }
 
 function printUsage() {
-  console.log('usage: node skiff-dev-sync.mjs [root] [--watch|--check|--check-sync] [--root <service-dir>] [--profile <name>] [--artifact-root <dir>] [--service-artifact-root <dir>]... [--reload-url <url>] [--no-reload] [--config <path>] [--packages-dir <dir>]... [--default-packages-dir <dir>]... [--poll-interval-ms <ms>]');
+  console.log('usage: node skiff-dev-sync.mjs [root] [--watch|--check|--check-sync] [--root <service-dir>] [--profile <name>] [--artifact-root <dir>] [--build-root <dir>] [--service-artifact-root <dir>]... [--reload-url <url>] [--no-reload] [--config <path>] [--packages-dir <dir>]... [--default-packages-dir <dir>]... [--poll-interval-ms <ms>]');
 }
 
 function run(command, runArgs, cwd, env = process.env) {

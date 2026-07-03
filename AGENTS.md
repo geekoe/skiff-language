@@ -34,9 +34,19 @@ node scripts/skiff.mjs instance status .skiff-instance/config.yml
 
 默认生成端口：
 
-- `4100`：service HTTP。
-- `4101`：router control/runtime WebSocket。
-- `4102`：telemetry。
+- `ports.base + 0`（默认 `4100`）：service HTTP。
+- `ports.base + 1`（默认 `4101`）：router control/runtime WebSocket。
+- `ports.base + 2`（默认 `4102`）：telemetry。
+
+MongoDB 是本机共享开发基础设施，不随 `ports.base` 偏移；默认仍是独立的
+`ports.mongo: 27017`。如果要让两个目录 instance 同时运行，创建第二个
+instance 后，在它的配置文件中使用不同起始端口：
+
+```yaml
+ports:
+  base: 4200
+  mongo: 27017
+```
 
 结束后关闭：
 

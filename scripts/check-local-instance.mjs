@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ try {
   assert.equal(devRuntimePaths({ env: { HOME: join(tempRoot, 'home') } }).devHome, join(skiffRoot, '.skiff-instance', 'dev-home'));
 
   const expected = defaultInstanceConfig({ configPath, repoRoot: skiffRoot });
+  assert.equal(expected.ports.base, defaultInstancePorts.base);
   assert.equal(expected.ports.routerHttp, defaultInstancePorts.routerHttp);
   assert.equal(expected.ports.routerControl, defaultInstancePorts.routerControl);
   assert.equal(expected.ports.telemetry, defaultInstancePorts.telemetry);
@@ -43,13 +44,12 @@ try {
   await run('node', [skiffCli, 'instance', 'init', configPath]);
   const configText = await readFile(configPath, 'utf8');
   assert.match(configText, /^devHome: /m);
+  assert.match(configText, /^  base: 4100$/m);
+  assert.match(configText, /^  mongo: 27017$/m);
 
   const loaded = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
   assert.deepEqual(instanceSummary(loaded).components, {
-    runtime: 'worktree',
-    identityCli: 'worktree',
-    router: 'worktree',
-    telemetry: 'worktree',
+    telemetry: 'managed',
     mongo: 'disabled',
     watch: 'disabled',
   });
@@ -59,6 +59,11 @@ try {
   assert.equal(paths.instanceRoot, instanceRoot);
   assert.equal(paths.devHome, join(instanceRoot, 'dev-home'));
   assert.equal(paths.artifactRoot, join(instanceRoot, 'dev-home', 'artifacts'));
+  assert.equal(paths.basePort, 4100);
+  assert.equal(paths.routerHttpPort, 4100);
+  assert.equal(paths.routerControlPort, 4101);
+  assert.equal(paths.telemetryPort, 4102);
+  assert.equal(paths.mongoPort, 27017);
   assert.equal(paths.routerReloadUrl, 'http://127.0.0.1:4101/__skiff/reload-artifacts');
 
   const status = JSON.parse(await runCapture('node', [skiffCli, 'instance', 'status', configPath, '--json']));
@@ -71,6 +76,22 @@ try {
     'runtime',
   ]);
   assert.ok(status.processes.every((processStatus) => processStatus.running === false));
+
+  const customConfigPath = join(tempRoot, 'custom-instance', 'config.yml');
+  await run('node', [skiffCli, 'instance', 'init', customConfigPath]);
+  const defaultCustomConfigText = await readFile(customConfigPath, 'utf8');
+  await writeFile(
+    customConfigPath,
+    defaultCustomConfigText.replace(/^  base: 4100$/m, '  base: 4300'),
+  );
+  const customConfigText = await readFile(customConfigPath, 'utf8');
+  assert.match(customConfigText, /^  base: 4300$/m);
+  assert.match(customConfigText, /^  mongo: 27017$/m);
+  const custom = await readInstanceConfig({ configPath: customConfigPath, repoRoot: skiffRoot });
+  assert.equal(custom.ports.routerHttp, 4300);
+  assert.equal(custom.ports.routerControl, 4301);
+  assert.equal(custom.ports.telemetry, 4302);
+  assert.equal(custom.ports.mongo, 27017);
 
   await assertMissing(join(instanceRoot, 'skiff.yml'));
   await assertMissing(join(instanceRoot, 'skiff.local.yml'));

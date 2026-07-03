@@ -9,19 +9,20 @@ import { parseSimpleYamlObject, parseYamlStringScalar, yamlStringScalarHasConten
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..', '..');
 
+export const defaultInstanceBasePort = 4100;
 export const defaultInstancePorts = {
-  routerHttp: 4100,
-  routerControl: 4101,
-  telemetry: 4102,
+  base: defaultInstanceBasePort,
+  routerHttp: defaultInstanceBasePort,
+  routerControl: defaultInstanceBasePort + 1,
+  telemetry: defaultInstanceBasePort + 2,
   mongo: 27017,
 };
-const installedComponentMode = 'installed';
-
 export function defaultInstanceConfigPath(repoRoot = skiffRoot) {
   return join(repoRoot, '.skiff-instance', 'config.yml');
 }
 
 export function defaultInstanceConfigText() {
+  const derived = derivedInstancePorts(defaultInstancePorts.base);
   return [
     '# Local Skiff instance config.',
     '# Paths are resolved relative to this config file.',
@@ -33,23 +34,18 @@ export function defaultInstanceConfigText() {
     '  # - ../skiff-packages',
     '',
     'ports:',
-    `  routerHttp: ${defaultInstancePorts.routerHttp}`,
-    `  routerControl: ${defaultInstancePorts.routerControl}`,
-    `  telemetry: ${defaultInstancePorts.telemetry}`,
+    '  # routerHttp, routerControl/runtime, and telemetry default to base + 0/1/2.',
+    `  base: ${defaultInstancePorts.base}`,
+    `  # routerHttp: ${derived.routerHttp}`,
+    `  # routerControl: ${derived.routerControl}`,
+    `  # telemetry: ${derived.telemetry}`,
+    '  # MongoDB is shared across local instances and is not derived from base.',
     `  mongo: ${defaultInstancePorts.mongo}`,
     '',
     'components:',
-    '  runtime: worktree',
-    '  identityCli: worktree',
-    '  router: worktree',
-    '  telemetry: worktree',
+    '  telemetry: managed',
     '  mongo: disabled',
     '  watch: disabled',
-    '',
-    'installed:',
-    '  # Used only when the matching component mode is installed.',
-    '  runtimeBinary: dev-home/bin/skiff-runtime',
-    '  identityCli: dev-home/bin/skiff-artifact-identity',
     '',
     'telemetry:',
     '  memory: true',
@@ -73,7 +69,7 @@ export async function readInstanceConfig({ configPath, repoRoot = skiffRoot }) {
   });
 }
 
-export function defaultInstanceConfig({ configPath, repoRoot = skiffRoot }) {
+export function defaultInstanceConfig({ configPath, repoRoot = skiffRoot } = {}) {
   const paths = instanceBasePaths({ configPath, repoRoot });
   return normalizeInstanceConfig(parseInstanceConfigText(defaultInstanceConfigText(), paths.configPath), {
     ...paths,
@@ -114,6 +110,11 @@ export function instanceSummary(config) {
     logDir: config.paths.logDir,
     buildRoot: config.paths.buildRoot,
     cargoTargetDir: config.paths.cargoTargetDir,
+    basePort: config.ports.base,
+    routerHttpPort: config.ports.routerHttp,
+    routerControlPort: config.ports.routerControl,
+    telemetryPort: config.ports.telemetry,
+    mongoPort: config.ports.mongo,
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
@@ -136,7 +137,6 @@ function normalizeInstanceConfig(raw, context) {
   ));
   const ports = normalizePorts(raw.ports);
   const components = normalizeComponents(raw.components);
-  const installed = normalizeInstalledBinaries(raw.installed, context.instanceRoot);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
   const watch = normalizeWatch(raw.watch, devHome);
@@ -170,7 +170,6 @@ function normalizeInstanceConfig(raw, context) {
     ports,
     components,
     packageDirs,
-    installed,
     telemetry,
     mongo,
     watch,
@@ -199,47 +198,54 @@ function parseInstanceConfigText(source, label) {
 
 function normalizePorts(value) {
   const ports = isRecord(value) ? value : {};
-  return {
-    routerHttp: readPort(ports.routerHttp, 'ports.routerHttp', defaultInstancePorts.routerHttp),
-    routerControl: readPort(ports.routerControl, 'ports.routerControl', defaultInstancePorts.routerControl),
-    telemetry: readPort(ports.telemetry, 'ports.telemetry', defaultInstancePorts.telemetry),
+  const base = readPort(ports.base, 'ports.base', defaultInstancePorts.base);
+  const derived = derivedInstancePorts(base);
+  const result = {
+    base,
+    routerHttp: readPort(ports.routerHttp, 'ports.routerHttp', derived.routerHttp),
+    routerControl: readPort(ports.routerControl, 'ports.routerControl', derived.routerControl),
+    telemetry: readPort(ports.telemetry, 'ports.telemetry', derived.telemetry),
     mongo: readPort(ports.mongo, 'ports.mongo', defaultInstancePorts.mongo),
   };
+  assertDistinctPorts(result);
+  return result;
+}
+
+function derivedInstancePorts(base) {
+  const telemetry = base + 2;
+  if (telemetry > 65535) {
+    throw new Error('ports.base must leave room for routerHttp, routerControl, and telemetry ports');
+  }
+  return {
+    routerHttp: base,
+    routerControl: base + 1,
+    telemetry,
+  };
+}
+
+function assertDistinctPorts(ports) {
+  const entries = [
+    ['routerHttp', ports.routerHttp],
+    ['routerControl', ports.routerControl],
+    ['telemetry', ports.telemetry],
+    ['mongo', ports.mongo],
+  ];
+  const seen = new Map();
+  for (const [name, port] of entries) {
+    const existing = seen.get(port);
+    if (existing !== undefined) {
+      throw new Error(`ports.${name} conflicts with ports.${existing} on ${port}`);
+    }
+    seen.set(port, name);
+  }
 }
 
 function normalizeComponents(value) {
   const components = isRecord(value) ? value : {};
-  const runtime = readComponentBinaryMode(components.runtime, 'components.runtime');
-  const identityCli = readComponentBinaryMode(components.identityCli, 'components.identityCli');
-  const router = readEnum(components.router, 'components.router', ['worktree'], 'worktree');
-  const telemetry = readEnum(components.telemetry, 'components.telemetry', ['worktree', 'disabled'], 'worktree');
+  const telemetry = readEnum(components.telemetry, 'components.telemetry', ['managed', 'disabled'], 'managed');
   const mongo = readEnum(components.mongo, 'components.mongo', ['managed', 'disabled'], 'disabled');
   const watch = readEnum(components.watch, 'components.watch', ['managed', 'disabled'], 'disabled');
-  return { runtime, identityCli, router, telemetry, mongo, watch };
-}
-
-function readComponentBinaryMode(value, label) {
-  const mode = readString(value, label, installedComponentMode);
-  if (mode !== installedComponentMode && mode !== 'worktree') {
-    throw new Error(`${label} must be one of ${installedComponentMode}, worktree`);
-  }
-  return mode;
-}
-
-function normalizeInstalledBinaries(value, instanceRoot) {
-  const installed = isRecord(value) ? value : {};
-  return {
-    runtimeBinary: resolveConfigPath(instanceRoot, readString(
-      installed.runtimeBinary,
-      'installed.runtimeBinary',
-      join('dev-home', 'bin', runtimeBinaryName()),
-    )),
-    identityCli: resolveConfigPath(instanceRoot, readString(
-      installed.identityCli,
-      'installed.identityCli',
-      join('dev-home', 'bin', identityCliBinaryName()),
-    )),
-  };
+  return { telemetry, mongo, watch };
 }
 
 function normalizeTelemetry(value) {

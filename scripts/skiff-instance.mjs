@@ -216,11 +216,9 @@ async function buildInstance(rawArgs, configPath) {
   await buildComponentBinaries(config);
   console.log(JSON.stringify({
     runtime: {
-      mode: config.components.runtime,
       path: config.paths.runtimeBinary,
     },
     identityCli: {
-      mode: config.components.identityCli,
       path: config.paths.identityCli,
     },
   }, null, 2));
@@ -374,6 +372,7 @@ async function syncInstance(rawArgs, configPath, watch) {
       prefix: watch ? ['--watch'] : [],
       injectOptions: {
         artifactRoot: config.paths.artifactRoot,
+        buildRoot: config.paths.serviceBuildRoot,
         reloadUrl: config.urls.routerReload,
         defaultPackagesDir: config.packageDirs,
       },
@@ -453,33 +452,25 @@ function telemetryConfigText(config) {
 }
 
 async function buildComponentBinaries(config) {
-  if (config.components.runtime === 'installed') {
-    await copyBinary(config.installed.runtimeBinary, config.paths.runtimeBinary);
-  } else {
-    await buildRustBinary({
-      manifest: join(skiffRoot, 'runtime', 'Cargo.toml'),
-      bin: 'runtime',
-      source: join(config.paths.cargoTargetDir, 'debug', process.platform === 'win32' ? 'runtime.exe' : 'runtime'),
-      destination: config.paths.runtimeBinary,
-      config,
-    });
-  }
+  await buildRustBinary({
+    manifest: join(skiffRoot, 'runtime', 'Cargo.toml'),
+    bin: 'runtime',
+    source: join(config.paths.cargoTargetDir, 'debug', process.platform === 'win32' ? 'runtime.exe' : 'runtime'),
+    destination: config.paths.runtimeBinary,
+    config,
+  });
 
-  if (config.components.identityCli === 'installed') {
-    await copyBinary(config.installed.identityCli, config.paths.identityCli);
-  } else {
-    await buildRustBinary({
-      manifest: join(skiffRoot, 'artifact-identity', 'Cargo.toml'),
-      bin: 'skiff-artifact-identity',
-      source: join(
-        config.paths.cargoTargetDir,
-        'debug',
-        process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity',
-      ),
-      destination: config.paths.identityCli,
-      config,
-    });
-  }
+  await buildRustBinary({
+    manifest: join(skiffRoot, 'artifact-identity', 'Cargo.toml'),
+    bin: 'skiff-artifact-identity',
+    source: join(
+      config.paths.cargoTargetDir,
+      'debug',
+      process.platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity',
+    ),
+    destination: config.paths.identityCli,
+    config,
+  });
 }
 
 async function buildRustBinary({ manifest, bin, source, destination, config }) {
@@ -555,6 +546,12 @@ function managedProcessSpecs(config) {
             '--watch',
             '--config',
             config.paths.watchConfig,
+            '--artifact-root',
+            config.paths.artifactRoot,
+            '--build-root',
+            config.paths.serviceBuildRoot,
+            '--reload-url',
+            config.urls.routerReload,
             ...config.packageDirs.flatMap((dir) => ['--default-packages-dir', dir]),
           ],
           cwd: skiffRoot,
@@ -564,14 +561,15 @@ function managedProcessSpecs(config) {
   ];
 }
 
-function processEnv(config) {
-  return {
+function processEnv() {
+  const env = {
     ...process.env,
-    SKIFF_DEV_HOME: config.paths.devHome,
-    SKIFF_ARTIFACT_ROOT: config.paths.artifactRoot,
-    SKIFF_DEV_RELOAD_URL: config.urls.routerReload,
     RUST_LOG: process.env.RUST_LOG ?? 'info',
   };
+  delete env.SKIFF_DEV_HOME;
+  delete env.SKIFF_ARTIFACT_ROOT;
+  delete env.SKIFF_DEV_RELOAD_URL;
+  return env;
 }
 
 async function ensureManagedProcessRunning(config, spec, options) {
@@ -617,7 +615,7 @@ async function startManagedProcess(config, spec, options = {}) {
   const err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
   const child = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
-    env: processEnv(config),
+    env: processEnv(),
     detached: true,
     stdio: ['ignore', out.fd, err.fd],
   });
@@ -1461,7 +1459,8 @@ function parseInstanceConfig(rawArgs) {
 function parseFlags(rawArgs, spec) {
   const flags = new Set();
   const positionals = [];
-  for (const arg of rawArgs) {
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
     if (spec.flags.has(arg)) {
       flags.add(arg);
       continue;

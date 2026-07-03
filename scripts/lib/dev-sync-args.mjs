@@ -37,6 +37,7 @@ const repeatableDevSyncOptions = new Set(['--packages-dir', '--default-packages-
 const forwardOptionOrder = Object.freeze([
   ['profile', '--profile'],
   ['artifactRoot', '--artifact-root'],
+  ['buildRoot', '--build-root'],
   ['reloadUrl', '--reload-url'],
   ['config', '--config'],
   ['serviceId', '--service-id'],

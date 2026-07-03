@@ -41,11 +41,12 @@ a secret source. The local control endpoint is
 
 Non-instance service-dev commands default to the main Skiff worktree's
 `.skiff-instance/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and
-instance commands set it from the selected instance config before starting child
-processes. It is a single path, not a list. Dev artifacts, service build cache,
-runtime config, runtime home, and the local runtime binary live under this one
-directory. Package source resolution is project-scoped through `skiff.yml`, not
-`SKIFF_DEV_HOME`. `CARGO_TARGET_DIR` is only a Cargo build-cache override.
+instance commands use their selected config directly instead of relying on that
+environment variable. It is a single path, not a list. Dev artifacts, service
+build cache, runtime config, runtime home, and the local runtime binary live
+under this one directory. Package source resolution is project-scoped through
+`skiff.yml`, not `SKIFF_DEV_HOME`. `CARGO_TARGET_DIR` is only a Cargo
+build-cache override.
 
 Main worktree instance status:
 
@@ -146,11 +147,25 @@ node scripts/skiff.mjs instance paths .skiff-instance/config.yml
 node scripts/skiff.mjs instance paths .skiff-instance/config.yml --json
 ```
 
-The generated config can reuse the configured `installed.runtimeBinary` and
-`installed.identityCli` sources by copying them into `.skiff-instance/dev-home/bin`
-and running those local copies.
-To test current repository runtime or identity changes, update the relevant
-component source in `.skiff-instance/config.yml` and run:
+`ports.base` controls only the non-database instance ports: service HTTP uses
+`base`, router control/runtime uses `base + 1`, and telemetry uses `base + 2`.
+MongoDB is shared local infrastructure and stays on the independently configured
+`ports.mongo`, defaulting to `27017`. To create another directory instance that
+can run at the same time, initialize that instance and then set a different base
+in its config:
+
+```bash
+node scripts/skiff.mjs instance init ../skiff-experiment/.skiff-instance/config.yml
+```
+
+```yaml
+ports:
+  base: 4200
+  mongo: 27017
+```
+
+To test current repository runtime or identity changes, rebuild the instance
+binaries and run:
 
 ```bash
 node scripts/skiff.mjs instance build .skiff-instance/config.yml
