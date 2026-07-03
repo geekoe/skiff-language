@@ -3,12 +3,9 @@ use std::path::Path;
 use compiler_input_model::{PackageDependency, PublicationApiSpec, PublicationCompilePolicy};
 
 use crate::{
-    config_requirements::DependencyPackageConfigFacts,
-    parsed_sources::ParsedCompilerSource,
-    root_refs,
-    source_graph::CompilerSourceFile,
-    ConfigRequirementScope, ConfigRequirementSet, PublicationError, SourceCompileLinkedFacts,
-    SourceCompileLinkedFactsInput,
+    config_requirements::DependencyPackageConfigFacts, parsed_sources::ParsedCompilerSource,
+    root_refs, source_graph::CompilerSourceFile, ConfigRequirementScope, ConfigRequirementSet,
+    PublicationError, SourceCompileLinkedFacts, SourceCompileLinkedFactsInput,
 };
 
 #[derive(Debug)]
@@ -128,11 +125,7 @@ fn validate_source_config_metadata_input(
             root_refs::RootRefValidationPolicy::service_sources()
         }
     };
-    root_refs::validate_source_root_refs(
-        diagnostic_root,
-        production_sources,
-        root_ref_policy,
-    )?;
+    root_refs::validate_source_root_refs(diagnostic_root, production_sources, root_ref_policy)?;
     if matches!(policy, PublicationCompilePolicy::Service { .. }) {
         crate::service_storage_rules::validate_service_storage_sources(parsed_sources)?;
     }
@@ -147,10 +140,8 @@ fn source_config_and_effect_metadata_from_config_usage_seed(
     let scope = ConfigRequirementScope::from_publication_policy(policy);
     let own_config_requirements =
         ConfigRequirementSet::from_usage_seed(config_usage_seed, scope.clone());
-    let effective_config_requirements = ConfigRequirementSet::effective(
-        &own_config_requirements,
-        dependency_config_requirements,
-    )?;
+    let effective_config_requirements =
+        ConfigRequirementSet::effective(&own_config_requirements, dependency_config_requirements)?;
     let legacy_config_projection_requirements =
         effective_config_requirements.matching_scope(&scope);
 

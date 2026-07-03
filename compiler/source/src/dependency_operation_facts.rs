@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref,
+    canonical_interface_method_abi_id, interface_instantiation_ref, type_ref_abi_key,
     CanonicalPublicCallableSignature, ExecutableIr, ExecutableSignatureIr, FileIrUnit,
-    InterfaceInstantiationRef, OperationAbiRef, PackageRefIr, PackageSymbolRef, PublicationAbiUnit,
-    PublicationOperationAbi, PublicationOperationKind, ServiceSymbolRef,
-    SourceCallOperationIndexEntry, TypeDeclIr, TypeRefIr,
+    FunctionTypeParamIr, InterfaceInstantiationRef, OperationAbiRef, PackageRefIr,
+    PackageSymbolRef, ParamIr, PublicationAbiUnit, PublicationOperationAbi,
+    PublicationOperationKind, ServiceSymbolRef, SourceCallOperationIndexEntry, TypeDeclIr,
+    TypeRefIr,
 };
 
 use crate::{
@@ -40,6 +41,8 @@ struct PackagePublicInstanceInterfaceProjection {
     instantiation: InterfaceInstantiationRef,
     methods: Vec<InterfaceMethodSignature>,
 }
+
+type PublicationVisibleTypeNames = BTreeMap<(String, u32), String>;
 
 impl DependencyPackageOperationFacts {
     pub fn from_package_facts(
@@ -84,6 +87,7 @@ fn package_dependency_publication_abi(
     let mut publication_abi = PublicationAbiUnit::empty(package_id, version, "");
     let compiled = package.compile_model();
     let type_symbols = package_dependency_type_symbol_index(package)?;
+    let publication_type_names = package_publication_type_names(package);
     for binding in compiled.export_bindings().public_callables().values() {
         let public_path = package_scoped_public_path(package_id, &binding.public_path);
         let executable = package_public_callable_executable(package, binding)?;
@@ -106,12 +110,12 @@ fn package_dependency_publication_abi(
         if has_self_receiver {
             continue;
         }
-        let public_signature = CanonicalPublicCallableSignature::from(ExecutableSignatureIr {
-            params: executable.params.clone(),
-            return_type: executable.return_type.clone(),
-            self_type: executable.self_type.clone(),
-            may_suspend: executable.may_suspend,
-        });
+        let public_signature =
+            CanonicalPublicCallableSignature::from(publication_visible_executable_signature(
+                &binding.source_module,
+                executable,
+                &publication_type_names,
+            ));
         let operation = OperationAbiRef {
             operation_abi_id: public_function_operation_abi_id(
                 &public_path,
@@ -146,12 +150,16 @@ fn package_dependency_publication_abi(
         let projected_instance = package_dependency_public_instance(
             package,
             &type_symbols,
+            &publication_type_names,
             &public_instance_key,
             public_instance,
         )?;
         for operation in &projected_instance.method_operations {
-            let public_signature =
-                package_dependency_public_instance_operation_signature(package, operation)?;
+            let public_signature = package_dependency_public_instance_operation_signature(
+                package,
+                &publication_type_names,
+                operation,
+            )?;
             publication_abi.operation_abi.push(PublicationOperationAbi {
                 operation: operation.clone(),
                 public_signature,
@@ -242,6 +250,7 @@ fn package_dependency_type_symbol_index(
 fn package_dependency_public_instance(
     package: &SourceCompilePackageFacts<'_>,
     type_symbols: &PackageTypeSymbolIndex,
+    publication_type_names: &PublicationVisibleTypeNames,
     public_instance_key: &str,
     public_instance: &ExportPublicInstanceBinding,
 ) -> Result<skiff_artifact_model::PublicationPublicInstanceExport, PublicationError> {
@@ -249,6 +258,7 @@ fn package_dependency_public_instance(
     let interfaces = package_dependency_public_instance_interfaces(
         package,
         type_symbols,
+        publication_type_names,
         public_instance_key,
         &receiver,
         public_instance,
@@ -274,8 +284,13 @@ fn package_dependency_public_instance(
                 &receiver,
                 &method.name,
             )?;
-            let public_signature =
-                public_signature_from_receiver_executable(executable_signature_ir(executable));
+            let public_signature = public_signature_from_receiver_executable(
+                publication_visible_executable_signature(
+                    &receiver.module_path,
+                    executable,
+                    publication_type_names,
+                ),
+            );
             let interface_signature = public_signature_from_interface_method(method);
             if public_signature != interface_signature {
                 return Err(PublicationError::ContractValidation {
@@ -367,6 +382,7 @@ fn package_dependency_public_instance_receiver(
 fn package_dependency_public_instance_interfaces(
     package: &SourceCompilePackageFacts<'_>,
     type_symbols: &PackageTypeSymbolIndex,
+    publication_type_names: &PublicationVisibleTypeNames,
     public_instance_key: &str,
     receiver: &ServiceSymbolRef,
     public_instance: &ExportPublicInstanceBinding,
@@ -451,6 +467,7 @@ fn package_dependency_public_instance_interfaces(
         let instantiation = package_dependency_public_interface_instantiation_ref(
             package,
             type_symbols,
+            publication_type_names,
             receiver_source_decl,
             &receiver.module_path,
             &interface_ty,
@@ -500,6 +517,16 @@ fn package_dependency_public_instance_interfaces(
                 error.actual_type_args
             ),
         })?;
+        let methods = methods
+            .iter()
+            .map(|method| {
+                publication_visible_interface_method_signature(
+                    &interface_unit.module_path,
+                    method,
+                    publication_type_names,
+                )
+            })
+            .collect();
         interfaces.push(PackagePublicInstanceInterfaceProjection {
             instantiation,
             methods,
@@ -511,6 +538,7 @@ fn package_dependency_public_instance_interfaces(
 fn package_dependency_public_interface_instantiation_ref(
     package: &SourceCompilePackageFacts<'_>,
     type_symbols: &PackageTypeSymbolIndex,
+    publication_type_names: &PublicationVisibleTypeNames,
     receiver_source_decl: &TypeDecl,
     receiver_module_path: &str,
     interface_ty: &TypeRefIr,
@@ -574,8 +602,10 @@ fn package_dependency_public_interface_instantiation_ref(
                     implemented.name
                 ),
             })?;
+        let interface_ty =
+            publication_visible_type_ref(interface_module, interface_ty, publication_type_names);
         return Ok(interface_instantiation_ref(
-            interface_ty.clone(),
+            interface_ty,
             canonical_type_args,
         ));
     }
@@ -656,6 +686,7 @@ fn package_dependency_impl_method_executable_index(
 
 fn package_dependency_public_instance_operation_signature(
     package: &SourceCompilePackageFacts<'_>,
+    publication_type_names: &PublicationVisibleTypeNames,
     operation: &OperationAbiRef,
 ) -> Result<CanonicalPublicCallableSignature, PublicationError> {
     let public_instance_key = operation.public_instance_key.as_deref().ok_or_else(|| {
@@ -694,7 +725,11 @@ fn package_dependency_public_instance_operation_signature(
         method_name,
     )?;
     Ok(public_signature_from_receiver_executable(
-        executable_signature_ir(executable),
+        publication_visible_executable_signature(
+            &receiver.module_path,
+            executable,
+            publication_type_names,
+        ),
     ))
 }
 
@@ -773,6 +808,20 @@ fn package_dependency_nominal_type_ref(
                 symbol: decl.name.clone(),
             })
         }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let unit = package
+                .file_ir_units()
+                .iter()
+                .find(|unit| unit.module_path == *module_path)?;
+            let decl = unit.type_table.get(*type_index as usize)?;
+            Some(ServiceSymbolRef {
+                module_path: module_path.clone(),
+                symbol: decl.name.clone(),
+            })
+        }
         TypeRefIr::ServiceSymbol { symbol } => {
             package_dependency_type_decl(package, &symbol.module_path, &symbol.symbol)?;
             Some(symbol.clone())
@@ -827,10 +876,215 @@ fn package_dependency_type_ref_matches_interface(
             .is_some_and(|decl| {
                 decl.name == interface_symbol && context_module == interface_module
             }),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => package
+            .file_ir_units()
+            .iter()
+            .find(|unit| unit.module_path == *module_path)
+            .and_then(|unit| unit.type_table.get(*type_index as usize))
+            .is_some_and(|decl| decl.name == interface_symbol && module_path == interface_module),
         TypeRefIr::ServiceSymbol { symbol } => {
             symbol.module_path == interface_module && symbol.symbol == interface_symbol
         }
         _ => false,
+    }
+}
+
+fn package_publication_type_names(
+    package: &SourceCompilePackageFacts<'_>,
+) -> PublicationVisibleTypeNames {
+    package
+        .file_ir_units()
+        .iter()
+        .flat_map(|unit| {
+            unit.type_table
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| ((unit.module_path.clone(), index as u32), ty.name.clone()))
+        })
+        .collect()
+}
+
+fn publication_visible_executable_signature(
+    context_module: &str,
+    executable: &ExecutableIr,
+    publication_type_names: &PublicationVisibleTypeNames,
+) -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: executable
+            .params
+            .iter()
+            .map(|param| ParamIr {
+                name: param.name.clone(),
+                slot: param.slot,
+                ty: publication_visible_type_ref(context_module, &param.ty, publication_type_names),
+            })
+            .collect(),
+        return_type: publication_visible_type_ref(
+            context_module,
+            &executable.return_type,
+            publication_type_names,
+        ),
+        self_type: executable
+            .self_type
+            .as_ref()
+            .map(|ty| publication_visible_type_ref(context_module, ty, publication_type_names)),
+        may_suspend: executable.may_suspend,
+    }
+}
+
+fn publication_visible_interface_method_signature(
+    context_module: &str,
+    method: &InterfaceMethodSignature,
+    publication_type_names: &PublicationVisibleTypeNames,
+) -> InterfaceMethodSignature {
+    InterfaceMethodSignature {
+        name: method.name.clone(),
+        type_params: method.type_params.clone(),
+        params: method
+            .params
+            .iter()
+            .map(|param| FunctionTypeParamIr {
+                name: param.name.clone(),
+                ty: publication_visible_type_ref(context_module, &param.ty, publication_type_names),
+            })
+            .collect(),
+        return_type: publication_visible_type_ref(
+            context_module,
+            &method.return_type,
+            publication_type_names,
+        ),
+        is_native: method.is_native,
+        is_provider: method.is_provider,
+        is_static: method.is_static,
+        implicit_self: method
+            .implicit_self
+            .as_ref()
+            .map(|ty| publication_visible_type_ref(context_module, ty, publication_type_names)),
+    }
+}
+
+fn publication_visible_type_ref(
+    context_module: &str,
+    ty: &TypeRefIr,
+    publication_type_names: &PublicationVisibleTypeNames,
+) -> TypeRefIr {
+    match ty {
+        TypeRefIr::LocalType { type_index } => publication_type_names
+            .get(&(context_module.to_string(), *type_index))
+            .map(|symbol| TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: context_module.to_string(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| ty.clone()),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => publication_type_names
+            .get(&(module_path.clone(), *type_index))
+            .map(|symbol| TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: module_path.clone(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| ty.clone()),
+        TypeRefIr::Native { name, args } => TypeRefIr::Native {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| {
+                    publication_visible_type_ref(context_module, arg, publication_type_names)
+                })
+                .collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        publication_visible_type_ref(context_module, ty, publication_type_names),
+                    )
+                })
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items
+                .iter()
+                .map(|item| {
+                    publication_visible_type_ref(context_module, item, publication_type_names)
+                })
+                .collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(publication_visible_type_ref(
+                context_module,
+                inner,
+                publication_type_names,
+            )),
+        },
+        TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
+            interface: publication_visible_interface_instantiation_ref(
+                context_module,
+                interface,
+                publication_type_names,
+            ),
+        },
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| FunctionTypeParamIr {
+                    name: param.name.clone(),
+                    ty: publication_visible_type_ref(
+                        context_module,
+                        &param.ty,
+                        publication_type_names,
+                    ),
+                })
+                .collect(),
+            return_type: Box::new(publication_visible_type_ref(
+                context_module,
+                return_type,
+                publication_type_names,
+            )),
+        },
+        TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn publication_visible_interface_instantiation_ref(
+    context_module: &str,
+    interface: &InterfaceInstantiationRef,
+    publication_type_names: &PublicationVisibleTypeNames,
+) -> InterfaceInstantiationRef {
+    let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+        .map(|identity| {
+            type_ref_abi_key(&publication_visible_type_ref(
+                context_module,
+                &identity,
+                publication_type_names,
+            ))
+        })
+        .unwrap_or_else(|_| interface.interface_abi_id.clone());
+    InterfaceInstantiationRef {
+        interface_abi_id,
+        canonical_type_args: interface
+            .canonical_type_args
+            .iter()
+            .map(|arg| publication_visible_type_ref(context_module, arg, publication_type_names))
+            .collect(),
     }
 }
 
@@ -858,15 +1112,6 @@ fn public_signature_from_receiver_executable(
         }
     }
     public_signature
-}
-
-fn executable_signature_ir(executable: &ExecutableIr) -> ExecutableSignatureIr {
-    ExecutableSignatureIr {
-        params: executable.params.clone(),
-        return_type: executable.return_type.clone(),
-        self_type: executable.self_type.clone(),
-        may_suspend: executable.may_suspend,
-    }
 }
 
 fn package_public_callable_executable<'a>(

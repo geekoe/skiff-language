@@ -508,7 +508,7 @@ impl<'a> RuntimeFileLinker<'a> {
         })
     }
 
-    fn publication_file(
+    pub(super) fn publication_file(
         &self,
         context: &str,
         unit: &UnitAddr,
@@ -661,7 +661,20 @@ impl<'a> RuntimeFileLinker<'a> {
             LinkedTypeRef::LocalType { type_index } => {
                 let addr = scope.local_type_addr(*type_index);
                 self.validate_type_addr(&addr)?;
-                self.public_package_type_ref_for_addr(&addr)?
+                match self.public_package_type_ref_for_addr(&addr)? {
+                    Some(replacement) => Some(replacement),
+                    // A bare local index is not a publication-wide identity;
+                    // lift it to the (module path, type index) form so
+                    // dispatch-table matching can resolve it without a public
+                    // export.
+                    None => {
+                        let file = self.file_for_addr(&addr.unit, &addr.file)?;
+                        Some(LinkedTypeRef::PublicationType {
+                            module_path: file.module_path.clone(),
+                            type_index: addr.type_index,
+                        })
+                    }
+                }
             }
             LinkedTypeRef::PublicationType {
                 module_path,

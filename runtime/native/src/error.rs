@@ -569,7 +569,9 @@ fn native_error_from_wire_payload_ref(error: &dyn WirePayload) -> RuntimeError {
     RuntimeError::Decode(error.to_string())
 }
 
-fn native_error_from_model_ref(error: &skiff_runtime_model::error::RuntimeModelError) -> RuntimeError {
+fn native_error_from_model_ref(
+    error: &skiff_runtime_model::error::RuntimeModelError,
+) -> RuntimeError {
     match error {
         skiff_runtime_model::error::RuntimeModelError::Decode(message) => {
             RuntimeError::Decode(message.clone())
@@ -598,7 +600,9 @@ fn native_error_from_boundary_ref(error: &skiff_runtime_boundary::RuntimeError) 
         skiff_runtime_boundary::RuntimeError::InvalidArtifact(message) => {
             RuntimeError::InvalidArtifact(message.clone())
         }
-        skiff_runtime_boundary::RuntimeError::Decode(message) => RuntimeError::Decode(message.clone()),
+        skiff_runtime_boundary::RuntimeError::Decode(message) => {
+            RuntimeError::Decode(message.clone())
+        }
         skiff_runtime_boundary::RuntimeError::DecodeTarget { target, message } => {
             RuntimeError::DecodeTarget {
                 target: target.clone(),

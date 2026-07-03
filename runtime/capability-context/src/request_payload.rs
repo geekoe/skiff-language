@@ -77,9 +77,7 @@ pub enum RequestPayloadContextError {
 impl fmt::Display for RequestPayloadContextError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingBinaryHttp { .. } => {
-                formatter.write_str(MISSING_BINARY_HTTP_MESSAGE)
-            }
+            Self::MissingBinaryHttp { .. } => formatter.write_str(MISSING_BINARY_HTTP_MESSAGE),
         }
     }
 }

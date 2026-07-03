@@ -125,5 +125,4 @@ impl WirePayload for CapabilityError {
 }
 
 pub type CapabilityResult<T> = Result<T, CapabilityError>;
-pub type CapabilityFuture<'a, T> =
-    Pin<Box<dyn Future<Output = CapabilityResult<T>> + Send + 'a>>;
+pub type CapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = CapabilityResult<T>> + Send + 'a>>;

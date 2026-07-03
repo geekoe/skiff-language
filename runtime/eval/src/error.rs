@@ -281,11 +281,19 @@ fn capability_budget_reason_to_eval(
     }
 }
 
+/// Convert an opaque wire carrier arriving from the host root into an eval
+/// error.
+///
+/// Carriers stay `RuntimeError::Opaque` by default: their `WirePayload`
+/// impls already provide the payload and catch projection, so re-projecting
+/// them into eval's structured variants is unnecessary and loses the original
+/// carrier. Only errors whose semantics eval (or its callers) consume
+/// structurally are unpacked: eval's own errors (so `Recoverable`, budget and
+/// cancellation control flow keep working after a round trip), model/native
+/// control errors, and the boundary `Recoverable` variant that drives the
+/// recoverable-spawn machinery.
 fn runtime_error_from_wire_payload(error: Box<dyn WirePayload>) -> RuntimeError {
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<RuntimeError>()
-    {
+    if let Some(error) = error.as_any().downcast_ref::<RuntimeError>() {
         return runtime_error_from_eval_ref(error);
     }
     if let Some(error) = error
@@ -294,11 +302,11 @@ fn runtime_error_from_wire_payload(error: Box<dyn WirePayload>) -> RuntimeError 
     {
         return runtime_error_from_model_ref(error);
     }
-    if let Some(error) = error
+    if let Some(skiff_runtime_boundary::error::RuntimeError::Recoverable(recoverable)) = error
         .as_any()
         .downcast_ref::<skiff_runtime_boundary::error::RuntimeError>()
     {
-        return runtime_error_from_boundary_ref(error);
+        return RuntimeError::Recoverable(recoverable.clone());
     }
     if let Some(error) = error
         .as_any()
@@ -336,22 +344,60 @@ fn runtime_error_from_wire_payload(error: Box<dyn WirePayload>) -> RuntimeError 
     {
         return runtime_error_from_db_capability_ref(error);
     }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::FileCapabilityError>()
-    {
-        return runtime_error_from_file_capability_ref(error);
-    }
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<skiff_runtime_capability_context::RequestPayloadContextError>()
-    {
-        return runtime_error_from_request_payload_ref(error);
-    }
     RuntimeError::Opaque(error)
 }
 
-fn runtime_error_from_model_ref(error: &skiff_runtime_model::error::RuntimeModelError) -> RuntimeError {
+/// Recursion-aware cancellation detection over opaque wire carriers, mirroring
+/// the host-side `wire_payload_is_request_cancelled` idiom for the error types
+/// eval can observe.
+fn wire_payload_is_cancelled(error: &dyn WirePayload) -> bool {
+    if let Some(error) = error.as_any().downcast_ref::<RuntimeError>() {
+        return error.is_cancelled();
+    }
+    if let Some(error) = error
+        .as_any()
+        .downcast_ref::<skiff_runtime_capability_context::ExecutionControlError>()
+    {
+        return match error {
+            skiff_runtime_capability_context::ExecutionControlError::Cancelled => true,
+            skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(failure) => {
+                failure.reason == skiff_runtime_capability_context::ExecutionBudgetReason::Cancelled
+            }
+        };
+    }
+    if let Some(error) = error
+        .as_any()
+        .downcast_ref::<skiff_runtime_capability_context::StreamRuntimeError>()
+    {
+        return match error {
+            skiff_runtime_capability_context::StreamRuntimeError::Cancelled => true,
+            skiff_runtime_capability_context::StreamRuntimeError::Producer(error) => {
+                wire_payload_is_cancelled(error.as_ref())
+            }
+            skiff_runtime_capability_context::StreamRuntimeError::Decode(_) => false,
+        };
+    }
+    if let Some(error) = error
+        .as_any()
+        .downcast_ref::<skiff_runtime_native::error::RuntimeError>()
+    {
+        return match error {
+            skiff_runtime_native::error::RuntimeError::Cancelled => true,
+            skiff_runtime_native::error::RuntimeError::ExecutionBudgetExceeded {
+                reason, ..
+            } => *reason == skiff_runtime_native::error::BudgetReason::Cancelled,
+            skiff_runtime_native::error::RuntimeError::Opaque(error) => {
+                wire_payload_is_cancelled(error.as_ref())
+            }
+            _ => false,
+        };
+    }
+    false
+}
+
+fn runtime_error_from_model_ref(
+    error: &skiff_runtime_model::error::RuntimeModelError,
+) -> RuntimeError {
     match error {
         skiff_runtime_model::error::RuntimeModelError::Decode(message) => {
             RuntimeError::Decode(message.clone())
@@ -448,13 +494,17 @@ fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
             frame: frame.clone(),
             error: Box::new(runtime_error_from_eval_ref(error)),
         },
-        RuntimeError::RootRuntimePayload(payload) => RuntimeError::RootRuntimePayload(payload.clone()),
+        RuntimeError::RootRuntimePayload(payload) => {
+            RuntimeError::RootRuntimePayload(payload.clone())
+        }
         RuntimeError::Opaque(error) => runtime_error_from_wire_payload_ref(error.as_ref()),
         RuntimeError::Json(_) => RuntimeError::Decode(error.to_string()),
     }
 }
 
-fn runtime_error_from_boundary_ref(error: &skiff_runtime_boundary::error::RuntimeError) -> RuntimeError {
+fn runtime_error_from_boundary_ref(
+    error: &skiff_runtime_boundary::error::RuntimeError,
+) -> RuntimeError {
     match error {
         skiff_runtime_boundary::error::RuntimeError::InvalidArtifact(message) => {
             RuntimeError::InvalidArtifact(message.clone())
@@ -516,7 +566,9 @@ fn runtime_error_from_boundary_ref(error: &skiff_runtime_boundary::error::Runtim
     }
 }
 
-fn runtime_error_from_native_ref(error: &skiff_runtime_native::error::RuntimeError) -> RuntimeError {
+fn runtime_error_from_native_ref(
+    error: &skiff_runtime_native::error::RuntimeError,
+) -> RuntimeError {
     match error {
         skiff_runtime_native::error::RuntimeError::InvalidArtifact(message) => {
             RuntimeError::InvalidArtifact(message.clone())
@@ -587,7 +639,9 @@ fn runtime_error_from_native_ref(error: &skiff_runtime_native::error::RuntimeErr
         skiff_runtime_native::error::RuntimeError::Opaque(_) => {
             RuntimeError::Decode(error.to_string())
         }
-        skiff_runtime_native::error::RuntimeError::Json(_) => RuntimeError::Decode(error.to_string()),
+        skiff_runtime_native::error::RuntimeError::Json(_) => {
+            RuntimeError::Decode(error.to_string())
+        }
     }
 }
 
@@ -629,10 +683,7 @@ fn runtime_error_from_stream_ref(
 }
 
 fn runtime_error_from_wire_payload_ref(error: &dyn WirePayload) -> RuntimeError {
-    if let Some(error) = error
-        .as_any()
-        .downcast_ref::<RuntimeError>()
-    {
+    if let Some(error) = error.as_any().downcast_ref::<RuntimeError>() {
         return runtime_error_from_eval_ref(error);
     }
     if let Some(error) = error
@@ -899,8 +950,12 @@ fn native_budget_reason(reason: BudgetReason) -> skiff_runtime_native::error::Bu
 impl From<skiff_runtime_capability_context::ExecutionControlError> for RuntimeError {
     fn from(error: skiff_runtime_capability_context::ExecutionControlError) -> Self {
         match error {
+            // Cancellation is a control signal, not a domain error: keep the
+            // wire carrier opaque so payload/catch projections delegate to the
+            // control error itself and cancellation detection recurses through
+            // the carrier (see `RuntimeError::is_cancelled`).
             skiff_runtime_capability_context::ExecutionControlError::Cancelled => {
-                RuntimeError::Cancelled
+                RuntimeError::Opaque(Box::new(error))
             }
             skiff_runtime_capability_context::ExecutionControlError::BudgetExceeded(failure) => {
                 if failure.reason
@@ -1024,10 +1079,7 @@ impl From<skiff_runtime_capability_context::RequestPayloadContextError> for Runt
         match error {
             skiff_runtime_capability_context::RequestPayloadContextError::MissingBinaryHttp {
                 target,
-            } => RuntimeError::Protocol {
-                target,
-                message,
-            },
+            } => RuntimeError::Protocol { target, message },
         }
     }
 }
@@ -1164,6 +1216,27 @@ impl fmt::Display for UserException {
 impl RuntimeError {
     pub fn from_wire_payload(error: Box<dyn WirePayload>) -> Self {
         runtime_error_from_wire_payload(error)
+    }
+
+    /// Whether this error is (or carries) a cancellation signal.
+    ///
+    /// Cancellation may arrive either as eval's structured
+    /// `RuntimeError::Cancelled` or as an opaque wire carrier (e.g.
+    /// `ExecutionControlError::Cancelled` boxed by
+    /// `From<ExecutionControlError>` or by the host root). Interpreter sites
+    /// that swallow or forward cancellation must use this recursion-aware
+    /// check instead of matching `RuntimeError::Cancelled` structurally.
+    pub fn is_cancelled(&self) -> bool {
+        match self {
+            RuntimeError::Cancelled => true,
+            RuntimeError::ExecutionBudgetExceeded { reason, .. } => {
+                *reason == BudgetReason::Cancelled
+            }
+            RuntimeError::WithSource { error, .. }
+            | RuntimeError::WithDiagnosticFrame { error, .. } => error.is_cancelled(),
+            RuntimeError::Opaque(error) => wire_payload_is_cancelled(error.as_ref()),
+            _ => false,
+        }
     }
 
     pub fn decode_target(target: impl Into<String>, message: impl Into<String>) -> Self {

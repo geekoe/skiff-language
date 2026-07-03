@@ -755,6 +755,21 @@ impl<'a> RuntimeFileLinker<'a> {
             file,
             declaration_name,
         )?];
+        // Publication-local direct refs address interface declarations by
+        // (module path, type index) instead of an exported symbol name, so the
+        // candidate list must also carry that form.
+        if let Some(declaration) = file.declarations.types.get(declaration_name) {
+            push_unique_candidate(
+                &mut abi_ids,
+                linked_type_ref_abi_key(
+                    context,
+                    &LinkedTypeRef::PublicationType {
+                        module_path: file.module_path.clone(),
+                        type_index: declaration.type_index,
+                    },
+                )?,
+            );
+        }
 
         if let UnitAddr::Package(package_slot) = unit {
             self.extend_package_interface_declaration_abi_ids(

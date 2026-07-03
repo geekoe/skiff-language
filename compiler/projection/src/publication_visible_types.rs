@@ -23,6 +23,7 @@ pub(crate) fn publication_type_names_from_file_units<'a>(
 }
 
 pub(crate) fn projection_visible_executable_signature(
+    context_module: &str,
     executable: &ExecutableIr,
     publication_type_names: &PublicationVisibleTypeNames,
 ) -> ExecutableSignatureIr {
@@ -33,19 +34,24 @@ pub(crate) fn projection_visible_executable_signature(
             .map(|param| ParamIr {
                 name: param.name.clone(),
                 slot: param.slot,
-                ty: projection_visible_type_ref(&param.ty, publication_type_names),
+                ty: projection_visible_type_ref(context_module, &param.ty, publication_type_names),
             })
             .collect(),
-        return_type: projection_visible_type_ref(&executable.return_type, publication_type_names),
+        return_type: projection_visible_type_ref(
+            context_module,
+            &executable.return_type,
+            publication_type_names,
+        ),
         self_type: executable
             .self_type
             .as_ref()
-            .map(|ty| projection_visible_type_ref(ty, publication_type_names)),
+            .map(|ty| projection_visible_type_ref(context_module, ty, publication_type_names)),
         may_suspend: executable.may_suspend,
     }
 }
 
 pub(crate) fn projection_visible_interface_method_signature(
+    context_module: &str,
     method: &InterfaceMethodSignature,
     publication_type_names: &PublicationVisibleTypeNames,
 ) -> InterfaceMethodSignature {
@@ -57,21 +63,26 @@ pub(crate) fn projection_visible_interface_method_signature(
             .iter()
             .map(|param| FunctionTypeParamIr {
                 name: param.name.clone(),
-                ty: projection_visible_type_ref(&param.ty, publication_type_names),
+                ty: projection_visible_type_ref(context_module, &param.ty, publication_type_names),
             })
             .collect(),
-        return_type: projection_visible_type_ref(&method.return_type, publication_type_names),
+        return_type: projection_visible_type_ref(
+            context_module,
+            &method.return_type,
+            publication_type_names,
+        ),
         is_native: method.is_native,
         is_provider: method.is_provider,
         is_static: method.is_static,
         implicit_self: method
             .implicit_self
             .as_ref()
-            .map(|ty| projection_visible_type_ref(ty, publication_type_names)),
+            .map(|ty| projection_visible_type_ref(context_module, ty, publication_type_names)),
     }
 }
 
 pub(crate) fn projection_visible_type_descriptor(
+    context_module: &str,
     descriptor: &TypeDescriptorIr,
     publication_type_names: &PublicationVisibleTypeNames,
 ) -> TypeDescriptorIr {
@@ -82,18 +93,20 @@ pub(crate) fn projection_visible_type_descriptor(
                 .map(|(name, ty)| {
                     (
                         name.clone(),
-                        projection_visible_type_ref(ty, publication_type_names),
+                        projection_visible_type_ref(context_module, ty, publication_type_names),
                     )
                 })
                 .collect(),
         },
         TypeDescriptorIr::Alias { target } => TypeDescriptorIr::Alias {
-            target: projection_visible_type_ref(target, publication_type_names),
+            target: projection_visible_type_ref(context_module, target, publication_type_names),
         },
         TypeDescriptorIr::Union { variants } => TypeDescriptorIr::Union {
             variants: variants
                 .iter()
-                .map(|variant| projection_visible_type_ref(variant, publication_type_names))
+                .map(|variant| {
+                    projection_visible_type_ref(context_module, variant, publication_type_names)
+                })
                 .collect(),
         },
         TypeDescriptorIr::Native { symbol } => TypeDescriptorIr::Native {
@@ -102,11 +115,33 @@ pub(crate) fn projection_visible_type_descriptor(
     }
 }
 
+/// Normalize a lowered `TypeRefIr` back into the symbolic form required by the
+/// publication-visible ABI surface.
+///
+/// The `publication-local direct refs` lowering pass rewrites cross-module
+/// references inside publication File IR into direct addresses
+/// (`PublicationType { module_path, type_index }` across modules,
+/// `LocalType { type_index }` within a module). The publication ABI/public
+/// signature — the bytes fed into `operationAbiId` and
+/// `remoteBoxProvenance.interfaceAbiId` — must stay in symbolic
+/// `ServiceSymbol { module_path, symbol }` form so producers and consumers hash
+/// identically. Both the direct `PublicationType` form and the same-module
+/// `LocalType` form are resolved here (the latter against `context_module`).
 pub(crate) fn projection_visible_type_ref(
+    context_module: &str,
     ty: &TypeRefIr,
     publication_type_names: &PublicationVisibleTypeNames,
 ) -> TypeRefIr {
     match ty {
+        TypeRefIr::LocalType { type_index } => publication_type_names
+            .get(&(context_module.to_string(), *type_index))
+            .map(|symbol| TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: context_module.to_string(),
+                    symbol: symbol.clone(),
+                },
+            })
+            .unwrap_or_else(|| ty.clone()),
         TypeRefIr::PublicationType {
             module_path,
             type_index,
@@ -123,7 +158,7 @@ pub(crate) fn projection_visible_type_ref(
             name: name.clone(),
             args: args
                 .iter()
-                .map(|arg| projection_visible_type_ref(arg, publication_type_names))
+                .map(|arg| projection_visible_type_ref(context_module, arg, publication_type_names))
                 .collect(),
         },
         TypeRefIr::Record { fields } => TypeRefIr::Record {
@@ -132,7 +167,7 @@ pub(crate) fn projection_visible_type_ref(
                 .map(|(name, ty)| {
                     (
                         name.clone(),
-                        projection_visible_type_ref(ty, publication_type_names),
+                        projection_visible_type_ref(context_module, ty, publication_type_names),
                     )
                 })
                 .collect(),
@@ -140,32 +175,25 @@ pub(crate) fn projection_visible_type_ref(
         TypeRefIr::Union { items } => TypeRefIr::Union {
             items: items
                 .iter()
-                .map(|item| projection_visible_type_ref(item, publication_type_names))
+                .map(|item| {
+                    projection_visible_type_ref(context_module, item, publication_type_names)
+                })
                 .collect(),
         },
         TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(projection_visible_type_ref(inner, publication_type_names)),
+            inner: Box::new(projection_visible_type_ref(
+                context_module,
+                inner,
+                publication_type_names,
+            )),
         },
-        TypeRefIr::AnyInterface { interface } => {
-            let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-                .map(|identity| {
-                    type_ref_abi_key(&projection_visible_type_ref(
-                        &identity,
-                        publication_type_names,
-                    ))
-                })
-                .unwrap_or_else(|_| interface.interface_abi_id.clone());
-            TypeRefIr::AnyInterface {
-                interface: InterfaceInstantiationRef {
-                    interface_abi_id,
-                    canonical_type_args: interface
-                        .canonical_type_args
-                        .iter()
-                        .map(|arg| projection_visible_type_ref(arg, publication_type_names))
-                        .collect(),
-                },
-            }
-        }
+        TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
+            interface: projection_visible_interface_instantiation_ref(
+                context_module,
+                interface,
+                publication_type_names,
+            ),
+        },
         TypeRefIr::Function {
             params,
             return_type,
@@ -174,19 +202,51 @@ pub(crate) fn projection_visible_type_ref(
                 .iter()
                 .map(|param| FunctionTypeParamIr {
                     name: param.name.clone(),
-                    ty: projection_visible_type_ref(&param.ty, publication_type_names),
+                    ty: projection_visible_type_ref(
+                        context_module,
+                        &param.ty,
+                        publication_type_names,
+                    ),
                 })
                 .collect(),
             return_type: Box::new(projection_visible_type_ref(
+                context_module,
                 return_type,
                 publication_type_names,
             )),
         },
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
+        TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+/// Normalize an interface instantiation reference (its `interfaceAbiId`
+/// identity payload plus canonical type args) back to symbolic form, mirroring
+/// [`projection_visible_type_ref`]. Used for `any I` interfaces and for
+/// `remoteBoxProvenance` interface identities.
+pub(crate) fn projection_visible_interface_instantiation_ref(
+    context_module: &str,
+    interface: &InterfaceInstantiationRef,
+    publication_type_names: &PublicationVisibleTypeNames,
+) -> InterfaceInstantiationRef {
+    let interface_abi_id = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+        .map(|identity| {
+            type_ref_abi_key(&projection_visible_type_ref(
+                context_module,
+                &identity,
+                publication_type_names,
+            ))
+        })
+        .unwrap_or_else(|_| interface.interface_abi_id.clone());
+    InterfaceInstantiationRef {
+        interface_abi_id,
+        canonical_type_args: interface
+            .canonical_type_args
+            .iter()
+            .map(|arg| projection_visible_type_ref(context_module, arg, publication_type_names))
+            .collect(),
     }
 }

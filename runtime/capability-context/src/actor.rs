@@ -36,10 +36,8 @@ pub trait ActorCapabilityApi: Send + Sync {
         request: ActorFindControlRequest,
     ) -> CapabilityFuture<'a, Option<ActorRef>>;
 
-    fn remove_actor<'a>(
-        &'a self,
-        request: ActorRemoveControlRequest,
-    ) -> CapabilityFuture<'a, bool>;
+    fn remove_actor<'a>(&'a self, request: ActorRemoveControlRequest)
+        -> CapabilityFuture<'a, bool>;
 
     fn submit_spawn<'a>(
         &'a self,
@@ -130,10 +128,7 @@ impl<'a> ActorCapabilityContext<'a> {
         self.inner.find_actor(request).await
     }
 
-    pub async fn remove_actor(
-        &self,
-        request: ActorRemoveControlRequest,
-    ) -> CapabilityResult<bool> {
+    pub async fn remove_actor(&self, request: ActorRemoveControlRequest) -> CapabilityResult<bool> {
         self.inner.remove_actor(request).await
     }
 
@@ -172,10 +167,7 @@ impl<'a> ActorClient<'a> {
         self.context.find_actor(request).await
     }
 
-    pub async fn remove_actor(
-        &self,
-        request: ActorRemoveControlRequest,
-    ) -> CapabilityResult<bool> {
+    pub async fn remove_actor(&self, request: ActorRemoveControlRequest) -> CapabilityResult<bool> {
         self.context.remove_actor(request).await
     }
 

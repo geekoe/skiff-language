@@ -921,7 +921,9 @@ impl<'a> EvalContext<'a> {
                     )
                     .await
             }
-            LinkedCallTarget::LocalExecutable { .. } | LinkedCallTarget::PackageSymbol { .. } => {
+            LinkedCallTarget::LocalExecutable { .. }
+            | LinkedCallTarget::PublicationExecutable { .. }
+            | LinkedCallTarget::PackageSymbol { .. } => {
                 Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram call target {} was not linked before execution",
                     program_call_target_kind(&call.target)

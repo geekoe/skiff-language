@@ -89,6 +89,12 @@ fn validate_request_fields(object: &serde_json::Map<String, Value>) -> Result<()
         {
             continue;
         }
+        // Legacy request-level response cap. Response size limits are enforced
+        // by runtime config now; accept and ignore the field so old callers
+        // keep working.
+        if key == "maxResponseBytes" {
+            continue;
+        }
         return Err(http_error(format!(
             "std.http.request has unknown field {key}"
         )));

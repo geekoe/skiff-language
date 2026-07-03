@@ -4,9 +4,13 @@ use crate::context::{
     ProjectedServiceDependencyLockEntry, ProjectedServiceDependencyRemoteBoxProvenance,
 };
 use crate::error::ProjectionError;
+use crate::publication_visible_types::{
+    projection_visible_interface_instantiation_ref, publication_type_names_from_file_units,
+};
 use crate::typed_artifacts::ServiceDependencyConstraint;
 use skiff_artifact_model::{
-    BoxSourceIr, ExecutableBody, ExprIr, FileIrUnit, OperationAbiRef, PublicationOperationAbi,
+    canonical_interface_method_abi_id, BoxSourceIr, ExecutableBody, ExprIr, FileIrUnit,
+    InterfaceInstantiationRef, OperationAbiRef, PublicationOperationAbi,
 };
 
 pub struct RemoteBoxProvenanceInput<'a> {
@@ -34,6 +38,11 @@ fn dependency_lock_with_remote_box_provenance(
         .iter()
         .map(|dependency| (dependency.alias.as_str(), dependency))
         .collect::<BTreeMap<_, _>>();
+    let publication_type_names = publication_type_names_from_file_units(
+        service_file_units
+            .iter()
+            .map(|unit| (unit.module_path.as_str(), unit)),
+    );
     let mut lock = dependency_lock.to_vec();
     let lock_entry_by_alias = lock
         .iter()
@@ -41,7 +50,7 @@ fn dependency_lock_with_remote_box_provenance(
         .map(|(index, entry)| (entry.alias().to_string(), index))
         .collect::<BTreeMap<_, _>>();
 
-    for source in remote_box_sources(service_file_units) {
+    for (source_module, source) in remote_box_sources(service_file_units) {
         let BoxSourceIr::Remote {
             dependency_ref,
             public_instance_key,
@@ -51,6 +60,19 @@ fn dependency_lock_with_remote_box_provenance(
         else {
             continue;
         };
+        // The `publication-local direct refs` lowering pass rewrites the box
+        // source's interface identity (and the interface identity embedded in
+        // each slot's methodAbiId) into direct address form. The published ABI
+        // that producers hash — and that we compare against here — is symbolic,
+        // so normalize the consumer-captured interface back to symbolic form
+        // before recording provenance. Otherwise producer and consumer derive
+        // divergent interfaceAbiId/methodAbiId strings and linking fails.
+        let interface = projection_visible_interface_instantiation_ref(
+            source_module,
+            &operations.interface,
+            &publication_type_names,
+        );
+        let interface_display = interface.interface_abi_id.clone();
         let Some(lock_index) = lock_entry_by_alias.get(dependency_ref.as_str()).copied() else {
             return Err(ProjectionError::ContractValidation {
                 message: format!(
@@ -87,10 +109,10 @@ fn dependency_lock_with_remote_box_provenance(
             )?;
             lock[lock_index].add_remote_box_provenance(
                 ProjectedServiceDependencyRemoteBoxProvenance {
-                    interface: operations.interface.clone(),
-                    interface_display: operations.interface.interface_abi_id.clone(),
+                    interface: interface.clone(),
+                    interface_display: interface_display.clone(),
                     public_instance: public_instance_key.clone(),
-                    method_abi_id: slot.method_abi_id.clone(),
+                    method_abi_id: normalized_method_abi_id(&interface, &slot.method_abi_id),
                     operation,
                 },
             );
@@ -100,10 +122,11 @@ fn dependency_lock_with_remote_box_provenance(
     Ok(lock)
 }
 
-fn remote_box_sources(service_file_units: &[FileIrUnit]) -> Vec<&BoxSourceIr> {
+fn remote_box_sources(service_file_units: &[FileIrUnit]) -> Vec<(&str, &BoxSourceIr)> {
     service_file_units
         .iter()
         .flat_map(|unit| {
+            let module_path = unit.module_path.as_str();
             unit.constants
                 .iter()
                 .flat_map(|constant| remote_box_sources_in_body(&constant.body))
@@ -112,8 +135,22 @@ fn remote_box_sources(service_file_units: &[FileIrUnit]) -> Vec<&BoxSourceIr> {
                         .iter()
                         .flat_map(|executable| remote_box_sources_in_body(&executable.body)),
                 )
+                .map(move |source| (module_path, source))
         })
         .collect()
+}
+
+/// Recompute a slot's methodAbiId against the symbol-normalized interface so
+/// the consumer's provenance methodAbiId matches the producer's published
+/// operation. Falls back to the original identifier when it does not carry the
+/// expected `method:<interface>:<method>` shape.
+fn normalized_method_abi_id(interface: &InterfaceInstantiationRef, method_abi_id: &str) -> String {
+    match method_abi_id.rsplit_once(':') {
+        Some((_, method_name)) if !method_name.is_empty() => {
+            canonical_interface_method_abi_id(interface, method_name)
+        }
+        _ => method_abi_id.to_string(),
+    }
 }
 
 fn remote_box_sources_in_body(body: &ExecutableBody) -> impl Iterator<Item = &BoxSourceIr> {

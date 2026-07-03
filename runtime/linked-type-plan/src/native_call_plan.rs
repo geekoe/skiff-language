@@ -260,6 +260,7 @@ fn substitute_type_params(
             return_type: return_type.clone(),
         },
         LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
         | LinkedTypeRef::Address { .. }
@@ -305,6 +306,7 @@ fn unresolved_type_param_name<'a>(
             .find_map(|param| unresolved_type_param_name(&param.ty, allowed_unresolved))
             .or_else(|| unresolved_type_param_name(return_type, allowed_unresolved)),
         LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
         | LinkedTypeRef::Address { .. }

@@ -114,6 +114,8 @@ impl HttpClientCapabilityContext {
         input: &Value,
         expected_item_type: Option<&RuntimeTypePlan>,
     ) -> CapabilityResult<Value> {
-        self.inner.dispatch_http_sse(input, expected_item_type).await
+        self.inner
+            .dispatch_http_sse(input, expected_item_type)
+            .await
     }
 }

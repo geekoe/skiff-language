@@ -385,7 +385,12 @@ fn run_ready_service_test_batch(
         Ok(prepared) => prepared,
         Err(message) => {
             for ready_index in batch {
-                record_service_test_failure(&ready_tests[*ready_index], message.clone(), results);
+                record_service_test_error(
+                    &ready_tests[*ready_index],
+                    message.clone(),
+                    options,
+                    results,
+                );
             }
             return;
         }
@@ -450,21 +455,34 @@ fn record_service_test_runtime_result(
             });
         }
         Err(message) => {
-            if options.live {
-                if let Some(message) = live_missing_config_skip_message(&message) {
-                    results[ready.result_index] = Some(SkiffTestResult {
-                        module_path: ready.test.module_path.clone(),
-                        name: ready.test.name.clone(),
-                        passed: false,
-                        skipped: true,
-                        message: Some(message),
-                    });
-                    return;
-                }
-            }
-            record_service_test_failure(ready, message, results);
+            record_service_test_error(ready, message, options, results);
         }
     }
+}
+
+/// Record a test error, converting live-mode missing-config failures into
+/// skips. Suite-level failures (publication/reload) must go through here too:
+/// a live artifact reload rejected for missing required config (e.g. a live
+/// API key) means "environment cannot run this live test", not a test failure.
+fn record_service_test_error(
+    ready: &ReadyServiceTest,
+    message: String,
+    options: &SkiffTestOptions,
+    results: &mut [Option<SkiffTestResult>],
+) {
+    if options.live {
+        if let Some(message) = live_missing_config_skip_message(&message) {
+            results[ready.result_index] = Some(SkiffTestResult {
+                module_path: ready.test.module_path.clone(),
+                name: ready.test.name.clone(),
+                passed: false,
+                skipped: true,
+                message: Some(message),
+            });
+            return;
+        }
+    }
+    record_service_test_failure(ready, message, results);
 }
 
 fn record_service_test_failure(

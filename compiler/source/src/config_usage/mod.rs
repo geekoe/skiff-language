@@ -122,8 +122,7 @@ pub fn collect_config_usage_seed_batches_from_parsed_sources(
         .collect::<BTreeMap<_, _>>();
     let empty_function_names = BTreeSet::new();
     let mut common_seed = ConfigUsageSeed::default();
-    let mut entrypoint_seeds =
-        vec![ConfigUsageSeed::default(); entrypoint_function_names.len()];
+    let mut entrypoint_seeds = vec![ConfigUsageSeed::default(); entrypoint_function_names.len()];
     let mut violations = Vec::new();
     for parsed in parsed_sources {
         let source = parsed.source();

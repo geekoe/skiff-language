@@ -5130,7 +5130,8 @@ fn any_interface_remote_dependency() -> ServiceDependencyConstraint {
 
 fn any_interface_remote_publication_abi() -> PublicationAbiUnit {
     let operation = any_interface_remote_operation_ref();
-    let mut publication_abi = PublicationAbiUnit::empty("skiff.run/remotellm", "0.1.0", "remoteLlm:abi");
+    let mut publication_abi =
+        PublicationAbiUnit::empty("skiff.run/remotellm", "0.1.0", "remoteLlm:abi");
     add_publication_operation_abi(
         &mut publication_abi,
         operation.clone(),
@@ -5969,7 +5970,8 @@ fn managed_llm_operation_ref(public_path: &str, operation_abi_id: &str) -> Opera
 
 fn managed_llm_publication_abi(public_path: &str, operation_abi_id: &str) -> PublicationAbiUnit {
     let operation = managed_llm_operation_ref(public_path, operation_abi_id);
-    let mut publication_abi = PublicationAbiUnit::empty("skiff.run/remotellm", "0.1.0", "remoteLlm:abi");
+    let mut publication_abi =
+        PublicationAbiUnit::empty("skiff.run/remotellm", "0.1.0", "remoteLlm:abi");
     add_publication_operation_abi(
         &mut publication_abi,
         operation.clone(),
@@ -6437,6 +6439,15 @@ fn artifact_builtin_type(name: &str) -> skiff_artifact_model::TypeRefIr {
     }
 }
 
+fn artifact_service_symbol_type(module_path: &str, symbol: &str) -> TypeRefIr {
+    TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: module_path.to_string(),
+            symbol: symbol.to_string(),
+        },
+    }
+}
+
 fn export_file(file_ir_identity: &str) -> FileIrRef {
     let module_path = if file_ir_identity.contains("pkg") {
         "pkg.main"
@@ -6712,7 +6723,7 @@ fn case23_local_type_resolved_to_address_after_linking() {
         "operation:svc.main.run",
         CanonicalPublicCallableSignature {
             params: Vec::new(),
-            return_type: TypeRefIr::LocalType { type_index: 0 },
+            return_type: artifact_service_symbol_type("svc.main", "MyType"),
             may_suspend: false,
         },
     );
@@ -6831,7 +6842,7 @@ fn case24_type_addr_differs_between_activations_for_same_type() {
         "operation:svc.main.run",
         CanonicalPublicCallableSignature {
             params: Vec::new(),
-            return_type: TypeRefIr::LocalType { type_index: 0 },
+            return_type: artifact_service_symbol_type("svc.main", "MyType"),
             may_suspend: false,
         },
     );
@@ -6865,7 +6876,7 @@ fn case24_type_addr_differs_between_activations_for_same_type() {
         "operation:svc.main.run",
         CanonicalPublicCallableSignature {
             params: Vec::new(),
-            return_type: TypeRefIr::LocalType { type_index: 0 },
+            return_type: artifact_service_symbol_type("svc.main", "MyType"),
             may_suspend: false,
         },
     );

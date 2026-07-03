@@ -1,18 +1,19 @@
 #[cfg(any(test, feature = "test-support"))]
 use serde_json::Value;
-use skiff_runtime_linked_program::{
-    ExecutableAddr, FunctionTypeParamIr, LinkedExecutable, LinkedInterfaceInstantiationRef,
-    LinkedTypeRef, PackageRefIr, PackageSymbolRef, ResolvedSymbol, ServiceSymbolRef, TypeAddr,
-};
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_linked_program::{type_descriptor_to_value, type_ref_to_value};
+use skiff_runtime_linked_program::{
+    ExecutableAddr, FileAddr, FunctionTypeParamIr, LinkedExecutable,
+    LinkedInterfaceInstantiationRef, LinkedTypeRef, PackageRefIr, PackageSymbolRef, ResolvedSymbol,
+    ServiceSymbolRef, TypeAddr, UnitAddr,
+};
 use skiff_runtime_linked_type_plan::ProgramTypeView;
 
 pub use skiff_runtime_linked_program::executable_type_param_names;
 
-use super::type_descriptor::TypeSubstitutions;
 #[cfg(any(test, feature = "test-support"))]
 use super::type_descriptor::substitute_type_descriptor;
+use super::type_descriptor::TypeSubstitutions;
 use super::Interpreter;
 #[cfg(any(test, feature = "test-support"))]
 use crate::error::{Result, RuntimeError};
@@ -20,6 +21,7 @@ use crate::error::{Result, RuntimeError};
 pub fn program_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
     match type_ref {
         LinkedTypeRef::LocalType { .. } => "localType",
+        LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
         LinkedTypeRef::Address { .. } => "address",
@@ -65,6 +67,7 @@ impl Interpreter {
             | LinkedTypeRef::Function { .. }
             | LinkedTypeRef::AnyInterface { .. } => Ok(Some(type_ref_to_value(type_ref))),
             LinkedTypeRef::LocalType { .. }
+            | LinkedTypeRef::PublicationType { .. }
             | LinkedTypeRef::ServiceSymbol { .. }
             | LinkedTypeRef::PackageSymbol { .. } => Err(RuntimeError::InvalidArtifact(format!(
                 "RuntimeProgram type ref {} was not linked before execution",
@@ -181,6 +184,12 @@ fn normalize_call_type_arg_binding_inner(
                 type_index: *type_index,
             },
         },
+        LinkedTypeRef::PublicationType {
+            module_path,
+            type_index,
+        } => program_publication_type_addr(program, caller_addr, module_path, *type_index)
+            .map(|addr| LinkedTypeRef::Address { addr })
+            .unwrap_or_else(|| type_ref.clone()),
         LinkedTypeRef::ServiceSymbol { symbol } => program_service_type_addr(program, symbol)
             .map(|addr| LinkedTypeRef::Address { addr })
             .unwrap_or_else(|| type_ref.clone()),
@@ -362,6 +371,10 @@ pub fn program_type_name(type_ref: &LinkedTypeRef) -> Option<String> {
         LinkedTypeRef::Native { name, .. } => Some(name.clone()),
         LinkedTypeRef::LocalType { type_index } => Some(format!("localType[{type_index}]")),
         LinkedTypeRef::Address { addr } => Some(addr.to_string()),
+        LinkedTypeRef::PublicationType {
+            module_path,
+            type_index,
+        } => Some(format!("publicationType[{module_path}:{type_index}]")),
         LinkedTypeRef::ServiceSymbol { symbol } => Some(symbol.symbol_path()),
         LinkedTypeRef::PackageSymbol { symbol } => Some(symbol.symbol_path.clone()),
         LinkedTypeRef::Nullable { inner } => program_type_name(inner),
@@ -549,6 +562,26 @@ fn program_service_type_addr(
         .types
         .exported_service_type(&symbol.module_path, &symbol.symbol)
         .cloned()
+}
+
+pub(crate) fn program_publication_type_addr(
+    program: ProgramTypeView<'_>,
+    current_addr: &ExecutableAddr,
+    module_path: &str,
+    type_index: usize,
+) -> Option<TypeAddr> {
+    let files = match &current_addr.unit {
+        UnitAddr::Service => program.service_files,
+        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+    };
+    let file_index = files
+        .iter()
+        .position(|file| file.module_path == module_path)?;
+    Some(TypeAddr {
+        unit: current_addr.unit.clone(),
+        file: FileAddr::LoadedFileIndex(file_index),
+        type_index,
+    })
 }
 
 pub fn program_package_type_addr<'p>(

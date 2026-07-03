@@ -15,9 +15,9 @@ pub(super) struct RuntimeWebsocketCapabilityContext<'a> {
 
 impl capability_contract::WebsocketCapabilityApi for RuntimeWebsocketCapabilityContext<'_> {
     fn owned(&self) -> capability_contract::OwnedWebsocketCapabilityContext {
-        capability_contract::WebsocketCapabilityContext::new(RuntimeOwnedWebsocketCapabilityContext(
-            self.owned.clone(),
-        ))
+        capability_contract::WebsocketCapabilityContext::new(
+            RuntimeOwnedWebsocketCapabilityContext(self.owned.clone()),
+        )
     }
 
     fn borrow(&self) -> capability_contract::WebsocketCapabilityContext<'_> {
@@ -84,9 +84,9 @@ struct RuntimeOwnedWebsocketCapabilityContext(RuntimeOwnedWebsocketParts);
 
 impl capability_contract::WebsocketCapabilityApi for RuntimeOwnedWebsocketCapabilityContext {
     fn owned(&self) -> capability_contract::OwnedWebsocketCapabilityContext {
-        capability_contract::WebsocketCapabilityContext::new(RuntimeOwnedWebsocketCapabilityContext(
-            self.0.clone(),
-        ))
+        capability_contract::WebsocketCapabilityContext::new(
+            RuntimeOwnedWebsocketCapabilityContext(self.0.clone()),
+        )
     }
 
     fn borrow(&self) -> capability_contract::WebsocketCapabilityContext<'_> {

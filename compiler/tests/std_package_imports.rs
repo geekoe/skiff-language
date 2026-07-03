@@ -496,12 +496,17 @@ fn std_log_import_lowers_runtime_target_and_effect_summary() {
 
     let log_artifact = package_source_artifact(&published, "log.skiff");
     let log_value = log_artifact.value();
-    assert!(
-        json_contains_external_service_symbol(&log_value, "std.telemetry", "emit"),
-        "std.log wrapper should emit through internal std.telemetry service symbol: {log_value}",
-    );
+    // The publication-local direct refs lowering pass rewrites the cross-module
+    // `std.telemetry.emit` call target inside std.log's File IR body from an
+    // `externalServiceSymbol` into a direct `publicationExecutable` address. The
+    // publication ABI stays symbolic; the wrapper implementation is direct.
     let telemetry_artifact = package_source_artifact(&published, "telemetry.skiff");
     assert_eq!(telemetry_artifact.module_path, "std.telemetry");
+    let emit_executable_index = declared_executable_index(&telemetry_artifact.value(), "emit");
+    assert!(
+        json_contains_publication_executable(&log_value, "std.telemetry", emit_executable_index),
+        "std.log wrapper should emit through direct std.telemetry publicationExecutable: {log_value}",
+    );
     assert!(std_assembly.value["files"]
         .as_array()
         .unwrap()
@@ -666,33 +671,34 @@ fn json_contains_native_symbol(
     }
 }
 
-fn json_contains_external_service_symbol(
+fn json_contains_publication_executable(
     value: &serde_json::Value,
     module_path: &str,
-    symbol_name: &str,
+    executable_index: u64,
 ) -> bool {
     match value {
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| json_contains_external_service_symbol(value, module_path, symbol_name)),
+        serde_json::Value::Array(values) => values.iter().any(|value| {
+            json_contains_publication_executable(value, module_path, executable_index)
+        }),
         serde_json::Value::Object(object) => {
-            object.get("kind").and_then(|value| value.as_str()) == Some("externalServiceSymbol")
+            object.get("kind").and_then(|value| value.as_str()) == Some("publicationExecutable")
+                && object.get("modulePath").and_then(|value| value.as_str()) == Some(module_path)
                 && object
-                    .get("symbol")
-                    .and_then(|symbol| symbol.get("modulePath"))
-                    .and_then(|value| value.as_str())
-                    == Some(module_path)
-                && object
-                    .get("symbol")
-                    .and_then(|symbol| symbol.get("symbol"))
-                    .and_then(|value| value.as_str())
-                    == Some(symbol_name)
+                    .get("executableIndex")
+                    .and_then(|value| value.as_u64())
+                    == Some(executable_index)
                 || object.values().any(|value| {
-                    json_contains_external_service_symbol(value, module_path, symbol_name)
+                    json_contains_publication_executable(value, module_path, executable_index)
                 })
         }
         _ => false,
     }
+}
+
+fn declared_executable_index(file_ir: &serde_json::Value, symbol: &str) -> u64 {
+    file_ir["declarations"]["executables"][symbol]["executableIndex"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("File IR is missing declared executable {symbol}"))
 }
 
 fn assert_native_wrapper_type_args(
@@ -815,6 +821,7 @@ fn assert_type_ref_has_no_native_std_normal_refs(ty: &TypeRefIr) {
         }
         TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
@@ -906,6 +913,7 @@ fn type_ref_contains_package_type_symbol(ty: &TypeRefIr, expected_symbol_path: &
                 || type_ref_contains_package_type_symbol(return_type, expected_symbol_path)
         }
         TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
@@ -977,6 +985,7 @@ fn type_ref_contains_native_type_ref(ty: &TypeRefIr, expected_name: &str) -> boo
         }
         TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }

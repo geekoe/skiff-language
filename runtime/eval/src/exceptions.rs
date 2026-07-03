@@ -151,6 +151,7 @@ fn collect_catch_type_leaves(
             }
         }
         LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. } => {
             return Err(RuntimeError::InvalidArtifact(format!(

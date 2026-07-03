@@ -125,6 +125,7 @@ pub fn bind_program_pattern(env: &mut Env, pattern: &PatternIr, value: RuntimeVa
 pub fn program_call_target_kind(target: &LinkedCallTarget) -> &'static str {
     match target {
         LinkedCallTarget::LocalExecutable { .. } => "localExecutable",
+        LinkedCallTarget::PublicationExecutable { .. } => "publicationExecutable",
         LinkedCallTarget::Executable { .. } => "executable",
         LinkedCallTarget::ExternalServiceSymbol { .. } => "externalServiceSymbol",
         LinkedCallTarget::ServiceDependencySymbol { .. } => "serviceDependencySymbol",

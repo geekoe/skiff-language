@@ -550,7 +550,11 @@ fn service_file_refs_from_units(
         for (index, executable) in unit.executables.iter().enumerate() {
             executable_signatures.insert(
                 (module_path.clone(), index as u32),
-                projection_visible_executable_signature(executable, &publication_type_names),
+                projection_visible_executable_signature(
+                    &module_path,
+                    executable,
+                    &publication_type_names,
+                ),
             );
         }
         if executable_link_targets

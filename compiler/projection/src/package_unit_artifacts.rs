@@ -204,7 +204,11 @@ fn package_unit_export_index(
                 .unwrap_or_default()
                 .into_iter()
                 .map(|method| {
-                    projection_visible_interface_method_signature(&method, &publication_type_names)
+                    projection_visible_interface_method_signature(
+                        module,
+                        &method,
+                        &publication_type_names,
+                    )
                 })
                 .collect();
             exports.types.insert(
@@ -214,6 +218,7 @@ fn package_unit_export_index(
                     type_index,
                     symbol: package_symbol.clone(),
                     descriptor: Some(projection_visible_type_descriptor(
+                        module,
                         &ty.descriptor,
                         &publication_type_names,
                     )),
@@ -232,7 +237,7 @@ fn package_unit_export_index(
                     file: file_ref,
                     const_index,
                     symbol: package_symbol.clone(),
-                    ty: projection_visible_type_ref(&constant.ty, &publication_type_names),
+                    ty: projection_visible_type_ref(module, &constant.ty, &publication_type_names),
                 },
             );
             continue;
@@ -250,6 +255,7 @@ fn package_unit_export_index(
                 executable_index,
                 symbol: executable.symbol.clone(),
                 signature: projection_visible_executable_signature(
+                    module,
                     executable,
                     &publication_type_names,
                 ),
@@ -553,7 +559,13 @@ fn package_public_instance_interfaces(
         let canonical_type_args = interface
             .canonical_type_args
             .iter()
-            .map(|arg| projection_visible_type_ref(arg, publication_type_names))
+            .map(|arg| {
+                projection_visible_type_ref(
+                    &receiver.symbol.module_path,
+                    arg,
+                    publication_type_names,
+                )
+            })
             .collect();
         let interface_ref = interface_instantiation_ref(interface_ty.clone(), canonical_type_args);
         let interface_key =
@@ -595,7 +607,11 @@ fn package_public_instance_interfaces(
         })?
         .into_iter()
         .map(|method| {
-            projection_visible_interface_method_signature(&method, publication_type_names)
+            projection_visible_interface_method_signature(
+                &interface_unit.module_path,
+                &method,
+                publication_type_names,
+            )
         })
         .collect();
         projected.push(PackagePublicInstanceInterface {
@@ -660,8 +676,11 @@ fn package_public_instance_operations(
                         ),
                     )
                 })?;
-            let executable_signature =
-                projection_visible_executable_signature(executable, publication_type_names);
+            let executable_signature = projection_visible_executable_signature(
+                &receiver.symbol.module_path,
+                executable,
+                publication_type_names,
+            );
             let public_signature =
                 public_signature_from_receiver_executable_signature(&executable_signature);
             let interface_signature = public_callable_signature_from_interface_method(method);

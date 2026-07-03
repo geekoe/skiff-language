@@ -51,7 +51,11 @@ pub(super) struct RuntimeTelemetryCapabilityContext(
 );
 
 impl capability_contract::TelemetryCapabilityApi for RuntimeTelemetryCapabilityContext {
-    fn emit_native(&self, target: &str, args: &[Value]) -> capability_contract::CapabilityResult<Value> {
+    fn emit_native(
+        &self,
+        target: &str,
+        args: &[Value],
+    ) -> capability_contract::CapabilityResult<Value> {
         self.0
             .emit_native(target, args)
             .map_err(capability_contract::CapabilityError::opaque)

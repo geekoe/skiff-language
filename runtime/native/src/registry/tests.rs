@@ -17,7 +17,10 @@ fn assert_decode_target_projection(
     let payload = error.payload();
     assert_eq!(payload.code, code, "unexpected error: {error}");
     assert_eq!(
-        payload.details.as_ref().and_then(|details| details["target"].as_str()),
+        payload
+            .details
+            .as_ref()
+            .and_then(|details| details["target"].as_str()),
         Some(target),
         "unexpected error: {error}"
     );

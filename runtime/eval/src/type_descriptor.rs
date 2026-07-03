@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
 use serde_json::{json, Value};
 use skiff_runtime_boundary::type_descriptor as runtime_type_descriptor;
-use skiff_runtime_linked_program::LinkedTypeRef;
 #[cfg(any(test, feature = "test-support"))]
 use skiff_runtime_linked_program::type_ref_to_value;
+use skiff_runtime_linked_program::LinkedTypeRef;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TypeSubstitutions {

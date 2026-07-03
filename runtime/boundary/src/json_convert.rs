@@ -10,6 +10,8 @@ mod wire_decode;
 use serde_json::Value;
 
 #[cfg(any(test, feature = "test-support"))]
+use crate::type_descriptor::RuntimeTypePlanDescriptorExt;
+#[cfg(any(test, feature = "test-support"))]
 use crate::{contract::RuntimeBoundaryContract, json::RuntimeBoundaryCodec, plan::BoundaryUse};
 use crate::{
     error::{Result, RuntimeError},
@@ -17,8 +19,6 @@ use crate::{
     runtime_value::RuntimeValue,
     type_descriptor::{RuntimeTypeNode, RuntimeTypePlan},
 };
-#[cfg(any(test, feature = "test-support"))]
-use crate::type_descriptor::RuntimeTypePlanDescriptorExt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoundaryStreamHandlePolicy {

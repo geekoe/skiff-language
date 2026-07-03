@@ -352,11 +352,7 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
         Ok(&self.response_stream_sink(target)?.item_type)
     }
 
-    pub async fn send_response_event(
-        &self,
-        target: &str,
-        event: Value,
-    ) -> StreamRuntimeResult<()> {
+    pub async fn send_response_event(&self, target: &str, event: Value) -> StreamRuntimeResult<()> {
         let typed_sink = self.response_stream_sink(target)?;
         let mut cancel_flags = vec![self.execution.cancel_flag()];
         if let Some(inner_sink) = self.stream_context.current_stream_sink.as_ref() {

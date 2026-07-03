@@ -25,8 +25,9 @@ pub fn spawn_claim_response_control_payload(
             Some(encode_base64(payload))
         },
     };
-    serde_json::to_vec(&response)
-        .map_err(|error| TransportError::decode(format!("spawn.claim.response encode failed: {error}")))
+    serde_json::to_vec(&response).map_err(|error| {
+        TransportError::decode(format!("spawn.claim.response encode failed: {error}"))
+    })
 }
 
 pub fn spawn_claim_response_payload_bytes(
@@ -149,13 +150,14 @@ mod tests {
             serde_json::from_slice(&payload).expect("encoded payload should decode");
 
         assert_eq!(
-            value.get("payloadBytesBase64").and_then(serde_json::Value::as_str),
+            value
+                .get("payloadBytesBase64")
+                .and_then(serde_json::Value::as_str),
             Some("c3Bhd24gcGF5bG9hZCBieXRlcw==")
         );
         assert_eq!(response.header, header);
         assert_eq!(
-            spawn_claim_response_payload_bytes(&response)
-                .expect("payload bytes should decode"),
+            spawn_claim_response_payload_bytes(&response).expect("payload bytes should decode"),
             bytes
         );
     }
@@ -167,8 +169,8 @@ mod tests {
             payload_bytes_base64: Some("@@@@".to_string()),
         };
 
-        let error = spawn_claim_response_payload_bytes(&response)
-            .expect_err("invalid payload should fail");
+        let error =
+            spawn_claim_response_payload_bytes(&response).expect_err("invalid payload should fail");
 
         assert!(error.contains("payloadBytesBase64"));
         assert!(error.contains("invalid base64 character"));

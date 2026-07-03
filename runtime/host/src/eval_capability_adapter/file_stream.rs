@@ -118,9 +118,7 @@ fn root_error_into_file(error: root_error::RuntimeError) -> FileCapabilityError 
             message,
             details,
             ..
-        } if code == "ResourceLimitExceeded" => {
-            file_resource_limit_from_details(message, details)
-        }
+        } if code == "ResourceLimitExceeded" => file_resource_limit_from_details(message, details),
         root_error::RuntimeError::Opaque(error) => file_capability_error_from_wire_payload(error),
         error => FileCapabilityError::opaque(error),
     }
@@ -154,9 +152,7 @@ fn file_capability_error_from_ref(error: &FileCapabilityError) -> FileCapability
     match error {
         FileCapabilityError::Decode(message) => FileCapabilityError::Decode(message.clone()),
         FileCapabilityError::File(message) => FileCapabilityError::File(message.clone()),
-        FileCapabilityError::Opaque(error) => {
-            FileCapabilityError::Decode(error.to_string())
-        }
+        FileCapabilityError::Opaque(error) => FileCapabilityError::Decode(error.to_string()),
         FileCapabilityError::ProviderUnavailable { target, reason } => {
             FileCapabilityError::ProviderUnavailable {
                 target: target.clone(),
@@ -287,7 +283,10 @@ fn file_capability_error_from_boundary_ref(
     }
 }
 
-fn file_resource_limit_from_details(message: String, details: Option<Value>) -> FileCapabilityError {
+fn file_resource_limit_from_details(
+    message: String,
+    details: Option<Value>,
+) -> FileCapabilityError {
     let Some(details) = details else {
         return FileCapabilityError::Decode(message);
     };

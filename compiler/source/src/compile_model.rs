@@ -370,10 +370,9 @@ impl SourceCompileModel {
     }
 
     pub fn legacy_config_projection_requirements(&self) -> ConfigRequirementSet {
-        self.effective_config_requirements
-            .matching_scope(&ConfigRequirementScope::from_publication_policy(
-                self.sources.policy.as_borrowed(),
-            ))
+        self.effective_config_requirements.matching_scope(
+            &ConfigRequirementScope::from_publication_policy(self.sources.policy.as_borrowed()),
+        )
     }
 
     pub fn with_semantic_context<T, E>(

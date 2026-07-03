@@ -362,9 +362,9 @@ impl Interpreter {
                 self.stream_runtime.cancel(&stream_value);
                 Ok(value)
             }
-            Err(RuntimeError::Cancelled) => {
+            Err(error) if error.is_cancelled() => {
                 self.stream_runtime.cancel(&stream_value);
-                Err(RuntimeError::Cancelled)
+                Err(error)
             }
             Err(error) => {
                 // The consumer errored on its own (not via cancellation). Drain
@@ -376,7 +376,6 @@ impl Interpreter {
                 self.stream_runtime.cancel(&stream_value);
                 match drain_result {
                     Ok(()) => Err(error),
-                    Err(RuntimeError::Cancelled) => Err(RuntimeError::Cancelled),
                     Err(producer_error) => Err(producer_error),
                 }
             }
@@ -813,7 +812,7 @@ async fn run_stream_producer_task(
     };
     match result {
         Ok(_) => sink.end().await,
-        Err(RuntimeError::Cancelled) if sink.is_cancelled() => {}
+        Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
         Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
     }
     for stream_value in arg_streams {
@@ -861,6 +860,7 @@ fn linked_type_ref_contains_type_param(type_ref: &LinkedTypeRef) -> bool {
         }
         LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. }
         | LinkedTypeRef::DbObjectSymbol { .. }

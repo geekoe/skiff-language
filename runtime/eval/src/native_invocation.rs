@@ -14,7 +14,11 @@ use skiff_runtime_native_contract::{
     validate_native_call_arg_count, NativeCallPlan, NativeDispatchTarget, NativeSignatureRegistry,
 };
 
-use super::{env::Env, program_types::program_package_type_addr, Interpreter};
+use super::{
+    env::Env,
+    program_types::{program_package_type_addr, program_publication_type_addr},
+    Interpreter,
+};
 use crate::error::{Result, RuntimeError};
 
 pub fn resolve_runtime_native_invocation(
@@ -176,6 +180,12 @@ fn normalize_native_signature_type_arg<'p>(
                 type_index: *type_index,
             },
         },
+        LinkedTypeRef::PublicationType {
+            module_path,
+            type_index,
+        } => program_publication_type_addr(program, current_addr, module_path, *type_index)
+            .map(|addr| LinkedTypeRef::Address { addr })
+            .unwrap_or_else(|| type_ref.clone()),
         LinkedTypeRef::ServiceSymbol { symbol } => program
             .types
             .exported_service_type(&symbol.module_path, &symbol.symbol)

@@ -895,16 +895,7 @@ impl CallerService {
         }])
     );
 
-    let service_file = assembly["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|file| file["sourcePath"] == "internal/caller.skiff")
-        .unwrap();
-    let file_ir_path = service_file["fileIrPath"].as_str().unwrap();
-    let file_ir: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(artifact_root.join(file_ir_path)).unwrap())
-            .unwrap();
+    let file_ir = read_service_file_ir(&assembly, &artifact_root, "internal/caller.skiff");
     assert!(file_ir["executables"]
         .as_array()
         .unwrap()
@@ -924,6 +915,16 @@ impl CallerService {
             && expr["call"]["target"]["symbol"]["dependencyRef"] == "remoteLlm"
             && expr["call"]["target"]["symbol"]["operation"]["operationAbiId"]
                 == CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID));
+    // The `publication-local direct refs` lowering pass rewrites cross-module
+    // interface identities inside the File IR body into direct
+    // `publicationType` address form. `api.caller.LlmClient` is reached from
+    // `internal.caller`, so the lowered `boxed.send(...)` call target carries a
+    // publicationType methodAbiId. The publication ABI stays symbolic (asserted
+    // via `caller_llm_client_method_abi_id` in `remoteBoxProvenance` above); the
+    // implementation body is direct.
+    let caller_api_file_ir = read_service_file_ir(&assembly, &artifact_root, "api/caller.skiff");
+    let llm_client_type_index = declared_type_index(&caller_api_file_ir, "LlmClient");
+    let direct_method_abi_id = caller_llm_client_direct_method_abi_id(llm_client_type_index);
     assert!(file_ir["executables"]
         .as_array()
         .unwrap()
@@ -931,7 +932,7 @@ impl CallerService {
         .flat_map(|executable| executable["body"]["expressions"].as_array().unwrap())
         .any(|expr| expr["kind"] == "call"
             && expr["call"]["target"]["kind"] == "interfaceMethod"
-            && expr["call"]["target"]["methodAbiId"] == caller_llm_client_method_abi_id()));
+            && expr["call"]["target"]["methodAbiId"] == direct_method_abi_id));
     let remote_box_provenance = assembly["dependencyLock"][0]["remoteBoxProvenance"]
         .as_array()
         .unwrap();
@@ -1639,6 +1640,40 @@ fn caller_method_abi_id(interface_symbol: &str, method: &str) -> String {
             .as_str()
             .unwrap()
     )
+}
+
+/// Direct (`publicationType`) form of the LlmClient `send` method ABI id, as it
+/// appears inside the lowered File IR body after the publication-local direct
+/// refs pass. The publication ABI keeps the symbolic form (`caller_method_abi_id`).
+fn caller_llm_client_direct_method_abi_id(type_index: u64) -> String {
+    let interface_abi_id = serde_json::to_string(&serde_json::json!({
+        "kind": "publicationType",
+        "modulePath": "api.caller",
+        "typeIndex": type_index
+    }))
+    .unwrap();
+    format!("method:{interface_abi_id}:send")
+}
+
+fn read_service_file_ir(
+    assembly: &serde_json::Value,
+    artifact_root: &Path,
+    source_path: &str,
+) -> serde_json::Value {
+    let service_file = assembly["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["sourcePath"] == source_path)
+        .unwrap_or_else(|| panic!("service assembly is missing file {source_path}"));
+    let file_ir_path = service_file["fileIrPath"].as_str().unwrap();
+    serde_json::from_str(&fs::read_to_string(artifact_root.join(file_ir_path)).unwrap()).unwrap()
+}
+
+fn declared_type_index(file_ir: &serde_json::Value, symbol: &str) -> u64 {
+    file_ir["declarations"]["types"][symbol]["typeIndex"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("File IR is missing declared type {symbol}"))
 }
 
 fn callee_public_instance_operation_ref() -> serde_json::Value {

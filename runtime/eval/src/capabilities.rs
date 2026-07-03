@@ -15,9 +15,7 @@ use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
-use skiff_runtime_capability_context::{
-    CancellationToken, RequestEffectDoubleControl,
-};
+use skiff_runtime_capability_context::{CancellationToken, RequestEffectDoubleControl};
 use skiff_runtime_linked_program::ServiceDependencyConstraint;
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -52,16 +50,15 @@ pub use skiff_runtime_capability_context::{
     DbRuntimeChange, DbRuntimeSetOp, ExecutionControl, ExecutionControlApi, FileCapabilityApi,
     FileCapabilityContext, FileCapabilityError, FileCapabilityFuture, FileCapabilityRecord,
     FileCapabilityResult, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
-    FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture,
-    HttpClientCapabilityApi, HttpClientCapabilityContext, HttpResponseStreamCapabilityContext,
-    HttpRuntimeOptions, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
-    OutboundServiceRequestStart, OutboundStartedRequest, OwnedExecutionControl,
-    OwnedExecutionControlApi, OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest,
-    StreamCancelSignal, StreamCancelSignalApi,
-    StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamSink, StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext,
-    TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi, WebsocketCapabilityContext,
-    HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
+    HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
+    OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
+    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
+    OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
+    StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
+    StreamRuntimeApi, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
+    WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -408,9 +405,7 @@ pub struct RuntimeNativeFileCapabilityContext<'execution>(
 pub struct RuntimeNativeFileCapability(FileCapabilityContext);
 
 #[derive(Clone)]
-pub struct RuntimeNativeFileSourceStreamCapability<'execution>(
-    FileSourceStreamContext<'execution>,
-);
+pub struct RuntimeNativeFileSourceStreamCapability<'execution>(FileSourceStreamContext<'execution>);
 
 #[derive(Clone)]
 pub struct RuntimeNativeConfigCapabilityContext<'execution>(ConfigCapabilityContext<'execution>);
@@ -457,8 +452,9 @@ impl<'execution> RuntimeNativeTimeCapabilityContext<'execution> {
 
 #[derive(Clone)]
 pub struct RuntimeNativeHttpClientCapabilityContext {
-    context:
-        skiff_runtime_capability_context::NativeHttpClientCapabilityContext<HttpClientCapabilityContext>,
+    context: skiff_runtime_capability_context::NativeHttpClientCapabilityContext<
+        HttpClientCapabilityContext,
+    >,
     test_effect_doubles: TestEffectDoubleContext,
 }
 
@@ -599,11 +595,8 @@ impl<'a> EvalRequestExecutionCapabilities<'a> {
         let file = file_source.context_for_request(db.clone());
         let file_source_stream =
             FileSourceStreamContext::new(stream_runtime.clone(), execution.clone());
-        let http_client = effects.http_client_context(
-            http_options,
-            stream_runtime,
-            test_effect_doubles.clone(),
-        );
+        let http_client =
+            effects.http_client_context(http_options, stream_runtime, test_effect_doubles.clone());
         ProgramExecutionInput {
             execution: execution.clone(),
             config,

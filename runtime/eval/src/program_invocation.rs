@@ -471,7 +471,7 @@ impl Interpreter {
                     .await
                 {
                     Ok(_) => sink.end().await,
-                    Err(RuntimeError::Cancelled) if sink.is_cancelled() => {}
+                    Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
                 }
             };
@@ -660,7 +660,7 @@ impl Interpreter {
                     .await
                 {
                     Ok(_) => sink.end().await,
-                    Err(RuntimeError::Cancelled) if sink.is_cancelled() => {}
+                    Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
                 }
             };
@@ -909,7 +909,7 @@ impl Interpreter {
                     .await
                 {
                     Ok(_) => sink.end().await,
-                    Err(RuntimeError::Cancelled) if sink.is_cancelled() => {}
+                    Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
                     Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
                 }
             };

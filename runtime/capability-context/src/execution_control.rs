@@ -145,9 +145,7 @@ fn cancel_catch_projection() -> (TypeIdentity, serde_json::Value) {
 fn budget_timeout_message(reason: ExecutionBudgetReason) -> &'static str {
     match reason {
         ExecutionBudgetReason::DeadlineExceeded => "execution deadline exceeded",
-        ExecutionBudgetReason::InstructionLimitExceeded => {
-            "execution instruction limit exceeded"
-        }
+        ExecutionBudgetReason::InstructionLimitExceeded => "execution instruction limit exceeded",
         ExecutionBudgetReason::Cancelled => REQUEST_CANCELLED_MESSAGE,
     }
 }

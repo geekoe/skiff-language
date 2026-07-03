@@ -299,6 +299,25 @@ pub(super) fn const_callable_abi_id(file: &LinkedFileUnit, constant: &ConstIr) -
     )
 }
 
+pub(super) fn declaration_name_for_type_index(
+    file: &LinkedFileUnit,
+    type_index: usize,
+) -> Option<String> {
+    file.declarations
+        .types
+        .iter()
+        .find_map(|(name, declaration)| {
+            (declaration.type_index == type_index).then(|| {
+                declaration
+                    .symbol
+                    .strip_prefix(&format!("{}.", file.module_path))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| name.clone())
+            })
+        })
+        .or_else(|| file.types.get(type_index).map(|ty| ty.name.clone()))
+}
+
 pub(super) fn qualified_item_symbol(module_path: &str, symbol: &str) -> String {
     let prefix = format!("{module_path}.");
     if symbol.starts_with(&prefix) {

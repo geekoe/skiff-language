@@ -524,6 +524,7 @@ fn schema_projectable_db_type_ref(type_ref: &TypeRefIr) -> bool {
         TypeRefIr::Literal { .. } => true,
         TypeRefIr::AnyInterface { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -578,6 +579,7 @@ fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeType
         TypeRefIr::Literal { .. }
         | TypeRefIr::AnyInterface { .. }
         | TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
         | TypeRefIr::ServiceSymbol { .. }
         | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -621,6 +623,7 @@ fn artifact_type_ref_label(type_ref: &TypeRefIr) -> &'static str {
     match type_ref {
         TypeRefIr::Native { .. } => "builtin",
         TypeRefIr::LocalType { .. } => "localType",
+        TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",

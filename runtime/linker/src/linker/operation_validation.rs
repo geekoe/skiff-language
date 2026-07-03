@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    CanonicalPublicCallableSignature, OperationAbiRef, OperationCallableKind,
+    type_ref_abi_key, CanonicalPublicCallableSignature, OperationAbiRef, OperationCallableKind,
     OperationConstReceiverRef, OperationTargetRef, PackageOperationTarget, PublicationAbiUnit,
     PublicationOperationAbi, PublicationOperationKind, ReceiverCallAbi, ServiceOperation,
+    ServiceSymbolRef as ArtifactServiceSymbolRef, TypeRefIr as ArtifactTypeRefIr,
 };
 
 use super::{
@@ -102,6 +103,7 @@ impl<'a> RuntimeFileLinker<'a> {
                 )?;
                 self.validate_executable_public_facts_match_operation(
                     context,
+                    &addr,
                     executable,
                     PublicSignatureProjection::Full,
                     operation_abi,
@@ -142,6 +144,7 @@ impl<'a> RuntimeFileLinker<'a> {
                     )?;
                 self.validate_executable_public_facts_match_operation(
                     context,
+                    &executable_addr,
                     executable,
                     PublicSignatureProjection::StripExplicitSelf,
                     operation_abi,
@@ -225,7 +228,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         &package.publication_abi,
                         operation,
                     )?;
-                    let (_addr, executable) = self.validate_operation_target_ref_with_executable(
+                    let (addr, executable) = self.validate_operation_target_ref_with_executable(
                         &target_context,
                         UnitAddr::Package(package_slot),
                         target,
@@ -233,6 +236,7 @@ impl<'a> RuntimeFileLinker<'a> {
                     )?;
                     self.validate_executable_public_facts_match_operation(
                         &target_context,
+                        &addr,
                         executable,
                         PublicSignatureProjection::Full,
                         operation_abi,
@@ -261,7 +265,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         &package.publication_abi,
                         operation,
                     )?;
-                    let (_const_addr, _executable_addr, executable) = self
+                    let (_const_addr, executable_addr, executable) = self
                         .validate_local_receiver_executable_ref(
                             &target_context,
                             UnitAddr::Package(package_slot),
@@ -270,6 +274,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         )?;
                     self.validate_executable_public_facts_match_operation(
                         &target_context,
+                        &executable_addr,
                         executable,
                         PublicSignatureProjection::StripExplicitSelf,
                         operation_abi,
@@ -315,7 +320,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         &self.service.publication_abi,
                         &target.operation,
                     )?;
-                    let (_addr, executable) = self.validate_operation_target_ref_with_executable(
+                    let (addr, executable) = self.validate_operation_target_ref_with_executable(
                         &context,
                         UnitAddr::Service,
                         &target.executable,
@@ -323,6 +328,7 @@ impl<'a> RuntimeFileLinker<'a> {
                     )?;
                     self.validate_executable_public_facts_match_operation(
                         &context,
+                        &addr,
                         executable,
                         PublicSignatureProjection::Full,
                         operation_abi,
@@ -351,7 +357,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         &self.service.publication_abi,
                         &target.operation,
                     )?;
-                    let (_const_addr, _executable_addr, executable) = self
+                    let (_const_addr, executable_addr, executable) = self
                         .validate_local_receiver_executable_ref(
                             &context,
                             UnitAddr::Service,
@@ -360,6 +366,7 @@ impl<'a> RuntimeFileLinker<'a> {
                         )?;
                     self.validate_executable_public_facts_match_operation(
                         &context,
+                        &executable_addr,
                         executable,
                         PublicSignatureProjection::StripExplicitSelf,
                         operation_abi,
@@ -1052,11 +1059,13 @@ impl<'a> RuntimeFileLinker<'a> {
     fn validate_executable_public_facts_match_operation(
         &self,
         context: &str,
+        current_addr: &ExecutableAddr,
         executable: &LinkedExecutable,
         projection: PublicSignatureProjection,
         operation_abi: &PublicationOperationAbi,
     ) -> ProgramResult<()> {
         let actual = executable_public_signature(context, executable, projection)?;
+        let actual = self.publication_visible_signature(context, current_addr, actual)?;
         self.validate_public_signature_match(
             context,
             &actual,
@@ -1106,6 +1115,122 @@ impl<'a> RuntimeFileLinker<'a> {
             ),
             expected_kind,
         })
+    }
+
+    /// Rewrite publication-local direct refs (`publicationType`) in a public
+    /// signature back to their publication-visible symbol form. Publication
+    /// ABI signatures are recorded in symbol form; the executable side may
+    /// carry direct refs after publication-local direct-ref lowering.
+    fn publication_visible_signature(
+        &self,
+        context: &str,
+        current_addr: &ExecutableAddr,
+        mut signature: CanonicalPublicCallableSignature,
+    ) -> ProgramResult<CanonicalPublicCallableSignature> {
+        for param in &mut signature.params {
+            self.publication_visible_signature_type_ref(context, current_addr, &mut param.ty)?;
+        }
+        self.publication_visible_signature_type_ref(
+            context,
+            current_addr,
+            &mut signature.return_type,
+        )?;
+        Ok(signature)
+    }
+
+    fn publication_visible_signature_type_ref(
+        &self,
+        context: &str,
+        current_addr: &ExecutableAddr,
+        ty: &mut ArtifactTypeRefIr,
+    ) -> ProgramResult<()> {
+        match ty {
+            ArtifactTypeRefIr::LocalType { type_index } => {
+                let file = self.file_for_addr(&current_addr.unit, &current_addr.file)?;
+                let symbol = declaration_name_for_type_index(file, *type_index as usize)
+                    .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+                        context: context.to_string(),
+                        symbol: format!("{}[{type_index}]", file.module_path),
+                        expected_kind: "local type declaration for public ABI signature",
+                    })?;
+                *ty = ArtifactTypeRefIr::ServiceSymbol {
+                    symbol: ArtifactServiceSymbolRef {
+                        module_path: file.module_path.clone(),
+                        symbol,
+                    },
+                };
+            }
+            ArtifactTypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let (_, file) = self.publication_file(context, &current_addr.unit, module_path)?;
+                let symbol = declaration_name_for_type_index(file, *type_index as usize)
+                    .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
+                        context: context.to_string(),
+                        symbol: format!("{module_path}[{type_index}]"),
+                        expected_kind: "publication type declaration for public ABI signature",
+                    })?;
+                *ty = ArtifactTypeRefIr::ServiceSymbol {
+                    symbol: ArtifactServiceSymbolRef {
+                        module_path: module_path.clone(),
+                        symbol,
+                    },
+                };
+            }
+            ArtifactTypeRefIr::Native { args, .. } => {
+                for arg in args {
+                    self.publication_visible_signature_type_ref(context, current_addr, arg)?;
+                }
+            }
+            ArtifactTypeRefIr::Record { fields } => {
+                for field in fields.values_mut() {
+                    self.publication_visible_signature_type_ref(context, current_addr, field)?;
+                }
+            }
+            ArtifactTypeRefIr::Union { items } => {
+                for item in items {
+                    self.publication_visible_signature_type_ref(context, current_addr, item)?;
+                }
+            }
+            ArtifactTypeRefIr::Nullable { inner } => {
+                self.publication_visible_signature_type_ref(context, current_addr, inner)?;
+            }
+            ArtifactTypeRefIr::Function {
+                params,
+                return_type,
+            } => {
+                for param in params {
+                    self.publication_visible_signature_type_ref(
+                        context,
+                        current_addr,
+                        &mut param.ty,
+                    )?;
+                }
+                self.publication_visible_signature_type_ref(context, current_addr, return_type)?;
+            }
+            ArtifactTypeRefIr::AnyInterface { interface } => {
+                if let Ok(mut identity) =
+                    serde_json::from_str::<ArtifactTypeRefIr>(&interface.interface_abi_id)
+                {
+                    self.publication_visible_signature_type_ref(
+                        context,
+                        current_addr,
+                        &mut identity,
+                    )?;
+                    interface.interface_abi_id = type_ref_abi_key(&identity);
+                }
+                for arg in &mut interface.canonical_type_args {
+                    self.publication_visible_signature_type_ref(context, current_addr, arg)?;
+                }
+            }
+            ArtifactTypeRefIr::ServiceSymbol { .. }
+            | ArtifactTypeRefIr::PackageSymbol { .. }
+            | ArtifactTypeRefIr::DbObjectSymbol { .. }
+            | ArtifactTypeRefIr::Literal { .. }
+            | ArtifactTypeRefIr::TypeParam { .. } => {}
+        }
+        Ok(())
     }
 
     pub(super) fn validate_remote_operation_signature_match(

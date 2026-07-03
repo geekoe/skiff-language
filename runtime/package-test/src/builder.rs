@@ -21,8 +21,8 @@ use super::{
     package_test_recoverable_metadata, package_test_spawn_targets,
     validate_loaded_package_test_link_policy, validate_loaded_test_file_scopes,
     LoadedPackageTestRuntimeProgram, PackageTestBuildArtifact, PackageTestBuildSelection,
-    PackageTestDispatchArtifact, PackageTestDispatchSelection, PackageTestRuntimeEntrypointTemplate,
-    PackageTestRuntimeTemplate, ValidatedPackageTestDispatch,
+    PackageTestDispatchArtifact, PackageTestDispatchSelection,
+    PackageTestRuntimeEntrypointTemplate, PackageTestRuntimeTemplate, ValidatedPackageTestDispatch,
 };
 
 pub struct PackageTestRuntimeBuilder<'a> {
@@ -50,10 +50,8 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         &self,
         selection: &PackageTestBuildSelection,
     ) -> anyhow::Result<PackageTestRuntimeTemplate> {
-        let build = load_package_test_build_artifact_from_artifact_roots(
-            self.artifact_roots,
-            selection,
-        )?;
+        let build =
+            load_package_test_build_artifact_from_artifact_roots(self.artifact_roots, selection)?;
         let artifact_loader =
             ArtifactGraphLoader::new(&build.validated.artifact_root, self.artifact_cache);
         let assembly = &build.assembly;
@@ -194,12 +192,14 @@ fn package_test_entrypoint_templates(
             file: FileAddr::file_ir_identity(&entrypoint.executable_ref.file_ir_identity),
             executable: entrypoint.executable_ref.executable_index as usize,
         };
-        let resolved = image.resolve_executable(&executable_addr).map_err(|error| {
-            anyhow::anyhow!(
-                "package test entrypoint {} references invalid executable: {error}",
-                entrypoint.entrypoint_id
-            )
-        })?;
+        let resolved = image
+            .resolve_executable(&executable_addr)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "package test entrypoint {} references invalid executable: {error}",
+                    entrypoint.entrypoint_id
+                )
+            })?;
         if let Some(expected_symbol) = entrypoint.executable_ref.symbol.as_deref() {
             if resolved.executable.symbol != expected_symbol {
                 anyhow::bail!(
@@ -219,7 +219,12 @@ fn package_test_entrypoint_templates(
             assembly: build.assembly.clone(),
             entrypoint: entrypoint.clone(),
         };
-        validate_package_test_executable_graph(&dispatch, image, &executable_addr, production_unit)?;
+        validate_package_test_executable_graph(
+            &dispatch,
+            image,
+            &executable_addr,
+            production_unit,
+        )?;
         templates.insert(
             entrypoint.entrypoint_id.clone(),
             PackageTestRuntimeEntrypointTemplate {

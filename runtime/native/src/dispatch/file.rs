@@ -390,9 +390,8 @@ mod tests {
 
     #[test]
     fn file_capability_error_from_native_preserves_opaque_producer_payload() {
-        let error = file_capability_error_from_native(RuntimeError::Opaque(Box::new(
-            DummyWirePayload,
-        )));
+        let error =
+            file_capability_error_from_native(RuntimeError::Opaque(Box::new(DummyWirePayload)));
 
         match error {
             FileCapabilityError::Stream(

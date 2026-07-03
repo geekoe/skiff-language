@@ -12,9 +12,7 @@ use skiff_runtime_model::recoverable::{
     RuntimeRecoverableInterfaceTypeRef, RuntimeRecoverableTypeIdentityRef,
 };
 
-pub use skiff_runtime_boundary::type_descriptor::{
-    bare_type_name, type_name_root,
-};
+pub use skiff_runtime_boundary::type_descriptor::{bare_type_name, type_name_root};
 pub use skiff_runtime_model::type_plan::{
     RuntimeRecordFieldPlan, RuntimeTypeIdentityPlan, RuntimeTypeNode, RuntimeTypePlan,
 };
@@ -295,6 +293,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
             TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
             | TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
@@ -376,6 +375,7 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
             TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
             | TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. }
@@ -536,6 +536,20 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     type_index: *type_index,
                 };
                 return Self::resolve_addr_or_bridge(type_ref, addr, ctx);
+            }
+            LinkedTypeRef::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                match program_publication_type_addr(
+                    ctx.program,
+                    &ctx.current_addr.unit,
+                    module_path,
+                    *type_index,
+                ) {
+                    Some(addr) => return Self::resolve_addr_or_bridge(type_ref, addr, ctx),
+                    None => return Ok(unknown_plan_for_type_ref(type_ref)),
+                }
             }
             LinkedTypeRef::ServiceSymbol { symbol } => {
                 match program_service_symbol_type_addr(ctx.program, &ctx.current_addr.unit, symbol)?
@@ -1113,6 +1127,7 @@ fn recoverable_expected_node_from_linked(
         | LinkedTypeRef::DbObjectSymbol { .. }
         | LinkedTypeRef::Address { .. }
         | LinkedTypeRef::LocalType { .. }
+        | LinkedTypeRef::PublicationType { .. }
         | LinkedTypeRef::ServiceSymbol { .. }
         | LinkedTypeRef::PackageSymbol { .. } => {
             let runtime_plan = RuntimeTypePlan::from_linked(type_ref, ctx)?;
@@ -1207,6 +1222,7 @@ fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
 fn linked_type_ref_kind(type_ref: &LinkedTypeRef) -> &'static str {
     match type_ref {
         LinkedTypeRef::LocalType { .. } => "localType",
+        LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
         LinkedTypeRef::Address { .. } => "address",
@@ -1226,6 +1242,7 @@ fn linked_type_ref_label(type_ref: &LinkedTypeRef) -> &'static str {
     match type_ref {
         LinkedTypeRef::Native { .. } => "builtin",
         LinkedTypeRef::LocalType { .. } => "localType",
+        LinkedTypeRef::PublicationType { .. } => "publicationType",
         LinkedTypeRef::ServiceSymbol { .. } => "serviceSymbol",
         LinkedTypeRef::PackageSymbol { .. } => "packageSymbol",
         LinkedTypeRef::Address { .. } => "address",
@@ -1261,6 +1278,7 @@ fn artifact_type_ref_label(type_ref: &skiff_artifact_model::TypeRefIr) -> &'stat
     match type_ref {
         TypeRefIr::Native { .. } => "builtin",
         TypeRefIr::LocalType { .. } => "localType",
+        TypeRefIr::PublicationType { .. } => "publicationType",
         TypeRefIr::ServiceSymbol { .. } => "serviceSymbol",
         TypeRefIr::PackageSymbol { .. } => "packageSymbol",
         TypeRefIr::DbObjectSymbol { .. } => "dbObjectSymbol",
@@ -1323,6 +1341,30 @@ fn program_db_object_type_addr(
             program_local_type_addr(files, unit, symbol)
         }
     }
+}
+
+fn program_publication_type_addr(
+    program: ProgramTypeView<'_>,
+    unit: &UnitAddr,
+    module_path: &str,
+    type_index: usize,
+) -> Option<TypeAddr> {
+    let files = match unit {
+        UnitAddr::Service => program.service_files,
+        UnitAddr::Package(slot) => program.package_files.get(*slot)?.as_slice(),
+    };
+    let (file_index, file) = files
+        .iter()
+        .enumerate()
+        .find(|(_, file)| file.module_path == module_path)?;
+    if type_index >= file.types.len() {
+        return None;
+    }
+    Some(TypeAddr {
+        unit: unit.clone(),
+        file: FileAddr::LoadedFileIndex(file_index),
+        type_index,
+    })
 }
 
 fn program_service_symbol_type_addr(
