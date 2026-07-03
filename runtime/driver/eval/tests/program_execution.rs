@@ -3444,6 +3444,7 @@ fn test_outbound_context(frame: &ProgramTestInvocation) -> OutboundServiceContex
     eval_capability_adapter::outbound(
         eval_capability_adapter::outbound_service_context_from_request(
             &frame.request,
+            frame.operation.target.as_str(),
             frame.execution_budget.clone(),
             execution.cancel_flag(),
             frame.request_heap_limits.clone(),
