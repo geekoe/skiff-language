@@ -13,6 +13,10 @@ import {
   instanceSummary,
   readInstanceConfig,
 } from './lib/local-instance-config.mjs';
+import {
+  defaultDevHome,
+  devRuntimePaths,
+} from './lib/dev-runtime-paths.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -22,6 +26,9 @@ const configPath = join(tempRoot, '.skiff-instance', 'config.yml');
 const instanceRoot = dirname(configPath);
 
 try {
+  assert.equal(defaultDevHome({ HOME: join(tempRoot, 'home') }), join(skiffRoot, '.skiff-instance', 'dev-home'));
+  assert.equal(devRuntimePaths({ env: { HOME: join(tempRoot, 'home') } }).devHome, join(skiffRoot, '.skiff-instance', 'dev-home'));
+
   const expected = defaultInstanceConfig({ configPath, repoRoot: skiffRoot });
   assert.equal(expected.ports.routerHttp, defaultInstancePorts.routerHttp);
   assert.equal(expected.ports.routerControl, defaultInstancePorts.routerControl);
@@ -39,8 +46,8 @@ try {
 
   const loaded = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
   assert.deepEqual(instanceSummary(loaded).components, {
-    runtime: 'installed',
-    identityCli: 'installed',
+    runtime: 'worktree',
+    identityCli: 'worktree',
     router: 'worktree',
     telemetry: 'worktree',
     mongo: 'disabled',

@@ -218,6 +218,11 @@ describe('router config', () => {
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
       identityCliPath: join(devHome, 'bin/skiff-artifact-identity'),
     });
+
+    delete process.env.SKIFF_DEV_HOME;
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      identityCliPath: join(resolve('.skiff-instance', 'dev-home'), 'bin/skiff-artifact-identity'),
+    });
   });
 
   it('does not use local dev identity CLI fallback in release mode', async () => {

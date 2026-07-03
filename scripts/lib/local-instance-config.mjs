@@ -39,16 +39,17 @@ export function defaultInstanceConfigText() {
     `  mongo: ${defaultInstancePorts.mongo}`,
     '',
     'components:',
-    '  runtime: installed',
-    '  identityCli: installed',
+    '  runtime: worktree',
+    '  identityCli: worktree',
     '  router: worktree',
     '  telemetry: worktree',
     '  mongo: disabled',
     '  watch: disabled',
     '',
     'installed:',
-    '  runtimeBinary: ~/.skiff/dev/bin/skiff-runtime',
-    '  identityCli: ~/.skiff/dev/bin/skiff-artifact-identity',
+    '  # Used only when the matching component mode is installed.',
+    '  runtimeBinary: dev-home/bin/skiff-runtime',
+    '  identityCli: dev-home/bin/skiff-artifact-identity',
     '',
     'telemetry:',
     '  memory: true',
@@ -135,7 +136,7 @@ function normalizeInstanceConfig(raw, context) {
   ));
   const ports = normalizePorts(raw.ports);
   const components = normalizeComponents(raw.components);
-  const installed = normalizeInstalledBinaries(raw.installed);
+  const installed = normalizeInstalledBinaries(raw.installed, context.instanceRoot);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
   const watch = normalizeWatch(raw.watch, devHome);
@@ -225,18 +226,18 @@ function readComponentBinaryMode(value, label) {
   return mode;
 }
 
-function normalizeInstalledBinaries(value) {
+function normalizeInstalledBinaries(value, instanceRoot) {
   const installed = isRecord(value) ? value : {};
   return {
-    runtimeBinary: resolveHome(readString(
+    runtimeBinary: resolveConfigPath(instanceRoot, readString(
       installed.runtimeBinary,
       'installed.runtimeBinary',
-      '~/.skiff/dev/bin/skiff-runtime',
+      join('dev-home', 'bin', runtimeBinaryName()),
     )),
-    identityCli: resolveHome(readString(
+    identityCli: resolveConfigPath(instanceRoot, readString(
       installed.identityCli,
       'installed.identityCli',
-      '~/.skiff/dev/bin/skiff-artifact-identity',
+      join('dev-home', 'bin', identityCliBinaryName()),
     )),
   };
 }

@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { parse } from 'yaml';
@@ -394,7 +393,7 @@ function defaultDevIdentityCliPath(): string {
   const devHome =
     process.env.SKIFF_DEV_HOME && process.env.SKIFF_DEV_HOME.trim().length > 0
       ? process.env.SKIFF_DEV_HOME
-      : join(process.env.HOME || process.env.USERPROFILE || homedir(), '.skiff', 'dev');
+      : join(process.cwd(), '.skiff-instance', 'dev-home');
   return join(resolve(devHome), 'bin', IDENTITY_CLI_BINARY);
 }
 

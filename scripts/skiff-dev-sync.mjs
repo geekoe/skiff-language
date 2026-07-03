@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
@@ -14,7 +14,7 @@ import { readProjectPackageDirs } from './lib/project-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
-const defaultDevHome = join(homedir(), '.skiff', 'dev');
+const defaultDevHome = join(skiffRoot, '.skiff-instance', 'dev-home');
 const defaultWritableDevHome = resolveDevHome(process.env.SKIFF_DEV_HOME);
 const defaultArtifactRoot = join(defaultWritableDevHome, 'artifacts');
 const defaultBuildRoot = join(defaultWritableDevHome, 'build');

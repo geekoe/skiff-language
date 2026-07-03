@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 const IDENTITY_CLI_ENV = "SKIFF_ARTIFACT_IDENTITY_CLI";
@@ -71,7 +70,7 @@ function defaultDevIdentityCliPath(): string {
   const devHome =
     env.SKIFF_DEV_HOME && env.SKIFF_DEV_HOME.trim().length > 0
       ? env.SKIFF_DEV_HOME
-      : join(env.HOME || env.USERPROFILE || homedir(), ".skiff", "dev");
+      : join(process.cwd(), ".skiff-instance", "dev-home");
   return join(resolve(devHome), "bin", IDENTITY_CLI_BINARY);
 }
 

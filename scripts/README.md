@@ -4,7 +4,7 @@ These scripts assume the Skiff router and runtime are already running. They do n
 
 ## Service Dev CLI
 
-The stable local service environment is the main Skiff worktree's local
+The main worktree local service environment is the Skiff worktree's local
 instance. It uses `.skiff-instance/config.yml`, `.skiff-instance/dev-home`, and
 ports `4000/4001/4002`. macOS LaunchAgent `run.skiff.instance.stable` should
 run the instance CLI once at login and then exit:
@@ -32,21 +32,22 @@ From a service directory, `skiff service dev sync` and `skiff service dev watch`
 use the current service root and `service.yml`/`service.<profile>.yml`, then
 write artifacts to the selected dev home. For the main worktree instance that is
 `.skiff-instance/dev-home/artifacts`. `skiff check <root>` runs the same compile
-validation without syncing stable artifacts or reloading the router.
+validation without syncing local instance artifacts or reloading the router.
 `service.<profile>.yml` is a service definition / build / dev overlay; it is not
-a secret source. The stable control endpoint is
+a secret source. The local control endpoint is
 `http://127.0.0.1:4001/__skiff/reload-artifacts`; override with
 `--artifact-root`, `--reload-url`, `SKIFF_ARTIFACT_ROOT`, or
 `SKIFF_DEV_RELOAD_URL` only for explicit non-standard service-dev environments.
 
-`SKIFF_DEV_HOME` sets the dev environment root directory for non-instance
-service-dev commands. Instance commands set it from the selected instance config.
-It is a single path, not a list. Dev artifacts, service build cache, runtime
-config, runtime home, and the installed local runtime binary live under this one
+Non-instance service-dev commands default to the main Skiff worktree's
+`.skiff-instance/dev-home`. `SKIFF_DEV_HOME` is only an explicit override, and
+instance commands set it from the selected instance config before starting child
+processes. It is a single path, not a list. Dev artifacts, service build cache,
+runtime config, runtime home, and the local runtime binary live under this one
 directory. Package source resolution is project-scoped through `skiff.yml`, not
 `SKIFF_DEV_HOME`. `CARGO_TARGET_DIR` is only a Cargo build-cache override.
 
-Stable instance status:
+Main worktree instance status:
 
 ```bash
 node scripts/skiff.mjs instance status .skiff-instance/config.yml
@@ -136,7 +137,7 @@ resolved from the config directory. The generated `.skiff-instance/config.yml`
 is unrelated to project `skiff.yml`, `skiff.local.yml`, or package store
 resolution, and `.skiff-instance/` is ignored local state. The generated
 instance uses ports `4100` for service HTTP, `4101` for router control/runtime,
-and `4102` for telemetry, leaving the stable service instance untouched.
+and `4102` for telemetry, leaving the main worktree service instance untouched.
 
 Use the instance CLI as the source of truth for instance paths:
 

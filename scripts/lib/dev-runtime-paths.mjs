@@ -1,9 +1,11 @@
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptLibDir = dirname(fileURLToPath(import.meta.url));
+const skiffRoot = resolve(scriptLibDir, '..', '..');
 
 export function defaultDevHome(env = process.env) {
-  const home = env.HOME || env.USERPROFILE || homedir();
-  return join(home, '.skiff', 'dev');
+  return join(skiffRoot, '.skiff-instance', 'dev-home');
 }
 
 export function resolveDevHome(value, env = process.env) {
