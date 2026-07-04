@@ -28,6 +28,11 @@ spawn runThreadDrain(threadId)
 
 - payload encode 在提交前完成；若任一参数不可恢复，提交失败按普通平台错误抛给 caller，平台不得提交半截 work item。
 - 提交成功表示平台当前控制面已接受该调用。
+- `spawn` 是 same-build 执行语义：spawned call 必须由与提交方相同 service/version/build 的 runtime 执行。这个约束属于
+  submit / queue / claim 控制面元数据和 worker claim 过滤，不属于 recoverable args payload。
+- args recoverable payload 不承载 `artifact_identity`、`build_id`、service version、package version 或 activation identity。
+  `carrier = Local` 的 `any I` self payload 用当前 execution context + stable `LocalConcrete` restore key 恢复；spawn decode
+  使用 target executable 的当前 expected type plan，policy 仍是 strict。
 - 提交成功后，spawned call 与 caller request 生命周期分离；caller 后续 cancel / timeout 不影响它。
 - spawned call 在新的、独立的 runtime request frame 中执行，不继承 caller 的 request-local 状态。
 - 一次提交至多执行一次；执行失败、超时或 runtime 断连后，平台不自动重试同一次提交。
