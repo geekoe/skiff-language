@@ -1086,7 +1086,8 @@ mod tests {
         FailClosedRecoverableBehaviorHooks, RecoverableBehaviorHooks,
         RecoverableEncodedLocalInterfaceSelf, RecoverableInterfaceConformanceRequest,
         RecoverableInterfaceMethodTableRequest, RecoverableLocalInterfaceEncodeRequest,
-        RecoverableLocalInterfaceRestoreRequest, RecoverableRestoredLocalInterfaceSelf,
+        RecoverableLocalInterfaceRestoreRequest, RecoverableRemoteInterfaceCarrierRequest,
+        RecoverableRestoredLocalInterfaceSelf,
     };
     use crate::runtime_value::{
         InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
@@ -1152,6 +1153,18 @@ mod tests {
         )
     }
 
+    fn test_remote_operation_table() -> RemoteOperationTable {
+        RemoteOperationTable::new(
+            "remote:reader".to_string(),
+            READER_INTERFACE.to_string(),
+            vec![RemoteOperationSlot::new(
+                0,
+                READER_METHOD.to_string(),
+                "operation:reader.read".to_string(),
+            )],
+        )
+    }
+
     fn local_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
         RuntimeValue::Heap(
             heap.alloc_interface(InterfaceValue::new(
@@ -1173,15 +1186,7 @@ mod tests {
                 InterfaceCarrier::Remote {
                     dependency_ref: "dep:reader".to_string(),
                     public_instance_key: "reader#1".to_string(),
-                    operations: RemoteOperationTable::new(
-                        "remote:reader".to_string(),
-                        READER_INTERFACE.to_string(),
-                        vec![RemoteOperationSlot::new(
-                            0,
-                            READER_METHOD.to_string(),
-                            "operation:reader.read".to_string(),
-                        )],
-                    ),
+                    operations: test_remote_operation_table(),
                 },
             ))
             .expect("remote interface should allocate"),
@@ -1215,7 +1220,7 @@ mod tests {
     fn interface_node() -> RecoverableNode {
         RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         )
@@ -1273,6 +1278,7 @@ mod tests {
         restore_calls: Cell<usize>,
         conformance_calls: Cell<usize>,
         table_calls: Cell<usize>,
+        remote_table_calls: Cell<usize>,
     }
 
     impl RecoverableBehaviorHooks for TestBehaviorHooks {
@@ -1341,6 +1347,23 @@ mod tests {
         ) -> Result<Option<InterfaceMethodTable>> {
             self.table_calls.set(self.table_calls.get() + 1);
             Ok(Some(test_method_table(READER_INTERFACE, READER_PROJECTION)))
+        }
+
+        fn rebuild_remote_interface_operation_table(
+            &self,
+            request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+        ) -> Result<Option<RemoteOperationTable>> {
+            self.remote_table_calls
+                .set(self.remote_table_calls.get() + 1);
+            if request.carrier.dependency_ref == "dep:reader"
+                && request.carrier.public_instance_key == "reader#1"
+                && request.interface_identity == READER_INTERFACE
+                && request.method_projection_identity == READER_PROJECTION
+            {
+                Ok(Some(test_remote_operation_table()))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -1563,6 +1586,60 @@ mod tests {
     }
 
     #[test]
+    fn owner_internal_service_explicit_slot_roundtrips_remote_interface_with_hooks() {
+        let expected = any_reader_expected();
+        let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::InboundServiceCall)
+            .with_origin_service(PayloadServiceRef::new("skiff.run/account"));
+        let mut heap = RequestHeap::default();
+        let value = remote_interface_runtime_value(&mut heap);
+        let hooks = TestBehaviorHooks::default();
+
+        let bytes =
+            encode_recoverable_payload_with_behavior(&value, &expected, &boundary, &heap, &hooks)
+                .expect("remote interface should encode through explicit owner-internal slot");
+        assert_eq!(hooks.encode_calls.get(), 0);
+
+        let mut decode_heap = RequestHeap::default();
+        let decoded = decode_recoverable_payload_with_behavior(
+            &bytes,
+            &expected,
+            &boundary,
+            &mut decode_heap,
+            &hooks,
+        )
+        .expect("remote interface should decode through explicit owner-internal slot");
+
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("decoded interface should be a heap value");
+        };
+        let HeapNode::Interface(interface) = decode_heap.get(handle).expect("interface resolves")
+        else {
+            panic!("decoded value should be an interface");
+        };
+        let InterfaceCarrier::Remote {
+            dependency_ref,
+            public_instance_key,
+            operations,
+        } = interface.carrier()
+        else {
+            panic!("decoded interface should use remote carrier");
+        };
+        assert_eq!(interface.interface(), READER_INTERFACE);
+        assert_eq!(dependency_ref, "dep:reader");
+        assert_eq!(public_instance_key, "reader#1");
+        assert_eq!(operations.id(), "remote:reader");
+        assert_eq!(operations.interface_abi_id(), READER_INTERFACE);
+        assert_eq!(operations.slots()[0].slot(), 0);
+        assert_eq!(operations.slots()[0].method_abi_id(), READER_METHOD);
+        assert_eq!(
+            operations.slots()[0].operation_abi_id(),
+            "operation:reader.read"
+        );
+        assert_eq!(hooks.restore_calls.get(), 0);
+        assert_eq!(hooks.remote_table_calls.get(), 1);
+    }
+
+    #[test]
     fn behavior_helper_encode_failures_return_no_bytes_before_submission() {
         let expected = any_reader_expected();
         let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
@@ -1585,25 +1662,6 @@ mod tests {
             error.code(),
             RecoverableBoundaryErrorCode::CodeIdentityMissing
         );
-
-        let remote_value = remote_interface_runtime_value(&mut heap);
-        let hooks = TestBehaviorHooks::default();
-        let error = encode_recoverable_payload_with_behavior(
-            &remote_value,
-            &expected,
-            &boundary,
-            &heap,
-            &hooks,
-        )
-        .expect_err("remote carrier must fail before hook calls");
-        let RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable
-        );
-        assert_eq!(hooks.encode_calls.get(), 0);
     }
 
     #[test]
