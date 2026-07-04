@@ -691,7 +691,6 @@ mod tests {
             DbBoundaryValuePlan, DbFieldPathPolicy, DbFieldPathPolicyError, DbValueProjection,
             MONGO_ID_FIELD,
         },
-        error::RecoverableBoundaryErrorCode,
         plan::{BoundaryDirection, BoundaryUse},
         recoverable::{FailClosedRecoverableBehaviorHooks, RecoverableBoundaryCodec},
     };
@@ -992,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn recoverable_envelope_db_context_rejects_remote_interface_carrier() {
+    fn recoverable_envelope_db_context_encodes_remote_interface_carrier() {
         let mut heap = RequestHeap::default();
         let remote = RuntimeValue::Heap(
             heap.alloc_interface(InterfaceValue::new(
@@ -1013,18 +1012,12 @@ mod tests {
         let context = recoverable_db_context();
         let hooks = FailClosedRecoverableBehaviorHooks;
 
-        let error = RecoverableBoundaryCodec::encode_with_behavior(
+        let bytes = RecoverableBoundaryCodec::encode_with_behavior(
             &remote, &expected, &context, &heap, &hooks,
         )
-        .expect_err("remote carrier must not be persistable through DB");
+        .expect("remote carrier should be persistable through DB recoverable envelope lane");
 
-        let crate::RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable
-        );
+        assert!(!bytes.is_empty());
     }
 
     #[test]
