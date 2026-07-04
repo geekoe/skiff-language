@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -9,10 +9,13 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::{
     sources::{find_package_root, should_skip_package_dir},
-    types::{default_skiff_dev_home, TestEffectDouble},
+    types::TestEffectDouble,
     SkiffTestError, SkiffTestOptions,
 };
 
+const LOCAL_INSTANCE_CONFIG_DIR: &str = ".skiff-instance";
+const LOCAL_INSTANCE_CONFIG_FILE: &str = "config.yml";
+const DEFAULT_LOCAL_INSTANCE_DEV_HOME: &str = "dev-home";
 const TEST_DOUBLES_FILE: &str = "skiff.test-doubles.json";
 const STD_HTTP_REQUEST_TARGET: &str = "std.http.client.request";
 
@@ -25,6 +28,12 @@ struct TestDoublesManifest {
     pub(crate) configs: HashMap<String, JsonValue>,
     #[serde(default)]
     pub(crate) tests: HashMap<String, HashMap<String, TestDoubleDefinition>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalInstanceConfig {
+    dev_home: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -282,7 +291,8 @@ pub(crate) fn read_runtime_test_inputs(
             message: "--live tests require --config <path>".to_string(),
         });
     } else if inputs.service_db_mongo_url.is_none() {
-        inputs.service_db_mongo_url = read_default_dev_router_service_db_mongo_url()?;
+        inputs.service_db_mongo_url =
+            read_default_dev_router_service_db_mongo_url(input, input_is_file)?;
     }
     Ok(inputs)
 }
@@ -514,14 +524,117 @@ fn has_yaml_extension(path: &Path) -> bool {
     )
 }
 
-fn read_default_dev_router_service_db_mongo_url() -> Result<Option<String>, SkiffTestError> {
-    if let Some(dev_home) = default_skiff_dev_home() {
-        let router_config_path = dev_home.join("router.yml");
-        if router_config_path.is_file() {
-            return service_db_mongo_url_from_router_config_path(&router_config_path);
+fn read_default_dev_router_service_db_mongo_url(
+    input: &Path,
+    input_is_file: bool,
+) -> Result<Option<String>, SkiffTestError> {
+    let cwd = env::current_dir().ok();
+    let Some(config_path) =
+        local_instance_config_path_for_default_service_db(input, input_is_file, cwd.as_deref())
+    else {
+        return Ok(None);
+    };
+    let dev_home = dev_home_from_local_instance_config_path(&config_path)?;
+    let router_config_path = dev_home.join("router.yml");
+    if !router_config_path.is_file() {
+        return Ok(None);
+    }
+    service_db_mongo_url_from_router_config_path(&router_config_path)
+}
+
+pub(crate) fn local_instance_config_path_for_default_service_db(
+    input: &Path,
+    input_is_file: bool,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    let input_start = default_service_db_input_start_dir(input, input_is_file);
+    find_local_instance_config_upward(&input_start)
+        .or_else(|| cwd.and_then(find_local_instance_config_upward))
+}
+
+fn default_service_db_input_start_dir(input: &Path, input_is_file: bool) -> PathBuf {
+    if !input_is_file {
+        return input.to_path_buf();
+    }
+    input
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn find_local_instance_config_upward(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        let candidate = current
+            .join(LOCAL_INSTANCE_CONFIG_DIR)
+            .join(LOCAL_INSTANCE_CONFIG_FILE);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
         }
     }
-    Ok(None)
+}
+
+fn dev_home_from_local_instance_config_path(path: &Path) -> Result<PathBuf, SkiffTestError> {
+    let text = fs::read_to_string(path).map_err(|source| SkiffTestError::ReadTestDoubles {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let config: LocalInstanceConfig =
+        serde_yaml::from_str(&text).map_err(|source| SkiffTestError::InvalidTestDouble {
+            path: path.display().to_string(),
+            message: format!("failed to parse local instance config as YAML: {source}"),
+        })?;
+    let raw_dev_home = config
+        .dev_home
+        .unwrap_or_else(|| DEFAULT_LOCAL_INSTANCE_DEV_HOME.to_string());
+    if raw_dev_home.is_empty() {
+        return Err(SkiffTestError::InvalidTestDouble {
+            path: path.display().to_string(),
+            message: "local instance devHome must be a non-empty string".to_string(),
+        });
+    }
+    let instance_root = path
+        .parent()
+        .ok_or_else(|| SkiffTestError::InvalidTestDouble {
+            path: path.display().to_string(),
+            message: "local instance config path must have a parent directory".to_string(),
+        })?;
+    Ok(resolve_local_instance_path(instance_root, &raw_dev_home))
+}
+
+fn resolve_local_instance_path(base_dir: &Path, value: &str) -> PathBuf {
+    let expanded = expand_home_path(value);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        base_dir.join(expanded)
+    }
+}
+
+fn expand_home_path(value: &str) -> PathBuf {
+    if value == "~" {
+        return home_dir()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(value));
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = home_dir() {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(value)
+}
+
+fn home_dir() -> Option<std::ffi::OsString> {
+    env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
 }
 
 pub(crate) fn service_db_mongo_url_from_router_config_path(

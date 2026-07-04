@@ -1,14 +1,96 @@
 use serde_json::json;
 
-use std::fs;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+};
 
 use super::doubles::{
-    live_missing_config_skip_message, read_runtime_test_inputs, service_db_mongo_url_from_config,
+    live_missing_config_skip_message, local_instance_config_path_for_default_service_db,
+    read_runtime_test_inputs, service_db_mongo_url_from_config,
     service_db_mongo_url_from_router_config_path,
 };
 use super::runtime_process::{config_wrapped_for_router, RuntimeLiveMetadata};
 use super::service::runtime_live_expected_error;
 use super::SkiffTestOptions;
+
+static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvVarGuard {
+    name: &'static str,
+    value: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let guard = Self {
+            name,
+            value: env::var_os(name),
+        };
+        env::set_var(name, value);
+        guard
+    }
+
+    fn remove(name: &'static str) -> Self {
+        let guard = Self {
+            name,
+            value: env::var_os(name),
+        };
+        env::remove_var(name);
+        guard
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.value {
+            env::set_var(self.name, value);
+        } else {
+            env::remove_var(self.name);
+        }
+    }
+}
+
+fn temp_test_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "skiff-test-runner-{label}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
+fn write_test_file(path: &Path) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "test \"noop\" { assert true }\n").unwrap();
+}
+
+fn write_local_instance_config(project_root: &Path, text: &str) -> PathBuf {
+    let instance_root = project_root.join(".skiff-instance");
+    fs::create_dir_all(&instance_root).unwrap();
+    let config_path = instance_root.join("config.yml");
+    fs::write(&config_path, text).unwrap();
+    config_path
+}
+
+fn write_router_service_db(dev_home: &Path, mongo_url: &str) {
+    fs::create_dir_all(dev_home).unwrap();
+    fs::write(
+        dev_home.join("router.yml"),
+        format!(
+            r#"
+profile: local
+serviceDb:
+  mongoUrl: "{mongo_url}"
+"#
+        ),
+    )
+    .unwrap();
+}
 
 #[test]
 fn live_missing_config_skip_message_is_not_package_specific() {
@@ -132,6 +214,153 @@ serviceDb:
         Some("mongodb://127.0.0.1:27017/?directConnection=true")
     );
 
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn default_service_db_uses_nearest_local_instance_from_input_file() {
+    let temp = temp_test_dir("nearest-local-instance");
+    let root = temp.join("repo");
+    let service = root.join("services/account");
+    let input = service.join("internal/session.test.skiff");
+    write_test_file(&input);
+    write_local_instance_config(&root, "devHome: root-home\n");
+    write_router_service_db(
+        &root.join(".skiff-instance/root-home"),
+        "mongodb://127.0.0.1:27017/root",
+    );
+    write_local_instance_config(&service, "devHome: service-home\n");
+    write_router_service_db(
+        &service.join(".skiff-instance/service-home"),
+        "mongodb://127.0.0.1:27017/service",
+    );
+
+    let inputs = read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap();
+
+    assert_eq!(
+        inputs.service_db_mongo_url.as_deref(),
+        Some("mongodb://127.0.0.1:27017/service")
+    );
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn default_service_db_resolves_default_dev_home_under_instance_root() {
+    let temp = temp_test_dir("default-dev-home");
+    let project = temp.join("repo");
+    let input = project.join("tests/storage.test.skiff");
+    write_test_file(&input);
+    write_local_instance_config(&project, "components:\n  mongo: disabled\n");
+    write_router_service_db(
+        &project.join(".skiff-instance/dev-home"),
+        "mongodb://127.0.0.1:27017/default-dev-home",
+    );
+
+    let inputs = read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap();
+
+    assert_eq!(
+        inputs.service_db_mongo_url.as_deref(),
+        Some("mongodb://127.0.0.1:27017/default-dev-home")
+    );
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn default_service_db_resolves_relative_dev_home_under_instance_root() {
+    let temp = temp_test_dir("relative-dev-home");
+    let project = temp.join("repo");
+    let input = project.join("tests/storage.test.skiff");
+    write_test_file(&input);
+    write_local_instance_config(&project, "devHome: state/dev\n");
+    write_router_service_db(
+        &project.join(".skiff-instance/state/dev"),
+        "mongodb://127.0.0.1:27017/relative-dev-home",
+    );
+
+    let inputs = read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap();
+
+    assert_eq!(
+        inputs.service_db_mongo_url.as_deref(),
+        Some("mongodb://127.0.0.1:27017/relative-dev-home")
+    );
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn default_service_db_falls_back_to_cwd_local_instance_walk() {
+    let temp = temp_test_dir("cwd-local-instance");
+    let workspace = temp.join("workspace");
+    let input_root = temp.join("external-package");
+    let input = input_root.join("tests/storage.test.skiff");
+    let cwd = workspace.join("packages/account");
+    write_test_file(&input);
+    fs::create_dir_all(&cwd).unwrap();
+    let config_path = write_local_instance_config(&workspace, "devHome: dev-home\n");
+
+    assert_eq!(
+        local_instance_config_path_for_default_service_db(&input, true, Some(&cwd)).as_deref(),
+        Some(config_path.as_path())
+    );
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn default_service_db_without_local_instance_does_not_use_home_fallback() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let temp = temp_test_dir("no-home-fallback");
+    let project = temp.join("repo");
+    let input = project.join("tests/storage.test.skiff");
+    let home = temp.join("home");
+    write_test_file(&input);
+    write_router_service_db(
+        &home.join(".skiff").join("dev"),
+        "mongodb://127.0.0.1:27017/legacy-home",
+    );
+    let _home = EnvVarGuard::set("HOME", &home);
+    let _user_profile = EnvVarGuard::remove("USERPROFILE");
+
+    let inputs = read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap();
+
+    assert_eq!(inputs.service_db_mongo_url, None);
+    fs::remove_dir_all(&temp).unwrap();
+}
+
+#[test]
+fn explicit_config_service_db_overrides_default_local_instance() {
+    let temp = temp_test_dir("explicit-config-wins");
+    let project = temp.join("repo");
+    let input = project.join("tests/storage.test.skiff");
+    let config_path = temp.join("test-config.json");
+    write_test_file(&input);
+    write_local_instance_config(&project, "devHome: dev-home\n");
+    write_router_service_db(
+        &project.join(".skiff-instance/dev-home"),
+        "mongodb://127.0.0.1:27017/default-local-instance",
+    );
+    fs::write(
+        &config_path,
+        r#"{
+  "serviceDb": {
+    "mongoUrl": "mongodb://127.0.0.1:27017/explicit-config"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let inputs = read_runtime_test_inputs(
+        &input,
+        true,
+        &SkiffTestOptions {
+            config_path: Some(config_path),
+            ..SkiffTestOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        inputs.service_db_mongo_url.as_deref(),
+        Some("mongodb://127.0.0.1:27017/explicit-config")
+    );
     fs::remove_dir_all(&temp).unwrap();
 }
 

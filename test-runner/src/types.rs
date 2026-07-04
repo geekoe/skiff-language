@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
     path::{Path, PathBuf},
 };
 
@@ -58,18 +57,6 @@ impl SkiffTestOptions {
             package_dirs: self.package_dirs.clone(),
         }
     }
-}
-
-pub(crate) fn default_skiff_dev_home() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("SKIFF_DEV_HOME") {
-        let path = PathBuf::from(&value);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".skiff").join("dev"))
 }
 
 #[derive(Debug, Error)]
