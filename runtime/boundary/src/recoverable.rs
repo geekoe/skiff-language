@@ -5,15 +5,17 @@ use skiff_runtime_model::{
         InterfaceValueState, NativeHandleState, NominalObjectState, RecoverableArtifactRef,
         RecoverableArtifactRetentionRoot, RecoverableCodeIdentity, RecoverableDate,
         RecoverableEnvelope, RecoverableField, RecoverableMapKey, RecoverableNode,
-        RecoverableNumber, RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
-        RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
+        RecoverableNumber, RecoverableRemoteInterfaceCarrier, RecoverableRemoteOperationSlot,
+        RecoverableRemoteOperationTable, RecoverableState, RecoverableValidationLimits,
+        RecoverableValueKind, RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
         RuntimeRecoverableExpectedAnyInterfacePlan, RuntimeRecoverableExpectedTypeNode,
         RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
     runtime_value::{
-        HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodTable, InterfaceValue, RuntimeMap,
-        RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+        HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodTable, InterfaceValue,
+        RemoteOperationSlot, RemoteOperationTable, RuntimeMap, RuntimeObject, RuntimeObjectFields,
+        RuntimeValue, RuntimeValueKey,
     },
 };
 
@@ -81,6 +83,16 @@ pub struct RecoverableInterfaceMethodTableRequest<'a> {
     pub expected: &'a RuntimeRecoverableExpectedTypePlan,
 }
 
+pub struct RecoverableRemoteInterfaceCarrierRequest<'a> {
+    pub interface_identity: &'a str,
+    pub method_projection_identity: &'a str,
+    pub expected_any_interface: &'a RuntimeRecoverableExpectedAnyInterfacePlan,
+    pub carrier: &'a RecoverableRemoteInterfaceCarrier,
+    pub path: &'a str,
+    pub context: &'a RuntimeRecoverableBoundaryContext,
+    pub expected: &'a RuntimeRecoverableExpectedTypePlan,
+}
+
 pub trait RecoverableBehaviorHooks {
     fn encode_local_interface_self(
         &self,
@@ -103,6 +115,11 @@ pub trait RecoverableBehaviorHooks {
         &self,
         request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> Result<Option<InterfaceMethodTable>>;
+
+    fn rebuild_remote_interface_operation_table(
+        &self,
+        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+    ) -> Result<Option<RemoteOperationTable>>;
 }
 
 pub struct FailClosedRecoverableBehaviorHooks;
@@ -135,6 +152,13 @@ impl RecoverableBehaviorHooks for FailClosedRecoverableBehaviorHooks {
         &self,
         _request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> Result<Option<InterfaceMethodTable>> {
+        Ok(None)
+    }
+
+    fn rebuild_remote_interface_operation_table(
+        &self,
+        _request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+    ) -> Result<Option<RemoteOperationTable>> {
         Ok(None)
     }
 }
@@ -577,26 +601,36 @@ impl RecoverableValueEncoder<'_> {
         path: &str,
         behavior_hooks: &dyn RecoverableBehaviorHooks,
     ) -> Result<RecoverableNode> {
-        match value.carrier() {
-            InterfaceCarrier::Remote { .. } => Err(remote_carrier_not_persistable_error(
+        if self.context.trust_boundary != RuntimeRecoverableTrustBoundary::OwnerInternal {
+            return Err(interface_encode_error(
                 value,
                 path,
                 self.context,
                 self.expected,
-            )),
+            ));
+        }
+        match value.carrier() {
+            InterfaceCarrier::Remote {
+                dependency_ref,
+                public_instance_key,
+                operations,
+            } => Ok(RecoverableNode {
+                value_kind: RecoverableValueKind::InterfaceValue,
+                variant_identity: RecoverableVariantIdentity::None,
+                code_identity: RecoverableCodeIdentity::None,
+                state: RecoverableState::InterfaceValue(InterfaceValueState::Remote {
+                    carrier: recoverable_remote_interface_carrier_from_runtime(
+                        dependency_ref,
+                        public_instance_key,
+                        operations,
+                    ),
+                }),
+            }),
             InterfaceCarrier::Local {
                 concrete_type,
                 method_table,
                 payload,
             } => {
-                if self.context.trust_boundary != RuntimeRecoverableTrustBoundary::OwnerInternal {
-                    return Err(interface_encode_error(
-                        value,
-                        path,
-                        self.context,
-                        self.expected,
-                    ));
-                }
                 let encoded = behavior_hooks
                     .encode_local_interface_self(
                         RecoverableLocalInterfaceEncodeRequest {
@@ -636,7 +670,7 @@ impl RecoverableValueEncoder<'_> {
                     value_kind: RecoverableValueKind::InterfaceValue,
                     variant_identity: RecoverableVariantIdentity::None,
                     code_identity: RecoverableCodeIdentity::None,
-                    state: RecoverableState::InterfaceValue(InterfaceValueState {
+                    state: RecoverableState::InterfaceValue(InterfaceValueState::Local {
                         self_node: Box::new(encoded.self_node),
                     }),
                 })
@@ -900,8 +934,41 @@ fn decode_interface_node_with_behavior(
 ) -> Result<RuntimeValue> {
     let expected_any = expected_any_interface_for_node(expected_for_node, path)
         .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected))?;
+    match state {
+        InterfaceValueState::Local { self_node } => decode_local_interface_node_with_behavior(
+            self_node,
+            expected_any,
+            path,
+            context,
+            root_expected,
+            heap,
+            behavior_hooks,
+            decode_policy,
+        ),
+        InterfaceValueState::Remote { carrier } => decode_remote_interface_node_with_behavior(
+            carrier,
+            expected_any,
+            path,
+            context,
+            root_expected,
+            heap,
+            behavior_hooks,
+        ),
+    }
+}
+
+fn decode_local_interface_node_with_behavior(
+    self_node: &RecoverableNode,
+    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    root_expected: &RuntimeRecoverableExpectedTypePlan,
+    heap: &mut RequestHeap,
+    behavior_hooks: &dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
+) -> Result<RuntimeValue> {
     validate_local_interface_self_node(
-        &state.self_node,
+        self_node,
         &format!("{path}.selfNode"),
         context,
         root_expected,
@@ -913,7 +980,7 @@ fn decode_interface_node_with_behavior(
                 interface_identity: &expected_any.interface_identity,
                 method_projection_identity: &expected_any.method_projection_identity,
                 expected_any_interface: expected_any,
-                self_node: &state.self_node,
+                self_node,
                 path,
                 context,
                 expected: root_expected,
@@ -1006,8 +1073,175 @@ fn decode_interface_node_with_behavior(
     )?))
 }
 
+fn decode_remote_interface_node_with_behavior(
+    carrier: &RecoverableRemoteInterfaceCarrier,
+    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    root_expected: &RuntimeRecoverableExpectedTypePlan,
+    heap: &mut RequestHeap,
+    behavior_hooks: &dyn RecoverableBehaviorHooks,
+) -> Result<RuntimeValue> {
+    validate_remote_interface_carrier_matches_expected(
+        carrier,
+        expected_any,
+        path,
+        context,
+        root_expected,
+    )?;
+    let operations = behavior_hooks
+        .rebuild_remote_interface_operation_table(RecoverableRemoteInterfaceCarrierRequest {
+            interface_identity: &expected_any.interface_identity,
+            method_projection_identity: &expected_any.method_projection_identity,
+            expected_any_interface: expected_any,
+            carrier,
+            path,
+            context,
+            expected: root_expected,
+        })?
+        .ok_or_else(|| {
+            remote_carrier_not_persistable_error(
+                "current linked program does not provide a matching remote InterfaceValue carrier",
+                carrier,
+                path,
+                context,
+                root_expected,
+            )
+        })?;
+    validate_restored_remote_operation_table(
+        carrier,
+        &operations,
+        expected_any,
+        path,
+        context,
+        root_expected,
+    )?;
+    Ok(RuntimeValue::Heap(heap.alloc_interface(
+        InterfaceValue::new(
+            expected_any.interface_identity.clone(),
+            InterfaceCarrier::Remote {
+                dependency_ref: carrier.dependency_ref.clone(),
+                public_instance_key: carrier.public_instance_key.clone(),
+                operations,
+            },
+        ),
+    )?))
+}
+
 fn plain_node(value_kind: RecoverableValueKind, state: RecoverableState) -> RecoverableNode {
     RecoverableNode::plain(value_kind, state)
+}
+
+fn recoverable_remote_interface_carrier_from_runtime(
+    dependency_ref: &str,
+    public_instance_key: &str,
+    operations: &RemoteOperationTable,
+) -> RecoverableRemoteInterfaceCarrier {
+    RecoverableRemoteInterfaceCarrier {
+        dependency_ref: dependency_ref.to_string(),
+        public_instance_key: public_instance_key.to_string(),
+        operations: RecoverableRemoteOperationTable {
+            id: operations.id().to_string(),
+            interface_abi_id: operations.interface_abi_id().to_string(),
+            slots: operations
+                .slots()
+                .iter()
+                .map(|slot| RecoverableRemoteOperationSlot {
+                    slot: slot.slot(),
+                    method_abi_id: slot.method_abi_id().to_string(),
+                    operation_abi_id: slot.operation_abi_id().to_string(),
+                })
+                .collect(),
+        },
+    }
+}
+
+fn remote_operation_table_from_recoverable(
+    carrier: &RecoverableRemoteInterfaceCarrier,
+) -> RemoteOperationTable {
+    RemoteOperationTable::new(
+        carrier.operations.id.clone(),
+        carrier.operations.interface_abi_id.clone(),
+        carrier
+            .operations
+            .slots
+            .iter()
+            .map(|slot| {
+                RemoteOperationSlot::new(
+                    slot.slot,
+                    slot.method_abi_id.clone(),
+                    slot.operation_abi_id.clone(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn remote_operation_tables_runtime_equivalent(
+    left: &RemoteOperationTable,
+    right: &RemoteOperationTable,
+) -> bool {
+    left.id() == right.id()
+        && left.interface_abi_id() == right.interface_abi_id()
+        && left.slots() == right.slots()
+}
+
+fn validate_remote_interface_carrier_matches_expected(
+    carrier: &RecoverableRemoteInterfaceCarrier,
+    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    expected: &RuntimeRecoverableExpectedTypePlan,
+) -> Result<()> {
+    remote_interface_carrier_precheck(carrier, expected_any, path)
+        .map_err(|error| expected_type_mismatch_error(error, "decode", context, expected))
+}
+
+fn remote_interface_carrier_precheck(
+    carrier: &RecoverableRemoteInterfaceCarrier,
+    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    path: &str,
+) -> std::result::Result<(), ExpectedTypePrecheckError> {
+    if carrier.operations.interface_abi_id != expected_any.interface_identity {
+        return Err(ExpectedTypePrecheckError::new(
+            path,
+            format!(
+                "remote InterfaceValue operation table targets interface {}, expected {}",
+                carrier.operations.interface_abi_id, expected_any.interface_identity
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_restored_remote_operation_table(
+    carrier: &RecoverableRemoteInterfaceCarrier,
+    operations: &RemoteOperationTable,
+    expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    expected: &RuntimeRecoverableExpectedTypePlan,
+) -> Result<()> {
+    if operations.interface_abi_id() != expected_any.interface_identity {
+        return Err(remote_carrier_not_persistable_error(
+            "rebuilt remote InterfaceValue operation table targets a different interface identity",
+            carrier,
+            path,
+            context,
+            expected,
+        ));
+    }
+    let persisted = remote_operation_table_from_recoverable(carrier);
+    if !remote_operation_tables_runtime_equivalent(&persisted, operations) {
+        return Err(remote_carrier_not_persistable_error(
+            "rebuilt remote InterfaceValue operation table no longer matches persisted carrier state",
+            carrier,
+            path,
+            context,
+            expected,
+        ));
+    }
+    Ok(())
 }
 
 fn recoverable_map_key_from_runtime_key(key: &RuntimeValueKey) -> RecoverableMapKey {
@@ -1148,14 +1382,15 @@ fn scan_untrusted_behavior_node(
                 expected,
             )?;
         }
-        RecoverableState::InterfaceValue(state) => {
+        RecoverableState::InterfaceValue(InterfaceValueState::Local { self_node }) => {
             scan_untrusted_behavior_node(
-                &state.self_node,
+                self_node,
                 &format!("{path}.selfNode"),
                 context,
                 expected,
             )?;
         }
+        RecoverableState::InterfaceValue(InterfaceValueState::Remote { .. }) => {}
         RecoverableState::Null
         | RecoverableState::Bool(_)
         | RecoverableState::Number(_)
@@ -1640,31 +1875,75 @@ fn behavior_union_branch_matches(
             decode_policy,
         ));
     };
-    let concrete_type_identity = match local_concrete_identity_for_interface_precheck(node, path) {
-        Ok(identity) => identity,
-        Err(error) => return Ok(Err(error)),
-    };
-    let conforms = behavior_hooks.concrete_type_conforms_to_interface(
-        RecoverableInterfaceConformanceRequest {
-            concrete_type_identity,
-            interface_identity: &expected_any.interface_identity,
-            method_projection_identity: &expected_any.method_projection_identity,
-            expected_any_interface: expected_any,
-            path,
-            context,
-            expected: root_expected,
-        },
-    )?;
-    if conforms {
-        Ok(Ok(()))
-    } else {
-        Ok(Err(ExpectedTypePrecheckError::new(
+    let RecoverableState::InterfaceValue(state) = &node.state else {
+        return Ok(Err(ExpectedTypePrecheckError::new(
             path,
             format!(
-                "local concrete {concrete_type_identity} does not conform to any-interface {} projection {}",
-                expected_any.interface_identity, expected_any.method_projection_identity
+                "expected interface value but recoverable node kind was {:?}",
+                node.value_kind
             ),
-        )))
+        )));
+    };
+    match state {
+        InterfaceValueState::Local { .. } => {
+            let concrete_type_identity =
+                match local_concrete_identity_for_interface_precheck(node, path) {
+                    Ok(identity) => identity,
+                    Err(error) => return Ok(Err(error)),
+                };
+            let conforms = behavior_hooks.concrete_type_conforms_to_interface(
+                RecoverableInterfaceConformanceRequest {
+                    concrete_type_identity,
+                    interface_identity: &expected_any.interface_identity,
+                    method_projection_identity: &expected_any.method_projection_identity,
+                    expected_any_interface: expected_any,
+                    path,
+                    context,
+                    expected: root_expected,
+                },
+            )?;
+            if conforms {
+                Ok(Ok(()))
+            } else {
+                Ok(Err(ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "local concrete {concrete_type_identity} does not conform to any-interface {} projection {}",
+                        expected_any.interface_identity, expected_any.method_projection_identity
+                    ),
+                )))
+            }
+        }
+        InterfaceValueState::Remote { carrier } => {
+            if let Err(error) = remote_interface_carrier_precheck(carrier, expected_any, path) {
+                return Ok(Err(error));
+            }
+            let operations = behavior_hooks.rebuild_remote_interface_operation_table(
+                RecoverableRemoteInterfaceCarrierRequest {
+                    interface_identity: &expected_any.interface_identity,
+                    method_projection_identity: &expected_any.method_projection_identity,
+                    expected_any_interface: expected_any,
+                    carrier,
+                    path,
+                    context,
+                    expected: root_expected,
+                },
+            )?;
+            if operations.is_some() {
+                Ok(Ok(()))
+            } else {
+                Ok(Err(ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "remote carrier {}/{} does not conform to any-interface {} projection {}",
+                        carrier.dependency_ref,
+                        carrier.public_instance_key,
+                        expected_any.interface_identity,
+                        expected_any.method_projection_identity
+                    ),
+                )))
+            }
+        }
     }
 }
 
@@ -1688,19 +1967,17 @@ fn local_concrete_identity_for_interface_precheck<'a>(
     node: &'a RecoverableNode,
     path: &str,
 ) -> std::result::Result<&'a str, ExpectedTypePrecheckError> {
-    let RecoverableState::InterfaceValue(state) = &node.state else {
+    let RecoverableState::InterfaceValue(InterfaceValueState::Local { self_node }) = &node.state
+    else {
         return Err(ExpectedTypePrecheckError::new(
             path,
-            format!(
-                "expected interface value but recoverable node kind was {:?}",
-                node.value_kind
-            ),
+            "InterfaceValue union branch selection requires LocalConcrete self identity",
         ));
     };
     let RecoverableCodeIdentity::LocalConcrete {
         concrete_type_identity,
         ..
-    } = &state.self_node.code_identity
+    } = &self_node.code_identity
     else {
         return Err(ExpectedTypePrecheckError::new(
             path,
@@ -2061,21 +2338,25 @@ fn interface_encode_error(
 }
 
 fn remote_carrier_not_persistable_error(
-    value: &InterfaceValue,
+    reason: &str,
+    carrier: &RecoverableRemoteInterfaceCarrier,
     path: &str,
     context: &RuntimeRecoverableBoundaryContext,
     expected: &RuntimeRecoverableExpectedTypePlan,
 ) -> RuntimeError {
     RecoverableBoundaryError::new(
         RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable,
-        "InterfaceCarrier::Remote is request-scope public instance state and cannot be persisted in recoverable envelope",
+        "InterfaceCarrier::Remote cannot be recovered from the current owner-internal linked program",
         context,
         expected,
     )
     .with_detail(serde_json::json!({
         "nodePath": path,
-        "reason": value.diagnostic_label(),
+        "reason": reason,
         "carrier": "remote",
+        "dependencyRef": carrier.dependency_ref,
+        "publicInstanceKey": carrier.public_instance_key,
+        "operationTableId": carrier.operations.id,
     }))
     .into()
 }
