@@ -53,6 +53,7 @@ pub struct RecoverableLocalInterfaceRestoreRequest<'a> {
     pub path: &'a str,
     pub context: &'a RuntimeRecoverableBoundaryContext,
     pub expected: &'a RuntimeRecoverableExpectedTypePlan,
+    pub decode_policy: RecoverableDecodePolicy,
 }
 
 pub struct RecoverableRestoredLocalInterfaceSelf {
@@ -135,6 +136,42 @@ impl RecoverableBehaviorHooks for FailClosedRecoverableBehaviorHooks {
         _request: RecoverableInterfaceMethodTableRequest<'_>,
     ) -> Result<Option<InterfaceMethodTable>> {
         Ok(None)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoverableDecodePolicy {
+    ignore_unknown_record_fields: bool,
+    materialize_missing_nullable_record_fields: bool,
+}
+
+impl RecoverableDecodePolicy {
+    pub const fn strict() -> Self {
+        Self {
+            ignore_unknown_record_fields: false,
+            materialize_missing_nullable_record_fields: false,
+        }
+    }
+
+    pub const fn durable_db() -> Self {
+        Self {
+            ignore_unknown_record_fields: true,
+            materialize_missing_nullable_record_fields: true,
+        }
+    }
+
+    pub const fn ignores_unknown_record_fields(self) -> bool {
+        self.ignore_unknown_record_fields
+    }
+
+    pub const fn materializes_missing_nullable_record_fields(self) -> bool {
+        self.materialize_missing_nullable_record_fields
+    }
+}
+
+impl Default for RecoverableDecodePolicy {
+    fn default() -> Self {
+        Self::strict()
     }
 }
 
@@ -300,6 +337,22 @@ impl RecoverableBoundaryCodec {
         context: &RuntimeRecoverableBoundaryContext,
         heap: &mut RequestHeap,
     ) -> Result<RuntimeValue> {
+        Self::decode_with_policy(
+            bytes,
+            expected,
+            context,
+            heap,
+            RecoverableDecodePolicy::strict(),
+        )
+    }
+
+    pub fn decode_with_policy(
+        bytes: &[u8],
+        expected: &RuntimeRecoverableExpectedTypePlan,
+        context: &RuntimeRecoverableBoundaryContext,
+        heap: &mut RequestHeap,
+        decode_policy: RecoverableDecodePolicy,
+    ) -> Result<RuntimeValue> {
         let envelope = Self::decode_envelope_canonical(
             bytes,
             &RecoverableValidationLimits::default(),
@@ -307,11 +360,19 @@ impl RecoverableBoundaryCodec {
             context,
         )?;
         reject_untrusted_behavior_payload(&envelope, context, expected)?;
-        precheck_expected_type(&envelope.root, expected, "$.root")
+        precheck_expected_type_with_policy(&envelope.root, expected, "$.root", decode_policy)
             .map_err(|error| expected_type_mismatch_error(error, "decode", context, expected))?;
 
         let checkpoint = heap.checkpoint();
-        match decode_node(&envelope.root, "$.root", context, expected, heap) {
+        match decode_node(
+            &envelope.root,
+            expected,
+            "$.root",
+            context,
+            expected,
+            heap,
+            decode_policy,
+        ) {
             Ok(value) => Ok(value),
             Err(error) => {
                 heap.rollback_to_checkpoint(checkpoint);
@@ -327,6 +388,24 @@ impl RecoverableBoundaryCodec {
         heap: &mut RequestHeap,
         behavior_hooks: &dyn RecoverableBehaviorHooks,
     ) -> Result<RuntimeValue> {
+        Self::decode_with_behavior_and_policy(
+            bytes,
+            expected,
+            context,
+            heap,
+            behavior_hooks,
+            RecoverableDecodePolicy::strict(),
+        )
+    }
+
+    pub fn decode_with_behavior_and_policy(
+        bytes: &[u8],
+        expected: &RuntimeRecoverableExpectedTypePlan,
+        context: &RuntimeRecoverableBoundaryContext,
+        heap: &mut RequestHeap,
+        behavior_hooks: &dyn RecoverableBehaviorHooks,
+        decode_policy: RecoverableDecodePolicy,
+    ) -> Result<RuntimeValue> {
         let envelope = Self::decode_envelope_canonical(
             bytes,
             &RecoverableValidationLimits::default(),
@@ -334,7 +413,7 @@ impl RecoverableBoundaryCodec {
             context,
         )?;
         reject_untrusted_behavior_payload(&envelope, context, expected)?;
-        precheck_expected_type(&envelope.root, expected, "$.root")
+        precheck_expected_type_with_policy(&envelope.root, expected, "$.root", decode_policy)
             .map_err(|error| expected_type_mismatch_error(error, "decode", context, expected))?;
 
         let checkpoint = heap.checkpoint();
@@ -346,6 +425,7 @@ impl RecoverableBoundaryCodec {
             expected,
             heap,
             behavior_hooks,
+            decode_policy,
         ) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -525,7 +605,7 @@ impl RecoverableValueEncoder<'_> {
                     )?
                     .ok_or_else(|| {
                         code_identity_missing_error(
-                            "local InterfaceValue encode requires a registered behavior hook that supplies a LocalCode self node",
+                            "local InterfaceValue encode requires a registered behavior hook that supplies a LocalConcrete self node",
                             path,
                             self.context,
                             self.expected,
@@ -550,8 +630,6 @@ impl RecoverableValueEncoder<'_> {
                     variant_identity: RecoverableVariantIdentity::None,
                     code_identity: RecoverableCodeIdentity::None,
                     state: RecoverableState::InterfaceValue(InterfaceValueState {
-                        interface_identity: value.interface().to_string(),
-                        method_projection_identity: encoded.method_projection_identity,
                         self_node: Box::new(encoded.self_node),
                     }),
                 })
@@ -562,12 +640,19 @@ impl RecoverableValueEncoder<'_> {
 
 fn decode_node(
     node: &RecoverableNode,
+    expected_for_node: &RuntimeRecoverableExpectedTypePlan,
     path: &str,
     context: &RuntimeRecoverableBoundaryContext,
-    expected: &RuntimeRecoverableExpectedTypePlan,
+    root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
+    decode_policy: RecoverableDecodePolicy,
 ) -> Result<RuntimeValue> {
-    reject_behavior_node_for_plain_decode(node, path, context, expected)?;
+    let selected_expected =
+        select_expected_plan_for_node_with_policy(node, expected_for_node, path, decode_policy)
+            .map_err(|error| {
+                expected_type_mismatch_error(error, "decode", context, root_expected)
+            })?;
+    reject_behavior_node_for_plain_decode(node, path, context, root_expected)?;
     match &node.state {
         RecoverableState::Null => Ok(RuntimeValue::Null),
         RecoverableState::Bool(value) => Ok(RuntimeValue::Bool(*value)),
@@ -576,29 +661,35 @@ fn decode_node(
         RecoverableState::Bytes(value) => Ok(RuntimeValue::Heap(heap.alloc_bytes(value.clone())?)),
         RecoverableState::Date(value) => Ok(RuntimeValue::Date(value.epoch_millis)),
         RecoverableState::Array(items) => {
+            let child_expected = expected_array_item_plan(selected_expected);
             let mut decoded = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
                 decoded.push(decode_node(
                     item,
+                    child_expected.unwrap_or(selected_expected),
                     &format!("{path}[{index}]"),
                     context,
-                    expected,
+                    root_expected,
                     heap,
+                    decode_policy,
                 )?);
             }
             Ok(RuntimeValue::Heap(heap.alloc_array(decoded)?))
         }
         RecoverableState::Map(entries) => {
+            let child_expected = expected_map_value_plan(selected_expected);
             let mut decoded = RuntimeMap::new();
             for (index, (key, value)) in entries.iter().enumerate() {
                 let key =
-                    runtime_key_from_recoverable_map_key(key, &format!("{path}.mapKey[{index}]"), context, expected)?;
+                    runtime_key_from_recoverable_map_key(key, &format!("{path}.mapKey[{index}]"), context, root_expected)?;
                 let value = decode_node(
                     value,
+                    child_expected.unwrap_or(selected_expected),
                     &format!("{path}.map[{index}]"),
                     context,
-                    expected,
+                    root_expected,
                     heap,
+                    decode_policy,
                 )?;
                 decoded.insert(key, value);
             }
@@ -607,17 +698,28 @@ fn decode_node(
         RecoverableState::Record(fields) => {
             let mut decoded = RuntimeObjectFields::new();
             for field in fields {
+                let field_expected =
+                    expected_record_field_plan(selected_expected, &field.field_identity);
+                if field_expected.is_none()
+                    && decode_policy.ignores_unknown_record_fields()
+                    && expected_record_fields(selected_expected).is_some()
+                {
+                    continue;
+                }
                 decoded.insert(
                     field.field_identity.clone(),
                     decode_node(
                         &field.value,
+                        field_expected.unwrap_or(selected_expected),
                         &format!("{path}.field({})", field.field_identity),
                         context,
-                        expected,
+                        root_expected,
                         heap,
+                        decode_policy,
                     )?,
                 );
             }
+            materialize_missing_nullable_record_fields(&mut decoded, selected_expected, decode_policy);
             Ok(RuntimeValue::Heap(
                 heap.alloc_object(RuntimeObject::unshaped(decoded))?,
             ))
@@ -626,19 +728,19 @@ fn decode_node(
             "nominal object restore requires an explicit concrete restore plan, which is not available in the current runtime architecture",
             path,
             context,
-            expected,
+            root_expected,
         )),
         RecoverableState::InterfaceValue(_) => Err(unsupported_decode_error(
             "InterfaceValue recoverable wrapper recovery is reserved for P4 and is not decoded by the P3 plain codec",
             path,
             context,
-            expected,
+            root_expected,
         )),
         RecoverableState::NativeHandle(_) => Err(RecoverableBoundaryError::new(
             RecoverableBoundaryErrorCode::NativeMissingAdapter,
             "native handle restore requires an explicit native adapter hook, which is not available in the current runtime architecture",
             context,
-            expected,
+            root_expected,
         )
         .with_detail(serde_json::json!({
             "nodePath": path,
@@ -656,9 +758,13 @@ fn decode_node_with_behavior(
     root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
     behavior_hooks: &dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
 ) -> Result<RuntimeValue> {
-    let selected_expected = select_expected_plan_for_node(node, expected_for_node, path)
-        .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected))?;
+    let selected_expected =
+        select_expected_plan_for_node_with_policy(node, expected_for_node, path, decode_policy)
+            .map_err(|error| {
+                expected_type_mismatch_error(error, "decode", context, root_expected)
+            })?;
     if !matches!(node.state, RecoverableState::InterfaceValue(_)) {
         reject_behavior_node_for_plain_decode(node, path, context, root_expected)?;
     }
@@ -681,6 +787,7 @@ fn decode_node_with_behavior(
                     root_expected,
                     heap,
                     behavior_hooks,
+                    decode_policy,
                 )?);
             }
             Ok(RuntimeValue::Heap(heap.alloc_array(decoded)?))
@@ -703,6 +810,7 @@ fn decode_node_with_behavior(
                     root_expected,
                     heap,
                     behavior_hooks,
+                    decode_policy,
                 )?;
                 decoded.insert(key, value);
             }
@@ -713,20 +821,28 @@ fn decode_node_with_behavior(
             for field in fields {
                 let field_expected =
                     expected_record_field_plan(selected_expected, &field.field_identity)
-                        .unwrap_or(selected_expected);
+                        ;
+                if field_expected.is_none()
+                    && decode_policy.ignores_unknown_record_fields()
+                    && expected_record_fields(selected_expected).is_some()
+                {
+                    continue;
+                }
                 decoded.insert(
                     field.field_identity.clone(),
                     decode_node_with_behavior(
                         &field.value,
-                        field_expected,
+                        field_expected.unwrap_or(selected_expected),
                         &format!("{path}.field({})", field.field_identity),
                         context,
                         root_expected,
                         heap,
                         behavior_hooks,
+                        decode_policy,
                     )?,
                 );
             }
+            materialize_missing_nullable_record_fields(&mut decoded, selected_expected, decode_policy);
             Ok(RuntimeValue::Heap(
                 heap.alloc_object(RuntimeObject::unshaped(decoded))?,
             ))
@@ -739,6 +855,7 @@ fn decode_node_with_behavior(
             root_expected,
             heap,
             behavior_hooks,
+            decode_policy,
         ),
         RecoverableState::NominalObject(_) => Err(unsupported_decode_error(
             "nominal object restore outside an any-I self node requires an explicit concrete restore plan, which is not available in the P4 behavior API",
@@ -768,10 +885,9 @@ fn decode_interface_node_with_behavior(
     root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
     behavior_hooks: &dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
 ) -> Result<RuntimeValue> {
     let expected_any = expected_any_interface_for_node(expected_for_node, path)
-        .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected))?;
-    verify_interface_state_matches_expected(state, expected_any, path)
         .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected))?;
     validate_local_interface_self_node(
         &state.self_node,
@@ -783,19 +899,20 @@ fn decode_interface_node_with_behavior(
     let restored = behavior_hooks
         .restore_local_interface_self(
             RecoverableLocalInterfaceRestoreRequest {
-                interface_identity: &state.interface_identity,
-                method_projection_identity: &state.method_projection_identity,
+                interface_identity: &expected_any.interface_identity,
+                method_projection_identity: &expected_any.method_projection_identity,
                 expected_any_interface: expected_any,
                 self_node: &state.self_node,
                 path,
                 context,
                 expected: root_expected,
+                decode_policy,
             },
             heap,
         )?
         .ok_or_else(|| {
             unsupported_decode_error(
-                "local InterfaceValue restore requires a registered behavior hook for the self LocalCode identity",
+                "local InterfaceValue restore requires a registered behavior hook for the self LocalConcrete identity",
                 path,
                 context,
                 root_expected,
@@ -813,8 +930,8 @@ fn decode_interface_node_with_behavior(
     let conforms = behavior_hooks.concrete_type_conforms_to_interface(
         RecoverableInterfaceConformanceRequest {
             concrete_type_identity: &restored.concrete_type_identity,
-            interface_identity: &state.interface_identity,
-            method_projection_identity: &state.method_projection_identity,
+            interface_identity: &expected_any.interface_identity,
+            method_projection_identity: &expected_any.method_projection_identity,
             expected_any_interface: expected_any,
             path,
             context,
@@ -824,8 +941,8 @@ fn decode_interface_node_with_behavior(
     if !conforms {
         return Err(interface_conformance_missing_error(
             &restored.concrete_type_identity,
-            &state.interface_identity,
-            &state.method_projection_identity,
+            &expected_any.interface_identity,
+            &expected_any.method_projection_identity,
             "concrete type no longer conforms to expected any-interface projection",
             path,
             context,
@@ -836,8 +953,8 @@ fn decode_interface_node_with_behavior(
     let method_table = behavior_hooks
         .rebuild_local_interface_method_table(RecoverableInterfaceMethodTableRequest {
             concrete_type_identity: &restored.concrete_type_identity,
-            interface_identity: &state.interface_identity,
-            method_projection_identity: &state.method_projection_identity,
+            interface_identity: &expected_any.interface_identity,
+            method_projection_identity: &expected_any.method_projection_identity,
             expected_any_interface: expected_any,
             path,
             context,
@@ -846,19 +963,19 @@ fn decode_interface_node_with_behavior(
         .ok_or_else(|| {
             interface_conformance_missing_error(
                 &restored.concrete_type_identity,
-                &state.interface_identity,
-                &state.method_projection_identity,
+                &expected_any.interface_identity,
+                &expected_any.method_projection_identity,
                 "method table rebuild hook did not find a compatible interface projection",
                 path,
                 context,
                 root_expected,
             )
         })?;
-    if method_table.interface_abi_id() != state.interface_identity {
+    if method_table.interface_abi_id() != expected_any.interface_identity {
         return Err(interface_conformance_missing_error(
             &restored.concrete_type_identity,
-            &state.interface_identity,
-            &state.method_projection_identity,
+            &expected_any.interface_identity,
+            &expected_any.method_projection_identity,
             "rebuilt method table targets a different interface identity",
             path,
             context,
@@ -868,7 +985,7 @@ fn decode_interface_node_with_behavior(
 
     Ok(RuntimeValue::Heap(heap.alloc_interface(
         InterfaceValue::new(
-            state.interface_identity.clone(),
+            expected_any.interface_identity.clone(),
             InterfaceCarrier::Local {
                 concrete_type: restored.concrete_type_identity,
                 method_table,
@@ -923,9 +1040,9 @@ fn reject_behavior_node_for_plain_decode(
 ) -> Result<()> {
     match &node.code_identity {
         RecoverableCodeIdentity::None => {}
-        RecoverableCodeIdentity::LocalCode { .. } => {
+        RecoverableCodeIdentity::LocalConcrete { .. } => {
             return Err(unsupported_decode_error(
-                "LocalCode recoverable nodes require artifact restore hooks; P3 does not fake nominal/custom recovery",
+                "LocalConcrete recoverable nodes require concrete restore hooks; P3 does not fake nominal/custom recovery",
                 path,
                 context,
                 expected,
@@ -1059,8 +1176,8 @@ fn untrusted_behavior_reason(node: &RecoverableNode) -> Option<&'static str> {
         | RecoverableValueKind::Map
         | RecoverableValueKind::Record => match node.code_identity {
             RecoverableCodeIdentity::None => None,
-            RecoverableCodeIdentity::LocalCode { .. } => {
-                Some("LocalCode identity is behavior-bearing")
+            RecoverableCodeIdentity::LocalConcrete { .. } => {
+                Some("LocalConcrete identity is behavior-bearing")
             }
             RecoverableCodeIdentity::NativeAdapter { .. } => {
                 Some("NativeAdapter identity is behavior-bearing")
@@ -1089,24 +1206,47 @@ fn precheck_expected_type(
     expected: &RuntimeRecoverableExpectedTypePlan,
     path: &str,
 ) -> std::result::Result<(), ExpectedTypePrecheckError> {
+    precheck_expected_type_with_policy(node, expected, path, RecoverableDecodePolicy::strict())
+}
+
+fn precheck_expected_type_with_policy(
+    node: &RecoverableNode,
+    expected: &RuntimeRecoverableExpectedTypePlan,
+    path: &str,
+    decode_policy: RecoverableDecodePolicy,
+) -> std::result::Result<(), ExpectedTypePrecheckError> {
     match &expected.node {
         RuntimeRecoverableExpectedTypeNode::Alias { target } => {
-            precheck_expected_type(node, target, path)
+            precheck_expected_type_with_policy(node, target, path, decode_policy)
         }
         RuntimeRecoverableExpectedTypeNode::Nullable { inner } => {
             if matches!(node.state, RecoverableState::Null) {
                 Ok(())
             } else {
-                precheck_expected_type(node, inner, path)
+                precheck_expected_type_with_policy(node, inner, path, decode_policy)
             }
         }
         RuntimeRecoverableExpectedTypeNode::Union { items } => {
             let mut errors = Vec::new();
+            let mut matches = Vec::new();
             for item in items {
-                match precheck_expected_type(node, item, path) {
-                    Ok(()) => return Ok(()),
+                match precheck_expected_type_with_policy(node, item, path, decode_policy) {
+                    Ok(()) => matches.push(item.label.as_str()),
                     Err(error) => errors.push(format!("{}: {}", item.label, error.reason)),
                 }
+            }
+            if matches.len() == 1 {
+                return Ok(());
+            }
+            if matches.len() > 1 {
+                return Err(ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "recoverable value matched multiple union branches for {}: {}",
+                        expected.diagnostic_label(),
+                        matches.join(", ")
+                    ),
+                ));
             }
             Err(ExpectedTypePrecheckError::new(
                 path,
@@ -1126,7 +1266,7 @@ fn precheck_expected_type(
             _ => kind_mismatch(path, "literal string", node.value_kind),
         },
         RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
-            precheck_expected_type(node, payload, path)
+            precheck_expected_type_with_policy(node, payload, path, decode_policy)
         }
         RuntimeRecoverableExpectedTypeNode::Json => precheck_json_value(node, path),
         RuntimeRecoverableExpectedTypeNode::JsonObject => precheck_json_object(node, path),
@@ -1165,7 +1305,12 @@ fn precheck_expected_type(
                 return kind_mismatch(path, "array", node.value_kind);
             };
             for (index, item_node) in items.iter().enumerate() {
-                precheck_expected_type(item_node, item, &format!("{path}[{index}]"))?;
+                precheck_expected_type_with_policy(
+                    item_node,
+                    item,
+                    &format!("{path}[{index}]"),
+                    decode_policy,
+                )?;
             }
             Ok(())
         }
@@ -1175,12 +1320,17 @@ fn precheck_expected_type(
             };
             for (index, (entry_key, entry_value)) in entries.iter().enumerate() {
                 precheck_map_key(entry_key, key, &format!("{path}.mapKey[{index}]"))?;
-                precheck_expected_type(entry_value, value, &format!("{path}.map[{index}]"))?;
+                precheck_expected_type_with_policy(
+                    entry_value,
+                    value,
+                    &format!("{path}.map[{index}]"),
+                    decode_policy,
+                )?;
             }
             Ok(())
         }
         RuntimeRecoverableExpectedTypeNode::Record { fields, .. } => {
-            precheck_record_fields(node, fields, path)
+            precheck_record_fields(node, fields, path, decode_policy)
         }
         RuntimeRecoverableExpectedTypeNode::AnyInterface { expected } => {
             precheck_any_interface(node, expected, path)
@@ -1191,38 +1341,12 @@ fn precheck_expected_type(
 
 fn precheck_any_interface(
     node: &RecoverableNode,
-    expected: &RuntimeRecoverableExpectedAnyInterfacePlan,
+    _expected: &RuntimeRecoverableExpectedAnyInterfacePlan,
     path: &str,
 ) -> std::result::Result<(), ExpectedTypePrecheckError> {
-    let RecoverableState::InterfaceValue(state) = &node.state else {
+    let RecoverableState::InterfaceValue(_) = &node.state else {
         return kind_mismatch(path, "interface value", node.value_kind);
     };
-    verify_interface_state_matches_expected(state, expected, path)
-}
-
-fn verify_interface_state_matches_expected(
-    state: &InterfaceValueState,
-    expected: &RuntimeRecoverableExpectedAnyInterfacePlan,
-    path: &str,
-) -> std::result::Result<(), ExpectedTypePrecheckError> {
-    if state.interface_identity != expected.interface_identity {
-        return Err(ExpectedTypePrecheckError::new(
-            path,
-            format!(
-                "expected any-interface {}, got {}",
-                expected.interface_identity, state.interface_identity
-            ),
-        ));
-    }
-    if state.method_projection_identity != expected.method_projection_identity {
-        return Err(ExpectedTypePrecheckError::new(
-            path,
-            format!(
-                "expected method projection {}, got {}",
-                expected.method_projection_identity, state.method_projection_identity
-            ),
-        ));
-    }
     Ok(())
 }
 
@@ -1303,27 +1427,51 @@ fn precheck_json_object(
     }
 }
 
-fn select_expected_plan_for_node<'a>(
+fn select_expected_plan_for_node_with_policy<'a>(
     node: &RecoverableNode,
     expected: &'a RuntimeRecoverableExpectedTypePlan,
     path: &str,
+    decode_policy: RecoverableDecodePolicy,
 ) -> std::result::Result<&'a RuntimeRecoverableExpectedTypePlan, ExpectedTypePrecheckError> {
     match &expected.node {
         RuntimeRecoverableExpectedTypeNode::Alias { target } => {
-            select_expected_plan_for_node(node, target, path)
+            select_expected_plan_for_node_with_policy(node, target, path, decode_policy)
         }
         RuntimeRecoverableExpectedTypeNode::Nullable { inner } => {
             if matches!(node.state, RecoverableState::Null) {
                 Ok(expected)
             } else {
-                select_expected_plan_for_node(node, inner, path)
+                select_expected_plan_for_node_with_policy(node, inner, path, decode_policy)
             }
         }
         RuntimeRecoverableExpectedTypeNode::Union { items } => {
+            let mut matches = Vec::new();
             for item in items {
-                if precheck_expected_type(node, item, path).is_ok() {
-                    return select_expected_plan_for_node(node, item, path);
+                if precheck_expected_type_with_policy(node, item, path, decode_policy).is_ok() {
+                    matches.push(item);
                 }
+            }
+            if matches.len() == 1 {
+                return select_expected_plan_for_node_with_policy(
+                    node,
+                    matches[0],
+                    path,
+                    decode_policy,
+                );
+            }
+            if matches.len() > 1 {
+                return Err(ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "recoverable value matched multiple union branches for {}: {}",
+                        expected.diagnostic_label(),
+                        matches
+                            .iter()
+                            .map(|item| item.label.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
             }
             Err(ExpectedTypePrecheckError::new(
                 path,
@@ -1334,7 +1482,7 @@ fn select_expected_plan_for_node<'a>(
             ))
         }
         RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
-            select_expected_plan_for_node(node, payload, path)
+            select_expected_plan_for_node_with_policy(node, payload, path, decode_policy)
         }
         _ => Ok(expected),
     }
@@ -1371,6 +1519,51 @@ fn expected_record_field_plan<'a>(
     }
 }
 
+fn expected_record_fields(
+    expected: &RuntimeRecoverableExpectedTypePlan,
+) -> Option<&[skiff_runtime_model::recoverable::RuntimeRecoverableExpectedRecordFieldPlan]> {
+    match &expected.node {
+        RuntimeRecoverableExpectedTypeNode::Record { fields, .. } => Some(fields.as_slice()),
+        _ => None,
+    }
+}
+
+fn materialize_missing_nullable_record_fields(
+    decoded: &mut RuntimeObjectFields,
+    expected: &RuntimeRecoverableExpectedTypePlan,
+    decode_policy: RecoverableDecodePolicy,
+) {
+    if !decode_policy.materializes_missing_nullable_record_fields() {
+        return;
+    }
+    let Some(fields) = expected_record_fields(expected) else {
+        return;
+    };
+    for field in fields {
+        if !field.required
+            && !decoded.contains_key(&field.name)
+            && expected_type_accepts_null(&field.ty)
+        {
+            decoded.insert(field.name.clone(), RuntimeValue::Null);
+        }
+    }
+}
+
+fn expected_type_accepts_null(expected: &RuntimeRecoverableExpectedTypePlan) -> bool {
+    match &expected.node {
+        RuntimeRecoverableExpectedTypeNode::Alias { target } => expected_type_accepts_null(target),
+        RuntimeRecoverableExpectedTypeNode::Nullable { .. }
+        | RuntimeRecoverableExpectedTypeNode::Null => true,
+        RuntimeRecoverableExpectedTypeNode::Union { items } => {
+            items.iter().any(expected_type_accepts_null)
+        }
+        RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
+            expected_type_accepts_null(payload)
+        }
+        _ => false,
+    }
+}
+
 fn expected_any_interface_for_node<'a>(
     expected: &'a RuntimeRecoverableExpectedTypePlan,
     path: &str,
@@ -1394,11 +1587,24 @@ fn precheck_map_key(
         RuntimeRecoverableExpectedTypeNode::Alias { target } => precheck_map_key(key, target, path),
         RuntimeRecoverableExpectedTypeNode::Union { items } => {
             let mut errors = Vec::new();
+            let mut matches = Vec::new();
             for item in items {
                 match precheck_map_key(key, item, path) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => matches.push(item.label.as_str()),
                     Err(error) => errors.push(format!("{}: {}", item.label, error.reason)),
                 }
+            }
+            if matches.len() == 1 {
+                return Ok(());
+            }
+            if matches.len() > 1 {
+                return Err(ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "recoverable map key matched multiple union branches: {}",
+                        matches.join(", ")
+                    ),
+                ));
             }
             Err(ExpectedTypePrecheckError::new(
                 path,
@@ -1445,6 +1651,7 @@ fn precheck_record_fields(
     node: &RecoverableNode,
     fields: &[skiff_runtime_model::recoverable::RuntimeRecoverableExpectedRecordFieldPlan],
     path: &str,
+    decode_policy: RecoverableDecodePolicy,
 ) -> std::result::Result<(), ExpectedTypePrecheckError> {
     let RecoverableState::Record(actual_fields) = &node.state else {
         return kind_mismatch(path, "record", node.value_kind);
@@ -1461,7 +1668,12 @@ fn precheck_record_fields(
     for field in fields {
         match actual_by_name.get(field.name.as_str()) {
             Some(value) => {
-                precheck_expected_type(value, &field.ty, &format!("{path}.field({})", field.name))?;
+                precheck_expected_type_with_policy(
+                    value,
+                    &field.ty,
+                    &format!("{path}.field({})", field.name),
+                    decode_policy,
+                )?;
             }
             None if field.required => {
                 return Err(ExpectedTypePrecheckError::new(
@@ -1475,6 +1687,9 @@ fn precheck_record_fields(
 
     for field in actual_fields {
         if !allowed.contains(field.field_identity.as_str()) {
+            if decode_policy.ignores_unknown_record_fields() {
+                continue;
+            }
             return Err(ExpectedTypePrecheckError::new(
                 &format!("{path}.field({})", field.field_identity),
                 format!(
@@ -1548,26 +1763,19 @@ fn validate_local_interface_self_node(
         ));
     }
     match &node.code_identity {
-        RecoverableCodeIdentity::LocalCode {
-            artifact_identity,
-            build_id,
+        RecoverableCodeIdentity::LocalConcrete {
             concrete_type_identity,
             ..
-        } if !artifact_identity.is_empty()
-            && !build_id.is_empty()
-            && !concrete_type_identity.is_empty() =>
-        {
-            Ok(())
-        }
-        RecoverableCodeIdentity::LocalCode { .. } => Err(code_identity_missing_error(
-            "InterfaceValue self_node LocalCode identity must include artifact, build, and concrete type identity",
+        } if !concrete_type_identity.is_empty() => Ok(()),
+        RecoverableCodeIdentity::LocalConcrete { .. } => Err(code_identity_missing_error(
+            "InterfaceValue self_node LocalConcrete identity must include concrete type identity",
             path,
             context,
             expected,
         )),
         RecoverableCodeIdentity::None | RecoverableCodeIdentity::NativeAdapter { .. } => {
             Err(code_identity_missing_error(
-                "InterfaceValue self_node must carry LocalCode identity",
+                "InterfaceValue self_node must carry LocalConcrete identity",
                 path,
                 context,
                 expected,
@@ -1840,9 +2048,9 @@ mod tests {
     use serde_json::json;
     use skiff_runtime_model::addr::ExecutableAddr;
     use skiff_runtime_model::recoverable::{
-        InterfaceValueState, NativeAdapterOwner, NativeHandleState, NominalObjectState,
-        RecoverableCodeIdentity, RecoverableEnvelope, RecoverableField, RecoverableNode,
-        RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
+        InterfaceValueState, LocalConcreteOwner, NativeAdapterOwner, NativeHandleState,
+        NominalObjectState, RecoverableCodeIdentity, RecoverableEnvelope, RecoverableField,
+        RecoverableNode, RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
         RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
         RuntimeRecoverableBoundaryKind, RuntimeRecoverableExpectedRecordFieldPlan,
         RuntimeRecoverableExpectedTypeNode, RuntimeRecoverableExpectedTypePlan,
@@ -1979,6 +2187,34 @@ mod tests {
         }
     }
 
+    fn optional_field(
+        name: &str,
+        ty: RuntimeRecoverableExpectedTypePlan,
+    ) -> RuntimeRecoverableExpectedRecordFieldPlan {
+        RuntimeRecoverableExpectedRecordFieldPlan {
+            name: name.to_string(),
+            ty,
+            required: false,
+        }
+    }
+
+    fn nullable_expected(
+        inner: RuntimeRecoverableExpectedTypePlan,
+    ) -> RuntimeRecoverableExpectedTypePlan {
+        expected(
+            "nullable",
+            RuntimeRecoverableExpectedTypeNode::Nullable {
+                inner: Box::new(inner),
+            },
+        )
+    }
+
+    fn union_expected(
+        items: Vec<RuntimeRecoverableExpectedTypePlan>,
+    ) -> RuntimeRecoverableExpectedTypePlan {
+        expected("union", RuntimeRecoverableExpectedTypeNode::Union { items })
+    }
+
     fn string_node(value: &str) -> RecoverableNode {
         RecoverableNode::plain(
             RecoverableValueKind::String,
@@ -1986,15 +2222,13 @@ mod tests {
         )
     }
 
-    fn local_code_node(build_id: &str) -> RecoverableNode {
+    fn local_concrete_node() -> RecoverableNode {
         RecoverableNode {
             value_kind: RecoverableValueKind::NominalObject,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: "svc/account".to_string(),
-                build_id: build_id.to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: "pkg.User".to_string(),
-                package: None,
             },
             state: RecoverableState::NominalObject(NominalObjectState::DefaultFields {
                 fields: vec![RecoverableField {
@@ -2005,18 +2239,15 @@ mod tests {
         }
     }
 
-    fn custom_local_code_node(build_id: &str) -> RecoverableNode {
+    fn custom_local_concrete_node() -> RecoverableNode {
         RecoverableNode {
             value_kind: RecoverableValueKind::NominalObject,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: "svc/account".to_string(),
-                build_id: build_id.to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: "pkg.User".to_string(),
-                package: None,
             },
             state: RecoverableState::NominalObject(NominalObjectState::Custom {
-                restore_schema_version: "1".to_string(),
                 durable_state: Box::new(string_node("durable")),
             }),
         }
@@ -2026,9 +2257,7 @@ mod tests {
         RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
             RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: "pkg.Reader".to_string(),
-                method_projection_identity: "pkg.Reader#read".to_string(),
-                self_node: Box::new(local_code_node("build-a")),
+                self_node: Box::new(local_concrete_node()),
             }),
         )
     }
@@ -2049,12 +2278,29 @@ mod tests {
         }
     }
 
+    fn native_adapter_artifact_plain_node(build_id: &str) -> RecoverableNode {
+        RecoverableNode {
+            value_kind: RecoverableValueKind::String,
+            variant_identity: RecoverableVariantIdentity::None,
+            code_identity: RecoverableCodeIdentity::NativeAdapter {
+                adapter_identity: "std.StringAdapter".to_string(),
+                adapter_schema_version: "1".to_string(),
+                owner: NativeAdapterOwner::Artifact {
+                    artifact_identity: SERVICE_ARTIFACT.to_string(),
+                    build_id: build_id.to_string(),
+                    package: None,
+                },
+                native_type_identity: "std.StringLike".to_string(),
+            },
+            state: RecoverableState::String("native-adapter".to_string()),
+        }
+    }
+
     const READER_INTERFACE: &str = "pkg.Reader";
     const READER_PROJECTION: &str = "projection:pkg.Reader:pkg.ReaderImpl";
     const READER_METHOD: &str = "method:pkg.Reader:read";
     const READER_IMPL: &str = "pkg.ReaderImpl";
     const SERVICE_ARTIFACT: &str = "svc/account";
-    const SERVICE_BUILD: &str = "build-a";
 
     fn any_reader_expected() -> RuntimeRecoverableExpectedTypePlan {
         RuntimeRecoverableExpectedTypePlan::any_interface(
@@ -2120,15 +2366,13 @@ mod tests {
         )
     }
 
-    fn local_code_self_node(value: &str) -> RecoverableNode {
+    fn local_concrete_self_node(value: &str) -> RecoverableNode {
         RecoverableNode {
             value_kind: RecoverableValueKind::NominalObject,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: SERVICE_ARTIFACT.to_string(),
-                build_id: SERVICE_BUILD.to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: READER_IMPL.to_string(),
-                package: None,
             },
             state: RecoverableState::NominalObject(NominalObjectState::DefaultFields {
                 fields: vec![RecoverableField {
@@ -2154,9 +2398,10 @@ mod tests {
         restore_available: bool,
         conformance_available: bool,
         table_available: bool,
-        self_node_has_local_code: bool,
+        self_node_has_local_concrete: bool,
         table_interface_identity: RefCell<String>,
         table_projection_identity: RefCell<String>,
+        last_restore_decode_policy: RefCell<Option<RecoverableDecodePolicy>>,
         encode_calls: Cell<usize>,
         restore_calls: Cell<usize>,
         conformance_calls: Cell<usize>,
@@ -2170,9 +2415,10 @@ mod tests {
                 restore_available: true,
                 conformance_available: true,
                 table_available: true,
-                self_node_has_local_code: true,
+                self_node_has_local_concrete: true,
                 table_interface_identity: RefCell::new(READER_INTERFACE.to_string()),
                 table_projection_identity: RefCell::new(READER_PROJECTION.to_string()),
+                last_restore_decode_policy: RefCell::new(None),
                 encode_calls: Cell::new(0),
                 restore_calls: Cell::new(0),
                 conformance_calls: Cell::new(0),
@@ -2182,9 +2428,9 @@ mod tests {
     }
 
     impl TestBehaviorHooks {
-        fn without_local_code_identity() -> Self {
+        fn without_local_concrete_identity() -> Self {
             Self {
-                self_node_has_local_code: false,
+                self_node_has_local_concrete: false,
                 ..Self::default()
             }
         }
@@ -2233,8 +2479,8 @@ mod tests {
                 RuntimeValue::Null => "null",
                 _ => "unsupported",
             };
-            let mut self_node = local_code_self_node(value);
-            if !self.self_node_has_local_code {
+            let mut self_node = local_concrete_self_node(value);
+            if !self.self_node_has_local_concrete {
                 self_node.code_identity = RecoverableCodeIdentity::None;
             }
             Ok(Some(RecoverableEncodedLocalInterfaceSelf {
@@ -2249,10 +2495,11 @@ mod tests {
             _heap: &mut RequestHeap,
         ) -> Result<Option<RecoverableRestoredLocalInterfaceSelf>> {
             self.restore_calls.set(self.restore_calls.get() + 1);
+            *self.last_restore_decode_policy.borrow_mut() = Some(request.decode_policy);
             if !self.restore_available {
                 return Ok(None);
             }
-            let RecoverableCodeIdentity::LocalCode {
+            let RecoverableCodeIdentity::LocalConcrete {
                 concrete_type_identity,
                 ..
             } = &request.self_node.code_identity
@@ -2285,7 +2532,8 @@ mod tests {
             self.conformance_calls.set(self.conformance_calls.get() + 1);
             Ok(self.conformance_available
                 && request.concrete_type_identity == READER_IMPL
-                && request.interface_identity == READER_INTERFACE)
+                && request.interface_identity == READER_INTERFACE
+                && request.method_projection_identity == READER_PROJECTION)
         }
 
         fn rebuild_local_interface_method_table(
@@ -2551,8 +2799,161 @@ mod tests {
     }
 
     #[test]
+    fn durable_db_policy_ignores_unknown_record_fields_and_materializes_missing_nullable_fields() {
+        let context = recoverable_context();
+        let expected = record_expected(vec![
+            field("name", string_expected()),
+            optional_field("nickname", nullable_expected(string_expected())),
+        ]);
+        let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
+            RecoverableValueKind::Record,
+            RecoverableState::Record(vec![
+                RecoverableField {
+                    field_identity: "name".to_string(),
+                    value: string_node("Ada"),
+                },
+                RecoverableField {
+                    field_identity: "historical".to_string(),
+                    value: string_node("ignored"),
+                },
+            ]),
+        ));
+        let bytes = envelope
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("record envelope should encode");
+
+        let strict_error = RecoverableBoundaryCodec::decode(
+            &bytes,
+            &expected,
+            &context,
+            &mut RequestHeap::default(),
+        )
+        .expect_err("strict decode must reject unknown record fields");
+        let RuntimeError::Recoverable(strict_error) = strict_error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            strict_error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+
+        let mut heap = RequestHeap::default();
+        let decoded = RecoverableBoundaryCodec::decode_with_policy(
+            &bytes,
+            &expected,
+            &context,
+            &mut heap,
+            RecoverableDecodePolicy::durable_db(),
+        )
+        .expect("durable DB policy should ignore unknown fields and materialize nullable fields");
+
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("expected object handle");
+        };
+        let HeapNode::Object(object) = heap.get(handle).expect("decoded object should resolve")
+        else {
+            panic!("expected decoded object");
+        };
+        assert_eq!(
+            object.fields().get("name"),
+            Some(&RuntimeValue::String("Ada".to_string()))
+        );
+        assert_eq!(object.fields().get("nickname"), Some(&RuntimeValue::Null));
+        assert!(!object.fields().contains_key("historical"));
+    }
+
+    #[test]
+    fn durable_db_policy_still_rejects_missing_required_record_fields() {
+        let context = recoverable_context();
+        let expected = record_expected(vec![field("name", string_expected())]);
+        let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
+            RecoverableValueKind::Record,
+            RecoverableState::Record(Vec::new()),
+        ));
+        let bytes = envelope
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("record envelope should encode");
+
+        let mut heap = RequestHeap::default();
+        let error = RecoverableBoundaryCodec::decode_with_policy(
+            &bytes,
+            &expected,
+            &context,
+            &mut heap,
+            RecoverableDecodePolicy::durable_db(),
+        )
+        .expect_err("missing required fields must fail under durable DB policy");
+
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+        assert_eq!(heap.len(), 0);
+    }
+
+    #[test]
+    fn union_expected_multi_match_fails_closed() {
+        let context = recoverable_context();
+        let expected = union_expected(vec![
+            string_expected(),
+            expected("json", RuntimeRecoverableExpectedTypeNode::Json),
+        ]);
+        let envelope = RecoverableEnvelope::new(string_node("Ada"));
+        let bytes = envelope
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("string envelope should encode");
+
+        let error = RecoverableBoundaryCodec::decode(
+            &bytes,
+            &expected,
+            &context,
+            &mut RequestHeap::default(),
+        )
+        .expect_err("union multi-match must fail closed");
+
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+        assert!(error.to_string().contains("multiple union branches"));
+    }
+
+    #[test]
+    fn unresolved_expected_does_not_decode_behavior_bearing_interface_value() {
+        let context = recoverable_context();
+        let hooks = TestBehaviorHooks::default();
+        let bytes = RecoverableEnvelope::new(interface_node())
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("interface envelope should encode");
+
+        let error = RecoverableBoundaryCodec::decode_with_behavior(
+            &bytes,
+            &expected_plan(),
+            &context,
+            &mut RequestHeap::default(),
+            &hooks,
+        )
+        .expect_err("unresolved expected must not decode behavior-bearing InterfaceValue");
+
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+        assert_eq!(hooks.restore_calls.get(), 0);
+    }
+
+    #[test]
     fn untrusted_context_rejects_behavior_envelope_before_restore() {
-        let envelope = RecoverableEnvelope::new(local_code_node("missing-build"));
+        let envelope = RecoverableEnvelope::new(local_concrete_node());
         let context = external_recoverable_context();
         let expected = expected_plan();
         let bytes = envelope
@@ -2721,19 +3122,14 @@ mod tests {
         let RecoverableState::InterfaceValue(state) = &envelope.root.state else {
             panic!("expected InterfaceValue root");
         };
-        assert_eq!(state.interface_identity, READER_INTERFACE);
-        assert_eq!(state.method_projection_identity, READER_PROJECTION);
-        let RecoverableCodeIdentity::LocalCode {
-            artifact_identity,
-            build_id,
+        let RecoverableCodeIdentity::LocalConcrete {
+            owner,
             concrete_type_identity,
-            ..
         } = &state.self_node.code_identity
         else {
-            panic!("self_node should carry LocalCode");
+            panic!("self_node should carry LocalConcrete");
         };
-        assert_eq!(artifact_identity, SERVICE_ARTIFACT);
-        assert_eq!(build_id, SERVICE_BUILD);
+        assert_eq!(owner, &LocalConcreteOwner::Service);
         assert_eq!(concrete_type_identity, READER_IMPL);
 
         let bytes = RecoverableBoundaryCodec::encode_envelope_canonical(
@@ -2755,6 +3151,10 @@ mod tests {
         assert_eq!(hooks.restore_calls.get(), 1);
         assert_eq!(hooks.conformance_calls.get(), 1);
         assert_eq!(hooks.table_calls.get(), 1);
+        assert_eq!(
+            *hooks.last_restore_decode_policy.borrow(),
+            Some(RecoverableDecodePolicy::strict())
+        );
 
         let RuntimeValue::Heap(handle) = decoded else {
             panic!("decoded interface should be a heap value");
@@ -2777,6 +3177,22 @@ mod tests {
         assert_eq!(method_table.interface_abi_id(), READER_INTERFACE);
         assert_eq!(method_table.slots()[0].method_abi_id(), READER_METHOD);
         assert_eq!(payload, &RuntimeValue::String("Ada".to_string()));
+
+        let durable_policy_hooks = TestBehaviorHooks::default();
+        let mut decode_heap = RequestHeap::default();
+        RecoverableBoundaryCodec::decode_with_behavior_and_policy(
+            &bytes,
+            &expected,
+            &context,
+            &mut decode_heap,
+            &durable_policy_hooks,
+            RecoverableDecodePolicy::durable_db(),
+        )
+        .expect("policy-aware behavior decode should succeed");
+        assert_eq!(
+            *durable_policy_hooks.last_restore_decode_policy.borrow(),
+            Some(RecoverableDecodePolicy::durable_db())
+        );
     }
 
     #[test]
@@ -2803,7 +3219,7 @@ mod tests {
     }
 
     #[test]
-    fn behavior_api_missing_hook_or_local_code_identity_fails_closed() {
+    fn behavior_api_missing_hook_or_local_concrete_identity_fails_closed() {
         let context = recoverable_context();
         let expected = any_reader_expected();
         let mut heap = RequestHeap::default();
@@ -2826,7 +3242,7 @@ mod tests {
             RecoverableBoundaryErrorCode::CodeIdentityMissing
         );
 
-        let missing_identity = TestBehaviorHooks::without_local_code_identity();
+        let missing_identity = TestBehaviorHooks::without_local_concrete_identity();
         let error = RecoverableBoundaryCodec::encode_with_behavior(
             &value,
             &expected,
@@ -2834,7 +3250,7 @@ mod tests {
             &heap,
             &missing_identity,
         )
-        .expect_err("missing LocalCode identity must fail");
+        .expect_err("missing LocalConcrete identity must fail");
         let RuntimeError::Recoverable(error) = error else {
             panic!("expected recoverable error");
         };
@@ -2846,9 +3262,7 @@ mod tests {
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
             RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: READER_INTERFACE.to_string(),
-                method_projection_identity: READER_PROJECTION.to_string(),
-                self_node: Box::new(local_code_self_node("Ada")),
+                self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));
         let bytes = envelope
@@ -2873,15 +3287,12 @@ mod tests {
     }
 
     #[test]
-    fn behavior_api_expected_interface_or_projection_mismatch_rejects_before_hook() {
+    fn behavior_api_expected_interface_or_projection_comes_from_expected_plan() {
         let context = recoverable_context();
-        let hooks = TestBehaviorHooks::default();
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
             RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: READER_INTERFACE.to_string(),
-                method_projection_identity: READER_PROJECTION.to_string(),
-                self_node: Box::new(local_code_self_node("Ada")),
+                self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));
         let bytes = envelope
@@ -2893,6 +3304,7 @@ mod tests {
             "pkg.Other",
             READER_PROJECTION,
         );
+        let hooks = TestBehaviorHooks::default();
         let error = RecoverableBoundaryCodec::decode_with_behavior(
             &bytes,
             &wrong_interface,
@@ -2900,21 +3312,23 @@ mod tests {
             &mut RequestHeap::default(),
             &hooks,
         )
-        .expect_err("wrong interface identity must reject before hook");
+        .expect_err("wrong expected interface identity must fail closed");
         let RuntimeError::Recoverable(error) = error else {
             panic!("expected recoverable error");
         };
         assert_eq!(
             error.code(),
-            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+            RecoverableBoundaryErrorCode::InterfaceConformanceMissing
         );
-        assert_eq!(hooks.restore_calls.get(), 0);
+        assert_eq!(hooks.restore_calls.get(), 1);
+        assert_eq!(hooks.conformance_calls.get(), 1);
 
         let wrong_projection = RuntimeRecoverableExpectedTypePlan::any_interface(
             "any pkg.Reader",
             READER_INTERFACE,
             "projection:pkg.Reader:Other",
         );
+        let hooks = TestBehaviorHooks::default();
         let error = RecoverableBoundaryCodec::decode_with_behavior(
             &bytes,
             &wrong_projection,
@@ -2922,15 +3336,16 @@ mod tests {
             &mut RequestHeap::default(),
             &hooks,
         )
-        .expect_err("wrong method projection must reject before hook");
+        .expect_err("wrong expected method projection must fail closed");
         let RuntimeError::Recoverable(error) = error else {
             panic!("expected recoverable error");
         };
         assert_eq!(
             error.code(),
-            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+            RecoverableBoundaryErrorCode::InterfaceConformanceMissing
         );
-        assert_eq!(hooks.restore_calls.get(), 0);
+        assert_eq!(hooks.restore_calls.get(), 1);
+        assert_eq!(hooks.conformance_calls.get(), 1);
     }
 
     #[test]
@@ -2940,9 +3355,7 @@ mod tests {
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
             RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: READER_INTERFACE.to_string(),
-                method_projection_identity: READER_PROJECTION.to_string(),
-                self_node: Box::new(local_code_self_node("Ada")),
+                self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));
         let bytes = envelope
@@ -3026,7 +3439,7 @@ mod tests {
         for context in contexts {
             for node in [
                 record_node("value", interface_node()),
-                record_node("value", local_code_node(SERVICE_BUILD)),
+                record_node("value", local_concrete_node()),
             ] {
                 let hooks = TestBehaviorHooks::default();
                 let bytes = RecoverableEnvelope::new(node)
@@ -3086,10 +3499,7 @@ mod tests {
         let context = recoverable_context();
         let expected = expected_plan();
 
-        for node in [
-            local_code_node("build-a"),
-            custom_local_code_node("build-a"),
-        ] {
+        for node in [local_concrete_node(), custom_local_concrete_node()] {
             let bytes = RecoverableEnvelope::new(node)
                 .to_canonical_bytes(&RecoverableValidationLimits::default())
                 .expect("nominal envelope should encode canonically");
@@ -3149,7 +3559,8 @@ mod tests {
 
     #[test]
     fn unavailable_artifact_fails_closed_with_required_diagnostics() {
-        let envelope = RecoverableEnvelope::new(local_code_node("missing-build"));
+        let envelope =
+            RecoverableEnvelope::new(native_adapter_artifact_plain_node("missing-build"));
         let store = TestArtifactStore::default();
         let context = recoverable_context_with_service();
         let expected = expected_plan();
@@ -3181,7 +3592,10 @@ mod tests {
     fn available_artifacts_produce_retention_roots_and_root_write_failure_fails_closed() {
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::Array,
-            RecoverableState::Array(vec![local_code_node("build-a"), local_code_node("build-b")]),
+            RecoverableState::Array(vec![
+                native_adapter_artifact_plain_node("build-a"),
+                native_adapter_artifact_plain_node("build-b"),
+            ]),
         ));
         let store = TestArtifactStore::default()
             .with_available("svc/account", "build-a")

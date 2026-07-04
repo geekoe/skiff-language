@@ -1072,9 +1072,9 @@ mod tests {
     use serde_json::json;
     use skiff_runtime_model::addr::ExecutableAddr;
     use skiff_runtime_model::recoverable::{
-        InterfaceValueState, NativeAdapterOwner, NativeHandleState, NominalObjectState,
-        RecoverableCodeIdentity, RecoverableEnvelope, RecoverableField, RecoverableNode,
-        RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
+        InterfaceValueState, LocalConcreteOwner, NativeAdapterOwner, NativeHandleState,
+        NominalObjectState, RecoverableCodeIdentity, RecoverableEnvelope, RecoverableField,
+        RecoverableNode, RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
         RecoverableVariantIdentity, RuntimeRecoverableBoundaryKind,
         RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
         RuntimeRecoverableTrustBoundary,
@@ -1112,8 +1112,6 @@ mod tests {
     const READER_PROJECTION: &str = "projection:pkg.Reader:pkg.ReaderImpl";
     const READER_METHOD: &str = "method:pkg.Reader:read";
     const READER_IMPL: &str = "pkg.ReaderImpl";
-    const SERVICE_ARTIFACT: &str = "svc/account";
-    const SERVICE_BUILD: &str = "build-a";
 
     fn string_plan() -> RuntimeTypePlan {
         RuntimeTypePlan::from_descriptor(&json!({
@@ -1197,15 +1195,13 @@ mod tests {
         )
     }
 
-    fn local_code_self_node(value: &str) -> RecoverableNode {
+    fn local_concrete_self_node(value: &str) -> RecoverableNode {
         RecoverableNode {
             value_kind: RecoverableValueKind::NominalObject,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: SERVICE_ARTIFACT.to_string(),
-                build_id: SERVICE_BUILD.to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: READER_IMPL.to_string(),
-                package: None,
             },
             state: RecoverableState::NominalObject(NominalObjectState::DefaultFields {
                 fields: vec![RecoverableField {
@@ -1220,9 +1216,7 @@ mod tests {
         RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
             RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: READER_INTERFACE.to_string(),
-                method_projection_identity: READER_PROJECTION.to_string(),
-                self_node: Box::new(local_code_self_node("Ada")),
+                self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         )
     }
@@ -1295,7 +1289,7 @@ mod tests {
             };
             Ok(Some(RecoverableEncodedLocalInterfaceSelf {
                 method_projection_identity: request.method_table.id().to_string(),
-                self_node: local_code_self_node(value),
+                self_node: local_concrete_self_node(value),
             }))
         }
 
@@ -1305,7 +1299,7 @@ mod tests {
             _heap: &mut RequestHeap,
         ) -> Result<Option<RecoverableRestoredLocalInterfaceSelf>> {
             self.restore_calls.set(self.restore_calls.get() + 1);
-            let RecoverableCodeIdentity::LocalCode {
+            let RecoverableCodeIdentity::LocalConcrete {
                 concrete_type_identity,
                 ..
             } = &request.self_node.code_identity
@@ -1665,7 +1659,7 @@ mod tests {
         ];
         let behavior_nodes = [
             interface_node(),
-            local_code_self_node("Ada"),
+            local_concrete_self_node("Ada"),
             native_adapter_plain_node(),
             native_handle_node(),
         ];
