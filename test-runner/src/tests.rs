@@ -26,6 +26,10 @@ struct EnvVarGuard {
     value: Option<std::ffi::OsString>,
 }
 
+struct CurrentDirGuard {
+    value: PathBuf,
+}
+
 impl EnvVarGuard {
     fn set(name: &'static str, value: &Path) -> Self {
         let guard = Self {
@@ -53,6 +57,23 @@ impl Drop for EnvVarGuard {
         } else {
             env::remove_var(self.name);
         }
+    }
+}
+
+impl CurrentDirGuard {
+    fn set(path: &Path) -> Self {
+        let guard = Self {
+            value: env::current_dir().unwrap(),
+        };
+        fs::create_dir_all(path).unwrap();
+        env::set_current_dir(path).unwrap();
+        guard
+    }
+}
+
+impl Drop for CurrentDirGuard {
+    fn drop(&mut self) {
+        env::set_current_dir(&self.value).unwrap();
     }
 }
 
@@ -310,6 +331,7 @@ fn default_service_db_without_local_instance_does_not_use_home_fallback() {
     let temp = temp_test_dir("no-home-fallback");
     let project = temp.join("repo");
     let input = project.join("tests/storage.test.skiff");
+    let cwd = temp.join("cwd-without-local-instance");
     let home = temp.join("home");
     write_test_file(&input);
     write_router_service_db(
@@ -319,7 +341,10 @@ fn default_service_db_without_local_instance_does_not_use_home_fallback() {
     let _home = EnvVarGuard::set("HOME", &home);
     let _user_profile = EnvVarGuard::remove("USERPROFILE");
 
-    let inputs = read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap();
+    let inputs = {
+        let _cwd = CurrentDirGuard::set(&cwd);
+        read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap()
+    };
 
     assert_eq!(inputs.service_db_mongo_url, None);
     fs::remove_dir_all(&temp).unwrap();
