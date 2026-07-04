@@ -681,6 +681,7 @@ mod tests {
         type_plan::RuntimeTypeNode,
     };
 
+    use crate::error::{RecoverableBoundaryErrorCode, RuntimeError};
     use crate::{
         db::{
             collection_item_plan_for_path, db_result_decode_plan_from_artifact_type_ref,
@@ -991,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn recoverable_envelope_db_context_encodes_remote_interface_carrier() {
+    fn recoverable_envelope_db_context_rejects_remote_interface_carrier_with_unresolved_expected() {
         let mut heap = RequestHeap::default();
         let remote = RuntimeValue::Heap(
             heap.alloc_interface(InterfaceValue::new(
@@ -1012,12 +1013,19 @@ mod tests {
         let context = recoverable_db_context();
         let hooks = FailClosedRecoverableBehaviorHooks;
 
-        let bytes = RecoverableBoundaryCodec::encode_with_behavior(
+        let error = RecoverableBoundaryCodec::encode_with_behavior(
             &remote, &expected, &context, &heap, &hooks,
         )
-        .expect("remote carrier should be persistable through DB recoverable envelope lane");
+        .expect_err("remote carrier encode must reject unresolved DB recoverable expected type");
 
-        assert!(!bytes.is_empty());
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+        assert!(error.message().contains("recoverable encode"));
     }
 
     #[test]

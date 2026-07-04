@@ -1636,7 +1636,7 @@ mod tests {
             "operation:reader.read"
         );
         assert_eq!(hooks.restore_calls.get(), 0);
-        assert_eq!(hooks.remote_table_calls.get(), 1);
+        assert_eq!(hooks.remote_table_calls.get(), 2);
     }
 
     #[test]

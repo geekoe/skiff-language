@@ -2018,7 +2018,7 @@ fn recoverable_envelope_runtime_field_roundtrips_remote_carrier_without_local_en
     assert_eq!(hooks.restore_calls.get(), 0);
     assert_eq!(hooks.conformance_calls.get(), 0);
     assert_eq!(hooks.table_calls.get(), 0);
-    assert_eq!(hooks.remote_table_calls.get(), 1);
+    assert_eq!(hooks.remote_table_calls.get(), 2);
     assert_decoded_remote_provider_runtime_value(&decoded, &read_heap, "binding-1");
 }
 
