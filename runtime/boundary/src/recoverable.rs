@@ -620,15 +620,6 @@ impl RecoverableValueEncoder<'_> {
                     public_instance_key,
                     operations,
                 );
-                if !self.context.explicit_recoverable_slot {
-                    return Err(remote_carrier_not_persistable_error(
-                        "remote InterfaceValue carrier is only persistable through explicit owner-internal recoverable slots",
-                        &carrier,
-                        path,
-                        self.context,
-                        self.expected,
-                    ));
-                }
                 Ok(RecoverableNode {
                     value_kind: RecoverableValueKind::InterfaceValue,
                     variant_identity: RecoverableVariantIdentity::None,
