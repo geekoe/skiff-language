@@ -436,8 +436,8 @@ decode 顺序：
    field 行为由当前 decode policy 决定。
 4. 对 `value_kind = InterfaceValue` 节点，expected type 必须唯一解析到一个 `any I` expected plan。单一 expected `any I`
    直接提供 interface/projection；expected union 对 `Local` carrier 必须用 `self_node` 的 `LocalConcreteRestoreKey` 对当前
-   linked program 做 conformance 检查，并唯一选中一个 any-interface 分支。没有分支或多个分支可匹配都 fail closed。`Remote`
-   carrier 第一版只在 expected type 已唯一给出 `any I` 时恢复；不能用远端 operation table 猜 union 分支。
+   linked program 做 conformance 检查，对 `Remote` carrier 必须用当前 linked program 按 persisted carrier 重建等价
+   remote operation table，并唯一选中一个 any-interface 分支。没有分支或多个分支可匹配都 fail closed。
 5. `InterfaceValueState::Local` 只提供 `self_node`。`self_node` 必须是 `NominalObject + LocalConcrete`；decode 用当前 linked
    program 按 `(owner, concrete_type_identity)` 查找 concrete restore plan，用当前 decode policy 递归恢复 durable state，
    再校验 concrete type 仍 implements expected interface/projection 并重建 method table。
