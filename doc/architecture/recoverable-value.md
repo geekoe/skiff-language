@@ -15,13 +15,14 @@ ToolProvider key-registry 方案。
 本文负责：
 
 - 定义“可恢复值”这一跨 request / 持久边界的统一属性。
-- 说明普通数据、nominal object、native handle、`any I`（`carrier = Local`）如何进入同一恢复机制；以及跨 service
-  `any I` 进恢复边界**第一版统一 fail-closed**，及其目标态（service callback transport 落地后）的直传回拨机制。
+- 说明普通数据、nominal object、native handle、`any I`（`carrier = Local` 或正向 `carrier = Remote` public-instance
+  引用）如何进入同一恢复机制；以及跨 service 反向 local callback 进恢复边界**第一版 fail-closed**，及其目标态（service
+  callback transport 落地后）的 sealed 直传回拨机制。
 - 规定恢复后的等价语义：类型、接口投影和可恢复状态保持一致；heap 地址不保持。
 - 给出 compiler/runtime 的边界分工：静态闭包检查 + encode 时动态 carrier 查询 + owner-internal local behavior
   decode 时按当前 execution context 与稳定 restore key 恢复。
-- 说明 ToolProvider 不需要 provider key registry；`any ToolProvider` 能否跨边界由其可恢复性决定（本地可恢复，
-  跨 service provider 第一版 fail-closed）。
+- 说明 ToolProvider 不需要 provider key registry；`any ToolProvider` 能否跨边界由其可恢复性决定（本地可恢复，正向远程
+  public-instance carrier 在 owner-internal recoverable lane 可恢复，跨 service 反向 local callback 第一版 fail-closed）。
 
 本文不负责：
 
@@ -73,7 +74,8 @@ domain 的 envelope 第一版只允许 plain data，除非未来引入 sealed op
 any I 只是其中一种值；判据是进入了哪类边界：
 package public 入口传参（同 service / 同 runtime）= request-scope 本地值，不需要恢复；
 DB/spawn/queue/persistent payload = 可恢复边界，按 carrier 与 self payload 判定；
-跨 service 行为/接口/native adapter 节点进恢复边界 = 第一版 fail-closed（卡 service callback transport 与 sealed payload）；
+跨 service 反向 local callback / 明文 local behavior / native adapter 节点进恢复边界 = 第一版 fail-closed（卡 service
+callback transport 与 sealed payload）；
 跨 service / public / 导出 materialization 的 plain data 显式 envelope 可传输，但不改变 public API schema closure 规则。
 ```
 
@@ -275,8 +277,31 @@ struct RecoverableField {
     value: RecoverableNode,
 }
 
-struct InterfaceValueState {
-    self_node: Box<RecoverableNode>,
+enum InterfaceValueState {
+    Local {
+        self_node: Box<RecoverableNode>,
+    },
+    Remote {
+        carrier: RecoverableRemoteInterfaceCarrier,
+    },
+}
+
+struct RecoverableRemoteInterfaceCarrier {
+    dependency_ref: String,
+    public_instance_key: String,
+    operations: RecoverableRemoteOperationTable,
+}
+
+struct RecoverableRemoteOperationTable {
+    id: String,
+    interface_abi_id: String,
+    slots: Vec<RecoverableRemoteOperationSlot>,
+}
+
+struct RecoverableRemoteOperationSlot {
+    slot: u32,
+    method_abi_id: String,
+    operation_abi_id: String,
 }
 
 enum NominalObjectState {
@@ -320,24 +345,30 @@ enum RecoverableMapKey {
 - `NominalObjectState::DefaultFields` 表示默认结构恢复；`NominalObjectState::Custom` 表示 concrete type 自定义恢复。入口由
   `LocalConcreteRestoreKey` 在当前 linked program 中定位；runtime wrapper 不保存 `restore_schema_version`。自定义 durable
   state 仍是 `RecoverableNode`，可递归包含 plain data 或其它可恢复值。
-- **`any I` 的恢复机制不在本 enum 重新判，而是取自 `any I` 自己的 `InterfaceCarrier` 分支**
+- **`any I` 的恢复机制不在 encode 点重新判，而是取自 `any I` 自己的 `InterfaceCarrier` 分支**
   （`any-interface-value.md §Runtime Value`，`Local` / `Remote`）。carrier 在**装箱点 `as I` 就焦死**了：装箱源
   是局部 concrete 值 → `carrier = Local`（带 payload）；装箱源是已发布 public instance（如 `remoteLlm/llmInstance`）→
   `carrier = Remote`（带寻址坐标，不带 payload）。encode 点早已 type-erased、看不到装箱源，只读 carrier 已填好的
   分支。所以：
   - `carrier = Local` → `InterfaceValue` wrapper 节点 `code_identity = None`，`InterfaceValueState` 只保存
     `self_node`；interface/projection 来自 encode/decode 的 expected type plan。concrete self 的身份与状态写入
-    `self_node`（通常是 `NominalObject + LocalConcrete`）。
-  - `carrier = Remote` → 是正向远程引用（consumer 主动调一个已发布 public instance），它是 request-scope 值、
-    **不进恢复机制**（见 §Cross-Service Interface Value）；本 enum 不为它设分支。
+    `self_node`（通常是 `NominalObject + LocalConcrete`）。local interface 不能把 runtime carrier 或 payload 直接写进
+    DB/spawn/queue；只能写入显式 envelope 中的 `Local{ self_node }`。
+  - `carrier = Remote` → 是正向远程引用（consumer 主动调一个已发布 public instance）。在 owner-internal
+    recoverable lane 中，它写成 `Remote{ carrier }`，只保存 `dependency_ref`、`public_instance_key` 和
+    `operation table`，不保存远端 self payload；恢复时用当前 linked program 重建并校验 operation table。把本地 local
+    carrier 作为跨 service 反向 callback payload 传出仍不属于这个分支，见 §Cross-Service Interface Value。
 - `value_kind` 仍区分 `NominalObject` 与 `InterfaceValue`：它决定恢复出的静态形态，与 code identity 的定位职责分离。
 - decode 阶段必须能用每个节点自己的 `code_identity` 定位当前 `LocalConcrete` restore plan 或 native adapter；找不到、找到
   多个候选或当前 plan 不接受 durable state 时 fail closed（见 §Definition“当前 execution context 恢复”）。
-- `InterfaceValueState` 不携带 interface identity 或 method projection identity。`self_node` decode 后必须得到 concrete nominal
-  object；native/custom resource 若要作为 interface self，必须被某个 nominal object 或该 nominal type 的自定义恢复封装。
+- `InterfaceValueState::Local` 不携带 interface identity 或 method projection identity。`self_node` decode 后必须得到 concrete
+  nominal object；native/custom resource 若要作为 interface self，必须被某个 nominal object 或该 nominal type 的自定义恢复封装。
   decode 恢复 concrete self 后，必须用 expected type plan 提供的 interface/projection 重新校验 concrete type 仍 implements
   该 interface，并按 projection 重建 method table。projection identity 不从 source method name 临时推导，也不从 durable
   wrapper 读取。
+- `InterfaceValueState::Remote` 不保存 local self。decode 先用 expected type plan 校验 operation table 的
+  `interface_abi_id`，再要求当前 linked program / behavior hooks 能按 `dependency_ref + public_instance_key + persisted
+  operation table` 重建等价 `RemoteOperationTable`；找不到、接口不匹配或 table 不等价都 fail closed。
 - `NativeHandle` 节点的 adapter 身份只来自 `code_identity = NativeAdapter{...}`。`NativeHandleState` 只保存 adapter 的
   durable state。decode 先加载并校验 adapter，再把 durable state 交给该 adapter；adapter 缺失、schema version 不兼容或
   native type 不匹配都以 `recoverable_native_missing_adapter` / `recoverable_state_invalid` fail closed。
@@ -346,8 +377,9 @@ enum RecoverableMapKey {
 
 DB 的规则建立在 recoverable 之上，并额外要求查询/投影/索引语义。可以把 DB stored field 的能力拆成两级：
 
-- **可存储底线**：写入 DB 的值必须可恢复；不可恢复的 request-local resource、未声明恢复语义的 native value、`carrier = Remote`
-  的行为引用等，写入时 fail closed。
+- **可存储底线**：写入 DB 的值必须可恢复；不可恢复的 request-local resource、未声明恢复语义的 native value、跨 service
+  反向 local callback carrier 等，写入时 fail closed。正向 `carrier = Remote` public-instance 引用在 owner-internal
+  recoverable-envelope lane 中可持久化为远程坐标与 operation table。
 - **可查询能力**：只有具有稳定 schema storage shape、可比较/可排序/可投影语义的值，才能参与 nested `fields`、`where`、
   `order` 和 index。可恢复本身不自动赋予这些 DB 查询能力。
 
@@ -403,16 +435,20 @@ decode 顺序：
    plain data shape、map key domain、nullable null/non-null shape 和 union branch identity 是否兼容。record unknown/missing
    field 行为由当前 decode policy 决定。
 4. 对 `value_kind = InterfaceValue` 节点，expected type 必须唯一解析到一个 `any I` expected plan。单一 expected `any I`
-   直接提供 interface/projection；expected union 必须用 `self_node` 的 `LocalConcreteRestoreKey` 对当前 linked program 做
-   conformance 检查，并唯一选中一个 any-interface 分支。没有分支或多个分支可匹配都 fail closed。
-5. `InterfaceValueState` 只提供 `self_node`。`self_node` 必须是 `NominalObject + LocalConcrete`；decode 用当前 linked
+   直接提供 interface/projection；expected union 对 `Local` carrier 必须用 `self_node` 的 `LocalConcreteRestoreKey` 对当前
+   linked program 做 conformance 检查，并唯一选中一个 any-interface 分支。没有分支或多个分支可匹配都 fail closed。`Remote`
+   carrier 第一版只在 expected type 已唯一给出 `any I` 时恢复；不能用远端 operation table 猜 union 分支。
+5. `InterfaceValueState::Local` 只提供 `self_node`。`self_node` 必须是 `NominalObject + LocalConcrete`；decode 用当前 linked
    program 按 `(owner, concrete_type_identity)` 查找 concrete restore plan，用当前 decode policy 递归恢复 durable state，
    再校验 concrete type 仍 implements expected interface/projection 并重建 method table。
-6. 对 `LocalConcrete` 节点，按当前 execution context lookup restore plan，再校验恢复出的 concrete type 可以赋给当前
+6. `InterfaceValueState::Remote` 只提供正向 public-instance carrier：`dependency_ref`、`public_instance_key` 和持久化
+   operation table。decode 用 expected type plan 校验 interface identity，并要求当前 linked program 能为同一 dependency /
+   public instance 重建等价 operation table；否则 fail closed。它不读取 local self，也不产生 artifact retention root。
+7. 对 `LocalConcrete` 节点，按当前 execution context lookup restore plan，再校验恢复出的 concrete type 可以赋给当前
    expected type。local behavior decode 不读取 durable interface/projection，也不读取 artifact/build。
-7. 对 nominal object，先按当前 concrete restore plan 和 durable state 恢复等价值，再按当前 expected nominal/interface/union
+8. 对 nominal object，先按当前 concrete restore plan 和 durable state 恢复等价值，再按当前 expected nominal/interface/union
    plan 做可赋值检查。当前 schema 不接受该 concrete key 或 durable state 时 fail closed；这不是自动 schema migration。
-8. 对 DB 普通 schema-projectable 字段的跨版本变化，仍由 DB schema migration 负责；recoverable decode 只负责“当前 expected
+9. 对 DB 普通 schema-projectable 字段的跨版本变化，仍由 DB schema migration 负责；recoverable decode 只负责“当前 expected
    type 能否接收这个 envelope”。
 
 不兼容必须以稳定错误 fail closed，不得把旧类型值交给当前代码后再在任意调用点失败。
@@ -431,9 +467,10 @@ duck typing 放行。
   DB schema migration 或 concrete custom restore，不由 recoverable decode 自动猜测。
 - nominal expected type：恢复出的 `LocalConcrete.concrete_type_identity` 必须被当前 expected nominal identity 接受；若 expected type 是
   interface，则按 interface 规则检查；若 expected type 是 union，则先按 union branch 规则选中分支。
-- interface expected type：interface identity 和 projection identity 来自当前 expected type plan；`InterfaceValueState` 不保存这两项。
-  恢复出的 concrete type 必须在当前 linked program 中实现该 interface/projection。否则
-  `recoverable_interface_conformance_missing`。
+- interface expected type：interface identity 和 projection identity 来自当前 expected type plan；local
+  `InterfaceValueState` 不保存这两项。恢复出的 concrete type 必须在当前 linked program 中实现该 interface/projection。
+  remote `InterfaceValueState` 必须能在当前 linked program 中按 persisted carrier 重建等价 remote operation table。否则
+  `recoverable_interface_conformance_missing` 或 remote carrier rebuild 失败。
 - union expected type：若 envelope 带 `UnionBranch{ union_identity, branch_identity }`，两者必须与当前 expected union 和 branch
   identity 精确匹配。没有 branch identity 时，只允许 compiler 证明 payload shape 在当前 union 中唯一；对 any-interface union，
   当前 `LocalConcrete` 若能匹配多个 any-interface 分支，必须 `recoverable_expected_type_mismatch` fail closed。
@@ -562,13 +599,22 @@ enum AdapterSchemaCompatibility {
   implements I / projection → 重建 method table → 返回 `any I`。失败 fail closed（见 §Definition“当前 execution context 恢复”）。
 
 **`carrier = Remote`**（装箱源是已发布 public instance，如 `remoteLlm/llmInstance`）→ 是 consumer **主动调**一个远程
-公开实例的 request-scope 引用，**不进恢复机制**（见下节）。若该值被写入 DB/spawn/queue/persistent payload 或任何显式
-recoverable envelope slot，encode 必须以 `recoverable_remote_carrier_not_persistable` fail closed。
+公开实例的正向引用。owner-internal DB/spawn/queue/persistent payload 或显式 recoverable envelope slot 可以持久化它，
+但只保存：
+
+- `dependency_ref`：当前 service dependency 指向的远端 service/public contract。
+- `public_instance_key`：远端已发布 public instance 的稳定 key。
+- `operation table`：当前 linked program 下用于 dispatch 的 remote operation table。
+
+decode 必须用当前 expected type plan 校验 interface identity，并要求当前 linked program 能按同一 dependency/public instance
+重建等价 operation table；dependency 不再存在、public instance 不再发布、operation table 不等价或 interface 不匹配时 fail
+closed。该路径不调用 local encode/restore hook，不保存 remote self payload，也不新增 artifact retention root。
 
 同 service 内（跨 package 同 runtime）的 `any I` 在 package public 入口之间传参时是 request-scope 本地值
 （`any-interface-value.md §Boundary Contract`），这类同 request / 同 runtime 的流动不需要 envelope。若同一个值进入
 DB/spawn/queue/persistent payload，则仍按本文的可恢复边界处理：`carrier = Local` 且 self payload 全可恢复时允许；
-`carrier = Remote` 或 self 不可恢复时 fail closed。
+`carrier = Remote` 为正向 public-instance carrier 且当前 linked program 可重建 operation table 时允许；self 不可恢复或
+local carrier 被当作跨 service 反向 callback payload 时 fail closed。
 
 ## Cross-Service Interface Value
 
@@ -577,14 +623,12 @@ DB/spawn/queue/persistent payload，则仍按本文的可恢复边界处理：`c
 
 - **正向：consumer 主动调远程公开实例。** `remoteLlm/llmInstance as I`——装箱出 `carrier = Remote`，consumer 持有它、
   **主动** consumer→callee 调用，复用现状 service dependency dispatch。这是 request-scope 引用，consumer **本地主动调**
-  这个用法**不进恢复机制**：它不被持久化重建，只是“指向某个已发布远程实例”的坐标，由 `any-interface-value.md` 的
-  `Remote` carrier 承载，本文不重复定义。但若把这个 `carrier = Remote` 值**当作 payload 传去对端 service 等回拨**，
-  它既不带 self 字节（无法直传），也不是 durable remote handle，故以 `recoverable_remote_carrier_not_persistable`
-  **第一版 fail-closed**——
-  “不进恢复机制”仅指 consumer 本地主动调，不含把它当 payload 传出。
+  时不需要 envelope。若它进入 owner-internal DB/spawn/queue/persistent payload，则按上节的
+  `Remote{ dependency_ref, public_instance_key, operation table }` 形式持久化并恢复。这个能力已经落地，恢复时校验的是当前
+  linked program 是否仍能解释该正向 public-instance carrier。
 - **反向：值被传去对端，对端之后回拨构造侧。** consumer 把一个 `any I`（装箱源是本进程**局部** concrete 值）作为
   payload 传给对端 service，对端之后调它的方法 = 反向打回构造侧。**这才是恢复机制要管的**——值离开了构造侧 request，
-  对端要据可恢复信息回拨。
+  对端要据可恢复信息回拨。第一版仍 fail closed；未来需要 sealed local value 与 service callback transport。
 
 反向恢复信息**直传、不落 DB**。直传的是对端不可解释的 opaque sealed payload，而不是明文 state：
 
@@ -688,9 +732,9 @@ enum RecoverableTrustBoundary {
 规则：
 
 - `DbPayload` / `SpawnPayload` / `QueuePayload` 是 owner service 内部的跨 request / 持久边界；`target_service = None`。
-  `trust_boundary = OwnerInternal`。`carrier = Local` 且 self payload 全可恢复时允许；`carrier = Remote` 永远不是可恢复值，
-  fail closed。`explicit_recoverable_slot` 对这类 owner-internal lane 不是 public ABI 开关；DB schema / spawn target /
-  queue payload plan 本身就是可恢复边界。
+  `trust_boundary = OwnerInternal`。`carrier = Local` 且 self payload 全可恢复时允许；正向 `carrier = Remote`
+  public-instance 引用可按 dependency/publicInstance/operation table 持久化并恢复。`explicit_recoverable_slot` 对这类
+  owner-internal lane 不是 public ABI 开关；DB schema / spawn target / queue payload plan 本身就是可恢复边界。
 - package public 入口传参不调用 recoverable codec；它是同 runtime request-scope 值传递。
 - service/public API 的 ordinary schema payload 不允许 `any I` 默认 wire shape，也不允许隐式 recoverable envelope。
 - service/public API 只有在 schema/ABI 明确标记 `explicit_recoverable_slot = true` 的位置才能调用 recoverable codec。
@@ -700,7 +744,8 @@ enum RecoverableTrustBoundary {
   `InterfaceValue` local carrier 的失败码是
   `cross_service_interface_callback_unavailable`；普通 `LocalConcrete` nominal object 或 `NativeAdapter` 节点的失败码是
   `cross_service_recoverable_behavior_unavailable`。`ExternalUntrusted` 下行为节点的失败码是
-  `recoverable_untrusted_behavior_payload`。`carrier = Remote` 的失败码是 `recoverable_remote_carrier_not_persistable`。
+  `recoverable_untrusted_behavior_payload`。`carrier = Remote` 只有 owner-internal 正向 public-instance carrier 可恢复；作为
+  cross-service 反向 callback payload 或不可信明文行为 envelope 时仍 fail closed。
   plain data 显式 envelope 可作为普通数据 envelope 传输，但不改变 public API schema closure 规则。
 - 目标态跨 service 行为值解除 fail-closed 前，必须同时具备 sealed opaque payload 与 service callback transport；否则不得把
   `LocalConcrete` state 作为明文发给对端 service。
@@ -764,13 +809,15 @@ type AgentRuntimeBindings {
 
 `any ToolProvider` 是否能写入 thread config、run row（以及仅审计用的 model turn metadata），由具体 provider 的装箱源决定：
 同 service 内 provider 走 owner-internal recoverable envelope（`carrier = Local`）；正向引用的远程公开实例 provider（`carrier = Remote`）
-是 request-scope、不进恢复机制；跨 service 进恢复边界的 provider 第一版 fail-closed（见 §Cross-Service Interface
-Value）。`HostProvider` 怎么恢复是 `HostProvider` 的责任，不是 agent 包的责任。
+在 owner-internal recoverable lane 中以 dependency/publicInstance/operation table 持久化；跨 service 反向 local callback
+provider 第一版 fail-closed（见 §Cross-Service Interface Value）。`HostProvider` 怎么恢复是 `HostProvider` 的责任，不是
+agent 包的责任。
 
 spawn payload 不保存 provider array。agent drain 类后台任务只能传 `threadId` / `runId` 等稳定 id；worker 进入新 request 后从
   `AgentRun.runtimeBindings` 读取 run 生命周期冻结的 provider array。这样 spawn payload 只是唤醒信号，不成为第二份 runtime
   binding source。所有写入 `AgentRun.runtimeBindings` 的 `llm` / `events` / `providers` interface 值都必须在 owner-internal
-  recoverable boundary 中可恢复；`carrier = Remote` 或不可恢复 local self 在创建 run/config 时稳定拒绝。
+  recoverable boundary 中可恢复；正向 `carrier = Remote` public-instance carrier 可恢复，不可恢复 local self 或跨 service
+  反向 callback local carrier 在创建 run/config 时稳定拒绝。
 
 `ToolProviderBinding { key, provider }` 不应作为恢复机制。若仍需要 key，只能是 provider 自己暴露的诊断或业务
 stable id，不是 agent 包找回 provider 的通用载体。
@@ -790,11 +837,12 @@ snapshot 路由的命题（本文只规定这一条，不冻结 agent 包 snapsh
 - DB/spawn/queue/persistent payload 使用“值必须可恢复”的统一底线。
 - `any I` 是否可恢复、走哪条路径，取自其 `InterfaceCarrier` 分支（装箱点 `as I` 已定，recoverable 不重判）：
   `carrier = Local` 行为值走 `InterfaceValueState + self_node`（self 节点携带 `LocalConcrete` stable restore key）；
-  `carrier = Remote`（正向引用已发布远程公开实例）是
-  request-scope、不进恢复机制。跨 package（同 service 内）`any I` 在 package public 入口传参时是 request-scope 本地值；
-  若进入 DB/spawn/queue/persistent payload，则仍按本文可恢复边界处理。**跨 service `any I` 进恢复边界第一版
-  fail-closed**（卡 `any-interface-value.md §Evolution` 的 service callback transport）；坐标方案
-  （含未发布内部 root 路径寻址）是演进方向、不在第一版。见 §Cross-Service Interface Value。
+  `carrier = Remote`（正向引用已发布远程公开实例）在 owner-internal recoverable lane 以
+  dependencyRef/publicInstanceKey/operation table 持久化，并在恢复时校验当前 linked program。跨 package（同 service 内）
+  `any I` 在 package public 入口传参时是 request-scope 本地值；若进入 DB/spawn/queue/persistent payload，则仍按本文可恢复边界处理。
+  **跨 service 反向 local callback / sealed local value 第一版 fail-closed**（卡 `any-interface-value.md §Evolution` 的
+  service callback transport 与 sealed payload）；坐标方案（含未发布内部 root 路径寻址）是演进方向、不在第一版。见
+  §Cross-Service Interface Value。
 - 普通结构化值默认递归恢复；native/request-local 值默认拒绝；concrete type 可以提供自定义恢复或拒绝恢复。
 - owner-internal local behavior envelope 必须携带 stable `LocalConcrete` restore key；decode 在当前 execution context 中找不到唯一
   concrete restore entry 时 fail closed。
