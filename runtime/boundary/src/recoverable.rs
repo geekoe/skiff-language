@@ -614,18 +614,30 @@ impl RecoverableValueEncoder<'_> {
                 dependency_ref,
                 public_instance_key,
                 operations,
-            } => Ok(RecoverableNode {
-                value_kind: RecoverableValueKind::InterfaceValue,
-                variant_identity: RecoverableVariantIdentity::None,
-                code_identity: RecoverableCodeIdentity::None,
-                state: RecoverableState::InterfaceValue(InterfaceValueState::Remote {
-                    carrier: recoverable_remote_interface_carrier_from_runtime(
-                        dependency_ref,
-                        public_instance_key,
-                        operations,
-                    ),
-                }),
-            }),
+            } => {
+                let carrier = recoverable_remote_interface_carrier_from_runtime(
+                    dependency_ref,
+                    public_instance_key,
+                    operations,
+                );
+                if !self.context.explicit_recoverable_slot {
+                    return Err(remote_carrier_not_persistable_error(
+                        "remote InterfaceValue carrier is only persistable through explicit owner-internal recoverable slots",
+                        &carrier,
+                        path,
+                        self.context,
+                        self.expected,
+                    ));
+                }
+                Ok(RecoverableNode {
+                    value_kind: RecoverableValueKind::InterfaceValue,
+                    variant_identity: RecoverableVariantIdentity::None,
+                    code_identity: RecoverableCodeIdentity::None,
+                    state: RecoverableState::InterfaceValue(InterfaceValueState::Remote {
+                        carrier,
+                    }),
+                })
+            }
             InterfaceCarrier::Local {
                 concrete_type,
                 method_table,
@@ -2765,7 +2777,7 @@ mod tests {
     fn interface_node() -> RecoverableNode {
         RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_node()),
             }),
         )
@@ -2847,6 +2859,18 @@ mod tests {
         )
     }
 
+    fn test_remote_operation_table() -> RemoteOperationTable {
+        RemoteOperationTable::new(
+            "remote:reader".to_string(),
+            READER_INTERFACE.to_string(),
+            vec![RemoteOperationSlot::new(
+                0,
+                READER_METHOD.to_string(),
+                "operation:reader:read".to_string(),
+            )],
+        )
+    }
+
     fn local_interface_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
         let interface = InterfaceValue::new(
             READER_INTERFACE.to_string(),
@@ -2868,15 +2892,7 @@ mod tests {
             InterfaceCarrier::Remote {
                 dependency_ref: "svc.reader".to_string(),
                 public_instance_key: "reader#42".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:reader".to_string(),
-                    READER_INTERFACE.to_string(),
-                    vec![RemoteOperationSlot::new(
-                        0,
-                        READER_METHOD.to_string(),
-                        "operation:reader:read".to_string(),
-                    )],
-                ),
+                operations: test_remote_operation_table(),
             },
         );
         RuntimeValue::Heap(
@@ -2905,7 +2921,7 @@ mod tests {
     fn reader_interface_node(value: &str) -> RecoverableNode {
         RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_self_node(value)),
             }),
         )
@@ -2935,6 +2951,7 @@ mod tests {
         restore_calls: Cell<usize>,
         conformance_calls: Cell<usize>,
         table_calls: Cell<usize>,
+        remote_table_calls: Cell<usize>,
     }
 
     impl Default for TestBehaviorHooks {
@@ -2953,6 +2970,7 @@ mod tests {
                 restore_calls: Cell::new(0),
                 conformance_calls: Cell::new(0),
                 table_calls: Cell::new(0),
+                remote_table_calls: Cell::new(0),
             }
         }
     }
@@ -3094,6 +3112,23 @@ mod tests {
                 &self.table_interface_identity.borrow(),
                 &self.table_projection_identity.borrow(),
             )))
+        }
+
+        fn rebuild_remote_interface_operation_table(
+            &self,
+            request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+        ) -> Result<Option<RemoteOperationTable>> {
+            self.remote_table_calls
+                .set(self.remote_table_calls.get() + 1);
+            if request.carrier.dependency_ref == "svc.reader"
+                && request.carrier.public_instance_key == "reader#42"
+                && request.interface_identity == READER_INTERFACE
+                && request.method_projection_identity == READER_PROJECTION
+            {
+                Ok(Some(test_remote_operation_table()))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -3726,10 +3761,13 @@ mod tests {
         let RecoverableState::InterfaceValue(state) = &envelope.root.state else {
             panic!("expected InterfaceValue root");
         };
+        let InterfaceValueState::Local { self_node } = state else {
+            panic!("encoded local interface should use Local state");
+        };
         let RecoverableCodeIdentity::LocalConcrete {
             owner,
             concrete_type_identity,
-        } = &state.self_node.code_identity
+        } = &self_node.code_identity
         else {
             panic!("self_node should carry LocalConcrete");
         };
@@ -3800,26 +3838,83 @@ mod tests {
     }
 
     #[test]
-    fn behavior_api_remote_carrier_encode_fails_closed_before_hook() {
+    fn behavior_api_roundtrips_owner_internal_remote_interface_value() {
         let context = recoverable_context();
         let expected = any_reader_expected();
         let mut heap = RequestHeap::default();
         let value = remote_interface_runtime_value(&mut heap);
         let hooks = TestBehaviorHooks::default();
 
-        let error = RecoverableBoundaryCodec::encode_with_behavior(
+        let envelope = RecoverableBoundaryCodec::encode_envelope_with_behavior(
             &value, &expected, &context, &heap, &hooks,
         )
-        .expect_err("remote carrier must not persist");
-
-        let RuntimeError::Recoverable(error) = error else {
-            panic!("expected recoverable error");
-        };
-        assert_eq!(
-            error.code(),
-            RecoverableBoundaryErrorCode::RemoteCarrierNotPersistable
-        );
+        .expect("remote interface should encode through owner-internal behavior API");
         assert_eq!(hooks.encode_calls.get(), 0);
+        assert!(matches!(
+            envelope.root.code_identity,
+            RecoverableCodeIdentity::None
+        ));
+        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
+            &envelope.root.state
+        else {
+            panic!("encoded remote interface should use Remote state");
+        };
+        assert_eq!(carrier.dependency_ref, "svc.reader");
+        assert_eq!(carrier.public_instance_key, "reader#42");
+        assert_eq!(carrier.operations.id, "remote:reader");
+        assert_eq!(carrier.operations.interface_abi_id, READER_INTERFACE);
+        assert_eq!(carrier.operations.slots[0].slot, 0);
+        assert_eq!(carrier.operations.slots[0].method_abi_id, READER_METHOD);
+        assert_eq!(
+            carrier.operations.slots[0].operation_abi_id,
+            "operation:reader:read"
+        );
+
+        let bytes = RecoverableBoundaryCodec::encode_envelope_canonical(
+            &envelope,
+            &RecoverableValidationLimits::default(),
+            &expected,
+            &context,
+        )
+        .expect("remote behavior envelope should canonical encode");
+        let mut decode_heap = RequestHeap::default();
+        let decoded = RecoverableBoundaryCodec::decode_with_behavior(
+            &bytes,
+            &expected,
+            &context,
+            &mut decode_heap,
+            &hooks,
+        )
+        .expect("remote interface should decode through behavior hook");
+
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("decoded interface should be a heap value");
+        };
+        let HeapNode::Interface(interface) = decode_heap.get(handle).expect("interface resolves")
+        else {
+            panic!("expected decoded InterfaceValue");
+        };
+        let InterfaceCarrier::Remote {
+            dependency_ref,
+            public_instance_key,
+            operations,
+        } = interface.carrier()
+        else {
+            panic!("decoded interface should use remote carrier");
+        };
+        assert_eq!(interface.interface(), READER_INTERFACE);
+        assert_eq!(dependency_ref, "svc.reader");
+        assert_eq!(public_instance_key, "reader#42");
+        assert_eq!(operations.id(), "remote:reader");
+        assert_eq!(operations.interface_abi_id(), READER_INTERFACE);
+        assert_eq!(operations.slots()[0].slot(), 0);
+        assert_eq!(operations.slots()[0].method_abi_id(), READER_METHOD);
+        assert_eq!(
+            operations.slots()[0].operation_abi_id(),
+            "operation:reader:read"
+        );
+        assert_eq!(hooks.restore_calls.get(), 0);
+        assert_eq!(hooks.remote_table_calls.get(), 1);
     }
 
     #[test]
@@ -3865,7 +3960,7 @@ mod tests {
 
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));
@@ -3895,7 +3990,7 @@ mod tests {
         let context = recoverable_context();
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));
@@ -3958,7 +4053,7 @@ mod tests {
         let expected = any_reader_expected();
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::InterfaceValue,
-            RecoverableState::InterfaceValue(InterfaceValueState {
+            RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_self_node("Ada")),
             }),
         ));

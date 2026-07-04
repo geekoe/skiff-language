@@ -338,7 +338,9 @@ pub struct RecoverableField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterfaceValueState {
-    Local { self_node: Box<RecoverableNode> },
+    Local {
+        self_node: Box<RecoverableNode>,
+    },
     Remote {
         carrier: RecoverableRemoteInterfaceCarrier,
     },
@@ -1179,13 +1181,15 @@ impl RecoverableCanonicalDecoder<'_> {
                 0 => {
                     let self_node =
                         Box::new(self.read_node(&format!("{path}.selfNode"), depth + 1)?);
-                    Ok(RecoverableState::InterfaceValue(InterfaceValueState::Local {
-                        self_node,
-                    }))
+                    Ok(RecoverableState::InterfaceValue(
+                        InterfaceValueState::Local { self_node },
+                    ))
                 }
-                1 => Ok(RecoverableState::InterfaceValue(InterfaceValueState::Remote {
-                    carrier: self.read_remote_interface_carrier(path)?,
-                })),
+                1 => Ok(RecoverableState::InterfaceValue(
+                    InterfaceValueState::Remote {
+                        carrier: self.read_remote_interface_carrier(path)?,
+                    },
+                )),
                 tag => Err(RecoverableStateInvalid::new(
                     path,
                     format!("unknown interface value state tag {tag}"),
@@ -2053,6 +2057,34 @@ mod tests {
         }
     }
 
+    fn remote_interface_node() -> RecoverableNode {
+        RecoverableNode::plain(
+            RecoverableValueKind::InterfaceValue,
+            RecoverableState::InterfaceValue(InterfaceValueState::Remote {
+                carrier: RecoverableRemoteInterfaceCarrier {
+                    dependency_ref: "dep:pkg.reader".to_string(),
+                    public_instance_key: "reader#1".to_string(),
+                    operations: RecoverableRemoteOperationTable {
+                        id: "remote:pkg.Reader".to_string(),
+                        interface_abi_id: "pkg.Reader".to_string(),
+                        slots: vec![
+                            RecoverableRemoteOperationSlot {
+                                slot: 0,
+                                method_abi_id: "method:pkg.Reader.read".to_string(),
+                                operation_abi_id: "operation:pkg.Reader.read".to_string(),
+                            },
+                            RecoverableRemoteOperationSlot {
+                                slot: 1,
+                                method_abi_id: "method:pkg.Reader.close".to_string(),
+                                operation_abi_id: "operation:pkg.Reader.close".to_string(),
+                            },
+                        ],
+                    },
+                },
+            }),
+        )
+    }
+
     fn nested_nominal_map_key(representation_count: usize) -> RecoverableMapKey {
         let mut key = RecoverableMapKey::String("leaf".to_string());
         for index in (0..representation_count).rev() {
@@ -2358,7 +2390,7 @@ mod tests {
             value_kind: RecoverableValueKind::InterfaceValue,
             variant_identity: RecoverableVariantIdentity::None,
             code_identity: RecoverableCodeIdentity::None,
-            state: RecoverableState::InterfaceValue(InterfaceValueState {
+            state: RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_node("pkg.FileReader")),
             }),
         });
@@ -2379,7 +2411,7 @@ mod tests {
                 owner: LocalConcreteOwner::Service,
                 concrete_type_identity: "pkg.FileReader".to_string(),
             },
-            state: RecoverableState::InterfaceValue(InterfaceValueState {
+            state: RecoverableState::InterfaceValue(InterfaceValueState::Local {
                 self_node: Box::new(local_concrete_node("pkg.FileReader")),
             }),
         });
@@ -2391,6 +2423,74 @@ mod tests {
         assert!(error
             .message()
             .contains("InterfaceValue wrapper must not carry code identity"));
+    }
+
+    #[test]
+    fn remote_interface_wrapper_canonical_roundtrip_preserves_carrier_state() {
+        let envelope = RecoverableEnvelope::new(remote_interface_node());
+        let limits = RecoverableValidationLimits::default();
+
+        envelope
+            .validate(&limits)
+            .expect("remote InterfaceValue carrier should validate");
+        let bytes = envelope
+            .to_canonical_bytes(&limits)
+            .expect("remote InterfaceValue should canonical encode");
+        let decoded = RecoverableEnvelope::from_canonical_bytes(&bytes, &limits)
+            .expect("remote InterfaceValue should canonical decode");
+
+        assert_eq!(decoded, envelope);
+        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
+            decoded.root.state
+        else {
+            panic!("decoded root should be remote InterfaceValue");
+        };
+        assert_eq!(carrier.dependency_ref, "dep:pkg.reader");
+        assert_eq!(carrier.public_instance_key, "reader#1");
+        assert_eq!(carrier.operations.id, "remote:pkg.Reader");
+        assert_eq!(carrier.operations.interface_abi_id, "pkg.Reader");
+        assert_eq!(carrier.operations.slots[0].slot, 0);
+        assert_eq!(carrier.operations.slots[1].slot, 1);
+    }
+
+    #[test]
+    fn remote_interface_wrapper_rejects_empty_dependency_ref() {
+        let mut envelope = RecoverableEnvelope::new(remote_interface_node());
+        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
+            &mut envelope.root.state
+        else {
+            panic!("expected remote InterfaceValue");
+        };
+        carrier.dependency_ref.clear();
+
+        let error = envelope
+            .validate(&RecoverableValidationLimits::default())
+            .expect_err("empty dependencyRef must fail");
+
+        assert_eq!(error.path(), "$.dependencyRef");
+        assert!(error
+            .message()
+            .contains("remote InterfaceValue dependencyRef must be non-empty"));
+    }
+
+    #[test]
+    fn remote_interface_wrapper_rejects_non_contiguous_operation_slots() {
+        let mut envelope = RecoverableEnvelope::new(remote_interface_node());
+        let RecoverableState::InterfaceValue(InterfaceValueState::Remote { carrier }) =
+            &mut envelope.root.state
+        else {
+            panic!("expected remote InterfaceValue");
+        };
+        carrier.operations.slots[1].slot = 3;
+
+        let error = envelope
+            .validate(&RecoverableValidationLimits::default())
+            .expect_err("non-contiguous remote operation slot must fail");
+
+        assert_eq!(error.path(), "$.operations.slots[1]");
+        assert!(error
+            .message()
+            .contains("remote InterfaceValue operation slot index must match"));
     }
 
     #[test]
