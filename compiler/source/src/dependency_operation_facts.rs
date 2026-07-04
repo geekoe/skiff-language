@@ -1,21 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref, type_ref_abi_key,
-    CanonicalPublicCallableSignature, ExecutableIr, ExecutableSignatureIr, FileIrUnit,
-    FunctionTypeParamIr, InterfaceInstantiationRef, OperationAbiRef, PackageRefIr,
-    PackageSymbolRef, ParamIr, PublicationAbiUnit, PublicationOperationAbi,
-    PublicationOperationKind, ServiceSymbolRef, SourceCallOperationIndexEntry, TypeDeclIr,
-    TypeRefIr,
+    interface_instantiation_ref, type_ref_abi_key, CanonicalPublicCallableSignature, ExecutableIr,
+    ExecutableSignatureIr, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    PackageRefIr, PackageSymbolRef, ParamIr, PublicationAbiUnit, ServiceSymbolRef,
+    SourceCallOperationIndexEntry, TypeDeclIr, TypeRefIr,
+};
+use skiff_compiler_core::package_publication_abi::{
+    package_public_instance_method_operation, public_signature_from_interface_method_signature,
+    public_signature_from_receiver_executable_signature, PackagePublicationAbiBuildError,
+    PackagePublicationAbiBuilder, PackagePublicationOperation, PackagePublicationPublicInstance,
 };
 
 use crate::{
     shared::{
         ast::TypeDecl,
         id::SKIFF_STD_PUBLICATION_ID,
-        operation_abi_identity::{
-            public_function_operation_abi_id, public_instance_method_operation_abi_id,
-        },
         package_interface_methods::{
             instantiate_interface_method_signatures, normalize_package_interface_type_ref,
             package_interface_method_signatures, InterfaceMethodSignature, PackageTypeSymbolIndex,
@@ -84,7 +84,7 @@ fn package_dependency_publication_abi(
 ) -> Result<PublicationAbiUnit, PublicationError> {
     let package_id = package.id();
     let version = package.version();
-    let mut publication_abi = PublicationAbiUnit::empty(package_id, version, "");
+    let mut builder = PackagePublicationAbiBuilder::new(package_id, version);
     let compiled = package.compile_model();
     let type_symbols = package_dependency_type_symbol_index(package)?;
     let publication_type_names = package_publication_type_names(package);
@@ -116,33 +116,9 @@ fn package_dependency_publication_abi(
                 executable,
                 &publication_type_names,
             ));
-        let operation = OperationAbiRef {
-            operation_abi_id: public_function_operation_abi_id(
-                &public_path,
-                &public_signature,
-                &[],
-                &BTreeMap::new(),
-            ),
-            kind: PublicationOperationKind::PublicFunction,
-            public_path: public_path.clone(),
-            public_instance_key: None,
-            interface: None,
-            method_abi_id: None,
-            display_name: public_path.clone(),
-        };
-        publication_abi.operation_abi.push(PublicationOperationAbi {
-            operation: operation.clone(),
-            public_signature,
-            schema_closure: Vec::new(),
-            stream_effect_throw_config: BTreeMap::new(),
-        });
-        push_publication_source_call_operation(
-            &mut publication_abi,
-            package_id,
-            public_path.clone(),
-            operation.clone(),
-        )?;
-        publication_abi.operation_exports.push(operation);
+        builder
+            .push_public_function(public_path, public_signature)
+            .map_err(core_publication_builder_error)?;
     }
     for public_instance in compiled.export_bindings().public_instances().values() {
         let public_instance_key =
@@ -154,56 +130,17 @@ fn package_dependency_publication_abi(
             &public_instance_key,
             public_instance,
         )?;
-        for operation in &projected_instance.method_operations {
-            let public_signature = package_dependency_public_instance_operation_signature(
-                package,
-                &publication_type_names,
-                operation,
-            )?;
-            publication_abi.operation_abi.push(PublicationOperationAbi {
-                operation: operation.clone(),
-                public_signature,
-                schema_closure: Vec::new(),
-                stream_effect_throw_config: BTreeMap::new(),
-            });
-            push_publication_source_call_operation(
-                &mut publication_abi,
-                package_id,
-                operation.public_path.clone(),
-                operation.clone(),
-            )?;
-            publication_abi.operation_exports.push(operation.clone());
-        }
-        publication_abi.public_instances.push(projected_instance);
+        builder
+            .push_public_instance(projected_instance)
+            .map_err(core_publication_builder_error)?;
     }
-    Ok(publication_abi)
+    Ok(builder.finish())
 }
 
-fn push_publication_source_call_operation(
-    publication_abi: &mut PublicationAbiUnit,
-    package_id: &str,
-    source_call_path: String,
-    operation: OperationAbiRef,
-) -> Result<(), PublicationError> {
-    if let Some(existing) = publication_abi
-        .source_call_operation_index
-        .iter()
-        .find(|entry| entry.source_call_path == source_call_path)
-    {
-        return Err(PublicationError::ContractValidation {
-            message: format!(
-                "package {package_id} publication ABI sourceCallOperationIndex duplicate sourceCallPath `{source_call_path}` for operations {} and {}",
-                existing.operation.operation_abi_id, operation.operation_abi_id
-            ),
-        });
+fn core_publication_builder_error(error: PackagePublicationAbiBuildError) -> PublicationError {
+    PublicationError::ContractValidation {
+        message: error.to_string(),
     }
-    publication_abi
-        .source_call_operation_index
-        .push(SourceCallOperationIndexEntry {
-            source_call_path,
-            operation,
-        });
-    Ok(())
 }
 
 fn package_dependency_type_symbol_index(
@@ -253,7 +190,7 @@ fn package_dependency_public_instance(
     publication_type_names: &PublicationVisibleTypeNames,
     public_instance_key: &str,
     public_instance: &ExportPublicInstanceBinding,
-) -> Result<skiff_artifact_model::PublicationPublicInstanceExport, PublicationError> {
+) -> Result<PackagePublicationPublicInstance, PublicationError> {
     let receiver = package_dependency_public_instance_receiver(package, public_instance)?;
     let interfaces = package_dependency_public_instance_interfaces(
         package,
@@ -263,35 +200,23 @@ fn package_dependency_public_instance(
         &receiver,
         public_instance,
     )?;
-    let mut source_call_method_index = Vec::new();
-    let mut method_operations = Vec::new();
-    let mut method_names = BTreeSet::new();
+    let mut operations = Vec::new();
     for interface in &interfaces {
         for method in &interface.methods {
-            if !method_names.insert(method.name.clone()) {
-                return Err(PublicationError::ContractValidation {
-                    message: format!(
-                        "package {} public instance {} derives conflicting operation `{}` from multiple interfaces",
-                        package.id(),
-                        public_instance_key,
-                        method.name
-                    ),
-                });
-            }
             let executable = package_dependency_public_instance_method_executable(
                 package,
                 public_instance_key,
                 &receiver,
                 &method.name,
             )?;
-            let public_signature = public_signature_from_receiver_executable(
+            let public_signature = public_signature_from_receiver_executable_signature(
                 publication_visible_executable_signature(
                     &receiver.module_path,
                     executable,
                     publication_type_names,
                 ),
             );
-            let interface_signature = public_signature_from_interface_method(method);
+            let interface_signature = public_signature_from_interface_method_signature(method);
             if public_signature != interface_signature {
                 return Err(PublicationError::ContractValidation {
                     message: format!(
@@ -304,28 +229,28 @@ fn package_dependency_public_instance(
                     ),
                 });
             }
-            let operation = package_dependency_public_instance_operation_ref(
+            let operation = package_public_instance_method_operation(
                 public_instance_key,
                 &interface.instantiation,
                 &method.name,
                 &interface_signature,
             );
-            source_call_method_index.push(skiff_artifact_model::SourceCallMethodIndexEntry {
-                method_name: method.name.clone(),
-                operation: operation.clone(),
-            });
-            method_operations.push(operation);
+            operations.push(PackagePublicationOperation::new(
+                operation.public_path.clone(),
+                operation,
+                public_signature,
+            ));
         }
     }
-    Ok(skiff_artifact_model::PublicationPublicInstanceExport {
-        public_instance_key: public_instance_key.to_string(),
-        interfaces: interfaces
-            .iter()
-            .map(|interface| interface.instantiation.clone())
-            .collect(),
-        source_call_method_index,
-        method_operations,
-    })
+    Ok(PackagePublicationPublicInstance::new(
+        public_instance_key,
+        operations,
+        Some(format!(
+            "package {} public instance `{}`",
+            package.id(),
+            public_instance_key
+        )),
+    ))
 }
 
 fn package_dependency_public_instance_receiver(
@@ -684,82 +609,6 @@ fn package_dependency_impl_method_executable_index(
         })
 }
 
-fn package_dependency_public_instance_operation_signature(
-    package: &SourceCompilePackageFacts<'_>,
-    publication_type_names: &PublicationVisibleTypeNames,
-    operation: &OperationAbiRef,
-) -> Result<CanonicalPublicCallableSignature, PublicationError> {
-    let public_instance_key = operation.public_instance_key.as_deref().ok_or_else(|| {
-        PublicationError::ContractValidation {
-            message: format!(
-                "package {} public instance operation {} is missing publicInstanceKey",
-                package.id(),
-                operation.operation_abi_id
-            ),
-        }
-    })?;
-    let method_name = operation
-        .public_path
-        .strip_prefix(&format!("{public_instance_key}."))
-        .unwrap_or(operation.public_path.as_str());
-    let public_instance = package
-        .compile_model()
-        .export_bindings()
-        .public_instances()
-        .values()
-        .find(|instance| {
-            package_scoped_public_path(package.id(), &instance.public_path) == public_instance_key
-        })
-        .ok_or_else(|| PublicationError::ContractValidation {
-            message: format!(
-                "package {} public instance {} is missing from export bindings",
-                package.id(),
-                public_instance_key
-            ),
-        })?;
-    let receiver = package_dependency_public_instance_receiver(package, public_instance)?;
-    let executable = package_dependency_public_instance_method_executable(
-        package,
-        public_instance_key,
-        &receiver,
-        method_name,
-    )?;
-    Ok(public_signature_from_receiver_executable(
-        publication_visible_executable_signature(
-            &receiver.module_path,
-            executable,
-            publication_type_names,
-        ),
-    ))
-}
-
-fn package_dependency_public_instance_operation_ref(
-    public_instance_key: &str,
-    interface: &InterfaceInstantiationRef,
-    method_name: &str,
-    public_signature: &CanonicalPublicCallableSignature,
-) -> OperationAbiRef {
-    let public_path = format!("{public_instance_key}.{method_name}");
-    let method_abi_id = canonical_interface_method_abi_id(interface, method_name);
-    OperationAbiRef {
-        operation_abi_id: public_instance_method_operation_abi_id(
-            &public_path,
-            public_instance_key,
-            interface,
-            &method_abi_id,
-            public_signature,
-            &[],
-            &BTreeMap::new(),
-        ),
-        kind: PublicationOperationKind::PublicInstanceMethod,
-        public_path: public_path.clone(),
-        public_instance_key: Some(public_instance_key.to_string()),
-        interface: Some(interface.clone()),
-        method_abi_id: Some(method_abi_id),
-        display_name: public_path,
-    }
-}
-
 fn package_dependency_public_interface_type_ref(
     package: &SourceCompilePackageFacts<'_>,
     module: &str,
@@ -1086,32 +935,6 @@ fn publication_visible_interface_instantiation_ref(
             .map(|arg| publication_visible_type_ref(context_module, arg, publication_type_names))
             .collect(),
     }
-}
-
-fn public_signature_from_interface_method(
-    method: &InterfaceMethodSignature,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: method.params.clone(),
-        return_type: method.return_type.clone(),
-        may_suspend: matches!(method.return_type, TypeRefIr::Native { ref name, .. } if name == "Stream"),
-    }
-}
-
-fn public_signature_from_receiver_executable(
-    signature: ExecutableSignatureIr,
-) -> CanonicalPublicCallableSignature {
-    let mut public_signature = CanonicalPublicCallableSignature::from(signature.clone());
-    if let Some(self_type) = &signature.self_type {
-        if public_signature
-            .params
-            .first()
-            .is_some_and(|param| &param.ty == self_type)
-        {
-            public_signature.params.remove(0);
-        }
-    }
-    public_signature
 }
 
 fn package_public_callable_executable<'a>(
