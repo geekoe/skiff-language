@@ -8,20 +8,20 @@ use super::{
 };
 use crate::{DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans, ServiceDbError};
 use mongodb::{
-    bson::{doc, spec::BinarySubtype, Bson, DateTime},
+    bson::{Bson, DateTime, doc, spec::BinarySubtype},
     error::{Error as MongoError, ErrorKind as MongoErrorKind, WriteError, WriteFailure},
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use skiff_artifact_model::DbMetadataIr;
 use skiff_runtime_boundary::{
-    db as db_boundary,
+    Result as BoundaryResult, db as db_boundary,
     recoverable::{
         RecoverableArtifactRetentionRootStore, RecoverableArtifactStore, RecoverableBehaviorHooks,
         RecoverableEncodedLocalInterfaceSelf, RecoverableInterfaceConformanceRequest,
         RecoverableInterfaceMethodTableRequest, RecoverableLocalInterfaceEncodeRequest,
-        RecoverableLocalInterfaceRestoreRequest, RecoverableRestoredLocalInterfaceSelf,
+        RecoverableLocalInterfaceRestoreRequest, RecoverableRemoteInterfaceCarrierRequest,
+        RecoverableRestoredLocalInterfaceSelf,
     },
-    Result as BoundaryResult,
 };
 use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityError, DbDocument, DbKey, DbOneSelector, DbOrderDirection,
@@ -36,7 +36,8 @@ use skiff_runtime_model::{
         RecoverableValueKind, RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
         RuntimeRecoverableBoundaryKind, RuntimeRecoverableExpectedRecordFieldPlan,
         RuntimeRecoverableExpectedTypeNode, RuntimeRecoverableExpectedTypePlan,
-        RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane, RuntimeRecoverableTrustBoundary,
+        RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane,
+        RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
     runtime_value::{
@@ -1581,7 +1582,10 @@ fn recoverable_envelope_runtime_read_ignores_historical_extra_record_fields() {
     let binding = recoverable_envelope_metadata();
     let document = recoverable_settings_document_with_expected(
         &binding,
-        recoverable_settings_expected(&[("mode", string_expected(), true), ("legacy", string_expected(), true)]),
+        recoverable_settings_expected(&[
+            ("mode", string_expected(), true),
+            ("legacy", string_expected(), true),
+        ]),
         runtime_settings_object([
             ("mode", RuntimeValue::String("dark".to_string())),
             ("legacy", RuntimeValue::String("old".to_string())),
@@ -1957,7 +1961,7 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
 }
 
 #[test]
-fn recoverable_envelope_runtime_field_rejects_remote_carrier_before_write() {
+fn recoverable_envelope_runtime_field_roundtrips_remote_carrier_without_local_encode_hook() {
     let binding = recoverable_provider_metadata();
     let mut heap = RequestHeap::default();
     let provider = remote_provider_runtime_value(&mut heap);
@@ -1969,29 +1973,52 @@ fn recoverable_envelope_runtime_field_rejects_remote_carrier_before_write() {
         ],
     );
     let hooks = TestDbBehaviorHooks::default();
+    let expected = test_provider_expected_plan();
     let artifact_store =
         TestDbArtifactStore::default().with_available(TEST_SERVICE_ARTIFACT, TEST_SERVICE_BUILD);
     let mut root_store = TestDbRootStore::default();
     let mut write_context = DbRecoverableRuntimeWriteContext {
         behavior_hooks: &hooks,
         boundary_context: None,
-        recoverable_expected_override: None,
+        recoverable_expected_override: Some(&expected),
         recoverable_expected_overrides: None,
         artifact_store: Some(&artifact_store),
         retention_root_store: Some(&mut root_store),
         retention_expires_at_epoch_millis: None,
     };
 
-    let error = binding
+    let document = binding
         .document_from_runtime_business_value(&value, &heap, Some(&mut write_context))
-        .expect_err("remote interface carrier must not be persisted");
+        .expect("remote interface carrier should encode as an owner-internal recoverable envelope");
 
-    assert!(
-        error.to_string().contains("InterfaceCarrier::Remote"),
-        "{error}"
-    );
     assert_eq!(hooks.encode_calls.get(), 0);
-    assert!(root_store.roots.is_empty());
+    let Some(Bson::Binary(binary)) = document.get("provider") else {
+        panic!("provider should be stored as recoverable-envelope BSON binary");
+    };
+    assert_eq!(binary.subtype, BinarySubtype::Generic);
+    assert!(!binary.bytes.is_empty());
+    assert!(
+        root_store.roots.is_empty(),
+        "remote public-instance carriers do not create artifact retention roots"
+    );
+
+    let mut read_heap = RequestHeap::default();
+    let read_context = DbRecoverableRuntimeReadContext {
+        behavior_hooks: &hooks,
+        boundary_context: None,
+        recoverable_expected_override: Some(&expected),
+        recoverable_expected_overrides: None,
+    };
+    let decoded = binding
+        .runtime_business_value_from_document(document, &mut read_heap, Some(&read_context))
+        .expect("remote interface carrier should decode from DB recoverable envelope");
+
+    assert_eq!(hooks.encode_calls.get(), 0);
+    assert_eq!(hooks.restore_calls.get(), 0);
+    assert_eq!(hooks.conformance_calls.get(), 0);
+    assert_eq!(hooks.table_calls.get(), 0);
+    assert_eq!(hooks.remote_table_calls.get(), 1);
+    assert_decoded_remote_provider_runtime_value(&decoded, &read_heap, "binding-1");
 }
 
 #[test]
@@ -2563,11 +2590,13 @@ fn recoverable_settings_expected(
         node: RuntimeRecoverableExpectedTypeNode::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty, required)| RuntimeRecoverableExpectedRecordFieldPlan {
-                    name: (*name).to_string(),
-                    ty: ty.clone(),
-                    required: *required,
-                })
+                .map(
+                    |(name, ty, required)| RuntimeRecoverableExpectedRecordFieldPlan {
+                        name: (*name).to_string(),
+                        ty: ty.clone(),
+                        required: *required,
+                    },
+                )
                 .collect(),
             boundary_record_kind: None,
         },
@@ -2691,14 +2720,18 @@ fn remote_provider_runtime_value(heap: &mut RequestHeap) -> RuntimeValue {
             InterfaceCarrier::Remote {
                 dependency_ref: "skiff.run/remote-provider".to_string(),
                 public_instance_key: "provider#1".to_string(),
-                operations: RemoteOperationTable::new(
-                    "remote:provider".to_string(),
-                    TEST_PROVIDER_INTERFACE.to_string(),
-                    Vec::new(),
-                ),
+                operations: test_remote_provider_operation_table(),
             },
         ))
         .expect("remote provider interface should allocate"),
+    )
+}
+
+fn test_remote_provider_operation_table() -> RemoteOperationTable {
+    RemoteOperationTable::new(
+        "remote:provider".to_string(),
+        TEST_PROVIDER_INTERFACE.to_string(),
+        Vec::new(),
     )
 }
 
@@ -2788,11 +2821,49 @@ fn assert_decoded_provider_runtime_value(
     ));
 }
 
+fn assert_decoded_remote_provider_runtime_value(
+    value: &RuntimeValue,
+    heap: &RequestHeap,
+    expected_id: &str,
+) {
+    let RuntimeValue::Heap(object_handle) = value else {
+        panic!("decoded DB value should be an object");
+    };
+    let HeapNode::Object(object) = heap.get(*object_handle).expect("object handle") else {
+        panic!("decoded DB value should be an object");
+    };
+    assert_eq!(
+        object.fields().get("id"),
+        Some(&RuntimeValue::String(expected_id.to_string()))
+    );
+    let RuntimeValue::Heap(provider_handle) = object.fields().get("provider").unwrap() else {
+        panic!("provider should be an interface heap value");
+    };
+    let HeapNode::Interface(provider) = heap.get(*provider_handle).expect("provider handle") else {
+        panic!("provider should decode as InterfaceValue");
+    };
+    assert_eq!(provider.interface(), TEST_PROVIDER_INTERFACE);
+    let InterfaceCarrier::Remote {
+        dependency_ref,
+        public_instance_key,
+        operations,
+    } = provider.carrier()
+    else {
+        panic!("provider should decode as a remote carrier");
+    };
+    assert_eq!(dependency_ref, "skiff.run/remote-provider");
+    assert_eq!(public_instance_key, "provider#1");
+    assert_eq!(operations.id(), "remote:provider");
+    assert_eq!(operations.interface_abi_id(), TEST_PROVIDER_INTERFACE);
+    assert!(operations.slots().is_empty());
+}
+
 struct TestDbBehaviorHooks {
     encode_calls: Cell<usize>,
     restore_calls: Cell<usize>,
     conformance_calls: Cell<usize>,
     table_calls: Cell<usize>,
+    remote_table_calls: Cell<usize>,
     table_projection_identity: RefCell<String>,
 }
 
@@ -2803,6 +2874,7 @@ impl Default for TestDbBehaviorHooks {
             restore_calls: Cell::new(0),
             conformance_calls: Cell::new(0),
             table_calls: Cell::new(0),
+            remote_table_calls: Cell::new(0),
             table_projection_identity: RefCell::new(TEST_PROVIDER_PROJECTION.to_string()),
         }
     }
@@ -2876,6 +2948,24 @@ impl RecoverableBehaviorHooks for TestDbBehaviorHooks {
         }
         Ok(Some(test_provider_method_table()))
     }
+
+    fn rebuild_remote_interface_operation_table(
+        &self,
+        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+    ) -> BoundaryResult<Option<RemoteOperationTable>> {
+        self.remote_table_calls
+            .set(self.remote_table_calls.get() + 1);
+        if request.interface_identity != TEST_PROVIDER_INTERFACE
+            || request.carrier.dependency_ref != "skiff.run/remote-provider"
+            || request.carrier.public_instance_key != "provider#1"
+            || request.carrier.operations.id != "remote:provider"
+            || request.carrier.operations.interface_abi_id != TEST_PROVIDER_INTERFACE
+            || !request.carrier.operations.slots.is_empty()
+        {
+            return Ok(None);
+        }
+        Ok(Some(test_remote_provider_operation_table()))
+    }
 }
 
 #[derive(Default)]
@@ -2926,6 +3016,14 @@ impl RecoverableBehaviorHooks for ThreadSafeTestDbBehaviorHooks {
     ) -> BoundaryResult<Option<InterfaceMethodTable>> {
         let inner = self.inner.lock().expect("test hook mutex");
         RecoverableBehaviorHooks::rebuild_local_interface_method_table(&*inner, request)
+    }
+
+    fn rebuild_remote_interface_operation_table(
+        &self,
+        request: RecoverableRemoteInterfaceCarrierRequest<'_>,
+    ) -> BoundaryResult<Option<RemoteOperationTable>> {
+        let inner = self.inner.lock().expect("test hook mutex");
+        RecoverableBehaviorHooks::rebuild_remote_interface_operation_table(&*inner, request)
     }
 }
 
