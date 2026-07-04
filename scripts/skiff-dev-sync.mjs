@@ -184,7 +184,10 @@ async function buildAll(config, options) {
     await assertConfiguredServiceOutputs(syncRoot, config.services);
   }
   if (options.syncShared && options.reloadRouter) {
-    await reloadRouter(config.reloadUrl);
+    const reloaded = await reloadRouter(config.reloadUrl);
+    if (reloaded) {
+      await pruneRouterRuntimes(config.reloadUrl);
+    }
   }
   return results;
 }
@@ -655,28 +658,55 @@ async function removeStaleServiceIndexFiles(targetRoot, serviceId, keepArtifactP
 
 async function reloadRouter(reloadUrl) {
   if (reloadUrl === undefined) {
-    return;
+    return false;
   }
   try {
     const response = await postReload(reloadUrl);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       console.warn(`[skiff-dev-sync] warning: router reload returned HTTP ${response.statusCode}${response.body ? `: ${response.body}` : ''}`);
-      return;
+      return false;
     }
     console.log(`[skiff-dev-sync] requested router reload at ${reloadUrl}`);
+    return true;
   } catch (error) {
     console.warn(`[skiff-dev-sync] warning: router reload unavailable at ${reloadUrl}: ${formatError(error)}`);
+    return false;
   }
 }
 
 function postReload(reloadUrl) {
+  return postControlJson(reloadUrl, undefined, 'router reload', 500);
+}
+
+async function pruneRouterRuntimes(reloadUrl) {
+  const pruneUrl = controlUrlFromReloadUrl(reloadUrl, '/__router/prune-runtimes');
+  try {
+    const response = await postControlJson(pruneUrl, undefined, 'router runtime prune', 1_000_000);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      console.warn(`[skiff-dev-sync] warning: router runtime prune returned HTTP ${response.statusCode}${response.body ? `: ${response.body}` : ''}`);
+      return;
+    }
+    const deletedCount = pruneDeletedCount(response.body);
+    if (deletedCount != null) {
+      console.log(`[skiff-dev-sync] pruned ${deletedCount} stale runtime(s) at ${pruneUrl}`);
+    } else {
+      console.log(`[skiff-dev-sync] requested router runtime prune at ${pruneUrl}`);
+    }
+  } catch (error) {
+    console.warn(`[skiff-dev-sync] warning: router runtime prune unavailable at ${pruneUrl}: ${formatError(error)}`);
+  }
+}
+
+function postControlJson(targetUrl, body, label, maxBodyBytes) {
   return new Promise((resolvePromise, reject) => {
-    const url = new URL(reloadUrl);
+    const url = new URL(targetUrl);
     const transport = url.protocol === 'https:' ? https : http;
+    const payload = body === undefined ? '' : JSON.stringify(body);
     const request = transport.request(url, {
       method: 'POST',
       headers: {
-        'content-length': '0',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload).toString(),
       },
     }, (response) => {
       let body = '';
@@ -687,16 +717,33 @@ function postReload(reloadUrl) {
       response.on('end', () => {
         resolvePromise({
           statusCode: response.statusCode ?? 0,
-          body: body.slice(0, 500),
+          body: body.slice(0, maxBodyBytes),
         });
       });
     });
     request.setTimeout(2_000, () => {
-      request.destroy(new Error('router reload request timed out'));
+      request.destroy(new Error(`${label} request timed out`));
     });
     request.on('error', reject);
-    request.end();
+    request.end(payload);
   });
+}
+
+function controlUrlFromReloadUrl(reloadUrl, pathname) {
+  const url = new URL(reloadUrl);
+  url.pathname = pathname;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+function pruneDeletedCount(body) {
+  try {
+    const value = JSON.parse(body);
+    return typeof value?.deletedCount === 'number' ? value.deletedCount : null;
+  } catch {
+    return null;
+  }
 }
 
 async function assertGeneratedArtifactRoot(root) {

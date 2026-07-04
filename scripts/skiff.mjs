@@ -549,6 +549,27 @@ async function devReload(rawArgs) {
   if (body.trim()) {
     console.log(body.trim());
   }
+  await devPruneAfterReload(reloadUrl);
+}
+
+async function devPruneAfterReload(reloadUrl) {
+  const pruneUrl = controlUrlFromReloadUrl(reloadUrl, '/__router/prune-runtimes');
+  const response = await fetch(pruneUrl, { method: 'POST' });
+  const body = await response.text();
+  if (!response.ok) {
+    console.warn(`warning: router runtime prune returned HTTP ${response.status}${body ? `: ${body}` : ''}`);
+    return;
+  }
+  try {
+    const result = JSON.parse(body);
+    if (typeof result.deletedCount === 'number') {
+      console.log(`pruned ${result.deletedCount} stale runtime(s) at ${pruneUrl}`);
+      return;
+    }
+  } catch {
+    // Fall through to the generic success message.
+  }
+  console.log(`requested router runtime prune at ${pruneUrl}`);
 }
 
 async function devStatus(rawArgs) {
