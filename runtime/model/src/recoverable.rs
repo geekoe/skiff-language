@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan};
 
-pub const RECOVERABLE_ENVELOPE_SCHEMA_VERSION: &str = "skiff.recoverable.envelope.v1";
+pub const RECOVERABLE_ENVELOPE_SCHEMA_VERSION: &str = "skiff.recoverable.envelope.v2";
 
 const RECOVERABLE_MAGIC: &[u8; 4] = b"SKRE";
 const RECOVERABLE_BINARY_VERSION: u8 = 1;
@@ -137,6 +137,12 @@ impl RecoverableEnvelope {
         };
         decoder.expect_magic()?;
         let schema_version = decoder.read_string("$.schemaVersion")?;
+        if schema_version != RECOVERABLE_ENVELOPE_SCHEMA_VERSION {
+            return Err(RecoverableStateInvalid::new(
+                "$",
+                format!("unsupported recoverable schema version {schema_version}"),
+            ));
+        }
         let root = decoder.read_node("$.root", 0)?;
         if decoder.offset != bytes.len() {
             return Err(RecoverableStateInvalid::new(
@@ -211,14 +217,25 @@ pub enum RecoverableVariantIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalConcreteOwner {
+    Service,
+    Package { package_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalConcreteRestoreKey {
+    pub owner: LocalConcreteOwner,
+    pub concrete_type_identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RecoverableCodeIdentity {
     None,
-    LocalCode {
-        artifact_identity: String,
-        build_id: String,
+    LocalConcrete {
+        owner: LocalConcreteOwner,
         concrete_type_identity: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        package: Option<PackageCoordinate>,
     },
     NativeAdapter {
         adapter_identity: String,
@@ -321,21 +338,14 @@ pub struct RecoverableField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceValueState {
-    pub interface_identity: String,
-    pub method_projection_identity: String,
     pub self_node: Box<RecoverableNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NominalObjectState {
-    DefaultFields {
-        fields: Vec<RecoverableField>,
-    },
-    Custom {
-        restore_schema_version: String,
-        durable_state: Box<RecoverableNode>,
-    },
+    DefaultFields { fields: Vec<RecoverableField> },
+    Custom { durable_state: Box<RecoverableNode> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,12 +396,7 @@ struct RecoverableArtifactCollector {
 impl RecoverableArtifactCollector {
     fn collect_node(&mut self, node: &RecoverableNode, path: &str) {
         match &node.code_identity {
-            RecoverableCodeIdentity::LocalCode {
-                artifact_identity,
-                build_id,
-                package,
-                ..
-            } => self.insert_ref(artifact_identity, build_id, package, path),
+            RecoverableCodeIdentity::LocalConcrete { .. } => {}
             RecoverableCodeIdentity::NativeAdapter {
                 owner:
                     NativeAdapterOwner::Artifact {
@@ -743,17 +748,11 @@ impl RecoverableCanonicalEncoder<'_> {
                 self.write_u8(0);
                 self.write_fields(fields, path, depth)?;
             }
-            RecoverableState::NominalObject(NominalObjectState::Custom {
-                restore_schema_version,
-                durable_state,
-            }) => {
+            RecoverableState::NominalObject(NominalObjectState::Custom { durable_state }) => {
                 self.write_u8(1);
-                self.write_string(restore_schema_version, path)?;
                 self.write_node(durable_state, &format!("{path}.durableState"), depth + 1)?;
             }
             RecoverableState::InterfaceValue(state) => {
-                self.write_string(&state.interface_identity, path)?;
-                self.write_string(&state.method_projection_identity, path)?;
                 self.write_node(&state.self_node, &format!("{path}.selfNode"), depth + 1)?;
             }
             RecoverableState::NativeHandle(state) => {
@@ -813,17 +812,13 @@ impl RecoverableCanonicalEncoder<'_> {
     ) -> RecoverableValidationResult {
         match identity {
             RecoverableCodeIdentity::None => self.write_u8(0),
-            RecoverableCodeIdentity::LocalCode {
-                artifact_identity,
-                build_id,
+            RecoverableCodeIdentity::LocalConcrete {
+                owner,
                 concrete_type_identity,
-                package,
             } => {
                 self.write_u8(1);
-                self.write_string(artifact_identity, path)?;
-                self.write_string(build_id, path)?;
+                self.write_local_concrete_owner(owner, path)?;
                 self.write_string(concrete_type_identity, path)?;
-                self.write_package(package, path)?;
             }
             RecoverableCodeIdentity::NativeAdapter {
                 adapter_identity,
@@ -857,6 +852,21 @@ impl RecoverableCanonicalEncoder<'_> {
                 self.write_string(artifact_identity, path)?;
                 self.write_string(build_id, path)?;
                 self.write_package(package, path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_local_concrete_owner(
+        &mut self,
+        owner: &LocalConcreteOwner,
+        path: &str,
+    ) -> RecoverableValidationResult {
+        match owner {
+            LocalConcreteOwner::Service => self.write_u8(0),
+            LocalConcreteOwner::Package { package_id } => {
+                self.write_u8(1);
+                self.write_string(package_id, path)?;
             }
         }
         Ok(())
@@ -1085,14 +1095,10 @@ impl RecoverableCanonicalDecoder<'_> {
                     },
                 )),
                 1 => {
-                    let restore_schema_version = self.read_string(path)?;
                     let durable_state =
                         Box::new(self.read_node(&format!("{path}.durableState"), depth + 1)?);
                     Ok(RecoverableState::NominalObject(
-                        NominalObjectState::Custom {
-                            restore_schema_version,
-                            durable_state,
-                        },
+                        NominalObjectState::Custom { durable_state },
                     ))
                 }
                 tag => Err(RecoverableStateInvalid::new(
@@ -1101,12 +1107,8 @@ impl RecoverableCanonicalDecoder<'_> {
                 )),
             },
             RecoverableValueKind::InterfaceValue => {
-                let interface_identity = self.read_string(path)?;
-                let method_projection_identity = self.read_string(path)?;
                 let self_node = Box::new(self.read_node(&format!("{path}.selfNode"), depth + 1)?);
                 Ok(RecoverableState::InterfaceValue(InterfaceValueState {
-                    interface_identity,
-                    method_projection_identity,
                     self_node,
                 }))
             }
@@ -1173,11 +1175,9 @@ impl RecoverableCanonicalDecoder<'_> {
     ) -> RecoverableValidationResult<RecoverableCodeIdentity> {
         match self.read_u8(path)? {
             0 => Ok(RecoverableCodeIdentity::None),
-            1 => Ok(RecoverableCodeIdentity::LocalCode {
-                artifact_identity: self.read_string(path)?,
-                build_id: self.read_string(path)?,
+            1 => Ok(RecoverableCodeIdentity::LocalConcrete {
+                owner: self.read_local_concrete_owner(path)?,
                 concrete_type_identity: self.read_string(path)?,
-                package: self.read_package(path)?,
             }),
             2 => Ok(RecoverableCodeIdentity::NativeAdapter {
                 adapter_identity: self.read_string(path)?,
@@ -1203,6 +1203,22 @@ impl RecoverableCanonicalDecoder<'_> {
             tag => Err(RecoverableStateInvalid::new(
                 path,
                 format!("unknown native adapter owner tag {tag}"),
+            )),
+        }
+    }
+
+    fn read_local_concrete_owner(
+        &mut self,
+        path: &str,
+    ) -> RecoverableValidationResult<LocalConcreteOwner> {
+        match self.read_u8(path)? {
+            0 => Ok(LocalConcreteOwner::Service),
+            1 => Ok(LocalConcreteOwner::Package {
+                package_id: self.read_string(path)?,
+            }),
+            tag => Err(RecoverableStateInvalid::new(
+                path,
+                format!("unknown local concrete owner tag {tag}"),
             )),
         }
     }
@@ -1848,19 +1864,13 @@ mod tests {
         )
     }
 
-    fn local_code_node(
-        artifact_identity: &str,
-        build_id: &str,
-        concrete_type_identity: &str,
-    ) -> RecoverableNode {
+    fn local_concrete_node(concrete_type_identity: &str) -> RecoverableNode {
         RecoverableNode {
             value_kind: RecoverableValueKind::NominalObject,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: artifact_identity.to_string(),
-                build_id: build_id.to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: concrete_type_identity.to_string(),
-                package: None,
             },
             state: RecoverableState::NominalObject(NominalObjectState::DefaultFields {
                 fields: vec![RecoverableField {
@@ -2156,34 +2166,28 @@ mod tests {
     }
 
     #[test]
-    fn nested_local_code_refs_are_collected_per_node() {
+    fn nested_local_concrete_refs_are_not_collected_as_artifact_refs() {
         let envelope = RecoverableEnvelope::new(RecoverableNode::plain(
             RecoverableValueKind::Array,
             RecoverableState::Array(vec![
-                local_code_node("svc/account", "build-a", "pkg.User"),
-                local_code_node("svc/account", "build-b", "pkg.Org"),
+                local_concrete_node("pkg.User"),
+                local_concrete_node("pkg.Org"),
             ]),
         ));
 
         let refs = envelope.collect_artifact_refs();
 
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].build_id, "build-a");
-        assert_eq!(refs[0].node_path, "$.root[0]");
-        assert_eq!(refs[1].build_id, "build-b");
-        assert_eq!(refs[1].node_path, "$.root[1]");
+        assert!(refs.is_empty());
     }
 
     #[test]
-    fn interface_wrapper_has_no_code_identity_and_self_node_carries_local_code() {
+    fn interface_wrapper_has_no_code_identity_and_self_node_carries_local_concrete() {
         let envelope = RecoverableEnvelope::new(RecoverableNode {
             value_kind: RecoverableValueKind::InterfaceValue,
             variant_identity: RecoverableVariantIdentity::None,
             code_identity: RecoverableCodeIdentity::None,
             state: RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: "pkg.Reader".to_string(),
-                method_projection_identity: "pkg.Reader#read".to_string(),
-                self_node: Box::new(local_code_node("svc/account", "build-a", "pkg.FileReader")),
+                self_node: Box::new(local_concrete_node("pkg.FileReader")),
             }),
         });
 
@@ -2191,8 +2195,7 @@ mod tests {
             .validate(&RecoverableValidationLimits::default())
             .expect("interface wrapper with self_node code should validate");
         let refs = envelope.collect_artifact_refs();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].node_path, "$.root.selfNode");
+        assert!(refs.is_empty());
     }
 
     #[test]
@@ -2200,16 +2203,12 @@ mod tests {
         let envelope = RecoverableEnvelope::new(RecoverableNode {
             value_kind: RecoverableValueKind::InterfaceValue,
             variant_identity: RecoverableVariantIdentity::None,
-            code_identity: RecoverableCodeIdentity::LocalCode {
-                artifact_identity: "svc/account".to_string(),
-                build_id: "build-a".to_string(),
+            code_identity: RecoverableCodeIdentity::LocalConcrete {
+                owner: LocalConcreteOwner::Service,
                 concrete_type_identity: "pkg.FileReader".to_string(),
-                package: None,
             },
             state: RecoverableState::InterfaceValue(InterfaceValueState {
-                interface_identity: "pkg.Reader".to_string(),
-                method_projection_identity: "pkg.Reader#read".to_string(),
-                self_node: Box::new(local_code_node("svc/account", "build-a", "pkg.FileReader")),
+                self_node: Box::new(local_concrete_node("pkg.FileReader")),
             }),
         });
 
@@ -2258,6 +2257,26 @@ mod tests {
         assert!(envelope
             .validate(&RecoverableValidationLimits::default())
             .expect_err("unknown schema should fail")
+            .message()
+            .contains("unsupported recoverable schema version"));
+
+        let mut v1_bytes = RecoverableEnvelope::new(string_node("Ada"))
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("v2 envelope should encode");
+        let schema_offset = v1_bytes
+            .windows(RECOVERABLE_ENVELOPE_SCHEMA_VERSION.len())
+            .position(|window| window == RECOVERABLE_ENVELOPE_SCHEMA_VERSION.as_bytes())
+            .expect("schema string should be encoded");
+        *v1_bytes
+            .get_mut(schema_offset + RECOVERABLE_ENVELOPE_SCHEMA_VERSION.len() - 1)
+            .expect("schema version suffix should exist") = b'1';
+        let error = RecoverableEnvelope::from_canonical_bytes(
+            &v1_bytes,
+            &RecoverableValidationLimits::default(),
+        )
+        .expect_err("v1 canonical bytes must fail closed");
+        assert_eq!(error.path(), "$");
+        assert!(error
             .message()
             .contains("unsupported recoverable schema version"));
 
