@@ -270,6 +270,10 @@ fn metadata_to_json(value: &MetadataValue) -> Value {
 mod recoverable_spawn_payload_tests {
     use std::{collections::HashMap, sync::Arc};
 
+    use skiff_artifact_model::{
+        abi_identity::derive::{abi_type_id_from_source_anchor, AbiSourceAnchorInput},
+        AbiDeclarationKind,
+    };
     use skiff_runtime_boundary::{
         error::RecoverableBoundaryErrorCode,
         payload::{PayloadBoundary, PayloadBoundaryKind},
@@ -279,9 +283,11 @@ mod recoverable_spawn_payload_tests {
         LinkedBoxSourceIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
         LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
         LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeRef, PackageUnit, ParamIr, ReceiverCallAbi,
-        RuntimeTypeContext, SlotIr, SlotLayoutIr,
+        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, PackageUnit,
+        ParamIr, ReceiverCallAbi, RuntimeTypeContext, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr,
+        UnitAddr,
     };
+    use skiff_runtime_linked_program::linked::TypeDeclarationIr;
     use skiff_runtime_linked_type_plan::{
         linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
     };
@@ -305,6 +311,7 @@ mod recoverable_spawn_payload_tests {
 
     const ARTIFACT_IDENTITY: &str = "skiff-protocol-v1:sha256:test";
     const BUILD_ID: &str = "skiff-service-build-v1:sha256:test";
+    const SERVICE_ID: &str = "skiff.test/provider";
     const INTERFACE_ABI: &str = "pkg.ToolProvider";
     const METHOD_ABI: &str = "pkg.ToolProvider.call";
 
@@ -319,13 +326,55 @@ mod recoverable_spawn_payload_tests {
 
     impl TestProgram {
         fn with_interface_box() -> Self {
+            let file = Arc::new(linked_file_with_interface_box());
+            let provider_addr = provider_type_addr();
             Self {
-                service_files: vec![Arc::new(linked_file_with_interface_box())],
+                service_files: vec![file.clone()],
                 packages: Vec::new(),
                 package_files: Vec::new(),
                 spawn_routes: HashMap::new(),
                 link_overlay: LinkOverlay::default(),
-                types: RuntimeTypeContext::default(),
+                types: RuntimeTypeContext {
+                    descriptors: HashMap::from([(provider_addr, file.types[0].clone())]),
+                    exported_types: Default::default(),
+                },
+            }
+        }
+
+        fn with_duplicate_restore_key() -> Self {
+            let first = Arc::new(linked_file_with_interface_box_for_file(0));
+            let second = Arc::new(linked_file_with_interface_box_for_file(1));
+            Self {
+                service_files: vec![first.clone(), second.clone()],
+                packages: Vec::new(),
+                package_files: Vec::new(),
+                spawn_routes: HashMap::new(),
+                link_overlay: LinkOverlay::default(),
+                types: RuntimeTypeContext {
+                    descriptors: HashMap::from([
+                        (provider_type_addr_for_file(0), first.types[0].clone()),
+                        (provider_type_addr_for_file(1), second.types[0].clone()),
+                    ]),
+                    exported_types: Default::default(),
+                },
+            }
+        }
+
+        fn with_generic_interface_box() -> Self {
+            let mut file = linked_file_with_interface_box();
+            file.types[0].type_params = vec!["T".to_string()];
+            let file = Arc::new(file);
+            let provider_addr = provider_type_addr();
+            Self {
+                service_files: vec![file.clone()],
+                packages: Vec::new(),
+                package_files: Vec::new(),
+                spawn_routes: HashMap::new(),
+                link_overlay: LinkOverlay::default(),
+                types: RuntimeTypeContext {
+                    descriptors: HashMap::from([(provider_addr, file.types[0].clone())]),
+                    exported_types: Default::default(),
+                },
             }
         }
 
@@ -342,6 +391,7 @@ mod recoverable_spawn_payload_tests {
 
         fn projection(&self) -> EvalProgramProjection<'_> {
             EvalProgramProjection::new(
+                SERVICE_ID,
                 &self.service_files,
                 &self.packages,
                 &self.package_files,
@@ -353,28 +403,52 @@ mod recoverable_spawn_payload_tests {
     }
 
     fn linked_file_with_interface_box() -> LinkedFileUnit {
+        linked_file_with_interface_box_for_file(0)
+    }
+
+    fn linked_file_with_interface_box_for_file(file_index: usize) -> LinkedFileUnit {
+        let mut declarations = FileDeclarations::default();
+        declarations.types.insert(
+            "ProviderImpl".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "ProviderImpl".to_string(),
+                source_span: None,
+            },
+        );
         LinkedFileUnit {
             schema_version: "skiff-file-ir-v3".to_string(),
-            file_ir_identity: "file:test".to_string(),
+            file_ir_identity: format!("file:test:{file_index}"),
             source_ast_hash: "source:test".to_string(),
             module_path: "pkg".to_string(),
             ir_format_version: None,
             opcode_table_version: None,
             source_map: Default::default(),
-            declarations: FileDeclarations::default(),
+            declarations,
             link_targets: FileLinkTargets::default(),
-            types: Vec::new(),
+            types: vec![TypeDeclIr {
+                name: "ProviderImpl".to_string(),
+                descriptor: LinkedTypeDescriptor::Alias {
+                    target: string_type(),
+                },
+                type_params: Vec::new(),
+                discriminator: None,
+                implements: vec![LinkedTypeRef::AnyInterface {
+                    interface: tool_provider_interface(),
+                }],
+                source_span: None,
+            }],
             constants: Vec::new(),
             executables: vec![
-                box_owner_executable(),
-                provider_method_executable(),
+                box_owner_executable(file_index),
+                provider_method_executable(file_index),
                 spawn_target_executable(),
             ],
             external_refs: Default::default(),
         }
     }
 
-    fn box_owner_executable() -> LinkedExecutable {
+    fn box_owner_executable(file_index: usize) -> LinkedExecutable {
         LinkedExecutable {
             kind: ExecutableKind::Function,
             symbol: "boxOwner".to_string(),
@@ -391,22 +465,22 @@ mod recoverable_spawn_payload_tests {
                     value: ExprRefIr { expression: 0 },
                     interface: tool_provider_interface(),
                     source: LinkedBoxSourceIr::Local {
-                        concrete_type: provider_concrete_type(),
-                        method_table: method_table_plan(),
+                        concrete_type: provider_concrete_type_for_file(file_index),
+                        method_table: method_table_plan_for_file(file_index),
                     },
                 }],
             },
         }
     }
 
-    fn provider_method_executable() -> LinkedExecutable {
+    fn provider_method_executable(file_index: usize) -> LinkedExecutable {
         LinkedExecutable {
             kind: ExecutableKind::ImplMethod,
             symbol: "ProviderImpl.call".to_string(),
             type_params: Vec::new(),
             params: Vec::new(),
             return_type: Some(string_type()),
-            self_type: Some(provider_concrete_type()),
+            self_type: Some(provider_concrete_type_for_file(file_index)),
             slots: SlotLayoutIr::default(),
             may_suspend: false,
             body: LinkedExecutableBody::default(),
@@ -473,10 +547,37 @@ mod recoverable_spawn_payload_tests {
     }
 
     fn provider_concrete_type() -> LinkedTypeRef {
-        LinkedTypeRef::Native {
-            name: "pkg.ProviderImpl".to_string(),
-            args: Vec::new(),
+        provider_concrete_type_for_file(0)
+    }
+
+    fn provider_concrete_type_for_file(file_index: usize) -> LinkedTypeRef {
+        LinkedTypeRef::Address {
+            addr: provider_type_addr_for_file(file_index),
         }
+    }
+
+    fn provider_type_addr() -> TypeAddr {
+        provider_type_addr_for_file(0)
+    }
+
+    fn provider_type_addr_for_file(file_index: usize) -> TypeAddr {
+        TypeAddr {
+            unit: UnitAddr::Service,
+            file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(file_index),
+            type_index: 0,
+        }
+    }
+
+    fn provider_stable_restore_key() -> String {
+        let input = AbiSourceAnchorInput {
+            publication_id: SERVICE_ID.to_string(),
+            abi_epoch: 0,
+            module_path: vec!["pkg".to_string()],
+            symbol: "ProviderImpl".to_string(),
+            kind: AbiDeclarationKind::Type,
+        };
+        let type_id = abi_type_id_from_source_anchor(&input, &[]);
+        format!("abi-type:{}", hex::encode(type_id.key_bytes()))
     }
 
     fn string_type() -> LinkedTypeRef {
@@ -487,9 +588,13 @@ mod recoverable_spawn_payload_tests {
     }
 
     fn method_table_plan() -> LinkedInterfaceMethodTablePlanIr {
+        method_table_plan_for_file(0)
+    }
+
+    fn method_table_plan_for_file(file_index: usize) -> LinkedInterfaceMethodTablePlanIr {
         LinkedInterfaceMethodTablePlanIr {
             interface: tool_provider_interface(),
-            concrete_type: provider_concrete_type(),
+            concrete_type: provider_concrete_type_for_file(file_index),
             slots: vec![LinkedInterfaceMethodSlotPlanIr {
                 slot: 0,
                 method_name: "call".to_string(),
@@ -599,6 +704,9 @@ mod recoverable_spawn_payload_tests {
         let bytes = encode_spawn_args_payload(&value, &expected, &boundary, &heap, &hooks)
             .expect("local interface should encode before spawn submit");
         assert_eq!(&bytes[..4], b"SKRE");
+        let payload_text = String::from_utf8_lossy(&bytes);
+        assert!(!payload_text.contains(ARTIFACT_IDENTITY));
+        assert!(!payload_text.contains(BUILD_ID));
 
         let mut decode_heap = RequestHeap::default();
         let decoded =
@@ -633,10 +741,12 @@ mod recoverable_spawn_payload_tests {
             panic!("provider should decode as local carrier");
         };
         assert_eq!(provider.interface(), INTERFACE_ABI);
-        assert_eq!(
-            concrete_type,
-            &linked_type_ref_runtime_key(&provider_concrete_type())
+        assert!(
+            concrete_type.starts_with("abi-type:"),
+            "decoded carrier concrete type should be the durable stable restore key, got {concrete_type}"
         );
+        assert_eq!(concrete_type, &provider_stable_restore_key());
+        assert_ne!(concrete_type, &linked_type_ref_runtime_key(&provider_concrete_type()));
         assert_eq!(payload, &RuntimeValue::String("state".to_string()));
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
         assert_eq!(method_table.slots()[0].method_abi_id(), METHOD_ABI);
@@ -649,6 +759,41 @@ mod recoverable_spawn_payload_tests {
             receiver_call_abi,
             &InterfaceReceiverCallAbi::ExplicitSelfFirst
         );
+    }
+
+    #[test]
+    fn recoverable_hooks_reject_duplicate_local_concrete_restore_key_candidates() {
+        let program = TestProgram::with_duplicate_restore_key();
+
+        let result =
+            EvalRecoverableBehaviorHooks::new(program.projection(), ARTIFACT_IDENTITY, BUILD_ID);
+
+        match result {
+            Err(RuntimeError::InvalidArtifact(message)) => assert!(
+                message.contains("conflicting restore metadata"),
+                "unexpected invalid artifact message: {message}"
+            ),
+            Err(error) => panic!("expected invalid artifact error, got {error}"),
+            Ok(_) => panic!("duplicate stable local concrete restore key should fail closed"),
+        }
+    }
+
+    #[test]
+    fn recoverable_hooks_reject_generic_local_concrete_without_stable_type_args() {
+        let program = TestProgram::with_generic_interface_box();
+
+        let result =
+            EvalRecoverableBehaviorHooks::new(program.projection(), ARTIFACT_IDENTITY, BUILD_ID);
+
+        match result {
+            Err(RuntimeError::InvalidArtifact(message)) => assert!(
+                message.contains("generic")
+                    && message.contains("stable restore keys for concrete type arguments"),
+                "unexpected invalid artifact message: {message}"
+            ),
+            Err(error) => panic!("expected invalid artifact error, got {error}"),
+            Ok(_) => panic!("generic local concrete restore key should fail closed"),
+        }
     }
 
     #[test]
@@ -746,6 +891,7 @@ mod tests {
         let link_overlay = LinkOverlay::default();
         let types = RuntimeTypeContext::default();
         let program = EvalProgramProjection::new(
+            "skiff.test/spawn",
             &service_files,
             &packages,
             &package_files,

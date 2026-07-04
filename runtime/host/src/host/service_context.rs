@@ -131,6 +131,10 @@ impl<'a> ServiceEvalRuntimeProgramSource<'a> {
 }
 
 impl EvalRuntimeProgramSource for ServiceEvalRuntimeProgramSource<'_> {
+    fn service_id(&self) -> &str {
+        &self.service.service_id
+    }
+
     fn service_files(&self) -> &[Arc<LinkedFileUnit>] {
         self.service.linked_image.service_files.as_slice()
     }

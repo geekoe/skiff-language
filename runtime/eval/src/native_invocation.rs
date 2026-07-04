@@ -306,6 +306,7 @@ mod tests {
 
     fn eval_program_for_test(program: &EvalProgramImage) -> EvalRuntimeProgram {
         EvalRuntimeProgram::new(
+            "skiff.test/native",
             program.service_files.clone(),
             program.packages.clone(),
             program.package_files.clone(),

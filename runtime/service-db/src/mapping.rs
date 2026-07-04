@@ -22,7 +22,7 @@ use skiff_runtime_boundary::{
     json::{decode_untyped_wire_json, encode_untyped_wire_json},
     recoverable::{
         RecoverableArtifactRetentionRootStore, RecoverableArtifactStore, RecoverableBehaviorHooks,
-        RecoverableBoundaryCodec,
+        RecoverableBoundaryCodec, RecoverableDecodePolicy,
     },
 };
 
@@ -991,11 +991,12 @@ impl DbCollectionMetadata {
             )));
         };
         let mut heap = RequestHeap::default();
-        let runtime_value = RecoverableBoundaryCodec::decode(
+        let runtime_value = RecoverableBoundaryCodec::decode_with_policy(
             &binary.bytes,
             plan.recoverable_expected(),
             &recoverable_db_context(),
             &mut heap,
+            RecoverableDecodePolicy::durable_db(),
         )
         .map_err(|error| {
             db_decode_error(format!(
@@ -1041,15 +1042,22 @@ impl DbCollectionMetadata {
             )));
         };
         let result = if let Some(recoverable_context) = recoverable_context {
-            RecoverableBoundaryCodec::decode_with_behavior(
+            RecoverableBoundaryCodec::decode_with_behavior_and_policy(
                 &binary.bytes,
                 expected,
                 context,
                 heap,
                 recoverable_context.behavior_hooks,
+                RecoverableDecodePolicy::durable_db(),
             )
         } else {
-            RecoverableBoundaryCodec::decode(&binary.bytes, expected, context, heap)
+            RecoverableBoundaryCodec::decode_with_policy(
+                &binary.bytes,
+                expected,
+                context,
+                heap,
+                RecoverableDecodePolicy::durable_db(),
+            )
         };
         result.map_err(|error| {
             db_decode_error(format!(

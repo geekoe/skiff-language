@@ -573,6 +573,15 @@ impl SpawnWorker {
                 ),
             });
         }
+        if descriptor.build_id != self.service.build_id {
+            return Err(RuntimeError::Protocol {
+                target: CLAIM_CONTROL_TARGET.to_string(),
+                message: format!(
+                    "claimed spawn buildId {} does not match runtime buildId {}",
+                    descriptor.build_id, self.service.build_id
+                ),
+            });
+        }
         Ok(())
     }
 

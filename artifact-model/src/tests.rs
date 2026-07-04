@@ -271,7 +271,6 @@ fn sample_recoverable_metadata() -> RecoverableArtifactMetadata {
         restore_plan_ref.0.clone(),
         RecoverableCustomRestorePlan {
             concrete_type_identity: "type:user".to_owned(),
-            restore_schema_version: "1".to_owned(),
             durable_state_type_plan: identity_expected,
             encode_hook_id: "restore:user.encode".to_owned(),
             decode_hook_id: "restore:user.decode".to_owned(),
@@ -478,7 +477,6 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
         "restore:user".to_string(),
         RecoverableCustomRestorePlan {
             concrete_type_identity: String::new(),
-            restore_schema_version: "1".to_string(),
             durable_state_type_plan: recoverable_type_ref_plan(TypeRefIr::native("Json")),
             encode_hook_id: String::new(),
             decode_hook_id: "restore:user.decode".to_string(),
@@ -516,7 +514,6 @@ fn recoverable_custom_and_native_plans_validate_required_fields() {
 fn recoverable_custom_plan_rejects_missing_required_schema_fields() {
     let value = json!({
         "concreteTypeIdentity": "type:user",
-        "restoreSchemaVersion": "1",
         "durableStateTypePlan": recoverable_type_ref_plan(TypeRefIr::native("Json")),
         "encodeHookId": "restore:user.encode",
         "restoreCapability": "exact"
@@ -526,7 +523,6 @@ fn recoverable_custom_plan_rejects_missing_required_schema_fields() {
 
     let missing_durable_state = json!({
         "concreteTypeIdentity": "type:user",
-        "restoreSchemaVersion": "1",
         "encodeHookId": "restore:user.encode",
         "decodeHookId": "restore:user.decode",
         "restoreCapability": "exact"

@@ -31,12 +31,12 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_model::{
     error::WirePayload,
     recoverable::{
-        NominalObjectState, RecoverableArtifactRetentionRoot, RecoverableCodeIdentity,
-        RecoverableField, RecoverableNode, RecoverableState, RecoverableValueKind,
-        RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
-        RuntimeRecoverableBoundaryKind, RuntimeRecoverableExpectedTypePlan,
-        RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane,
-        RuntimeRecoverableTrustBoundary,
+        LocalConcreteOwner, NominalObjectState, RecoverableArtifactRetentionRoot,
+        RecoverableCodeIdentity, RecoverableField, RecoverableNode, RecoverableState,
+        RecoverableValueKind, RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
+        RuntimeRecoverableBoundaryKind, RuntimeRecoverableExpectedRecordFieldPlan,
+        RuntimeRecoverableExpectedTypeNode, RuntimeRecoverableExpectedTypePlan,
+        RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane, RuntimeRecoverableTrustBoundary,
     },
     request_heap::RequestHeap,
     runtime_value::{
@@ -1577,6 +1577,88 @@ fn recoverable_envelope_field_roundtrips_plain_values_as_opaque_binary() {
 }
 
 #[test]
+fn recoverable_envelope_runtime_read_ignores_historical_extra_record_fields() {
+    let binding = recoverable_envelope_metadata();
+    let document = recoverable_settings_document_with_expected(
+        &binding,
+        recoverable_settings_expected(&[("mode", string_expected(), true), ("legacy", string_expected(), true)]),
+        runtime_settings_object([
+            ("mode", RuntimeValue::String("dark".to_string())),
+            ("legacy", RuntimeValue::String("old".to_string())),
+        ]),
+    );
+
+    let decoded = recoverable_settings_runtime_read_with_expected(
+        &binding,
+        document,
+        recoverable_settings_expected(&[("mode", string_expected(), true)]),
+    )
+    .expect("DB durable read should ignore historical extra fields");
+
+    assert_eq!(
+        decoded.get("mode"),
+        Some(&RuntimeValue::String("dark".to_string()))
+    );
+    assert!(
+        !decoded.contains_key("legacy"),
+        "historical field must not be materialized into current runtime object"
+    );
+}
+
+#[test]
+fn recoverable_envelope_runtime_read_materializes_missing_nullable_fields() {
+    let binding = recoverable_envelope_metadata();
+    let document = recoverable_settings_document_with_expected(
+        &binding,
+        recoverable_settings_expected(&[("mode", string_expected(), true)]),
+        runtime_settings_object([("mode", RuntimeValue::String("dark".to_string()))]),
+    );
+
+    let decoded = recoverable_settings_runtime_read_with_expected(
+        &binding,
+        document,
+        recoverable_settings_expected(&[
+            ("mode", string_expected(), true),
+            ("nickname", nullable_string_expected(), false),
+        ]),
+    )
+    .expect("DB durable read should materialize selected missing nullable fields");
+
+    assert_eq!(
+        decoded.get("mode"),
+        Some(&RuntimeValue::String("dark".to_string()))
+    );
+    assert_eq!(decoded.get("nickname"), Some(&RuntimeValue::Null));
+}
+
+#[test]
+fn recoverable_envelope_runtime_read_rejects_missing_required_fields() {
+    let binding = recoverable_envelope_metadata();
+    let document = recoverable_settings_document_with_expected(
+        &binding,
+        recoverable_settings_expected(&[("mode", string_expected(), true)]),
+        runtime_settings_object([("mode", RuntimeValue::String("dark".to_string()))]),
+    );
+
+    let error = recoverable_settings_runtime_read_with_expected(
+        &binding,
+        document,
+        recoverable_settings_expected(&[
+            ("mode", string_expected(), true),
+            ("nickname", string_expected(), true),
+        ]),
+    )
+    .expect_err("DB durable read must still reject missing required fields");
+
+    assert!(
+        error
+            .to_string()
+            .contains("recoverable-envelope DB field decode failed"),
+        "{error}"
+    );
+}
+
+#[test]
 fn nullable_recoverable_envelope_bson_null_decodes_to_business_json_null() {
     let binding = recoverable_nullable_envelope_metadata();
 
@@ -1681,12 +1763,9 @@ fn recoverable_envelope_runtime_field_roundtrips_local_interface_with_hooks() {
     };
     assert_eq!(binary.subtype, BinarySubtype::Generic);
     assert!(!binary.bytes.is_empty());
-    assert_eq!(root_store.roots.len(), 1);
-    assert_eq!(root_store.roots[0].artifact_identity, TEST_SERVICE_ARTIFACT);
-    assert_eq!(root_store.roots[0].build_id, TEST_SERVICE_BUILD);
-    assert_eq!(
-        root_store.roots[0].expires_at_epoch_millis,
-        Some(1_609_459_200_000)
+    assert!(
+        root_store.roots.is_empty(),
+        "LocalConcrete recoverable self nodes do not create artifact retention roots"
     );
 
     let mut read_heap = RequestHeap::default();
@@ -1916,7 +1995,7 @@ fn recoverable_envelope_runtime_field_rejects_remote_carrier_before_write() {
 }
 
 #[test]
-fn recoverable_envelope_runtime_field_requires_hooks_and_artifact_outlets() {
+fn recoverable_envelope_runtime_field_requires_hooks_but_not_artifact_outlets_for_local_concrete() {
     let binding = recoverable_provider_metadata();
     let mut heap = RequestHeap::default();
     let value = {
@@ -1951,15 +2030,10 @@ fn recoverable_envelope_runtime_field_requires_hooks_and_artifact_outlets() {
         retention_root_store: Some(&mut root_store),
         retention_expires_at_epoch_millis: None,
     };
-    let error = binding
+    binding
         .document_from_runtime_business_value(&value, &heap, Some(&mut missing_artifact_store))
-        .expect_err("behavior envelope without artifact store should fail before write");
-    assert!(
-        error
-            .to_string()
-            .contains("requires an artifact availability store"),
-        "{error}"
-    );
+        .expect("LocalConcrete behavior envelope should not require an artifact store");
+    assert!(root_store.roots.is_empty());
 
     let artifact_store =
         TestDbArtifactStore::default().with_available(TEST_SERVICE_ARTIFACT, TEST_SERVICE_BUILD);
@@ -1972,15 +2046,9 @@ fn recoverable_envelope_runtime_field_requires_hooks_and_artifact_outlets() {
         retention_root_store: None,
         retention_expires_at_epoch_millis: None,
     };
-    let error = binding
+    binding
         .document_from_runtime_business_value(&value, &heap, Some(&mut missing_retention_store))
-        .expect_err("behavior envelope without retention root store should fail before write");
-    assert!(
-        error
-            .to_string()
-            .contains("requires an artifact retention root store"),
-        "{error}"
-    );
+        .expect("LocalConcrete behavior envelope should not require a retention root store");
 }
 
 #[test]
@@ -2486,6 +2554,110 @@ fn test_provider_expected_plan() -> RuntimeRecoverableExpectedTypePlan {
     )
 }
 
+fn recoverable_settings_expected(
+    fields: &[(&str, RuntimeRecoverableExpectedTypePlan, bool)],
+) -> RuntimeRecoverableExpectedTypePlan {
+    RuntimeRecoverableExpectedTypePlan {
+        label: "Settings".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty, required)| RuntimeRecoverableExpectedRecordFieldPlan {
+                    name: (*name).to_string(),
+                    ty: ty.clone(),
+                    required: *required,
+                })
+                .collect(),
+            boundary_record_kind: None,
+        },
+    }
+}
+
+fn string_expected() -> RuntimeRecoverableExpectedTypePlan {
+    RuntimeRecoverableExpectedTypePlan {
+        label: "string".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::String,
+    }
+}
+
+fn nullable_string_expected() -> RuntimeRecoverableExpectedTypePlan {
+    RuntimeRecoverableExpectedTypePlan {
+        label: "string?".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::Nullable {
+            inner: Box::new(string_expected()),
+        },
+    }
+}
+
+fn runtime_settings_object<const N: usize>(
+    fields: [(&str, RuntimeValue); N],
+) -> [(&str, RuntimeValue); N] {
+    fields
+}
+
+fn recoverable_settings_document_with_expected<const N: usize>(
+    binding: &DbCollectionMetadata,
+    expected: RuntimeRecoverableExpectedTypePlan,
+    settings_fields: [(&str, RuntimeValue); N],
+) -> mongodb::bson::Document {
+    let hooks = TestDbBehaviorHooks::default();
+    let mut heap = RequestHeap::default();
+    let settings = runtime_object(&mut heap, settings_fields);
+    let value = runtime_object(
+        &mut heap,
+        [
+            ("id", RuntimeValue::String("thread-1".to_string())),
+            ("title", RuntimeValue::String("Hello".to_string())),
+            ("settings", settings),
+        ],
+    );
+    let mut write_context = DbRecoverableRuntimeWriteContext {
+        behavior_hooks: &hooks,
+        boundary_context: None,
+        recoverable_expected_override: Some(&expected),
+        recoverable_expected_overrides: None,
+        artifact_store: None,
+        retention_root_store: None,
+        retention_expires_at_epoch_millis: None,
+    };
+    binding
+        .document_from_runtime_business_value(&value, &heap, Some(&mut write_context))
+        .expect("recoverable settings fixture should encode")
+}
+
+fn recoverable_settings_runtime_read_with_expected(
+    binding: &DbCollectionMetadata,
+    document: mongodb::bson::Document,
+    expected: RuntimeRecoverableExpectedTypePlan,
+) -> Result<RuntimeObjectFields> {
+    let hooks = TestDbBehaviorHooks::default();
+    let mut heap = RequestHeap::default();
+    let read_context = DbRecoverableRuntimeReadContext {
+        behavior_hooks: &hooks,
+        boundary_context: None,
+        recoverable_expected_override: Some(&expected),
+        recoverable_expected_overrides: None,
+    };
+    let decoded =
+        binding.runtime_business_value_from_document(document, &mut heap, Some(&read_context))?;
+    let RuntimeValue::Heap(row_handle) = decoded else {
+        panic!("decoded DB row should be an object");
+    };
+    let HeapNode::Object(row) = heap.get(row_handle).expect("decoded row handle") else {
+        panic!("decoded DB row should be an object");
+    };
+    let RuntimeValue::Heap(settings_handle) = row.fields().get("settings").unwrap() else {
+        panic!("settings should be a heap object");
+    };
+    let HeapNode::Object(settings) = heap.get(*settings_handle).expect("settings handle") else {
+        panic!("settings should decode as an object");
+    };
+    Ok(settings.fields().clone())
+}
+
 fn runtime_object<const N: usize>(
     heap: &mut RequestHeap,
     fields: [(&str, RuntimeValue); N],
@@ -2549,11 +2721,9 @@ fn provider_self_node(provider_name: &str) -> RecoverableNode {
     RecoverableNode {
         value_kind: RecoverableValueKind::NominalObject,
         variant_identity: RecoverableVariantIdentity::None,
-        code_identity: RecoverableCodeIdentity::LocalCode {
-            artifact_identity: TEST_SERVICE_ARTIFACT.to_string(),
-            build_id: TEST_SERVICE_BUILD.to_string(),
+        code_identity: RecoverableCodeIdentity::LocalConcrete {
+            owner: LocalConcreteOwner::Service,
             concrete_type_identity: TEST_PROVIDER_IMPL.to_string(),
-            package: None,
         },
         state: RecoverableState::NominalObject(NominalObjectState::DefaultFields {
             fields: vec![RecoverableField {
@@ -2661,7 +2831,7 @@ impl RecoverableBehaviorHooks for TestDbBehaviorHooks {
         _heap: &mut RequestHeap,
     ) -> BoundaryResult<Option<RecoverableRestoredLocalInterfaceSelf>> {
         self.restore_calls.set(self.restore_calls.get() + 1);
-        let RecoverableCodeIdentity::LocalCode {
+        let RecoverableCodeIdentity::LocalConcrete {
             concrete_type_identity,
             ..
         } = &request.self_node.code_identity

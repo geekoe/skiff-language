@@ -939,6 +939,7 @@ mod tests {
     fn service_dependency_stream_call_is_not_treated_as_unlinked_producer() {
         let program = Arc::new(empty_program());
         let projection = EvalProgramProjection::new(
+            &program.service_id,
             &program.service_files,
             &program.packages,
             &program.package_files,
@@ -1032,6 +1033,7 @@ mod tests {
 
         let routes = HashMap::<String, ExecutableAddr>::new();
         let type_projection = EvalTypeProjection::new(EvalProgramProjection::new(
+            &program.service_id,
             &program.service_files,
             &program.packages,
             &program.package_files,
@@ -1104,6 +1106,7 @@ mod tests {
 
         let routes = HashMap::<String, ExecutableAddr>::new();
         let type_projection = EvalTypeProjection::new(EvalProgramProjection::new(
+            &program.service_id,
             &program.service_files,
             &program.packages,
             &program.package_files,

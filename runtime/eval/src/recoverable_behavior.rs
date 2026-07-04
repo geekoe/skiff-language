@@ -1,5 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use skiff_artifact_model::{
+    abi_identity::derive::{abi_type_id_from_source_anchor, AbiSourceAnchorInput},
+    AbiDeclarationKind,
+};
 use skiff_runtime_boundary::{
     error::{
         RecoverableBoundaryError, RecoverableBoundaryErrorCode, Result as BoundaryResult,
@@ -13,18 +17,19 @@ use skiff_runtime_boundary::{
     },
 };
 use skiff_runtime_linked_program::{
-    ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedInterfaceMethodSlotPlanIr,
-    LinkedInterfaceMethodTablePlanIr, ReceiverCallAbi, UnitAddr,
+    ExecutableAddr, FileAddr, LinkedBoxSourceIr, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodTablePlanIr, LinkedTypeRef,
+    ReceiverCallAbi, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
-    linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
-    recoverable_interface_projection_identity,
+    linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key, PlanContext,
+    RuntimeRecoverableExpectedTypePlanLinkedExt, recoverable_interface_projection_identity,
 };
 use skiff_runtime_model::{
     recoverable::{
-        NominalObjectState, RecoverableCodeIdentity, RecoverableEnvelope, RecoverableNode,
-        RecoverableState, RecoverableValidationLimits, RecoverableValueKind,
-        RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
+        LocalConcreteOwner, LocalConcreteRestoreKey, NominalObjectState, RecoverableCodeIdentity,
+        RecoverableEnvelope, RecoverableNode, RecoverableState, RecoverableValidationLimits,
+        RecoverableValueKind, RecoverableVariantIdentity, RuntimeRecoverableBoundaryContext,
         RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane,
     },
     request_heap::RequestHeap,
@@ -35,7 +40,7 @@ use skiff_runtime_model::{
 
 use crate::{error::RuntimeError, invocation::EvalProgramProjection};
 
-const INTERFACE_SELF_RESTORE_SCHEMA_VERSION: &str = "skiff.runtime.interfaceSelf.v1";
+const ABI_TYPE_RESTORE_KEY_PREFIX: &str = "abi-type:";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct MethodTableKey {
@@ -47,24 +52,24 @@ struct MethodTableKey {
 #[derive(Clone)]
 struct MethodTableEntry {
     key: MethodTableKey,
+    restore_key: LocalConcreteRestoreKey,
+    runtime_concrete_type_identity: String,
+    durable_expected: RuntimeRecoverableExpectedTypePlan,
     method_table: InterfaceMethodTable,
 }
 
 pub struct EvalRecoverableBehaviorHooks {
-    artifact_identity: String,
-    build_id: String,
     method_tables: HashMap<MethodTableKey, MethodTableEntry>,
 }
 
 impl EvalRecoverableBehaviorHooks {
     pub fn new(
         program: EvalProgramProjection<'_>,
-        artifact_identity: impl Into<String>,
-        build_id: impl Into<String>,
+        _artifact_identity: impl Into<String>,
+        _build_id: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
+        unique_package_ids(program.packages)?;
         let mut hooks = Self {
-            artifact_identity: artifact_identity.into(),
-            build_id: build_id.into(),
             method_tables: HashMap::new(),
         };
         hooks.index_program(program)?;
@@ -72,15 +77,16 @@ impl EvalRecoverableBehaviorHooks {
     }
 
     fn index_program(&mut self, program: EvalProgramProjection<'_>) -> Result<(), RuntimeError> {
-        self.index_files(UnitAddr::Service, program.service_files)?;
+        self.index_files(program, UnitAddr::Service, program.service_files)?;
         for (package_slot, files) in program.package_files.iter().enumerate() {
-            self.index_files(UnitAddr::Package(package_slot), files)?;
+            self.index_files(program, UnitAddr::Package(package_slot), files)?;
         }
         Ok(())
     }
 
     fn index_files(
         &mut self,
+        program: EvalProgramProjection<'_>,
         unit: UnitAddr,
         files: &[std::sync::Arc<skiff_runtime_linked_program::LinkedFileUnit>],
     ) -> Result<(), RuntimeError> {
@@ -107,7 +113,14 @@ impl EvalRecoverableBehaviorHooks {
                     let interface_identity = linked_interface_instantiation_runtime_id(interface);
                     let method_projection_identity =
                         recoverable_interface_projection_identity(interface);
-                    let concrete_type_identity = linked_type_ref_runtime_key(concrete_type);
+                    let restore_key = local_concrete_restore_key(program, concrete_type)?;
+                    let concrete_type_identity = restore_key.concrete_type_identity.clone();
+                    let runtime_concrete_type_identity = linked_type_ref_runtime_key(concrete_type);
+                    let durable_expected =
+                        RuntimeRecoverableExpectedTypePlan::from_linked(
+                            concrete_type,
+                            &PlanContext::from_type_view(program.type_view(), &owner_addr),
+                        )?;
                     let method_table =
                         interface_method_table_from_linked(&owner_addr, method_table)?;
                     if method_table.interface_abi_id() != interface_identity {
@@ -124,15 +137,23 @@ impl EvalRecoverableBehaviorHooks {
                     };
                     let entry = MethodTableEntry {
                         key: key.clone(),
+                        restore_key,
+                        runtime_concrete_type_identity,
+                        durable_expected,
                         method_table,
                     };
                     if let Some(existing) = self.method_tables.get(&key) {
-                        if !method_tables_runtime_equivalent(
-                            &existing.method_table,
-                            &entry.method_table,
-                        ) {
+                        if existing.restore_key != entry.restore_key
+                            || existing.runtime_concrete_type_identity
+                                != entry.runtime_concrete_type_identity
+                            || existing.durable_expected != entry.durable_expected
+                            || !method_tables_runtime_equivalent(
+                                &existing.method_table,
+                                &entry.method_table,
+                            )
+                        {
                             return Err(RuntimeError::InvalidArtifact(format!(
-                                "recoverable interface projection {} for {} has conflicting method tables",
+                                "recoverable interface projection {} for {} has conflicting restore metadata",
                                 key.method_projection_identity, key.concrete_type_identity
                             )));
                         }
@@ -156,7 +177,7 @@ impl EvalRecoverableBehaviorHooks {
             .values()
             .filter(|entry| {
                 entry.key.interface_identity == interface_identity
-                    && entry.key.concrete_type_identity == concrete_type_identity
+                    && entry.runtime_concrete_type_identity == concrete_type_identity
                     && method_tables_runtime_equivalent(&entry.method_table, method_table)
             })
             .collect::<Vec<_>>();
@@ -200,11 +221,9 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
         else {
             return Ok(None);
         };
-        let durable_expected =
-            RuntimeRecoverableExpectedTypePlan::unresolved("local interface self");
         let durable_envelope = RecoverableBoundaryCodec::encode_envelope_with_behavior(
             request.payload,
-            &durable_expected,
+            &entry.durable_expected,
             request.context,
             heap,
             self,
@@ -214,14 +233,11 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
             self_node: RecoverableNode {
                 value_kind: RecoverableValueKind::NominalObject,
                 variant_identity: RecoverableVariantIdentity::None,
-                code_identity: RecoverableCodeIdentity::LocalCode {
-                    artifact_identity: self.artifact_identity.clone(),
-                    build_id: self.build_id.clone(),
-                    concrete_type_identity: request.concrete_type.to_string(),
-                    package: None,
+                code_identity: RecoverableCodeIdentity::LocalConcrete {
+                    owner: entry.restore_key.owner.clone(),
+                    concrete_type_identity: entry.restore_key.concrete_type_identity.clone(),
                 },
                 state: RecoverableState::NominalObject(NominalObjectState::Custom {
-                    restore_schema_version: INTERFACE_SELF_RESTORE_SCHEMA_VERSION.to_string(),
                     durable_state: Box::new(durable_envelope.root),
                 }),
             },
@@ -233,26 +249,18 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
         request: RecoverableLocalInterfaceRestoreRequest<'_>,
         heap: &mut RequestHeap,
     ) -> BoundaryResult<Option<RecoverableRestoredLocalInterfaceSelf>> {
-        let RecoverableCodeIdentity::LocalCode {
-            artifact_identity,
-            build_id,
+        let RecoverableCodeIdentity::LocalConcrete {
+            owner,
             concrete_type_identity,
-            ..
         } = &request.self_node.code_identity
         else {
             return Ok(None);
         };
-        if artifact_identity != &self.artifact_identity || build_id != &self.build_id {
-            return Err(recoverable_hook_error(
-                RecoverableBoundaryErrorCode::ArtifactUnavailable,
-                "local InterfaceValue self node was written by a different artifact/build",
-                request.path,
-                Some(request.context),
-                Some(request.expected),
-            ));
-        }
+        let restore_key = LocalConcreteRestoreKey {
+            owner: owner.clone(),
+            concrete_type_identity: concrete_type_identity.clone(),
+        };
         let RecoverableState::NominalObject(NominalObjectState::Custom {
-            restore_schema_version,
             durable_state,
         }) = &request.self_node.state
         else {
@@ -264,29 +272,46 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
                 Some(request.expected),
             ));
         };
-        if restore_schema_version != INTERFACE_SELF_RESTORE_SCHEMA_VERSION {
+        let lookup = RecoverableInterfaceMethodTableRequest {
+            concrete_type_identity,
+            interface_identity: request.interface_identity,
+            method_projection_identity: request.method_projection_identity,
+            expected_any_interface: request.expected_any_interface,
+            path: request.path,
+            context: request.context,
+            expected: request.expected,
+        };
+        let entry = self.entry_for_key(&lookup).ok_or_else(|| {
+            recoverable_hook_error(
+                RecoverableBoundaryErrorCode::InterfaceConformanceMissing,
+                "current linked program does not provide the local concrete restore key for InterfaceValue self",
+                request.path,
+                Some(request.context),
+                Some(request.expected),
+            )
+        })?;
+        if entry.restore_key != restore_key {
             return Err(recoverable_hook_error(
-                RecoverableBoundaryErrorCode::StateInvalid,
-                "local InterfaceValue self node restore schema is unsupported",
+                RecoverableBoundaryErrorCode::InterfaceConformanceMissing,
+                "local InterfaceValue self node owner does not match current concrete restore key",
                 request.path,
                 Some(request.context),
                 Some(request.expected),
             ));
         }
-        let durable_expected =
-            RuntimeRecoverableExpectedTypePlan::unresolved("local interface self");
         let durable_bytes = RecoverableBoundaryCodec::encode_envelope_canonical(
             &RecoverableEnvelope::new((**durable_state).clone()),
             &RecoverableValidationLimits::default(),
-            &durable_expected,
+            &entry.durable_expected,
             request.context,
         )?;
-        let payload = RecoverableBoundaryCodec::decode_with_behavior(
+        let payload = RecoverableBoundaryCodec::decode_with_behavior_and_policy(
             &durable_bytes,
-            &durable_expected,
+            &entry.durable_expected,
             request.context,
             heap,
             self,
+            request.decode_policy,
         )?;
         Ok(Some(RecoverableRestoredLocalInterfaceSelf {
             concrete_type_identity: concrete_type_identity.clone(),
@@ -373,6 +398,132 @@ fn method_tables_runtime_equivalent(
     right: &InterfaceMethodTable,
 ) -> bool {
     left.interface_abi_id() == right.interface_abi_id() && left.slots() == right.slots()
+}
+
+fn unique_package_ids(
+    packages: &[std::sync::Arc<skiff_runtime_linked_program::PackageUnit>],
+) -> Result<HashSet<String>, RuntimeError> {
+    let mut ids = HashSet::new();
+    for package in packages {
+        if !ids.insert(package.package_id.clone()) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "recoverable local concrete owner lookup found duplicate package id {}",
+                package.package_id
+            )));
+        }
+    }
+    Ok(ids)
+}
+
+fn local_concrete_restore_key(
+    program: EvalProgramProjection<'_>,
+    concrete_type: &LinkedTypeRef,
+) -> Result<LocalConcreteRestoreKey, RuntimeError> {
+    let LinkedTypeRef::Address { addr } = concrete_type else {
+        return Err(RuntimeError::InvalidArtifact(
+            "recoverable local concrete restore key requires a linked source type address"
+                .to_string(),
+        ));
+    };
+    let owner = local_concrete_owner(program, &addr.unit)?;
+    let concrete_type_identity = concrete_type_identity_for_addr(program, addr, &owner)?;
+    Ok(LocalConcreteRestoreKey {
+        owner,
+        concrete_type_identity,
+    })
+}
+
+fn local_concrete_owner(
+    program: EvalProgramProjection<'_>,
+    unit: &UnitAddr,
+) -> Result<LocalConcreteOwner, RuntimeError> {
+    match unit {
+        UnitAddr::Service => Ok(LocalConcreteOwner::Service),
+        UnitAddr::Package(slot) => {
+            let package = program.packages.get(*slot).ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "recoverable local concrete owner package slot {slot} is not loaded"
+                ))
+            })?;
+            if program
+                .packages
+                .iter()
+                .filter(|candidate| candidate.package_id == package.package_id)
+                .take(2)
+                .count()
+                != 1
+            {
+                return Err(RuntimeError::InvalidArtifact(format!(
+                    "recoverable local concrete owner package id {} is ambiguous",
+                    package.package_id
+                )));
+            }
+            Ok(LocalConcreteOwner::Package {
+                package_id: package.package_id.clone(),
+            })
+        }
+    }
+}
+
+fn concrete_type_identity_for_addr(
+    program: EvalProgramProjection<'_>,
+    addr: &TypeAddr,
+    owner: &LocalConcreteOwner,
+) -> Result<String, RuntimeError> {
+    let file = program.resolve_file(&addr.unit, &addr.file)?;
+    let type_decl = file.types.get(addr.type_index).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "recoverable local concrete type {} has no linked type declaration",
+            linked_type_ref_runtime_key(&LinkedTypeRef::Address { addr: addr.clone() })
+        ))
+    })?;
+    if !type_decl.type_params.is_empty() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "recoverable local concrete type {} is generic; stable restore keys for concrete type arguments are not implemented",
+            linked_type_ref_runtime_key(&LinkedTypeRef::Address { addr: addr.clone() })
+        )));
+    }
+    let symbol = type_declaration_symbol_for_addr(file, addr).ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "recoverable local concrete type {} has no source declaration",
+            linked_type_ref_runtime_key(&LinkedTypeRef::Address { addr: addr.clone() })
+        ))
+    })?;
+    let publication_id = match owner {
+        LocalConcreteOwner::Service => program.service_id.to_string(),
+        LocalConcreteOwner::Package { package_id } => package_id.clone(),
+    };
+    let input = AbiSourceAnchorInput {
+        publication_id,
+        abi_epoch: 0,
+        module_path: module_path_segments(&file.module_path),
+        symbol: symbol.to_string(),
+        kind: AbiDeclarationKind::Type,
+    };
+    let type_id = abi_type_id_from_source_anchor(&input, &[]);
+    Ok(format!(
+        "{ABI_TYPE_RESTORE_KEY_PREFIX}{}",
+        hex::encode(type_id.key_bytes())
+    ))
+}
+
+fn type_declaration_symbol_for_addr<'a>(
+    file: &'a LinkedFileUnit,
+    addr: &TypeAddr,
+) -> Option<&'a str> {
+    file.declarations
+        .types
+        .values()
+        .find(|declaration| declaration.type_index == addr.type_index)
+        .map(|declaration| declaration.symbol.as_str())
+}
+
+fn module_path_segments(module_path: &str) -> Vec<String> {
+    if module_path.is_empty() {
+        Vec::new()
+    } else {
+        module_path.split('.').map(ToString::to_string).collect()
+    }
 }
 
 fn recoverable_hook_error(

@@ -381,6 +381,7 @@ impl<'a> ExecutableInvocation<'a> {
 impl Interpreter {
     pub fn program_projection(&self) -> Result<EvalProgramProjection<'_>> {
         Ok(EvalProgramProjection::new(
+            &self.program.service_id,
             &self.program.service_files,
             &self.program.packages,
             &self.program.package_files,

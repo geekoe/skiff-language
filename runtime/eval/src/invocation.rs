@@ -21,6 +21,7 @@ pub struct EvalExecutableBody<'a> {
 
 #[derive(Clone, Copy)]
 pub struct EvalProgramProjection<'a> {
+    pub service_id: &'a str,
     pub service_files: &'a [Arc<LinkedFileUnit>],
     pub packages: &'a [Arc<PackageUnit>],
     pub package_files: &'a [Vec<Arc<LinkedFileUnit>>],
@@ -31,6 +32,7 @@ pub struct EvalProgramProjection<'a> {
 
 impl<'a> EvalProgramProjection<'a> {
     pub fn new(
+        service_id: &'a str,
         service_files: &'a [Arc<LinkedFileUnit>],
         packages: &'a [Arc<PackageUnit>],
         package_files: &'a [Vec<Arc<LinkedFileUnit>>],
@@ -39,6 +41,7 @@ impl<'a> EvalProgramProjection<'a> {
         types: &'a RuntimeTypeContext,
     ) -> Self {
         Self {
+            service_id,
             service_files,
             packages,
             package_files,

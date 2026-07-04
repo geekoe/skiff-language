@@ -644,6 +644,7 @@ export interface SpawnClaimDescriptorFrameMetadata {
   serviceId: string;
   serviceVersion: string;
   serviceProtocolIdentity: string;
+  buildId: string;
   payloadSchemaIdentity?: string;
   leaseExpiresAt?: string;
 }

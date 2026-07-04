@@ -200,6 +200,7 @@ mod tests {
             service_id: "service-1".to_string(),
             service_version: "v1".to_string(),
             service_protocol_identity: "protocol-1".to_string(),
+            build_id: "build-1".to_string(),
             payload_schema_identity: None,
             lease_expires_at: None,
         }

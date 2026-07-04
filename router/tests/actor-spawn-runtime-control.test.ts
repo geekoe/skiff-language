@@ -365,6 +365,7 @@ describe('actor/spawn runtime control protocol', () => {
         serviceId,
         serviceVersion,
         serviceProtocolIdentity,
+        buildId: packageTestBuildId,
       },
     });
   });
@@ -524,6 +525,7 @@ async function claimFunctionSpawn(ws: WebSocket, rpcId: string): Promise<Runtime
       serviceId,
       serviceVersion,
       serviceProtocolIdentity,
+      buildId,
     },
   });
   return claim;

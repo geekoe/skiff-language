@@ -822,6 +822,7 @@ pub struct SpawnClaimDescriptorFrameMetadata {
     pub service_id: String,
     pub service_version: String,
     pub service_protocol_identity: String,
+    pub build_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_schema_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
