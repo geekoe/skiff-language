@@ -268,7 +268,10 @@ fn metadata_to_json(value: &MetadataValue) -> Value {
 
 #[cfg(test)]
 mod recoverable_spawn_payload_tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        sync::Arc,
+    };
 
     use skiff_artifact_model::{
         abi_identity::derive::{abi_type_id_from_source_anchor, AbiSourceAnchorInput},
@@ -278,6 +281,7 @@ mod recoverable_spawn_payload_tests {
         error::RecoverableBoundaryErrorCode,
         payload::{PayloadBoundary, PayloadBoundaryKind},
     };
+    use skiff_runtime_linked_program::linked::TypeDeclarationIr;
     use skiff_runtime_linked_program::{
         ExecutableAddr, ExecutableKind, ExprRefIr, FileDeclarations, FileLinkTargets, LinkOverlay,
         LinkedBoxSourceIr, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
@@ -287,7 +291,6 @@ mod recoverable_spawn_payload_tests {
         ParamIr, ReceiverCallAbi, RuntimeTypeContext, SlotIr, SlotLayoutIr, TypeAddr, TypeDeclIr,
         UnitAddr,
     };
-    use skiff_runtime_linked_program::linked::TypeDeclarationIr;
     use skiff_runtime_linked_type_plan::{
         linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
     };
@@ -443,6 +446,7 @@ mod recoverable_spawn_payload_tests {
                 box_owner_executable(file_index),
                 provider_method_executable(file_index),
                 spawn_target_executable(),
+                runtime_bindings_spawn_target_executable(),
             ],
             external_refs: Default::default(),
         }
@@ -514,6 +518,31 @@ mod recoverable_spawn_payload_tests {
         }
     }
 
+    fn runtime_bindings_spawn_target_executable() -> LinkedExecutable {
+        LinkedExecutable {
+            kind: ExecutableKind::Function,
+            symbol: "spawnRuntimeBindingsTarget".to_string(),
+            type_params: Vec::new(),
+            params: vec![ParamIr {
+                name: "bindings".to_string(),
+                slot: 0,
+                ty: runtime_bindings_type(),
+            }],
+            return_type: None,
+            self_type: None,
+            slots: SlotLayoutIr {
+                slots: vec![SlotIr {
+                    index: 0,
+                    name: "bindings".to_string(),
+                    kind: "param".to_string(),
+                }],
+                frame_size: 1,
+            },
+            may_suspend: false,
+            body: LinkedExecutableBody::default(),
+        }
+    }
+
     fn plain_string_executable() -> LinkedExecutable {
         LinkedExecutable {
             kind: ExecutableKind::Function,
@@ -536,6 +565,29 @@ mod recoverable_spawn_payload_tests {
             },
             may_suspend: false,
             body: LinkedExecutableBody::default(),
+        }
+    }
+
+    fn provider_any_type() -> LinkedTypeRef {
+        LinkedTypeRef::AnyInterface {
+            interface: tool_provider_interface(),
+        }
+    }
+
+    fn array_type(item: LinkedTypeRef) -> LinkedTypeRef {
+        LinkedTypeRef::Native {
+            name: "Array".to_string(),
+            args: vec![item],
+        }
+    }
+
+    fn runtime_bindings_type() -> LinkedTypeRef {
+        LinkedTypeRef::Record {
+            fields: BTreeMap::from([
+                ("events".to_string(), provider_any_type()),
+                ("llm".to_string(), provider_any_type()),
+                ("providers".to_string(), array_type(provider_any_type())),
+            ]),
         }
     }
 
@@ -615,6 +667,10 @@ mod recoverable_spawn_payload_tests {
         ExecutableAddr::service(0, 2)
     }
 
+    fn runtime_bindings_spawn_target_addr() -> ExecutableAddr {
+        ExecutableAddr::service(0, 3)
+    }
+
     fn provider_value(heap: &mut RequestHeap) -> RuntimeValue {
         let method_table = interface_method_table_from_linked(
             &ExecutableAddr::service(0, 0),
@@ -634,6 +690,25 @@ mod recoverable_spawn_payload_tests {
         )
     }
 
+    fn runtime_bindings_value(heap: &mut RequestHeap) -> RuntimeValue {
+        let first_provider = provider_value(heap);
+        let second_provider = provider_value(heap);
+        let providers = RuntimeValue::Heap(
+            heap.alloc_array(vec![first_provider, second_provider])
+                .expect("providers array should allocate"),
+        );
+        let llm = provider_value(heap);
+        let events = provider_value(heap);
+        RuntimeValue::Heap(
+            heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([
+                ("llm".to_string(), llm),
+                ("events".to_string(), events),
+                ("providers".to_string(), providers),
+            ])))
+            .expect("runtime bindings object should allocate"),
+        )
+    }
+
     fn args_record(heap: &mut RequestHeap, field: &str, value: RuntimeValue) -> RuntimeValue {
         RuntimeValue::Heap(
             heap.alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
@@ -642,6 +717,29 @@ mod recoverable_spawn_payload_tests {
             )])))
             .expect("args object should allocate"),
         )
+    }
+
+    fn assert_decoded_provider_value(heap: &RequestHeap, value: &RuntimeValue, label: &str) {
+        let RuntimeValue::Heap(provider_handle) = value else {
+            panic!("{label} should be a heap value");
+        };
+        let HeapNode::Interface(provider) = heap.get(*provider_handle).expect("provider resolves")
+        else {
+            panic!("{label} should decode as InterfaceValue");
+        };
+        let InterfaceCarrier::Local {
+            concrete_type,
+            method_table,
+            payload,
+        } = provider.carrier()
+        else {
+            panic!("{label} should decode as local carrier");
+        };
+        assert_eq!(provider.interface(), INTERFACE_ABI);
+        assert_eq!(concrete_type, &provider_stable_restore_key());
+        assert_eq!(payload, &RuntimeValue::String("state".to_string()));
+        assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
+        assert_eq!(method_table.slots()[0].method_abi_id(), METHOD_ABI);
     }
 
     #[test]
@@ -746,7 +844,10 @@ mod recoverable_spawn_payload_tests {
             "decoded carrier concrete type should be the durable stable restore key, got {concrete_type}"
         );
         assert_eq!(concrete_type, &provider_stable_restore_key());
-        assert_ne!(concrete_type, &linked_type_ref_runtime_key(&provider_concrete_type()));
+        assert_ne!(
+            concrete_type,
+            &linked_type_ref_runtime_key(&provider_concrete_type())
+        );
         assert_eq!(payload, &RuntimeValue::String("state".to_string()));
         assert_eq!(method_table.interface_abi_id(), INTERFACE_ABI);
         assert_eq!(method_table.slots()[0].method_abi_id(), METHOD_ABI);
@@ -759,6 +860,88 @@ mod recoverable_spawn_payload_tests {
             receiver_call_abi,
             &InterfaceReceiverCallAbi::ExplicitSelfFirst
         );
+    }
+
+    #[test]
+    fn spawn_submit_args_helper_roundtrips_runtime_bindings_record_with_interface_array() {
+        let program = TestProgram::with_interface_box();
+        let projection = program.projection();
+        let executable = &program.service_files[0].executables[3];
+        let expected = executable_request_recoverable_expected_plan(
+            projection.type_view(),
+            &runtime_bindings_spawn_target_addr(),
+            executable,
+        )
+        .expect("recoverable expected plan should build");
+        let hooks = EvalRecoverableBehaviorHooks::new(projection, ARTIFACT_IDENTITY, BUILD_ID)
+            .expect("production hooks should build");
+        let boundary = PayloadBoundary::owner_internal(PayloadBoundaryKind::SpawnPayload);
+        let mut heap = RequestHeap::default();
+        let bindings = runtime_bindings_value(&mut heap);
+        let value = args_record(&mut heap, "bindings", bindings);
+
+        let bytes = encode_spawn_args_payload(&value, &expected, &boundary, &heap, &hooks)
+            .expect("runtime bindings should encode before spawn submit");
+        assert_eq!(&bytes[..4], b"SKRE");
+        let payload_text = String::from_utf8_lossy(&bytes);
+        assert!(!payload_text.contains(ARTIFACT_IDENTITY));
+        assert!(!payload_text.contains(BUILD_ID));
+
+        let mut decode_heap = RequestHeap::default();
+        let decoded =
+            decode_spawn_args_payload(&bytes, &expected, &boundary, &mut decode_heap, &hooks)
+                .expect("runtime bindings should decode on spawn worker");
+        let RuntimeValue::Heap(args_handle) = decoded else {
+            panic!("decoded args should be a heap object");
+        };
+        let HeapNode::Object(args) = decode_heap.get(args_handle).expect("args object resolves")
+        else {
+            panic!("decoded args should be an object");
+        };
+        let RuntimeValue::Heap(bindings_handle) = args
+            .fields()
+            .get("bindings")
+            .expect("bindings arg should exist")
+        else {
+            panic!("bindings should be a heap value");
+        };
+        let HeapNode::Object(bindings) = decode_heap
+            .get(*bindings_handle)
+            .expect("bindings object resolves")
+        else {
+            panic!("bindings should decode as an object");
+        };
+
+        assert_decoded_provider_value(
+            &decode_heap,
+            bindings.fields().get("llm").expect("llm field exists"),
+            "llm",
+        );
+        assert_decoded_provider_value(
+            &decode_heap,
+            bindings
+                .fields()
+                .get("events")
+                .expect("events field exists"),
+            "events",
+        );
+
+        let RuntimeValue::Heap(providers_handle) = bindings
+            .fields()
+            .get("providers")
+            .expect("providers field exists")
+        else {
+            panic!("providers should be a heap value");
+        };
+        let HeapNode::Array(providers) = decode_heap
+            .get(*providers_handle)
+            .expect("providers array resolves")
+        else {
+            panic!("providers should decode as an array");
+        };
+        assert_eq!(providers.len(), 2);
+        assert_decoded_provider_value(&decode_heap, &providers[0], "providers[0]");
+        assert_decoded_provider_value(&decode_heap, &providers[1], "providers[1]");
     }
 
     #[test]

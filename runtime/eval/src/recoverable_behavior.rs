@@ -22,8 +22,9 @@ use skiff_runtime_linked_program::{
     ReceiverCallAbi, TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{
-    linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key, PlanContext,
-    RuntimeRecoverableExpectedTypePlanLinkedExt, recoverable_interface_projection_identity,
+    linked_interface_instantiation_runtime_id, linked_type_ref_runtime_key,
+    recoverable_interface_projection_identity, PlanContext,
+    RuntimeRecoverableExpectedTypePlanLinkedExt,
 };
 use skiff_runtime_model::{
     recoverable::{
@@ -116,11 +117,10 @@ impl EvalRecoverableBehaviorHooks {
                     let restore_key = local_concrete_restore_key(program, concrete_type)?;
                     let concrete_type_identity = restore_key.concrete_type_identity.clone();
                     let runtime_concrete_type_identity = linked_type_ref_runtime_key(concrete_type);
-                    let durable_expected =
-                        RuntimeRecoverableExpectedTypePlan::from_linked(
-                            concrete_type,
-                            &PlanContext::from_type_view(program.type_view(), &owner_addr),
-                        )?;
+                    let durable_expected = RuntimeRecoverableExpectedTypePlan::from_linked(
+                        concrete_type,
+                        &PlanContext::from_type_view(program.type_view(), &owner_addr),
+                    )?;
                     let method_table =
                         interface_method_table_from_linked(&owner_addr, method_table)?;
                     if method_table.interface_abi_id() != interface_identity {
@@ -260,9 +260,8 @@ impl RecoverableBehaviorHooks for EvalRecoverableBehaviorHooks {
             owner: owner.clone(),
             concrete_type_identity: concrete_type_identity.clone(),
         };
-        let RecoverableState::NominalObject(NominalObjectState::Custom {
-            durable_state,
-        }) = &request.self_node.state
+        let RecoverableState::NominalObject(NominalObjectState::Custom { durable_state }) =
+            &request.self_node.state
         else {
             return Err(recoverable_hook_error(
                 RecoverableBoundaryErrorCode::StateInvalid,
