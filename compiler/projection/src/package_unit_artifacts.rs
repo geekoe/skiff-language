@@ -9,25 +9,27 @@ use crate::publication_visible_types::{
     publication_type_names_from_file_units, PublicationVisibleTypeNames,
 };
 use crate::typed_artifacts::{
-    assign_package_unit_identities, canonical_interface_method_abi_id,
+    assign_package_unit_identities,
     interface_methods::{package_interface_method_signatures, PackageTypeSymbolIndex},
-    package_implementation_links, package_publication_abi, public_instance_method_operation_abi_id,
-    ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,
-    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
-    PackageDependencyConstraint, PackageExportIndex, PackageUnit, PublicInstanceExport,
-    PublicInstanceOperation, ReceiverCallAbi, RecoverableArtifactMetadata, TypeExport,
+    package_implementation_links, package_publication_abi, ConfigAndEffectMetadata, ConstExport,
+    ExecutableExport, InterfaceMethodSignature, OperationCallableKind, OperationConstReceiverRef,
+    OperationTargetRef, PackageDependencyConstraint, PackageExportIndex, PackageUnit,
+    PublicInstanceExport, PublicInstanceOperation, ReceiverCallAbi, RecoverableArtifactMetadata,
+    TypeExport,
 };
 use crate::ConfigProjection;
 use skiff_artifact_model::{
-    interface_instantiation_ref, type_ref_abi_key, CanonicalPublicCallableSignature, ConstIr,
-    ExecutableIr, ExecutableSignatureIr, FileIrRef, FileIrUnit, InterfaceInstantiationRef,
-    LocalReceiverExecutableRef, MetadataValue, OperationAbiRef, PackageRefIr, PackageSymbolRef,
-    PublicationOperationKind, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_UNIT_SCHEMA_VERSION,
+    interface_instantiation_ref, type_ref_abi_key, ConstIr, ExecutableIr, FileIrRef, FileIrUnit,
+    InterfaceInstantiationRef, LocalReceiverExecutableRef, MetadataValue, PackageRefIr,
+    PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr, PACKAGE_UNIT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_core::naming::impl_method_declaration_name;
 use skiff_compiler_core::package_interface_methods::instantiate_interface_method_signatures;
+use skiff_compiler_core::package_publication_abi::{
+    package_public_instance_method_operation, public_signature_from_interface_method_signature,
+    public_signature_from_receiver_executable_signature,
+};
 
 #[derive(Debug, Clone)]
 pub struct PackageFileIrProjection {
@@ -682,8 +684,8 @@ fn package_public_instance_operations(
                 publication_type_names,
             );
             let public_signature =
-                public_signature_from_receiver_executable_signature(&executable_signature);
-            let interface_signature = public_callable_signature_from_interface_method(method);
+                public_signature_from_receiver_executable_signature(executable_signature.clone());
+            let interface_signature = public_signature_from_interface_method_signature(method);
             if public_signature != interface_signature {
                 return Err(package_public_instance_error(
                     package,
@@ -694,7 +696,7 @@ fn package_public_instance_operations(
                     ),
                 ));
             }
-            let operation = package_public_instance_operation_ref(
+            let operation = package_public_instance_method_operation(
                 public_path,
                 &interface.instantiation,
                 &method.name,
@@ -760,63 +762,6 @@ fn impl_method_executable_index(unit: &FileIrUnit, target_symbol: &str) -> Optio
                 .get(target_symbol)
                 .map(|target| target.executable_index)
         })
-}
-
-fn package_public_instance_operation_ref(
-    public_instance_key: &str,
-    interface: &InterfaceInstantiationRef,
-    method_name: &str,
-    public_signature: &CanonicalPublicCallableSignature,
-) -> OperationAbiRef {
-    let public_path = format!("{public_instance_key}.{method_name}");
-    let method_abi_id = canonical_interface_method_abi_id(&interface, method_name);
-    OperationAbiRef {
-        operation_abi_id: public_instance_method_operation_abi_id(
-            &public_path,
-            public_instance_key,
-            interface,
-            &method_abi_id,
-            public_signature,
-            &[],
-            &StdBTreeMap::new(),
-        ),
-        kind: PublicationOperationKind::PublicInstanceMethod,
-        public_path: public_path.clone(),
-        public_instance_key: Some(public_instance_key.to_string()),
-        interface: Some(interface.clone()),
-        method_abi_id: Some(method_abi_id),
-        display_name: public_path,
-    }
-}
-
-fn public_callable_signature_from_interface_method(
-    method: &InterfaceMethodSignature,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: method.params.clone(),
-        return_type: method.return_type.clone(),
-        may_suspend: is_stream_type_ref(&method.return_type),
-    }
-}
-
-fn is_stream_type_ref(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::Native { name, .. } if name == "Stream")
-}
-
-fn public_signature_from_receiver_executable_signature(
-    signature: &ExecutableSignatureIr,
-) -> CanonicalPublicCallableSignature {
-    let mut public_signature = CanonicalPublicCallableSignature::from(signature.clone());
-    if let Some(self_type) = &signature.self_type {
-        if public_signature
-            .params
-            .first()
-            .is_some_and(|param| &param.ty == self_type)
-        {
-            public_signature.params.remove(0);
-        }
-    }
-    public_signature
 }
 
 fn package_public_interface_type_ref(
