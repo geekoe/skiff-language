@@ -32,7 +32,9 @@ spawn runThreadDrain(threadId)
   submit / queue / claim 控制面元数据和 worker claim 过滤，不属于 recoverable args payload。
 - args recoverable payload 不承载 `artifact_identity`、`build_id`、service version、package version 或 activation identity。
   `carrier = Local` 的 `any I` self payload 用当前 execution context + stable `LocalConcrete` restore key 恢复；spawn decode
-  使用 target executable 的当前 expected type plan，policy 仍是 strict。
+  使用 target executable 的当前 expected type plan，policy 仍是 strict。payload schema 不一致、target expected type 不匹配或
+  local concrete/projection 在 target executable 中不可用时，执行在 payload decode 阶段 fail closed；平台不从 payload 中读取
+  历史 build/artifact 作为 fallback。
 - 提交成功后，spawned call 与 caller request 生命周期分离；caller 后续 cancel / timeout 不影响它。
 - spawned call 在新的、独立的 runtime request frame 中执行，不继承 caller 的 request-local 状态。
 - 一次提交至多执行一次；执行失败、超时或 runtime 断连后，平台不自动重试同一次提交。

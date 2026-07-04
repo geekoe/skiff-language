@@ -140,10 +140,24 @@ local behavior 的 durable code identity 是 `LocalConcrete`：
 - `owner = Package { package_id }` 表示 concrete type 来自当前 linked program 中该 package id 对应的 package unit；同一
   package id 必须唯一，0 个或多个 candidate 都 fail closed。
 - `concrete_type_identity` 的 wire format 固定为 `abi-type:` + lowercase hex of `AbiTypeId::key_bytes()`。
-  `AbiTypeId` 由 artifact-model 的 source anchor ABI identity 生成；worker 不得改用 JSON descriptor、debug string、base64、
-  source path、runtime type shape 或局部 runtime address。
+  `AbiTypeId` 由 artifact-model 的 `abi_type_id_from_source_anchor(anchor, type_args)` 生成；worker 不得改用 JSON descriptor、
+  debug string、base64、source path、runtime type shape 或局部 runtime address。`anchor` 是 source
+  `SourceDeclarationAnchor` 投影到 ABI source anchor：`publication_id` 是 service id 或 package id，`abi_epoch` 是
+  publication ABI owner epoch，`module_path` 和 `symbol` 来自源声明，`kind = Type`。`abi_epoch` 不是 service/package
+  version、build id 或 artifact identity；改变它是显式打断 ABI identity 的 breaking 操作。
+- 泛型 concrete 只有在所有 type args 都能按声明顺序递归投影成 `AbiTypeId` child key 时，才可以编码为 durable
+  `LocalConcrete`；alias 按 compiler ABI 规则展开到 target。如果实现不能证明某个 type arg 有稳定 ABI type id，必须整体
+  fail closed，不能把 `LinkedTypeRef::Address`、JSON descriptor、runtime type shape、package slot 或 `TypeAddr` 写进
+  durable key。
 - lookup key 是 `(owner, concrete_type_identity)`。当前 linked program 中同 key 多 concrete declaration、owner 与
   `AbiTypeId.publication_id` 不一致、package id 重复或无法稳定投影 generic type args，都必须 fail closed。
+- `owner = Service` 时，`AbiTypeId.publication_id` 必须等于当前 service id，并且 lookup 只在当前 owner-internal service
+  context 的 linked program 内进行，不能跨 service registry 或 service DB 查找。`owner = Package { package_id }` 时，
+  `AbiTypeId.publication_id` 必须等于该 package id，当前 linked program 负责把 package id 解析到本次执行加载的唯一 package
+  unit。
+- artifact load/link 阶段需要建立 `(owner, concrete_type_identity) -> current TypeAddr / restore expected plan / method table`
+  索引。索引构建时若同 key 对应多个不同 concrete declaration、不同 restore expected plan 或互不等价的 method table set，
+  必须 fail closed；decode 时 0 个或多于 1 个 match 也必须 fail closed。
 - `LocalConcrete` 不产生 artifact retention root。仍需要 historical artifact/adapter owner 的 `NativeAdapter` 节点继续按 native
   adapter contract 校验和保留。
 
