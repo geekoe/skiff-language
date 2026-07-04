@@ -63,6 +63,21 @@ export interface RuntimeSnapshot {
   capabilities?: RuntimeCapabilitiesMetadata;
 }
 
+export interface RuntimePruneKeep {
+  serviceId: string;
+  buildId: string;
+}
+
+export interface RuntimePruneOptions {
+  keep: readonly RuntimePruneKeep[];
+  serviceIds?: readonly string[];
+}
+
+export interface RuntimePruneResult {
+  deleted: RuntimeSnapshot[];
+  kept: RuntimeSnapshot[];
+}
+
 export type RuntimeDispatchFrameHeader = RequestStartFrameHeader | PackageTestStartFrameHeader;
 
 export interface RuntimeDispatchConnection {
@@ -201,48 +216,9 @@ export class RuntimeRegistry {
   }
 
   snapshot(): RuntimeSnapshot[] {
-    return Array.from(this.runtimes.values()).map((runtime) => {
-      const inFlightCount = this.countInFlight(runtime);
-      const active = this.hasActiveTarget(runtime);
-      const snapshot: RuntimeSnapshot = {
-        runtimeId: runtime.runtimeId,
-        serviceId: runtime.serviceId,
-        revisionId: runtime.revisionId,
-        buildId: runtime.buildId,
-        serviceProtocolIdentity: runtime.serviceProtocolIdentity,
-        targets: Array.from(runtime.targets),
-        revisionState: runtime.revisionState,
-        active,
-        draining: runtime.revisionState === 'draining',
-        inFlightCount,
-        registeredAt: runtime.registeredAt.toISOString()
-      };
-      if (runtime.version !== undefined) {
-        snapshot.version = runtime.version;
-      }
-      if (runtime.protocolVersion !== undefined) {
-        snapshot.protocolVersion = runtime.protocolVersion;
-      }
-      if (runtime.runtimeVersion !== undefined) {
-        snapshot.runtimeVersion = runtime.runtimeVersion;
-      }
-      if (runtime.codeRevisionId !== undefined) {
-        snapshot.codeRevisionId = runtime.codeRevisionId;
-      }
-      if (runtime.activationIdentity !== undefined) {
-        snapshot.activationIdentity = runtime.activationIdentity;
-      }
-      if (runtime.artifactIdentity !== undefined) {
-        snapshot.artifactIdentity = runtime.artifactIdentity;
-      }
-      if (runtime.gatewayEntryIdentities !== undefined) {
-        snapshot.gatewayEntryIdentities = Array.from(runtime.gatewayEntryIdentities);
-      }
-      if (runtime.capabilities !== undefined) {
-        snapshot.capabilities = runtime.capabilities;
-      }
-      return snapshot;
-    });
+    return Array.from(this.runtimes.values()).map((runtime) =>
+      this.snapshotRuntime(runtime)
+    );
   }
 
   registerRuntime(
@@ -307,6 +283,41 @@ export class RuntimeRegistry {
       registeredAt: new Date(),
       ws
     });
+  }
+
+  pruneRuntimes(options: RuntimePruneOptions): RuntimePruneResult {
+    const keep = new Set(
+      options.keep.map((entry) => runtimeBuildKey(entry.serviceId, entry.buildId))
+    );
+    const scopedServiceIds =
+      options.serviceIds !== undefined ? new Set(options.serviceIds) : undefined;
+    const affectedRouteKeys = new Set<string>();
+    const deleted: RuntimeSnapshot[] = [];
+    const kept: RuntimeSnapshot[] = [];
+
+    for (const [runtimeId, runtime] of this.runtimes.entries()) {
+      const inScope =
+        scopedServiceIds === undefined || scopedServiceIds.has(runtime.serviceId);
+      const shouldKeep =
+        !inScope || keep.has(runtimeBuildKey(runtime.serviceId, runtime.buildId));
+      const snapshot = this.snapshotRuntime(runtime);
+      if (shouldKeep) {
+        kept.push(snapshot);
+        continue;
+      }
+
+      runtime.revisionState = 'retired';
+      for (const key of this.runtimeRouteKeys(runtime)) {
+        affectedRouteKeys.add(key);
+      }
+      this.runtimes.delete(runtimeId);
+      deleted.push(snapshot);
+    }
+
+    this.pruneActiveRoutes(affectedRouteKeys);
+    this.roundRobinCursorByRoute.clear();
+    this.refreshAllRuntimeStates();
+    return { deleted, kept };
   }
 
   removeRuntimeConnection(ws: WebSocket): void {
@@ -987,6 +998,53 @@ export class RuntimeRegistry {
       runtime.gatewayEntryIdentities?.has(gatewayEntryIdentity) === true
     );
   }
+
+  private snapshotRuntime(runtime: RegisteredRuntime): RuntimeSnapshot {
+    const inFlightCount = this.countInFlight(runtime);
+    const active = this.hasActiveTarget(runtime);
+    const snapshot: RuntimeSnapshot = {
+      runtimeId: runtime.runtimeId,
+      serviceId: runtime.serviceId,
+      revisionId: runtime.revisionId,
+      buildId: runtime.buildId,
+      serviceProtocolIdentity: runtime.serviceProtocolIdentity,
+      targets: Array.from(runtime.targets),
+      revisionState: runtime.revisionState,
+      active,
+      draining: runtime.revisionState === 'draining',
+      inFlightCount,
+      registeredAt: runtime.registeredAt.toISOString()
+    };
+    if (runtime.version !== undefined) {
+      snapshot.version = runtime.version;
+    }
+    if (runtime.protocolVersion !== undefined) {
+      snapshot.protocolVersion = runtime.protocolVersion;
+    }
+    if (runtime.runtimeVersion !== undefined) {
+      snapshot.runtimeVersion = runtime.runtimeVersion;
+    }
+    if (runtime.codeRevisionId !== undefined) {
+      snapshot.codeRevisionId = runtime.codeRevisionId;
+    }
+    if (runtime.activationIdentity !== undefined) {
+      snapshot.activationIdentity = runtime.activationIdentity;
+    }
+    if (runtime.artifactIdentity !== undefined) {
+      snapshot.artifactIdentity = runtime.artifactIdentity;
+    }
+    if (runtime.gatewayEntryIdentities !== undefined) {
+      snapshot.gatewayEntryIdentities = Array.from(runtime.gatewayEntryIdentities);
+    }
+    if (runtime.capabilities !== undefined) {
+      snapshot.capabilities = runtime.capabilities;
+    }
+    return snapshot;
+  }
+}
+
+function runtimeBuildKey(serviceId: string, buildId: string): string {
+  return `${serviceId}\u0000${buildId}`;
 }
 
 function runtimeRouteKey(input: {

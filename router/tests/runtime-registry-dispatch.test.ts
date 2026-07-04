@@ -215,6 +215,75 @@ describe('router runtime registry dispatch', () => {
     ).resolves.toEqual({ runtimeId: 'runtime-exact-lazy-priority' });
   });
 
+  it('prunes runtime registrations outside the keep set', async () => {
+    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
+    const harness = await RouterHarness.create({ manifest });
+    const { dispatcher, registry } = harness;
+    const target = 'service.skiff~run~~hello.HelloApi.hello';
+    const staleBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000030aa';
+    const currentBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000030bb';
+
+    const staleRuntime = await harness.registerRuntime({
+      runtimeId: 'runtime-prune-stale',
+      revisionId: 'revision-prune-stale',
+      buildId: staleBuild,
+      targets: [target]
+    });
+    const currentRuntime = await harness.registerRuntime({
+      runtimeId: 'runtime-prune-current',
+      revisionId: 'revision-prune-current',
+      buildId: currentBuild,
+      targets: [target]
+    });
+
+    const result = registry.pruneRuntimes({
+      keep: [{ serviceId: manifest.service.id, buildId: currentBuild }]
+    });
+
+    expect(result.deleted.map((runtime) => runtime.runtimeId)).toEqual([
+      'runtime-prune-stale'
+    ]);
+    expect(result.kept.map((runtime) => runtime.runtimeId)).toEqual([
+      'runtime-prune-current'
+    ]);
+    expect(hasRuntime(registry.snapshot(), 'runtime-prune-stale')).toBe(false);
+    expect(findRuntime(registry.snapshot(), 'runtime-prune-current')).toMatchObject({
+      active: true,
+      buildId: currentBuild
+    });
+    expect(() =>
+      registry.validateRuntimeRequestStartSource(
+        staleRuntime.ws,
+        serviceRequestStart({
+          requestId: 'runtime-prune-stale-source',
+          callerTarget: target,
+          target,
+          serviceId: manifest.service.id,
+          buildId: staleBuild,
+          serviceProtocolIdentity: manifest.service.protocolIdentity
+        })
+      )
+    ).toThrow('runtime-originated request.start requires a registered runtime for the caller target');
+
+    currentRuntime.respondWithBinaryJsonPayload({
+      runtimeId: 'runtime-prune-current'
+    });
+    await expect(
+      dispatchBinaryJson(dispatcher,
+        createRequestStart({
+          requestId: 'request-prune-current',
+          target,
+          serviceId: manifest.service.id,
+          buildId: currentBuild,
+          serviceProtocolIdentity: manifest.service.protocolIdentity
+        }),
+        2000
+      )
+    ).resolves.toEqual({ runtimeId: 'runtime-prune-current' });
+  });
+
 
   it('rejects legacy text request.start dispatch without sending a runtime message', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');

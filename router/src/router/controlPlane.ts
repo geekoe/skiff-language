@@ -18,7 +18,10 @@ import {
   type RouterActiveSnapshot
 } from './activeSnapshot.js';
 import { GatewayError, toGatewayError } from './errors.js';
-import type { RuntimeRegistry } from './runtimeRegistry.js';
+import type {
+  RuntimePruneKeep,
+  RuntimeRegistry
+} from './runtimeRegistry.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
 
 export interface RuntimeControlBroadcaster {
@@ -86,6 +89,11 @@ interface ResolvedTestDispatch {
   timeoutMs: number;
 }
 
+interface PruneRuntimesRequest {
+  keep?: RuntimePruneKeep[];
+  serviceIds?: string[];
+}
+
 export class RouterControlPlane {
   private readonly requestTimeoutMs: number;
   private reloadInFlight: Promise<RouterActiveSnapshot> | undefined;
@@ -110,6 +118,11 @@ export class RouterControlPlane {
 
     if (url.pathname === '/__skiff/reload-artifacts') {
       await this.handleReloadArtifacts(request, response);
+      return true;
+    }
+
+    if (url.pathname === '/__router/prune-runtimes') {
+      await this.handlePruneRuntimes(request, response);
       return true;
     }
 
@@ -165,6 +178,47 @@ export class RouterControlPlane {
     this.writeJson(response, 200, {
       ok: true,
       ...summarizeRouterActiveSnapshot(snapshot),
+      runtimes: this.options.registry.snapshot()
+    });
+  }
+
+  private async handlePruneRuntimes(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<void> {
+    if (request.method !== 'POST') {
+      response.setHeader('allow', 'POST');
+      this.writeJson(response, 405, {
+        error: {
+          code: 'MethodNotAllowed',
+          message: 'prune runtimes requires POST'
+        }
+      });
+      return;
+    }
+
+    const snapshot = this.options.snapshotStore.get();
+    const body = parsePruneRuntimesRequest(await readOptionalPruneRuntimesJson(request));
+    const keep = body.keep ?? keepRuntimesFromSnapshot(snapshot);
+    if (keep === undefined) {
+      throw new GatewayError(
+        409,
+        'PruneRuntimesUnavailable',
+        'router snapshot does not include service builds; provide keep entries'
+      );
+    }
+    const result = this.options.registry.pruneRuntimes({
+      keep,
+      ...(body.serviceIds !== undefined ? { serviceIds: body.serviceIds } : {})
+    });
+    this.writeJson(response, 200, {
+      ok: true,
+      keep,
+      ...(body.serviceIds !== undefined ? { serviceIds: body.serviceIds } : {}),
+      deletedCount: result.deleted.length,
+      keptCount: result.kept.length,
+      deleted: result.deleted,
+      kept: result.kept,
       runtimes: this.options.registry.snapshot()
     });
   }
@@ -540,6 +594,183 @@ function optionalReloadBodyStringArray(
     }
     return item.trim();
   });
+}
+
+async function readOptionalPruneRuntimesJson(
+  request: IncomingMessage
+): Promise<unknown | undefined> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.byteLength;
+    if (size > 1024 * 1024) {
+      throw new GatewayError(
+        413,
+        'RequestTooLarge',
+        'prune runtimes request body is too large'
+      );
+    }
+    chunks.push(buffer);
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (text.length === 0) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new GatewayError(
+      400,
+      'InvalidPruneRuntimesRequest',
+      `request body is not valid JSON: ${message}`
+    );
+  }
+}
+
+function parsePruneRuntimesRequest(value: unknown | undefined): PruneRuntimesRequest {
+  if (value === undefined) {
+    return {};
+  }
+  if (!isRecord(value)) {
+    throw new GatewayError(
+      400,
+      'InvalidPruneRuntimesRequest',
+      'request body must be a JSON object'
+    );
+  }
+  for (const field of Object.keys(value)) {
+    if (field !== 'keep' && field !== 'serviceIds') {
+      throw new GatewayError(
+        400,
+        'InvalidPruneRuntimesRequest',
+        `${field} is not supported for prune runtimes`
+      );
+    }
+  }
+  const keep = parsePruneKeep(value.keep);
+  const serviceIds = parsePruneServiceIds(value.serviceIds);
+  return {
+    ...(keep !== undefined ? { keep } : {}),
+    ...(serviceIds !== undefined ? { serviceIds } : {})
+  };
+}
+
+function parsePruneKeep(value: unknown): RuntimePruneKeep[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new GatewayError(
+      400,
+      'InvalidPruneRuntimesRequest',
+      'keep must be an array'
+    );
+  }
+  const keep: RuntimePruneKeep[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) {
+      throw new GatewayError(
+        400,
+        'InvalidPruneRuntimesRequest',
+        `keep[${index}] must be an object`
+      );
+    }
+    const serviceId = pruneBodyString(item, `keep[${index}].serviceId`, 'serviceId');
+    if (!isPublicationId(serviceId)) {
+      throw new GatewayError(
+        400,
+        'InvalidPruneRuntimesRequest',
+        `keep[${index}].serviceId must be a publication id`
+      );
+    }
+    const buildId = pruneBodyString(item, `keep[${index}].buildId`, 'buildId');
+    const key = `${serviceId}\u0000${buildId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keep.push({ serviceId, buildId });
+  }
+  return keep;
+}
+
+function parsePruneServiceIds(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new GatewayError(
+      400,
+      'InvalidPruneRuntimesRequest',
+      'serviceIds must be a non-empty array'
+    );
+  }
+  const serviceIds: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== 'string' || item.length === 0) {
+      throw new GatewayError(
+        400,
+        'InvalidPruneRuntimesRequest',
+        `serviceIds[${index}] must be a non-empty string`
+      );
+    }
+    if (!isPublicationId(item)) {
+      throw new GatewayError(
+        400,
+        'InvalidPruneRuntimesRequest',
+        `serviceIds[${index}] must be a publication id`
+      );
+    }
+    if (seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    serviceIds.push(item);
+  }
+  return serviceIds;
+}
+
+function pruneBodyString(
+  value: Record<string, unknown>,
+  label: string,
+  field: string
+): string {
+  const parsed = value[field];
+  if (typeof parsed !== 'string' || parsed.length === 0) {
+    throw new GatewayError(
+      400,
+      'InvalidPruneRuntimesRequest',
+      `${label} must be a non-empty string`
+    );
+  }
+  return parsed;
+}
+
+function keepRuntimesFromSnapshot(
+  snapshot: RouterActiveSnapshot
+): RuntimePruneKeep[] | undefined {
+  const serviceBuilds = snapshot.control?.serviceBuilds;
+  if (serviceBuilds === undefined) {
+    return undefined;
+  }
+  const keep: RuntimePruneKeep[] = [];
+  const seen = new Set<string>();
+  for (const build of serviceBuilds) {
+    const key = `${build.serviceId}\u0000${build.buildId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keep.push({
+      serviceId: build.serviceId,
+      buildId: build.buildId
+    });
+  }
+  return keep;
 }
 
 async function readJsonRequest(request: IncomingMessage): Promise<unknown> {

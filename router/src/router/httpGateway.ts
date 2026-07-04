@@ -220,7 +220,7 @@ export class HttpGateway {
 
     const url = requestUrl(request);
 
-    if (url.pathname === '/__router/health') {
+    if (url.pathname === '/__router/health' || url.pathname === '/__router/prune-runtimes') {
       this.writeGatewayError(
         response,
         new GatewayError(

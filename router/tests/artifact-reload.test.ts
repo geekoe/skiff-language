@@ -15,6 +15,7 @@ import { buildActivationLookup } from '../src/artifacts/activationLookup.js';
 import { HttpGateway } from '../src/router/httpGateway.js';
 import { RouterControlPlane } from '../src/router/controlPlane.js';
 import { onceWithTimeout } from './helpers/events.js';
+import { hasRuntime, readHealth } from './helpers/health.js';
 import { loadRawHttpManifest } from './helpers/manifests.js';
 import { requestHttp } from './helpers/request.js';
 import {
@@ -238,6 +239,101 @@ describe('router artifact reload', () => {
       protocolIdentity: protocolV2,
       runtimeId: 'runtime-reload-v2'
     });
+  });
+
+  it('prunes runtime registrations from the control listener current snapshot', async () => {
+    const runtimeRouter = trackResource(createRuntimeRouter());
+    const { dispatcher, endpoint, registry } = runtimeRouter;
+    const manifest = loadRawHttpManifest();
+    const staleBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000040aa';
+    const currentBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000040bb';
+    const snapshot: RouterActiveSnapshot = {
+      activationByServiceOperation: buildActivationLookup([]),
+      control: {
+        artifactRoots: ['/tmp/skiff-artifacts'],
+        devReload: true,
+        mode: 'dev',
+        serviceBuilds: [{
+          buildId: currentBuild,
+          serviceId: manifest.service.id,
+          sourcePath: '/tmp/skiff-artifacts/dev/services/sample.json',
+          version: '0.1.0'
+        }]
+      },
+      manifest
+    };
+    const snapshotStore = new RouterActiveSnapshotStore(snapshot);
+    const controlPlane = new RouterControlPlane({
+      controlBroadcaster: endpoint,
+      dispatcher,
+      registry,
+      snapshotStore
+    });
+    const registryListen = await endpoint.listen({ port: 0, controlPlane });
+    const gateway = new HttpGateway({
+      manifest,
+      dispatcher,
+      snapshotStore,
+      port: 0,
+      requestTimeoutMs: 2000
+    });
+    trackResource(gateway);
+    const gatewayListen = await gateway.listen();
+    const controlUrl = registryListen.url.replace('ws://', 'http://').replace('/runtime', '');
+
+    await openRegisteredRuntime(registryListen.url, {
+      type: 'runtime.register',
+      runtimeId: 'runtime-control-prune-stale',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-control-prune-stale',
+      buildId: staleBuild,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: manifest.operations.map((operation) => operation.target)
+    });
+    await openRegisteredRuntime(registryListen.url, {
+      type: 'runtime.register',
+      runtimeId: 'runtime-control-prune-current',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-control-prune-current',
+      buildId: currentBuild,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: manifest.operations.map((operation) => operation.target)
+    });
+
+    const publicPrune = await requestHttp({
+      url: `${gatewayListen.url}/__router/prune-runtimes`,
+      method: 'POST'
+    });
+    expect(publicPrune.status).toBe(404);
+
+    const prune = await requestHttp({
+      url: `${controlUrl}/__router/prune-runtimes`,
+      method: 'POST'
+    });
+    expect(prune.status).toBe(200);
+    expect(JSON.parse(prune.body)).toMatchObject({
+      ok: true,
+      deletedCount: 1,
+      keptCount: 1,
+      keep: [{
+        buildId: currentBuild,
+        serviceId: manifest.service.id
+      }],
+      deleted: [{
+        runtimeId: 'runtime-control-prune-stale',
+        buildId: staleBuild
+      }],
+      kept: [{
+        runtimeId: 'runtime-control-prune-current',
+        buildId: currentBuild
+      }]
+    });
+
+    const health = await readHealth(controlUrl);
+    expect(hasRuntime(health, 'runtime-control-prune-stale')).toBe(false);
+    expect(hasRuntime(health, 'runtime-control-prune-current')).toBe(true);
   });
 
 
