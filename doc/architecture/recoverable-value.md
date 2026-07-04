@@ -29,8 +29,8 @@ ToolProvider key-registry 方案。
 - 定义某个公开用户接口名，例如 `Recoverable` trait。本文的“可恢复”是语义属性，具体实现可以是 compiler fact、
   runtime codec、native adapter 或 artifact metadata。
 - 保证对象 identity。恢复值不是同一个 heap object。
-- owner-internal local behavior 的写入时 artifact/build 保留策略；这类 durable bytes 只保存稳定 `LocalConcrete` restore
-  key，不依赖历史 artifact/build。native adapter 若声明 artifact-owned adapter，仍由对应 adapter owner 规则处理。
+- owner-internal local behavior 的历史 artifact/build 读取或保留策略；这类 durable bytes 只保存稳定 `LocalConcrete`
+  restore key，不依赖历史 artifact/build。native adapter 若声明 artifact-owned adapter，仍由对应 adapter owner 规则处理。
 
 ## Position
 

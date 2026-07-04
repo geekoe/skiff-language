@@ -353,19 +353,19 @@ duck typing 或宽松 coercion 放行。
   拆分或合并属于 DB schema migration 或 custom restore version，不由 recoverable decode 自动处理。
 - nominal expected type：恢复出的 concrete type identity 必须等于当前 expected nominal identity；expected type 是
   interface 或 union 时分别进入 interface / union 规则。
-- interface expected type：`InterfaceValueState.interface_identity` 与当前 interface identity 必须精确匹配；
-  `method_projection_identity` 必须等于当前 projection identity。写入时 artifact metadata 必须证明旧 concrete type 实现
-  该 exact interface/projection；当前 artifact 不重新解释旧实现。
+- interface expected type：interface identity 和 projection identity 来自当前 expected type plan；`InterfaceValueState`
+  不保存这两项。payload 中的 stable `LocalConcreteRestoreKey` 必须能在当前 linked program 中唯一定位 concrete type，
+  且当前 metadata 必须证明该 concrete type 实现 exact interface/projection。
 - union expected type：envelope 中的 `union_identity` 和 `branch_identity` 必须与当前 expected union/branch 精确匹配。
   没有 branch identity 时，只允许 compiler 证明 payload shape 在当前 union 中唯一。
-- custom restore / native adapter：`restore_schema_version`、`adapter_identity`、`adapter_schema_version` 和
-  `native_type_identity` 按 artifact / adapter metadata 精确定位；第一版默认不做 schema migration，除非 adapter metadata
-  显式声明可接受版本。
+- custom restore / native adapter：custom restore 由当前 `LocalConcrete` restore entry 定位，runtime wrapper 不保存
+  `restore_schema_version`；native adapter 仍按 `adapter_identity`、`adapter_schema_version` 和 `native_type_identity` 精确定位。
+  第一版默认不做 schema migration，除非 concrete type 或 adapter metadata 显式声明可接受版本。
 
 示例：
 
 ```text
-accept: old concrete type identity C still implements exact current interface I and exact method projection P.
+accept: stored LocalConcrete restore key C still maps to a current concrete type that implements exact current interface I and exact method projection P.
 fail: field `displayName` was renamed to `name`; recoverable decode does not infer rename.
 fail: union branch `Pending` was renamed to `Queued`; branch identity mismatch.
 fail: interface method projection changed from P1 to P2, even if source method names look similar.

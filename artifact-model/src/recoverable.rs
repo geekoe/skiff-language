@@ -255,7 +255,6 @@ pub struct RecoverableStorageLanePlan {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecoverableCustomRestorePlan {
     pub concrete_type_identity: String,
-    pub restore_schema_version: String,
     pub durable_state_type_plan: RecoverableExpectedTypePlan,
     pub encode_hook_id: String,
     pub decode_hook_id: String,
@@ -396,12 +395,6 @@ pub fn validate_recoverable_artifact_metadata(
             key,
             "concrete_type_identity",
             &plan.concrete_type_identity,
-            &mut violations,
-        );
-        require_non_empty(
-            key,
-            "restore_schema_version",
-            &plan.restore_schema_version,
             &mut violations,
         );
         require_non_empty(key, "encode_hook_id", &plan.encode_hook_id, &mut violations);

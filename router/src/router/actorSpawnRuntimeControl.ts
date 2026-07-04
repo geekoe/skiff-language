@@ -793,6 +793,13 @@ function spawnClaimDescriptor(
       500
     );
   }
+  if (item.buildId === undefined) {
+    throw new RuntimeControlProtocolError(
+      'SpawnBuildMissing',
+      `claimed spawn item ${item.id} is missing buildId`,
+      500
+    );
+  }
 
   return {
     itemId: item.id,
@@ -805,6 +812,7 @@ function spawnClaimDescriptor(
     serviceId: item.serviceId,
     serviceVersion: item.serviceVersion,
     serviceProtocolIdentity: item.serviceProtocolIdentity,
+    buildId: item.buildId,
     ...(item.payloadSchemaIdentity === undefined
       ? {}
       : { payloadSchemaIdentity: item.payloadSchemaIdentity }),

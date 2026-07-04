@@ -67,6 +67,10 @@ impl RuntimeProgram {
 }
 
 impl EvalRuntimeProgramSource for RuntimeProgram {
+    fn service_id(&self) -> &str {
+        &self.service.id
+    }
+
     fn service_files(&self) -> &[Arc<LinkedFileUnit>] {
         &self.service_files
     }

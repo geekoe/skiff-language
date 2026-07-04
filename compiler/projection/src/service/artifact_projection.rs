@@ -429,7 +429,6 @@ mod tests {
             "restore:bad".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: String::new(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: TypeRefIr::native("Json"),
@@ -462,7 +461,6 @@ mod tests {
             "restore:bad".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Session".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: TypeRefIr::Function {

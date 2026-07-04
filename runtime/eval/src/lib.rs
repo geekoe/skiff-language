@@ -91,6 +91,7 @@ pub use capabilities::TestEffectDouble;
 
 #[derive(Clone)]
 pub struct EvalRuntimeProgram {
+    pub service_id: String,
     pub service_files: Vec<Arc<LinkedFileUnit>>,
     pub packages: Vec<Arc<PackageUnit>>,
     pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
@@ -100,6 +101,8 @@ pub struct EvalRuntimeProgram {
 }
 
 pub trait EvalRuntimeProgramSource {
+    fn service_id(&self) -> &str;
+
     fn service_files(&self) -> &[Arc<LinkedFileUnit>];
 
     fn packages(&self) -> &[Arc<PackageUnit>];
@@ -115,6 +118,7 @@ pub trait EvalRuntimeProgramSource {
 
 impl EvalRuntimeProgram {
     fn new(
+        service_id: impl Into<String>,
         service_files: Vec<Arc<LinkedFileUnit>>,
         packages: Vec<Arc<PackageUnit>>,
         package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
@@ -123,6 +127,7 @@ impl EvalRuntimeProgram {
         types: RuntimeTypeContext,
     ) -> Self {
         Self {
+            service_id: service_id.into(),
             service_files,
             packages,
             package_files,
@@ -134,6 +139,7 @@ impl EvalRuntimeProgram {
 
     pub fn from_source(source: &impl EvalRuntimeProgramSource) -> Self {
         Self::new(
+            source.service_id(),
             source.service_files().to_vec(),
             source.packages().to_vec(),
             source.package_files().to_vec(),
@@ -145,6 +151,7 @@ impl EvalRuntimeProgram {
 
     pub fn projection(&self) -> invocation::EvalProgramProjection<'_> {
         invocation::EvalProgramProjection::new(
+            &self.service_id,
             &self.service_files,
             &self.packages,
             &self.package_files,
@@ -156,6 +163,10 @@ impl EvalRuntimeProgram {
 }
 
 impl EvalRuntimeProgramSource for EvalRuntimeProgram {
+    fn service_id(&self) -> &str {
+        &self.service_id
+    }
+
     fn service_files(&self) -> &[Arc<LinkedFileUnit>] {
         &self.service_files
     }

@@ -304,7 +304,6 @@ custom restore 的 artifact metadata 必须闭合：
 ```rust
 struct CustomRestorePlan {
     concrete_type_identity: String,
-    restore_schema_version: String,
     durable_state_type_plan: RuntimeTypePlan,
     encode_hook_id: String,
     decode_hook_id: String,
@@ -338,8 +337,10 @@ enum AdapterSchemaCompatibility {
 
 规则：
 
-- `CustomRestorePlan` 属于写入时 concrete type artifact。decode 必须加载写入时 artifact，按
-  `concrete_type_identity + restore_schema_version` 精确定位 durable state plan 和 hook。
+- `CustomRestorePlan` 属于当前 linked program 中的 `LocalConcrete` restore entry。recoverable payload 只保存 stable
+  `LocalConcreteRestoreKey`；decode 必须在当前 service execution context 内唯一定位当前 concrete type、durable state plan
+  和 hook。runtime wrapper 不保存 `restore_schema_version`，应用级状态迁移必须由 concrete type 或 DB schema migration
+  显式定义。
 - `NativeAdapterPlan` 由 builtin registry 或 artifact metadata 提供。decode 必须校验
   `adapter_identity`、`adapter_schema_version` 和 `native_type_identity`，不兼容则 fail closed。
 - encode/decode hook 只在 `PureRecoverableRestore` capability 下执行，不得做 DB write、HTTP/WebSocket、spawn、文件写入、

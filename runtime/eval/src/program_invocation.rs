@@ -1402,6 +1402,7 @@ mod recoverable_spawn_payload_tests {
 
         fn projection(&self) -> EvalProgramProjection<'_> {
             EvalProgramProjection::new(
+                "skiff.test/invocation",
                 &self.service_files,
                 &self.packages,
                 &self.package_files,

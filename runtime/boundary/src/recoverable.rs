@@ -413,8 +413,15 @@ impl RecoverableBoundaryCodec {
             context,
         )?;
         reject_untrusted_behavior_payload(&envelope, context, expected)?;
-        precheck_expected_type_with_policy(&envelope.root, expected, "$.root", decode_policy)
-            .map_err(|error| expected_type_mismatch_error(error, "decode", context, expected))?;
+        select_expected_plan_for_node_with_behavior_policy(
+            &envelope.root,
+            expected,
+            "$.root",
+            context,
+            expected,
+            behavior_hooks,
+            decode_policy,
+        )?;
 
         let checkpoint = heap.checkpoint();
         match decode_node_with_behavior(
@@ -760,11 +767,15 @@ fn decode_node_with_behavior(
     behavior_hooks: &dyn RecoverableBehaviorHooks,
     decode_policy: RecoverableDecodePolicy,
 ) -> Result<RuntimeValue> {
-    let selected_expected =
-        select_expected_plan_for_node_with_policy(node, expected_for_node, path, decode_policy)
-            .map_err(|error| {
-                expected_type_mismatch_error(error, "decode", context, root_expected)
-            })?;
+    let selected_expected = select_expected_plan_for_node_with_behavior_policy(
+        node,
+        expected_for_node,
+        path,
+        context,
+        root_expected,
+        behavior_hooks,
+        decode_policy,
+    )?;
     if !matches!(node.state, RecoverableState::InterfaceValue(_)) {
         reject_behavior_node_for_plain_decode(node, path, context, root_expected)?;
     }
@@ -1484,8 +1495,225 @@ fn select_expected_plan_for_node_with_policy<'a>(
         RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
             select_expected_plan_for_node_with_policy(node, payload, path, decode_policy)
         }
-        _ => Ok(expected),
+        _ => {
+            precheck_expected_type_with_policy(node, expected, path, decode_policy)?;
+            Ok(expected)
+        }
     }
+}
+
+fn select_expected_plan_for_node_with_behavior_policy<'a>(
+    node: &RecoverableNode,
+    expected: &'a RuntimeRecoverableExpectedTypePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    root_expected: &RuntimeRecoverableExpectedTypePlan,
+    behavior_hooks: &dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
+) -> Result<&'a RuntimeRecoverableExpectedTypePlan> {
+    match &expected.node {
+        RuntimeRecoverableExpectedTypeNode::Alias { target } => {
+            select_expected_plan_for_node_with_behavior_policy(
+                node,
+                target,
+                path,
+                context,
+                root_expected,
+                behavior_hooks,
+                decode_policy,
+            )
+        }
+        RuntimeRecoverableExpectedTypeNode::Nullable { inner } => {
+            if matches!(node.state, RecoverableState::Null) {
+                Ok(expected)
+            } else {
+                select_expected_plan_for_node_with_behavior_policy(
+                    node,
+                    inner,
+                    path,
+                    context,
+                    root_expected,
+                    behavior_hooks,
+                    decode_policy,
+                )
+            }
+        }
+        RuntimeRecoverableExpectedTypeNode::Union { items } => {
+            let mut matches = Vec::new();
+            let mut errors = Vec::new();
+            for item in items {
+                match behavior_union_branch_matches(
+                    node,
+                    item,
+                    path,
+                    context,
+                    root_expected,
+                    behavior_hooks,
+                    decode_policy,
+                )? {
+                    Ok(()) => matches.push(item),
+                    Err(error) => errors.push(format!("{}: {}", item.label, error.reason)),
+                }
+            }
+            if matches.len() == 1 {
+                return select_expected_plan_for_node_with_behavior_policy(
+                    node,
+                    matches[0],
+                    path,
+                    context,
+                    root_expected,
+                    behavior_hooks,
+                    decode_policy,
+                );
+            }
+            if matches.len() > 1 {
+                return Err(expected_type_mismatch_error(
+                    ExpectedTypePrecheckError::new(
+                        path,
+                        format!(
+                            "recoverable value matched multiple union branches for {}: {}",
+                            expected.diagnostic_label(),
+                            matches
+                                .iter()
+                                .map(|item| item.label.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ),
+                    "decode",
+                    context,
+                    root_expected,
+                ));
+            }
+            Err(expected_type_mismatch_error(
+                ExpectedTypePrecheckError::new(
+                    path,
+                    format!(
+                        "recoverable value did not match any union branch for {}: {}",
+                        expected.diagnostic_label(),
+                        errors.join("; ")
+                    ),
+                ),
+                "decode",
+                context,
+                root_expected,
+            ))
+        }
+        RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
+            select_expected_plan_for_node_with_behavior_policy(
+                node,
+                payload,
+                path,
+                context,
+                root_expected,
+                behavior_hooks,
+                decode_policy,
+            )
+        }
+        _ => select_expected_plan_for_node_with_policy(node, expected, path, decode_policy)
+            .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected)),
+    }
+}
+
+fn behavior_union_branch_matches(
+    node: &RecoverableNode,
+    expected: &RuntimeRecoverableExpectedTypePlan,
+    path: &str,
+    context: &RuntimeRecoverableBoundaryContext,
+    root_expected: &RuntimeRecoverableExpectedTypePlan,
+    behavior_hooks: &dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
+) -> Result<std::result::Result<(), ExpectedTypePrecheckError>> {
+    if matches!(node.state, RecoverableState::Null) {
+        return Ok(precheck_expected_type_with_policy(
+            node,
+            expected,
+            path,
+            decode_policy,
+        ));
+    }
+    let Some(expected_any) = expected_any_interface_candidate(expected) else {
+        return Ok(precheck_expected_type_with_policy(
+            node,
+            expected,
+            path,
+            decode_policy,
+        ));
+    };
+    let concrete_type_identity = match local_concrete_identity_for_interface_precheck(node, path) {
+        Ok(identity) => identity,
+        Err(error) => return Ok(Err(error)),
+    };
+    let conforms = behavior_hooks.concrete_type_conforms_to_interface(
+        RecoverableInterfaceConformanceRequest {
+            concrete_type_identity,
+            interface_identity: &expected_any.interface_identity,
+            method_projection_identity: &expected_any.method_projection_identity,
+            expected_any_interface: expected_any,
+            path,
+            context,
+            expected: root_expected,
+        },
+    )?;
+    if conforms {
+        Ok(Ok(()))
+    } else {
+        Ok(Err(ExpectedTypePrecheckError::new(
+            path,
+            format!(
+                "local concrete {concrete_type_identity} does not conform to any-interface {} projection {}",
+                expected_any.interface_identity, expected_any.method_projection_identity
+            ),
+        )))
+    }
+}
+
+fn expected_any_interface_candidate(
+    expected: &RuntimeRecoverableExpectedTypePlan,
+) -> Option<&RuntimeRecoverableExpectedAnyInterfacePlan> {
+    match &expected.node {
+        RuntimeRecoverableExpectedTypeNode::Alias { target }
+        | RuntimeRecoverableExpectedTypeNode::Nullable { inner: target } => {
+            expected_any_interface_candidate(target)
+        }
+        RuntimeRecoverableExpectedTypeNode::Representation { payload, .. } => {
+            expected_any_interface_candidate(payload)
+        }
+        RuntimeRecoverableExpectedTypeNode::AnyInterface { expected } => Some(expected),
+        _ => None,
+    }
+}
+
+fn local_concrete_identity_for_interface_precheck<'a>(
+    node: &'a RecoverableNode,
+    path: &str,
+) -> std::result::Result<&'a str, ExpectedTypePrecheckError> {
+    let RecoverableState::InterfaceValue(state) = &node.state else {
+        return Err(ExpectedTypePrecheckError::new(
+            path,
+            format!(
+                "expected interface value but recoverable node kind was {:?}",
+                node.value_kind
+            ),
+        ));
+    };
+    let RecoverableCodeIdentity::LocalConcrete {
+        concrete_type_identity,
+        ..
+    } = &state.self_node.code_identity
+    else {
+        return Err(ExpectedTypePrecheckError::new(
+            path,
+            "InterfaceValue union branch selection requires LocalConcrete self identity",
+        ));
+    };
+    if concrete_type_identity.is_empty() {
+        return Err(ExpectedTypePrecheckError::new(
+            path,
+            "InterfaceValue union branch selection requires non-empty LocalConcrete identity",
+        ));
+    }
+    Ok(concrete_type_identity)
 }
 
 fn expected_array_item_plan(
@@ -2299,6 +2527,8 @@ mod tests {
     const READER_INTERFACE: &str = "pkg.Reader";
     const READER_PROJECTION: &str = "projection:pkg.Reader:pkg.ReaderImpl";
     const READER_METHOD: &str = "method:pkg.Reader:read";
+    const WRITER_INTERFACE: &str = "pkg.Writer";
+    const WRITER_PROJECTION: &str = "projection:pkg.Writer:pkg.ReaderImpl";
     const READER_IMPL: &str = "pkg.ReaderImpl";
     const SERVICE_ARTIFACT: &str = "svc/account";
 
@@ -2307,6 +2537,14 @@ mod tests {
             "any pkg.Reader",
             READER_INTERFACE,
             READER_PROJECTION,
+        )
+    }
+
+    fn any_writer_expected() -> RuntimeRecoverableExpectedTypePlan {
+        RuntimeRecoverableExpectedTypePlan::any_interface(
+            "any pkg.Writer",
+            WRITER_INTERFACE,
+            WRITER_PROJECTION,
         )
     }
 
@@ -2383,6 +2621,15 @@ mod tests {
         }
     }
 
+    fn reader_interface_node(value: &str) -> RecoverableNode {
+        RecoverableNode::plain(
+            RecoverableValueKind::InterfaceValue,
+            RecoverableState::InterfaceValue(InterfaceValueState {
+                self_node: Box::new(local_concrete_self_node(value)),
+            }),
+        )
+    }
+
     fn record_node(field_identity: &str, value: RecoverableNode) -> RecoverableNode {
         RecoverableNode::plain(
             RecoverableValueKind::Record,
@@ -2401,6 +2648,7 @@ mod tests {
         self_node_has_local_concrete: bool,
         table_interface_identity: RefCell<String>,
         table_projection_identity: RefCell<String>,
+        additional_conformances: Vec<(String, String)>,
         last_restore_decode_policy: RefCell<Option<RecoverableDecodePolicy>>,
         encode_calls: Cell<usize>,
         restore_calls: Cell<usize>,
@@ -2418,6 +2666,7 @@ mod tests {
                 self_node_has_local_concrete: true,
                 table_interface_identity: RefCell::new(READER_INTERFACE.to_string()),
                 table_projection_identity: RefCell::new(READER_PROJECTION.to_string()),
+                additional_conformances: Vec::new(),
                 last_restore_decode_policy: RefCell::new(None),
                 encode_calls: Cell::new(0),
                 restore_calls: Cell::new(0),
@@ -2445,6 +2694,13 @@ mod tests {
         fn without_conformance() -> Self {
             Self {
                 conformance_available: false,
+                ..Self::default()
+            }
+        }
+
+        fn with_additional_conformance(interface: &str, projection: &str) -> Self {
+            Self {
+                additional_conformances: vec![(interface.to_string(), projection.to_string())],
                 ..Self::default()
             }
         }
@@ -2530,10 +2786,19 @@ mod tests {
             request: RecoverableInterfaceConformanceRequest<'_>,
         ) -> Result<bool> {
             self.conformance_calls.set(self.conformance_calls.get() + 1);
+            let primary = request.concrete_type_identity == READER_IMPL
+                && request.interface_identity == READER_INTERFACE
+                && request.method_projection_identity == READER_PROJECTION;
+            let additional = self.additional_conformances.iter().any(
+                |(interface_identity, method_projection_identity)| {
+                    request.concrete_type_identity == READER_IMPL
+                        && request.interface_identity == interface_identity
+                        && request.method_projection_identity == method_projection_identity
+                },
+            );
             Ok(self.conformance_available
                 && request.concrete_type_identity == READER_IMPL
-                && request.interface_identity == READER_INTERFACE
-                && request.method_projection_identity == READER_PROJECTION)
+                && (primary || additional))
         }
 
         fn rebuild_local_interface_method_table(
@@ -2922,6 +3187,64 @@ mod tests {
             RecoverableBoundaryErrorCode::ExpectedTypeMismatch
         );
         assert!(error.to_string().contains("multiple union branches"));
+    }
+
+    #[test]
+    fn union_expected_any_interface_single_conformance_selects_matching_branch() {
+        let context = recoverable_context();
+        let expected = union_expected(vec![any_writer_expected(), any_reader_expected()]);
+        let bytes = RecoverableEnvelope::new(reader_interface_node("Ada"))
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("interface envelope should encode");
+        let hooks = TestBehaviorHooks::default();
+        let mut heap = RequestHeap::default();
+
+        let decoded = RecoverableBoundaryCodec::decode_with_behavior(
+            &bytes, &expected, &context, &mut heap, &hooks,
+        )
+        .expect("single conforming any-interface branch should decode");
+
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("decoded interface should be a heap value");
+        };
+        let HeapNode::Interface(interface) = heap.get(handle).expect("interface resolves") else {
+            panic!("expected decoded InterfaceValue");
+        };
+        assert_eq!(interface.interface(), READER_INTERFACE);
+        assert_eq!(hooks.restore_calls.get(), 1);
+        assert_eq!(hooks.table_calls.get(), 1);
+        assert_eq!(hooks.conformance_calls.get(), 5);
+    }
+
+    #[test]
+    fn union_expected_any_interface_multi_conformance_fails_closed_before_restore() {
+        let context = recoverable_context();
+        let expected = union_expected(vec![any_writer_expected(), any_reader_expected()]);
+        let bytes = RecoverableEnvelope::new(reader_interface_node("Ada"))
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("interface envelope should encode");
+        let hooks =
+            TestBehaviorHooks::with_additional_conformance(WRITER_INTERFACE, WRITER_PROJECTION);
+
+        let error = RecoverableBoundaryCodec::decode_with_behavior(
+            &bytes,
+            &expected,
+            &context,
+            &mut RequestHeap::default(),
+            &hooks,
+        )
+        .expect_err("multiple conforming any-interface branches must fail closed");
+
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected recoverable error");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::ExpectedTypeMismatch
+        );
+        assert!(error.to_string().contains("multiple union branches"));
+        assert_eq!(hooks.restore_calls.get(), 0);
+        assert_eq!(hooks.table_calls.get(), 0);
     }
 
     #[test]

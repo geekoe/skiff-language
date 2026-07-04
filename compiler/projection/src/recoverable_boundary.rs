@@ -2274,7 +2274,6 @@ mod tests {
     fn custom_restore_plan(concrete_type_identity: &str) -> RecoverableCustomRestorePlan {
         RecoverableCustomRestorePlan {
             concrete_type_identity: concrete_type_identity.to_string(),
-            restore_schema_version: "1".to_string(),
             durable_state_type_plan: RecoverableExpectedTypePlan {
                 root: RecoverableExpectedTypeRoot::TypeRef {
                     ty: TypeRefIr::native("Json"),
@@ -3490,7 +3489,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: TypeRefIr::LocalType { type_index: 0 },
@@ -3525,7 +3523,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: type_identity_expected_plan(RecoverableTypeIdentityRef(
                     "type:missing".to_string(),
                 )),
@@ -3551,7 +3548,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: host_handle_type(),
@@ -3588,7 +3584,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: host_handle_type(),
@@ -3631,7 +3626,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: type_identity_expected_plan(state_identity_ref),
                 encode_hook_id: "restore:state.encode".to_string(),
                 decode_hook_id: "restore:state.decode".to_string(),
@@ -3655,7 +3649,6 @@ mod tests {
             "restore:state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: RecoverableExpectedTypePlan {
                     root: RecoverableExpectedTypeRoot::TypeRef {
                         ty: map_type(TypeRefIr::native("number"), TypeRefIr::native("string")),
@@ -3744,7 +3737,6 @@ mod tests {
             "restore:pkg-state".to_string(),
             RecoverableCustomRestorePlan {
                 concrete_type_identity: "type:Widget".to_string(),
-                restore_schema_version: "1".to_string(),
                 durable_state_type_plan: type_identity_expected_plan(package_identity_ref),
                 encode_hook_id: "restore:pkg-state.encode".to_string(),
                 decode_hook_id: "restore:pkg-state.decode".to_string(),

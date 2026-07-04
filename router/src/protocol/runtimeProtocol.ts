@@ -396,6 +396,7 @@ const spawnClaimDescriptorProperties = {
   serviceId: { type: 'string' },
   serviceVersion: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
+  buildId: { type: 'string' },
   payloadSchemaIdentity: { type: 'string' },
   leaseExpiresAt: { type: 'string' }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
@@ -881,7 +882,8 @@ export const runtimeFrameHeaderSchemas = {
           'target',
           'serviceId',
           'serviceVersion',
-          'serviceProtocolIdentity'
+          'serviceProtocolIdentity',
+          'buildId'
         ],
         properties: spawnClaimDescriptorProperties,
         additionalProperties: false
@@ -1416,6 +1418,7 @@ const spawnFixture = {
   serviceId: runtimeRegisterFixture.serviceId,
   serviceVersion: '0.1.0',
   serviceProtocolIdentity: runtimeRegisterFixture.serviceProtocolIdentity,
+  buildId: runtimeRegisterFixture.buildId,
   target: spawnTargetFixture,
   spawnCompatibilityKey: `${'0.1.0'}:${runtimeRegisterFixture.serviceProtocolIdentity}:${spawnTargetFixture}`,
   spawnId: 'spawn-fixture-1',
@@ -1575,6 +1578,7 @@ export const runtimeFrameHeaderFixtures = {
       serviceId: spawnFixture.serviceId,
       serviceVersion: spawnFixture.serviceVersion,
       serviceProtocolIdentity: spawnFixture.serviceProtocolIdentity,
+      buildId: spawnFixture.buildId,
       payloadSchemaIdentity: `skiff-spawn-payload-v1:${spawnFixture.serviceProtocolIdentity}:${spawnFixture.target}`,
       leaseExpiresAt: '2026-06-06T10:00:30.000Z'
     }
@@ -2218,6 +2222,13 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
       'item.serviceProtocolIdentity',
       PROTOCOL_IDENTITY_PATTERN,
       'skiff-protocol-v1:sha256:<64 lowercase hex>'
+    ) ??
+    requireStringPattern(
+      envelope,
+      'spawn.claim.response',
+      'item.buildId',
+      SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
+      'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
     optionalString(envelope, 'spawn.claim.response', 'item.payloadSchemaIdentity') ??
     optionalString(envelope, 'spawn.claim.response', 'item.leaseExpiresAt')
