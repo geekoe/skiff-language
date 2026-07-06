@@ -729,11 +729,16 @@ fn decode_node(
         RecoverableState::Date(value) => Ok(RuntimeValue::Date(value.epoch_millis)),
         RecoverableState::Array(items) => {
             let child_expected = expected_array_item_plan(selected_expected);
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
                 decoded.push(decode_node(
                     item,
-                    child_expected.unwrap_or(selected_expected),
+                    child_expected.unwrap_or(fallback_expected),
                     &format!("{path}[{index}]"),
                     context,
                     root_expected,
@@ -745,13 +750,18 @@ fn decode_node(
         }
         RecoverableState::Map(entries) => {
             let child_expected = expected_map_value_plan(selected_expected);
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = RuntimeMap::new();
             for (index, (key, value)) in entries.iter().enumerate() {
                 let key =
                     runtime_key_from_recoverable_map_key(key, &format!("{path}.mapKey[{index}]"), context, root_expected)?;
                 let value = decode_node(
                     value,
-                    child_expected.unwrap_or(selected_expected),
+                    child_expected.unwrap_or(fallback_expected),
                     &format!("{path}.map[{index}]"),
                     context,
                     root_expected,
@@ -763,6 +773,11 @@ fn decode_node(
             Ok(RuntimeValue::Heap(heap.alloc_map(decoded)?))
         }
         RecoverableState::Record(fields) => {
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = RuntimeObjectFields::new();
             for field in fields {
                 let field_expected =
@@ -777,7 +792,7 @@ fn decode_node(
                     field.field_identity.clone(),
                     decode_node(
                         &field.value,
-                        field_expected.unwrap_or(selected_expected),
+                        field_expected.unwrap_or(fallback_expected),
                         &format!("{path}.field({})", field.field_identity),
                         context,
                         root_expected,
@@ -849,11 +864,16 @@ fn decode_node_with_behavior(
         RecoverableState::Date(value) => Ok(RuntimeValue::Date(value.epoch_millis)),
         RecoverableState::Array(items) => {
             let child_expected = expected_array_item_plan(selected_expected);
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
                 decoded.push(decode_node_with_behavior(
                     item,
-                    child_expected.unwrap_or(selected_expected),
+                    child_expected.unwrap_or(fallback_expected),
                     &format!("{path}[{index}]"),
                     context,
                     root_expected,
@@ -866,6 +886,11 @@ fn decode_node_with_behavior(
         }
         RecoverableState::Map(entries) => {
             let child_expected = expected_map_value_plan(selected_expected);
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = RuntimeMap::new();
             for (index, (key, value)) in entries.iter().enumerate() {
                 let key = runtime_key_from_recoverable_map_key(
@@ -876,7 +901,7 @@ fn decode_node_with_behavior(
                 )?;
                 let value = decode_node_with_behavior(
                     value,
-                    child_expected.unwrap_or(selected_expected),
+                    child_expected.unwrap_or(fallback_expected),
                     &format!("{path}.map[{index}]"),
                     context,
                     root_expected,
@@ -889,11 +914,15 @@ fn decode_node_with_behavior(
             Ok(RuntimeValue::Heap(heap.alloc_map(decoded)?))
         }
         RecoverableState::Record(fields) => {
+            let json_child_expected = json_value_child_expected_plan();
+            let fallback_expected = recoverable_child_fallback_expected(
+                selected_expected,
+                &json_child_expected,
+            );
             let mut decoded = RuntimeObjectFields::new();
             for field in fields {
                 let field_expected =
-                    expected_record_field_plan(selected_expected, &field.field_identity)
-                        ;
+                    expected_record_field_plan(selected_expected, &field.field_identity);
                 if field_expected.is_none()
                     && decode_policy.ignores_unknown_record_fields()
                     && expected_record_fields(selected_expected).is_some()
@@ -904,7 +933,7 @@ fn decode_node_with_behavior(
                     field.field_identity.clone(),
                     decode_node_with_behavior(
                         &field.value,
-                        field_expected.unwrap_or(selected_expected),
+                        field_expected.unwrap_or(fallback_expected),
                         &format!("{path}.field({})", field.field_identity),
                         context,
                         root_expected,
@@ -2126,6 +2155,32 @@ fn expected_record_fields(
     }
 }
 
+fn recoverable_child_fallback_expected<'a>(
+    selected_expected: &'a RuntimeRecoverableExpectedTypePlan,
+    json_child_expected: &'a RuntimeRecoverableExpectedTypePlan,
+) -> &'a RuntimeRecoverableExpectedTypePlan {
+    if expected_decodes_children_as_json(selected_expected) {
+        json_child_expected
+    } else {
+        selected_expected
+    }
+}
+
+fn expected_decodes_children_as_json(expected: &RuntimeRecoverableExpectedTypePlan) -> bool {
+    matches!(
+        expected.node,
+        RuntimeRecoverableExpectedTypeNode::Json | RuntimeRecoverableExpectedTypeNode::JsonObject
+    )
+}
+
+fn json_value_child_expected_plan() -> RuntimeRecoverableExpectedTypePlan {
+    RuntimeRecoverableExpectedTypePlan {
+        label: "Json".to_string(),
+        identity: None,
+        node: RuntimeRecoverableExpectedTypeNode::Json,
+    }
+}
+
 fn materialize_missing_nullable_record_fields(
     decoded: &mut RuntimeObjectFields,
     expected: &RuntimeRecoverableExpectedTypePlan,
@@ -2562,8 +2617,9 @@ fn expected_type_mismatch_error(
     RecoverableBoundaryError::new(
         RecoverableBoundaryErrorCode::ExpectedTypeMismatch,
         format!(
-            "recoverable {operation} expected type precheck failed for {}: {}",
+            "recoverable {operation} expected type precheck failed for {} at {}: {}",
             expected.diagnostic_label(),
+            error.path,
             error.reason
         ),
         context,
@@ -2732,6 +2788,10 @@ mod tests {
 
     fn number_expected() -> RuntimeRecoverableExpectedTypePlan {
         expected("number", RuntimeRecoverableExpectedTypeNode::Number)
+    }
+
+    fn json_object_expected() -> RuntimeRecoverableExpectedTypePlan {
+        expected("JsonObject", RuntimeRecoverableExpectedTypeNode::JsonObject)
     }
 
     fn bytes_expected() -> RuntimeRecoverableExpectedTypePlan {
@@ -3334,6 +3394,86 @@ mod tests {
         )
         .expect("decoded record should re-encode");
         assert_eq!(bytes, reencoded);
+    }
+
+    #[test]
+    fn json_object_decodes_json_child_values() {
+        let context = recoverable_context();
+        let expected = json_object_expected();
+        let mut heap = RequestHeap::default();
+        let nested = heap
+            .alloc_map(RuntimeMap::from([
+                (RuntimeValueKey::string("enabled"), RuntimeValue::Bool(true)),
+                (
+                    RuntimeValueKey::string("name"),
+                    RuntimeValue::String("inner".to_string()),
+                ),
+            ]))
+            .expect("nested JsonObject map should allocate");
+        let value = RuntimeValue::Heap(
+            heap.alloc_map(RuntimeMap::from([
+                (
+                    RuntimeValueKey::string("providerKey"),
+                    RuntimeValue::String("test".to_string()),
+                ),
+                (RuntimeValueKey::string("route"), RuntimeValue::Heap(nested)),
+            ]))
+            .expect("JsonObject map should allocate"),
+        );
+        let bytes = RecoverableBoundaryCodec::encode(&value, &expected, &context, &heap)
+            .expect("JsonObject should encode");
+        let mut decoded_heap = RequestHeap::default();
+        let decoded =
+            RecoverableBoundaryCodec::decode(&bytes, &expected, &context, &mut decoded_heap)
+                .expect("JsonObject should decode scalar child values as Json");
+
+        let RuntimeValue::Heap(handle) = decoded else {
+            panic!("JsonObject should decode to a heap map");
+        };
+        let HeapNode::Map(decoded) = decoded_heap
+            .get(handle)
+            .expect("decoded map should resolve")
+        else {
+            panic!("expected decoded JsonObject map");
+        };
+        assert_eq!(
+            decoded.get(&RuntimeValueKey::string("providerKey")),
+            Some(&RuntimeValue::String("test".to_string()))
+        );
+        let RuntimeValue::Heap(route_handle) = decoded
+            .get(&RuntimeValueKey::string("route"))
+            .expect("route")
+        else {
+            panic!("route should be a nested map");
+        };
+        let HeapNode::Map(route) = decoded_heap
+            .get(*route_handle)
+            .expect("nested map should resolve")
+        else {
+            panic!("expected nested JsonObject map");
+        };
+        assert_eq!(
+            route.get(&RuntimeValueKey::string("enabled")),
+            Some(&RuntimeValue::Bool(true))
+        );
+
+        let record_envelope = RecoverableEnvelope::new(RecoverableNode::plain(
+            RecoverableValueKind::Record,
+            RecoverableState::Record(vec![RecoverableField {
+                field_identity: "providerKey".to_string(),
+                value: string_node("test"),
+            }]),
+        ));
+        let record_bytes = record_envelope
+            .to_canonical_bytes(&RecoverableValidationLimits::default())
+            .expect("record JsonObject envelope should encode");
+        RecoverableBoundaryCodec::decode(
+            &record_bytes,
+            &expected,
+            &context,
+            &mut RequestHeap::default(),
+        )
+        .expect("record-shaped JsonObject should decode scalar child values as Json");
     }
 
     #[test]
