@@ -237,7 +237,8 @@ pub(super) fn run_package_tests(
         .collect::<Vec<_>>();
 
     for (mongo_url, service_ids) in &databases_to_drop {
-        let _ = drop_test_service_databases(mongo_url, service_ids);
+        drop_test_service_databases(mongo_url, service_ids)
+            .map_err(|message| SkiffTestError::RuntimeSetup { message })?;
     }
 
     let passed = results

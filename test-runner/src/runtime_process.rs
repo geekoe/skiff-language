@@ -213,17 +213,15 @@ fn service_id_storage_database_name(service_id: &str) -> String {
     service_id.replace('.', "~").replace('/', "~~")
 }
 
-/// Best-effort teardown: drop the per-test service Mongo databases created by a
-/// run so they do not accumulate run-over-run. Each test runs under a unique
-/// service id (=> unique database), so this only drops databases the run itself
-/// created. By default, cleanup runs in a background `mongosh` child process so
-/// database teardown does not dominate package-test wall time. Set
-/// `SKIFF_TEST_SYNC_CLEANUP=1` to wait for the drop command and surface cleanup
-/// errors to the caller.
+/// Drop the per-test service Mongo databases created by a run so they do not
+/// accumulate run-over-run. Each test runs under a unique service id (=>
+/// unique database), so this only drops databases the run itself created. By
+/// default, cleanup waits for `mongosh` and reports cleanup errors to the
+/// caller. Set `SKIFF_TEST_SYNC_CLEANUP=0` to restore background best-effort
+/// cleanup for local speed.
 ///
 /// The test path already depends on a live local dev stack (router + runtime +
-/// Mongo), so it relies on `mongosh` being available for cleanup; if it is not
-/// present the databases are simply left behind rather than failing the run.
+/// Mongo), so it relies on `mongosh` being available for cleanup.
 pub(super) fn drop_test_service_databases(
     mongo_url: &str,
     service_ids: &[String],
@@ -237,7 +235,7 @@ pub(super) fn drop_test_service_databases(
         .collect::<Vec<_>>();
     let script = test_database_drop_script(&database_names)?;
     if !sync_test_database_cleanup_enabled() {
-        let mut child = Command::new("mongosh")
+        let child = Command::new("mongosh")
             .arg(mongo_url)
             .arg("--quiet")
             .arg("--eval")
@@ -245,8 +243,10 @@ pub(super) fn drop_test_service_databases(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("failed to spawn mongosh for test database drop: {error}"))?;
+            .spawn();
+        let Ok(mut child) = child else {
+            return Ok(());
+        };
         thread::spawn(move || {
             let _ = child.wait();
         });
@@ -279,9 +279,15 @@ fn test_database_drop_script(database_names: &[String]) -> Result<String, String
 }
 
 fn sync_test_database_cleanup_enabled() -> bool {
-    env::var(SYNC_TEST_DB_CLEANUP_ENV)
-        .map(|value| test_database_cleanup_env_value_enabled(&value))
-        .unwrap_or(false)
+    sync_test_database_cleanup_enabled_from_env_value(
+        env::var(SYNC_TEST_DB_CLEANUP_ENV).ok().as_deref(),
+    )
+}
+
+fn sync_test_database_cleanup_enabled_from_env_value(value: Option<&str>) -> bool {
+    value
+        .map(test_database_cleanup_env_value_enabled)
+        .unwrap_or(true)
 }
 
 fn test_database_cleanup_env_value_enabled(value: &str) -> bool {
@@ -2252,7 +2258,8 @@ mod tests {
         copy_artifact_file, current_nanos, is_transient_dispatch_error,
         is_transient_dispatch_response, package_test_dispatch_body,
         package_test_service_db_service_id, service_id_storage_database_name,
-        synthetic_test_target, test_database_cleanup_env_value_enabled, test_database_drop_script,
+        sync_test_database_cleanup_enabled_from_env_value, synthetic_test_target,
+        test_database_cleanup_env_value_enabled, test_database_drop_script,
         PackageTestDispatchInput,
     };
 
@@ -2364,9 +2371,17 @@ mod tests {
 
     #[test]
     fn test_database_cleanup_env_accepts_truthy_values() {
+        assert!(
+            sync_test_database_cleanup_enabled_from_env_value(None),
+            "unset cleanup env should default to synchronous cleanup"
+        );
         for value in ["1", "true", "TRUE", "yes", "on", " on "] {
             assert!(
                 test_database_cleanup_env_value_enabled(value),
+                "{value:?} should enable sync cleanup"
+            );
+            assert!(
+                sync_test_database_cleanup_enabled_from_env_value(Some(value)),
                 "{value:?} should enable sync cleanup"
             );
         }
@@ -2374,6 +2389,10 @@ mod tests {
             assert!(
                 !test_database_cleanup_env_value_enabled(value),
                 "{value:?} should not enable sync cleanup"
+            );
+            assert!(
+                !sync_test_database_cleanup_enabled_from_env_value(Some(value)),
+                "{value:?} should disable sync cleanup"
             );
         }
     }
