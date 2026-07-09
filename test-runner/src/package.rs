@@ -575,26 +575,39 @@ fn dispatch_package_test_artifact(
         &prepared.package_id,
         &prepared.package_version,
     ) {
+        let cleanup = prepared.finish();
         for ready in ready_tests {
             record_package_test_failure(ready, message.clone(), results);
         }
+        if let Err(cleanup_message) = cleanup {
+            for ready in ready_tests {
+                record_package_test_failure(ready, cleanup_message.clone(), results);
+            }
+        }
         return;
     }
-    let dispatch_context = prepared.dispatch_context();
     let concurrency = package_test_dispatch_concurrency(
         options.live,
         ready_tests.len(),
         dispatch_concurrency_override,
         available_package_test_parallelism(),
     );
-    let reports = dispatch_prepared_package_test_entrypoints(
-        &dispatch_context,
-        &prepared.entrypoints,
-        ready_tests,
-        options,
-        concurrency,
-    );
+    let reports = {
+        let dispatch_context = prepared.dispatch_context();
+        dispatch_prepared_package_test_entrypoints(
+            &dispatch_context,
+            &prepared.entrypoints,
+            ready_tests,
+            options,
+            concurrency,
+        )
+    };
     merge_package_test_dispatch_reports(ready_tests, reports, options, results, databases_to_drop);
+    if let Err(message) = prepared.finish() {
+        for ready in ready_tests {
+            record_package_test_failure(ready, message.clone(), results);
+        }
+    }
 }
 
 fn validate_prepared_package_test_entrypoints(

@@ -75,6 +75,7 @@ pub struct TestPackageTestArtifactOutput {
     pub package_unit_path: String,
     pub assembly_path: String,
     pub dev_pointer_path: String,
+    pub runtime_visible_paths: Vec<String>,
     pub entrypoints: Vec<TestPackageTestEntrypointSummary>,
 }
 
@@ -132,6 +133,8 @@ pub enum TestPackageTestArtifactError {
     },
     #[error("failed to compute package test identity: {0}")]
     Identity(#[from] skiff_compiler_emission::identity::ArtifactIdentityError),
+    #[error("failed to register runtime-visible path {path}: {message}")]
+    RuntimeVisiblePathRegistration { path: String, message: String },
 }
 
 impl From<PackageTestArtifactBuildError> for TestPackageTestArtifactError {
@@ -147,6 +150,13 @@ impl From<PackageTestArtifactBuildError> for TestPackageTestArtifactError {
 
 pub fn write_package_test_artifact_root(
     input: TestPackageTestArtifactInput,
+) -> Result<TestPackageTestArtifactOutput, TestPackageTestArtifactError> {
+    write_package_test_artifact_root_with_runtime_path_registration(input, |_| Ok(()))
+}
+
+pub fn write_package_test_artifact_root_with_runtime_path_registration(
+    input: TestPackageTestArtifactInput,
+    mut register_runtime_path: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<TestPackageTestArtifactOutput, TestPackageTestArtifactError> {
     let artifact_root = input.artifact_root;
     let built = build_package_test_artifacts(PackageTestArtifactBuildInput {
@@ -199,6 +209,15 @@ pub fn write_package_test_artifact_root(
         "dev/package-tests/{}/{}.json",
         built.package_artifact_path, built.test_build_hash
     );
+    let runtime_visible_paths = vec![dev_pointer_path.clone(), assembly_path.clone()];
+    for path in &runtime_visible_paths {
+        register_runtime_path(path).map_err(|message| {
+            TestPackageTestArtifactError::RuntimeVisiblePathRegistration {
+                path: path.clone(),
+                message,
+            }
+        })?;
+    }
     let pointer = TestPackageTestPointer {
         schema_version: "skiff-package-test-dev-pointer-v1".to_string(),
         package_id: built.package_id.clone(),
@@ -243,6 +262,7 @@ pub fn write_package_test_artifact_root(
         package_unit_path: built.production_package_unit.unit_path,
         assembly_path,
         dev_pointer_path,
+        runtime_visible_paths,
         entrypoints: built
             .entrypoints
             .into_iter()

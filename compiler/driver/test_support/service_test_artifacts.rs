@@ -90,6 +90,7 @@ pub struct WrittenTestServiceArtifactRoot {
     pub target: String,
     pub service_assembly_path: String,
     pub service_unit_path: String,
+    pub runtime_visible_paths: Vec<String>,
     pub service_db_mongo_url: Option<String>,
 }
 
@@ -117,12 +118,21 @@ pub enum TestArtifactError {
         #[source]
         source: serde_yaml::Error,
     },
+    #[error("failed to register runtime-visible path {path}: {message}")]
+    RuntimeVisiblePathRegistration { path: String, message: String },
 }
 
 pub type TestServiceArtifactError = TestArtifactError;
 
 pub fn write_test_service_artifact_root(
     input: WriteTestServiceArtifactRootInput,
+) -> Result<WrittenTestServiceArtifactRoot, TestArtifactError> {
+    write_test_service_artifact_root_with_runtime_path_registration(input, |_| Ok(()))
+}
+
+pub fn write_test_service_artifact_root_with_runtime_path_registration(
+    input: WriteTestServiceArtifactRootInput,
+    mut register_runtime_path: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<WrittenTestServiceArtifactRoot, TestArtifactError> {
     let service_id = PublicationId::parse(&input.service_id).map_err(|error| {
         TestArtifactError::InvalidInput {
@@ -222,6 +232,29 @@ pub fn write_test_service_artifact_root(
         &db,
     );
     let pointer_build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{}", assembly.hash);
+    let runtime_config = config_wrapped_for_router(
+        &input.test_config,
+        input.service_db_mongo_url.as_deref(),
+        &package_artifacts.dependencies,
+    );
+    let runtime_visible_paths = test_service_runtime_visible_paths(
+        &input.artifact_root,
+        &service_id,
+        &input.version,
+        &build_id,
+        &artifacts,
+        &service_unit_artifact,
+        &assembly,
+        &runtime_config,
+    )?;
+    for path in &runtime_visible_paths {
+        register_runtime_path(path).map_err(|message| {
+            TestArtifactError::RuntimeVisiblePathRegistration {
+                path: path.clone(),
+                message,
+            }
+        })?;
+    }
 
     write_artifact_tree(
         &input.artifact_root,
@@ -233,11 +266,7 @@ pub fn write_test_service_artifact_root(
         &input.version,
         &build_id,
         &pointer_build_id,
-        &config_wrapped_for_router(
-            &input.test_config,
-            input.service_db_mongo_url.as_deref(),
-            &package_artifacts.dependencies,
-        ),
+        &runtime_config,
     )?;
 
     Ok(WrittenTestServiceArtifactRoot {
@@ -252,6 +281,7 @@ pub fn write_test_service_artifact_root(
         target: input.target,
         service_assembly_path: assembly.path,
         service_unit_path,
+        runtime_visible_paths,
         service_db_mongo_url: input.service_db_mongo_url,
     })
 }
@@ -854,6 +884,40 @@ fn ordered_package_build_identities(
         loaded_build_by_package_id.insert(package_id.to_string(), build_identity);
     }
     Ok(identities)
+}
+
+fn test_service_runtime_visible_paths(
+    artifact_root: &Path,
+    service_id: &PublicationId,
+    version: &str,
+    build_id: &str,
+    service_files: &[PublishedFileIrArtifact],
+    service_unit: &PublishedJsonArtifact,
+    assembly: &PublishedJsonArtifact,
+    config: &Value,
+) -> Result<Vec<String>, TestArtifactError> {
+    let service_path = service_id.artifact_path();
+    let mut paths = vec![
+        format!("dev/services/{service_path}.json"),
+        service_unit.path.clone(),
+        assembly.path.clone(),
+        format!("versions/services/{service_path}/{version}.json"),
+        format!(
+            "builds/services/{service_path}/{}.json",
+            service_build_hash(build_id)?
+        ),
+    ];
+    if config.as_object().is_some_and(|object| !object.is_empty()) {
+        paths.push(format!("configs/services/{service_path}/config.yml"));
+    }
+    for file in service_files {
+        if !artifact_root.join(&file.path).exists() {
+            paths.push(file.path.clone());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn write_artifact_tree(
@@ -1584,10 +1648,48 @@ mod tests {
             .ends_with(&format!("{expected_hash}.json")));
         let file_artifact_path = service_unit.files[0]
             .artifact_path
-            .as_deref()
+            .clone()
             .expect("service file should point at written FileIR artifact");
         assert!(file_artifact_path.starts_with("units/files/"));
-        assert!(root.path.join(file_artifact_path).is_file());
+        assert!(root.path.join(&file_artifact_path).is_file());
+        assert!(output
+            .runtime_visible_paths
+            .iter()
+            .any(|path| path == &file_artifact_path));
+
+        let mut second_registered_paths = Vec::new();
+        let second_output = write_test_service_artifact_root_with_runtime_path_registration(
+            WriteTestServiceArtifactRootInput {
+                artifact_root: root.path.clone(),
+                service_id: "example.com/test".to_string(),
+                version: "test".to_string(),
+                artifacts: vec![TestRuntimeArtifact {
+                    source_path: "tests/service_test.skiff".to_string(),
+                    module_path: "internal.test".to_string(),
+                    role: "implementation".to_string(),
+                    package_id: None,
+                    file_ir: sample_file_ir("internal.test", "run"),
+                }],
+                package_aliases: BTreeMap::new(),
+                operation_name: "run".to_string(),
+                operation_module: "internal.test".to_string(),
+                target: "internal.test.run".to_string(),
+                test_config: json!({}),
+                service_db_mongo_url: None,
+            },
+            |path| {
+                second_registered_paths.push(path.to_string());
+                Ok(())
+            },
+        )
+        .expect("second write should succeed");
+        assert!(!second_registered_paths
+            .iter()
+            .any(|path| path == &file_artifact_path));
+        assert!(!second_output
+            .runtime_visible_paths
+            .iter()
+            .any(|path| path == &file_artifact_path));
 
         let pointer_path = root.path.join("dev/services/example~com~~test.json");
         let pointer: Value =
