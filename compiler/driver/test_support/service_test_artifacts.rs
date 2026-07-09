@@ -238,11 +238,9 @@ pub fn write_test_service_artifact_root_with_runtime_path_registration(
         &package_artifacts.dependencies,
     );
     let runtime_visible_paths = test_service_runtime_visible_paths(
-        &input.artifact_root,
         &service_id,
         &input.version,
         &build_id,
-        &artifacts,
         &service_unit_artifact,
         &assembly,
         &runtime_config,
@@ -887,11 +885,9 @@ fn ordered_package_build_identities(
 }
 
 fn test_service_runtime_visible_paths(
-    artifact_root: &Path,
     service_id: &PublicationId,
     version: &str,
     build_id: &str,
-    service_files: &[PublishedFileIrArtifact],
     service_unit: &PublishedJsonArtifact,
     assembly: &PublishedJsonArtifact,
     config: &Value,
@@ -909,11 +905,6 @@ fn test_service_runtime_visible_paths(
     ];
     if config.as_object().is_some_and(|object| !object.is_empty()) {
         paths.push(format!("configs/services/{service_path}/config.yml"));
-    }
-    for file in service_files {
-        if !artifact_root.join(&file.path).exists() {
-            paths.push(file.path.clone());
-        }
     }
     paths.sort();
     paths.dedup();
@@ -1655,7 +1646,7 @@ mod tests {
         assert!(output
             .runtime_visible_paths
             .iter()
-            .any(|path| path == &file_artifact_path));
+            .all(|path| path != &file_artifact_path));
 
         let mut second_registered_paths = Vec::new();
         let second_output = write_test_service_artifact_root_with_runtime_path_registration(

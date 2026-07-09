@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
+    panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
     path::Path,
 };
 
@@ -393,8 +394,12 @@ fn run_ready_service_test_batch(
             return;
         }
     };
-    {
-        let dispatch_context = prepared.dispatch_context();
+    let mut prepared = Some(prepared);
+    let dispatch = catch_unwind(AssertUnwindSafe(|| {
+        let prepared_ref = prepared
+            .as_ref()
+            .expect("prepared service test suite should be available during dispatch");
+        let dispatch_context = prepared_ref.dispatch_context();
         for (ready_index, case) in batch.iter().zip(publication.cases.iter()) {
             let ready = &ready_tests[*ready_index];
             let result = execute_dev_synced_service_test_case_with_context(
@@ -415,7 +420,16 @@ fn run_ready_service_test_batch(
             }
             record_service_test_runtime_result(ready, result, options, results);
         }
+    }));
+    if let Err(payload) = dispatch {
+        if let Some(prepared) = prepared.take() {
+            let _ = prepared.finish();
+        }
+        resume_unwind(payload);
     }
+    let Some(prepared) = prepared else {
+        return;
+    };
     if let Err(message) = prepared.finish() {
         for ready_index in batch {
             record_service_test_error(
