@@ -3,13 +3,7 @@
 //! Shared request capability contracts live in `skiff-runtime-capability-context`.
 //! Eval keeps its request construction, native bridge, and compatibility exports here.
 
-use std::{
-    any::Any,
-    collections::HashMap,
-    future::Future,
-    pin::Pin,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use serde_json::Value;
@@ -43,22 +37,22 @@ pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 
 pub use skiff_runtime_capability_context::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, ActorFindControlRequest,
     ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError, CapabilityFuture,
-    CapabilityResult, ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext,
-    DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture, DbCapabilityLeaseHandle,
-    DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore,
-    DbCapabilityStoreApi, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
-    DbRuntimeChange, DbRuntimeSetOp, ExecutionControl, ExecutionControlApi, FileCapabilityApi,
-    FileCapabilityContext, FileCapabilityError, FileCapabilityFuture, FileCapabilityRecord,
-    FileCapabilityResult, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
-    FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
-    HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
-    OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
-    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
-    OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
-    StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
-    StreamRuntimeApi, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
-    WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    CapabilityResult, CompletionSignal, ConfigCapabilityApi, ConfigCapabilityContext,
+    DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture,
+    DbCapabilityLeaseHandle, DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle,
+    DbCapabilityResult, DbCapabilityStore, DbCapabilityStoreApi, DbRecoverableRuntimeContext,
+    DbRecoverableRuntimeExpectedPlans, DbRuntimeChange, DbRuntimeSetOp, ExecutionControl,
+    ExecutionControlApi, FileCapabilityApi, FileCapabilityContext, FileCapabilityError,
+    FileCapabilityFuture, FileCapabilityRecord, FileCapabilityResult, FileCapabilitySource,
+    FileCapabilitySourceApi, FileChunkSource, FileSourceStreamApi, FileSourceStreamContext,
+    HttpCapabilityFuture, HttpClientCapabilityApi, HttpClientCapabilityContext,
+    HttpResponseStreamCapabilityContext, HttpRuntimeOptions, OutboundServiceRequestStart,
+    OutboundStartedRequest, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
+    OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
+    SpawnSubmitControlRequest, StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamSink, StreamSinkApi,
+    TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink,
+    WebsocketCapabilityApi, WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -303,7 +297,7 @@ pub trait OutboundServiceApi: Send + Sync {
         &self,
         request_id: String,
         cancellation: CancellationToken,
-        completed: Arc<AtomicBool>,
+        completed: CompletionSignal,
     );
 }
 
@@ -385,7 +379,7 @@ impl OutboundServiceContext {
         &self,
         request_id: String,
         cancellation: CancellationToken,
-        completed: Arc<AtomicBool>,
+        completed: CompletionSignal,
     ) {
         self.inner
             .spawn_stream_cancel_task(request_id, cancellation, completed);

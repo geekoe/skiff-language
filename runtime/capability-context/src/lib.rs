@@ -20,7 +20,9 @@ mod websocket;
 pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
 };
-pub use cancellation::{CancellationSignals, CancellationToken, RequestAbortSignal};
+pub use cancellation::{
+    CancellationSignals, CancellationToken, CompletionSignal, RequestAbortSignal,
+};
 pub use capability_error::{CapabilityError, CapabilityFuture, CapabilityResult};
 pub use config::{ConfigCapabilityApi, ConfigCapabilityContext, OwnedConfigCapabilityContext};
 pub use db::{

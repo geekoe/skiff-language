@@ -70,7 +70,7 @@ impl eval_capabilities::OutboundServiceApi for RuntimeOutboundServiceContext {
         &self,
         request_id: String,
         cancellation: CancellationToken,
-        completed: Arc<AtomicBool>,
+        completed: CompletionSignal,
     ) {
         self.0
             .spawn_stream_cancel_task(request_id, cancellation, completed);

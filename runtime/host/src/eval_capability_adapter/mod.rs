@@ -19,9 +19,9 @@ use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context as capability_contract;
 use skiff_runtime_capability_context::{
     ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken,
-    ExecutionControlResult, FileCapabilityError, FileCapabilityFuture, RequestEffectDoubleControl,
-    SpawnSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    CompletionSignal, ExecutionControlResult, FileCapabilityError, FileCapabilityFuture,
+    RequestEffectDoubleControl, SpawnSubmitControlRequest, StreamPoll, StreamPullSource,
+    StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_eval::{
     capabilities as eval_capabilities,

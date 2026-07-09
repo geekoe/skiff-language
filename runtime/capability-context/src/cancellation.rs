@@ -18,6 +18,12 @@ pub struct CancellationToken {
     notify: Option<Arc<Notify>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CompletionSignal {
+    completed: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
 impl CancellationToken {
     pub fn new() -> Self {
         Self {
@@ -68,6 +74,45 @@ impl CancellationToken {
                 _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {}
             }
         }
+    }
+}
+
+impl CompletionSignal {
+    pub fn new() -> Self {
+        Self {
+            completed: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    pub fn mark_completed(&self) {
+        self.completed.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.completed.load(Ordering::SeqCst)
+    }
+
+    pub async fn wait_completed(&self) {
+        loop {
+            if self.is_completed() {
+                return;
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_completed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Default for CompletionSignal {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -232,6 +277,24 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), waiter)
             .await
             .expect("flag-backed cancellation should be polled")
+            .expect("wait task should succeed");
+    }
+
+    #[tokio::test]
+    async fn completion_signal_waits_for_mark_completed() {
+        let completed = CompletionSignal::new();
+        let waiter = {
+            let completed = completed.clone();
+            tokio::spawn(async move { completed.wait_completed().await })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        completed.mark_completed();
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("completion signal should wake")
             .expect("wait task should succeed");
     }
 

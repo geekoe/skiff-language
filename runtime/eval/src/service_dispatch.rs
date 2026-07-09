@@ -1,7 +1,3 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use std::{collections::HashMap, future::Future, pin::Pin};
 
 use serde_json::Value;
@@ -10,8 +6,8 @@ use skiff_runtime_boundary::{
     payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef},
 };
 use skiff_runtime_capability_context::{
-    CancellationToken, OutboundResponse, OutboundResponseReceiver, RequestEffectDoubleControl,
-    StreamRuntimeError, StreamRuntimeResult,
+    CancellationToken, CompletionSignal, OutboundResponse, OutboundResponseReceiver,
+    RequestEffectDoubleControl, StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ServiceDependencyConstraint, ServiceDependencySymbolRef,
@@ -172,7 +168,7 @@ fn outbound_service_stream_value(
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
     let cancellation = CancellationToken::new();
-    let completed = Arc::new(AtomicBool::new(false));
+    let completed = CompletionSignal::new();
     context.spawn_stream_cancel_task(request_id.clone(), cancellation.clone(), completed.clone());
     let stream_value = interpreter.stream_runtime.pull_stream_with_cancellation(
         OutboundServiceStreamSource {
@@ -205,7 +201,7 @@ struct OutboundServiceStreamSource {
     item_plan: RuntimeTypePlan,
     next_seq: u64,
     started: bool,
-    completed: Arc<AtomicBool>,
+    completed: CompletionSignal,
 }
 
 impl StreamPullSource for OutboundServiceStreamSource {
@@ -276,7 +272,7 @@ impl OutboundServiceStreamSource {
                     };
                 }
                 OutboundResponse::End { payload } => {
-                    self.completed.store(true, Ordering::SeqCst);
+                    self.completed.mark_completed();
                     if !payload.is_empty() {
                         self.abort_pending("stream_end_payload");
                         return Err(StreamRuntimeError::producer(
@@ -290,7 +286,7 @@ impl OutboundServiceStreamSource {
                     return Ok(None);
                 }
                 OutboundResponse::Error(error) => {
-                    self.completed.store(true, Ordering::SeqCst);
+                    self.completed.mark_completed();
                     return Err(StreamRuntimeError::producer(
                         RuntimeError::ProviderUnavailable {
                             target: self.target.clone(),
@@ -322,7 +318,7 @@ impl OutboundServiceStreamSource {
     }
 
     fn abort_pending(&self, reason: &str) {
-        self.completed.store(true, Ordering::SeqCst);
+        self.completed.mark_completed();
         self.context
             .abort_outbound_request(&self.request_id, reason);
     }
