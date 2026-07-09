@@ -9,10 +9,13 @@ use std::{
 
 use serde_json::{json, Value};
 use skiff_artifact_identity::{
-    package_abi_identity, package_build_identity, publication_abi_identity,
-    runtime_program_dynamic_build_id_from_artifact_root,
+    assign_package_unit_identities, package_abi_identity, package_build_identity,
+    publication_abi_identity, runtime_program_dynamic_build_id_from_artifact_refs,
+    runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
 };
-use skiff_artifact_model::{PackageUnit, ServiceUnit};
+use skiff_artifact_model::{
+    EffectMetadata, MetadataValue, PackageDependencyConstraint, PackageUnit, ServiceUnit,
+};
 
 #[test]
 fn runtime_program_build_id_cli_returns_dynamic_build_id() {
@@ -39,6 +42,80 @@ fn runtime_program_build_id_cli_returns_dynamic_build_id() {
     );
     let stdout: Value = serde_json::from_slice(&output.stdout).expect("stdout JSON");
     assert_eq!(stdout["results"][0]["key"], "svc");
+    assert_eq!(stdout["results"][0]["dynamicBuildId"], expected);
+}
+
+#[test]
+fn runtime_program_build_id_cli_uses_pinned_package_units() {
+    let root = TempArtifactRoot::new("cli-pinned-package-units");
+    let mut service = valid_service();
+    service
+        .package_dependencies
+        .push(PackageDependencyConstraint {
+            id: "example.com/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            alias: "pkg".to_string(),
+            config: Value::Object(Default::default()),
+        });
+    let old_package = package_unit_with_build_seed("old");
+    let new_package = package_unit_with_build_seed("new");
+    write_json_artifact(root.path(), "units/packages/pkg-old.json", &old_package);
+    write_json_artifact(root.path(), "units/packages/pkg-new.json", &new_package);
+    write_json_artifact(
+        root.path(),
+        "indexes/packages/example~com~~pkg/versions/1.0.0.json",
+        &json!({
+            "schemaVersion": "skiff-package-unit-index-v1",
+            "packageId": "example.com/pkg",
+            "version": "1.0.0",
+            "packageUnit": {
+                "unitPath": "units/packages/pkg-new.json"
+            }
+        }),
+    );
+    let package_ref = PackageUnitArtifactRef {
+        package_id: old_package.package_id.clone(),
+        version: old_package.version.clone(),
+        build_identity: old_package.build_identity.clone(),
+        abi_identity: old_package.abi_identity.clone(),
+        unit_hash: None,
+        unit_path: PathBuf::from("units/packages/pkg-old.json"),
+    };
+    let expected = runtime_program_dynamic_build_id_from_artifact_refs(
+        root.path(),
+        &service,
+        std::slice::from_ref(&package_ref),
+    )
+    .expect("pinned dynamic build id");
+    let mutable_index_build_id =
+        runtime_program_dynamic_build_id_from_artifact_root(root.path(), &service)
+            .expect("mutable index dynamic build id");
+    assert_ne!(expected, mutable_index_build_id);
+
+    let output = run_cli_command(
+        "runtime-program-build-id",
+        json!({
+            "artifactRoot": root.path(),
+            "services": [{
+                "key": "svc",
+                "serviceUnit": service,
+                "packageUnits": [{
+                    "packageId": package_ref.package_id,
+                    "version": package_ref.version,
+                    "buildIdentity": package_ref.build_identity,
+                    "abiIdentity": package_ref.abi_identity,
+                    "unitPath": package_ref.unit_path
+                }],
+            }],
+        }),
+    );
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout: Value = serde_json::from_slice(&output.stdout).expect("stdout JSON");
     assert_eq!(stdout["results"][0]["dynamicBuildId"], expected);
 }
 
@@ -168,6 +245,36 @@ fn valid_package_unit() -> PackageUnit {
     package.publication_abi.abi_identity =
         publication_abi_identity(&package.publication_abi).expect("publication ABI identity");
     package
+}
+
+fn package_unit_with_build_seed(seed: &str) -> PackageUnit {
+    let mut package = PackageUnit::empty(
+        "example.com/pkg",
+        "1.0.0",
+        "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    );
+    let mut effect = EffectMetadata::default();
+    effect
+        .metadata
+        .insert("seed".to_string(), MetadataValue::String(seed.to_string()));
+    package
+        .config_and_effect_metadata
+        .effects
+        .insert("__testBuildSeed".to_string(), effect);
+    assign_package_unit_identities(&mut package).expect("package identities");
+    package
+}
+
+fn write_json_artifact(root: &Path, relative_path: &str, value: &impl serde::Serialize) {
+    let path = root.join(relative_path);
+    fs::create_dir_all(path.parent().expect("artifact path should have parent"))
+        .expect("artifact dir should be created");
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(value).expect("artifact JSON should serialize"),
+    )
+    .expect("artifact should be written");
 }
 
 #[derive(Debug, serde::Deserialize)]

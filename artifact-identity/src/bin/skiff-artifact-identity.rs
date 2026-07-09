@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_identity::{
     package_abi_identity, package_build_identity,
+    runtime_program_dynamic_build_id_from_artifact_refs,
     runtime_program_dynamic_build_id_from_artifact_root, ArtifactIdentityError,
+    PackageUnitArtifactRef,
 };
 use skiff_artifact_model::{PackageUnit, ServiceUnit};
 
@@ -57,10 +59,21 @@ fn runtime_program_build_id() -> Result<(), CliError> {
     for service in request.services {
         let service_unit: ServiceUnit = serde_json::from_value(service.service_unit)
             .map_err(|error| CliError::SchemaInvalid(format!("serviceUnit is invalid: {error}")))?;
-        let dynamic_build_id = runtime_program_dynamic_build_id_from_artifact_root(
-            &request.artifact_root,
-            &service_unit,
-        )
+        let dynamic_build_id = if let Some(package_units) = service.package_units {
+            runtime_program_dynamic_build_id_from_artifact_refs(
+                &request.artifact_root,
+                &service_unit,
+                &package_units
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            runtime_program_dynamic_build_id_from_artifact_root(
+                &request.artifact_root,
+                &service_unit,
+            )
+        }
         .map_err(CliError::Identity)?;
         results.push(RuntimeProgramBuildIdResult {
             key: service.key,
@@ -104,6 +117,33 @@ struct RuntimeProgramBuildIdRequest {
 struct RuntimeProgramBuildIdService {
     key: String,
     service_unit: Value,
+    #[serde(default)]
+    package_units: Option<Vec<RuntimeProgramPackageUnitRef>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeProgramPackageUnitRef {
+    package_id: String,
+    version: String,
+    build_identity: String,
+    abi_identity: String,
+    #[serde(default)]
+    unit_hash: Option<String>,
+    unit_path: PathBuf,
+}
+
+impl From<RuntimeProgramPackageUnitRef> for PackageUnitArtifactRef {
+    fn from(value: RuntimeProgramPackageUnitRef) -> Self {
+        Self {
+            package_id: value.package_id,
+            version: value.version,
+            build_identity: value.build_identity,
+            abi_identity: value.abi_identity,
+            unit_hash: value.unit_hash,
+            unit_path: value.unit_path,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +228,7 @@ fn identity_error_code(error: &ArtifactIdentityError) -> &'static str {
         }
         ArtifactIdentityError::PackageDependencyCycle { .. } => "dependency_cycle",
         ArtifactIdentityError::PackageDependencyConflict { .. } => "dependency_conflict",
+        ArtifactIdentityError::PackageUnitPointerMismatch { .. } => "schema_invalid",
         ArtifactIdentityError::PathEscape { .. }
         | ArtifactIdentityError::ArtifactPathEscapesRoot { .. }
         | ArtifactIdentityError::InvalidArtifactSegment { .. } => "path_escape",

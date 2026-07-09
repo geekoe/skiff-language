@@ -3,6 +3,8 @@ import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
+import type { PackageUnitArtifactPointer } from "./types.js";
+
 const IDENTITY_CLI_ENV = "SKIFF_ARTIFACT_IDENTITY_CLI";
 const IDENTITY_CLI_BINARY = process.platform === "win32"
   ? "skiff-artifact-identity.exe"
@@ -17,6 +19,7 @@ export interface IdentityCliResolutionOptions {
 
 export async function computeRuntimeProgramBuildIdWithIdentityCli(input: {
   artifactRoot: string;
+  packageUnits?: readonly PackageUnitArtifactPointer[];
   serviceUnit: Record<string, unknown>;
 } & IdentityCliResolutionOptions): Promise<string> {
   const resolution = resolveIdentityCliPath(input);
@@ -32,11 +35,32 @@ export async function computeRuntimeProgramBuildIdWithIdentityCli(input: {
     services: [
       {
         key,
+        ...(input.packageUnits !== undefined
+          ? { packageUnits: input.packageUnits.map(identityCliPackageUnitRef) }
+          : {}),
         serviceUnit: input.serviceUnit,
       },
     ],
   }, resolution.candidates);
   return readDynamicBuildId(stdout, key, resolution.candidates);
+}
+
+function identityCliPackageUnitRef(unit: PackageUnitArtifactPointer): {
+  packageId: string;
+  version: string;
+  buildIdentity: string;
+  abiIdentity: string;
+  unitHash?: string;
+  unitPath: string;
+} {
+  return {
+    packageId: unit.packageId,
+    version: unit.version,
+    buildIdentity: unit.buildIdentity,
+    abiIdentity: unit.abiIdentity,
+    ...(unit.unitHash !== undefined ? { unitHash: unit.unitHash } : {}),
+    unitPath: unit.unitPath,
+  };
 }
 
 function resolveIdentityCliPath(

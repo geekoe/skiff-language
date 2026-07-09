@@ -572,6 +572,24 @@ async function assertDevReloadPointerContract(root, service, pointer) {
       throw new Error(`dev reload pointer for ${service.serviceId} references missing service unit ${unitPath}`);
     }
   }
+
+  if (pointer.packageUnits !== undefined) {
+    if (!Array.isArray(pointer.packageUnits)) {
+      throw new Error(`dev reload pointer for ${service.serviceId} packageUnits must be an array`);
+    }
+    for (const [index, packageUnit] of pointer.packageUnits.entries()) {
+      if (!isRecord(packageUnit)) {
+        throw new Error(`dev reload pointer for ${service.serviceId} packageUnits[${index}] must be an object`);
+      }
+      const unitPath = stringValue(packageUnit.unitPath);
+      if (unitPath === undefined) {
+        throw new Error(`dev reload pointer for ${service.serviceId} packageUnits[${index}] is missing unitPath`);
+      }
+      if (!await isFile(join(root, unitPath))) {
+        throw new Error(`dev reload pointer for ${service.serviceId} references missing package unit ${unitPath}`);
+      }
+    }
+  }
 }
 
 function removedServiceIds(previousServices, nextServices) {
@@ -594,6 +612,7 @@ function devReloadPointerFromIndex(service, indexValue) {
   const contractHash = `sha256:${identityHash(protocolIdentity)}`;
   const serviceAssembly = serviceAssemblyPointer(indexValue.serviceAssembly);
   const serviceUnit = serviceUnitPointer(indexValue.serviceUnit);
+  const packageUnits = packageUnitPointers(indexValue.packageUnits);
   const buildId = serviceBuildIdFromAssemblyIdentity(serviceAssembly.assemblyIdentity);
   return {
     mode: 'dev',
@@ -607,7 +626,36 @@ function devReloadPointerFromIndex(service, indexValue) {
       assemblyPath: serviceAssembly.assemblyPath,
     },
     ...(serviceUnit === undefined ? {} : { serviceUnit }),
+    ...(packageUnits === undefined ? {} : { packageUnits }),
   };
+}
+
+function packageUnitPointers(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('packageUnits must be an array when present');
+  }
+  return value.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new Error(`packageUnits[${index}] must be an object`);
+    }
+    const label = `packageUnits[${index}]`;
+    const schemaVersion = requiredString(item.schemaVersion, `${label}.schemaVersion`);
+    if (schemaVersion !== 'skiff-package-unit-v1') {
+      throw new Error(`${label}.schemaVersion must be skiff-package-unit-v1`);
+    }
+    return {
+      schemaVersion,
+      packageId: requiredString(item.packageId, `${label}.packageId`),
+      version: requiredString(item.version, `${label}.version`),
+      buildIdentity: requiredString(item.buildIdentity, `${label}.buildIdentity`),
+      abiIdentity: requiredString(item.abiIdentity, `${label}.abiIdentity`),
+      ...(stringValue(item.unitHash) === undefined ? {} : { unitHash: stringValue(item.unitHash) }),
+      unitPath: requiredString(item.unitPath, `${label}.unitPath`),
+    };
+  });
 }
 
 function serviceUnitPointer(value) {

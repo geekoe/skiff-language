@@ -32,6 +32,9 @@ export async function computeRuntimeProgramBuildId(input: {
     }));
   return computeRuntimeProgramBuildIdWithIdentityCli({
     artifactRoot: input.root,
+    ...(input.pointer.packageUnits !== undefined
+      ? { packageUnits: input.pointer.packageUnits }
+      : {}),
     serviceUnit: serviceUnit.value,
     ...(input.identityCliPath !== undefined
       ? { identityCliPath: input.identityCliPath }

@@ -958,6 +958,53 @@ describe("router artifact root", () => {
     );
   });
 
+  it("loads Service Unit package dependencies through pinned packageUnits without Package Unit indexes", async () => {
+    const root = await createArtifactRoot();
+    await mkdir(join(root, "assemblies", "services"), { recursive: true });
+    await mkdir(join(root, "files"), { recursive: true });
+    const packageUnit = await writePackageUnit(
+      root,
+      "skiff.run/llm",
+      "1.0.0",
+      "llm-build-pinned",
+    );
+    const assembly = serviceAssembly(SERVICE_ID) as any;
+    const serviceUnit = await writeServiceUnit(
+      root,
+      SERVICE_ID,
+      serviceTestVersion(SERVICE_ID),
+      {
+        assembly,
+        packageDependencies: [
+          {
+            id: "skiff.run/llm",
+            version: "1.0.0",
+            alias: "llm",
+          },
+        ],
+      },
+    );
+    const writtenAssembly = await writeServiceAssembly(root, assembly);
+    await writeIndexPointer(root, {
+      ...serviceAssemblyIndex(writtenAssembly),
+      serviceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
+    });
+    await writeContractFile(root);
+
+    const loaded = await loadRouterArtifactRoot(root);
+    const binding = loaded.versionByService
+      ?.get(SERVICE_ID)
+      ?.get(serviceTestVersion(SERVICE_ID));
+
+    expect(binding?.buildId).toMatch(
+      /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/,
+    );
+    expect(loaded.manifest.rawHttpEntries[0]?.buildId).toBe(
+      binding?.buildId,
+    );
+  });
+
   it("includes Service Unit package ABI expectations in the dynamic build id", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
@@ -4408,6 +4455,7 @@ interface WrittenPackageAssembly {
 }
 
 interface WrittenPackageUnit {
+  abiIdentity: string;
   buildIdentity: string;
   unitPath: string;
   value: Record<string, unknown>;
@@ -4450,7 +4498,24 @@ async function writePackageUnit(
     recursive: true,
   });
   await writeFile(join(root, unitPath), JSON.stringify(value, null, 2));
-  return { buildIdentity: identities.buildIdentity, unitPath, value };
+  return {
+    abiIdentity: identities.abiIdentity,
+    buildIdentity: identities.buildIdentity,
+    unitPath,
+    value,
+  };
+}
+
+function packageUnitPointer(unit: WrittenPackageUnit): Record<string, unknown> {
+  return {
+    schemaVersion: "skiff-package-unit-v1",
+    packageId: unit.value.packageId,
+    version: unit.value.version,
+    buildIdentity: unit.buildIdentity,
+    abiIdentity: unit.abiIdentity,
+    unitHash: artifactHash(unit.value),
+    unitPath: unit.unitPath,
+  };
 }
 
 async function computePackageUnitIdentities(

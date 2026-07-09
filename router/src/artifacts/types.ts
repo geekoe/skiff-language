@@ -84,10 +84,21 @@ export interface ArtifactPointer {
   serviceAssemblyIdentity?: string;
   serviceUnit?: string;
   serviceId?: string;
+  packageUnits?: readonly PackageUnitArtifactPointer[];
 }
 
 export interface SourcedArtifactPointer extends ArtifactPointer {
   sourceRoot: string;
+}
+
+export interface PackageUnitArtifactPointer {
+  schemaVersion: "skiff-package-unit-v1";
+  packageId: string;
+  version: string;
+  buildIdentity: string;
+  abiIdentity: string;
+  unitHash?: string;
+  unitPath: string;
 }
 
 export type ArtifactPointerInput = {

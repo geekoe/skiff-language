@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use super::{
     identity::{identity_hash, identity_hash_with_label, validate_identity_prefix},
-    types::{ArtifactIndexPointer, ServiceAssemblyPointer},
+    types::{ArtifactIndexPointer, PackageUnitArtifactPointer, ServiceAssemblyPointer},
     utils::{is_sha256_hash, map_string, object_string},
     SERVICE_BUILD_IDENTITY_PREFIX,
 };
@@ -49,6 +49,7 @@ pub(super) fn parse_dev_reload_pointer(
     )?;
     let service_assembly = parse_service_assembly_pointer(object, pointer_path)?;
     let service_unit_path = parse_service_unit_path(object)?;
+    let package_units = parse_package_unit_pointers(object, pointer_path)?;
     validate_dev_build_id_matches_service_assembly(&build_id, &service_assembly, pointer_path)?;
 
     Ok(ArtifactIndexPointer {
@@ -60,6 +61,7 @@ pub(super) fn parse_dev_reload_pointer(
         implementation_identity: object_string(object, "implementationIdentity"),
         service_unit_path,
         service_assembly,
+        package_units,
     })
 }
 
@@ -212,4 +214,55 @@ fn parse_service_unit_path(object: &Map<String, Value>) -> anyhow::Result<Option
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("serviceUnit requires unitPath"))?;
     Ok(Some(PathBuf::from(path)))
+}
+
+pub(super) fn parse_package_unit_pointers(
+    object: &Map<String, Value>,
+    pointer_path: &Path,
+) -> anyhow::Result<Option<Vec<PackageUnitArtifactPointer>>> {
+    let Some(value) = object.get("packageUnits") else {
+        return Ok(None);
+    };
+    let items = value.as_array().ok_or_else(|| {
+        anyhow::anyhow!("{} packageUnits must be an array", pointer_path.display())
+    })?;
+    Ok(Some(
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, value)| parse_package_unit_pointer(value, pointer_path, index))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    ))
+}
+
+fn parse_package_unit_pointer(
+    value: &Value,
+    pointer_path: &Path,
+    index: usize,
+) -> anyhow::Result<PackageUnitArtifactPointer> {
+    let label = format!("{} packageUnits[{index}]", pointer_path.display());
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{label} must be an object"))?;
+    if let Some(schema_version) = map_string(Some(object), "schemaVersion") {
+        if schema_version != "skiff-package-unit-v1" {
+            anyhow::bail!("{label}.schemaVersion must be skiff-package-unit-v1");
+        }
+    }
+    Ok(PackageUnitArtifactPointer {
+        package_id: required_package_unit_string(object, "packageId", &label)?,
+        version: required_package_unit_string(object, "version", &label)?,
+        build_identity: required_package_unit_string(object, "buildIdentity", &label)?,
+        abi_identity: required_package_unit_string(object, "abiIdentity", &label)?,
+        unit_hash: map_string(Some(object), "unitHash"),
+        unit_path: PathBuf::from(required_package_unit_string(object, "unitPath", &label)?),
+    })
+}
+
+fn required_package_unit_string(
+    object: &Map<String, Value>,
+    field: &str,
+    label: &str,
+) -> anyhow::Result<String> {
+    map_string(Some(object), field).ok_or_else(|| anyhow::anyhow!("{label}.{field} is required"))
 }

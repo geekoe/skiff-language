@@ -122,6 +122,71 @@ describe('dynamic build id identity CLI boundary', () => {
     }
   });
 
+  it('passes pinned package units to the identity CLI when the pointer carries them', async () => {
+    const fixture = await dynamicBuildIdFixture();
+    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-package-units-'));
+    const capturePath = join(root, 'identity-cli-stdin.json');
+    const packageUnits = [
+      {
+        schemaVersion: 'skiff-package-unit-v1' as const,
+        packageId: 'skiff.run/llm',
+        version: '1.0.0',
+        buildIdentity:
+          'skiff-package-build-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+        abiIdentity:
+          'skiff-package-abi-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222',
+        unitHash: '3333333333333333333333333333333333333333333333333333333333333333',
+        unitPath: 'units/packages/skiff~run~~llm/3333333333333333333333333333333333333333333333333333333333333333.json'
+      }
+    ];
+    try {
+      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
+      const identityCliPath = await writeMockIdentityCli({
+        dir: join(root, 'bin'),
+        dynamicBuildId: EXPECTED_DYNAMIC_BUILD_ID,
+        capturePath,
+      });
+      const serviceUnit = await readRuntimeProgramServiceUnit({
+        root,
+        pointer: {
+          indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
+          serviceUnit: fixture.serviceUnitPath,
+          packageUnits
+        },
+        serviceAssembly: {}
+      });
+
+      await expect(
+        computeRuntimeProgramBuildId({
+          root,
+          pointer: {
+            indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
+            serviceUnit: fixture.serviceUnitPath,
+            packageUnits
+          },
+          serviceAssembly: {},
+          serviceUnit,
+          identityCliPath
+        })
+      ).resolves.toBe(EXPECTED_DYNAMIC_BUILD_ID);
+
+      const cliInput = JSON.parse(await readFile(capturePath, 'utf8')) as Record<string, any>;
+      const firstPackageUnit = packageUnits[0]!;
+      expect(cliInput.services[0].packageUnits).toEqual([
+        {
+          packageId: firstPackageUnit.packageId,
+          version: firstPackageUnit.version,
+          buildIdentity: firstPackageUnit.buildIdentity,
+          abiIdentity: firstPackageUnit.abiIdentity,
+          unitHash: firstPackageUnit.unitHash,
+          unitPath: firstPackageUnit.unitPath
+        }
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the identity CLI exits non-zero', async () => {
     const fixture = await dynamicBuildIdFixture();
     const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-error-'));

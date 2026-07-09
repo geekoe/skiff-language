@@ -30,6 +30,7 @@ import {
 import type {
   LoadedServiceAssemblyArtifact,
   LoadRouterArtifactRootOptions,
+  PackageUnitArtifactPointer,
   SourcedArtifactPointer,
 } from "./types.js";
 import {
@@ -206,6 +207,7 @@ async function routerManifestFromServiceAssembly(
   const packageConfigs = await packageConfigActivationInputs(
     root,
     serviceUnit.value,
+    pointer.packageUnits,
     pointer.indexPath,
     serviceUnit.path,
   );
@@ -262,6 +264,7 @@ async function routerManifestFromServiceAssembly(
 async function packageConfigActivationInputs(
   root: string,
   serviceUnit: Record<string, unknown>,
+  packageUnits: readonly PackageUnitArtifactPointer[] | undefined,
   indexPath: string,
   serviceUnitPath: string,
 ): Promise<PackageConfigActivationInput[]> {
@@ -271,7 +274,14 @@ async function packageConfigActivationInputs(
   );
   const inputs: PackageConfigActivationInput[] = [];
   for (const dependency of packageDependencies) {
-    const packageUnit = await readPackageUnitForDependency(root, dependency);
+    const packageUnit = packageUnits
+      ? await readPinnedPackageUnitForDependency(
+          root,
+          dependency,
+          packageUnits,
+          indexPath,
+        )
+      : await readPackageUnitForDependency(root, dependency);
     const configMetadata = readPackageConfigMetadata(packageUnit.value);
     const configShape = readConfigShape(
       configMetadata.shape,
@@ -290,6 +300,114 @@ async function packageConfigActivationInputs(
     });
   }
   return inputs;
+}
+
+async function readPinnedPackageUnitForDependency(
+  root: string,
+  dependency: ServiceUnitPackageDependency,
+  packageUnits: readonly PackageUnitArtifactPointer[],
+  indexPath: string,
+): Promise<{ path: string; value: Record<string, unknown> }> {
+  const matches = packageUnits.filter(
+    (unit) =>
+      unit.packageId === dependency.id && unit.version === dependency.version,
+  );
+  if (matches.length === 0) {
+    throw new Error(
+      `${indexPath} packageUnits missing direct dependency ${dependency.id}@${dependency.version}`,
+    );
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `${indexPath} packageUnits declares duplicate dependency ${dependency.id}@${dependency.version}`,
+    );
+  }
+  const packageUnitPointer = matches[0]!;
+  const unit = await readJsonAtArtifactPath(
+    root,
+    packageUnitPointer.unitPath,
+    indexPath,
+  );
+  assertRecord(unit, `${packageUnitPointer.unitPath} package unit`);
+  validatePinnedPackageUnit(
+    unit,
+    packageUnitPointer,
+    dependency,
+    packageUnitPointer.unitPath,
+  );
+  return { path: packageUnitPointer.unitPath, value: unit };
+}
+
+function validatePinnedPackageUnit(
+  unit: Record<string, unknown>,
+  pointer: PackageUnitArtifactPointer,
+  dependency: ServiceUnitPackageDependency,
+  unitPath: string,
+): void {
+  if (unit.schemaVersion !== "skiff-package-unit-v1") {
+    throw new Error(
+      `${unitPath} package unit schemaVersion must be skiff-package-unit-v1`,
+    );
+  }
+  validatePinnedPackageUnitField(
+    unitPath,
+    "packageId",
+    dependency.id,
+    pointer.packageId,
+    "Service Unit dependency",
+  );
+  validatePinnedPackageUnitField(
+    unitPath,
+    "version",
+    dependency.version,
+    pointer.version,
+    "Service Unit dependency",
+  );
+  validatePinnedPackageUnitField(
+    unitPath,
+    "packageId",
+    pointer.packageId,
+    readRequiredString(unit.packageId, `${unitPath} packageUnit.packageId`),
+    "package unit",
+  );
+  validatePinnedPackageUnitField(
+    unitPath,
+    "version",
+    pointer.version,
+    readRequiredString(unit.version, `${unitPath} packageUnit.version`),
+    "package unit",
+  );
+  validatePinnedPackageUnitField(
+    unitPath,
+    "buildIdentity",
+    pointer.buildIdentity,
+    readRequiredString(
+      unit.buildIdentity,
+      `${unitPath} packageUnit.buildIdentity`,
+    ),
+    "package unit",
+  );
+  validatePinnedPackageUnitField(
+    unitPath,
+    "abiIdentity",
+    pointer.abiIdentity,
+    readRequiredString(unit.abiIdentity, `${unitPath} packageUnit.abiIdentity`),
+    "package unit",
+  );
+}
+
+function validatePinnedPackageUnitField(
+  unitPath: string,
+  field: string,
+  expected: string,
+  actual: string,
+  source: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `${unitPath} package unit ${field} ${actual} does not match ${source} ${expected}`,
+    );
+  }
 }
 
 interface ServiceUnitPackageDependency {

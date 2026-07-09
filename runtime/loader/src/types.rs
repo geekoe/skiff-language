@@ -9,6 +9,7 @@ pub struct ArtifactIndexPointer {
     pub implementation_identity: Option<String>,
     pub service_unit_path: Option<PathBuf>,
     pub service_assembly: ServiceAssemblyPointer,
+    pub package_units: Option<Vec<PackageUnitArtifactPointer>>,
 }
 
 #[derive(Debug)]
@@ -38,4 +39,14 @@ impl RootedArtifactPointerFile {
 pub struct ServiceAssemblyPointer {
     pub path: PathBuf,
     pub assembly_identity: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct PackageUnitArtifactPointer {
+    pub package_id: String,
+    pub version: String,
+    pub build_identity: String,
+    pub abi_identity: String,
+    pub unit_hash: Option<String>,
+    pub unit_path: PathBuf,
 }

@@ -10,7 +10,7 @@ use super::{
     identity::{identity_hash, identity_hash_with_label, validate_identity_prefix},
     paths::{service_id_artifact_json_path, service_id_artifact_path},
     pointer_parse::{
-        parse_dev_reload_pointer, parse_service_assembly_pointer,
+        parse_dev_reload_pointer, parse_package_unit_pointers, parse_service_assembly_pointer,
         reject_unsupported_pointer_aliases,
     },
     types::{ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile},
@@ -333,6 +333,7 @@ fn parse_service_build_record(
     }
     let service_assembly = parse_service_assembly_pointer(object, build_path)?;
     let service_unit_path = parse_service_unit_path(object)?;
+    let package_units = parse_package_unit_pointers(object, build_path)?;
 
     Ok(ArtifactIndexPointer {
         service_id,
@@ -342,6 +343,7 @@ fn parse_service_build_record(
         implementation_identity: object_string(object, "implementationIdentity"),
         service_unit_path,
         service_assembly,
+        package_units,
     })
 }
 

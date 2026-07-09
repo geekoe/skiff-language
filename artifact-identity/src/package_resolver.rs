@@ -14,12 +14,35 @@ use crate::{
     validate_package_unit_identities, ArtifactIdentityError, Result,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageUnitArtifactRef {
+    pub package_id: String,
+    pub version: String,
+    pub build_identity: String,
+    pub abi_identity: String,
+    pub unit_hash: Option<String>,
+    pub unit_path: PathBuf,
+}
+
 pub fn ordered_package_build_identities_from_artifact_root(
     artifact_root: &Path,
     service_unit: &ServiceUnit,
 ) -> Result<Vec<String>> {
     Ok(
         ordered_package_units_from_artifact_root(artifact_root, service_unit)?
+            .into_iter()
+            .map(|package| package.build_identity)
+            .collect(),
+    )
+}
+
+pub fn ordered_package_build_identities_from_artifact_refs(
+    artifact_root: &Path,
+    service_unit: &ServiceUnit,
+    package_refs: &[PackageUnitArtifactRef],
+) -> Result<Vec<String>> {
+    Ok(
+        ordered_package_units_from_artifact_refs(artifact_root, service_unit, package_refs)?
             .into_iter()
             .map(|package| package.build_identity)
             .collect(),
@@ -39,11 +62,37 @@ pub fn runtime_program_dynamic_build_id_from_artifact_root(
     ))
 }
 
+pub fn runtime_program_dynamic_build_id_from_artifact_refs(
+    artifact_root: &Path,
+    service_unit: &ServiceUnit,
+    package_refs: &[PackageUnitArtifactRef],
+) -> Result<String> {
+    let service_identity = runtime_program_service_unit_identity_bytes(service_unit)?;
+    let package_build_identities = ordered_package_build_identities_from_artifact_refs(
+        artifact_root,
+        service_unit,
+        package_refs,
+    )?;
+    Ok(runtime_program_dynamic_build_id(
+        &service_identity,
+        package_build_identities.iter().map(String::as_str),
+    ))
+}
+
 pub fn ordered_package_units_from_artifact_root(
     artifact_root: &Path,
     service_unit: &ServiceUnit,
 ) -> Result<Vec<PackageUnit>> {
     PackageResolver::new(artifact_root).resolve_service_packages(service_unit)
+}
+
+pub fn ordered_package_units_from_artifact_refs(
+    artifact_root: &Path,
+    service_unit: &ServiceUnit,
+    package_refs: &[PackageUnitArtifactRef],
+) -> Result<Vec<PackageUnit>> {
+    PackageResolver::new(artifact_root)
+        .resolve_service_packages_from_refs(service_unit, package_refs)
 }
 
 struct PackageResolver<'a> {
@@ -57,7 +106,7 @@ impl<'a> PackageResolver<'a> {
 
     fn resolve_service_packages(&self, service_unit: &ServiceUnit) -> Result<Vec<PackageUnit>> {
         let mut packages = Vec::new();
-        let mut loaded_build_by_package_id = BTreeMap::new();
+        let mut loaded_build_by_package_id = BTreeMap::<String, String>::new();
         let mut visiting = BTreeSet::new();
         for dependency in &service_unit.package_dependencies {
             self.resolve_package_dependency_recursive(
@@ -66,6 +115,57 @@ impl<'a> PackageResolver<'a> {
                 &mut loaded_build_by_package_id,
                 &mut visiting,
             )?;
+        }
+        Ok(packages)
+    }
+
+    fn resolve_service_packages_from_refs(
+        &self,
+        service_unit: &ServiceUnit,
+        package_refs: &[PackageUnitArtifactRef],
+    ) -> Result<Vec<PackageUnit>> {
+        let mut packages = Vec::new();
+        let mut loaded_build_by_package_id = BTreeMap::<String, String>::new();
+        for package_ref in package_refs {
+            let package = self.load_package_unit_from_ref(package_ref)?;
+            if let Some(existing_build) = loaded_build_by_package_id.get(&package.package_id) {
+                if existing_build != &package.build_identity {
+                    return Err(ArtifactIdentityError::PackageDependencyConflict {
+                        package_id: package.package_id,
+                        existing_build: existing_build.clone(),
+                        new_build: package.build_identity,
+                    });
+                }
+                continue;
+            }
+            loaded_build_by_package_id
+                .insert(package.package_id.clone(), package.build_identity.clone());
+            packages.push(package);
+        }
+
+        let package_by_id = packages
+            .iter()
+            .map(|package| (package.package_id.as_str(), package))
+            .collect::<BTreeMap<_, _>>();
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        for dependency in &service_unit.package_dependencies {
+            validate_pinned_dependency_recursive(
+                dependency,
+                &package_by_id,
+                &mut visiting,
+                &mut visited,
+            )?;
+        }
+        for package in &packages {
+            if !visited.contains(&package.package_id) {
+                return Err(ArtifactIdentityError::InvalidPackageIndex {
+                    message: format!(
+                        "pinned packageUnits includes unreachable package {}@{}",
+                        package.package_id, package.version
+                    ),
+                });
+            }
         }
         Ok(packages)
     }
@@ -113,6 +213,19 @@ impl<'a> PackageResolver<'a> {
     fn resolve_package_dependency(&self, package_id: &str, version: &str) -> Result<PackageUnit> {
         let path = self.package_unit_path_for_dependency(package_id, version)?;
         self.load_package_unit_at_artifact_path(&path)
+    }
+
+    fn load_package_unit_from_ref(
+        &self,
+        package_ref: &PackageUnitArtifactRef,
+    ) -> Result<PackageUnit> {
+        let path = ArtifactRootRelativePath::new(
+            &package_ref.unit_path,
+            &format!("package unit {} unitPath", package_ref.package_id),
+        )?;
+        let package = self.load_package_unit_at_artifact_path(&path)?;
+        validate_package_unit_ref(&package, package_ref, &path)?;
+        Ok(package)
     }
 
     fn package_unit_path_for_dependency(
@@ -195,6 +308,90 @@ impl<'a> PackageResolver<'a> {
     fn artifact_path_exists(&self, relative_path: &ArtifactRootRelativePath) -> bool {
         self.artifact_root.join(relative_path.as_path()).is_file()
     }
+}
+
+fn validate_pinned_dependency_recursive<'a>(
+    dependency: &PackageDependencyConstraint,
+    package_by_id: &BTreeMap<&'a str, &'a PackageUnit>,
+    visiting: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+) -> Result<()> {
+    if visiting.contains(&dependency.id) {
+        return Err(ArtifactIdentityError::PackageDependencyCycle {
+            package_id: dependency.id.clone(),
+        });
+    }
+    if visited.contains(&dependency.id) {
+        return Ok(());
+    }
+    let Some(package) = package_by_id.get(dependency.id.as_str()).copied() else {
+        return Err(ArtifactIdentityError::InvalidPackageIndex {
+            message: format!(
+                "pinned packageUnits missing dependency {}@{}",
+                dependency.id, dependency.version
+            ),
+        });
+    };
+    if package.version.as_str() != dependency.version.as_str() {
+        return Err(ArtifactIdentityError::InvalidPackageIndex {
+            message: format!(
+                "pinned packageUnits dependency {} version {} does not match required {}",
+                dependency.id, package.version, dependency.version
+            ),
+        });
+    }
+
+    visiting.insert(dependency.id.clone());
+    for nested in &package.dependencies {
+        validate_pinned_dependency_recursive(nested, package_by_id, visiting, visited)?;
+    }
+    visiting.remove(&dependency.id);
+    visited.insert(dependency.id.clone());
+    Ok(())
+}
+
+fn validate_package_unit_ref(
+    package: &PackageUnit,
+    package_ref: &PackageUnitArtifactRef,
+    path: &ArtifactRootRelativePath,
+) -> Result<()> {
+    validate_package_unit_ref_field(
+        path,
+        "packageId",
+        &package_ref.package_id,
+        &package.package_id,
+    )?;
+    validate_package_unit_ref_field(path, "version", &package_ref.version, &package.version)?;
+    validate_package_unit_ref_field(
+        path,
+        "buildIdentity",
+        &package_ref.build_identity,
+        &package.build_identity,
+    )?;
+    validate_package_unit_ref_field(
+        path,
+        "abiIdentity",
+        &package_ref.abi_identity,
+        &package.abi_identity,
+    )?;
+    Ok(())
+}
+
+fn validate_package_unit_ref_field(
+    path: &ArtifactRootRelativePath,
+    field: &'static str,
+    expected: &str,
+    actual: &str,
+) -> Result<()> {
+    if expected != actual {
+        return Err(ArtifactIdentityError::PackageUnitPointerMismatch {
+            path: path.display().to_string(),
+            field,
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

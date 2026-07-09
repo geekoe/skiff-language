@@ -19,8 +19,10 @@ use thiserror::Error;
 pub mod package_resolver;
 
 pub use package_resolver::{
-    ordered_package_build_identities_from_artifact_root, ordered_package_units_from_artifact_root,
-    runtime_program_dynamic_build_id_from_artifact_root,
+    ordered_package_build_identities_from_artifact_refs,
+    ordered_package_build_identities_from_artifact_root, ordered_package_units_from_artifact_refs,
+    ordered_package_units_from_artifact_root, runtime_program_dynamic_build_id_from_artifact_refs,
+    runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
 };
 
 pub const RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER: &str = "skiff-runtime-program-link-v1";
@@ -138,6 +140,15 @@ pub enum ArtifactIdentityError {
         package_id: String,
         existing_build: String,
         new_build: String,
+    },
+    #[error(
+        "package unit pointer for {path} declared {field} {expected} but package unit has {actual}"
+    )]
+    PackageUnitPointerMismatch {
+        path: String,
+        field: &'static str,
+        expected: String,
+        actual: String,
     },
     #[error("{message}")]
     InvalidPackageIndex { message: String },

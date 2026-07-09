@@ -1125,6 +1125,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )
@@ -1346,6 +1347,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )
@@ -1493,6 +1495,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )
@@ -1569,6 +1572,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )
@@ -1638,6 +1642,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )
@@ -1692,6 +1697,7 @@ mod tests {
                         path: PathBuf::from("local/assembly.json"),
                         assembly_identity: Some(assembly_identity),
                     },
+                    package_units: None,
                 },
             }],
         )

@@ -1281,6 +1281,158 @@ fn artifact_loader_accepts_matching_package_abi_expectation() {
 }
 
 #[test]
+fn artifact_loader_uses_pinned_package_units_when_version_index_moves() {
+    let temp = TempDir::new("runtime-program-pinned-package-units");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_package_unit(
+        &root,
+        "units/packages/pkg-old.json",
+        "example.com/pkg",
+        "1.0.0",
+        "pkg:build:old",
+        "abi:actual",
+    );
+    write_package_unit(
+        &root,
+        "units/packages/pkg-new.json",
+        "example.com/pkg",
+        "1.0.0",
+        "pkg:build:new",
+        "abi:new",
+    );
+    let pinned_package = read_json(&root, "units/packages/pkg-old.json");
+    let pinned_build_identity = pinned_package["buildIdentity"]
+        .as_str()
+        .expect("pinned package build identity")
+        .to_string();
+    let pinned_abi_identity = pinned_package["abiIdentity"]
+        .as_str()
+        .expect("pinned package ABI identity")
+        .to_string();
+    let service_unit = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        vec![json!({
+            "id": "example.com/pkg",
+            "version": "1.0.0",
+            "alias": "pkg"
+        })],
+        vec![json!({
+            "id": "example.com/pkg",
+            "version": "1.0.0",
+            "abiIdentity": pinned_abi_identity,
+            "usedSymbols": []
+        })],
+    );
+    write_service_unit(&root, "units/services/svc-v1.json", service_unit);
+    write_package_index(
+        &root,
+        "example.com/pkg",
+        "1.0.0",
+        "units/packages/pkg-new.json",
+    );
+    write_release_pointer_with_service_unit_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity('c'),
+        json!({
+            "serviceUnit": {
+                "unitPath": "units/services/svc-v1.json"
+            },
+            "packageUnits": [{
+                "schemaVersion": "skiff-package-unit-v1",
+                "packageId": "example.com/pkg",
+                "version": "1.0.0",
+                "buildIdentity": pinned_build_identity,
+                "abiIdentity": pinned_package["abiIdentity"],
+                "unitPath": "units/packages/pkg-old.json"
+            }]
+        }),
+    );
+
+    let program = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect("pinned package unit should load even after version index moves");
+
+    assert_eq!(
+        program.image.packages[0].build_identity,
+        pinned_build_identity
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_explicit_empty_package_unit_lock_for_dependencies() {
+    let temp = TempDir::new("runtime-program-empty-package-unit-lock");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_service_unit(
+        &root,
+        "units/services/svc-v1.json",
+        service_unit_json(
+            "example.com/svc",
+            "v1",
+            "file:service",
+            "units/files/service.json",
+            vec![json!({
+                "id": "example.com/pkg",
+                "version": "1.0.0",
+                "alias": "pkg"
+            })],
+            vec![],
+        ),
+    );
+    write_package_unit(
+        &root,
+        "units/packages/pkg.json",
+        "example.com/pkg",
+        "1.0.0",
+        "pkg:build",
+        "abi:actual",
+    );
+    write_package_index(&root, "example.com/pkg", "1.0.0", "units/packages/pkg.json");
+    write_release_pointer_with_service_unit_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity('c'),
+        json!({
+            "serviceUnit": {
+                "unitPath": "units/services/svc-v1.json"
+            },
+            "packageUnits": []
+        }),
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("explicit empty packageUnits must not fall back to package indexes");
+
+    assert!(
+        format!("{error:#}")
+            .contains("pinned packageUnits missing dependency example.com/pkg@1.0.0"),
+        "expected missing pinned dependency error, got {error:#}"
+    );
+}
+
+#[test]
 fn artifact_loader_resolves_packages_from_selected_artifact_root() {
     let temp = TempDir::new("runtime-program-multi-root-package-binding");
     let default_root = temp.path().join("default-artifacts");
@@ -2369,6 +2521,12 @@ fn write_json(root: &Path, relative_path: &str, value: Value) {
         serde_json::to_vec_pretty(&value).expect("test JSON should serialize"),
     )
     .expect("test artifact should be written");
+}
+
+fn read_json(root: &Path, relative_path: &str) -> Value {
+    let path = root.join(relative_path);
+    serde_json::from_slice(&fs::read(path).expect("test artifact should be readable"))
+        .expect("test artifact should be valid JSON")
 }
 
 fn canonicalize_test_artifact_json(mut value: Value) -> Value {

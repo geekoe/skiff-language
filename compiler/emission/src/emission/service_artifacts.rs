@@ -5,7 +5,7 @@ use crate::emission::artifact::{
     SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
 use crate::emission::identity::identity;
-use crate::error::Result;
+use crate::error::{EmissionError, Result};
 use crate::projection::context::{PackageApiSourceProjection, ProjectedServiceDependencyLockEntry};
 use crate::projection::contract::{CanonicalContractProjectionSchema, ContractProjection};
 use crate::projection::prelude_metadata::PreludeMetadata;
@@ -21,7 +21,7 @@ use crate::projection::{
     ConfigActivation, ConfigRequirementsProjection, ConfigShape, ConfigUseEntry,
 };
 use serde::Serialize;
-use skiff_artifact_model::{DbMetadataIr, PackageUnit};
+use skiff_artifact_model::DbMetadataIr;
 use skiff_compiler_core::{id::PublicationId, json_utils::value_sha256};
 
 use super::identity::{service_unit_hash, service_unit_identity};
@@ -259,7 +259,7 @@ fn service_bundle_artifact_model<'a>(
     service_unit: ServiceUnitArtifactPointer,
     files: Vec<FileIrArtifactPointer>,
     file_ir_units: Vec<FileIrArtifactPointer>,
-    package_units: Vec<PackageUnitArtifactPointer<'a>>,
+    package_units: Vec<PackageUnitArtifactPointer>,
 ) -> ServiceBundleArtifact<'a> {
     ServiceBundleArtifact {
         schema_version: BUNDLE_SCHEMA_VERSION,
@@ -287,7 +287,7 @@ fn service_index_artifact_model<'a>(
     bundle: ServiceBundleArtifactPointer,
     files: Vec<FileIrArtifactPointer>,
     file_ir_units: Vec<FileIrArtifactPointer>,
-    package_units: Vec<PackageUnitArtifactPointer<'a>>,
+    package_units: Vec<PackageUnitArtifactPointer>,
 ) -> ServiceIndexArtifact<'a> {
     ServiceIndexArtifact {
         schema_version: ARTIFACT_INDEX_SCHEMA_VERSION,
@@ -465,12 +465,11 @@ fn build_published_artifact_units<'a>(
         unit_hash: service_unit_hash.clone(),
         unit_path: service_unit_path.clone(),
     };
-    let package_unit_pointers = artifact_projection
-        .package_units_typed
+    let package_unit_pointers = context
+        .package_units
         .iter()
-        .zip(context.package_units.iter())
-        .map(|(unit, artifact)| package_unit_pointer(unit, artifact))
-        .collect::<Vec<_>>();
+        .map(package_unit_pointer)
+        .collect::<Result<Vec<_>>>()?;
     let file_ir_unit_pointers = context
         .file_ir_units
         .iter()
@@ -686,7 +685,7 @@ struct ServiceBundleArtifact<'a> {
     service_unit: ServiceUnitArtifactPointer,
     files: Vec<FileIrArtifactPointer>,
     file_ir_units: Vec<FileIrArtifactPointer>,
-    package_units: Vec<PackageUnitArtifactPointer<'a>>,
+    package_units: Vec<PackageUnitArtifactPointer>,
     package_configs: &'a std::collections::BTreeMap<String, ServicePackageConfigEntry>,
     dependency_lock: &'a [ProjectedServiceDependencyLockEntry],
 }
@@ -743,45 +742,116 @@ struct ServiceIndexArtifact<'a> {
     bundle: ServiceBundleArtifactPointer,
     files: Vec<FileIrArtifactPointer>,
     file_ir_units: Vec<FileIrArtifactPointer>,
-    package_units: Vec<PackageUnitArtifactPointer<'a>>,
+    package_units: Vec<PackageUnitArtifactPointer>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PackageUnitArtifactPointer<'a> {
+pub(crate) struct PackageUnitArtifactPointer {
     schema_version: &'static str,
-    package_id: &'a str,
-    version: &'a str,
-    build_identity: &'a str,
-    abi_identity: &'a str,
-    unit_hash: &'a str,
-    unit_path: &'a str,
+    package_id: String,
+    version: String,
+    build_identity: String,
+    abi_identity: String,
+    unit_hash: String,
+    unit_path: String,
 }
 
-pub(crate) fn package_unit_pointer<'a>(
-    unit: &'a PackageUnit,
-    artifact: &'a PublishedJsonArtifact,
-) -> PackageUnitArtifactPointer<'a> {
-    PackageUnitArtifactPointer {
-        schema_version: PACKAGE_UNIT_SCHEMA_VERSION,
-        package_id: unit.package_id.as_str(),
-        version: unit.version.as_str(),
-        build_identity: artifact.identity.as_str(),
-        abi_identity: unit.abi_identity.as_str(),
-        unit_hash: artifact.hash.as_str(),
-        unit_path: artifact.path.as_str(),
+pub(crate) fn package_unit_pointer(
+    artifact: &PublishedJsonArtifact,
+) -> Result<PackageUnitArtifactPointer> {
+    let object = artifact
+        .value
+        .as_object()
+        .ok_or_else(|| EmissionError::ContractValidation {
+            message: format!("package unit artifact {} must be an object", artifact.path),
+        })?;
+    let schema_version = package_unit_string_field(object, "schemaVersion", &artifact.path)?;
+    if schema_version != PACKAGE_UNIT_SCHEMA_VERSION {
+        return Err(EmissionError::ContractValidation {
+            message: format!(
+                "package unit artifact {} schemaVersion must be {}",
+                artifact.path, PACKAGE_UNIT_SCHEMA_VERSION
+            ),
+        });
     }
+    let package_id = package_unit_string_field(object, "packageId", &artifact.path)?;
+    let version = package_unit_string_field(object, "version", &artifact.path)?;
+    let build_identity = package_unit_string_field(object, "buildIdentity", &artifact.path)?;
+    let abi_identity = package_unit_string_field(object, "abiIdentity", &artifact.path)?;
+    if build_identity != artifact.identity {
+        return Err(EmissionError::ContractValidation {
+            message: format!(
+                "package unit artifact {} buildIdentity {} does not match published identity {}",
+                artifact.path, build_identity, artifact.identity
+            ),
+        });
+    }
+    Ok(PackageUnitArtifactPointer {
+        schema_version: PACKAGE_UNIT_SCHEMA_VERSION,
+        package_id,
+        version,
+        build_identity,
+        abi_identity,
+        unit_hash: artifact.hash.clone(),
+        unit_path: artifact.path.clone(),
+    })
+}
+
+fn package_unit_string_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    path: &str,
+) -> Result<String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| EmissionError::ContractValidation {
+            message: format!("package unit artifact {path} missing string {field}"),
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::service_id_artifact_path;
+    use super::{package_unit_pointer, service_id_artifact_path};
+    use crate::emission::artifact::PublishedJsonArtifact;
+    use serde_json::json;
 
     #[test]
     fn service_id_artifact_path_projects_url_like_id_to_single_segment() {
         assert_eq!(
             service_id_artifact_path("skiff.run/account"),
             "skiff~run~~account"
+        );
+    }
+
+    #[test]
+    fn package_unit_pointer_uses_published_artifact_content_for_identity_fields() {
+        let artifact = PublishedJsonArtifact {
+            value: json!({
+                "schemaVersion": "skiff-package-unit-v1",
+                "packageId": "example.com/package-a",
+                "version": "1.0.0",
+                "buildIdentity": "skiff-package-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "abiIdentity": "skiff-package-abi-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }),
+            identity: "skiff-package-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            path: "units/packages/example~com~~package-a/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.json"
+                .to_string(),
+        };
+
+        let pointer = package_unit_pointer(&artifact).expect("package pointer should build");
+
+        assert_eq!(pointer.package_id, "example.com/package-a");
+        assert_eq!(pointer.version, "1.0.0");
+        assert_eq!(pointer.build_identity, artifact.identity);
+        assert_eq!(
+            pointer.unit_path,
+            "units/packages/example~com~~package-a/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.json"
         );
     }
 }

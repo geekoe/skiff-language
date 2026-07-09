@@ -13,6 +13,7 @@ import {
 import type {
   ArtifactPointer,
   ArtifactPointerInput,
+  PackageUnitArtifactPointer,
   ServiceVersionBuildBinding,
 } from "./types.js";
 
@@ -74,6 +75,7 @@ export function readDevReloadPointer(
     serviceAssemblyIdentity: serviceAssembly.assemblyIdentity,
     serviceUnit: readServiceUnitPath(value, pointerPath),
     serviceId: readRequiredString(value.serviceId, `${pointerPath} serviceId`),
+    packageUnits: readPackageUnitPointers(value.packageUnits, pointerPath),
   });
 }
 
@@ -159,6 +161,51 @@ export function readBuildRecordPointer(
     serviceAssemblyIdentity: serviceAssembly.assemblyIdentity,
     serviceUnit: readServiceUnitPath(value, buildPath),
     serviceId,
+    packageUnits: readPackageUnitPointers(value.packageUnits, buildPath),
+  });
+}
+
+function readPackageUnitPointers(
+  value: unknown,
+  pointerPath: string,
+): PackageUnitArtifactPointer[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${pointerPath} packageUnits must be an array`);
+  }
+  return value.map((item, index) => {
+    const label = `${pointerPath} packageUnits[${index}]`;
+    const object = readOptionalRecord(item);
+    if (!object) {
+      throw new Error(`${label} must be an object`);
+    }
+    const schemaVersion = readRequiredString(
+      object.schemaVersion,
+      `${label}.schemaVersion`,
+    );
+    if (schemaVersion !== "skiff-package-unit-v1") {
+      throw new Error(
+        `${label}.schemaVersion must be skiff-package-unit-v1`,
+      );
+    }
+    const unitHash = readOptionalString(object.unitHash);
+    return {
+      schemaVersion,
+      packageId: readRequiredString(object.packageId, `${label}.packageId`),
+      version: readRequiredString(object.version, `${label}.version`),
+      buildIdentity: readRequiredString(
+        object.buildIdentity,
+        `${label}.buildIdentity`,
+      ),
+      abiIdentity: readRequiredString(
+        object.abiIdentity,
+        `${label}.abiIdentity`,
+      ),
+      ...(unitHash !== undefined ? { unitHash } : {}),
+      unitPath: readRequiredString(object.unitPath, `${label}.unitPath`),
+    };
   });
 }
 
@@ -286,6 +333,9 @@ function definedPointer(pointer: ArtifactPointerInput): ArtifactPointer {
     if (value !== undefined) {
       result[key] = value;
     }
+  }
+  if (pointer.packageUnits !== undefined) {
+    result.packageUnits = pointer.packageUnits;
   }
   return result;
 }

@@ -2,7 +2,10 @@ use std::{path::Path, sync::Arc};
 
 use anyhow::Context;
 use serde_json::Value;
-use skiff_artifact_identity::ordered_package_units_from_artifact_root;
+use skiff_artifact_identity::{
+    ordered_package_units_from_artifact_refs, ordered_package_units_from_artifact_root,
+    PackageUnitArtifactRef,
+};
 use skiff_artifact_model::{FileIrRef, FileIrUnit, PackageUnit, ServiceUnit};
 
 use super::{
@@ -15,7 +18,7 @@ use super::{
 };
 use crate::{
     paths::{resolve_index_artifact_path, ArtifactRootRelativePath},
-    types::ArtifactIndexPointer,
+    types::{ArtifactIndexPointer, PackageUnitArtifactPointer},
     utils::read_json_file,
 };
 
@@ -46,7 +49,7 @@ impl<'a> ArtifactGraphLoader<'a> {
                 )
             })?;
         let service = Arc::new(self.load_service_unit_at_artifact_path(&service_unit_path)?);
-        self.load_service_artifact_graph(service)
+        self.load_service_artifact_graph_for_pointer(service, pointer)
     }
 
     pub fn load_service_artifact_graph(
@@ -55,6 +58,28 @@ impl<'a> ArtifactGraphLoader<'a> {
     ) -> anyhow::Result<ArtifactGraph> {
         let service_files = self.load_file_refs(&service.files, "service unit files")?;
         let package_units = self.resolve_service_packages(&service)?;
+        self.build_artifact_graph(service, service_files, package_units)
+    }
+
+    fn load_service_artifact_graph_for_pointer(
+        &self,
+        service: Arc<ServiceUnit>,
+        pointer: &ArtifactIndexPointer,
+    ) -> anyhow::Result<ArtifactGraph> {
+        let service_files = self.load_file_refs(&service.files, "service unit files")?;
+        let package_units = match &pointer.package_units {
+            Some(package_units) => self.resolve_pinned_service_packages(&service, package_units)?,
+            None => self.resolve_service_packages(&service)?,
+        };
+        self.build_artifact_graph(service, service_files, package_units)
+    }
+
+    fn build_artifact_graph(
+        &self,
+        service: Arc<ServiceUnit>,
+        service_files: Vec<Arc<FileIrUnit>>,
+        package_units: Vec<Arc<PackageUnit>>,
+    ) -> anyhow::Result<ArtifactGraph> {
         let package_files = package_units
             .iter()
             .map(|package| {
@@ -169,6 +194,24 @@ impl<'a> ArtifactGraphLoader<'a> {
             .collect())
     }
 
+    fn resolve_pinned_service_packages(
+        &self,
+        service: &ServiceUnit,
+        package_refs: &[PackageUnitArtifactPointer],
+    ) -> anyhow::Result<Vec<Arc<PackageUnit>>> {
+        let package_refs = package_refs
+            .iter()
+            .map(package_unit_artifact_ref)
+            .collect::<Vec<_>>();
+        let packages =
+            ordered_package_units_from_artifact_refs(self.artifact_root, service, &package_refs)
+                .context("failed to resolve pinned service package dependencies")?;
+        Ok(packages
+            .into_iter()
+            .map(|package| self.cache.insert_package(package))
+            .collect())
+    }
+
     pub(super) fn read_artifact_json(
         &self,
         relative_path: &ArtifactRootRelativePath,
@@ -176,5 +219,16 @@ impl<'a> ArtifactGraphLoader<'a> {
     ) -> anyhow::Result<Value> {
         let path = resolve_index_artifact_path(self.artifact_root, relative_path, label)?;
         read_json_file(&path, label)
+    }
+}
+
+fn package_unit_artifact_ref(pointer: &PackageUnitArtifactPointer) -> PackageUnitArtifactRef {
+    PackageUnitArtifactRef {
+        package_id: pointer.package_id.clone(),
+        version: pointer.version.clone(),
+        build_identity: pointer.build_identity.clone(),
+        abi_identity: pointer.abi_identity.clone(),
+        unit_hash: pointer.unit_hash.clone(),
+        unit_path: pointer.unit_path.clone(),
     }
 }
