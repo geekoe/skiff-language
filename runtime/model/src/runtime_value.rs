@@ -43,6 +43,12 @@ fn runtime_values_equal_inner(
     left: &RuntimeValue,
     right: &RuntimeValue,
 ) -> Result<bool> {
+    match (left, right) {
+        (RuntimeValue::Null, RuntimeValue::Null) => return Ok(true),
+        (RuntimeValue::Null, _) | (_, RuntimeValue::Null) => return Ok(false),
+        _ => {}
+    }
+
     if let Some(label) = interface_equality_label(heap, left, right)? {
         return Err(RuntimeError::Decode(format!(
             "interface value {label} does not define equality"
@@ -50,7 +56,6 @@ fn runtime_values_equal_inner(
     }
 
     match (left, right) {
-        (RuntimeValue::Null, RuntimeValue::Null) => Ok(true),
         (RuntimeValue::Bool(left), RuntimeValue::Bool(right)) => Ok(left == right),
         (RuntimeValue::Number(left), RuntimeValue::Number(right)) => Ok(left == right),
         (RuntimeValue::Date(left), RuntimeValue::Date(right)) => Ok(left == right),
