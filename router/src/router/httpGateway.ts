@@ -20,6 +20,10 @@ import {
   type RequestStartFrameHeader,
   type TelemetryEvent
 } from '../protocol/envelope.js';
+import {
+  REQUEST_CANCEL_SITUATION,
+  requestCancelReasonForSituation
+} from '../protocol/cancelReason.js';
 import { isPublicationId } from '../publicationId.js';
 import { buildActivationLookup } from '../artifacts/activationLookup.js';
 import type { ActivationLookup } from '../artifacts/loadArtifactRoot.js';
@@ -488,7 +492,9 @@ export class HttpGateway {
           },
           {
             signal: clientDisconnect.signal,
-            cancelReason: 'client_disconnect'
+            cancelReason: requestCancelReasonForSituation(
+              REQUEST_CANCEL_SITUATION.clientDisconnect
+            )
           }
         );
         if (!response.writableEnded) {
@@ -502,7 +508,9 @@ export class HttpGateway {
         timeoutMs,
         {
           signal: clientDisconnect.signal,
-          cancelReason: 'client_disconnect'
+          cancelReason: requestCancelReasonForSituation(
+            REQUEST_CANCEL_SITUATION.clientDisconnect
+          )
         }
       );
       this.writeHttpFrameResponse(response, runtimeResponse);

@@ -1,4 +1,7 @@
 import type { ConfigShape } from '../config/index.js';
+import type { RequestCancelReason } from './cancelReason.js';
+
+export type { RequestCancelReason } from './cancelReason.js';
 
 export type DispatchMode = 'unary' | 'serverStream';
 
@@ -19,17 +22,6 @@ export interface TraceContext {
   parentSpanId?: string;
   sampled?: boolean;
 }
-
-export type RequestCancelReason =
-  | 'timeout'
-  | 'caller_cancel'
-  | 'runtime_disconnect'
-  | 'gateway_disconnect'
-  | 'drain'
-  | 'retire'
-  | 'client_disconnect'
-  | 'router_shutdown'
-  | 'backpressure';
 
 export const TELEMETRY_PROTOCOL = 'skiff-telemetry-v1' as const;
 

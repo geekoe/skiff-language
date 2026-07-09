@@ -3047,7 +3047,7 @@ async fn runtime_program_service_dependency_server_stream_decode_error_cancels_o
         .expect("router channel should stay open");
     let cancel_header = request_cancel_control(cancel);
     assert_eq!(cancel_header.request_id, header.request_id);
-    assert_eq!(cancel_header.reason, "caller_cancel");
+    assert_eq!(cancel_header.reason, "protocol_error");
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ use skiff_runtime_request_contract::{
 };
 
 use crate::{
+    cancel_reason::request_cancel_wire_reason_for_internal,
     error::TransportResult,
     protocol::{
         encode_binary_frame, ActorFindRequestFrameHeader, ActorKeyFrameMetadata,
@@ -244,7 +245,7 @@ fn request_cancel_frame_header(request: RequestCancelControl) -> RequestCancelFr
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         envelope_type: "request.cancel".to_string(),
         request_id: request.request_id,
-        reason: request.reason,
+        reason: request_cancel_wire_reason_for_internal(&request.reason).to_string(),
     }
 }
 
@@ -478,6 +479,21 @@ mod tests {
         assert_eq!(decoded.request_id, "request-cancel-1");
         assert_eq!(decoded.reason, "caller_cancel");
         assert!(decoded_payload.is_empty());
+    }
+
+    #[test]
+    fn outbound_request_cancel_control_maps_internal_reason() {
+        let frame = encode_outbound_control_message(OutboundControlMessage::RequestCancel {
+            request: RequestCancelControl {
+                request_id: "request-cancel-1".to_string(),
+                reason: "chunk_seq_mismatch".to_string(),
+            },
+        })
+        .expect("outbound cancel encodes");
+        let (decoded, _): (RequestCancelFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&frame).expect("cancel frame decodes");
+
+        assert_eq!(decoded.reason, "protocol_error");
     }
 
     #[test]
