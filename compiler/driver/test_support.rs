@@ -44,13 +44,15 @@ pub mod service_test_artifacts;
 pub const PACKAGE_CONFIG_FILE: &str = crate::input::PACKAGE_CONFIG_FILE;
 
 pub use package_test_artifacts::{
-    list_package_test_assemblies, write_package_test_artifact_root, TestPackageTestArtifactInput,
+    list_package_test_assemblies, write_package_test_artifact_root,
+    write_package_test_artifact_root_with_runtime_path_registration, TestPackageTestArtifactInput,
     TestPackageTestArtifactOutput, TestPackageTestDependencyPackageInput,
     TestPackageTestEntrypointInput, TestPackageTestFileIrArtifact, TestPackageTestPointer,
 };
 pub use service_test_artifacts::{
-    write_test_service_artifact_root, TestServiceArtifactError, TestServiceArtifactInput,
-    TestServiceArtifactOutput, TestServiceFileIrArtifact,
+    write_test_service_artifact_root,
+    write_test_service_artifact_root_with_runtime_path_registration, TestServiceArtifactError,
+    TestServiceArtifactInput, TestServiceArtifactOutput, TestServiceFileIrArtifact,
 };
 
 pub fn compile_source_file_ir_artifact_for_test(

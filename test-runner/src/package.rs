@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     thread,
@@ -569,32 +569,75 @@ fn dispatch_package_test_artifact(
             return;
         }
     };
-    if let Err(message) = validate_prepared_package_test_entrypoints(
-        ready_tests,
-        &prepared.entrypoints,
-        &prepared.package_id,
-        &prepared.package_version,
-    ) {
+    let mut prepared = Some(prepared);
+    let dispatch = catch_unwind(AssertUnwindSafe(|| {
+        let validation = {
+            let prepared_ref = prepared
+                .as_ref()
+                .expect("prepared package test artifact should be available during validation");
+            validate_prepared_package_test_entrypoints(
+                ready_tests,
+                &prepared_ref.entrypoints,
+                &prepared_ref.package_id,
+                &prepared_ref.package_version,
+            )
+        };
+        if let Err(message) = validation {
+            let cleanup = prepared
+                .take()
+                .expect("prepared package test artifact should be available for cleanup")
+                .finish();
+            for ready in ready_tests {
+                record_package_test_failure(ready, message.clone(), results);
+            }
+            if let Err(cleanup_message) = cleanup {
+                for ready in ready_tests {
+                    record_package_test_failure(ready, cleanup_message.clone(), results);
+                }
+            }
+            return;
+        }
+        let concurrency = package_test_dispatch_concurrency(
+            options.live,
+            ready_tests.len(),
+            dispatch_concurrency_override,
+            available_package_test_parallelism(),
+        );
+        let reports = {
+            let prepared_ref = prepared
+                .as_ref()
+                .expect("prepared package test artifact should be available during dispatch");
+            let dispatch_context = prepared_ref.dispatch_context();
+            dispatch_prepared_package_test_entrypoints(
+                &dispatch_context,
+                &prepared_ref.entrypoints,
+                ready_tests,
+                options,
+                concurrency,
+            )
+        };
+        merge_package_test_dispatch_reports(
+            ready_tests,
+            reports,
+            options,
+            results,
+            databases_to_drop,
+        );
+    }));
+    if let Err(payload) = dispatch {
+        if let Some(prepared) = prepared.take() {
+            let _ = prepared.finish();
+        }
+        resume_unwind(payload);
+    }
+    let Some(prepared) = prepared else {
+        return;
+    };
+    if let Err(message) = prepared.finish() {
         for ready in ready_tests {
             record_package_test_failure(ready, message.clone(), results);
         }
-        return;
     }
-    let dispatch_context = prepared.dispatch_context();
-    let concurrency = package_test_dispatch_concurrency(
-        options.live,
-        ready_tests.len(),
-        dispatch_concurrency_override,
-        available_package_test_parallelism(),
-    );
-    let reports = dispatch_prepared_package_test_entrypoints(
-        &dispatch_context,
-        &prepared.entrypoints,
-        ready_tests,
-        options,
-        concurrency,
-    );
-    merge_package_test_dispatch_reports(ready_tests, reports, options, results, databases_to_drop);
 }
 
 fn validate_prepared_package_test_entrypoints(

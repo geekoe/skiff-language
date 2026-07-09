@@ -1,26 +1,32 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env, fs,
+    fs::{File, OpenOptions},
     io::{Read, Write},
     net::TcpStream,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::PackageDependencyConstraint;
 use skiff_compiler::test_support::{
     default_std_dir, package_test_artifacts::TestPackageTestEntrypointSummary,
-    write_package_test_artifact_root, write_test_service_artifact_root,
-    TestPackageTestArtifactInput, TestServiceArtifactInput, TestServiceFileIrArtifact,
+    write_package_test_artifact_root_with_runtime_path_registration,
+    write_test_service_artifact_root_with_runtime_path_registration, TestPackageTestArtifactInput,
+    TestServiceArtifactInput, TestServiceFileIrArtifact,
 };
 
 use super::{
@@ -55,15 +61,16 @@ const SERVICE_DEPENDENCY_SERVICE_ARTIFACT_DIRS: &[(&str, &str, bool)] = &[
     ("indexes", "services", true),
     ("units", "services", false),
 ];
-const SERVICE_DEPENDENCY_PACKAGE_TEST_ARTIFACT_DIRS: &[(&str, &str, bool)] = &[
-    ("assemblies", "package-tests", false),
-    ("configs", "package-tests", true),
-    ("dev", "package-tests", true),
-];
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
 const PACKAGE_TEST_ACTIVATION_ID_PREFIX: &str = "skiff-package-test-run-v1:";
 const PACKAGE_TEST_SERVICE_DB_PREFIX: &str = "skiff.run/package-test-db-";
 const SYNC_TEST_DB_CLEANUP_ENV: &str = "SKIFF_TEST_SYNC_CLEANUP";
+const TEST_RUNNER_STATE_DIR: &str = ".skiff-test-runner";
+const TEST_RUNNER_LOCK_FILE: &str = "artifact.lock";
+const TEST_RUNNER_RUNS_DIR: &str = "runs";
+const TEST_RUNNER_RELOAD_MARKER: &str = "reload-required";
+const TEST_RUNNER_MANIFEST_SCHEMA_VERSION: &str = "skiff-test-runner-runtime-artifacts-v1";
+const SYNTHETIC_SERVICE_ARTIFACT_PATH_PREFIX: &str = "example~com~~skiff-";
 
 static SERVICE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 static RUNTIME_ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
@@ -135,69 +142,920 @@ fn test_target_component(value: &str) -> String {
         .replace('/', "~~")
 }
 
-struct TestArtifactCleanup {
-    pointer_path: PathBuf,
-    config_dir: PathBuf,
-    pointer_build_id: String,
+struct RuntimeArtifactRun {
+    _process_guard: MutexGuard<'static, ()>,
+    _root_lock: RuntimeArtifactRootLock,
+    registrar: Arc<RuntimeArtifactRunRegistrar>,
+    control_base_url: String,
+    live: bool,
+    completed: AtomicBool,
 }
 
-impl TestArtifactCleanup {
-    fn new(artifact_root: &std::path::Path, service_id: &str, pointer_build_id: &str) -> Self {
-        let service_path = service_id_artifact_path(service_id);
-        Self {
-            pointer_path: artifact_root
+impl RuntimeArtifactRun {
+    fn start(
+        process_guard: MutexGuard<'static, ()>,
+        artifact_root: &Path,
+        control_base_url: &str,
+        options: &SkiffTestOptions,
+    ) -> Result<Self, String> {
+        let root_lock = RuntimeArtifactRootLock::acquire(artifact_root)?;
+        preflight_runtime_artifact_cleanup(artifact_root, control_base_url, options.live)?;
+        let run_id = runtime_artifact_run_id();
+        let registrar = RuntimeArtifactRunRegistrar::create(artifact_root, run_id)?;
+        Ok(Self {
+            _process_guard: process_guard,
+            _root_lock: root_lock,
+            registrar,
+            control_base_url: control_base_url.to_string(),
+            live: options.live,
+            completed: AtomicBool::new(false),
+        })
+    }
+
+    fn registrar(&self) -> &RuntimeArtifactRunRegistrar {
+        &self.registrar
+    }
+
+    fn register_path(&self, relative_path: impl AsRef<Path>) -> Result<(), String> {
+        self.registrar.register_path(relative_path.as_ref())
+    }
+
+    fn mark_written(&self, relative_path: impl AsRef<Path>) -> Result<(), String> {
+        self.registrar.mark_written(relative_path.as_ref())
+    }
+
+    fn finish(self) -> Result<(), String> {
+        let mut reload =
+            || reload_runtime_artifacts_for_live(&self.control_base_url, self.live).map(|_| ());
+        let result = self.finish_with_reloader(&mut reload);
+        if result.is_ok() {
+            self.completed.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn finish_with_reloader(
+        &self,
+        reload: &mut impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let manifest = self.registrar.snapshot()?;
+        let cleanup = cleanup_manifest_paths(&self.registrar.artifact_root, &manifest)?;
+        let reload_required = runtime_cleanup_needs_reload(
+            self.registrar.reload_marker_path.exists(),
+            std::slice::from_ref(&manifest),
+            cleanup.deleted_any,
+        );
+        self.registrar
+            .mark_finished_with_reload_required(reload_required)?;
+        if reload_required {
+            self.registrar.write_reload_marker()?;
+            reload()?;
+            self.registrar.remove_reload_marker()?;
+        }
+        self.registrar.remove_manifest()?;
+        Ok(())
+    }
+}
+
+impl Drop for RuntimeArtifactRun {
+    fn drop(&mut self) {
+        if self.completed.load(Ordering::SeqCst) {
+            return;
+        }
+        self.registrar.mark_cleanup_required_best_effort();
+    }
+}
+
+fn finish_runtime_artifacts<T>(
+    runtime_artifacts: RuntimeArtifactRun,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    let cleanup = runtime_artifacts.finish();
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(message), Ok(())) => Err(message),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(message), Err(cleanup_error)) => {
+            Err(format!("{message}; cleanup failed: {cleanup_error}"))
+        }
+    }
+}
+
+fn run_with_runtime_artifacts<T>(
+    runtime_artifacts: RuntimeArtifactRun,
+    operation: impl FnOnce(&RuntimeArtifactRun) -> Result<T, String>,
+) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        operation(&runtime_artifacts)
+    })) {
+        Ok(result) => finish_runtime_artifacts(runtime_artifacts, result),
+        Err(payload) => {
+            let _ = runtime_artifacts.finish();
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+fn run_prepared_runtime_artifacts<T>(
+    runtime_artifacts: RuntimeArtifactRun,
+    operation: impl FnOnce(&RuntimeArtifactRun) -> Result<T, String>,
+) -> Result<(RuntimeArtifactRun, T), String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        operation(&runtime_artifacts)
+    })) {
+        Ok(Ok(value)) => Ok((runtime_artifacts, value)),
+        Ok(Err(message)) => Err(
+            finish_runtime_artifacts(runtime_artifacts, Err::<(), _>(message))
+                .expect_err("error result cannot produce a value"),
+        ),
+        Err(payload) => {
+            let _ = runtime_artifacts.finish();
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+struct RuntimeArtifactRootLock {
+    file: File,
+}
+
+impl RuntimeArtifactRootLock {
+    fn acquire(artifact_root: &Path) -> Result<Self, String> {
+        let state_dir = test_runner_state_dir(artifact_root);
+        fs::create_dir_all(&state_dir).map_err(|error| {
+            format!(
+                "failed to create test-runner artifact state directory {}: {error}",
+                state_dir.display()
+            )
+        })?;
+        let lock_path = state_dir.join(TEST_RUNNER_LOCK_FILE);
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "failed to open test-runner artifact lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        lock_runtime_artifact_file(&file, &lock_path)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for RuntimeArtifactRootLock {
+    fn drop(&mut self) {
+        unlock_runtime_artifact_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn lock_runtime_artifact_file(file: &File, lock_path: &Path) -> Result<(), String> {
+    let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if status == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "failed to lock test-runner artifact lock {}: {}",
+        lock_path.display(),
+        std::io::Error::last_os_error()
+    ))
+}
+
+#[cfg(not(unix))]
+fn lock_runtime_artifact_file(_file: &File, _lock_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unlock_runtime_artifact_file(file: &File) {
+    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(not(unix))]
+fn unlock_runtime_artifact_file(_file: &File) {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeArtifactRunManifest {
+    schema_version: String,
+    run_id: String,
+    status: String,
+    reload_required: bool,
+    paths: Vec<RuntimeArtifactManifestPath>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeArtifactManifestPath {
+    path: String,
+    written: bool,
+}
+
+struct RuntimeArtifactRunRegistrar {
+    artifact_root: PathBuf,
+    manifest_path: PathBuf,
+    reload_marker_path: PathBuf,
+    state: Mutex<RuntimeArtifactRunManifest>,
+}
+
+impl RuntimeArtifactRunRegistrar {
+    fn create(artifact_root: &Path, run_id: String) -> Result<Arc<Self>, String> {
+        let runs_dir = test_runner_runs_dir(artifact_root);
+        fs::create_dir_all(&runs_dir).map_err(|error| {
+            format!(
+                "failed to create test-runner run manifest directory {}: {error}",
+                runs_dir.display()
+            )
+        })?;
+        let manifest_path = runs_dir.join(format!("{run_id}.json"));
+        let manifest = RuntimeArtifactRunManifest {
+            schema_version: TEST_RUNNER_MANIFEST_SCHEMA_VERSION.to_string(),
+            run_id,
+            status: "active".to_string(),
+            reload_required: false,
+            paths: Vec::new(),
+        };
+        write_runtime_artifact_manifest(&manifest_path, &manifest)?;
+        Ok(Arc::new(Self {
+            artifact_root: artifact_root.to_path_buf(),
+            manifest_path,
+            reload_marker_path: test_runner_reload_marker_path(artifact_root),
+            state: Mutex::new(manifest),
+        }))
+    }
+
+    fn register_path(&self, relative_path: &Path) -> Result<(), String> {
+        let relative_path = artifact_manifest_relative_path(relative_path)?;
+        validate_runtime_cleanup_path(&relative_path)?;
+        let mut manifest = self
+            .state
+            .lock()
+            .map_err(|_| "runtime artifact manifest lock was poisoned".to_string())?;
+        if !manifest
+            .paths
+            .iter()
+            .any(|entry| entry.path == relative_path)
+        {
+            manifest.paths.push(RuntimeArtifactManifestPath {
+                path: relative_path,
+                written: false,
+            });
+        }
+        manifest.reload_required = true;
+        self.write_reload_marker()?;
+        write_runtime_artifact_manifest(&self.manifest_path, &manifest)
+    }
+
+    fn mark_written(&self, relative_path: &Path) -> Result<(), String> {
+        let relative_path = artifact_manifest_relative_path(relative_path)?;
+        let mut manifest = self
+            .state
+            .lock()
+            .map_err(|_| "runtime artifact manifest lock was poisoned".to_string())?;
+        if let Some(entry) = manifest
+            .paths
+            .iter_mut()
+            .find(|entry| entry.path == relative_path)
+        {
+            entry.written = true;
+        }
+        manifest.reload_required = true;
+        self.write_reload_marker()?;
+        write_runtime_artifact_manifest(&self.manifest_path, &manifest)
+    }
+
+    fn snapshot(&self) -> Result<RuntimeArtifactRunManifest, String> {
+        self.state
+            .lock()
+            .map_err(|_| "runtime artifact manifest lock was poisoned".to_string())
+            .map(|manifest| manifest.clone())
+    }
+
+    fn mark_finished_with_reload_required(&self, reload_required: bool) -> Result<(), String> {
+        let mut manifest = self
+            .state
+            .lock()
+            .map_err(|_| "runtime artifact manifest lock was poisoned".to_string())?;
+        manifest.status = "finished".to_string();
+        manifest.reload_required = reload_required;
+        write_runtime_artifact_manifest(&self.manifest_path, &manifest)
+    }
+
+    fn write_reload_marker(&self) -> Result<(), String> {
+        write_reload_marker(&self.reload_marker_path)
+    }
+
+    fn remove_reload_marker(&self) -> Result<(), String> {
+        remove_file_if_exists(&self.reload_marker_path).map_err(|error| {
+            format!(
+                "failed to remove test-runner reload marker {}: {error}",
+                self.reload_marker_path.display()
+            )
+        })
+    }
+
+    fn remove_manifest(&self) -> Result<(), String> {
+        remove_file_if_exists(&self.manifest_path).map_err(|error| {
+            format!(
+                "failed to remove test-runner run manifest {}: {error}",
+                self.manifest_path.display()
+            )
+        })
+    }
+
+    fn mark_cleanup_required_best_effort(&self) {
+        if let Ok(mut manifest) = self.state.lock() {
+            manifest.status = "cleanup-required".to_string();
+            manifest.reload_required = true;
+            let _ = write_runtime_artifact_manifest(&self.manifest_path, &manifest);
+        }
+        let _ = self.write_reload_marker();
+    }
+}
+
+fn preflight_runtime_artifact_cleanup(
+    artifact_root: &Path,
+    control_base_url: &str,
+    live: bool,
+) -> Result<(), String> {
+    let manifests = read_runtime_artifact_manifests(artifact_root)?;
+    let reload_marker = test_runner_reload_marker_path(artifact_root);
+    let mut deleted_any = false;
+    let manifests_to_cleanup = manifests
+        .iter()
+        .filter(|manifest| manifest.manifest.status != "finished")
+        .collect::<Vec<_>>();
+    if !manifests_to_cleanup.is_empty() {
+        write_reload_marker(&reload_marker)?;
+    }
+    for manifest in manifests_to_cleanup {
+        let cleanup = cleanup_manifest_paths(artifact_root, &manifest.manifest)?;
+        deleted_any |= cleanup.deleted_any;
+    }
+    let legacy_cleanup = cleanup_legacy_test_runner_artifacts(artifact_root, &reload_marker)?;
+    deleted_any |= legacy_cleanup.deleted_any;
+    if manifests.is_empty() && !reload_marker.exists() && !deleted_any {
+        return Ok(());
+    }
+    if runtime_cleanup_needs_reload(
+        reload_marker.exists(),
+        &manifests
+            .iter()
+            .map(|manifest| manifest.manifest.clone())
+            .collect::<Vec<_>>(),
+        deleted_any,
+    ) {
+        reload_runtime_artifacts_for_live(control_base_url, live)?;
+        remove_file_if_exists(&reload_marker).map_err(|error| {
+            format!(
+                "failed to remove test-runner reload marker {}: {error}",
+                reload_marker.display()
+            )
+        })?;
+    }
+    for manifest in manifests {
+        remove_file_if_exists(&manifest.path).map_err(|error| {
+            format!(
+                "failed to remove test-runner run manifest {}: {error}",
+                manifest.path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn cleanup_legacy_test_runner_artifacts(
+    artifact_root: &Path,
+    reload_marker: &Path,
+) -> Result<RuntimeArtifactCleanupResult, String> {
+    let mut result = RuntimeArtifactCleanupResult::default();
+    let mut service_paths = legacy_synthetic_service_paths(artifact_root)?;
+    service_paths.sort();
+    service_paths.dedup();
+    let mut pending_deletes = Vec::new();
+    for service_path in &service_paths {
+        pending_deletes.push(
+            artifact_root
                 .join("dev")
                 .join("services")
                 .join(format!("{service_path}.json")),
-            config_dir: artifact_root
-                .join("configs")
-                .join("services")
-                .join(service_path),
-            pointer_build_id: pointer_build_id.to_string(),
+        );
+        for (directory, child) in [
+            ("configs", "services"),
+            ("dev", "service-test-activations"),
+            ("configs", "service-test-activations"),
+            ("assemblies", "services"),
+            ("units", "services"),
+            ("indexes", "services"),
+            ("files", "services"),
+            ("versions", "services"),
+            ("builds", "services"),
+        ] {
+            pending_deletes.push(artifact_root.join(directory).join(child).join(service_path));
         }
     }
+    for path in [
+        artifact_root.join("dev").join("package-tests"),
+        artifact_root.join("assemblies").join("package-tests"),
+        artifact_root.join("configs").join("package-tests"),
+    ] {
+        if path.exists() {
+            pending_deletes.push(path);
+        }
+    }
+    if pending_deletes.is_empty() {
+        return Ok(result);
+    }
+    write_reload_marker(reload_marker)?;
+    for path in pending_deletes {
+        if remove_runtime_artifact_path_if_exists(&path)? {
+            result.deleted_any = true;
+        }
+        prune_empty_artifact_dirs(artifact_root, path.parent());
+    }
+    Ok(result)
+}
 
-    fn pointer_still_matches(&self) -> bool {
-        let Ok(text) = fs::read_to_string(&self.pointer_path) else {
-            return false;
-        };
-        serde_json::from_str::<JsonValue>(&text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("buildId")
-                    .and_then(JsonValue::as_str)
-                    .map(ToString::to_string)
-            })
-            .is_some_and(|build_id| build_id == self.pointer_build_id)
+fn legacy_synthetic_service_paths(artifact_root: &Path) -> Result<Vec<String>, String> {
+    let mut service_paths = Vec::new();
+    let dev_services = artifact_root.join("dev").join("services");
+    if dev_services.is_dir() {
+        for entry in fs::read_dir(&dev_services).map_err(|error| {
+            format!(
+                "failed to read dev service pointers {}: {error}",
+                dev_services.display()
+            )
+        })? {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "failed to read dev service pointer in {}: {error}",
+                    dev_services.display()
+                )
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if is_synthetic_service_artifact_path(stem) {
+                service_paths.push(stem.to_string());
+            }
+        }
+    }
+    for (directory, child) in [
+        ("configs", "services"),
+        ("dev", "service-test-activations"),
+        ("configs", "service-test-activations"),
+        ("assemblies", "services"),
+        ("units", "services"),
+        ("indexes", "services"),
+        ("files", "services"),
+        ("versions", "services"),
+        ("builds", "services"),
+    ] {
+        let root = artifact_root.join(directory).join(child);
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&root).map_err(|error| {
+            format!(
+                "failed to read legacy synthetic service directory {}: {error}",
+                root.display()
+            )
+        })? {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "failed to read legacy synthetic service entry in {}: {error}",
+                    root.display()
+                )
+            })?;
+            let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
+                continue;
+            };
+            if is_synthetic_service_artifact_path(&name) {
+                service_paths.push(name);
+            }
+        }
+    }
+    Ok(service_paths)
+}
+
+#[derive(Clone)]
+struct RuntimeArtifactManifestFile {
+    path: PathBuf,
+    manifest: RuntimeArtifactRunManifest,
+}
+
+fn read_runtime_artifact_manifests(
+    artifact_root: &Path,
+) -> Result<Vec<RuntimeArtifactManifestFile>, String> {
+    let runs_dir = test_runner_runs_dir(artifact_root);
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut manifests = Vec::new();
+    for entry in fs::read_dir(&runs_dir).map_err(|error| {
+        format!(
+            "failed to read test-runner run manifest directory {}: {error}",
+            runs_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read test-runner run manifest entry in {}: {error}",
+                runs_dir.display()
+            )
+        })?;
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path()).map_err(|error| {
+            format!(
+                "failed to read test-runner run manifest {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        let manifest =
+            serde_json::from_str::<RuntimeArtifactRunManifest>(&text).map_err(|error| {
+                format!(
+                    "failed to parse test-runner run manifest {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+        if manifest.schema_version == TEST_RUNNER_MANIFEST_SCHEMA_VERSION {
+            manifests.push(RuntimeArtifactManifestFile {
+                path: entry.path(),
+                manifest,
+            });
+        }
+    }
+    manifests.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(manifests)
+}
+
+#[derive(Default)]
+struct RuntimeArtifactCleanupResult {
+    deleted_any: bool,
+}
+
+fn cleanup_manifest_paths(
+    artifact_root: &Path,
+    manifest: &RuntimeArtifactRunManifest,
+) -> Result<RuntimeArtifactCleanupResult, String> {
+    let mut result = RuntimeArtifactCleanupResult::default();
+    for entry in &manifest.paths {
+        if cleanup_registered_artifact_path(artifact_root, &entry.path)? {
+            result.deleted_any = true;
+        }
+    }
+    Ok(result)
+}
+
+fn cleanup_registered_artifact_path(
+    artifact_root: &Path,
+    relative_path: &str,
+) -> Result<bool, String> {
+    if validate_runtime_cleanup_path(relative_path).is_err() {
+        return Ok(false);
+    }
+    let path = artifact_root.join(Path::new(relative_path));
+    if !path.exists() {
+        return Ok(false);
+    };
+    if path.is_dir() {
+        return remove_runtime_artifact_path_if_exists(&path);
+    }
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Ok(false);
+    };
+    if metadata.is_dir() {
+        return remove_runtime_artifact_path_if_exists(&path);
+    }
+    remove_file_if_exists(&path).map_err(|error| {
+        format!(
+            "failed to remove test-owned runtime artifact {}: {error}",
+            path.display()
+        )
+    })?;
+    prune_empty_artifact_dirs(artifact_root, path.parent());
+    Ok(true)
+}
+
+fn remove_runtime_artifact_path_if_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(path).map_err(|error| {
+                format!(
+                    "failed to remove test-owned runtime artifact directory {}: {error}",
+                    path.display()
+                )
+            })?;
+            Ok(true)
+        }
+        Ok(_) => {
+            fs::remove_file(path).map_err(|error| {
+                format!(
+                    "failed to remove test-owned runtime artifact {}: {error}",
+                    path.display()
+                )
+            })?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect test-owned runtime artifact {}: {error}",
+            path.display()
+        )),
     }
 }
 
-impl Drop for TestArtifactCleanup {
+fn prune_empty_artifact_dirs(artifact_root: &Path, mut directory: Option<&Path>) {
+    while let Some(path) = directory {
+        if path == artifact_root {
+            break;
+        }
+        match fs::remove_dir(path) {
+            Ok(()) => directory = path.parent(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => directory = path.parent(),
+            Err(_) => break,
+        }
+    }
+}
+
+fn runtime_cleanup_needs_reload(
+    reload_marker_exists: bool,
+    manifests: &[RuntimeArtifactRunManifest],
+    deleted_runtime_paths: bool,
+) -> bool {
+    reload_marker_exists
+        || deleted_runtime_paths
+        || manifests.iter().any(|manifest| manifest.reload_required)
+}
+
+fn validate_runtime_cleanup_path(relative_path: &str) -> Result<(), String> {
+    let normalized = artifact_manifest_relative_path(Path::new(relative_path))?;
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if allowed_synthetic_service_runtime_path(&parts) || allowed_package_test_runtime_path(&parts) {
+        Ok(())
+    } else {
+        Err(format!(
+            "runtime artifact cleanup path {relative_path} is not test-owned"
+        ))
+    }
+}
+
+fn allowed_synthetic_service_runtime_path(parts: &[&str]) -> bool {
+    match parts {
+        ["dev", "services", file] => file
+            .strip_suffix(".json")
+            .is_some_and(is_synthetic_service_artifact_path),
+        ["configs", "services", service, rest @ ..] => {
+            is_synthetic_service_artifact_path(service) && !rest.is_empty()
+        }
+        ["dev", "service-test-activations", service, file] => {
+            is_synthetic_service_artifact_path(service) && json_file(file)
+        }
+        ["configs", "service-test-activations", service, pointer_hash, activation_hash, "config.yml"] => {
+            is_synthetic_service_artifact_path(service)
+                && lowercase_sha256(pointer_hash)
+                && lowercase_sha256(activation_hash)
+        }
+        [directory, "services", service, file]
+            if matches!(
+                *directory,
+                "assemblies" | "units" | "indexes" | "versions" | "builds"
+            ) =>
+        {
+            is_synthetic_service_artifact_path(service) && json_file(file)
+        }
+        ["files", "services", service, rest @ ..] => {
+            is_synthetic_service_artifact_path(service) && !rest.is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn allowed_package_test_runtime_path(parts: &[&str]) -> bool {
+    match parts {
+        ["configs", "package-tests", activation_id, "config.yml"] => {
+            validate_package_test_activation_id(activation_id).is_ok()
+        }
+        ["dev", "package-tests", package_path, file]
+        | ["assemblies", "package-tests", package_path, file] => {
+            !package_path.is_empty() && json_file(file)
+        }
+        _ => false,
+    }
+}
+
+fn is_synthetic_service_artifact_path(value: &str) -> bool {
+    value.starts_with(SYNTHETIC_SERVICE_ARTIFACT_PATH_PREFIX)
+}
+
+fn json_file(value: &str) -> bool {
+    value.ends_with(".json") && value.len() > ".json".len()
+}
+
+fn lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn artifact_manifest_relative_path(path: &Path) -> Result<String, String> {
+    if path.is_absolute() {
+        return Err(format!(
+            "runtime artifact manifest path {} must be relative",
+            path.display()
+        ));
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_str().ok_or_else(|| {
+                    format!(
+                        "runtime artifact manifest path {} must be UTF-8",
+                        path.display()
+                    )
+                })?;
+                if part.is_empty() {
+                    return Err(format!(
+                        "runtime artifact manifest path {} contains an empty segment",
+                        path.display()
+                    ));
+                }
+                parts.push(part.to_string());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!(
+                    "runtime artifact manifest path {} must not contain ..",
+                    path.display()
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "runtime artifact manifest path {} must be relative",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err("runtime artifact manifest path must not be empty".to_string());
+    }
+    Ok(parts.join("/"))
+}
+
+fn write_runtime_artifact_manifest(
+    manifest_path: &Path,
+    manifest: &RuntimeArtifactRunManifest,
+) -> Result<(), String> {
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create test-runner manifest directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let text = serde_json::to_string_pretty(manifest)
+        .map_err(|error| format!("failed to serialize test-runner manifest: {error}"))?;
+    let temporary_path = manifest_path.with_extension("json.tmp");
+    let mut file = File::create(&temporary_path).map_err(|error| {
+        format!(
+            "failed to create test-runner manifest {}: {error}",
+            temporary_path.display()
+        )
+    })?;
+    file.write_all(format!("{text}\n").as_bytes())
+        .map_err(|error| {
+            format!(
+                "failed to write test-runner manifest {}: {error}",
+                temporary_path.display()
+            )
+        })?;
+    file.sync_all().map_err(|error| {
+        format!(
+            "failed to sync test-runner manifest {}: {error}",
+            temporary_path.display()
+        )
+    })?;
+    fs::rename(&temporary_path, manifest_path).map_err(|error| {
+        format!(
+            "failed to install test-runner manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    sync_parent_dir_best_effort(manifest_path);
+    Ok(())
+}
+
+fn write_reload_marker(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create test-runner reload marker directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut file = File::create(path).map_err(|error| {
+        format!(
+            "failed to create test-runner reload marker {}: {error}",
+            path.display()
+        )
+    })?;
+    file.write_all(b"reload required\n").map_err(|error| {
+        format!(
+            "failed to write test-runner reload marker {}: {error}",
+            path.display()
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        format!(
+            "failed to sync test-runner reload marker {}: {error}",
+            path.display()
+        )
+    })?;
+    sync_parent_dir_best_effort(path);
+    Ok(())
+}
+
+fn sync_parent_dir_best_effort(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Ok(directory) = File::open(parent) {
+        let _ = directory.sync_all();
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn test_runner_state_dir(artifact_root: &Path) -> PathBuf {
+    artifact_root.join(TEST_RUNNER_STATE_DIR)
+}
+
+fn test_runner_runs_dir(artifact_root: &Path) -> PathBuf {
+    test_runner_state_dir(artifact_root).join(TEST_RUNNER_RUNS_DIR)
+}
+
+fn test_runner_reload_marker_path(artifact_root: &Path) -> PathBuf {
+    test_runner_state_dir(artifact_root).join(TEST_RUNNER_RELOAD_MARKER)
+}
+
+fn runtime_artifact_run_id() -> String {
+    format!(
+        "{}-{}-{}",
+        std::process::id(),
+        current_nanos(),
+        SERVICE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+struct RuntimeTempDir {
+    path: PathBuf,
+}
+
+impl RuntimeTempDir {
+    fn create(label: &str) -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!(
+            "skiff-test-runner-{label}-{}-{}-{}",
+            std::process::id(),
+            current_nanos(),
+            SERVICE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).map_err(|error| {
+            format!(
+                "failed to create temporary runtime artifact directory {}: {error}",
+                path.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for RuntimeTempDir {
     fn drop(&mut self) {
-        if !self.pointer_still_matches() {
-            return;
-        }
-        let _ = fs::remove_file(&self.pointer_path);
-        let _ = fs::remove_dir_all(&self.config_dir);
-    }
-}
-
-struct PackageTestActivationCleanup {
-    config_dir: PathBuf,
-}
-
-impl PackageTestActivationCleanup {
-    fn new(artifact_root: &Path, activation_id: &str) -> Self {
-        Self {
-            config_dir: package_test_config_dir(artifact_root, activation_id),
-        }
-    }
-}
-
-impl Drop for PackageTestActivationCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.config_dir);
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -309,49 +1167,58 @@ pub(super) fn execute_runtime_process_test(
     doubles: Option<HashMap<String, Vec<TestEffectDouble>>>,
     options: &SkiffTestOptions,
 ) -> Result<(), String> {
-    let _runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
+    let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
     let artifact_root = test_artifact_root(&health)?;
-    let published = write_test_service_artifact_root(TestServiceArtifactInput {
-        artifact_root,
-        service_id: service_id.to_string(),
-        version: TEST_SERVICE_VERSION.to_string(),
-        artifacts: artifacts.iter().map(test_artifact_for_compiler).collect(),
-        package_aliases: package_aliases.clone(),
-        operation_name: operation.to_string(),
-        operation_module: operation_module.to_string(),
-        target: target.to_string(),
-        test_config: values,
-        service_db_mongo_url: service_db_mongo_url.map(ToString::to_string),
-    })
-    .map_err(|error| format!("failed to write runtime test artifacts: {error}"))?;
-    let _artifact_cleanup = TestArtifactCleanup::new(
-        &published.artifact_root,
-        &published.service_id,
-        &published.pointer_build_id,
-    );
+    let runtime_artifacts = RuntimeArtifactRun::start(
+        runtime_artifact_guard,
+        &artifact_root,
+        &control_base_url,
+        options,
+    )?;
+    run_with_runtime_artifacts(runtime_artifacts, |runtime_artifacts| {
+        let published = write_test_service_artifact_root_with_runtime_path_registration(
+            TestServiceArtifactInput {
+                artifact_root,
+                service_id: service_id.to_string(),
+                version: TEST_SERVICE_VERSION.to_string(),
+                artifacts: artifacts.iter().map(test_artifact_for_compiler).collect(),
+                package_aliases: package_aliases.clone(),
+                operation_name: operation.to_string(),
+                operation_module: operation_module.to_string(),
+                target: target.to_string(),
+                test_config: values,
+                service_db_mongo_url: service_db_mongo_url.map(ToString::to_string),
+            },
+            |path| runtime_artifacts.register_path(path),
+        )
+        .map_err(|error| format!("failed to write runtime test artifacts: {error}"))?;
+        for path in &published.runtime_visible_paths {
+            runtime_artifacts.mark_written(path)?;
+        }
 
-    let dispatch_url = control_url_with_path(&control_base_url, "/__skiff/test-dispatch")?;
-    let mut dispatch_body = json!({
-            "buildId": published.build_id,
-            "mode": "unary",
-            "serviceId": published.service_id,
-            "serviceProtocolIdentity": published.service_protocol_identity,
-            "operation": published.operation_name,
-            "operationAbiId": published.operation_abi_id,
-            "target": published.target,
-            "payloadBase64": "",
-            "testEffectsEnabled": !options.live,
-            "testEffectDoubles": doubles.unwrap_or_default(),
-    });
-    dispatch_body["websocketEntryId"] =
-        JsonValue::String(synthetic_websocket_entry_id(&published.service_id));
-    let response = post_dispatch_json(&dispatch_url, &dispatch_body)
-        .map_err(|error| format!("router test dispatch failed: {error}"))?;
-    runtime_dispatch_result(&response, None)
+        let dispatch_url = control_url_with_path(&control_base_url, "/__skiff/test-dispatch")?;
+        let mut dispatch_body = json!({
+                "buildId": published.build_id,
+                "mode": "unary",
+                "serviceId": published.service_id,
+                "serviceProtocolIdentity": published.service_protocol_identity,
+                "operation": published.operation_name,
+                "operationAbiId": published.operation_abi_id,
+                "target": published.target,
+                "payloadBase64": "",
+                "testEffectsEnabled": !options.live,
+                "testEffectDoubles": doubles.unwrap_or_default(),
+        });
+        dispatch_body["websocketEntryId"] =
+            JsonValue::String(synthetic_websocket_entry_id(&published.service_id));
+        let response = post_dispatch_json(&dispatch_url, &dispatch_body)
+            .map_err(|error| format!("router test dispatch failed: {error}"))?;
+        runtime_dispatch_result(&response, None)
+    })
 }
 
 pub(super) fn execute_dev_synced_service_test(
@@ -364,62 +1231,75 @@ pub(super) fn execute_dev_synced_service_test(
     expected_error: Option<&RuntimeExpectedError>,
     options: &SkiffTestOptions,
 ) -> Result<(), String> {
-    let _runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
+    let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
     let artifact_root = test_artifact_root(&health)?;
-    write_runtime_config(
-        publication.root(),
-        &values,
-        service_db_mongo_url,
-        package_aliases.keys().map(String::as_str),
-        options.live.then_some(RuntimeLiveMetadata {
-            service_id: &publication.service_id,
-            version: TEST_SERVICE_VERSION,
-        }),
-        false,
-    )?;
-    sync_service_dependency_artifact_roots(
+    let runtime_artifacts = RuntimeArtifactRun::start(
+        runtime_artifact_guard,
         &artifact_root,
+        &control_base_url,
         options,
-        Some(&publication.dependency_service_ids),
     )?;
-    sync_dev_service_artifacts(publication.root(), &artifact_root, options)?;
-    let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
-    let _artifact_cleanup =
-        TestArtifactCleanup::new(&artifact_root, &publication.service_id, &pointer.build_id);
+    run_with_runtime_artifacts(runtime_artifacts, |runtime_artifacts| {
+        write_runtime_config(
+            publication.root(),
+            &values,
+            service_db_mongo_url,
+            package_aliases.keys().map(String::as_str),
+            options.live.then_some(RuntimeLiveMetadata {
+                service_id: &publication.service_id,
+                version: TEST_SERVICE_VERSION,
+            }),
+            false,
+        )?;
+        sync_service_dependency_artifact_roots(
+            &artifact_root,
+            options,
+            Some(&publication.dependency_service_ids),
+        )?;
+        sync_test_owned_dev_service_artifacts(
+            publication.root(),
+            &artifact_root,
+            &publication.service_id,
+            options,
+            runtime_artifacts.registrar(),
+        )?;
+        let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
 
-    let reload_url = control_url_with_path(&control_base_url, "/__skiff/reload-artifacts")?;
-    let reload_response = post_json(&reload_url, &json!({}))
-        .map_err(|error| dev_reload_error_message(error, options.live))?;
-    let build_id =
-        reloaded_dynamic_build_id(&reload_response, &publication.service_id, &pointer.build_id)?;
+        let reload_response = reload_runtime_artifacts(&control_base_url, options)?;
+        let build_id = reloaded_dynamic_build_id(
+            &reload_response,
+            &publication.service_id,
+            &pointer.build_id,
+        )?;
 
-    let dispatch_url = control_url_with_path(&control_base_url, "/__skiff/test-dispatch")?;
-    let payload_base64 = runtime_test_payload_base64(request_payload)?;
-    let mut dispatch_body = json!({
-            "buildId": build_id,
-            "mode": "unary",
-            "serviceId": publication.service_id,
-            "serviceProtocolIdentity": pointer.protocol_identity,
-            "operation": publication.operation_name,
-            "operationAbiId": publication.operation_abi_id,
-            "target": publication.target,
-            "payloadBase64": payload_base64,
-            "testEffectsEnabled": !options.live,
-            "testEffectDoubles": doubles.unwrap_or_default(),
-    });
-    dispatch_body["websocketEntryId"] =
-        JsonValue::String(synthetic_websocket_entry_id(&publication.service_id));
-    let response = post_dispatch_json(&dispatch_url, &dispatch_body)
-        .map_err(|error| format!("router test dispatch failed: {error}"))?;
-    runtime_dispatch_result(&response, expected_error)?;
-    if expected_error.is_none() && request_payload.is_some() {
-        runtime_dispatch_bool_true_payload(&response)?;
-    }
-    Ok(())
+        let dispatch_url = control_url_with_path(&control_base_url, "/__skiff/test-dispatch")?;
+        let payload_base64 = runtime_test_payload_base64(request_payload)?;
+        let mut dispatch_body = json!({
+                "buildId": build_id,
+                "mode": "unary",
+                "serviceId": publication.service_id,
+                "serviceProtocolIdentity": pointer.protocol_identity,
+                "operation": publication.operation_name,
+                "operationAbiId": publication.operation_abi_id,
+                "target": publication.target,
+                "payloadBase64": payload_base64,
+                "testEffectsEnabled": !options.live,
+                "testEffectDoubles": doubles.unwrap_or_default(),
+        });
+        dispatch_body["websocketEntryId"] =
+            JsonValue::String(synthetic_websocket_entry_id(&publication.service_id));
+        let response = post_dispatch_json(&dispatch_url, &dispatch_body)
+            .map_err(|error| format!("router test dispatch failed: {error}"))?;
+        runtime_dispatch_result(&response, expected_error)?;
+        if expected_error.is_none() && request_payload.is_some() {
+            runtime_dispatch_bool_true_payload(&response)?;
+        }
+        Ok(())
+    })
 }
 
 pub(super) struct ServiceTestSuiteActivationInput {
@@ -429,8 +1309,7 @@ pub(super) struct ServiceTestSuiteActivationInput {
 }
 
 pub(super) struct PreparedServiceTestSuite {
-    _runtime_artifact_guard: MutexGuard<'static, ()>,
-    _artifact_cleanup: ServiceTestSuiteArtifactCleanup,
+    runtime_artifacts: RuntimeArtifactRun,
     pub(super) control_base_url: String,
     pub(super) service_id: String,
     pub(super) build_id: String,
@@ -453,37 +1332,9 @@ impl PreparedServiceTestSuite {
             service_protocol_identity: &self.service_protocol_identity,
         }
     }
-}
 
-struct ServiceTestSuiteArtifactCleanup {
-    _pointer_cleanup: TestArtifactCleanup,
-    activation_sidecar_dir: PathBuf,
-    activation_config_dir: PathBuf,
-}
-
-impl ServiceTestSuiteArtifactCleanup {
-    fn new(artifact_root: &Path, service_id: &str, pointer_build_id: &str) -> Self {
-        let service_path = service_id_artifact_path(service_id);
-        let pointer_hash = pointer_build_id_hash(pointer_build_id);
-        Self {
-            _pointer_cleanup: TestArtifactCleanup::new(artifact_root, service_id, pointer_build_id),
-            activation_sidecar_dir: artifact_root
-                .join("dev")
-                .join("service-test-activations")
-                .join(&service_path),
-            activation_config_dir: artifact_root
-                .join("configs")
-                .join("service-test-activations")
-                .join(service_path)
-                .join(pointer_hash),
-        }
-    }
-}
-
-impl Drop for ServiceTestSuiteArtifactCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.activation_sidecar_dir);
-        let _ = fs::remove_dir_all(&self.activation_config_dir);
+    pub(super) fn finish(self) -> Result<(), String> {
+        self.runtime_artifacts.finish()
     }
 }
 
@@ -499,39 +1350,51 @@ pub(super) fn prepare_dev_synced_service_test_suite(
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
     let artifact_root = test_artifact_root(&health)?;
-    sync_service_dependency_artifact_roots(
+    let runtime_artifacts = RuntimeArtifactRun::start(
+        runtime_artifact_guard,
         &artifact_root,
-        options,
-        Some(&publication.dependency_service_ids),
-    )?;
-    sync_dev_service_artifacts(publication.root(), &artifact_root, options)?;
-    let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
-    write_service_test_suite_activation_artifacts(
-        &artifact_root,
-        &publication.service_id,
-        &pointer.build_id,
-        package_aliases.keys().map(String::as_str),
-        activations,
+        &control_base_url,
         options,
     )?;
-    let artifact_cleanup = ServiceTestSuiteArtifactCleanup::new(
-        &artifact_root,
-        &publication.service_id,
-        &pointer.build_id,
-    );
-    let reload_url = control_url_with_path(&control_base_url, "/__skiff/reload-artifacts")?;
-    let reload_response = post_json(&reload_url, &json!({}))
-        .map_err(|error| dev_reload_error_message(error, options.live))?;
-    let build_id =
-        reloaded_dynamic_build_id(&reload_response, &publication.service_id, &pointer.build_id)?;
+    let (runtime_artifacts, (build_id, service_protocol_identity)) =
+        run_prepared_runtime_artifacts(runtime_artifacts, |runtime_artifacts| {
+            sync_service_dependency_artifact_roots(
+                &artifact_root,
+                options,
+                Some(&publication.dependency_service_ids),
+            )?;
+            sync_test_owned_dev_service_artifacts(
+                publication.root(),
+                &artifact_root,
+                &publication.service_id,
+                options,
+                runtime_artifacts.registrar(),
+            )?;
+            let pointer = read_dev_reload_pointer(&artifact_root, &publication.service_id)?;
+            write_service_test_suite_activation_artifacts(
+                &artifact_root,
+                &publication.service_id,
+                &pointer.build_id,
+                package_aliases.keys().map(String::as_str),
+                activations,
+                options,
+                runtime_artifacts.registrar(),
+            )?;
+            let reload_response = reload_runtime_artifacts(&control_base_url, options)?;
+            let build_id = reloaded_dynamic_build_id(
+                &reload_response,
+                &publication.service_id,
+                &pointer.build_id,
+            )?;
+            Ok((build_id, pointer.protocol_identity))
+        })?;
 
     Ok(PreparedServiceTestSuite {
-        _runtime_artifact_guard: runtime_artifact_guard,
-        _artifact_cleanup: artifact_cleanup,
+        runtime_artifacts,
         control_base_url,
         service_id: publication.service_id.clone(),
         build_id,
-        service_protocol_identity: pointer.protocol_identity,
+        service_protocol_identity,
     })
 }
 
@@ -576,6 +1439,7 @@ fn write_service_test_suite_activation_artifacts<'a>(
     package_aliases: impl IntoIterator<Item = &'a str>,
     activations: &[ServiceTestSuiteActivationInput],
     options: &SkiffTestOptions,
+    runtime_artifacts: &RuntimeArtifactRunRegistrar,
 ) -> Result<(), String> {
     let service_path = service_id_artifact_path(service_id);
     let pointer_hash = pointer_build_id_hash(pointer_build_id);
@@ -593,6 +1457,7 @@ fn write_service_test_suite_activation_artifacts<'a>(
             service_id,
             version: TEST_SERVICE_VERSION,
         });
+        runtime_artifacts.register_path(&config_path)?;
         write_runtime_config_at_artifact_path(
             artifact_root,
             &config_path,
@@ -601,6 +1466,7 @@ fn write_service_test_suite_activation_artifacts<'a>(
             package_aliases.iter().copied(),
             runtime_live,
         )?;
+        runtime_artifacts.mark_written(&config_path)?;
         let mut case = JsonMap::new();
         case.insert(
             "activationIdentity".to_string(),
@@ -635,7 +1501,9 @@ fn write_service_test_suite_activation_artifacts<'a>(
         .join("service-test-activations")
         .join(&service_path)
         .join(format!("{pointer_hash}.json"));
-    write_json_at_artifact_path(artifact_root, &sidecar_path, &sidecar)
+    runtime_artifacts.register_path(&sidecar_path)?;
+    write_json_at_artifact_path(artifact_root, &sidecar_path, &sidecar)?;
+    runtime_artifacts.mark_written(&sidecar_path)
 }
 
 fn write_runtime_config_at_artifact_path<'a>(
@@ -724,7 +1592,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 pub(super) struct PreparedPackageTestArtifact {
-    _runtime_artifact_guard: MutexGuard<'static, ()>,
+    runtime_artifacts: RuntimeArtifactRun,
     pub(super) artifact_root: PathBuf,
     pub(super) control_base_url: String,
     pub(super) package_id: String,
@@ -741,6 +1609,7 @@ pub(super) struct PreparedPackageTestDispatchContext<'a> {
     package_version: &'a str,
     test_build_identity: &'a str,
     package_config_aliases: &'a [String],
+    runtime_artifacts: &'a RuntimeArtifactRunRegistrar,
 }
 
 impl PreparedPackageTestArtifact {
@@ -752,7 +1621,12 @@ impl PreparedPackageTestArtifact {
             package_version: &self.package_version,
             test_build_identity: &self.test_build_identity,
             package_config_aliases: &self.package_config_aliases,
+            runtime_artifacts: self.runtime_artifacts.registrar(),
         }
+    }
+
+    pub(super) fn finish(self) -> Result<(), String> {
+        self.runtime_artifacts.finish()
     }
 }
 
@@ -771,16 +1645,35 @@ pub(super) fn prepare_dev_synced_package_test(
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
     let artifact_root = test_artifact_root(&health)?;
+    let runtime_artifacts = RuntimeArtifactRun::start(
+        runtime_artifact_guard,
+        &artifact_root,
+        &control_base_url,
+        options,
+    )?;
     let package_config_aliases = package_config_aliases(&artifact_input.package_dependencies);
     artifact_input.artifact_root = artifact_root.clone();
-    sync_service_dependency_artifact_roots(&artifact_root, options, None)?;
-    let written = write_package_test_artifact_root(artifact_input)
-        .map_err(|error| format!("failed to write package test artifacts: {error}"))?;
-    ensure_package_test_dependency_configs_are_objects(&artifact_root, &written.assembly_path)?;
-    reload_runtime_artifacts(&control_base_url, options)?;
+    let (runtime_artifacts, written) =
+        run_prepared_runtime_artifacts(runtime_artifacts, |runtime_artifacts| {
+            sync_service_dependency_artifact_roots(&artifact_root, options, None)?;
+            let written = write_package_test_artifact_root_with_runtime_path_registration(
+                artifact_input,
+                |path| runtime_artifacts.register_path(path),
+            )
+            .map_err(|error| format!("failed to write package test artifacts: {error}"))?;
+            for path in &written.runtime_visible_paths {
+                runtime_artifacts.mark_written(path)?;
+            }
+            ensure_package_test_dependency_configs_are_objects(
+                &artifact_root,
+                &written.assembly_path,
+            )?;
+            reload_runtime_artifacts(&control_base_url, options)?;
+            Ok(written)
+        })?;
 
     Ok(PreparedPackageTestArtifact {
-        _runtime_artifact_guard: runtime_artifact_guard,
+        runtime_artifacts,
         artifact_root,
         control_base_url,
         package_id: written.package_id,
@@ -874,6 +1767,8 @@ fn execute_dev_synced_package_test_entrypoint_with_activation(
     expected_error: Option<&RuntimeExpectedError>,
     options: &SkiffTestOptions,
 ) -> Result<(), String> {
+    let config_path = package_test_config_path(activation_id);
+    prepared.runtime_artifacts.register_path(&config_path)?;
     write_package_test_runtime_config(
         prepared.artifact_root,
         activation_id,
@@ -881,8 +1776,7 @@ fn execute_dev_synced_package_test_entrypoint_with_activation(
         &test_config,
         service_db_mongo_url,
     )?;
-    let _activation_cleanup =
-        PackageTestActivationCleanup::new(prepared.artifact_root, activation_id);
+    prepared.runtime_artifacts.mark_written(&config_path)?;
 
     let dispatch_url = control_url_with_path(prepared.control_base_url, "/__skiff/test-dispatch")?;
     let payload_base64 = runtime_test_payload_base64(request_payload)?;
@@ -913,21 +1807,30 @@ pub(super) fn execute_dev_synced_package_test(
     options: &SkiffTestOptions,
 ) -> Result<(), String> {
     let prepared = prepare_dev_synced_package_test(artifact_input, options)?;
-    let entrypoint = prepared
-        .entrypoints
-        .first()
-        .ok_or_else(|| "package test artifact writer returned no entrypoints".to_string())?;
-    execute_dev_synced_package_test_entrypoint(
-        &prepared,
-        entrypoint,
-        values,
-        service_db_mongo_url,
-        doubles,
-        request_payload,
-        expected_error,
-        options,
-    )
-    .result
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let entrypoint = prepared
+            .entrypoints
+            .first()
+            .ok_or_else(|| "package test artifact writer returned no entrypoints".to_string())?;
+        execute_dev_synced_package_test_entrypoint(
+            &prepared,
+            entrypoint,
+            values,
+            service_db_mongo_url,
+            doubles,
+            request_payload,
+            expected_error,
+            options,
+        )
+        .result
+    }));
+    match result {
+        Ok(result) => finish_runtime_artifacts(prepared.runtime_artifacts, result),
+        Err(payload) => {
+            let _ = prepared.runtime_artifacts.finish();
+            std::panic::resume_unwind(payload);
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1046,10 +1949,17 @@ fn write_package_test_runtime_config<'a>(
 }
 
 fn package_test_config_dir(artifact_root: &Path, activation_id: &str) -> PathBuf {
-    artifact_root
-        .join("configs")
+    artifact_root.join(package_test_config_dir_path(activation_id))
+}
+
+fn package_test_config_dir_path(activation_id: &str) -> PathBuf {
+    PathBuf::from("configs")
         .join("package-tests")
         .join(activation_id)
+}
+
+fn package_test_config_path(activation_id: &str) -> PathBuf {
+    package_test_config_dir_path(activation_id).join("config.yml")
 }
 
 #[derive(Clone, Copy)]
@@ -1357,6 +2267,121 @@ fn sync_dev_service_artifacts(
     ))
 }
 
+fn sync_test_owned_dev_service_artifacts(
+    service_root: &Path,
+    artifact_root: &Path,
+    service_id: &str,
+    options: &SkiffTestOptions,
+    runtime_artifacts: &RuntimeArtifactRunRegistrar,
+) -> Result<(), String> {
+    let temp = RuntimeTempDir::create("dev-sync-artifacts")?;
+    sync_dev_service_artifacts(service_root, temp.path(), options)?;
+    let runtime_visible_paths = synthetic_service_runtime_visible_paths(temp.path(), service_id)?;
+    for path in &runtime_visible_paths {
+        runtime_artifacts.register_path(path)?;
+    }
+    let requested_service_paths = BTreeSet::from([service_id_artifact_path(service_id)]);
+    copy_service_dependency_artifact_root(
+        temp.path(),
+        artifact_root,
+        Some(&requested_service_paths),
+    )?;
+    for path in &runtime_visible_paths {
+        if artifact_root.join(path).exists() {
+            runtime_artifacts.mark_written(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn synthetic_service_runtime_visible_paths(
+    artifact_root: &Path,
+    service_id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let service_path = service_id_artifact_path(service_id);
+    let mut paths = Vec::new();
+    let pointer = PathBuf::from("dev")
+        .join("services")
+        .join(format!("{service_path}.json"));
+    if artifact_root.join(&pointer).is_file() {
+        paths.push(pointer);
+    }
+    for directory in [
+        "assemblies",
+        "configs",
+        "files",
+        "indexes",
+        "units",
+        "versions",
+        "builds",
+    ] {
+        let root = PathBuf::from(directory)
+            .join("services")
+            .join(&service_path);
+        collect_existing_artifact_files(artifact_root, &root, &mut paths)?;
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return Err(format!(
+            "dev sync for {service_id} did not produce any test-owned runtime-visible service artifacts"
+        ));
+    }
+    Ok(paths)
+}
+
+fn collect_existing_artifact_files(
+    artifact_root: &Path,
+    relative_dir: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let dir = artifact_root.join(relative_dir);
+    if !dir.exists() {
+        return Ok(());
+    }
+    if !dir.is_dir() {
+        return Err(format!(
+            "expected artifact path {} to be a directory",
+            dir.display()
+        ));
+    }
+    collect_existing_artifact_files_inner(artifact_root, relative_dir, output)
+}
+
+fn collect_existing_artifact_files_inner(
+    artifact_root: &Path,
+    relative_dir: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let dir = artifact_root.join(relative_dir);
+    for entry in fs::read_dir(&dir).map_err(|error| {
+        format!(
+            "failed to read artifact directory {}: {error}",
+            dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read artifact directory entry in {}: {error}",
+                dir.display()
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "failed to inspect artifact path {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        let child = relative_dir.join(entry.file_name());
+        if file_type.is_dir() {
+            collect_existing_artifact_files_inner(artifact_root, &child, output)?;
+        } else if file_type.is_file() {
+            output.push(child);
+        }
+    }
+    Ok(())
+}
+
 fn sync_service_dependency_artifact_roots(
     artifact_root: &Path,
     options: &SkiffTestOptions,
@@ -1429,23 +2454,6 @@ fn copy_service_dependency_artifact_root(
             &source,
             &artifact_root.join(directory).join(child),
             is_mutable_top_level_artifact_dir(directory),
-        )?;
-    }
-    for (directory, child, overwrite_existing) in SERVICE_DEPENDENCY_PACKAGE_TEST_ARTIFACT_DIRS {
-        let source = dependency_root.join(directory).join(child);
-        if !source.exists() {
-            continue;
-        }
-        if !source.is_dir() {
-            return Err(format!(
-                "service artifact root entry {} is not a directory",
-                source.display()
-            ));
-        }
-        copy_artifact_tree(
-            &source,
-            &artifact_root.join(directory).join(child),
-            *overwrite_existing,
         )?;
     }
     let service_paths =
@@ -1770,9 +2778,15 @@ fn reload_runtime_artifacts(
     control_base_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<JsonValue, String> {
+    reload_runtime_artifacts_for_live(control_base_url, options.live)
+}
+
+fn reload_runtime_artifacts_for_live(
+    control_base_url: &str,
+    live: bool,
+) -> Result<JsonValue, String> {
     let reload_url = control_url_with_path(control_base_url, "/__skiff/reload-artifacts")?;
-    post_json(&reload_url, &json!({}))
-        .map_err(|error| dev_reload_error_message(error, options.live))
+    post_json(&reload_url, &json!({})).map_err(|error| dev_reload_error_message(error, live))
 }
 
 fn router_control_base_url(options: &SkiffTestOptions) -> Result<String, String> {
@@ -2250,17 +3264,25 @@ fn current_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap};
+    use std::{
+        collections::{BTreeSet, HashMap},
+        path::{Path, PathBuf},
+    };
 
     use serde_json::json;
 
     use super::{
-        copy_artifact_file, current_nanos, is_transient_dispatch_error,
-        is_transient_dispatch_response, package_test_dispatch_body,
-        package_test_service_db_service_id, service_id_storage_database_name,
-        sync_test_database_cleanup_enabled_from_env_value, synthetic_test_target,
+        cleanup_manifest_paths, copy_artifact_file, copy_service_dependency_artifact_root,
+        current_nanos, is_transient_dispatch_error, is_transient_dispatch_response,
+        package_test_dispatch_body, package_test_service_db_service_id,
+        preflight_runtime_artifact_cleanup, runtime_cleanup_needs_reload,
+        service_id_storage_database_name, sync_test_database_cleanup_enabled_from_env_value,
+        synthetic_service_runtime_visible_paths, synthetic_test_target,
         test_database_cleanup_env_value_enabled, test_database_drop_script,
-        PackageTestDispatchInput,
+        test_runner_reload_marker_path, test_runner_runs_dir, validate_runtime_cleanup_path,
+        write_runtime_artifact_manifest, PackageTestDispatchInput, RuntimeArtifactManifestPath,
+        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions, RUNTIME_ARTIFACT_LOCK,
+        TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
     };
 
     #[test]
@@ -2477,6 +3499,205 @@ mod tests {
     }
 
     #[test]
+    fn runtime_cleanup_allowlist_rejects_escape_and_real_service_namespaces() {
+        assert!(validate_runtime_cleanup_path("/tmp/skiff-artifact.json").is_err());
+        assert!(validate_runtime_cleanup_path("dev/services/../escape.json").is_err());
+        assert!(validate_runtime_cleanup_path("dev/services/skiff~run~~account.json").is_err());
+        assert!(
+            validate_runtime_cleanup_path("configs/services/skiff~run~~account/config.yml")
+                .is_err()
+        );
+        assert!(validate_runtime_cleanup_path(
+            "dev/services/example~com~~skiff-service-test-1.json"
+        )
+        .is_ok());
+        assert!(
+            validate_runtime_cleanup_path(&format!("units/files/{}.json", "a".repeat(64))).is_err()
+        );
+        assert!(validate_runtime_cleanup_path("units/files/not-a-hash.json").is_err());
+    }
+
+    #[test]
+    fn stale_manifest_cleanup_deletes_registered_path_even_when_written_false() {
+        let dir = temp_runtime_artifact_dir("stale-written-false");
+        let relative = "dev/services/example~com~~skiff-stale-service.json";
+        write_test_file(&dir, relative);
+        let manifest = test_manifest("stale", false, [(relative, false)]);
+
+        let cleanup = cleanup_manifest_paths(&dir, &manifest).expect("cleanup should run");
+
+        assert!(cleanup.deleted_any);
+        assert!(!dir.join(relative).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reload_marker_forces_reload_decision_without_deleted_files() {
+        let manifest = test_manifest("finished", false, std::iter::empty::<(&str, bool)>());
+
+        assert!(runtime_cleanup_needs_reload(true, &[manifest], false));
+    }
+
+    #[test]
+    fn synthetic_service_cleanup_removes_exact_paths_but_not_real_service_paths() {
+        let dir = temp_runtime_artifact_dir("synthetic-service-cleanup");
+        let synthetic = "dev/services/example~com~~skiff-service-test-clean.json";
+        let real = "dev/services/skiff~run~~account.json";
+        let file_ir = format!("units/files/{}.json", "b".repeat(64));
+        write_test_file(&dir, synthetic);
+        write_test_file(&dir, real);
+        write_test_file(&dir, &file_ir);
+        let manifest = test_manifest(
+            "mixed",
+            true,
+            [(synthetic, true), (real, true), (file_ir.as_str(), true)],
+        );
+
+        let cleanup = cleanup_manifest_paths(&dir, &manifest).expect("cleanup should run");
+
+        assert!(cleanup.deleted_any);
+        assert!(!dir.join(synthetic).exists());
+        assert!(dir.join(file_ir).is_file());
+        assert!(dir.join(real).is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preflight_cleanup_does_not_drop_cleanup_required_manifest_without_deleting_paths() {
+        let dir = temp_runtime_artifact_dir("preflight-cleanup-required");
+        let relative = "dev/services/example~com~~skiff-cleanup-required.json";
+        write_test_file(&dir, relative);
+        let runs_dir = test_runner_runs_dir(&dir);
+        std::fs::create_dir_all(&runs_dir).expect("runs dir should be created");
+        let mut manifest = test_manifest("cleanup-required", true, [(relative, false)]);
+        manifest.status = "cleanup-required".to_string();
+        write_runtime_artifact_manifest(&runs_dir.join("cleanup-required.json"), &manifest)
+            .expect("manifest should be written");
+        preflight_runtime_artifact_cleanup(&dir, "http://127.0.0.1:1", false)
+            .expect_err("reload should fail after cleanup");
+
+        assert!(!dir.join(relative).exists());
+        assert!(test_runner_reload_marker_path(&dir).exists());
+        assert!(runs_dir.join("cleanup-required.json").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn synthetic_service_runtime_visible_paths_collects_dev_sync_outputs() {
+        let dir = temp_runtime_artifact_dir("synthetic-service-paths");
+        let service_id = "example.com/skiff-service-test-paths";
+        let service_path = "example~com~~skiff-service-test-paths";
+        let expected = [
+            format!("dev/services/{service_path}.json"),
+            format!("assemblies/services/{service_path}/assembly.json"),
+            format!("units/services/{service_path}/unit.json"),
+            format!("indexes/services/{service_path}/index.json"),
+            format!("configs/services/{service_path}/config.dev.yml"),
+        ];
+        for path in &expected {
+            write_test_file(&dir, path);
+        }
+        write_test_file(&dir, "dev/services/skiff~run~~account.json");
+
+        let paths = synthetic_service_runtime_visible_paths(&dir, service_id)
+            .expect("synthetic service paths should be discovered")
+            .into_iter()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect::<BTreeSet<_>>();
+
+        for path in expected {
+            assert!(paths.contains(&path), "missing {path}");
+        }
+        assert!(!paths.contains("dev/services/skiff~run~~account.json"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn package_suite_cleanup_removes_pointer_assembly_and_activation_config() {
+        let dir = temp_runtime_artifact_dir("package-suite-cleanup");
+        let activation_id = "skiff-package-test-run-v1:example~com~~pkg:abcdef123456:1";
+        let paths = vec![
+            "dev/package-tests/example~com~~pkg/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json".to_string(),
+            "assemblies/package-tests/example~com~~pkg/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json".to_string(),
+            format!("configs/package-tests/{activation_id}/config.yml"),
+        ];
+        for path in &paths {
+            write_test_file(&dir, path);
+        }
+        let manifest = test_manifest(
+            "package",
+            true,
+            paths.iter().map(|path| (path.as_str(), true)),
+        );
+
+        let cleanup = cleanup_manifest_paths(&dir, &manifest).expect("cleanup should run");
+
+        assert!(cleanup.deleted_any);
+        for path in manifest.paths {
+            assert!(!dir.join(path.path).exists());
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn service_dependency_sync_does_not_copy_package_test_directories() {
+        let dir = temp_runtime_artifact_dir("dependency-package-test-skip");
+        let dependency_root = dir.join("dependency");
+        let artifact_root = dir.join("artifact");
+        write_test_file(
+            &dependency_root,
+            "dev/package-tests/example~com~~pkg/hash.json",
+        );
+        write_test_file(
+            &dependency_root,
+            "assemblies/package-tests/example~com~~pkg/hash.json",
+        );
+        write_test_file(
+            &dependency_root,
+            "configs/package-tests/skiff-package-test-run-v1:example~com~~pkg:run/config.yml",
+        );
+
+        copy_service_dependency_artifact_root(&dependency_root, &artifact_root, None)
+            .expect("dependency sync should run");
+
+        assert!(!artifact_root.join("dev/package-tests").exists());
+        assert!(!artifact_root.join("assemblies/package-tests").exists());
+        assert!(!artifact_root.join("configs/package-tests").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dispatch_error_path_can_finish_and_cleanup_registered_artifacts() {
+        let dir = temp_runtime_artifact_dir("dispatch-error-cleanup");
+        let process_guard = RUNTIME_ARTIFACT_LOCK
+            .lock()
+            .expect("runtime artifact lock should lock");
+        let options = SkiffTestOptions::default();
+        let run = RuntimeArtifactRun::start(process_guard, &dir, "http://127.0.0.1:1", &options)
+            .expect("runtime artifact run should start");
+        let relative = "dev/services/example~com~~skiff-dispatch-error.json";
+        run.register_path(relative)
+            .expect("registered path should be accepted");
+        write_test_file(&dir, relative);
+        run.mark_written(relative)
+            .expect("registered path should be marked written");
+        let mut reloads = 0usize;
+        let mut reload = || {
+            reloads += 1;
+            Ok(())
+        };
+
+        run.finish_with_reloader(&mut reload)
+            .expect("cleanup should finish");
+        run.completed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(reloads, 1);
+        assert!(!dir.join(relative).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn service_dependency_sync_filters_requested_service_pointers() {
         let dir = std::env::temp_dir().join(format!(
             "skiff-service-dependency-sync-test-{}-{}",
@@ -2544,5 +3765,43 @@ mod tests {
             r#"{"ok":true}"#
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn temp_runtime_artifact_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "skiff-runtime-process-{label}-{}-{}",
+            std::process::id(),
+            current_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp artifact dir should be created");
+        dir
+    }
+
+    fn write_test_file(root: &Path, relative_path: &str) {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("test artifact parent should be created");
+        }
+        std::fs::write(path, b"test").expect("test artifact should be written");
+    }
+
+    fn test_manifest<'a>(
+        run_id: &str,
+        reload_required: bool,
+        paths: impl IntoIterator<Item = (&'a str, bool)>,
+    ) -> RuntimeArtifactRunManifest {
+        RuntimeArtifactRunManifest {
+            schema_version: TEST_RUNNER_MANIFEST_SCHEMA_VERSION.to_string(),
+            run_id: run_id.to_string(),
+            status: "active".to_string(),
+            reload_required,
+            paths: paths
+                .into_iter()
+                .map(|(path, written)| RuntimeArtifactManifestPath {
+                    path: path.to_string(),
+                    written,
+                })
+                .collect(),
+        }
     }
 }
