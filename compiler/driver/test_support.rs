@@ -949,6 +949,7 @@ fn package_unit_from_compiled_package_for_test(
             exports: &package_projection.exports,
             abi_identity_projection: &package_projection.abi_identity_projection,
             config_projection: &package_projection.config_projection,
+            resources: &[],
             file_ir_units: package_projection
                 .input
                 .file_ir_units()

@@ -17,6 +17,7 @@ pub struct ProjectionInput {
     source_metadata: Vec<ProjectionSourceMetadata>,
     source: ProjectionSourceFacts,
     lowering: ProjectionLoweringFacts,
+    resources: Vec<PublicationResourceProjectionInput>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,7 +37,29 @@ impl ProjectionInput {
             source_metadata,
             source,
             lowering,
+            resources: Vec::new(),
         }
+    }
+
+    pub fn new_with_resources(
+        file_ir_units: Vec<FileIrUnit>,
+        source_metadata: Vec<ProjectionSourceMetadata>,
+        source: ProjectionSourceFacts,
+        lowering: ProjectionLoweringFacts,
+        resources: Vec<PublicationResourceProjectionInput>,
+    ) -> Self {
+        Self {
+            file_ir_units,
+            source_metadata,
+            source,
+            lowering,
+            resources,
+        }
+    }
+
+    pub fn with_resources(mut self, resources: Vec<PublicationResourceProjectionInput>) -> Self {
+        self.resources = resources;
+        self
     }
 
     pub fn view(&self) -> ProjectionView<'_> {
@@ -61,8 +84,59 @@ impl<'a> ProjectionView<'a> {
         &self.input.lowering
     }
 
+    pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
+        &self.input.resources
+    }
+
     pub fn service_ingress(&self) -> Option<&'a ServiceIngressProjection> {
         self.source().service_ingress()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationResourceProjectionInput {
+    path: String,
+    absolute_path: PathBuf,
+    byte_len: u64,
+    sha256: String,
+    content_type: Option<String>,
+}
+
+impl PublicationResourceProjectionInput {
+    pub fn new(
+        path: String,
+        absolute_path: PathBuf,
+        byte_len: u64,
+        sha256: String,
+        content_type: Option<String>,
+    ) -> Self {
+        Self {
+            path,
+            absolute_path,
+            byte_len,
+            sha256,
+            content_type,
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn absolute_path(&self) -> &Path {
+        &self.absolute_path
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn content_type(&self) -> Option<&str> {
+        self.content_type.as_deref()
     }
 }
 
@@ -123,6 +197,11 @@ impl PackageProjectionInput {
 
     pub fn compiled(&self) -> ProjectionView<'_> {
         self.compiled.view()
+    }
+
+    pub fn with_resources(mut self, resources: Vec<PublicationResourceProjectionInput>) -> Self {
+        self.compiled = self.compiled.with_resources(resources);
+        self
     }
 }
 

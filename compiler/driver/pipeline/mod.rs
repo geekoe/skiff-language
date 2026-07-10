@@ -8,7 +8,10 @@ use std::{
 use skiff_compiler_compiled::{
     compile_parsed_publication_sources as compile_parsed_publication_sources_model,
     compile_source_model,
-    projection_input::{build_package_projection_inputs, build_projection_input},
+    projection_input::{
+        build_package_projection_inputs as build_compiled_package_projection_inputs,
+        build_projection_input as build_compiled_projection_input,
+    },
     source_compile_package_facts_from_publications as compiled_package_facts_from_publications,
     CompiledPublication, PackageApiEntryInfo, PackageApiSourceInfo, PackageDependencyInfo,
     PackagePublication, PackagePublicationInfo, PackagePublicationProvenance,
@@ -43,6 +46,10 @@ use crate::{
 use projection_context::{
     service_projection_context_from_job, service_projection_context_seed_from_service_job_seeds,
 };
+use skiff_compiler_projection_input::{PackageProjectionInput, PublicationResourceProjectionInput};
+
+type PackageResourceProjectionTable =
+    BTreeMap<(String, String), Vec<PublicationResourceProjectionInput>>;
 
 pub struct ServicePublicationBuildInput<'a> {
     pub config: &'a ServiceConfig,
@@ -92,6 +99,7 @@ pub fn build_service_publication(
         },
     )?;
     let service_projection_seed = service_projection_context_seed_from_service_job_seeds(&seeds);
+    let package_resource_table = package_resource_projection_table(&package_jobs);
     let package_publications = compile_package_jobs(package_jobs, &seeds.package_manifests)?;
 
     let service_input = PublicationInput::Service(ServicePublicationInput::new_with_service_id(
@@ -108,6 +116,7 @@ pub fn build_service_publication(
         &publication,
         &compiled_service,
         &package_publications,
+        &package_resource_table,
         service_projection_seed,
     )
 }
@@ -116,9 +125,11 @@ fn build_service_artifacts_from_compilation(
     publication: &Publication,
     compiled_service: &CompiledPublication,
     package_publications: &[PackagePublication],
+    package_resource_table: &PackageResourceProjectionTable,
     service_projection_seed: projection_context::ServiceProjectionContextSeed,
 ) -> Result<BuiltServicePublication, PublicationError> {
-    let package_projection_inputs = build_package_projection_inputs(package_publications);
+    let package_projection_inputs =
+        build_package_projection_inputs(package_publications, package_resource_table);
     let prelude_projection = crate::shared::prelude_registry::projection_prelude_context();
     let package_projections =
         project_package_publications(&package_projection_inputs, &prelude_projection)?;
@@ -132,7 +143,8 @@ fn build_service_artifacts_from_compilation(
         publication.manifest.api.source.as_ref(),
         &prelude_projection,
     );
-    let service_projection_input = build_projection_input(compiled_service);
+    let service_projection_input = build_compiled_projection_input(compiled_service)
+        .with_resources(publication_resource_projection_inputs(publication));
     let service_projection = project_service(service_projection_input.view(), projection_context)?;
     let artifacts = emit_service(
         &service_projection,
@@ -146,6 +158,54 @@ fn build_service_artifacts_from_compilation(
         manifest: service_projection.runtime_manifest_projection.manifest,
         artifacts,
     })
+}
+
+fn build_package_projection_inputs(
+    package_publications: &[PackagePublication],
+    resources: &PackageResourceProjectionTable,
+) -> Vec<PackageProjectionInput> {
+    build_compiled_package_projection_inputs(package_publications)
+        .into_iter()
+        .map(|input| {
+            let key = (input.id().to_string(), input.version().to_string());
+            input.with_resources(resources.get(&key).cloned().unwrap_or_default())
+        })
+        .collect()
+}
+
+fn package_resource_projection_table(
+    package_jobs: &[PackagePublicationJob],
+) -> PackageResourceProjectionTable {
+    package_jobs
+        .iter()
+        .map(|job| {
+            (
+                (
+                    job.publication.manifest.id.to_string(),
+                    job.publication.manifest.version.clone(),
+                ),
+                publication_resource_projection_inputs(&job.publication),
+            )
+        })
+        .collect()
+}
+
+fn publication_resource_projection_inputs(
+    publication: &Publication,
+) -> Vec<PublicationResourceProjectionInput> {
+    publication
+        .resources
+        .iter()
+        .map(|resource| {
+            PublicationResourceProjectionInput::new(
+                resource.path.clone(),
+                resource.absolute_path.clone(),
+                resource.byte_len,
+                resource.sha256.clone(),
+                resource.content_type.clone(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn compile_publication(
