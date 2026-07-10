@@ -15,7 +15,7 @@ import { sourceKeyFromInputs } from './lib/source-key.mjs';
 const DEFAULT_REMOTE_HOME = '/root';
 const DEFAULT_NODE_BIN = `${DEFAULT_REMOTE_HOME}/.local/share/fnm/node-versions/v22.22.1/installation/bin`;
 const DEFAULT_TELEMETRY_MONGO_URL = 'mongodb://127.0.0.1:27017';
-const DEFAULT_TELEMETRY_DB = 'skiff';
+const DEFAULT_TELEMETRY_DB = 'skiff_telemetry';
 const DEFAULT_TELEMETRY_HOST = '127.0.0.1';
 const DEFAULT_TELEMETRY_PORT = '4002';
 const DEFAULT_TELEMETRY_PATH = '/telemetry';

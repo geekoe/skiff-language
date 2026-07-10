@@ -205,7 +205,7 @@ Telemetry deployment options:
 ```bash
 node deploy-runtime-stack.mjs \
   --telemetry-mongo-url 'mongodb://127.0.0.1:27017' \
-  --telemetry-db skiff
+  --telemetry-db skiff_telemetry
 
 node deploy-runtime-stack.mjs \
   --telemetry-memory true

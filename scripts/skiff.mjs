@@ -476,7 +476,7 @@ async function devInit(rawArgs) {
   const telemetryDb =
     args.options.telemetryDb ??
     process.env.SKIFF_TELEMETRY_DB ??
-    'skiff';
+    'skiff_telemetry';
   const force = args.flags.has('--force');
 
   await mkdir(artifactRoot, { recursive: true });

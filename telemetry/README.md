@@ -16,7 +16,7 @@ Persistence is Mongo-backed, not file-backed. Use the shared project Mongo in de
 ```yaml
 mongo:
   url: mongodb://127.0.0.1:27017/?replicaSet=rs0&readPreference=primary&directConnection=true
-  database: skiff
+  database: skiff_telemetry
   ttlDays: 7
 ```
 

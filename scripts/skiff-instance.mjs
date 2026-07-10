@@ -446,7 +446,7 @@ function telemetryConfigText(config) {
       ? undefined
       : {
           url: `mongodb://127.0.0.1:${config.ports.mongo}/?directConnection=true&replicaSet=rs0&retryWrites=false`,
-          database: 'skiff',
+          database: 'skiff_telemetry',
         },
   });
 }
