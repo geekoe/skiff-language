@@ -1746,28 +1746,48 @@ impl<'a> OwnerChecker<'a> {
         expr: &Expr,
         fields: &BTreeMap<String, ResolvedTypeRef>,
     ) -> Option<ResolvedTypeRef> {
-        if !Self::is_db_field_operand(expr, fields) {
+        let Some(root) = Self::db_field_operand_root(expr, fields) else {
             return self.check_expr(expr);
-        }
-        let mut previous = Vec::with_capacity(fields.len());
-        for (name, ty) in fields {
-            previous.push((name.clone(), self.env.insert(name.clone(), ty.clone())));
-        }
+        };
+        let target_type = fields
+            .get(&root)
+            .expect("DB field operand root must come from target fields")
+            .clone();
+        let previous_env = self.env.insert(root.clone(), target_type);
+        let descendant_prefix = format!("{root}.");
+        let conflicting_paths = self
+            .path_refinements
+            .keys()
+            .filter(|path| *path == &root || path.starts_with(&descendant_prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        let previous_refinements = conflicting_paths
+            .into_iter()
+            .filter_map(|path| self.path_refinements.remove(&path).map(|ty| (path, ty)))
+            .collect::<Vec<_>>();
         let ty = self.check_expr(expr);
-        for (name, old) in previous.into_iter().rev() {
-            if let Some(old) = old {
-                self.env.insert(name, old);
-            } else {
-                self.env.remove(&name);
-            }
+        if let Some(previous_env) = previous_env {
+            self.env.insert(root.clone(), previous_env);
+        } else {
+            self.env.remove(&root);
+        }
+        for (path, ty) in previous_refinements {
+            self.path_refinements.insert(path, ty);
         }
         ty
     }
 
     fn is_db_field_operand(expr: &Expr, fields: &BTreeMap<String, ResolvedTypeRef>) -> bool {
+        Self::db_field_operand_root(expr, fields).is_some()
+    }
+
+    fn db_field_operand_root(
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<String> {
         expr_path(expr)
             .and_then(|path| path.split('.').next().map(str::to_string))
-            .is_some_and(|root| fields.contains_key(&root))
+            .filter(|root| fields.contains_key(root))
     }
 
     fn check_db_body(&mut self, body: &DbBody) {
@@ -3698,6 +3718,37 @@ mod tests {
                   }
                 "#,
                 "DB field and shadowed lexical value",
+            ),
+            (
+                r#"
+                  type Credential { id: string }
+                  db object Credential { primary key(id) }
+
+                  function invalid(id: number?) -> bool {
+                    if id != null {
+                      const count = db count Credential { where id > id }
+                    }
+                    return true
+                  }
+                "#,
+                "DB field and non-null-narrowed lexical root",
+            ),
+            (
+                r#"
+                  type StoredProfile { name: number }
+                  type Credential { id: string, profile: StoredProfile }
+                  db object Credential { primary key(id) }
+
+                  type LexicalProfile { name: string? }
+
+                  function invalid(profile: LexicalProfile, lastString: string) -> bool {
+                    if profile.name != null {
+                      const count = db count Credential { where profile.name > lastString }
+                    }
+                    return true
+                  }
+                "#,
+                "nested DB field and narrowed lexical path",
             ),
         ] {
             let error = expression_type_result(source)
