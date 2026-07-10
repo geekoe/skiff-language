@@ -32,6 +32,7 @@ use skiff_runtime_boundary::date_value;
 
 mod capability;
 mod cascade;
+mod encryption;
 mod error;
 mod lease;
 mod mapping;
@@ -42,6 +43,10 @@ mod store;
 
 pub use capability::{
     ServiceDbCapabilityFactory, ServiceDbCapabilityHandle, ServiceDbCapabilityStore,
+};
+pub use encryption::{
+    DbEncryptedFieldContext, DbEncryptionCipher, DbEncryptionError, DbEncryptionKeyring,
+    DbEncryptionKeyringError, SERVICE_DB_ENCRYPTION_KEYRING_FORMAT,
 };
 pub use error::{Result, ServiceDbError};
 pub use provider::MongoServiceDbProviderFactory;

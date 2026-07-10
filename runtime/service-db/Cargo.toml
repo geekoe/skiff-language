@@ -12,9 +12,14 @@ default = []
 test-support = []
 
 [dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
 futures-util = "0.3"
 hex = "0.4"
+hkdf = "0.12"
+libc = "0.2"
 mongodb = "3.2"
+rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -26,3 +31,4 @@ thiserror = "2.0"
 time = { version = "0.3.47", features = ["formatting", "parsing"] }
 tokio = { version = "1.44", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.16", features = ["v4"] }
+zeroize = "1.8"
