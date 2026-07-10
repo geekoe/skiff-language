@@ -16,6 +16,7 @@ try {
 
 async function checkPackageSourceArchiveIncludesManifestResources() {
   const packageRoot = join(root, 'pkg');
+  await mkdir(join(packageRoot, 'nested'), { recursive: true });
   await mkdir(join(packageRoot, 'prompts'), { recursive: true });
   await mkdir(join(packageRoot, 'src'), { recursive: true });
   await mkdir(join(packageRoot, 'node_modules', 'ignored'), { recursive: true });
@@ -31,6 +32,7 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
     ].join('\n'),
   );
   await writeFile(join(packageRoot, 'prompts', 'system.md'), 'resource bytes\n');
+  await writeFile(join(packageRoot, 'nested', 'package.yml'), 'id: nested\n');
   await writeFile(join(packageRoot, 'src', 'main.skiff'), 'function main() -> string { return "ok" }\n');
   await writeFile(join(packageRoot, 'node_modules', 'ignored', 'ignored.skiff'), 'ignored\n');
 
@@ -44,8 +46,22 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
     [
       'id: example.com/pkg',
       'version: 1.0.0',
-      'resources:',
-      '  - prompts/system.md',
+      'resources: ["nested/package.yml"]',
+      '',
+    ].join('\n'),
+  );
+
+  await expectFailure(
+    collectPackageSourceArchivePaths(packageRoot),
+    'control file',
+  );
+
+  await writeFile(
+    join(packageRoot, 'package.yml'),
+    [
+      'id: example.com/pkg',
+      'version: 1.0.0',
+      'resources: ["prompts/system.md"]',
       '',
     ].join('\n'),
   );

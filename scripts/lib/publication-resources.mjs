@@ -1,6 +1,6 @@
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { parseYamlStringScalar } from './simple-yaml.mjs';
+import { parseYamlStringScalar, stripYamlComment } from './simple-yaml.mjs';
 
 const controlFilePatterns = [
   /^package\.yml$/,
@@ -51,7 +51,7 @@ export function parsePublicationResourceList(text, label = 'manifest') {
   const lines = text.split(/\r?\n/);
   const resources = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const line = stripComment(lines[index]);
+    const line = stripYamlComment(lines[index]);
     if (/^\s*$/.test(line) || /^---\s*$/.test(line)) {
       continue;
     }
@@ -63,12 +63,15 @@ export function parsePublicationResourceList(text, label = 'manifest') {
     if (rawValue === '[]') {
       return [];
     }
+    if (rawValue.startsWith('[')) {
+      return parseYamlFlowStringList(rawValue, label);
+    }
     if (rawValue.length > 0) {
-      throw new Error(`${label} resources must be a block list`);
+      throw new Error(`${label} resources must be a string list`);
     }
     const resourceIndent = leadingWhitespace(lines[index]).length;
     for (let itemIndex = index + 1; itemIndex < lines.length; itemIndex += 1) {
-      const itemLine = stripComment(lines[itemIndex]);
+      const itemLine = stripYamlComment(lines[itemIndex]);
       if (/^\s*$/.test(itemLine)) {
         continue;
       }
@@ -87,6 +90,69 @@ export function parsePublicationResourceList(text, label = 'manifest') {
   return [];
 }
 
+function parseYamlFlowStringList(rawValue, label) {
+  const value = rawValue.trim();
+  if (!value.endsWith(']')) {
+    throw new Error(`${label} resources flow list must close with ]`);
+  }
+  const inner = value.slice(1, -1).trim();
+  if (inner.length === 0) {
+    return [];
+  }
+  return splitYamlFlowListItems(inner, label).map((item) => {
+    if (item.trim().length === 0) {
+      throw new Error(`${label} resources must contain string path list items`);
+    }
+    return parseYamlStringScalar(item);
+  });
+}
+
+function splitYamlFlowListItems(inner, label) {
+  const items = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < inner.length; index += 1) {
+    const char = inner[index];
+    if (quote === '"') {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") {
+        if (inner[index + 1] === "'") {
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ',') {
+      items.push(inner.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (quote !== null) {
+    throw new Error(`${label} resources flow list contains an unterminated string`);
+  }
+  const trailing = inner.slice(start);
+  if (trailing.trim().length > 0) {
+    items.push(trailing);
+  }
+  return items;
+}
+
 export function validatePublicationResourceLogicalPath(path, label = 'resource') {
   if (typeof path !== 'string' || path.length === 0) {
     throw new Error(`${label} resource path must not be empty`);
@@ -94,11 +160,14 @@ export function validatePublicationResourceLogicalPath(path, label = 'resource')
   if (path !== path.trim() || path.includes('\0') || path.includes('\n') || path.includes('\r')) {
     throw new Error(`${label} resource path is invalid: ${path}`);
   }
-  if (path === '.' || path === '..' || path.startsWith('/') || isAbsolute(path)) {
+  if (path === '.' || path === '..' || path.startsWith('/') || isAbsolute(path) || isWindowsAbsolutePath(path)) {
     throw new Error(`${label} resource path is unsafe: ${path}`);
   }
   if (path.includes('\\') || path.includes('//') || path.startsWith('./') || path.endsWith('/')) {
     throw new Error(`${label} resource path is not canonical: ${path}`);
+  }
+  if (containsGlobMetacharacter(path)) {
+    throw new Error(`${label} resource path must not be a glob pattern: ${path}`);
   }
   const parts = path.split('/');
   if (parts.some((part) => part.length === 0 || part === '.' || part === '..')) {
@@ -107,7 +176,8 @@ export function validatePublicationResourceLogicalPath(path, label = 'resource')
   if (parts.some((part) => part.startsWith('.'))) {
     throw new Error(`${label} resource path must not include hidden path segments: ${path}`);
   }
-  if (path.endsWith('.skiff') || controlFilePatterns.some((pattern) => pattern.test(path))) {
+  const fileName = basename(path);
+  if (fileName.endsWith('.skiff') || controlFilePatterns.some((pattern) => pattern.test(fileName))) {
     throw new Error(`${label} resource path must not be a Skiff source or control file: ${path}`);
   }
   return path;
@@ -164,11 +234,14 @@ async function visitManifestDirectories(root, visit) {
   await walk(resolve(root));
 }
 
-function stripComment(line) {
-  const hash = line.indexOf('#');
-  return hash === -1 ? line : line.slice(0, hash);
-}
-
 function leadingWhitespace(line) {
   return line.match(/^\s*/)?.[0] ?? '';
+}
+
+function isWindowsAbsolutePath(path) {
+  return /^[A-Za-z]:\//.test(path);
+}
+
+function containsGlobMetacharacter(path) {
+  return /[*?[\]{}]/.test(path);
 }
