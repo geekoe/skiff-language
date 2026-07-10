@@ -922,6 +922,31 @@ fn encrypted_storage_allows_projection_full_writes_and_key_selector_set() {
 }
 
 #[test]
+fn string_primary_key_cursor_comparison_compiles_through_db_lowering() {
+    compile_source_file_ir_artifact(
+        r#"
+            type Credential { id: string, apiKey: string }
+            db object Credential {
+              primary key(id)
+              storage apiKey using encrypted
+            }
+
+            function scan(lastId: string) -> Array<Credential> {
+                return db find many Credential {
+                  where id > lastId
+                  order id asc
+                  limit 100
+                }
+            }
+        "#,
+        "internal/string_cursor.skiff",
+        "internal.string_cursor",
+        "service",
+    )
+    .expect("string primary-key cursor should compile through DB lowering");
+}
+
+#[test]
 fn encrypted_storage_rejects_predicate_regex_order_query_set_and_partial_change() {
     let cases = [
         (

@@ -37,6 +37,9 @@ http:
       path: /encrypted-live/default/rewrite
       handler: root.internal.live.rewrite
     - method: POST
+      path: /encrypted-live/default/rewrite-batch
+      handler: root.internal.live.rewriteBatch
+    - method: POST
       path: /encrypted-live/default/identity-date
       handler: root.internal.live.identityDate
     - method: POST
@@ -51,6 +54,9 @@ http:
     - method: POST
       path: /encrypted-live/default/archive-rewrite
       handler: root.internal.live.rewriteArchive
+    - method: POST
+      path: /encrypted-live/default/archive-rewrite-batch
+      handler: root.internal.live.rewriteArchiveBatch
     - method: POST
       path: /encrypted-live/default/archive-restore
       handler: root.internal.live.restoreArchive

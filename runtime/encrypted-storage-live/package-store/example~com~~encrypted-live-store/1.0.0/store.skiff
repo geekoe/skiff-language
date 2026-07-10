@@ -20,12 +20,16 @@ type PackageSecretInput {
   sequence: number,
 }
 
+type PackageSecretBatchInput {
+  rows: Array<PackageSecret>,
+}
+
 type IdInput {
   id: string,
 }
 
 type ScanInput {
-  lastId: number,
+  lastId: string,
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
@@ -46,7 +50,7 @@ function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const input = std.http.decodeJson<ScanInput>(request)
-  const rows = db find many PackageSecret { where sequence > input.lastId order sequence asc limit 100 }
+  const rows = db find many PackageSecret { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
@@ -54,4 +58,14 @@ function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const input = std.http.decodeJson<PackageSecretInput>(request)
   const row = db update PackageSecret(input.id) { token = input.token }
   return std.http.json(200, row)
+}
+
+function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<PackageSecretBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update PackageSecret(row.id) { token = row.token }
+    }
+  }
+  return std.http.json(200, input.rows)
 }

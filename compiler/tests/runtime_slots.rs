@@ -62,6 +62,36 @@ fn function_ir_emits_typed_slot_layout_and_refs() {
 }
 
 #[test]
+fn string_relational_comparison_preserves_bool_descriptor_and_binary_lowering() {
+    let artifact = compile_source_file_ir_artifact(
+        r#"
+            function ordered(left: string, right: string) -> bool {
+                return left > right
+            }
+        "#,
+        "internal/string_order.skiff",
+        "internal.string_order",
+        "service",
+    )
+    .expect("string relational comparison should compile");
+    let artifact_value = artifact.value();
+    let ordered = executable_entry(&artifact_value, "ordered");
+
+    assert_builtin_type(&ordered["params"][0]["ty"], "string");
+    assert_builtin_type(&ordered["params"][1]["ty"], "string");
+    assert_builtin_type(&ordered["returnType"], "bool");
+    assert!(
+        ordered["body"]["expressions"]
+            .as_array()
+            .expect("expressions should be an array")
+            .iter()
+            .any(|expression| expression["kind"] == "binary"
+                && expression["op"] == "greaterThan"),
+        "string comparison should lower to the ordinary greaterThan binary descriptor",
+    );
+}
+
+#[test]
 fn same_scope_duplicate_let_is_rejected_before_ir_emission() {
     let error = compile_source_file_ir_artifact(
         r#"

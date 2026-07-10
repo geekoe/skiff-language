@@ -1324,7 +1324,7 @@ impl<'a> OwnerChecker<'a> {
                 self.db_operation_type(operation)
             }
             Expr::DbQuery(query) => {
-                self.check_db_query_block(&query.query);
+                self.check_db_query_block(&query.query, &query.target);
                 self.db_query_type(&query.target)
             }
             Expr::DbTransaction(transaction) => {
@@ -1618,10 +1618,10 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_db_operation_children(&mut self, operation: &crate::shared::ast::DbOperation) {
         if let Some(selector) = &operation.selector {
-            self.check_db_selector(selector);
+            self.check_db_selector(selector, &operation.target);
         }
         if let Some(query) = operation.independent_query() {
-            self.check_db_query_block(query);
+            self.check_db_query_block(query, &operation.target);
         }
         if let Some(body) = &operation.body {
             self.check_db_body(body);
@@ -1644,27 +1644,27 @@ impl<'a> OwnerChecker<'a> {
         }
     }
 
-    fn check_db_selector(&mut self, selector: &DbSelector) {
+    fn check_db_selector(&mut self, selector: &DbSelector, target: &TypeRef) {
         match selector {
             DbSelector::Key { value } => {
                 self.check_expr(value);
             }
-            DbSelector::Query { query } => self.check_db_query_block(query),
+            DbSelector::Query { query } => self.check_db_query_block(query, target),
         }
     }
 
-    fn check_db_query_block(&mut self, query: &DbQueryBlock) {
+    fn check_db_query_block(&mut self, query: &DbQueryBlock, target: &TypeRef) {
         for clause in &query.where_clauses {
             match clause {
                 DbWhereClause::Predicate { predicate } => {
-                    self.check_condition(predicate, "db where predicate");
+                    self.check_db_predicate(predicate, target);
                 }
                 DbWhereClause::Conditional {
                     condition,
                     predicate,
                 } => {
                     self.check_condition(condition, "db where condition");
-                    self.check_condition(predicate, "db where predicate");
+                    self.check_db_predicate(predicate, target);
                 }
             }
         }
@@ -1676,6 +1676,27 @@ impl<'a> OwnerChecker<'a> {
         }
         if let Some(after) = &query.after {
             self.check_expr(after);
+        }
+    }
+
+    fn check_db_predicate(&mut self, predicate: &Expr, target: &TypeRef) {
+        let fields = self
+            .type_resolution
+            .resolve_constructor_target_text(&target.name, &self.type_context)
+            .map(|target| target.fields)
+            .unwrap_or_default();
+        let mut previous = Vec::with_capacity(fields.len());
+        for (name, ty) in fields {
+            let old = self.env.insert(name.clone(), ty);
+            previous.push((name, old));
+        }
+        self.check_condition(predicate, "db where predicate");
+        for (name, old) in previous.into_iter().rev() {
+            if let Some(old) = old {
+                self.env.insert(name, old);
+            } else {
+                self.env.remove(&name);
+            }
         }
     }
 
@@ -1797,6 +1818,9 @@ impl<'a> OwnerChecker<'a> {
                 self.check_operand_assignable(key, "binary arithmetic operand", right, "number");
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                if self.operands_both_assignable_to(left, right, "string") {
+                    return;
+                }
                 self.check_operand_assignable(key, "binary comparison operand", left, "number");
                 self.check_operand_assignable(key, "binary comparison operand", right, "number");
             }
@@ -1842,6 +1866,24 @@ impl<'a> OwnerChecker<'a> {
             self.type_resolution
                 .assignable_in_context(right, &expected, &self.type_context)
         })
+    }
+
+    fn operands_both_assignable_to(
+        &self,
+        left: Option<&ResolvedTypeRef>,
+        right: Option<&ResolvedTypeRef>,
+        expected_builtin: &str,
+    ) -> bool {
+        let (Some(left), Some(right), Some(expected)) =
+            (left, right, self.resolve_builtin(expected_builtin))
+        else {
+            return false;
+        };
+        self.type_resolution
+            .assignable_in_context(left, &expected, &self.type_context)
+            && self
+                .type_resolution
+                .assignable_in_context(right, &expected, &self.type_context)
     }
 
     fn check_unary_operand(
@@ -3508,6 +3550,60 @@ mod tests {
             assert!(
                 error.contains(expected),
                 "projection {fields:?} should report {expected:?}, got:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn relational_comparison_accepts_numbers_and_same_type_strings() {
+        expression_type_result(
+            r#"
+              function stringOrder(left: string, right: string) -> bool {
+                return left < right || left <= right || left > right || left >= right
+              }
+
+              function numberOrder(left: number, right: number) -> bool {
+                return left < right || left <= right || left > right || left >= right
+              }
+            "#,
+        )
+        .expect("same-type string and numeric relational comparisons should type-check");
+    }
+
+    #[test]
+    fn relational_comparison_rejects_mixed_nullable_and_other_types() {
+        for (source, label) in [
+            (
+                r#"
+                  function invalid(left: string, right: number) -> bool {
+                    return left > right
+                  }
+                "#,
+                "mixed string/number",
+            ),
+            (
+                r#"
+                  function invalid(left: string?, right: string) -> bool {
+                    return left > right
+                  }
+                "#,
+                "nullable string",
+            ),
+            (
+                r#"
+                  function invalid(left: bool, right: bool) -> bool {
+                    return left > right
+                  }
+                "#,
+                "non-orderable bool",
+            ),
+        ] {
+            let error = expression_type_result(source)
+                .expect_err("invalid relational comparison should fail")
+                .message();
+            assert!(
+                error.contains("binary comparison operand type mismatch"),
+                "{label} should report a comparison mismatch, got:\n{error}"
             );
         }
     }

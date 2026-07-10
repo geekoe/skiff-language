@@ -72,6 +72,14 @@ type ArchiveInput {
   sequence: number,
 }
 
+type CredentialBatchInput {
+  rows: Array<Credential>,
+}
+
+type ArchiveBatchInput {
+  rows: Array<CredentialArchive>,
+}
+
 type IdInput {
   id: string,
 }
@@ -86,7 +94,7 @@ type ReplaceQueryInput {
 }
 
 type ScanInput {
-  lastId: number,
+  lastId: string,
 }
 
 type BarrierInput {
@@ -162,7 +170,7 @@ function readArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
 
 function scanArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const input = std.http.decodeJson<ScanInput>(request)
-  const rows = db find many CredentialArchive { where sequence > input.lastId order sequence asc limit 100 }
+  const rows = db find many CredentialArchive { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
@@ -172,6 +180,18 @@ function rewriteArchive(request: std.http.HttpRequest) -> std.http.HttpResponse 
   const input = std.http.decodeJson<ArchiveInput>(request)
   const row = db update CredentialArchive(input.id) { apiKey = input.apiKey }
   return std.http.json(200, row)
+}
+
+function rewriteArchiveBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ArchiveBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update CredentialArchive(row.id) { apiKey = row.apiKey }
+    }
+  }
+  return std.http.json(200, input.rows)
 }
 
 function restoreArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
@@ -302,7 +322,7 @@ function updateOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const input = std.http.decodeJson<ScanInput>(request)
-  const rows = db find many Credential { where sequence > input.lastId order sequence asc limit 100 }
+  const rows = db find many Credential { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
@@ -315,6 +335,21 @@ function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
     refreshToken = input.refreshToken
   }
   return std.http.json(200, row)
+}
+
+function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update Credential(row.id) {
+        apiKey = row.apiKey
+        refreshToken = row.refreshToken
+      }
+    }
+  }
+  return std.http.json(200, input.rows)
 }
 
 function identityDate(request: std.http.HttpRequest) -> std.http.HttpResponse {

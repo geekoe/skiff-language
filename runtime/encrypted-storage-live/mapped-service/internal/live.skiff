@@ -38,12 +38,16 @@ type CredentialInput {
   sequence: number,
 }
 
+type CredentialBatchInput {
+  rows: Array<Credential>,
+}
+
 type IdInput {
   id: string,
 }
 
 type ScanInput {
-  lastId: number,
+  lastId: string,
 }
 
 function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
@@ -99,7 +103,7 @@ function readServiceContextProbe(request: std.http.HttpRequest) -> std.http.Http
 
 function scanServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const input = std.http.decodeJson<ScanInput>(request)
-  const rows = db find many Credential { where sequence > input.lastId order sequence asc limit 100 }
+  const rows = db find many Credential { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
@@ -109,6 +113,18 @@ function rewriteServiceContextProbe(request: std.http.HttpRequest) -> std.http.H
   const input = std.http.decodeJson<CredentialInput>(request)
   const row = db update Credential(input.id) { apiKey = input.apiKey }
   return std.http.json(200, row)
+}
+
+function rewriteServiceContextProbeBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update Credential(row.id) { apiKey = row.apiKey }
+    }
+  }
+  return std.http.json(200, input.rows)
 }
 
 function restoreServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
@@ -141,4 +157,10 @@ function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const blocked = writerBarrier(request)
   if blocked != null { return blocked }
   return encryptedStore.rewrite(request)
+}
+
+function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  return encryptedStore.rewriteBatch(request)
 }

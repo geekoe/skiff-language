@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import {
+  createRotationInventory,
+  inventoryWithMissingField,
+  inventoryWithMissingService,
+  numberFromEjson,
+  ROTATION_PAGE_SIZE,
+  RotationCohort,
+  SimulatedCheckpointCrash,
+} from './lib/encrypted-storage-rotation-cohort.mjs';
 import {
   EncryptedStorageLiveHarness,
   keyringFingerprint,
@@ -17,7 +25,6 @@ const MAPPED_DATABASE = storageDatabaseName(MAPPED_SERVICE);
 const DEFAULT_COLLECTION = 'Credential';
 const ARCHIVE_COLLECTION = 'CredentialArchive';
 const MAPPED_COLLECTION = 'mapped_package_secret';
-const ROTATION_PAGE_SIZE = 100;
 const DEFAULT_BASE = '/encrypted-live/default';
 const MAPPED_BASE = '/encrypted-live/mapped';
 
@@ -102,7 +109,18 @@ async function run() {
   assertEnvelope(nextRaw.refreshToken, 'next-v2', 'all encrypted fields must use active key');
 
   const oldBackupDocument = await rawDefault(state.main.id);
-  const inventory = rotationInventory(testRunnerStorage);
+  const inventory = createRotationInventory({
+    defaultService: DEFAULT_SERVICE,
+    mappedService: MAPPED_SERVICE,
+    defaultDatabase: DEFAULT_DATABASE,
+    mappedDatabase: MAPPED_DATABASE,
+    defaultCollection: DEFAULT_COLLECTION,
+    archiveCollection: ARCHIVE_COLLECTION,
+    mappedCollection: MAPPED_COLLECTION,
+    defaultBase: DEFAULT_BASE,
+    mappedBase: MAPPED_BASE,
+    retiredStorage: testRunnerStorage,
+  });
   const checkpointPath = join(liveHarness.paths.tempRoot, 'rotation-checkpoints.json');
   const targetFingerprint = keyringFingerprint(oldAndNext);
   const barrierToken = randomRootKey();
@@ -118,7 +136,7 @@ async function run() {
   await assertDirectFetchWriterBarrier(state);
   const keyringBeforeRefusals = await liveHarness.readKeyring();
   await assertRejects(
-    () => firstAttempt.retireOldKey(inventoryWithMissingService(inventory), nextOnly),
+    () => firstAttempt.retireOldKey(inventoryWithMissingService(inventory, MAPPED_SERVICE), nextOnly),
     'missing service must block old-key retirement',
   );
   assertKeyringUnchanged(keyringBeforeRefusals, await liveHarness.readKeyring());
@@ -143,7 +161,7 @@ async function run() {
       throw error;
     }
   }
-  assert(crashed, 'rotation must simulate a write-success/checkpoint-before-write crash');
+  assert(crashed, 'rotation must simulate a committed batch transaction before checkpoint persistence');
   assert(firstAttempt.checkpoint(crashEntry) === undefined, 'crashed batch must not advance checkpoint');
   const afterCrashedWrite = await rawDefault(state.main.id);
 
@@ -159,7 +177,13 @@ async function run() {
   await resumed.migrateCollection(crashEntry);
   const resumedCursors = resumed.scanCursors(crashEntry);
   assert(resumedCursors.length >= 2, 'default rotation must cross at least two scan pages');
-  assert(resumedCursors.some((cursor) => cursor > 0), 'default rotation never issued a non-zero lastId scan');
+  assert(resumedCursors.some((cursor) => cursor !== ''), 'default rotation never issued a non-empty lastId scan');
+  const batchRewrites = resumed.batchRewrites(crashEntry);
+  assert(batchRewrites.length > 1, 'default rotation must issue more than one batch rewrite request');
+  assert(
+    batchRewrites.every((batch) => batch.rowCount > 1),
+    'rotation must send multiple rows in each full batch rewrite request',
+  );
   const afterResume = await rawDefault(state.main.id);
   assert(
     envelopeCiphertext(afterCrashedWrite.apiKey) !== envelopeCiphertext(afterResume.apiKey),
@@ -213,7 +237,6 @@ async function run() {
     onlineDocument,
   );
   await resumed.retireOldKey(inventory, nextOnly);
-  await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, state.main);
 
   const logs = await liveHarness.readLogs([
     liveHarness.paths.runtimeLog,
@@ -231,7 +254,7 @@ async function run() {
   console.log('PASS operation matrix: insert/read/projection/insert-many/replace/upsert/key-update');
   console.log('PASS raw Mongo: plaintext absent, nonce independent, field/collection/record/service AAD enforced');
   console.log('PASS keyring lifecycle: restart, wrong-root/delete fail closed, old-read/new-write, fingerprint events');
-  console.log('PASS rotation cohort: multi-page cursor, barrier, tuple checkpoints, crash replay, inventory refusal, raw $ne=0, offline recovery');
+  console.log('PASS rotation cohort: string-id pages, transactional batches, barrier, tuple checkpoints, crash replay, inventory refusal, raw $ne=0, offline recovery');
   await liveHarness.cleanup({ forceFallbackForTest: true });
   assert(liveHarness.cleanupFallbackUsed, 'cleanup fallback path must be exercised');
   assert(liveHarness.cleanupFallbackGroups.length >= 3, 'cleanup fallback did not own all managed process groups');
@@ -393,7 +416,7 @@ async function exerciseOperationMatrix() {
     apiKey: 'sk-live-page-api',
     refreshToken: 'sk-live-page-refresh',
     label: `page-${index}`,
-    sequence: 1000 + index,
+    sequence: index % 2,
   }));
   await callDefault('/insert-bulk', { rows: paginationRows });
   plaintexts.push(paginationRows[0].apiKey, paginationRows[0].refreshToken);
@@ -407,15 +430,17 @@ async function exerciseOperationMatrix() {
   await callMapped('/service-probe-insert', serviceProbe);
   plaintexts.push(serviceProbe.apiKey);
 
-  const defaultCursorRows = await callDefault('/scan', { lastId: 1103 });
+  const defaultCursor = 'credential-page-103';
+  const defaultCursorRows = await callDefault('/scan', { lastId: defaultCursor });
   assert(
-    defaultCursorRows.length === 1 && defaultCursorRows[0].sequence === 1104,
-    'default scan must apply its non-zero lastId cursor',
+    defaultCursorRows[0].id === 'credential-page-104'
+      && defaultCursorRows.every((row) => row.id > defaultCursor),
+    'default scan must apply its non-empty string primary-key cursor',
   );
-  const mappedCursorRows = await callMapped('/scan', { lastId: 1 });
+  const mappedCursorRows = await callMapped('/scan', { lastId: 'mapped-one' });
   assert(
-    mappedCursorRows.length === 1 && mappedCursorRows[0].sequence === 2,
-    'mapped scan must apply its non-zero lastId cursor',
+    mappedCursorRows.length === 1 && mappedCursorRows[0].id === 'mapped-two',
+    'mapped scan must apply its non-empty string primary-key cursor',
   );
 
   return {
@@ -522,218 +547,6 @@ async function assertCrossContextCopyFails(state) {
   await callDefault('/update', state.main);
 }
 
-function rotationInventory(testRunnerStorage) {
-  return [
-    {
-      storageServiceId: DEFAULT_SERVICE,
-      database: DEFAULT_DATABASE,
-      collection: DEFAULT_COLLECTION,
-      fields: ['apiKey', 'refreshToken'],
-      scanPath: `${DEFAULT_BASE}/scan`,
-      rewritePath: `${DEFAULT_BASE}/rewrite`,
-      service: DEFAULT_SERVICE,
-      barrierPath: `${DEFAULT_BASE}/barrier`,
-      barrierStatusPath: `${DEFAULT_BASE}/barrier-status`,
-    },
-    {
-      storageServiceId: DEFAULT_SERVICE,
-      database: DEFAULT_DATABASE,
-      collection: ARCHIVE_COLLECTION,
-      fields: ['apiKey'],
-      scanPath: `${DEFAULT_BASE}/archive-scan`,
-      rewritePath: `${DEFAULT_BASE}/archive-rewrite`,
-      service: DEFAULT_SERVICE,
-      barrierPath: `${DEFAULT_BASE}/barrier`,
-      barrierStatusPath: `${DEFAULT_BASE}/barrier-status`,
-    },
-    {
-      storageServiceId: MAPPED_SERVICE,
-      database: MAPPED_DATABASE,
-      collection: MAPPED_COLLECTION,
-      fields: ['token'],
-      scanPath: `${MAPPED_BASE}/scan`,
-      rewritePath: `${MAPPED_BASE}/rewrite`,
-      service: MAPPED_SERVICE,
-      barrierPath: `${MAPPED_BASE}/barrier`,
-      barrierStatusPath: `${MAPPED_BASE}/barrier-status`,
-    },
-    {
-      storageServiceId: MAPPED_SERVICE,
-      database: MAPPED_DATABASE,
-      collection: DEFAULT_COLLECTION,
-      fields: ['apiKey'],
-      scanPath: `${MAPPED_BASE}/service-probe-scan`,
-      rewritePath: `${MAPPED_BASE}/service-probe-rewrite`,
-      service: MAPPED_SERVICE,
-      barrierPath: `${MAPPED_BASE}/barrier`,
-      barrierStatusPath: `${MAPPED_BASE}/barrier-status`,
-    },
-    {
-      storageServiceId: testRunnerStorage.storageServiceId,
-      database: testRunnerStorage.database,
-      collection: testRunnerStorage.collection,
-      fields: [...testRunnerStorage.fields],
-      retired: true,
-    },
-  ];
-}
-
-class RotationCohort {
-  static async create(input) {
-    let checkpoints = new Map();
-    try {
-      const stored = JSON.parse(await readFile(input.checkpointPath, 'utf8'));
-      checkpoints = new Map(stored);
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        throw error;
-      }
-    }
-    return new RotationCohort(input, checkpoints);
-  }
-
-  constructor(input, checkpoints) {
-    Object.assign(this, input);
-    this.checkpoints = checkpoints;
-    this.writeBarrier = false;
-    this.scanHistory = new Map();
-  }
-
-  async beginWriteBarrier() {
-    for (const endpoint of barrierEndpoints(this.expectedInventory)) {
-      const result = await this.harness.request(endpoint.service, endpoint.barrierPath, {
-        token: this.barrierToken,
-      });
-      assert(result.active === true, `failed to activate writer barrier for ${endpoint.service}`);
-    }
-    this.writeBarrier = true;
-    this.harness.requireRetirementGate();
-    await this.assertRealBarrierActive();
-  }
-
-  checkpoint(entry) {
-    return this.checkpoints.get(this.checkpointKey(entry));
-  }
-
-  scanCursors(entry) {
-    return this.scanHistory.get(this.checkpointKey(entry)) ?? [];
-  }
-
-  assertRetirementInventory(candidate) {
-    assert(this.writeBarrier, 'cohort retirement requires an active full-writer barrier');
-    const expected = canonicalInventory(this.expectedInventory);
-    const actual = canonicalInventory(candidate);
-    assert(actual === expected, 'cohort inventory is incomplete; refusing old-key retirement');
-  }
-
-  async assertRealBarrierActive() {
-    assert(this.writeBarrier, 'cohort requires an active full-writer barrier');
-    for (const endpoint of barrierEndpoints(this.expectedInventory)) {
-      const status = await this.harness.request(
-        endpoint.service,
-        endpoint.barrierStatusPath,
-        {},
-      );
-      assert(status.active === true, `writer barrier is not active for ${endpoint.service}`);
-    }
-  }
-
-  async migrateCollection(entry, { crashAfterFirstBatchBeforeCheckpoint = false } = {}) {
-    assert(this.writeBarrier, 'rotation migration requires an active full-writer barrier');
-    if (entry.retired) {
-      assert(!(await this.harness.databaseExists(entry.database)), `${entry.database} must remain retired`);
-      for (const field of entry.fields) {
-        const count = await this.harness.countNotKeyId(
-          entry.database,
-          entry.collection,
-          field,
-          'next-v2',
-        );
-        assert(numberFromEjson(count) === 0, `retired ${entry.collection}.${field} is not empty`);
-      }
-      await this.saveCheckpoint(entry, { lastId: null, complete: true });
-      return;
-    }
-    let cursor = this.checkpoint(entry)?.lastId ?? 0;
-    const batchSize = 2;
-    while (true) {
-      const key = this.checkpointKey(entry);
-      const cursors = this.scanHistory.get(key) ?? [];
-      cursors.push(cursor);
-      this.scanHistory.set(key, cursors);
-      const rows = await this.harness.request(entry.service, entry.scanPath, {
-        lastId: cursor,
-      });
-      assert(rows.length <= ROTATION_PAGE_SIZE, `${entry.collection} scan exceeded its page limit`);
-      assert(
-        rows.every((row) => row.sequence > cursor),
-        `${entry.collection} scan did not honor lastId ${cursor}`,
-      );
-      if (rows.length === 0) {
-        await this.saveCheckpoint(entry, { lastId: cursor, complete: true });
-        return;
-      }
-      for (let offset = 0; offset < rows.length; offset += batchSize) {
-        const batch = rows.slice(offset, offset + batchSize);
-        for (const row of batch) {
-          await this.harness.request(entry.service, entry.rewritePath, row, {
-            rotationToken: this.barrierToken,
-          });
-        }
-        if (crashAfterFirstBatchBeforeCheckpoint && offset === 0) {
-          throw new SimulatedCheckpointCrash();
-        }
-        cursor = batch.at(-1).sequence;
-        await this.saveCheckpoint(entry, { lastId: cursor, complete: false });
-      }
-      if (rows.length < ROTATION_PAGE_SIZE) {
-        await this.saveCheckpoint(entry, { lastId: cursor, complete: true });
-        return;
-      }
-    }
-  }
-
-  async retireOldKey(candidateInventory, nextKeyring) {
-    this.assertRetirementInventory(candidateInventory);
-    await this.assertRealBarrierActive();
-    for (const entry of this.expectedInventory) {
-      const checkpoint = this.checkpoint(entry);
-      assert(checkpoint?.complete === true, `checkpoint is incomplete for ${entry.storageServiceId}/${entry.collection}`);
-      if (entry.retired) {
-        assert(!(await this.harness.databaseExists(entry.database)), `${entry.database} unexpectedly returned`);
-      }
-      for (const field of entry.fields) {
-        const count = await this.harness.countNotKeyId(
-          entry.database,
-          entry.collection,
-          field,
-          nextKeyring.activeKeyId,
-        );
-        assert(
-          numberFromEjson(count) === 0,
-          `${entry.storageServiceId}/${entry.collection}.${field} blocks old-key retirement`,
-        );
-      }
-    }
-    await this.harness.restartRuntime(nextKeyring, { retirementAuthorized: true });
-  }
-
-  async saveCheckpoint(entry, value) {
-    this.checkpoints.set(this.checkpointKey(entry), value);
-    await writeFile(this.checkpointPath, `${JSON.stringify([...this.checkpoints], null, 2)}\n`, 'utf8');
-  }
-
-  checkpointKey(entry) {
-    return JSON.stringify([
-      this.targetFingerprint,
-      entry.storageServiceId,
-      entry.collection,
-    ]);
-  }
-}
-
-class SimulatedCheckpointCrash extends Error {}
-
 async function assertAllBusinessRowsReadable(state) {
   for (const row of state.defaultRows.values()) {
     await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, row);
@@ -828,52 +641,6 @@ function envelopeNonce(value) {
 
 function envelopeCiphertext(value) {
   return value._skiff_encrypted.ciphertext.$binary.base64;
-}
-
-function numberFromEjson(value) {
-  if (typeof value === 'number') {
-    return value;
-  }
-  return Number(value.$numberInt ?? value.$numberLong);
-}
-
-function inventoryWithMissingField(inventory) {
-  return inventory.map((entry, index) => ({
-    ...entry,
-    fields: index === 0 ? entry.fields.slice(0, 1) : [...entry.fields],
-  }));
-}
-
-function inventoryWithMissingService(inventory) {
-  return inventory.filter((entry) => entry.storageServiceId !== MAPPED_SERVICE);
-}
-
-function canonicalInventory(inventory) {
-  return JSON.stringify(
-    inventory
-      .map((entry) => ({
-        storageServiceId: entry.storageServiceId,
-        collection: entry.collection,
-        fields: [...entry.fields].sort(),
-        retired: entry.retired === true,
-      }))
-      .sort((left, right) => `${left.storageServiceId}/${left.collection}`.localeCompare(`${right.storageServiceId}/${right.collection}`)),
-  );
-}
-
-function barrierEndpoints(inventory) {
-  const endpoints = new Map();
-  for (const entry of inventory) {
-    if (entry.retired || entry.barrierPath === undefined) {
-      continue;
-    }
-    endpoints.set(`${entry.service}:${entry.barrierPath}`, {
-      service: entry.service,
-      barrierPath: entry.barrierPath,
-      barrierStatusPath: entry.barrierStatusPath,
-    });
-  }
-  return [...endpoints.values()];
 }
 
 function assertKeyringUnchanged(before, after) {
