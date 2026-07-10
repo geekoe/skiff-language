@@ -3564,7 +3564,10 @@ fn runtime_activation_from_program(program: &RuntimeProgram) -> RuntimeActivatio
 fn concrete_execution_control(
     frame: &ProgramTestInvocation,
 ) -> crate::request::ExecutionControl<'_> {
-    crate::request::ExecutionControl::new(&frame.cancelled, &frame.execution_budget)
+    crate::request::ExecutionControl::new(
+        crate::request::cancellation::CancellationToken::from_flag(frame.cancelled.clone()),
+        &frame.execution_budget,
+    )
 }
 
 fn test_execution_control(
@@ -3593,7 +3596,7 @@ fn test_outbound_context(frame: &ProgramTestInvocation) -> OutboundServiceContex
             &frame.request,
             frame.operation.target.as_str(),
             frame.execution_budget.clone(),
-            execution.cancel_flag(),
+            execution.cancellation_token(),
             frame.request_heap_limits.clone(),
             frame.router_sender.clone(),
             frame.outbound_requests.clone(),
@@ -3758,14 +3761,13 @@ fn program_invocation_context<'a>(
         &frame.operation,
         frame.router_sender.as_ref(),
         &frame.outbound_requests,
-        frame.cancelled.as_ref(),
-        execution.cancel_flag(),
+        execution.cancellation_token(),
     );
     let effects = eval_capability_adapter::effects(
         eval_capability_adapter::effect_dispatch_context_from_request(
             &frame.request,
             frame.service_http_response_max_bytes,
-            execution.cancel_flag(),
+            execution.cancellation_token(),
             frame.telemetry_context(),
             skiff_runtime_capability_context::HttpRuntimeOptions::from_env(),
         ),
