@@ -57,7 +57,7 @@ pub struct DbEncryptionKeyring {
 }
 
 impl DbEncryptionKeyring {
-    pub fn parse_json(bytes: &[u8]) -> Result<Self, DbEncryptionKeyringError> {
+    fn parse_json(bytes: &[u8]) -> Result<Self, DbEncryptionKeyringError> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
         let raw = RawKeyring::deserialize(&mut deserializer)
             .map_err(|_| DbEncryptionKeyringError::Invalid)?;
@@ -360,7 +360,10 @@ fn open_keyring_file(path: &Path) -> Result<File, DbEncryptionKeyringError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        // A read-only open of a FIFO blocks before we can reject it via fstat.
+        // O_NONBLOCK is inert for regular files and lets the opened-fd type
+        // check below fail closed for FIFOs without waiting for a writer.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     options
         .open(path)

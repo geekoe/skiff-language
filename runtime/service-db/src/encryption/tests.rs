@@ -488,3 +488,35 @@ fn keyring_loader_requires_a_secure_regular_file() {
     };
     assert_eq!(missing_error, DbEncryptionKeyringError::Unreadable);
 }
+
+#[cfg(unix)]
+#[test]
+fn keyring_loader_rejects_fifo_without_blocking() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+
+    let temp = TestDir::new();
+    let path = temp.0.join("keyring.fifo");
+    let c_path = CString::new(path.as_os_str().as_bytes()).expect("FIFO path has no NUL byte");
+    let status = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+    assert_eq!(
+        status,
+        0,
+        "mkfifo failed: {}",
+        std::io::Error::last_os_error()
+    );
+
+    let (sender, receiver) = mpsc::channel();
+    let loader = std::thread::spawn(move || {
+        let error = match DbEncryptionKeyring::load(&path) {
+            Ok(_) => None,
+            Err(error) => Some(error),
+        };
+        sender.send(error).expect("FIFO test receiver remains live");
+    });
+
+    let error = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("FIFO keyring load must not block waiting for a writer");
+    loader.join().expect("FIFO loader thread should finish");
+    assert_eq!(error, Some(DbEncryptionKeyringError::NotRegularFile));
+}
