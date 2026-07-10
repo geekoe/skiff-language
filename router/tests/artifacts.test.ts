@@ -41,7 +41,7 @@ const CONTRACT_FILE_IR_UNIT = fileIrUnitTypes(CONTRACT_FILE_IR_IDENTITY);
 const CONTRACT_FILE_IR_HASH = artifactHash(CONTRACT_FILE_IR_UNIT);
 const CONTRACT_FILE_IR_PATH = `units/files/${CONTRACT_FILE_IR_HASH}.json`;
 const DEFAULTED_RUNTIME_PROGRAM_BUILD_ID =
-  "skiff-service-build-v1:sha256:9e0b19e915403565ffb7963ed393684bd7d88c8b30fd074c5e1f7cf03713d6f1";
+  "skiff-service-build-v1:sha256:bb6caac1100689bcc8c5e4e68c72cb85c46e7be0b5b0558e4b47f7e6b855e8b0";
 const ASSEMBLY_HASH = artifactHash(
   serviceAssemblyHashInput(
     serviceAssembly(SERVICE_ID, { assemblyIdentity: "" }),
