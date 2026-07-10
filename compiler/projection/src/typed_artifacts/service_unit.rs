@@ -86,6 +86,7 @@ pub fn build_service_unit(
         protocol_identity,
         abi_identity_projection: Default::default(),
         files: refs,
+        resources: Vec::new(),
         package_dependencies,
         service_dependencies,
         package_abi_expectations,

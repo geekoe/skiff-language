@@ -10,6 +10,7 @@ use crate::{
     publication_abi::{OperationAbiRef, PublicationAbiUnit},
     recoverable::RecoverableArtifactMetadata,
     refs::FileIrRef,
+    resources::PublicationResourceRef,
     schema::PACKAGE_UNIT_SCHEMA_VERSION,
     service_unit::{
         LocalReceiverExecutableRef, OperationCallableKind, OperationTargetRef, PublicInstanceExport,
@@ -29,6 +30,8 @@ pub struct PackageUnit {
     pub abi_identity_projection: AbiIdentityFacts,
     pub publication_abi: PublicationAbiUnit,
     pub files: Vec<FileIrRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<PublicationResourceRef>,
     #[serde(default, skip_serializing_if = "PackageImplementationLinks::is_empty")]
     pub implementation_links: PackageImplementationLinks,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,6 +60,7 @@ impl PackageUnit {
             abi_identity_projection: AbiIdentityFacts::default(),
             publication_abi: PublicationAbiUnit::empty(package_id, version, abi_identity),
             files: Vec::new(),
+            resources: Vec::new(),
             implementation_links: PackageImplementationLinks::default(),
             dependencies: Vec::new(),
             recoverable_metadata: RecoverableArtifactMetadata::default(),

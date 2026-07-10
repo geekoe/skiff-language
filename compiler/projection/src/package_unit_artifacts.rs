@@ -93,6 +93,7 @@ pub fn project_package_ir_artifacts(
         abi_identity_projection: package.abi_identity_projection.clone(),
         publication_abi,
         files: file_refs,
+        resources: Vec::new(),
         implementation_links,
         dependencies: dependency_constraints,
         recoverable_metadata: RecoverableArtifactMetadata::default(),

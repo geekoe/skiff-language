@@ -158,6 +158,85 @@ events:
 }
 
 #[test]
+fn parses_service_config_resources() {
+    let config = parse_service_config(
+        r#"
+id: example.com/api
+version: 1.0.0
+resources:
+  - prompts/system.md
+  - schemas/tool_input.schema.json
+"#,
+        Path::new("service.yml"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        config
+            .publication
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["prompts/system.md", "schemas/tool_input.schema.json"]
+    );
+}
+
+#[test]
+fn rejects_service_config_invalid_resources() {
+    let error = parse_service_config(
+        r#"
+id: example.com/api
+version: 1.0.0
+resources:
+  - main.skiff
+"#,
+        Path::new("service.yml"),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("resources[0] main.skiff is invalid"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_service_profile_overlay_resources_before_merge() {
+    let temp = TestDir::new("profile-resources");
+    std::fs::write(
+        temp.path().join("service.yml"),
+        r#"
+id: example.com/api
+version: 1.0.0
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("service.prod.yml"),
+        r#"
+resources:
+  - prompts/system.md
+"#,
+    )
+    .unwrap();
+
+    let error = read_service_config_with_profile(temp.path(), Some("prod"))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("service.prod.yml: field resources is invalid"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("resources must be declared in service.yml"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn defaults_service_access_to_public() {
     let config = parse_service_config(
         r#"

@@ -8,13 +8,14 @@ use serde_json::Value;
 use serde_yaml::Value as YamlValue;
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 
+use crate::collect_publication_resource_spec_violations;
 use crate::{
     collect_package_dependency_violations, empty_dependency_config, is_publication_dependency_id,
     is_reserved_source_import_alias, is_safe_publication_artifact_id_component,
     is_safe_publication_artifact_path_segment, is_valid_source_import_alias,
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
     ManifestProvenance, PackageDependency, PublicationApiSpec, PublicationManifest,
-    ServiceDependency,
+    PublicationResourceSpec, ServiceDependency,
 };
 
 use super::{
@@ -37,6 +38,8 @@ struct RawServiceConfig {
     access: Option<RawServiceAccessConfig>,
     packages: Option<Vec<RawServicePackageDependency>>,
     services: Option<Vec<RawServiceDependency>>,
+    #[serde(default)]
+    resources: Vec<PublicationResourceSpec>,
     requires: Option<RawServiceRequires>,
     dependencies: Option<RawDependenciesConfig>,
     http: Option<RawHttpConfig>,
@@ -279,6 +282,7 @@ impl RawServiceConfig {
         let services = validate_service_dependencies(path, self.services.unwrap_or_default())?;
         validate_service_dependency_rules(path, &services)?;
         validate_removed_service_requires(self.requires, &mut publication_violations);
+        collect_publication_resource_spec_violations(&self.resources, &mut publication_violations);
 
         if !publication_violations.is_empty() {
             return Err(ServiceConfigError::InvalidStringField {
@@ -339,12 +343,13 @@ impl RawServiceConfig {
         }
         let gateway = GatewayConfig {};
 
-        let mut publication = PublicationManifest::new_with_service_dependencies(
+        let publication = PublicationManifest::new_with_service_dependencies_and_resources(
             id.expect("validated service id"),
             version.expect("validated service version"),
             api,
             packages,
             services.clone(),
+            self.resources,
             ManifestProvenance::file(path, ManifestOwner::ServicePublication),
         );
         let runtime = ServiceRuntimeSpec {

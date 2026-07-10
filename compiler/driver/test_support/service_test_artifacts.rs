@@ -195,6 +195,7 @@ pub fn write_test_service_artifact_root_with_runtime_path_registration(
         abi_identity_projection: Default::default(),
         publication_abi,
         files: service_files,
+        resources: Vec::new(),
         package_dependencies: package_artifacts.dependencies.clone(),
         service_dependencies: Vec::new(),
         package_abi_expectations: Vec::new(),
@@ -429,6 +430,7 @@ fn service_test_package_unit_artifact(
             .iter()
             .map(|file| file_ref_for_published(file))
             .collect(),
+        resources: Vec::new(),
         implementation_links: PackageImplementationLinks::from_exports(&exports),
         dependencies: Vec::new(),
         recoverable_metadata: RecoverableArtifactMetadata::default(),

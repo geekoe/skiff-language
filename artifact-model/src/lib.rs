@@ -18,6 +18,7 @@ pub mod package_unit;
 pub mod publication_abi;
 pub mod recoverable;
 pub mod refs;
+pub mod resources;
 pub mod schema;
 pub mod service_unit;
 pub mod symbols;
@@ -80,6 +81,7 @@ pub use recoverable::{
     RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
 };
 pub use refs::{FileIrRef, SourcePosition, SourceSpanRef};
+pub use resources::PublicationResourceRef;
 pub use schema::{
     ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,

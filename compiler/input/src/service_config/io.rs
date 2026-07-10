@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use serde_yaml::Value as YamlValue;
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
 use crate::{read_publication_api_yml, PublicationApiSpec};
 
@@ -30,6 +30,7 @@ pub(super) fn read_service_config_with_profile(
     if let Some(profile) = profile {
         let profile_path = root.join(format!("service.{profile}.yml"));
         if let Some(profile_config) = read_optional_service_config_yaml(&profile_path)? {
+            reject_profile_publication_fields(&profile_path, &profile_config)?;
             overlay_yaml_object(&mut merged, profile_config);
         }
     }
@@ -114,6 +115,33 @@ fn validate_yaml_root_object(path: &Path, value: &YamlValue) -> Result<(), Servi
         field: "root",
         message: "must be a YAML object",
     })
+}
+
+fn reject_profile_publication_fields(
+    path: &Path,
+    value: &YamlValue,
+) -> Result<(), ServiceConfigError> {
+    let YamlValue::Mapping(mapping) = value else {
+        return Ok(());
+    };
+    for field in ["resources", "id", "version", "packages", "publication"] {
+        if mapping_has_field(mapping, field) {
+            return Err(ServiceConfigError::InvalidField {
+                path: path.display().to_string(),
+                field,
+                message: if field == "resources" {
+                    "resources must be declared in service.yml"
+                } else {
+                    "source publication fields must be declared in service.yml"
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+fn mapping_has_field(mapping: &YamlMapping, field: &str) -> bool {
+    mapping.contains_key(&YamlValue::String(field.to_string()))
 }
 
 fn validate_profile(path: &Path, profile: &str) -> Result<(), ServiceConfigError> {

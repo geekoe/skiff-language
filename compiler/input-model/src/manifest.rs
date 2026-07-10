@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{PackageDependency, PublicationApiSpec, ServiceDependency};
+use crate::{PackageDependency, PublicationApiSpec, PublicationResourceSpec, ServiceDependency};
 use skiff_compiler_core::id::{PublicationId, PublicationIdError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +10,7 @@ pub struct PublicationManifest {
     pub api: PublicationApiSpec,
     pub dependencies: Vec<PackageDependency>,
     pub service_dependencies: Vec<ServiceDependency>,
+    pub resources: Vec<PublicationResourceSpec>,
     pub provenance: ManifestProvenance,
 }
 
@@ -27,6 +28,26 @@ impl PublicationManifest {
             api,
             dependencies,
             service_dependencies: Vec::new(),
+            resources: Vec::new(),
+            provenance,
+        }
+    }
+
+    pub fn new_with_resources(
+        id: PublicationId,
+        version: String,
+        api: PublicationApiSpec,
+        dependencies: Vec<PackageDependency>,
+        resources: Vec<PublicationResourceSpec>,
+        provenance: ManifestProvenance,
+    ) -> Self {
+        Self {
+            id,
+            version,
+            api,
+            dependencies,
+            service_dependencies: Vec::new(),
+            resources,
             provenance,
         }
     }
@@ -45,6 +66,27 @@ impl PublicationManifest {
             api,
             dependencies,
             service_dependencies,
+            resources: Vec::new(),
+            provenance,
+        }
+    }
+
+    pub fn new_with_service_dependencies_and_resources(
+        id: PublicationId,
+        version: String,
+        api: PublicationApiSpec,
+        dependencies: Vec<PackageDependency>,
+        service_dependencies: Vec<ServiceDependency>,
+        resources: Vec<PublicationResourceSpec>,
+        provenance: ManifestProvenance,
+    ) -> Self {
+        Self {
+            id,
+            version,
+            api,
+            dependencies,
+            service_dependencies,
+            resources,
             provenance,
         }
     }

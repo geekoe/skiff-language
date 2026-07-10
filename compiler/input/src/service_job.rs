@@ -8,7 +8,7 @@ use skiff_compiler_core::id::PublicationId;
 use skiff_compiler_input_model::RawPublicationSourceGraph;
 
 use crate::{
-    assemble_publication,
+    assemble_publication_with_resources,
     error::InputAssemblyError,
     package_config::{
         package_alias_bindings, PackageDependency, PackageManifest, PackageManifestKey,
@@ -73,11 +73,14 @@ pub fn build_service_job(
         source_package_facts,
         discover_manifests,
     )?;
-    let publication = assemble_publication(
+    let resources =
+        crate::read_publication_resources(&source_tree.root, &config.publication.resources)?;
+    let publication = assemble_publication_with_resources(
         config.publication.clone(),
         source_tree.clone(),
         raw_source_graph,
         resolved_packages.package_graph,
+        resources,
     );
     let package_jobs = resolved_packages.package_jobs;
     let package_manifests = resolved_packages.package_manifests;
