@@ -390,7 +390,7 @@ fn std_root_import_allows_official_std_modules_and_records_std_package() {
         .unwrap()
         .clone();
     entries.sort_by_key(|entry| entry["path"].as_str().unwrap().to_string());
-    assert_eq!(entries.len(), 90);
+    assert_eq!(entries.len(), 97);
     for (path, module) in [
         ("actor.Actor", "actor"),
         ("bytes.DecodeError", "bytes"),
