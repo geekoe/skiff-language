@@ -2,3 +2,6 @@ router: ws://127.0.0.1:4001/runtime
 runtime-home: .runtime-home
 artifactRoots:
   - /var/lib/skiff/artifacts
+serviceDb:
+  encryption:
+    keyringFile: /run/secrets/skiff-service-db-keyring.json

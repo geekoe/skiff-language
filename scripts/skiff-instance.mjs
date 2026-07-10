@@ -27,6 +27,7 @@ import {
   renderRuntimeConfig,
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
+import { ensureLocalServiceDbKeyring } from './lib/service-db-keyring.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -135,7 +136,9 @@ async function initInstance(rawArgs, configPath) {
   }
   const paths = instanceBasePaths({ configPath, repoRoot: skiffRoot });
   const force = args.flags.has('--force');
-  const config = defaultInstanceConfig({ configPath: paths.configPath, repoRoot: skiffRoot });
+  const config = !force && await fileExists(paths.configPath)
+    ? await loadInstance(paths.configPath)
+    : defaultInstanceConfig({ configPath: paths.configPath, repoRoot: skiffRoot });
   await ensureInstanceDirs(config.paths);
   const configWrite = await writeIfMissing(paths.configPath, defaultInstanceConfigText(), force);
   const writes = [configWrite, ...await writeRuntimeConfigs(config, force)];
@@ -393,6 +396,7 @@ async function ensureInstanceDirs(paths) {
   await mkdir(paths.artifactRoot, { recursive: true });
   await mkdir(paths.serviceBuildRoot, { recursive: true });
   await mkdir(paths.runtimeHome, { recursive: true });
+  await mkdir(paths.secretsDir, { recursive: true, mode: 0o700 });
   await mkdir(paths.binDir, { recursive: true });
   await mkdir(paths.serviceDbPath, { recursive: true });
   await mkdir(dirname(paths.watchConfig), { recursive: true });
@@ -402,7 +406,11 @@ async function ensureInstanceDirs(paths) {
 }
 
 async function writeRuntimeConfigs(config, force) {
+  const keyring = await ensureLocalServiceDbKeyring(
+    config.paths.serviceDbEncryptionKeyringFile,
+  );
   return [
+    keyring,
     await writeIfMissing(config.paths.routerConfig, routerConfigText(config), force),
     await writeIfMissing(config.paths.runtimeConfig, runtimeConfigText(config), force),
     ...(config.components.telemetry === 'disabled'
@@ -432,6 +440,7 @@ function runtimeConfigText(config) {
     routerUrl: config.urls.routerRuntime,
     runtimeHome: config.paths.runtimeHome,
     artifactRoots: [config.paths.artifactRoot],
+    serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
   });
 }
 

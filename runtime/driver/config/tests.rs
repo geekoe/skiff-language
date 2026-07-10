@@ -104,6 +104,105 @@ fn config_reads_runtime_artifact_roots() {
 }
 
 #[test]
+fn config_resolves_relative_service_db_encryption_keyring_file() {
+    let temp = TempDir::new("config-service-db-keyring-relative");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "serviceDb:",
+            "  encryption:",
+            "    keyringFile: secrets/service-db-keyring.json",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(
+        config.service_db_encryption_keyring_file,
+        Some(temp.path.join("secrets/service-db-keyring.json"))
+    );
+}
+
+#[test]
+fn config_preserves_absolute_service_db_encryption_keyring_file() {
+    let temp = TempDir::new("config-service-db-keyring-absolute");
+    let config_path = temp.path.join("runtime.yml");
+    let keyring_path = temp.path.join("mounted/service-db-keyring.json");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime".to_string(),
+            "runtime-home: .runtime-home".to_string(),
+            "serviceDb:".to_string(),
+            "  encryption:".to_string(),
+            format!("    keyringFile: {}", keyring_path.display()),
+            String::new(),
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(
+        config.service_db_encryption_keyring_file,
+        Some(keyring_path)
+    );
+}
+
+#[test]
+fn config_defaults_service_db_encryption_keyring_file_when_missing() {
+    let temp = TempDir::new("config-service-db-keyring-missing");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let config = RuntimeFileConfig::load(&config_path).expect("config should load");
+
+    assert_eq!(config.service_db_encryption_keyring_file, None);
+}
+
+#[test]
+fn config_rejects_empty_service_db_encryption_keyring_file() {
+    let temp = TempDir::new("config-service-db-keyring-empty");
+    let config_path = temp.path.join("runtime.yml");
+    write(
+        &config_path,
+        [
+            "router: ws://127.0.0.1:4001/runtime",
+            "runtime-home: .runtime-home",
+            "serviceDb:",
+            "  encryption:",
+            "    keyringFile: \"\"",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("config should be written");
+
+    let error = RuntimeFileConfig::load(&config_path).expect_err("empty path should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "runtime config serviceDb.encryption.keyringFile must be a non-empty string"
+    );
+}
+
+#[test]
 fn config_ignores_legacy_mongo_url() {
     let temp = TempDir::new("config-mongo-url");
     let config_path = temp.path.join("runtime.yml");

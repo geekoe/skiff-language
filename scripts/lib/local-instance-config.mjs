@@ -99,6 +99,8 @@ export function instanceSummary(config) {
     serviceBuildRoot: config.paths.serviceBuildRoot,
     runtimeConfig: config.paths.runtimeConfig,
     runtimeHome: config.paths.runtimeHome,
+    secretsDir: config.paths.secretsDir,
+    serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
     binDir: config.paths.binDir,
     runtimeBinary: config.paths.runtimeBinary,
     identityCli: config.paths.identityCli,
@@ -143,6 +145,7 @@ function normalizeInstanceConfig(raw, context) {
   const packageDirs = normalizePackageDirs(raw.packageDirs, context.instanceRoot);
   const binDir = join(devHome, 'bin');
   const runtimeHome = join(devHome, 'runtime-home');
+  const secretsDir = join(devHome, 'secrets');
 
   return {
     schemaVersion: 'skiff-instance-v1',
@@ -155,6 +158,8 @@ function normalizeInstanceConfig(raw, context) {
       serviceBuildRoot: join(devHome, 'build'),
       runtimeConfig: join(devHome, 'runtime.yml'),
       runtimeHome,
+      secretsDir,
+      serviceDbEncryptionKeyringFile: join(secretsDir, 'service-db-keyring.json'),
       binDir,
       runtimeBinary: join(binDir, runtimeBinaryName()),
       identityCli: join(binDir, identityCliBinaryName()),
