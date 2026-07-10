@@ -44,6 +44,7 @@ fn native_signature_registry_shared_targets_are_runtime_reachable() {
         RuntimeNativeRoute::Http,
         RuntimeNativeRoute::Websocket,
         RuntimeNativeRoute::Telemetry,
+        RuntimeNativeRoute::Resource,
         RuntimeNativeRoute::NativeRegistry,
         RuntimeNativeRoute::ReceiverMethod,
     ]);
@@ -163,14 +164,14 @@ fn http_sse_headers_include_event_stream_defaults() {
 
 #[test]
 fn http_helper_none_capability_assertion_rejects_other_capabilities() {
-    let no_capability = NativeCapabilityContexts::<(), (), (), (), (), (), ()>::None;
+    let no_capability = NativeCapabilityContexts::<(), (), (), (), (), (), (), ()>::None;
     assert!(
         ensure_http_helper_none_capability_context(HTTP_REQUEST_HEADER_KEY, &no_capability,)
             .is_ok()
     );
 
     let http_client_capability =
-        NativeCapabilityContexts::<(), (), (), (), (), (), ()>::HttpClient(());
+        NativeCapabilityContexts::<(), (), (), (), (), (), (), ()>::HttpClient(());
     let error = ensure_http_helper_none_capability_context(
         HTTP_REQUEST_HEADER_KEY,
         &http_client_capability,

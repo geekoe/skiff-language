@@ -18,6 +18,8 @@ pub struct RuntimeProgram {
     pub service_files: Vec<Arc<LinkedFileUnit>>,
     pub packages: Vec<Arc<PackageUnit>>,
     pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    pub service_resources: skiff_runtime_linked_program::PublicationResourceTable,
+    pub package_resources: Vec<skiff_runtime_linked_program::PublicationResourceTable>,
     pub service_dependencies: Vec<ServiceDependencyConstraint>,
     pub timeout: ServiceTimeoutConfig,
     pub operation_route_bindings: Vec<OperationRouteBinding>,
@@ -42,6 +44,8 @@ impl RuntimeProgram {
             service_files: self.service_files.clone(),
             packages: self.packages.clone(),
             package_files: self.package_files.clone(),
+            service_resources: self.service_resources.clone(),
+            package_resources: self.package_resources.clone(),
             routes: self.routes.clone(),
             spawn_routes: self.spawn_routes.clone(),
             operations: self.operations.clone(),
@@ -81,6 +85,14 @@ impl EvalRuntimeProgramSource for RuntimeProgram {
 
     fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
         &self.package_files
+    }
+
+    fn service_resources(&self) -> &skiff_runtime_linked_program::PublicationResourceTable {
+        &self.service_resources
+    }
+
+    fn package_resources(&self) -> &[skiff_runtime_linked_program::PublicationResourceTable] {
+        &self.package_resources
     }
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {

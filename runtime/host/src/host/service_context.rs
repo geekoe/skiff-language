@@ -4,7 +4,7 @@ use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_eval::{EvalRuntimeProgram, EvalRuntimeProgramSource};
 use skiff_runtime_linked_program::{
     ExecutableAddr, LinkOverlay, LinkedFileUnit, LinkedProgramImage, PackageUnit,
-    RuntimeProgramIdentity, RuntimeTypeContext,
+    PublicationResourceTable, RuntimeProgramIdentity, RuntimeTypeContext,
 };
 
 use crate::{capability_context::DbCapabilitySource, config_view::RuntimeConfigView};
@@ -145,6 +145,14 @@ impl EvalRuntimeProgramSource for ServiceEvalRuntimeProgramSource<'_> {
 
     fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
         self.service.linked_image.package_files.as_slice()
+    }
+
+    fn service_resources(&self) -> &PublicationResourceTable {
+        &self.service.linked_image.service_resources
+    }
+
+    fn package_resources(&self) -> &[PublicationResourceTable] {
+        self.service.linked_image.package_resources.as_slice()
     }
 
     fn spawn_routes(&self) -> &HashMap<String, ExecutableAddr> {

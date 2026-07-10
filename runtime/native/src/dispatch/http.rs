@@ -83,6 +83,7 @@ impl HttpNativeDispatch {
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -93,6 +94,7 @@ impl HttpNativeDispatch {
             HttpResponseStreamContext,
             WebsocketContext,
             TelemetryContext,
+            ResourceContext,
         >,
         invocation: &RuntimeNativeInvocation,
         diagnostic_target: &str,
@@ -628,6 +630,7 @@ pub(super) fn ensure_http_helper_none_capability_context<
     HttpResponseStreamContext,
     WebsocketContext,
     TelemetryContext,
+    ResourceContext,
 >(
     binding_key: &str,
     native_capability_context: &NativeCapabilityContexts<
@@ -638,6 +641,7 @@ pub(super) fn ensure_http_helper_none_capability_context<
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >,
 ) -> Result<()> {
     ensure_native_capability_context(

@@ -520,7 +520,9 @@ impl WirePayload for RuntimeError {
 
 pub fn decode_target_error_code(target: &str) -> Option<&'static str> {
     match target {
-        "std.json.decode" | "std.json.encode" => Some("std.json.DecodeError"),
+        "std.json.decode" | "std.json.encode" | "std.resource.json" => {
+            Some("std.json.DecodeError")
+        }
         "config.require" | "config.optional" | "config.has" => Some("config.DecodeError"),
         "number.parse" | "number.assertSafeInteger" => Some("std.number.DecodeError"),
         target if target.starts_with("Date.") || target.starts_with("Duration.") => {

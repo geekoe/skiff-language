@@ -310,6 +310,7 @@ fn program_units_serialize_loader_schema_fields_as_camel_case() {
         abi_identity_projection: Default::default(),
         publication_abi: PublicationAbiUnit::empty("svc", "v1", "protocol:1"),
         files: vec![FileIrRef::new("file:service", "svc.main".to_string())],
+        resources: Vec::new(),
         package_dependencies: vec![ServicePackageDependencyConstraint {
             id: "skiff.run/std".to_string(),
             version: "1.0.0".to_string(),
@@ -370,6 +371,7 @@ fn service_and_package_unit_schema_roundtrip_keeps_file_refs_lightweight() {
         abi_identity_projection: Default::default(),
         publication_abi: PublicationAbiUnit::empty("svc", "v1", "protocol:1"),
         files: vec![FileIrRef::new("file:service", "svc.main".to_string())],
+        resources: Vec::new(),
         package_dependencies: vec![ServicePackageDependencyConstraint {
             id: "example.com/pkg".to_string(),
             version: "1.0.0".to_string(),
@@ -5395,6 +5397,7 @@ fn runtime_program(
     packages: Vec<Arc<PackageUnit>>,
     package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
 ) -> RuntimeProgram {
+    let package_resources = vec![Default::default(); packages.len()];
     RuntimeProgram {
         service: ServiceMeta {
             id: "svc".to_string(),
@@ -5406,6 +5409,8 @@ fn runtime_program(
         service_files,
         packages,
         package_files,
+        service_resources: Default::default(),
+        package_resources,
         package_configs: Vec::new(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),
@@ -5740,6 +5745,7 @@ fn service_unit(
         abi_identity_projection: Default::default(),
         publication_abi: PublicationAbiUnit::empty(service_id, "v1", "protocol:1"),
         files,
+        resources: Vec::new(),
         package_dependencies: Vec::new(),
         service_dependencies: Vec::new(),
         package_abi_expectations,

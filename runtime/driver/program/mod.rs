@@ -53,6 +53,7 @@ pub use service_unit::{
     ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
     ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
 };
+pub use skiff_runtime_linked_program::PublicationResourceTable;
 pub(crate) use skiff_runtime_linked_program::{LinkOverlay, ResolvedSymbol};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use skiff_runtime_linker::package_handler_target;
@@ -106,6 +107,7 @@ mod runtime_program {
         OperationRouteBinding, PackageUnit, ProgramError, ProgramResult, RuntimeTypeContext,
         ServiceDependencyConstraint, ServiceMeta, ServiceTimeoutConfig, UnitAddr,
     };
+    use skiff_runtime_linked_program::PublicationResourceTable;
 
     use crate::config_view::RuntimeConfigView;
 
@@ -118,6 +120,8 @@ mod runtime_program {
         pub service_files: Vec<Arc<LinkedFileUnit>>,
         pub packages: Vec<Arc<PackageUnit>>,
         pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+        pub service_resources: PublicationResourceTable,
+        pub package_resources: Vec<PublicationResourceTable>,
         pub package_configs: Vec<RuntimeConfigView>,
         pub service_dependencies: Vec<ServiceDependencyConstraint>,
         pub timeout: ServiceTimeoutConfig,

@@ -43,6 +43,9 @@ pub fn resolve_runtime_native_invocation(
         };
     let program = interpreter.program_projection()?.type_view();
     let actor_metadata = resolve_actor_native_metadata(binding_key, &target_name, call)?;
+    let resource_owner =
+        (runtime_shared_native_route(binding_key) == Some(RuntimeNativeRoute::Resource))
+            .then(|| current_addr.unit.clone());
     let plan = match resolve_runtime_native_call_plan(
         program,
         current_addr,
@@ -64,6 +67,7 @@ pub fn resolve_runtime_native_invocation(
         binding_key,
         plan,
         actor_metadata,
+        resource_owner,
     ))
 }
 
@@ -280,6 +284,8 @@ mod tests {
             service_files: Vec::new(),
             packages: Vec::new(),
             package_files: Vec::new(),
+            service_resources: Default::default(),
+            package_resources: Vec::new(),
             routes: std::collections::HashMap::new(),
             spawn_routes: std::collections::HashMap::new(),
             operations: std::collections::HashMap::new(),
@@ -310,6 +316,8 @@ mod tests {
             program.service_files.clone(),
             program.packages.clone(),
             program.package_files.clone(),
+            program.service_resources.clone(),
+            program.package_resources.clone(),
             program.spawn_routes.clone(),
             program.link_overlay.clone(),
             program.types.clone(),

@@ -10,6 +10,7 @@ pub enum NativeRequiredContext {
     HttpResponseStream,
     Websocket,
     Telemetry,
+    Resource,
 }
 
 impl NativeRequiredContext {
@@ -74,6 +75,11 @@ impl NativeRequiredContext {
                 Self::HttpClient
             }
             "std.http.stream.emitResponse" => Self::HttpResponseStream,
+            "std.resource.bytes"
+            | "std.resource.text"
+            | "std.resource.json"
+            | "std.resource.info"
+            | "std.resource.exists" => Self::Resource,
             "std.file.create"
             | "std.file.createText"
             | "std.file.read"

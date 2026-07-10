@@ -380,11 +380,13 @@ impl<'a> ExecutableInvocation<'a> {
 
 impl Interpreter {
     pub fn program_projection(&self) -> Result<EvalProgramProjection<'_>> {
-        Ok(EvalProgramProjection::new(
+        Ok(EvalProgramProjection::new_with_resources(
             &self.program.service_id,
             &self.program.service_files,
             &self.program.packages,
             &self.program.package_files,
+            &self.program.service_resources,
+            &self.program.package_resources,
             &self.program.spawn_routes,
             &self.program.link_overlay,
             &self.program.types,

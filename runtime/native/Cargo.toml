@@ -16,6 +16,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
+skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 thiserror = "2.0"
@@ -24,3 +25,4 @@ uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }

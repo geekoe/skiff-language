@@ -14,6 +14,7 @@ mod http;
 mod http_helpers;
 mod invocation;
 mod json;
+mod resource;
 mod telemetry;
 mod time;
 mod websocket;

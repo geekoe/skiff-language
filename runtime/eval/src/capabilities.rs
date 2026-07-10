@@ -514,6 +514,7 @@ pub type RuntimeNativeCapabilityContexts<'execution> =
         RuntimeNativeHttpResponseStreamCapabilityContext<'execution>,
         RuntimeNativeWebsocketCapabilityContext<'execution>,
         RuntimeNativeTelemetryCapabilityContext,
+        (),
     >;
 
 pub struct EvalRequestExecutionCapabilities<'a> {

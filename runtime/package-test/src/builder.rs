@@ -149,8 +149,10 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         let graph = ArtifactGraph {
             service_unit: synthetic_service.clone(),
             service_files,
+            service_resources: Default::default(),
             package_units: dependency_units,
             package_files: dependency_files,
+            package_resources: Vec::new(),
             identities,
         };
         let image_build = link_runtime_program_image(graph).map_err(|error| {
