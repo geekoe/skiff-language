@@ -39,6 +39,7 @@ pub struct RuntimeFileConfig {
     pub router: String,
     pub runtime_home: PathBuf,
     pub artifact_roots: Vec<PathBuf>,
+    pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -52,7 +53,23 @@ struct RawRuntimeFileConfig {
     #[serde(default, alias = "artifact-roots")]
     artifact_roots: Vec<PathBuf>,
     #[serde(default)]
+    service_db: Option<RawRuntimeServiceDbConfig>,
+    #[serde(default)]
     services: Option<serde_yaml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRuntimeServiceDbConfig {
+    #[serde(default)]
+    encryption: Option<RawRuntimeServiceDbEncryptionConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRuntimeServiceDbEncryptionConfig {
+    #[serde(default)]
+    keyring_file: Option<String>,
 }
 
 impl RuntimeFileConfig {
@@ -84,10 +101,33 @@ impl RuntimeFileConfig {
             router: raw.router,
             runtime_home,
             artifact_roots: resolve_relative_paths(base_dir, raw.artifact_roots)?,
+            service_db_encryption_keyring_file: runtime_service_db_encryption_keyring_file(
+                base_dir,
+                raw.service_db,
+            )?,
             http_response_max_bytes: runtime_http_response_max_bytes_from_value(&value)?,
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
         })
     }
+}
+
+fn runtime_service_db_encryption_keyring_file(
+    base_dir: &Path,
+    service_db: Option<RawRuntimeServiceDbConfig>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let Some(keyring_file) = service_db
+        .and_then(|service_db| service_db.encryption)
+        .and_then(|encryption| encryption.keyring_file)
+    else {
+        return Ok(None);
+    };
+    if keyring_file.trim().is_empty() {
+        anyhow::bail!("runtime config serviceDb.encryption.keyringFile must be a non-empty string");
+    }
+    Ok(Some(resolve_relative_path(
+        base_dir,
+        PathBuf::from(keyring_file),
+    )))
 }
 
 fn runtime_http_response_max_bytes_from_value(value: &serde_yaml::Value) -> anyhow::Result<usize> {

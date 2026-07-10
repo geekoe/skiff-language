@@ -2,10 +2,10 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   defaultInstanceConfig,
@@ -17,6 +17,10 @@ import {
   defaultDevHome,
   devRuntimePaths,
 } from './lib/dev-runtime-paths.mjs';
+import {
+  localServiceDbKeyId,
+  serviceDbKeyringFormat,
+} from './lib/service-db-keyring.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -39,6 +43,11 @@ try {
   assert.equal(expected.paths.instanceRoot, instanceRoot);
   assert.equal(expected.paths.devHome, join(instanceRoot, 'dev-home'));
   assert.equal(expected.paths.artifactRoot, join(instanceRoot, 'dev-home', 'artifacts'));
+  assert.equal(expected.paths.secretsDir, join(instanceRoot, 'dev-home', 'secrets'));
+  assert.equal(
+    expected.paths.serviceDbEncryptionKeyringFile,
+    join(instanceRoot, 'dev-home', 'secrets', 'service-db-keyring.json'),
+  );
   assert.equal(expected.urls.routerReload, 'http://127.0.0.1:4101/__skiff/reload-artifacts');
 
   await run('node', [skiffCli, 'instance', 'init', configPath]);
@@ -46,6 +55,29 @@ try {
   assert.match(configText, /^devHome: /m);
   assert.match(configText, /^  base: 4100$/m);
   assert.match(configText, /^  mongo: 27017$/m);
+
+  const runtimeConfigText = await readFile(expected.paths.runtimeConfig, 'utf8');
+  assert.match(runtimeConfigText, /^serviceDb:$/m);
+  assert.match(runtimeConfigText, /^  encryption:$/m);
+  assert.match(
+    runtimeConfigText,
+    new RegExp(`^    keyringFile: ${escapeRegExp(JSON.stringify(expected.paths.serviceDbEncryptionKeyringFile))}$`, 'm'),
+  );
+  const firstKeyringText = await readFile(expected.paths.serviceDbEncryptionKeyringFile, 'utf8');
+  assertValidProvisionedKeyring(firstKeyringText);
+  if (process.platform !== 'win32') {
+    assert.equal(
+      (await stat(expected.paths.serviceDbEncryptionKeyringFile)).mode & 0o777,
+      0o600,
+    );
+  }
+
+  await run('node', [skiffCli, 'instance', 'init', configPath, '--force']);
+  assert.equal(
+    await readFile(expected.paths.serviceDbEncryptionKeyringFile, 'utf8'),
+    firstKeyringText,
+    're-running an instance lifecycle ensure must preserve the existing key',
+  );
 
   const loaded = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
   assert.deepEqual(instanceSummary(loaded).components, {
@@ -59,6 +91,11 @@ try {
   assert.equal(paths.instanceRoot, instanceRoot);
   assert.equal(paths.devHome, join(instanceRoot, 'dev-home'));
   assert.equal(paths.artifactRoot, join(instanceRoot, 'dev-home', 'artifacts'));
+  assert.equal(paths.secretsDir, expected.paths.secretsDir);
+  assert.equal(
+    paths.serviceDbEncryptionKeyringFile,
+    expected.paths.serviceDbEncryptionKeyringFile,
+  );
   assert.equal(paths.basePort, 4100);
   assert.equal(paths.routerHttpPort, 4100);
   assert.equal(paths.routerControlPort, 4101);
@@ -82,16 +119,69 @@ try {
   const defaultCustomConfigText = await readFile(customConfigPath, 'utf8');
   await writeFile(
     customConfigPath,
-    defaultCustomConfigText.replace(/^  base: 4100$/m, '  base: 4300'),
+    defaultCustomConfigText
+      .replace(/^devHome: dev-home$/m, 'devHome: custom-dev-home')
+      .replace(/^  base: 4100$/m, '  base: 4300'),
   );
+  await run('node', [skiffCli, 'instance', 'init', customConfigPath]);
   const customConfigText = await readFile(customConfigPath, 'utf8');
+  assert.match(customConfigText, /^devHome: custom-dev-home$/m);
   assert.match(customConfigText, /^  base: 4300$/m);
   assert.match(customConfigText, /^  mongo: 27017$/m);
   const custom = await readInstanceConfig({ configPath: customConfigPath, repoRoot: skiffRoot });
+  assert.equal(custom.paths.devHome, join(dirname(customConfigPath), 'custom-dev-home'));
+  assertValidProvisionedKeyring(
+    await readFile(custom.paths.serviceDbEncryptionKeyringFile, 'utf8'),
+  );
+  assert.match(
+    await readFile(custom.paths.runtimeConfig, 'utf8'),
+    new RegExp(`^    keyringFile: ${escapeRegExp(JSON.stringify(custom.paths.serviceDbEncryptionKeyringFile))}$`, 'm'),
+  );
   assert.equal(custom.ports.routerHttp, 4300);
   assert.equal(custom.ports.routerControl, 4301);
   assert.equal(custom.ports.telemetry, 4302);
   assert.equal(custom.ports.mongo, 27017);
+
+  const concurrentKeyringPath = join(
+    tempRoot,
+    'concurrent-instance',
+    'dev-home',
+    'secrets',
+    'service-db-keyring.json',
+  );
+  const keyringHelperUrl = pathToFileURL(
+    join(scriptDir, 'lib', 'service-db-keyring.mjs'),
+  ).href;
+  const concurrentEnsureProgram = [
+    `import { ensureLocalServiceDbKeyring } from ${JSON.stringify(keyringHelperUrl)};`,
+    'console.log(JSON.stringify(await ensureLocalServiceDbKeyring(process.argv[1])));',
+  ].join('\n');
+  const concurrentEnsures = await Promise.all(
+    Array.from({ length: 16 }, async () => JSON.parse(await runCapture('node', [
+      '--input-type=module',
+      '--eval',
+      concurrentEnsureProgram,
+      concurrentKeyringPath,
+    ]))),
+  );
+  assert.equal(
+    concurrentEnsures.filter(({ action }) => action === 'created').length,
+    1,
+    'exactly one concurrent ensure must install the keyring',
+  );
+  assert.ok(concurrentEnsures.every(({ path }) => path === concurrentKeyringPath));
+  const concurrentKeyringText = await readFile(concurrentKeyringPath, 'utf8');
+  assertValidProvisionedKeyring(concurrentKeyringText);
+  assert.equal(
+    await readFile(concurrentKeyringPath, 'utf8'),
+    concurrentKeyringText,
+    'all concurrent losers must observe the complete installed file',
+  );
+  assert.deepEqual(
+    (await readdir(dirname(concurrentKeyringPath))).sort(),
+    ['service-db-keyring.json'],
+    'provisioning must remove its lock and same-directory temporary file',
+  );
 
   await assertMissing(join(instanceRoot, 'skiff.yml'));
   await assertMissing(join(instanceRoot, 'skiff.local.yml'));
@@ -99,6 +189,22 @@ try {
   console.log('[check-local-instance] ok');
 } finally {
   await rm(tempRoot, { recursive: true, force: true });
+}
+
+function assertValidProvisionedKeyring(text) {
+  const keyring = JSON.parse(text);
+  assert.deepEqual(Object.keys(keyring).sort(), ['activeKeyId', 'format', 'keys']);
+  assert.equal(keyring.format, serviceDbKeyringFormat);
+  assert.equal(keyring.activeKeyId, localServiceDbKeyId);
+  assert.deepEqual(Object.keys(keyring.keys), [localServiceDbKeyId]);
+  const material = keyring.keys[localServiceDbKeyId];
+  assert.match(material, /^[A-Za-z0-9+/]{43}=$/);
+  assert.equal(Buffer.from(material, 'base64').length, 32);
+  assert.equal(Buffer.from(material, 'base64').toString('base64'), material);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function assertMissing(path) {

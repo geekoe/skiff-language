@@ -35,6 +35,7 @@ const SCRIPT_SYNTAX_CHECK_FILES = [
   'scripts/deploy-runtime-stack.mjs',
   'scripts/lib/cargo-target-dir.mjs',
   'scripts/lib/dev-runtime-paths.mjs',
+  'scripts/lib/service-db-keyring.mjs',
   'scripts/lib/source-key.mjs',
 ];
 
@@ -143,6 +144,11 @@ function unitPhases(unit) {
           command: 'node',
           args: ['--check', file],
         })),
+        {
+          name: 'scripts:local-instance',
+          command: 'node',
+          args: ['scripts/check-local-instance.mjs'],
+        },
         {
           name: 'scripts:runtime-eval-error-boundary',
           command: 'node',

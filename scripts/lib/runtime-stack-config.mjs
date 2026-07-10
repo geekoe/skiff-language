@@ -66,6 +66,7 @@ export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
   artifactRoots,
+  serviceDbEncryptionKeyringFile,
   httpResponseMaxBytes,
 }) {
   const lines = [
@@ -76,6 +77,13 @@ export function renderRuntimeConfig({
     lines.push(
       'artifactRoots:',
       ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
+    );
+  }
+  if (serviceDbEncryptionKeyringFile !== undefined) {
+    lines.push(
+      'serviceDb:',
+      '  encryption:',
+      `    keyringFile: ${quoteYamlString(serviceDbEncryptionKeyringFile)}`,
     );
   }
   if (httpResponseMaxBytes !== undefined) {
