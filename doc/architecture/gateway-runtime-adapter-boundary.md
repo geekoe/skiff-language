@@ -251,6 +251,11 @@ runtime HTTP adapter
 
 Gateway 不解码 body record，也不构造 handler args object。它只把 `httpAdapter.adapterArgs` 和 raw body bytes 发给 runtime。
 
+HTTP CORS 的所有权按 literal path 决定。若选中的 service/version/build 为该 path 声明了显式
+`OPTIONS` route，router 必须把预检 dispatch 给 runtime，且不得为该 path 的普通响应预先注入
+或覆盖 CORS header；service 返回的 exact Origin 策略是唯一结果。没有显式 `OPTIONS` route 的
+path 继续使用 router 的自动预检与兼容 CORS header。
+
 ### 示例：HTTP pre context
 
 Manifest：

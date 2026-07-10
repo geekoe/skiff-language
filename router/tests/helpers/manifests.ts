@@ -88,6 +88,7 @@ export function loadHttpRouteManifest(
   input: {
     serviceId?: string;
     protocolIdentity?: string;
+    sessionOptions?: boolean;
   } = {}
 ) {
   const serviceId = input.serviceId ?? SAMPLE_SERVICE_ID;
@@ -174,6 +175,34 @@ export function loadHttpRouteManifest(
               adapterArgs: [{ param: 'request', source: { kind: 'http.request' } }]
             }
           },
+          ...(input.sessionOptions === true
+            ? [
+                {
+                  method: 'OPTIONS',
+                  path: '/session',
+                  handler: {
+                    kind: 'serviceFunction' as const,
+                    source: 'root.api.sessionPreflight',
+                    modulePath: 'api',
+                    symbol: 'sessionPreflight'
+                  },
+                  operation: 'SessionApi.handle',
+                  operationAbiId: testOperationAbiId(sessionTarget),
+                  target: sessionTarget,
+                  adapter: {
+                    kind: 'rawHttp' as const,
+                    handler: {
+                      kind: 'serviceFunction' as const,
+                      modulePath: 'api',
+                      symbol: 'sessionPreflight'
+                    },
+                    adapterArgs: [
+                      { param: 'request', source: { kind: 'http.request' as const } }
+                    ]
+                  }
+                }
+              ]
+            : []),
           {
             method: 'POST',
             path: '/track',

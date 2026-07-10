@@ -238,11 +238,14 @@ export class HttpGateway {
     telemetry: HttpRequestTelemetryContext
   ): Promise<void> {
     this.attachRequestTelemetryFinalizers(response, telemetry);
-    this.writeCorsHeaders(request, response);
-    if (isCorsPreflightRequest(request)) {
-      telemetry.routeKind = 'gateway';
-      this.writeCorsPreflightResponse(request, response);
-      return;
+    const serviceManagesCors = this.hasExplicitOptionsRoute(request);
+    if (!serviceManagesCors) {
+      this.writeCorsHeaders(request, response);
+      if (isCorsPreflightRequest(request)) {
+        telemetry.routeKind = 'gateway';
+        this.writeCorsPreflightResponse(request, response);
+        return;
+      }
     }
 
     const url = requestUrl(request);
@@ -888,6 +891,38 @@ export class HttpGateway {
     response.setHeader('access-control-allow-origin', origin);
     response.setHeader('access-control-allow-credentials', 'true');
     addVaryHeader(response, 'Origin');
+  }
+
+  private hasExplicitOptionsRoute(request: IncomingMessage): boolean {
+    if (firstHeader(request.headers.origin) === undefined) {
+      return false;
+    }
+
+    try {
+      const url = requestUrl(request);
+      const rewrite = resolveRequestRewrite(this.options.rewrite, request, url);
+      const serviceId = rewrite?.service ?? requestServiceId(request, url);
+      const snapshot = this.currentSnapshot();
+      const serviceVersion = this.resolveServiceVersion(
+        snapshot,
+        serviceId,
+        snapshot.versionByService !== undefined
+          ? rewrite?.version ?? requestVersion(request, url)
+          : undefined
+      );
+      return this.resolveHttpRouteDispatch(
+        snapshot,
+        serviceId,
+        serviceVersion?.buildId,
+        'OPTIONS',
+        url.pathname
+      ).routeOperation !== undefined;
+    } catch (error) {
+      if (error instanceof GatewayError) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private writeCorsPreflightResponse(

@@ -135,6 +135,119 @@ describe('router raw HTTP gateway', () => {
     expect(response.headers.vary).toContain('Access-Control-Request-Headers');
   });
 
+  it('dispatches service-managed CORS without reflecting disallowed origins', async () => {
+    const manifest = loadHttpRouteManifest({ sessionOptions: true });
+    const harness = await RouterHarness.http({ manifest });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-service-managed-cors',
+      targets: manifest.operations.map((operation) => operation.target)
+    });
+    const allowedOrigin = 'http://127.0.0.1:4007';
+    const dispatchedMethods: string[] = [];
+    const dispatchedCallers: string[] = [];
+    runtime.onRequestFrame((request) => {
+      const method = request.header.httpRequest?.method ?? '';
+      const origin = request.header.httpRequest?.headers.find(
+        (header) => header.name.toLowerCase() === 'origin'
+      )?.value;
+      const allowed = origin === allowedOrigin;
+      dispatchedMethods.push(method);
+      dispatchedCallers.push(request.header.caller.target);
+      runtime.sendHttpFrameResponse({
+        requestId: request.header.requestId,
+        status: method === 'OPTIONS' && !allowed ? 403 : 200,
+        headers: [
+          { name: 'vary', value: 'Origin' },
+          ...(allowed
+            ? [
+                { name: 'access-control-allow-origin', value: allowedOrigin },
+                { name: 'access-control-allow-credentials', value: 'true' },
+                ...(method === 'OPTIONS'
+                  ? [
+                      { name: 'access-control-allow-methods', value: 'POST, OPTIONS' },
+                      {
+                        name: 'access-control-allow-headers',
+                        value: 'content-type, x-codex-relay-csrf'
+                      }
+                    ]
+                  : [])
+              ]
+            : [])
+        ],
+        body: JSON.stringify({ method, allowed })
+      });
+    });
+
+    const preflightHeaders = {
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type, x-codex-relay-csrf'
+    };
+    const allowedPreflight = await harness.requestHttp({
+      path: '/session?service=skiff.run/sample',
+      method: 'OPTIONS',
+      headers: { Origin: allowedOrigin, ...preflightHeaders }
+    });
+    const evilPreflight = await harness.requestHttp({
+      path: '/session?service=skiff.run/sample',
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.example', ...preflightHeaders }
+    });
+    const allowedPost = await harness.requestHttp({
+      path: '/session?service=skiff.run/sample',
+      method: 'POST',
+      headers: { Origin: allowedOrigin }
+    });
+    const evilPost = await harness.requestHttp({
+      path: '/session?service=skiff.run/sample',
+      method: 'POST',
+      headers: { Origin: 'https://evil.example' }
+    });
+    const fallbackPreflight = await harness.requestHttp({
+      path: '/track?service=skiff.run/sample',
+      method: 'OPTIONS',
+      headers: { Origin: 'https://legacy.example', ...preflightHeaders }
+    });
+
+    expect(dispatchedMethods).toEqual(['OPTIONS', 'OPTIONS', 'POST', 'POST']);
+    expect(dispatchedCallers).toEqual([
+      'gateway.skiff~run~~sample.http.options.session',
+      'gateway.skiff~run~~sample.http.options.session',
+      'gateway.skiff~run~~sample.http.post.session',
+      'gateway.skiff~run~~sample.http.post.session'
+    ]);
+    expect(allowedPreflight.status).toBe(200);
+    expect(allowedPreflight.headers['access-control-allow-origin']).toBe(allowedOrigin);
+    expect(allowedPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(allowedPreflight.headers['access-control-allow-methods']).toBe('POST, OPTIONS');
+    expect(allowedPreflight.headers['access-control-allow-headers']).toBe(
+      'content-type, x-codex-relay-csrf'
+    );
+    expect(allowedPreflight.headers.vary).toBe('Origin');
+
+    expect(evilPreflight.status).toBe(403);
+    expect(evilPreflight.headers['access-control-allow-origin']).toBeUndefined();
+    expect(evilPreflight.headers['access-control-allow-credentials']).toBeUndefined();
+    expect(evilPreflight.headers['access-control-allow-methods']).toBeUndefined();
+    expect(evilPreflight.headers.vary).toBe('Origin');
+
+    expect(allowedPost.status).toBe(200);
+    expect(allowedPost.headers['access-control-allow-origin']).toBe(allowedOrigin);
+    expect(allowedPost.headers['access-control-allow-credentials']).toBe('true');
+    expect(allowedPost.headers.vary).toBe('Origin');
+    expect(evilPost.status).toBe(200);
+    expect(evilPost.headers['access-control-allow-origin']).toBeUndefined();
+    expect(evilPost.headers['access-control-allow-credentials']).toBeUndefined();
+    expect(evilPost.headers.vary).toBe('Origin');
+
+    expect(fallbackPreflight.status).toBe(204);
+    expect(fallbackPreflight.headers['access-control-allow-origin']).toBe(
+      'https://legacy.example'
+    );
+    expect(fallbackPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(fallbackPreflight.headers.vary).toContain('Origin');
+    expect(fallbackPreflight.headers.vary).toContain('Access-Control-Request-Method');
+  });
+
   it('adds CORS headers to HTTP API error responses with an Origin', async () => {
     const harness = await RouterHarness.rawHttp();
 
