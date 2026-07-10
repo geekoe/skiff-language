@@ -742,7 +742,7 @@ Integration / smoke：
 - After chat smoke, check loop-risk health from this repository:
   `node scripts/check-loop-risk-health.mjs --url http://127.0.0.1:4001/__router/health?detail=loop-risk --runtime-id <touched-runtime-id> --timeout-ms 5000`
 - Stable-instance WebSocket cancel stress entry:
-  `node scripts/stress-loop-risk-websocket-cancel.mjs --ws-url '<stable-websocket-url>' --runtime-id <touched-runtime-id> --runtime-pid <runtime-pid> --runtime-log <runtime-log-file>`
+  `node scripts/stress-loop-risk-websocket-cancel.mjs --ws-url '<stable-websocket-url>' --runtime-id <touched-runtime-id> --runtime-pid <runtime-pid> --runtime-log <runtime-log-file> --health-timeout-ms 5000`
 
 Stress acceptance：
 
@@ -763,6 +763,7 @@ Before final merge of the implementation series:
   - every touched spawn has owner, stop signal or join/abort handle.
 - `rg "CancellationToken::from_flag|CancellationSignals::from_flags|CANCEL_POLL_INTERVAL|Duration::from_millis\\(1\\)" runtime`
   - every remaining production hit appears in the polling fallback allowlist with owner、bound、counter and test.
+  - `runtime/host/src/host/spawn_worker.rs` uses `Duration::from_millis(1)` only as a spawn lease renew lower bound; it is not a cancellation polling loop.
 - `rg "register_outbound_response|outbound_requests\\.insert|OutboundRequestRegistry::insert" runtime`
   - every outbound request registration reaches an `OutboundRequestLease` terminal path.
 - `rg "finishPending\\(|completePending\\(|rejectPendingWithError\\(|sendCancel\\(" router/src/router/runtimeDispatcher.ts`

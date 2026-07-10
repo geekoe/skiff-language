@@ -2,11 +2,10 @@
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-
-import WebSocket from 'ws';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +35,7 @@ async function main() {
   const concurrency = readPositiveIntegerArg('concurrency', 50);
   const healthUrl =
     firstArg('health-url') ?? 'http://127.0.0.1:4001/__router/health?detail=loop-risk';
-  const healthTimeoutMs = readPositiveIntegerArg('health-timeout-ms', 10000);
+  const healthTimeoutMs = readPositiveIntegerArg('health-timeout-ms', 5000);
   const headers = parseHeaders();
   const sessionPrefix = firstArg('session-prefix') ?? `loop-risk-stress-${Date.now()}`;
   const payloadTemplate =
@@ -59,8 +58,10 @@ async function main() {
   }
 
   const logCountsBefore = skipLogCheck ? [] : await readRuntimeRequestErrorCounts(logFiles);
+  const WebSocket = await loadWebSocket();
   const stormStartedAt = new Date().toISOString();
   const storm = await runWebSocketStorm({
+    WebSocket,
     closeDelayMs,
     closeTimeoutMs,
     concurrency,
@@ -158,7 +159,7 @@ function runWebSocketAttempt(input, index) {
       ? `${headers.cookie}; sessionId=${sessionId}`
       : `sessionId=${sessionId}`;
 
-    const ws = new WebSocket(input.wsUrl, { headers });
+    const ws = new input.WebSocket(input.wsUrl, { headers });
     let settled = false;
     let opened = false;
     const timeout = setTimeout(() => {
@@ -185,7 +186,7 @@ function runWebSocketAttempt(input, index) {
           return;
         }
         setTimeout(() => {
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws.readyState === input.WebSocket.OPEN) {
             ws.close();
           }
         }, input.closeDelayMs);
@@ -201,6 +202,13 @@ function runWebSocketAttempt(input, index) {
       settle(reject, error);
     });
   });
+}
+
+async function loadWebSocket() {
+  const routerRequire = createRequire(path.join(scriptDir, '../router/package.json'));
+  const resolved = routerRequire.resolve('ws');
+  const imported = await import(pathToFileURL(resolved).href);
+  return imported.default ?? imported.WebSocket ?? imported;
 }
 
 async function runHealthCheck(input) {
@@ -488,7 +496,7 @@ Health:
   --health-url <url>             Router loop-risk health URL. Default: local stable control port.
   --runtime-id <id>              Touched runtime id. May be repeated or comma-separated.
   --runtime-ids <ids>            Comma-separated touched runtime ids.
-  --health-timeout-ms <ms>       Health zero-window timeout. Default: 10000.
+  --health-timeout-ms <ms>       Health zero-window timeout. Default: 5000.
 
 CPU:
   --runtime-pid <pid>            Runtime process id. May be repeated or comma-separated.

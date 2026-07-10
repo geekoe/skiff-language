@@ -181,8 +181,11 @@ function validateTouchedRuntimeIds(runtimes, touchedRuntimeIds, reasons) {
       validateRuntimeSession(runtime, label, reasons, {
         requireConnectedFreshZero: runtime.connected
       });
-      if (!runtime.connected && !runtimeCountersAreZero(runtime.counters)) {
-        reasons.push(`${label} is disconnected with nonzero counters`);
+      if (!runtime.connected) {
+        reasons.push(`${label} is disconnected; touched runtimes must remain connected`);
+        if (!runtimeCountersAreZero(runtime.counters)) {
+          reasons.push(`${label} is disconnected with nonzero counters`);
+        }
       }
     }
   }
@@ -308,6 +311,16 @@ function runSelfTest() {
     evaluateLoopRiskHealth({
       router: zeroRouter,
       runtimes: [
+        { runtimeId: 'runtime-a', connected: false, fresh: false, counters: zeroCounters },
+        { runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }
+      ]
+    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
+    false
+  );
+  assert.equal(
+    evaluateLoopRiskHealth({
+      router: zeroRouter,
+      runtimes: [
         { runtimeId: 'runtime-b', connected: true, fresh: true, counters: zeroCounters }
       ]
     }, { touchedRuntimeIds: ['runtime-a'] }).ok,
@@ -330,5 +343,6 @@ Options:
   --self-test                 Run local evaluator self-checks without network.
 
 Touched runtime ids must remain present with at least one connected fresh zero
-session. Any disconnected nonzero touched runtime session fails the check.`);
+session. Any disconnected touched runtime session fails the check because this
+script has no pre-stress baseline mechanism.`);
 }
