@@ -2322,6 +2322,83 @@ describe('router runtime registry dispatch', () => {
     });
   });
 
+  it('classifies runtime stream protocol violations as protocol_error terminal', async () => {
+    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
+    const target = 'service.skiff~run~~hello.HelloApi.streamProtocolError';
+
+    const runtimeRouter = trackResource(createRuntimeRouter());
+    const { dispatcher, endpoint } = runtimeRouter;
+    const registryListen = await endpoint.listen({ port: 0 });
+    const runtime = await openRegisteredRuntime(registryListen.url, {
+      type: 'runtime.register',
+      runtimeId: 'runtime-stream-protocol-error',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-stream-protocol-error',
+      buildId: DEFAULT_TEST_BUILD_ID,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: [target]
+    });
+
+    let closedTerminalSource: string | undefined;
+    const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-protocol-error');
+    const dispatch = dispatcher.dispatchBinaryStream(
+      {
+        header: serviceRequestStart({
+          requestId: 'request-stream-protocol-error',
+          callerTarget: 'gateway.test.stream',
+          callerKind: 'gateway',
+          target,
+          serviceId: manifest.service.id,
+          serviceProtocolIdentity: manifest.service.protocolIdentity,
+          mode: 'serverStream'
+        }),
+        payloadBytes: Buffer.from('stream payload')
+      },
+      2000,
+      {
+        onStart: () => {},
+        onChunk: () => {},
+        onEnd: () => {},
+        closeFromPendingTerminal: (terminal) => {
+          closedTerminalSource = terminal.source;
+        }
+      }
+    );
+    const request = await requestPromise;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime,
+      request.header.requestId,
+      'stream protocol error cancel'
+    );
+    runtime.send(
+      encodeRuntimeFrame(
+        {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.chunk',
+          requestId: request.header.requestId,
+          seq: 0
+        },
+        Buffer.from('chunk-before-start')
+      )
+    );
+
+    await expect(dispatch).rejects.toMatchObject({
+      code: 'StreamProtocolError',
+      message: 'response.chunk received before response.start'
+    });
+    await expect(cancelPromise).resolves.toMatchObject({
+      message: {
+        type: 'request.cancel',
+        requestId: request.header.requestId,
+        reason: 'protocol_error'
+      }
+    });
+    expect(closedTerminalSource).toBe('protocol_error');
+    expect(dispatcher.pendingLifecycleCounters()).toMatchObject({
+      pendingStream: 0
+    });
+  });
+
 
   it('rejects response.chunk during unary dispatch', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');

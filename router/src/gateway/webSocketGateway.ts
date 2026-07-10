@@ -457,7 +457,13 @@ export class WebSocketGateway {
         'websocket path does not match any gateway entry'
       );
     }
-    const prepared = await this.prepareUpgrade(request, url);
+    const connectAbort = this.upgradeClientDisconnectSignal(request, socket);
+    let prepared: PreparedUpgrade;
+    try {
+      prepared = await this.prepareUpgrade(request, url, connectAbort.signal);
+    } finally {
+      connectAbort.complete();
+    }
     try {
       webSocketServer.handleUpgrade(request, socket, head, (ws) => {
         this.attachSocket(prepared.connection, ws);
@@ -473,7 +479,8 @@ export class WebSocketGateway {
 
   private async prepareUpgrade(
     request: IncomingMessage,
-    url: URL
+    url: URL,
+    signal: AbortSignal
   ): Promise<PreparedUpgrade> {
     const { entry, service, buildId, version } = this.selectEntry(request, url);
     const upgradeSession = resolveClientUpgradeSession();
@@ -489,7 +496,7 @@ export class WebSocketGateway {
     });
 
     try {
-      await this.verifyConnection(connection, request, url);
+      await this.verifyConnection(connection, request, url, signal);
     } catch (error) {
       connection.state = 'rejected';
       this.connectionsById.delete(connection.id);
@@ -585,10 +592,11 @@ export class WebSocketGateway {
   private async verifyConnection(
     connection: Connection,
     request: IncomingMessage,
-    url: URL
+    url: URL,
+    signal: AbortSignal
   ): Promise<void> {
     const accepted = connection.entry.connect
-      ? await this.dispatchConnect(connection.entry.connect, request, url, connection)
+      ? await this.dispatchConnect(connection.entry.connect, request, url, connection, signal)
       : {
           contextBytes: new Uint8Array()
         };
@@ -632,7 +640,8 @@ export class WebSocketGateway {
     connect: LoadedWebSocketConnect,
     request: IncomingMessage,
     url: URL,
-    connection: Connection
+    connection: Connection,
+    signal: AbortSignal
   ): Promise<ConnectAccept> {
     if (connect.operationManifest.mode !== 'unary') {
       throw new GatewayError(
@@ -655,7 +664,8 @@ export class WebSocketGateway {
       serviceId: connection.entry.serviceId,
       callerTarget: `gateway.${publicationStorageSegment(connection.entry.serviceId)}.websocket.${connection.entry.id}.connect`,
       buildId: connection.buildId,
-      clientSession: connection.clientSession
+      clientSession: connection.clientSession,
+      signal
     });
 
     return decodeWebSocketConnectResponse(response);
@@ -801,6 +811,34 @@ export class WebSocketGateway {
     }
     connection.receiveQueue = [];
     this.receiveCounters.queued = Math.max(0, this.receiveCounters.queued - queued);
+  }
+
+  private upgradeClientDisconnectSignal(
+    request: IncomingMessage,
+    socket: Socket
+  ): { signal: AbortSignal; complete(): void } {
+    const controller = new AbortController();
+    let completed = false;
+    const abort = () => {
+      if (!completed && !controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+    socket.once('close', abort);
+    socket.once('end', abort);
+    request.once('aborted', abort);
+    if (socket.destroyed) {
+      queueMicrotask(abort);
+    }
+    return {
+      signal: controller.signal,
+      complete: () => {
+        completed = true;
+        socket.off('close', abort);
+        socket.off('end', abort);
+        request.off('aborted', abort);
+      }
+    };
   }
 
   private async dispatchReceive(

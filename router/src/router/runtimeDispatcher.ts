@@ -967,16 +967,21 @@ export class RuntimeDispatcher {
     requestId: string,
     error: { code: string; message: string; details?: unknown }
   ): void {
-    this.rejectPendingWithError(ws, requestId, new RuntimeResponseError(error));
+    this.rejectPendingWithError(ws, requestId, new RuntimeResponseError(error), 'protocol_error');
   }
 
-  private rejectPendingWithError(ws: WebSocket, requestId: string, error: unknown): void {
+  private rejectPendingWithError(
+    ws: WebSocket,
+    requestId: string,
+    error: unknown,
+    source: 'callback_error' | 'protocol_error' = 'callback_error'
+  ): void {
     const pending = this.pending.get(requestId);
     if (!pending || !this.isPendingRuntimeSocket(ws, pending)) {
       return;
     }
     this.finishPending(requestId, pending, {
-      source: 'callback_error',
+      source,
       kind: 'failed',
       error
     });

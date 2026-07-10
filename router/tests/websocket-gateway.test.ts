@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { connect as connectTcp } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -212,6 +213,46 @@ describe('router websocket gateway', () => {
       queued: 0,
       abortOnClose: 1
     });
+  });
+
+  it('aborts in-flight websocket connect dispatch on upgrade socket close', async () => {
+    const manifestValue = webSocketManifestValue();
+    const manifest = loadManifest(manifestValue);
+    const harness = await RouterHarness.websocket({ manifest });
+
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-ws-connect-close-abort',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    const connectRequestPromise = runtime.collectRequests(1, 'connect close abort request');
+
+    const socket = connectTcp(
+      harness.webSocketListen!.port,
+      harness.webSocketListen!.host
+    );
+    socket.on('error', () => {
+      // The server may close the TCP upgrade while connect dispatch is being aborted.
+    });
+    trackResource({ close: () => { socket.destroy(); } });
+    await onceWithTimeout(socket, 'connect', 'connect abort raw socket');
+    socket.write(rawWebSocketUpgradeRequest(
+      harness.webSocketUrl('?deviceId=connect-abort-user&platform=web&clientVersion=1.0.0&language=en'),
+      'connect-abort-session'
+    ));
+
+    const [connectRequest] = await connectRequestPromise;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime.ws,
+      connectRequest!.requestId,
+      'websocket connect close cancel'
+    );
+    socket.end();
+
+    await expect(cancelPromise).resolves.toMatchObject({
+      reason: 'client_disconnect'
+    });
+    socket.destroy();
   });
 
   it('bounds verified websocket receive queue and drops queued messages locally on close', async () => {
@@ -1497,6 +1538,23 @@ function websocketHeaders(
     ? `${headers.cookie}; sessionId=${sessionId}`
     : `sessionId=${sessionId}`;
   return headers;
+}
+
+function rawWebSocketUpgradeRequest(url: string, sessionId: string): string {
+  const parsed = new URL(url);
+  const path = `${parsed.pathname}${parsed.search}`;
+  const host = parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+  return [
+    `GET ${path} HTTP/1.1`,
+    `Host: ${host}`,
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+    'Sec-WebSocket-Version: 13',
+    `Cookie: sessionId=${sessionId}`,
+    '',
+    ''
+  ].join('\r\n');
 }
 
 function nameValue(
