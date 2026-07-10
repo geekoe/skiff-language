@@ -2890,7 +2890,7 @@ async fn actor_client_put_sends_rpc_and_decodes_response_header() {
     };
     let pending = frame
         .outbound_requests
-        .complete(&request.rpc_id)
+        .complete_for_test(&request.rpc_id)
         .expect("actor put rpc should be pending");
     pending
         .send(OutboundResponse::End {
@@ -3213,7 +3213,7 @@ fn deliver_spawn_claim_response(
         .expect("claim response should serialize");
     let pending = host
         .outbound_requests
-        .complete(rpc_id)
+        .complete_for_test(rpc_id)
         .expect("spawn claim rpc should be pending");
     pending
         .send(OutboundResponse::End { payload })
@@ -3230,7 +3230,7 @@ fn deliver_spawn_complete_response(host: &RuntimeHost, rpc_id: &str) {
     };
     let pending = host
         .outbound_requests
-        .complete(rpc_id)
+        .complete_for_test(rpc_id)
         .expect("spawn complete rpc should be pending");
     pending
         .send(OutboundResponse::End {
@@ -3250,7 +3250,7 @@ fn deliver_spawn_renew_response(host: &RuntimeHost, rpc_id: &str) {
     };
     let pending = host
         .outbound_requests
-        .complete(rpc_id)
+        .complete_for_test(rpc_id)
         .expect("spawn renew rpc should be pending");
     pending
         .send(OutboundResponse::End {
@@ -3269,7 +3269,7 @@ fn deliver_spawn_fail_response(host: &RuntimeHost, rpc_id: &str) {
     };
     let pending = host
         .outbound_requests
-        .complete(rpc_id)
+        .complete_for_test(rpc_id)
         .expect("spawn fail rpc should be pending");
     pending
         .send(OutboundResponse::End {
@@ -4547,7 +4547,7 @@ fn actor_client_context(frame: &ActorClientTestInvocation) -> ActorClientContext
         invocation,
         frame.router_sender.as_ref(),
         frame.outbound_requests.as_ref(),
-        frame.cancelled.as_ref(),
+        CancellationToken::from_flag(frame.cancelled.clone()),
     )
 }
 

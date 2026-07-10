@@ -151,6 +151,19 @@ impl StreamRuntime {
         }
     }
 
+    fn finish_all_streams(&self, terminal: StreamTerminalReason) {
+        let states = self
+            .streams
+            .lock()
+            .expect("stream registry mutex poisoned")
+            .drain()
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>();
+        for state in states {
+            state.finish(terminal);
+        }
+    }
+
     pub fn active_stream_count(&self) -> usize {
         self.streams
             .lock()
@@ -259,6 +272,14 @@ impl StreamRuntime {
             return;
         };
         self.finish_stream(id, StreamTerminalReason::Cancelled);
+    }
+}
+
+impl Drop for StreamRuntime {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.streams) == 1 {
+            self.finish_all_streams(StreamTerminalReason::SourceDropped);
+        }
     }
 }
 
@@ -404,7 +425,20 @@ impl StreamSink {
         item: Value,
         cancellation: &CancellationSignals<'_>,
     ) -> StreamRuntimeResult<()> {
+        self.send_with_stream_cancellation(item, &[], cancellation)
+            .await
+    }
+
+    pub async fn send_with_stream_cancellation(
+        &self,
+        item: Value,
+        signals: &[StreamCancelSignal],
+        cancellation: &CancellationSignals<'_>,
+    ) -> StreamRuntimeResult<()> {
         if self.is_cancelled() {
+            return Err(StreamRuntimeError::cancelled());
+        }
+        if external_cancelled(signals, cancellation) {
             return Err(StreamRuntimeError::cancelled());
         }
         if cancellation.is_cancelled() {
@@ -413,12 +447,12 @@ impl StreamSink {
         let cancel_notified = self.cancel_notify.notified();
         tokio::pin!(cancel_notified);
         cancel_notified.as_mut().enable();
-        let external_cancel_notified = wait_for_cancellation(cancellation);
+        let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
         tokio::pin!(external_cancel_notified);
         if self.is_cancelled() {
             return Err(StreamRuntimeError::cancelled());
         }
-        if cancellation.is_cancelled() {
+        if external_cancelled(signals, cancellation) {
             return Err(StreamRuntimeError::cancelled());
         }
         tokio::select! {
@@ -573,10 +607,6 @@ async fn wait_for_any_signal(signals: &[StreamCancelSignal]) {
         })
         .await;
     }
-}
-
-async fn wait_for_cancellation(cancellation: &CancellationSignals<'_>) {
-    cancellation.wait_cancelled().await;
 }
 
 #[cfg(test)]

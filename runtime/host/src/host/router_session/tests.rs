@@ -966,7 +966,7 @@ async fn binary_response_end_completes_pending_outbound_request() {
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let _lease = host
+    let lease = host
         .outbound_requests
         .insert_with_lease(
             "request-outbound-1".to_string(),
@@ -1007,10 +1007,9 @@ async fn binary_response_end_completes_pending_outbound_request() {
         skiff_runtime_request::OutboundResponse::End { payload }
             if payload == b"encoded-result"
     ));
-    assert!(host
-        .outbound_requests
-        .complete("request-outbound-1")
-        .is_none());
+    assert!(host.outbound_requests.contains("request-outbound-1"));
+    lease.complete();
+    assert!(!host.outbound_requests.contains("request-outbound-1"));
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -1022,7 +1021,7 @@ async fn binary_response_error_completes_pending_outbound_request() {
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    let _lease = host
+    let lease = host
         .outbound_requests
         .insert_with_lease(
             "request-outbound-error".to_string(),
@@ -1066,10 +1065,9 @@ async fn binary_response_error_completes_pending_outbound_request() {
         skiff_runtime_request::OutboundResponse::Error(error)
             if error.message == "callee failed" && error.status == Some(503)
     ));
-    assert!(host
-        .outbound_requests
-        .complete("request-outbound-error")
-        .is_none());
+    assert!(host.outbound_requests.contains("request-outbound-error"));
+    lease.complete();
+    assert!(!host.outbound_requests.contains("request-outbound-error"));
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }

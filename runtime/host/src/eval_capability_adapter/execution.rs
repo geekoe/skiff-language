@@ -13,6 +13,10 @@ impl capability_contract::ExecutionControlApi for RuntimeExecutionControl {
         self.0.borrow().cancel_flag()
     }
 
+    fn cancellation_token(&self) -> CancellationToken {
+        self.0.borrow().cancellation_token()
+    }
+
     fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.0.borrow().check_cancelled()
     }
@@ -47,5 +51,9 @@ impl capability_contract::OwnedExecutionControlApi for RuntimeOwnedExecutionCont
 
     fn cancelled(&self) -> &AtomicBool {
         self.0.cancelled()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.0.cancellation_token()
     }
 }

@@ -53,7 +53,11 @@ impl Interpreter {
             check_cancelled(&execution, env)?;
             let item = self
                 .stream_runtime
-                .next_with_cancel(&stream_value, cancel_signals, &[execution.cancel_flag()])
+                .next_with_cancellation(
+                    &stream_value,
+                    cancel_signals,
+                    [execution.cancellation_token()],
+                )
                 .await?;
             let item = match item {
                 StreamPoll::Item(item) => item,
@@ -399,10 +403,10 @@ impl Interpreter {
         loop {
             match self
                 .stream_runtime
-                .next_with_cancel(
+                .next_with_cancellation(
                     stream_value,
                     std::slice::from_ref(cancel_signal),
-                    &[execution.cancel_flag()],
+                    [execution.cancellation_token()],
                 )
                 .await
                 .map_err(RuntimeError::from)

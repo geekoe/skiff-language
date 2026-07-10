@@ -98,11 +98,28 @@ pub(crate) async fn open_body_stream_with_cancel_flags_and_options(
     service_max_response_bytes: usize,
     options: HttpRuntimeOptions,
 ) -> Result<HttpBodyStream<'static>> {
+    open_body_stream_with_cancellation_and_options(
+        input,
+        frame_deadline_ms,
+        CancellationSignals::from_flags(cancelled),
+        service_max_response_bytes,
+        options,
+    )
+    .await
+}
+
+pub(crate) async fn open_body_stream_with_cancellation_and_options(
+    input: &Value,
+    frame_deadline_ms: Option<u64>,
+    cancellation: CancellationSignals<'static>,
+    service_max_response_bytes: usize,
+    options: HttpRuntimeOptions,
+) -> Result<HttpBodyStream<'static>> {
     let context = HttpCallContext::owned(
         input,
         frame_deadline_ms,
         service_max_response_bytes,
-        CancellationSignals::from_flags(cancelled),
+        cancellation,
         options,
         TARGET_STD_HTTP_STREAM,
     );

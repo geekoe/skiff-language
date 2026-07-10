@@ -1,13 +1,12 @@
 //! HTTP effect execution and response boundary conversion.
 
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::{future::Future, pin::Pin};
 
 use serde_json::Value;
-use skiff_runtime_capability_context::{StreamPullSource, StreamRuntimeError, StreamRuntimeResult};
+use skiff_runtime_capability_context::{
+    CancellationSignals, CancellationToken, StreamPullSource, StreamRuntimeError,
+    StreamRuntimeResult,
+};
 
 use crate::{
     capability_context::{
@@ -17,8 +16,8 @@ use crate::{
     config_view::{from_wire_json_plan, materialize_internal_json, materialize_json},
     error::{Result, RuntimeError},
     host::http_runtime::{
-        open_body_stream_with_cancel_flags_and_options, open_sse_with_cancel_flags_and_options,
-        request_with_options, HttpBodyStream, HttpEventStream,
+        open_body_stream_with_cancellation_and_options, open_sse_with_cancellation_and_options,
+        request_with_cancellation_and_options, HttpBodyStream, HttpEventStream,
     },
 };
 use skiff_runtime_model::{
@@ -30,7 +29,7 @@ pub(crate) struct HttpEffectRequest<'a> {
     input: Value,
     deadline_ms: Option<u64>,
     response_max_bytes: usize,
-    request_cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
     http_options: HttpRuntimeOptions,
 }
 
@@ -46,7 +45,7 @@ impl<'a> HttpEffectRequest<'a> {
             input: materialize_json(input.clone())?,
             deadline_ms: context.deadline_ms(),
             response_max_bytes: context.response_max_bytes(),
-            request_cancelled: context.request_cancelled(),
+            cancellation: context.cancellation_token(),
             http_options,
         })
     }
@@ -87,11 +86,11 @@ impl HttpClientCapabilityContext {
             return value;
         }
         test_effect_doubles.require_non_test_mode(request.target())?;
-        request_with_options(
+        request_with_cancellation_and_options(
             request.input(),
             request.deadline_ms,
             request.response_max_bytes,
-            Some(request.request_cancelled.as_ref()),
+            CancellationSignals::from_tokens([request.cancellation.clone()]),
             request.http_options.clone(),
         )
         .await
@@ -123,19 +122,22 @@ impl HttpClientCapabilityContext {
         }
         test_effect_doubles.require_non_test_mode(request.target())?;
 
-        let stream_cancelled = Arc::new(AtomicBool::new(false));
-        let http_stream = open_body_stream_with_cancel_flags_and_options(
+        let stream_cancellation = CancellationToken::new();
+        let http_stream = open_body_stream_with_cancellation_and_options(
             request.input(),
             request.deadline_ms,
-            vec![request.request_cancelled.clone(), stream_cancelled.clone()],
+            CancellationSignals::from_tokens([
+                request.cancellation.clone(),
+                stream_cancellation.clone(),
+            ]),
             request.response_max_bytes,
             request.http_options.clone(),
         )
         .await?;
         let (status, headers) = http_stream.handle_metadata();
-        let stream = self.stream_runtime().pull_stream(
+        let stream = self.stream_runtime().pull_stream_with_cancellation(
             HttpBodyPullSource::new(http_stream, expected_body_item_type),
-            stream_cancelled,
+            stream_cancellation,
         );
         Ok(HttpBodyStream::handle_value(status, headers, stream))
     }
@@ -160,18 +162,21 @@ impl HttpClientCapabilityContext {
         }
         test_effect_doubles.require_non_test_mode(request.target())?;
 
-        let stream_cancelled = Arc::new(AtomicBool::new(false));
-        let http_stream = open_sse_with_cancel_flags_and_options(
+        let stream_cancellation = CancellationToken::new();
+        let http_stream = open_sse_with_cancellation_and_options(
             request.input(),
             request.deadline_ms,
-            vec![request.request_cancelled.clone(), stream_cancelled.clone()],
+            CancellationSignals::from_tokens([
+                request.cancellation.clone(),
+                stream_cancellation.clone(),
+            ]),
             request.response_max_bytes,
             request.http_options.clone(),
         )
         .await?;
-        let stream = self.stream_runtime().pull_stream(
+        let stream = self.stream_runtime().pull_stream_with_cancellation(
             HttpEventPullSource::new(http_stream, expected_item_type),
-            stream_cancelled,
+            stream_cancellation,
         );
         Ok(stream)
     }

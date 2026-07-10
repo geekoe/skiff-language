@@ -1,6 +1,5 @@
-use std::sync::{atomic::AtomicBool, Arc};
-
 use super::{HttpRuntimeOptions, TelemetryCapabilityContext};
+use skiff_runtime_capability_context::CancellationToken;
 
 #[derive(Clone)]
 pub struct EffectDispatchContext {
@@ -39,19 +38,19 @@ impl EffectDispatchContext {
 pub struct HttpEffectContext {
     deadline_ms: Option<u64>,
     response_max_bytes: usize,
-    request_cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
 }
 
 impl HttpEffectContext {
     pub fn new(
         deadline_ms: Option<u64>,
         response_max_bytes: usize,
-        request_cancelled: Arc<AtomicBool>,
+        cancellation: CancellationToken,
     ) -> Self {
         Self {
             deadline_ms,
             response_max_bytes,
-            request_cancelled,
+            cancellation,
         }
     }
 
@@ -63,7 +62,7 @@ impl HttpEffectContext {
         self.response_max_bytes
     }
 
-    pub fn request_cancelled(&self) -> Arc<AtomicBool> {
-        self.request_cancelled.clone()
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 }

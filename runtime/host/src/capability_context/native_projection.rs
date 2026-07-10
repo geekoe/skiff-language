@@ -338,7 +338,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         object_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            ActorClient::new(*self)
+            ActorClient::new(self.clone())
                 .put(request, object_payload)
                 .await
                 .into_native_result()
@@ -350,7 +350,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         request: ActorFindControlRequest,
     ) -> NativeCapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            ActorClient::new(*self)
+            ActorClient::new(self.clone())
                 .find(request)
                 .await
                 .into_native_result()
@@ -362,7 +362,7 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         request: ActorRemoveControlRequest,
     ) -> NativeCapabilityFuture<'a, bool> {
         Box::pin(async move {
-            ActorClient::new(*self)
+            ActorClient::new(self.clone())
                 .remove(request)
                 .await
                 .into_native_result()

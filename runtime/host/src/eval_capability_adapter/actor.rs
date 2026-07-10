@@ -14,7 +14,7 @@ pub(super) struct RuntimeOwnedActorParts {
     pub(super) trace_id: Option<String>,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
-    pub(super) cancel_flag: Arc<AtomicBool>,
+    pub(super) cancellation: CancellationToken,
 }
 
 pub(super) fn actor<'a>(
@@ -38,7 +38,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
     }
 
     fn borrow(&self) -> capability_contract::ActorCapabilityContext<'_> {
-        actor(self.context, self.owned.clone())
+        actor(self.context.clone(), self.owned.clone())
     }
 
     fn runtime_id(&self) -> &str {
@@ -81,7 +81,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         object_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context)
+            concrete::ActorClient::new(self.context.clone())
                 .put(request, object_payload)
                 .await
                 .map_err(capability_contract::CapabilityError::opaque)
@@ -93,7 +93,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         request: ActorFindControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, Option<ActorRef>> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context)
+            concrete::ActorClient::new(self.context.clone())
                 .find(request)
                 .await
                 .map_err(capability_contract::CapabilityError::opaque)
@@ -105,7 +105,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         request: ActorRemoveControlRequest,
     ) -> capability_contract::CapabilityFuture<'a, bool> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context)
+            concrete::ActorClient::new(self.context.clone())
                 .remove(request)
                 .await
                 .map_err(capability_contract::CapabilityError::opaque)
@@ -118,7 +118,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         args_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
         Box::pin(async move {
-            concrete::ActorClient::new(self.context)
+            concrete::ActorClient::new(self.context.clone())
                 .submit_spawn(request, args_payload)
                 .await
                 .map(|_| ())
@@ -150,7 +150,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
             self.0.trace_id.as_deref(),
             self.0.router_sender.as_ref(),
             self.0.outbound_requests.as_ref(),
-            self.0.cancel_flag.as_ref(),
+            self.0.cancellation.clone(),
         );
         actor(context, self.0.clone())
     }

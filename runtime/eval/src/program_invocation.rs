@@ -1018,7 +1018,11 @@ impl Interpreter {
             map_eval_error(execution.add_instruction_units(1))?;
             let item = map_eval_error(
                 self.stream_runtime
-                    .next_with_cancel(stream_value, cancel_signals, &[execution.cancel_flag()])
+                    .next_with_cancellation(
+                        stream_value,
+                        cancel_signals,
+                        [execution.cancellation_token()],
+                    )
                     .await,
             )?;
             let item = match item {
@@ -1059,7 +1063,11 @@ impl Interpreter {
             map_eval_error(execution.add_instruction_units(1))?;
             let item = map_eval_error(
                 self.stream_runtime
-                    .next_with_cancel(stream_value, cancel_signals, &[execution.cancel_flag()])
+                    .next_with_cancellation(
+                        stream_value,
+                        cancel_signals,
+                        [execution.cancellation_token()],
+                    )
                     .await,
             )?;
             let item = match item {

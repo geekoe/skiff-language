@@ -389,6 +389,21 @@ impl capability_contract::StreamRuntimeApi for RuntimeStreamRuntime {
         })
     }
 
+    fn next_with_cancellation<'a>(
+        &'a self,
+        value: &'a Value,
+        signals: &'a [capability_contract::StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>> {
+        Box::pin(async move {
+            let signals = concrete_stream_cancel_signals(signals)?;
+            let cancellation = capability_contract::CancellationSignals::from_tokens(cancel_tokens);
+            self.0
+                .next_with_cancellation(value, &signals, &cancellation)
+                .await
+        })
+    }
+
     fn next<'a>(
         &'a self,
         value: &'a Value,
@@ -428,6 +443,21 @@ impl capability_contract::StreamSinkApi for RuntimeStreamSink {
         cancel_flags: &'a [Arc<AtomicBool>],
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
         Box::pin(async move { self.0.send_with_cancel(item, cancel_flags).await })
+    }
+
+    fn send_with_cancellation<'a>(
+        &'a self,
+        item: Value,
+        signals: &'a [capability_contract::StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let signals = concrete_stream_cancel_signals(signals)?;
+            let cancellation = capability_contract::CancellationSignals::from_tokens(cancel_tokens);
+            self.0
+                .send_with_stream_cancellation(item, &signals, &cancellation)
+                .await
+        })
     }
 
     fn end<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {

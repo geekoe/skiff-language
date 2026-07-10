@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use skiff_runtime_capability_context::CancellationSignals;
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 use skiff_runtime_request::ExecutionControl;
 
@@ -53,15 +54,16 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
 
     pub async fn send_response_event(&self, target: &str, event: Value) -> Result<()> {
         let typed_sink = self.response_stream_sink(target)?;
-        let mut cancel_flags = vec![self.execution.cancel_flag()];
+        let mut signals = Vec::new();
         if let Some(inner_sink) = self.stream_context.current_stream_sink.as_ref() {
             if !inner_sink.is_same_stream(&typed_sink.sink) {
-                cancel_flags.push(inner_sink.cancel_flag());
+                signals.push(inner_sink.cancel_signal());
             }
         }
+        let cancellation = CancellationSignals::from_tokens([self.execution.cancellation_token()]);
         Ok(typed_sink
             .sink
-            .send_with_cancel(event, &cancel_flags)
+            .send_with_stream_cancellation(event, &signals, &cancellation)
             .await?)
     }
 

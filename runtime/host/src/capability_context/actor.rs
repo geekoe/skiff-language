@@ -1,12 +1,9 @@
-use std::sync::atomic::AtomicBool;
-
 use serde::de::DeserializeOwned;
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
-    CancellationSignals, InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
+    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken,
+    InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
     OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestAbortSignal, RequestCancelControl, RouterWriterMessage,
-    SpawnSubmitControlRequest,
+    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
 };
 use tokio::sync::mpsc;
 
@@ -143,7 +140,7 @@ impl<'a> ActorClient<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ActorClientContext<'a> {
     runtime_id: &'a str,
     service_id: &'a str,
@@ -157,7 +154,7 @@ pub struct ActorClientContext<'a> {
     trace_id: Option<&'a str>,
     router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
     outbound_requests: &'a OutboundRequestRegistry,
-    cancelled: &'a AtomicBool,
+    cancellation: CancellationToken,
 }
 
 pub type ActorCapabilityContext<'a> = ActorClientContext<'a>;
@@ -167,7 +164,7 @@ impl<'a> ActorClientContext<'a> {
         invocation: InvocationContext<'a>,
         router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
         outbound_requests: &'a OutboundRequestRegistry,
-        cancelled: &'a AtomicBool,
+        cancellation: CancellationToken,
     ) -> Self {
         Self {
             runtime_id: invocation.runtime_id(),
@@ -182,7 +179,7 @@ impl<'a> ActorClientContext<'a> {
             trace_id: invocation.trace_id(),
             router_sender,
             outbound_requests,
-            cancelled,
+            cancellation,
         }
     }
 
@@ -200,7 +197,7 @@ impl<'a> ActorClientContext<'a> {
         trace_id: Option<&'a str>,
         router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
         outbound_requests: &'a OutboundRequestRegistry,
-        cancelled: &'a AtomicBool,
+        cancellation: CancellationToken,
     ) -> Self {
         Self {
             runtime_id,
@@ -215,7 +212,7 @@ impl<'a> ActorClientContext<'a> {
             trace_id,
             router_sender,
             outbound_requests,
-            cancelled,
+            cancellation,
         }
     }
 
@@ -297,8 +294,8 @@ impl<'a> ActorClientContext<'a> {
             })
     }
 
-    fn abort_signal(&self) -> RequestAbortSignal<'a> {
-        RequestAbortSignal::from_borrowed_flag(self.cancelled)
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 
     fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender> {
@@ -355,10 +352,7 @@ async fn await_control_response(
 }
 
 async fn wait_request_cancelled(context: &ActorClientContext<'_>) {
-    let abort_signal = context.abort_signal();
-    CancellationSignals::from_signals([abort_signal])
-        .wait_cancelled()
-        .await;
+    context.cancellation_token().wait_cancelled().await;
 }
 
 fn cancel_message(request_id: &str, reason: &str) -> RouterWriterMessage {

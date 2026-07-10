@@ -149,6 +149,12 @@ pub trait StreamSinkApi: Any + Send + Sync + fmt::Debug {
         item: Value,
         cancel_flags: &'a [Arc<AtomicBool>],
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>>;
+    fn send_with_cancellation<'a>(
+        &'a self,
+        item: Value,
+        signals: &'a [StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>>;
     fn end<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
     fn fail<'a>(
         &'a self,
@@ -185,6 +191,17 @@ impl StreamSink {
         cancel_flags: &[Arc<AtomicBool>],
     ) -> StreamRuntimeResult<()> {
         self.inner.send_with_cancel(item, cancel_flags).await
+    }
+
+    pub async fn send_with_cancellation(
+        &self,
+        item: Value,
+        signals: &[StreamCancelSignal],
+        cancel_tokens: impl IntoIterator<Item = CancellationToken>,
+    ) -> StreamRuntimeResult<()> {
+        self.inner
+            .send_with_cancellation(item, signals, cancel_tokens.into_iter().collect())
+            .await
     }
 
     pub async fn end(&self) {
@@ -261,6 +278,12 @@ pub trait StreamRuntimeApi: Any + Send + Sync + fmt::Debug {
         signals: &'a [StreamCancelSignal],
         cancel_flags: &'a [Arc<AtomicBool>],
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>>;
+    fn next_with_cancellation<'a>(
+        &'a self,
+        value: &'a Value,
+        signals: &'a [StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>>;
     fn next<'a>(
         &'a self,
         value: &'a Value,
@@ -311,6 +334,17 @@ impl StreamRuntime {
             .await
     }
 
+    pub async fn next_with_cancellation(
+        &self,
+        value: &Value,
+        signals: &[StreamCancelSignal],
+        cancel_tokens: impl IntoIterator<Item = CancellationToken>,
+    ) -> StreamRuntimeResult<StreamPoll> {
+        self.inner
+            .next_with_cancellation(value, signals, cancel_tokens.into_iter().collect())
+            .await
+    }
+
     pub async fn next(&self, value: &Value) -> StreamRuntimeResult<StreamPoll> {
         self.inner.next(value).await
     }
@@ -354,13 +388,16 @@ impl<'execution> HttpResponseStreamCapabilityContext<'execution> {
 
     pub async fn send_response_event(&self, target: &str, event: Value) -> StreamRuntimeResult<()> {
         let typed_sink = self.response_stream_sink(target)?;
-        let mut cancel_flags = vec![self.execution.cancel_flag()];
+        let mut signals = Vec::new();
         if let Some(inner_sink) = self.stream_context.current_stream_sink.as_ref() {
             if !inner_sink.is_same_stream(&typed_sink.sink) {
-                cancel_flags.push(inner_sink.cancel_flag());
+                signals.push(inner_sink.cancel_signal());
             }
         }
-        typed_sink.sink.send_with_cancel(event, &cancel_flags).await
+        typed_sink
+            .sink
+            .send_with_cancellation(event, &signals, [self.execution.cancellation_token()])
+            .await
     }
 
     fn response_stream_sink(&self, target: &str) -> StreamRuntimeResult<&TypedStreamSink> {

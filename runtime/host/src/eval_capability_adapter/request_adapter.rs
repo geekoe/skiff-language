@@ -64,7 +64,7 @@ impl RequestEvalAdapter for RuntimeRequestEvalAdapter {
             request,
             execution,
             cancellation,
-            cancelled,
+            cancelled: _,
             execution_budget,
             request_heap_limits,
         } = parts;
@@ -77,7 +77,7 @@ impl RequestEvalAdapter for RuntimeRequestEvalAdapter {
         let effects = effects(effect_dispatch_context_from_request(
             request,
             service.http_response_max_bytes,
-            execution.cancel_flag(),
+            execution.cancellation_token(),
             self.telemetry_context.clone(),
             self.http_options.clone(),
         ));
@@ -97,8 +97,7 @@ impl RequestEvalAdapter for RuntimeRequestEvalAdapter {
             operation,
             self.router_sender.as_ref(),
             &self.outbound_requests,
-            cancelled,
-            execution.cancel_flag(),
+            cancellation.clone(),
         );
         let outbound = outbound(outbound_service_context_from_request(
             request,

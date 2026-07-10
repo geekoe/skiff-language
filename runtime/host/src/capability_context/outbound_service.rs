@@ -430,6 +430,13 @@ mod tests {
     fn test_context(
         router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
     ) -> OutboundServiceContext {
+        test_context_with_cancellation(router_sender, CancellationToken::new())
+    }
+
+    fn test_context_with_cancellation(
+        router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
+        cancellation: CancellationToken,
+    ) -> OutboundServiceContext {
         OutboundServiceContext {
             caller_request_id: "request-parent".to_string(),
             caller_target: "caller.target".to_string(),
@@ -448,10 +455,45 @@ mod tests {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),
-            cancel_signal: CancellationToken::new(),
+            cancel_signal: cancellation,
             request_heap_limits: RequestHeapLimits::default(),
             router_sender,
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
+        }
+    }
+
+    fn unary_request_start(timeout_ms: Option<u64>) -> OutboundServiceRequestStart {
+        OutboundServiceRequestStart {
+            service_id: "skiff.run/account".to_string(),
+            version: "0.1.0".to_string(),
+            build_id: "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            service_protocol_identity: "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            operation_abi_id: "operation:account:lookup".to_string(),
+            selector: "operation:operation:account:lookup".to_string(),
+            target: "account.lookup".to_string(),
+            mode: "unary".to_string(),
+            timeout_ms,
+            activation_identity: None,
+            test_effect_doubles: HashMap::new(),
+        }
+    }
+
+    async fn expect_request_start(
+        router_rx: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+    ) -> String {
+        match tokio::time::timeout(std::time::Duration::from_secs(1), router_rx.recv())
+            .await
+            .expect("router should receive request.start")
+            .expect("router channel should stay open")
+        {
+            RouterWriterMessage::Control(OutboundControlMessage::RequestStart {
+                request,
+                payload,
+            }) => {
+                assert_eq!(payload, b"payload".to_vec());
+                request.request_id
+            }
+            other => panic!("expected request.start control command, got {other:?}"),
         }
     }
 
@@ -564,6 +606,167 @@ mod tests {
         assert!(router_rx.try_recv().is_err());
         assert_eq!(context.outbound_requests.pending_count(), 0);
         assert_eq!(context.outbound_requests.active_lease_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unary_outbound_normal_response_cleans_registry_and_lease() {
+        let (router_sender, mut router_rx) = mpsc::unbounded_channel();
+        let context = test_context(Some(router_sender));
+        let started = context
+            .start_request(unary_request_start(None), b"payload".to_vec())
+            .expect("unary outbound request should start");
+        let request_id = expect_request_start(&mut router_rx).await;
+        assert_eq!(request_id, started.request_id);
+        assert_eq!(context.outbound_requests.pending_count(), 1);
+        assert_eq!(context.outbound_requests.active_lease_count(), 1);
+
+        context
+            .outbound_requests
+            .sender(&request_id)
+            .expect("pending sender should exist")
+            .send(OutboundResponse::End {
+                payload: b"encoded-result".to_vec(),
+            })
+            .expect("response should deliver to runtime receiver");
+        let OutboundStartedRequest {
+            mut response_rx,
+            lease,
+            ..
+        } = started;
+        let response = context
+            .receive_response(&lease, "account.lookup", &mut response_rx, None)
+            .await
+            .expect("response should be received");
+        assert!(matches!(
+            response,
+            OutboundResponse::End { payload } if payload == b"encoded-result"
+        ));
+
+        lease.complete();
+        drop(lease);
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+        assert!(router_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unary_outbound_provider_error_cleans_registry_and_lease() {
+        let (router_sender, mut router_rx) = mpsc::unbounded_channel();
+        let context = test_context(Some(router_sender));
+        let started = context
+            .start_request(unary_request_start(None), b"payload".to_vec())
+            .expect("unary outbound request should start");
+        let request_id = expect_request_start(&mut router_rx).await;
+
+        context
+            .outbound_requests
+            .sender(&request_id)
+            .expect("pending sender should exist")
+            .send(OutboundResponse::Error(
+                skiff_runtime_capability_context::ResponseError {
+                    code: "ProviderError".to_string(),
+                    message: "callee failed".to_string(),
+                    status: Some(503),
+                    details: None,
+                },
+            ))
+            .expect("response should deliver to runtime receiver");
+        let OutboundStartedRequest {
+            mut response_rx,
+            lease,
+            ..
+        } = started;
+        let response = context
+            .receive_response(&lease, "account.lookup", &mut response_rx, None)
+            .await
+            .expect("provider error frame should be received");
+        assert!(matches!(
+            response,
+            OutboundResponse::Error(error)
+                if error.message == "callee failed" && error.status == Some(503)
+        ));
+
+        lease.complete();
+        drop(lease);
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+        assert!(router_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unary_outbound_caller_cancel_cleans_registry_and_lease() {
+        let (router_sender, mut router_rx) = mpsc::unbounded_channel();
+        let cancellation = CancellationToken::source();
+        let context = test_context_with_cancellation(Some(router_sender), cancellation.token());
+        let started = context
+            .start_request(unary_request_start(None), b"payload".to_vec())
+            .expect("unary outbound request should start");
+        let request_id = expect_request_start(&mut router_rx).await;
+        let OutboundStartedRequest {
+            mut response_rx,
+            lease,
+            ..
+        } = started;
+
+        cancellation.cancel();
+        let result = context
+            .receive_response(&lease, "account.lookup", &mut response_rx, None)
+            .await;
+        assert!(result.is_err());
+
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), router_rx.recv())
+            .await
+            .expect("caller cancel should emit request cancel")
+            .expect("router writer channel should stay open");
+        assert_cancel_message(message, &request_id, "caller_cancel");
+        drop(lease);
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unary_outbound_timeout_cleans_registry_and_lease() {
+        let (router_sender, mut router_rx) = mpsc::unbounded_channel();
+        let context = test_context(Some(router_sender));
+        let started = context
+            .start_request(unary_request_start(Some(1)), b"payload".to_vec())
+            .expect("unary outbound request should start");
+        let request_id = expect_request_start(&mut router_rx).await;
+        let OutboundStartedRequest {
+            mut response_rx,
+            lease,
+            ..
+        } = started;
+
+        let result = context
+            .receive_response(&lease, "account.lookup", &mut response_rx, Some(1))
+            .await;
+        assert!(result.is_err());
+
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), router_rx.recv())
+            .await
+            .expect("deadline should emit request cancel")
+            .expect("router writer channel should stay open");
+        assert_cancel_message(message, &request_id, "deadline_exceeded");
+        drop(lease);
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+    }
+
+    #[test]
+    fn unary_outbound_router_disconnect_cleans_registry_and_lease() {
+        let (router_sender, router_rx) = mpsc::unbounded_channel();
+        drop(router_rx);
+        let context = test_context(Some(router_sender));
+
+        let result = context.start_request(unary_request_start(None), b"payload".to_vec());
+        assert!(result.is_err());
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+        assert_eq!(
+            context.outbound_requests.cancel_send_failed_closed_count(),
+            1
+        );
     }
 
     #[test]

@@ -147,7 +147,8 @@ impl OutboundRequestRegistry {
         })
     }
 
-    pub fn complete(&self, request_id: &str) -> Option<OutboundResponseSender> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn complete_for_test(&self, request_id: &str) -> Option<OutboundResponseSender> {
         let entry = self.remove_entry(request_id)?;
         entry.terminal.mark_terminal();
         Some(entry.sender)

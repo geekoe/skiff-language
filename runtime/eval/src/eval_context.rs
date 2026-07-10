@@ -232,7 +232,7 @@ impl<'a> EvalContext<'a> {
                     "stream emit item",
                     self.heap,
                 )?;
-                sink.send_with_cancel(value, &[self.execution.cancel_flag()])
+                sink.send_with_cancellation(value, &[], [self.execution.cancellation_token()])
                     .await?;
                 Ok(Flow::Continue)
             }

@@ -25,7 +25,7 @@ pub(super) fn concrete_actor_context_from_owned(
         parts.trace_id.as_deref(),
         parts.router_sender.as_ref(),
         parts.outbound_requests.as_ref(),
-        parts.cancel_flag.as_ref(),
+        parts.cancellation.clone(),
     )
 }
 

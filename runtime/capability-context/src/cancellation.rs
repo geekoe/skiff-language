@@ -67,14 +67,6 @@ pub const FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST:
         counter: "cancellation.flag_backed_waiters.active",
         removal: "replace cancel flag helpers with token-backed SSE constructors",
     },
-    CancellationPollingFallbackAllowlistEntry {
-        file: "runtime/host/src/capability_context/actor.rs",
-        function: "wait_request_cancelled",
-        reason: "actor context currently receives a borrowed request cancellation flag",
-        bound: "one actor control RPC wait per actor operation",
-        counter: "cancellation.flag_backed_waiters.active",
-        removal: "thread request CancellationToken into ActorClientContext",
-    },
 ];
 
 #[derive(Clone, Debug)]

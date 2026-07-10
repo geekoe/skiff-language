@@ -77,8 +77,7 @@ pub fn actor_from_request<'a>(
     operation: &'a RuntimeOperation,
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
-    cancelled: &'a AtomicBool,
-    cancel_flag: Arc<AtomicBool>,
+    cancellation: CancellationToken,
 ) -> eval_capabilities::ActorCapabilityContext<'a> {
     let invocation = invocation_context_from_request(
         runtime_id,
@@ -91,30 +90,26 @@ pub fn actor_from_request<'a>(
         invocation,
         router_sender,
         outbound_requests.as_ref(),
-        cancelled,
+        cancellation.clone(),
     );
-    actor(
-        context,
-        RuntimeOwnedActorParts {
-            runtime_id: context.runtime_id().to_string(),
-            service_id: context.service_id().to_string(),
-            service_version: context.service_version().to_string(),
-            request_id: context.request_id().to_string(),
-            request_target: context.request_target().to_string(),
-            request_build_id: context.request_build_id().to_string(),
-            request_service_protocol_identity: context
-                .request_service_protocol_identity()
-                .to_string(),
-            operation_service_protocol_identity: context
-                .operation_service_protocol_identity()
-                .map(str::to_string),
-            activation_identity: context.activation_identity().map(str::to_string),
-            trace_id: context.trace_id().map(str::to_string),
-            router_sender: router_sender.cloned(),
-            outbound_requests: outbound_requests.clone(),
-            cancel_flag,
-        },
-    )
+    let owned = RuntimeOwnedActorParts {
+        runtime_id: context.runtime_id().to_string(),
+        service_id: context.service_id().to_string(),
+        service_version: context.service_version().to_string(),
+        request_id: context.request_id().to_string(),
+        request_target: context.request_target().to_string(),
+        request_build_id: context.request_build_id().to_string(),
+        request_service_protocol_identity: context.request_service_protocol_identity().to_string(),
+        operation_service_protocol_identity: context
+            .operation_service_protocol_identity()
+            .map(str::to_string),
+        activation_identity: context.activation_identity().map(str::to_string),
+        trace_id: context.trace_id().map(str::to_string),
+        router_sender: router_sender.cloned(),
+        outbound_requests: outbound_requests.clone(),
+        cancellation,
+    };
+    actor(context, owned)
 }
 
 #[derive(Clone)]

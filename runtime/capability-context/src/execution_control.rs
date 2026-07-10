@@ -7,7 +7,7 @@ use std::{
 use serde_json::json;
 use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
 
-use crate::{FileSourceStreamContext, StreamRuntime};
+use crate::{CancellationToken, FileSourceStreamContext, StreamRuntime};
 
 const REQUEST_CANCELLED_MESSAGE: &str = "request was cancelled";
 
@@ -155,6 +155,7 @@ pub type ExecutionControlResult<T> = Result<T, ExecutionControlError>;
 pub trait ExecutionControlApi: Send + Sync {
     fn owned(&self) -> OwnedExecutionControl;
     fn cancel_flag(&self) -> Arc<AtomicBool>;
+    fn cancellation_token(&self) -> CancellationToken;
     fn check_cancelled(&self) -> ExecutionControlResult<()>;
     fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()>;
     fn poll_execution_budget(&self) -> ExecutionControlResult<()>;
@@ -189,6 +190,10 @@ impl<'a> ExecutionControl<'a> {
         self.inner.cancel_flag()
     }
 
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.inner.cancellation_token()
+    }
+
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         self.inner.check_cancelled()
     }
@@ -212,6 +217,7 @@ impl<'a> ExecutionControl<'a> {
 pub trait OwnedExecutionControlApi: Send + Sync {
     fn borrow(&self) -> ExecutionControl<'_>;
     fn cancelled(&self) -> &AtomicBool;
+    fn cancellation_token(&self) -> CancellationToken;
 }
 
 #[derive(Clone)]
@@ -235,5 +241,9 @@ impl OwnedExecutionControl {
 
     pub fn cancelled(&self) -> &AtomicBool {
         self.inner.cancelled()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.inner.cancellation_token()
     }
 }

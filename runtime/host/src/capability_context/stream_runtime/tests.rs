@@ -2,8 +2,9 @@ use std::{future::Future, pin::Pin};
 
 use serde_json::{json, Value};
 use skiff_runtime_capability_context::{
-    CancellationSignals, CancellationToken, StreamPoll, StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    CancellationSignals, CancellationToken, OutboundRequestCancelSendError,
+    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, StreamPoll,
+    StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_model::error::WirePayload;
 
@@ -343,6 +344,48 @@ async fn stream_runtime_repeated_terminal_is_idempotent() {
     assert!(sink.send(json!("after-terminal")).await.is_err());
 }
 
+#[tokio::test]
+async fn unconsumed_outbound_server_stream_cleans_up_on_runtime_drop() {
+    let registry = OutboundRequestRegistry::default();
+    let (response_sender, _response_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cancel_sender, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancel_sender: OutboundRequestCancelSender =
+        std::sync::Arc::new(move |request_id, reason| {
+            cancel_sender
+                .send((request_id.to_string(), reason.to_string()))
+                .map_err(|_| OutboundRequestCancelSendError::Closed)
+        });
+    let lease = registry
+        .insert_with_lease(
+            "request-unconsumed-stream".to_string(),
+            response_sender,
+            Some(cancel_sender),
+            "stream_cancelled",
+        )
+        .expect("outbound stream lease should register");
+
+    let runtime = StreamRuntime::default();
+    let _stream = runtime.pull_stream_with_cancellation(
+        LeaseHoldingPullSource { _lease: lease },
+        CancellationToken::new(),
+    );
+    assert_eq!(runtime.active_stream_count(), 1);
+    assert_eq!(registry.pending_count(), 1);
+    assert_eq!(registry.active_lease_count(), 1);
+
+    drop(runtime);
+
+    let (request_id, reason) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancel_rx.recv())
+            .await
+            .expect("runtime drop should cancel unconsumed stream")
+            .expect("cancel receiver should stay open");
+    assert_eq!(request_id, "request-unconsumed-stream");
+    assert_eq!(reason, "stream_cancelled");
+    assert_eq!(registry.pending_count(), 0);
+    assert_eq!(registry.active_lease_count(), 0);
+}
+
 #[test]
 fn stream_runtime_error_root_fold_boxes_eval_producer_error_and_preserves_payload() {
     let stream_error =
@@ -385,6 +428,18 @@ fn stream_runtime_error_eval_fold_preserves_root_producer_wire_payload() {
 struct PendingPullSource;
 
 impl StreamPullSource for PendingPullSource {
+    fn next<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+struct LeaseHoldingPullSource {
+    _lease: OutboundRequestLease,
+}
+
+impl StreamPullSource for LeaseHoldingPullSource {
     fn next<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {

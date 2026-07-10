@@ -199,11 +199,13 @@ impl<'a> FileSourceStreamContext<'a> {
         &self,
         stream: &Value,
     ) -> FileCapabilityResult<Option<Value>> {
-        let cancel_flag = self.source_execution.cancel_flag();
-        let cancel_flags = [cancel_flag];
+        let cancellation =
+            skiff_runtime_capability_context::CancellationSignals::from_tokens([self
+                .source_execution
+                .cancellation_token()]);
         match self
             .source_stream
-            .next_with_cancel(stream, &[], &cancel_flags)
+            .next_with_cancellation(stream, &[], &cancellation)
             .await?
         {
             StreamPoll::End => Ok(None),
