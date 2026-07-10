@@ -640,15 +640,21 @@ pub(super) fn is_db_readonly_result_operation(operation: &DbOperation) -> bool {
         ) && !operation.many
 }
 
-/// Variant used from `suspend_analysis` where the db metadata is never available.
-pub(super) fn db_operation_result_type_text_no_db(
+/// Best-effort DB operation typing for callers that do not have DB metadata.
+///
+/// A projected read has a structural result type derived from DB field metadata,
+/// so using the nominal target here would invent a wider type than the expression
+/// actually returns.
+pub(super) fn db_operation_result_type_text_without_metadata(
     operation: &DbOperation,
-    projection: Option<&DbProjectionIr>,
-) -> String {
-    db_operation_result_type_text(operation, projection, None)
+) -> Option<String> {
+    operation
+        .projection
+        .is_none()
+        .then(|| db_operation_result_type_text(operation, None, None))
 }
 
-pub(super) fn db_operation_result_type_text(
+fn db_operation_result_type_text(
     operation: &DbOperation,
     projection: Option<&DbProjectionIr>,
     db: Option<&DbMetadataIr>,
