@@ -15,6 +15,10 @@ import {
   type RouterToRuntimeFrameHeader,
   type RuntimeErrorPayload
 } from '../protocol/envelope.js';
+import {
+  REQUEST_CANCEL_SITUATION,
+  requestCancelReasonForSituation
+} from '../protocol/cancelReason.js';
 import type {
   RuntimeActorExecution,
   RuntimeDispatchConnection,
@@ -175,7 +179,7 @@ export class RuntimeDispatcher {
         this.sendCancel(connection.ws, {
           type: 'request.cancel',
           requestId: dispatchHeader.requestId,
-          reason: 'timeout'
+          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
         this.options.registry.refreshRuntimeStatesForRequest(pending);
         reject(new RuntimeTimeoutError(timeoutMs));
@@ -236,7 +240,7 @@ export class RuntimeDispatcher {
         this.sendCancel(connection.ws, {
           type: 'request.cancel',
           requestId: dispatchHeader.requestId,
-          reason: 'timeout'
+          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
         this.options.registry.refreshRuntimeStatesForRequest(pending);
         reject(new RuntimeTimeoutError(timeoutMs));
@@ -307,7 +311,7 @@ export class RuntimeDispatcher {
         this.sendCancel(connection.ws, {
           type: 'request.cancel',
           requestId: dispatchHeader.requestId,
-          reason: 'timeout'
+          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
         });
         this.options.registry.refreshRuntimeStatesForRequest(pending);
         reject(new RuntimeTimeoutError(timeoutMs));
@@ -358,7 +362,7 @@ export class RuntimeDispatcher {
       this.sendCancel(pending.ws, {
         type: 'request.cancel',
         requestId,
-        reason: 'router_shutdown'
+        reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.routerShutdown)
       });
       pending.reject(new ProviderUnavailableError('Runtime registry is closing'));
     }
@@ -418,7 +422,7 @@ export class RuntimeDispatcher {
       this.sendCancel(connection.ws, {
         type: 'request.cancel',
         requestId: forwardedRequestId,
-        reason: 'timeout'
+        reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
       });
       this.options.registry.refreshRuntimeStatesForRequest(pending);
       this.sendRuntimeErrorResponse(
@@ -706,7 +710,7 @@ export class RuntimeDispatcher {
         this.sendCancel(pending.ws, {
           type: 'request.cancel',
           requestId,
-          reason: 'runtime_disconnect'
+          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.runtimeDisconnect)
         });
         this.options.registry.refreshRuntimeStatesForRequest(pending);
         this.finishPendingActorExecution(pending, 'cancelled', 'caller runtime disconnected');
@@ -935,7 +939,9 @@ export class RuntimeDispatcher {
       this.sendCancel(connection.ws, {
         type: 'request.cancel',
         requestId,
-        reason: options.cancelReason ?? 'caller_cancel'
+        reason:
+          options.cancelReason ??
+          requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.callerAbort)
       });
       this.options.registry.refreshRuntimeStatesForRequest(pending);
       reject(new ProviderUnavailableError('Runtime request was cancelled before completion'));

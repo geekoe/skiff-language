@@ -10,6 +10,10 @@ import {
   type RuntimeToRouterFrameHeader,
   type TelemetryTopic
 } from './envelope.js';
+import {
+  REQUEST_CANCEL_REASONS,
+  REQUEST_CANCEL_REASON_BY_SITUATION
+} from './cancelReason.js';
 import { CONFIG_SHAPE_VALUE_TYPES, isConfigShapeValueType } from '../config/index.js';
 import { isPublicationId, publicationStorageSegment } from '../publicationId.js';
 
@@ -134,17 +138,7 @@ const configShapeProtocolSchema = {
   additionalProperties: false
 } as const satisfies ProtocolSchemaProperty;
 
-const cancelReasons = [
-  'timeout',
-  'caller_cancel',
-  'runtime_disconnect',
-  'gateway_disconnect',
-  'drain',
-  'retire',
-  'client_disconnect',
-  'router_shutdown',
-  'backpressure'
-] as const satisfies readonly RequestCancelReason[];
+const cancelReasons = REQUEST_CANCEL_REASONS satisfies readonly RequestCancelReason[];
 
 const spawnTargetKinds = ['function'] as const;
 const spawnFailReasons = ['failed', 'cancelled', 'timed_out'] as const;
@@ -1387,7 +1381,7 @@ const responseErrorFixture = {
 const requestCancelFixture = {
   type: 'request.cancel',
   requestId: 'request-fixture-1',
-  reason: 'timeout'
+  reason: REQUEST_CANCEL_REASON_BY_SITUATION.timeout
 } as const;
 
 const connectionSendFixture = {

@@ -16,6 +16,7 @@ pub use skiff_runtime_capability_context::{OutboundServiceRequestStart, Outbound
 use skiff_runtime_linked_program::{ServiceDependencyConstraint, ServiceTimeoutConfig};
 use skiff_runtime_model::request_heap::{RequestHeap, RequestHeapLimits};
 use skiff_runtime_request::execution_budget::ExecutionBudget;
+use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::mpsc;
 
@@ -450,25 +451,9 @@ fn deadline_expires_at(timeout_ms: u64) -> String {
 fn cancel_message(request_id: &str, reason: &str) -> RouterWriterMessage {
     let request = RequestCancelControl {
         request_id: request_id.to_string(),
-        reason: router_cancel_reason(reason).to_string(),
+        reason: request_cancel_wire_reason_for_internal(reason).to_string(),
     };
     RouterWriterMessage::Control(OutboundControlMessage::RequestCancel { request })
-}
-
-fn router_cancel_reason(reason: &str) -> &'static str {
-    match reason {
-        "timeout" => "timeout",
-        "caller_cancel" => "caller_cancel",
-        "runtime_disconnect" => "runtime_disconnect",
-        "gateway_disconnect" => "gateway_disconnect",
-        "drain" => "drain",
-        "retire" => "retire",
-        "client_disconnect" => "client_disconnect",
-        "router_shutdown" => "router_shutdown",
-        "backpressure" => "backpressure",
-        "deadline_exceeded" => "timeout",
-        _ => "caller_cancel",
-    }
 }
 
 #[cfg(test)]
@@ -536,9 +521,12 @@ mod tests {
 
     #[test]
     fn cancel_control_maps_internal_reasons_to_router_reasons() {
-        assert_eq!(cancel_reason("deadline_exceeded"), "timeout");
-        assert_eq!(cancel_reason("unexpected_stream_response"), "caller_cancel");
-        assert_eq!(cancel_reason("stream_cancelled"), "caller_cancel");
+        assert_eq!(cancel_reason("deadline_exceeded"), "deadline_exceeded");
+        assert_eq!(
+            cancel_reason("unexpected_stream_response"),
+            "protocol_error"
+        );
+        assert_eq!(cancel_reason("stream_cancelled"), "stream_dropped");
     }
 
     #[tokio::test]
@@ -588,7 +576,7 @@ mod tests {
             .await
             .expect("stream cancellation should emit request cancel")
             .expect("router writer channel should stay open");
-        assert_cancel_message(message, &request_id, "caller_cancel");
+        assert_cancel_message(message, &request_id, "stream_dropped");
 
         tokio::time::timeout(std::time::Duration::from_secs(1), task)
             .await

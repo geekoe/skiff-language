@@ -12,6 +12,7 @@ use tokio::time::{sleep, Duration};
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_boundary::value::decode_base64;
 use skiff_runtime_model::runtime_value::ActorRef;
+use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use skiff_runtime_transport::protocol::{
     ActorFindResponseFrameHeader, ActorPutResponseFrameHeader, ActorRefFrameMetadata,
     ActorRemoveResponseFrameHeader, SpawnSubmitResponseFrameHeader,
@@ -362,7 +363,7 @@ fn cancel_message(request_id: &str, reason: &str) -> RouterWriterMessage {
     RouterWriterMessage::Control(OutboundControlMessage::RequestCancel {
         request: RequestCancelControl {
             request_id: request_id.to_string(),
-            reason: reason.to_string(),
+            reason: request_cancel_wire_reason_for_internal(reason).to_string(),
         },
     })
 }

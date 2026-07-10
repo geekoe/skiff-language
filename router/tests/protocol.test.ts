@@ -17,6 +17,13 @@ import {
   type RuntimeProtocolFrameHeaderName,
   type RuntimeToRouterFrameHeaderName
 } from '../src/protocol/runtimeProtocol.js';
+import {
+  CONTRACT_H_REQUEST_CANCEL_SITUATIONS,
+  mapInternalRequestCancelReason,
+  requestCancelReasonForSituation,
+  type RequestCancelReason,
+  type RequestCancelSituation
+} from '../src/protocol/cancelReason.js';
 import type { JsonSchema } from '../src/manifest/types.js';
 
 const runtimeFrameHeaderTypes = [
@@ -107,6 +114,56 @@ const routerToRuntimeFrameHeaderTypes = [
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
 describe('runtime protocol fixtures and schemas', () => {
+  it('maps Contract H cancel situations to stable request.cancel reasons', () => {
+    const expected = {
+      caller_abort: 'caller_cancel',
+      client_disconnect: 'client_disconnect',
+      timeout: 'timeout',
+      deadline_exceeded: 'deadline_exceeded',
+      backpressure: 'backpressure',
+      protocol_error: 'protocol_error',
+      stream_dropped: 'stream_dropped',
+      runtime_disconnect: 'runtime_disconnect',
+      router_shutdown: 'router_shutdown'
+    } as const satisfies Record<RequestCancelSituation, RequestCancelReason>;
+
+    expect(CONTRACT_H_REQUEST_CANCEL_SITUATIONS).toEqual(Object.keys(expected));
+
+    for (const [situation, reason] of Object.entries(expected) as Array<
+      [RequestCancelSituation, RequestCancelReason]
+    >) {
+      expect(requestCancelReasonForSituation(situation)).toBe(reason);
+
+      const header = {
+        ...runtimeFrameHeaderFixtures['request.cancel'],
+        reason
+      };
+      expect(validateRouterToRuntimeFrameHeader(header)).toEqual({
+        ok: true,
+        envelope: header
+      });
+      expect(validateRuntimeToRouterFrameHeader(header)).toEqual({
+        ok: true,
+        envelope: header
+      });
+    }
+  });
+
+  it('maps internal cancel reasons while retaining the original reason', () => {
+    expect(mapInternalRequestCancelReason('chunk_seq_mismatch')).toEqual({
+      internalReason: 'chunk_seq_mismatch',
+      wireReason: 'protocol_error'
+    });
+    expect(mapInternalRequestCancelReason('stream_cancelled')).toEqual({
+      internalReason: 'stream_cancelled',
+      wireReason: 'stream_dropped'
+    });
+    expect(mapInternalRequestCancelReason('unknown_internal_reason')).toEqual({
+      internalReason: 'unknown_internal_reason',
+      wireReason: 'caller_cancel'
+    });
+  });
+
   it('returns clear validation errors for malformed runtime frame headers', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
