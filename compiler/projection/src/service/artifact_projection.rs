@@ -387,6 +387,7 @@ mod tests {
                 fields: vec![DbObjectFieldIr {
                     name: "state".to_string(),
                     ty: TypeRefIr::LocalType { type_index: 0 },
+                    storage: Default::default(),
                 }],
                 retention: None,
                 leases: Vec::new(),
@@ -411,6 +412,7 @@ mod tests {
         ProjectedPackageIrArtifacts {
             unit,
             config_projection: empty_config_projection(),
+            resources: Vec::new(),
             file_ir_units: vec![PackageFileIrProjection::from_unit(file)],
         }
     }
@@ -561,6 +563,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "state".to_string(),
                 ty: package_exported_state_type_ref(),
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -604,6 +607,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "state".to_string(),
                 ty: package_exported_state_type_ref(),
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),

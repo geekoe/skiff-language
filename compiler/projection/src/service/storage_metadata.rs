@@ -182,6 +182,7 @@ fn package_db_field_entry(
     DbObjectFieldIr {
         name: field.name.clone(),
         ty: service_visible_package_type_ir(&field.ty, local_type_names, mappings),
+        storage: field.storage,
     }
 }
 
@@ -511,6 +512,7 @@ mod tests {
                             symbol: RUNTIME_BINDINGS_TYPE.to_string(),
                         },
                     },
+                    storage: Default::default(),
                 }],
                 retention: None,
                 leases: Vec::new(),
@@ -554,6 +556,7 @@ mod tests {
         ProjectedPackageIrArtifacts {
             unit,
             config_projection: empty_config_projection(),
+            resources: Vec::new(),
             file_ir_units: vec![
                 PackageFileIrProjection::from_unit(file),
                 PackageFileIrProjection::from_unit(tools),

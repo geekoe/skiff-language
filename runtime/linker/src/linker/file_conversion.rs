@@ -211,6 +211,10 @@ fn linked_db_declaration(declaration: &artifact::DbDeclarationIr) -> DbDeclarati
             .map(|field| DbObjectFieldIr {
                 name: field.name.clone(),
                 ty: linked_type_ref(&field.ty),
+                storage: match field.storage {
+                    artifact::DbFieldStorageIr::Identity => DbFieldStorageIr::Identity,
+                    artifact::DbFieldStorageIr::Encrypted => DbFieldStorageIr::Encrypted,
+                },
             })
             .collect(),
         leases: declaration
@@ -1043,5 +1047,43 @@ fn linked_interface_method_slot_plan(
             executable_index: slot.target.executable_index,
             receiver_call_abi: slot.target.receiver_call_abi,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linked_file_conversion_preserves_encrypted_db_field_storage() {
+        let mut artifact = artifact::FileIrUnit::empty("internal.credential", "source");
+        artifact.declarations.db.insert(
+            "Credential".to_string(),
+            artifact::DbDeclarationIr {
+                type_ref: artifact::TypeRefIr::native("Credential"),
+                type_name: "Credential".to_string(),
+                collection_name: "credential".to_string(),
+                kind: artifact::DbObjectKindIr::Object,
+                key: artifact::DbObjectKeyIr {
+                    name: "id".to_string(),
+                    ty: artifact::TypeRefIr::native("string"),
+                },
+                fields: vec![artifact::DbObjectFieldIr {
+                    name: "apiKey".to_string(),
+                    ty: artifact::TypeRefIr::native("string"),
+                    storage: artifact::DbFieldStorageIr::Encrypted,
+                }],
+                retention: None,
+                leases: Vec::new(),
+                indexes: Vec::new(),
+                source_span: None,
+            },
+        );
+
+        let linked = linked_file_unit_from_artifact(&artifact).unwrap();
+        assert_eq!(
+            linked.declarations.db["Credential"].fields[0].storage,
+            DbFieldStorageIr::Encrypted
+        );
     }
 }

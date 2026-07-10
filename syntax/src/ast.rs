@@ -183,8 +183,22 @@ pub struct DbDecl {
     pub retention: Option<DbRetention>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leases: Vec<DbLeaseDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage: Vec<DbStorageDecl>,
     pub indexes: Vec<DbIndexEntry>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbStorageDecl {
+    pub field: String,
+    pub codec: DbStorageCodec,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbStorageCodec {
+    Encrypted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

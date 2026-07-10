@@ -195,6 +195,7 @@ pub struct PublicationDbMetadata {
     pub fields: BTreeSet<String>,
     pub field_types: BTreeMap<String, TypeRef>,
     pub field_type_texts: BTreeMap<String, String>,
+    pub field_storage: BTreeMap<String, crate::shared::ast::DbStorageCodec>,
 }
 
 impl PublicationDbMetadata {
@@ -314,6 +315,7 @@ fn publication_db_metadata(
         fields: db_field_names,
         field_types,
         field_type_texts,
+        field_storage: attachment.storage_map().clone(),
     })
 }
 

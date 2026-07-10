@@ -1035,7 +1035,8 @@ mod tests {
     };
     use skiff_artifact_model::{
         interface_instantiation_ref, CallIr as ArtifactCallIr, ConfigAndEffectMetadata,
-        DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
+        DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
+        ExecutableBody as ArtifactExecutableBody,
         ExecutableDeclarationIr as ArtifactExecutableDeclarationIr, ExecutableExport,
         ExecutableIr as ArtifactExecutableIr, ExecutableKind as ArtifactExecutableKind,
         ExecutableSignatureIr, ExprIr as ArtifactExprIr,
@@ -1308,12 +1309,24 @@ mod tests {
             "2222222222222222222222222222222222222222222222222222222222222222",
             "3333333333333333333333333333333333333333333333333333333333333333",
         );
-        let production_file = Arc::new(file_ir_with_db_object(
+        let mut production_file = file_ir_with_db_object(
             "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "model",
             "AgentThread",
             "agentThread",
-        ));
+        );
+        production_file
+            .declarations
+            .db
+            .get_mut("AgentThread")
+            .unwrap()
+            .fields
+            .push(DbObjectFieldIr {
+                name: "token".to_string(),
+                ty: TypeRefIr::native("string"),
+                storage: DbFieldStorageIr::Encrypted,
+            });
+        let production_file = Arc::new(production_file);
         let owner_test_file = Arc::new(file_ir_with_db_object(
             "skiff-file-ir-v3:sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "agent.test",
@@ -1330,6 +1343,7 @@ mod tests {
         assert_eq!(metadata[0].package_version.as_deref(), Some("1.0.0"));
         assert_eq!(metadata[0].type_name, "AgentThread");
         assert_eq!(metadata[0].collection_name, "agentThread");
+        assert_eq!(metadata[0].fields[0].storage, DbFieldStorageIr::Encrypted);
         assert!(metadata
             .iter()
             .all(|entry| entry.file_ir_identity != Some(owner_test_file.file_ir_identity.clone())));
@@ -1401,6 +1415,7 @@ mod tests {
             .push(DbObjectFieldIr {
                 name: "callback".to_string(),
                 ty: callback_ty.clone(),
+                storage: Default::default(),
             });
         let TypeDescriptorIr::Record { fields } = &mut production_file.type_table[0].descriptor
         else {
@@ -2354,14 +2369,17 @@ mod tests {
                     DbObjectFieldIr {
                         name: "id".to_string(),
                         ty: TypeRefIr::native("string"),
+                        storage: Default::default(),
                     },
                     DbObjectFieldIr {
                         name: "currentConfig".to_string(),
                         ty: current_config_ty,
+                        storage: Default::default(),
                     },
                     DbObjectFieldIr {
                         name: "runtimeBindings".to_string(),
                         ty: runtime_bindings_ty,
+                        storage: Default::default(),
                     },
                 ],
                 retention: None,

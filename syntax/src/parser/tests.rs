@@ -1,4 +1,4 @@
-use crate::ast::{DbIndexDirection, DbRetentionUnit, ForBinding, Stmt};
+use crate::ast::{DbIndexDirection, DbRetentionUnit, DbStorageCodec, ForBinding, Stmt};
 
 use super::{
     parse_source, parse_source_metadata, parse_source_with_bodies_tolerant, BuiltinPackage,
@@ -260,6 +260,82 @@ fn parses_db_declaration_with_key_indexes_and_contextual_keywords() {
     assert_eq!(db.indexes[1].name, "byExternalId");
     assert!(db.indexes[1].unique);
     assert!(db.indexes[1].where_expr.is_some());
+}
+
+#[test]
+fn parses_db_encrypted_storage_with_optional_semicolon() {
+    let ast = parse_source(
+        r#"
+            type Credential { id: string, apiKey: string, secret: string }
+            db object Credential {
+              primary key(id)
+              storage apiKey using encrypted;
+              storage secret using encrypted
+            }
+        "#,
+    )
+    .unwrap();
+
+    let storage = &ast.dbs[0].storage;
+    assert_eq!(storage.len(), 2);
+    assert_eq!(storage[0].field, "apiKey");
+    assert_eq!(storage[0].codec, DbStorageCodec::Encrypted);
+    assert_eq!(storage[1].field, "secret");
+}
+
+#[test]
+fn rejects_nested_db_storage_field_path() {
+    let error = parse_source(
+        r#"
+            db object Credential {
+              primary key(id)
+              storage profile.secret using encrypted
+            }
+        "#,
+    )
+    .expect_err("nested storage paths must fail during parsing");
+    assert!(
+        error
+            .to_string()
+            .contains("db storage field must be a single top-level identifier"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_unknown_db_storage_codec() {
+    let error = parse_source(
+        r#"
+            db object Credential {
+              primary key(id)
+              storage apiKey using compressed
+            }
+        "#,
+    )
+    .expect_err("unknown storage codecs must fail during parsing");
+    assert!(
+        error
+            .to_string()
+            .contains("expected db storage codec `encrypted`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_db_storage_without_using() {
+    let error = parse_source(
+        r#"
+            db object Credential {
+              primary key(id)
+              storage apiKey encrypted
+            }
+        "#,
+    )
+    .expect_err("storage declarations without using must fail during parsing");
+    assert!(
+        error.to_string().contains("using"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

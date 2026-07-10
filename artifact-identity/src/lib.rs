@@ -1372,14 +1372,15 @@ fn hash_framed_bytes(hasher: &mut Sha256, label: &str, value: &[u8]) {
 mod tests {
     use serde_json::json;
     use skiff_artifact_model::{
-        CanonicalPublicCallableSignature, ConfigAndEffectMetadata, FileIrUnit, MetadataValue,
-        OperationAbiRef, PackageDependencyPublicLinkScope, PackageProductionLinkScope,
-        PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypoint,
-        PackageTestEntrypointKind, PackageTestExecutableRef, PackageTestFileIrRef,
-        PackageTestFileLinkScope, PackageTestLinkPolicy, PackageTestPackageUnitRef,
-        PackageTestRuntimeExpectedError, PackageUnit, PublicationOperationAbi,
-        PublicationOperationKind, PublicationResourceRef, SourceCallOperationIndexEntry,
-        SourceMapSource, TypeRefIr,
+        CanonicalPublicCallableSignature, ConfigAndEffectMetadata, DbDeclarationIr,
+        DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FileIrUnit,
+        MetadataValue, OperationAbiRef, PackageDependencyPublicLinkScope,
+        PackageProductionLinkScope, PackageTestAssembly, PackageTestAssemblyKind,
+        PackageTestEntrypoint, PackageTestEntrypointKind, PackageTestExecutableRef,
+        PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
+        PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit,
+        PublicationOperationAbi, PublicationOperationKind, PublicationResourceRef,
+        SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
     };
 
     use super::*;
@@ -1721,6 +1722,44 @@ mod tests {
         let computed = file_ir_identity(&unit).expect("computed identity");
         unit.file_ir_identity = computed;
         validate_file_ir_identity(&unit).expect("computed identity should validate");
+    }
+
+    #[test]
+    fn encrypted_db_field_storage_participates_in_file_ir_identity() {
+        let mut identity = FileIrUnit::empty("internal.example", "source-ast-hash-a");
+        identity.declarations.db.insert(
+            "Credential".to_string(),
+            DbDeclarationIr {
+                type_ref: TypeRefIr::native("Credential"),
+                type_name: "Credential".to_string(),
+                collection_name: "credential".to_string(),
+                kind: DbObjectKindIr::Object,
+                key: DbObjectKeyIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::native("string"),
+                },
+                fields: vec![DbObjectFieldIr {
+                    name: "apiKey".to_string(),
+                    ty: TypeRefIr::native("string"),
+                    storage: DbFieldStorageIr::Identity,
+                }],
+                retention: None,
+                leases: Vec::new(),
+                indexes: Vec::new(),
+                source_span: None,
+            },
+        );
+        let identity_hash = file_ir_hash(&identity).expect("identity field storage hash");
+        identity
+            .declarations
+            .db
+            .get_mut("Credential")
+            .unwrap()
+            .fields[0]
+            .storage = DbFieldStorageIr::Encrypted;
+        let encrypted_hash = file_ir_hash(&identity).expect("encrypted field storage hash");
+
+        assert_ne!(identity_hash, encrypted_hash);
     }
 
     #[test]

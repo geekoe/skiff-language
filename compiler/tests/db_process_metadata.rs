@@ -29,12 +29,14 @@ fn build_service_publication_assembly_includes_db_object_metadata() {
             type Prompt {
               id: string,
               promptIdNumber: number,
-              externalId: string?
+              externalId: string?,
+              secret: string
             }
 
             db object Prompt {
               name "prompt"
               primary key(id)
+              storage secret using encrypted
               retention 180 days
               index byFeed(promptIdNumber desc, id desc)
               unique index byExternalId(externalId) where externalId != null
@@ -60,6 +62,15 @@ fn build_service_publication_assembly_includes_db_object_metadata() {
         serde_json::json!({ "amount": 180, "unit": "days" })
     );
     assert_eq!(db["key"]["name"], "id");
+    assert_eq!(
+        db["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == "secret")
+            .unwrap()["storage"],
+        "encrypted"
+    );
     assert!(db.get("relations").is_none());
     assert_eq!(db["indexes"][0]["name"], "byFeed");
     assert_eq!(db["indexes"][0]["fields"][0]["direction"], "desc");
@@ -82,6 +93,15 @@ fn build_service_publication_assembly_includes_db_object_metadata() {
         serde_json::json!({ "amount": 180, "unit": "days" })
     );
     assert_eq!(file_db["key"]["name"], "id");
+    assert_eq!(
+        file_db["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == "secret")
+            .unwrap()["storage"],
+        "encrypted"
+    );
     assert!(file_db.get("relations").is_none());
     assert_eq!(file_db["indexes"][1]["where"]["Binary"]["op"], "Ne");
 }
@@ -458,6 +478,7 @@ packages:
 
     assert_eq!(package_db["typeName"], "Session");
     assert_eq!(package_db["collectionName"], "registry_session");
+    assert_eq!(package_db["fields"][1]["storage"], "encrypted");
     assert_eq!(service_unit["db"], assembly["db"]);
     assert!(service_unit["packageDependencies"][0]
         .get("collectionNameMapping")
@@ -467,6 +488,10 @@ packages:
     assert_eq!(
         file_ir.value()["declarations"]["db"]["Session"]["collectionName"],
         "Session"
+    );
+    assert_eq!(
+        file_ir.value()["declarations"]["db"]["Session"]["fields"][1]["storage"],
+        "encrypted"
     );
     assert!(published.artifacts.package_units[0]
         .value
@@ -836,6 +861,100 @@ fn object_db_change_rejects_incompatible_atomic_operator_field_types() {
     );
 }
 
+#[test]
+fn encrypted_storage_allows_projection_full_writes_and_key_selector_set() {
+    compile_source_file_ir_artifact(
+        r#"
+            type Credential { id: string, apiKey: string }
+            db object Credential {
+              primary key(id)
+              storage apiKey using encrypted
+            }
+
+            function run(id: string, value: string) -> bool {
+                db insert Credential { id = id apiKey = value }
+                db require Credential(id) { fields { apiKey } }
+                db update Credential(id) { apiKey = value }
+                db replace Credential(id) { apiKey = value }
+                db upsert Credential(id) { apiKey = value } { apiKey = value }
+                return true
+            }
+        "#,
+        "internal/encrypted_storage_allowed.skiff",
+        "internal.encrypted_storage_allowed",
+        "service",
+    )
+    .expect("encrypted full writes, projection, and key update should compile");
+}
+
+#[test]
+fn encrypted_storage_rejects_predicate_regex_order_query_set_and_partial_change() {
+    let cases = [
+        (
+            "db find many Credential { where apiKey == value }",
+            "encrypted storage field `apiKey` cannot be used for predicate",
+        ),
+        (
+            "db find many Credential { where regex(apiKey, value) }",
+            "encrypted storage field `apiKey` cannot be used for predicate",
+        ),
+        (
+            "db find many Credential { order apiKey asc }",
+            "encrypted storage field `apiKey` cannot be used for order",
+        ),
+        (
+            "db update many Credential { where id != value } { apiKey = value }",
+            "encrypted storage field `apiKey` cannot be used for whole-field set without a key selector",
+        ),
+        (
+            "db update Credential { where id != value } { apiKey = value }",
+            "encrypted storage field `apiKey` cannot be used for whole-field set without a key selector",
+        ),
+        (
+            "db update Credential(id) { apiKey += value }",
+            "encrypted storage field `apiKey` cannot be used for partial change",
+        ),
+    ];
+
+    for (operation, expected) in cases {
+        let source = format!(
+            r#"
+                type Credential {{ id: string, apiKey: string }}
+                db object Credential {{
+                  primary key(id)
+                  storage apiKey using encrypted
+                }}
+                function run(id: string, value: string) -> bool {{
+                    {operation}
+                    return true
+                }}
+            "#
+        );
+        assert_compile_error_contains(&source, expected);
+    }
+}
+
+#[test]
+fn ordinary_db_object_keeps_non_string_key_read_write_contract() {
+    compile_source_file_ir_artifact(
+        r#"
+            type Counter { id: number, value: string }
+            db object Counter { primary key(id) }
+
+            function run(value: string) -> bool {
+                db insert Counter { id = 1 value = value }
+                db require Counter(1)
+                db update Counter(1) { value = value }
+                return true
+            }
+        "#,
+        "internal/plain_numeric_key.skiff",
+        "internal.plain_numeric_key",
+        "service",
+    )
+    .expect("plain DB objects should keep non-string key reads and writes");
+}
+
 fn service_project(name: &str, internal_source: &str) -> ServiceProjectBuilder {
     service_project_with_id(name, "example.com/example", internal_source)
 }
@@ -978,11 +1097,13 @@ session:
         "session_impl.skiff",
         r#"
         type Session {
-          id: string
+          id: string,
+          token: string
         }
 
         db object Session {
           primary key(id)
+          storage token using encrypted
         }
         "#,
     );

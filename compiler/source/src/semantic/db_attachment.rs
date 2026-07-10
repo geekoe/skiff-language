@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    shared::ast::{DbDecl, FieldDecl, SourceFile, TypeDecl},
+    shared::ast::{DbDecl, DbStorageCodec, FieldDecl, SourceFile, TypeDecl},
     shared::error::{CompileError, Result},
 };
 
@@ -12,6 +12,7 @@ pub struct DbAttachment<'a> {
     pub ty: &'a TypeDecl,
     pub key: &'a FieldDecl,
     fields_by_name: BTreeMap<String, &'a FieldDecl>,
+    storage_by_field: BTreeMap<String, DbStorageCodec>,
 }
 
 impl<'a> DbAttachment<'a> {
@@ -21,6 +22,10 @@ impl<'a> DbAttachment<'a> {
 
     pub fn field_map(&self) -> &BTreeMap<String, &'a FieldDecl> {
         &self.fields_by_name
+    }
+
+    pub fn storage_map(&self) -> &BTreeMap<String, DbStorageCodec> {
+        &self.storage_by_field
     }
 }
 
@@ -58,6 +63,11 @@ impl<'a> DbAttachmentIndex<'a> {
             let key = *fields
                 .get(key_name)
                 .expect("validated db attachment key field exists");
+            let storage_by_field = db
+                .storage
+                .iter()
+                .map(|storage| (storage.field.clone(), storage.codec))
+                .collect();
             index.by_name.insert(
                 db.name.as_str(),
                 DbAttachment {
@@ -66,6 +76,7 @@ impl<'a> DbAttachmentIndex<'a> {
                     ty,
                     key,
                     fields_by_name: fields,
+                    storage_by_field,
                 },
             );
         }
@@ -124,16 +135,45 @@ pub fn validate_db_attachments(_module_path: &str, ast: &SourceFile) -> Vec<Stri
             }
         }
 
-        let Some(key) = &db.key else {
+        if let Some(key) = &db.key {
+            if !fields.contains_key(key.name.as_str()) {
+                violations.push(format!(
+                    "db object {} primary key field {} must be a field on the attached type",
+                    db.name, key.name
+                ));
+            }
+        } else {
             violations.push(format!("db object {} must declare key", db.name));
-            continue;
-        };
-        if !fields.contains_key(key.name.as_str()) {
+        }
+        validate_db_storage_declarations(db, &fields.keys().copied().collect(), &mut violations);
+    }
+    violations
+}
+
+pub(crate) fn validate_db_storage_declarations(
+    db: &DbDecl,
+    fields: &BTreeSet<&str>,
+    violations: &mut Vec<String>,
+) {
+    let mut storage_fields = BTreeSet::new();
+    for storage in &db.storage {
+        if !storage_fields.insert(storage.field.as_str()) {
             violations.push(format!(
-                "db object {} primary key field {} must be a field on the attached type",
-                db.name, key.name
+                "db object {} storage field `{}` is declared more than once",
+                db.name, storage.field
+            ));
+        }
+        if !fields.contains(storage.field.as_str()) {
+            violations.push(format!(
+                "db object {} encrypted storage field `{}` must be a field on the attached type",
+                db.name, storage.field
+            ));
+        }
+        if db.key.as_ref().is_some_and(|key| storage.field == key.name) {
+            violations.push(format!(
+                "db object {} encrypted storage field `{}` cannot be the primary key",
+                db.name, storage.field
             ));
         }
     }
-    violations
 }

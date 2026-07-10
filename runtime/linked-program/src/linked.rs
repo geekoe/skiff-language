@@ -133,6 +133,22 @@ pub struct DbObjectFieldIr {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: LinkedTypeRef,
+    #[serde(default, skip_serializing_if = "DbFieldStorageIr::is_identity")]
+    pub storage: DbFieldStorageIr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DbFieldStorageIr {
+    #[default]
+    Identity,
+    Encrypted,
+}
+
+impl DbFieldStorageIr {
+    pub fn is_identity(&self) -> bool {
+        *self == Self::Identity
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1299,4 +1315,27 @@ where
     Err(E::custom(format!(
         "expected link target object with numeric {index_key}"
     )))
+}
+
+#[cfg(test)]
+mod db_storage_tests {
+    use super::*;
+
+    #[test]
+    fn linked_db_field_storage_round_trips_encrypted() {
+        let field = DbObjectFieldIr {
+            name: "apiKey".to_string(),
+            ty: LinkedTypeRef::Native {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+            storage: DbFieldStorageIr::Encrypted,
+        };
+        let value = serde_json::to_value(&field).unwrap();
+        assert_eq!(value["storage"], "encrypted");
+        assert_eq!(
+            serde_json::from_value::<DbObjectFieldIr>(value).unwrap(),
+            field
+        );
+    }
 }

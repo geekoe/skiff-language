@@ -170,6 +170,7 @@ pub(super) fn exports_index_from_production_exports(
                 retention: None,
                 indexes: Vec::new(),
                 leases: Vec::new(),
+                storage: Vec::new(),
                 span: SourceSpan::synthetic(),
             });
         }
