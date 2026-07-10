@@ -395,7 +395,7 @@ describe('actor/spawn runtime control protocol', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error',
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error',
     });
   });
 

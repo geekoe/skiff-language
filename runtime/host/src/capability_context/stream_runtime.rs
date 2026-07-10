@@ -3,7 +3,7 @@ use std::{
     fmt,
     future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -17,6 +17,7 @@ use skiff_runtime_capability_context::{
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
 const STREAM_BUFFER_CAPACITY: usize = 1;
+static STREAM_RUNTIME_STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct StreamRuntime {
@@ -102,6 +103,7 @@ impl StreamRuntime {
             .lock()
             .expect("stream registry mutex poisoned")
             .insert(id.clone(), Arc::new(state));
+        STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
         (
             stream_value(&id),
             StreamSink {
@@ -126,9 +128,10 @@ impl StreamRuntime {
         cancellation: CancellationToken,
     ) -> Value {
         let id = format!("stream-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let cancelled = Arc::new(AtomicBool::new(false));
         let state = StreamState {
             source: StreamSource::Pull(AsyncMutex::new(Box::new(source))),
-            cancelled: cancellation.cancel_flag(),
+            cancelled,
             cancel_notify: Arc::new(Notify::new()),
             cancellation: Some(cancellation),
             ended: AtomicBool::new(false),
@@ -137,6 +140,7 @@ impl StreamRuntime {
             .lock()
             .expect("stream registry mutex poisoned")
             .insert(id.clone(), Arc::new(state));
+        STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
         stream_value(&id)
     }
 
@@ -147,7 +151,7 @@ impl StreamRuntime {
             .expect("stream registry mutex poisoned")
             .remove(id);
         if let Some(state) = state {
-            state.finish(terminal);
+            finish_stream_state(state.as_ref(), terminal);
         }
     }
 
@@ -160,7 +164,7 @@ impl StreamRuntime {
             .map(|(_, state)| state)
             .collect::<Vec<_>>();
         for state in states {
-            state.finish(terminal);
+            finish_stream_state(state.as_ref(), terminal);
         }
     }
 
@@ -272,6 +276,16 @@ impl StreamRuntime {
             return;
         };
         self.finish_stream(id, StreamTerminalReason::Cancelled);
+    }
+}
+
+pub(crate) fn stream_runtime_streams_active() -> usize {
+    STREAM_RUNTIME_STREAMS_ACTIVE.load(Ordering::Acquire)
+}
+
+fn finish_stream_state(state: &StreamState, terminal: StreamTerminalReason) {
+    if state.finish(terminal) {
+        STREAM_RUNTIME_STREAMS_ACTIVE.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

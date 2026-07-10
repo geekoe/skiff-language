@@ -258,6 +258,15 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
           type: 'runtime.capabilities'
         });
         return;
+      case 'runtime.health':
+        if (frame.payloadBytes.byteLength !== 0) {
+          throw new Error('runtime.health binary frame payload must be empty');
+        }
+        this.options.registry.recordRuntimeHealth(ws, {
+          ...header,
+          type: 'runtime.health'
+        });
+        return;
       case 'actor.put.request':
       case 'actor.find.request':
       case 'actor.remove.request':

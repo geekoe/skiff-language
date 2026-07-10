@@ -227,6 +227,27 @@ pub enum RuntimeDispatchModeCapability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeHealthCountersFrameHeader {
+    pub outbound_requests_pending: usize,
+    pub outbound_stream_leases_active: usize,
+    pub stream_runtime_streams_active: usize,
+    pub flag_backed_cancel_waiters_active: usize,
+    pub spawned_tasks_active: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeHealthFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub runtime_id: String,
+    pub observed_at: String,
+    pub counters: RuntimeHealthCountersFrameHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRegisteredFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -75,8 +77,11 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 
     let mut control: Option<RouterControlEnvelope> = None;
     let mut artifact_fingerprint: Option<String> = None;
+    let mut registered_runtime_ids = HashSet::<String>::new();
     let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
     reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut health_interval = tokio::time::interval(Duration::from_secs(1));
+    health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -91,12 +96,13 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                         reject_router_text_message(text.as_str())?;
                     }
                     Message::Binary(bytes) => {
-                        dispatch_router_binary_frame(
+                        dispatch_router_binary_frame_with_health(
                             &host,
                             &bytes,
                             &sender,
                             &mut control,
                             &mut artifact_fingerprint,
+                            &mut registered_runtime_ids,
                         )
                         .await?;
                     }
@@ -108,6 +114,11 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                 maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
                     .await;
             }
+            _ = health_interval.tick(), if !registered_runtime_ids.is_empty() => {
+                for runtime_id in registered_runtime_ids.iter() {
+                    host.queue_runtime_health(&sender, runtime_id).await?;
+                }
+            }
         }
     }
 
@@ -116,12 +127,51 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 async fn dispatch_router_binary_frame(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
+) -> Result<()> {
+    dispatch_router_binary_frame_inner(
+        host,
+        bytes,
+        sender,
+        control,
+        artifact_fingerprint,
+        None,
+    )
+    .await
+}
+
+async fn dispatch_router_binary_frame_with_health(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    control: &mut Option<RouterControlEnvelope>,
+    artifact_fingerprint: &mut Option<String>,
+    registered_runtime_ids: &mut HashSet<String>,
+) -> Result<()> {
+    dispatch_router_binary_frame_inner(
+        host,
+        bytes,
+        sender,
+        control,
+        artifact_fingerprint,
+        Some(registered_runtime_ids),
+    )
+    .await
+}
+
+async fn dispatch_router_binary_frame_inner(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    control: &mut Option<RouterControlEnvelope>,
+    artifact_fingerprint: &mut Option<String>,
+    mut registered_runtime_ids: Option<&mut HashSet<String>>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
@@ -138,6 +188,15 @@ async fn dispatch_router_binary_frame(
             let mut rest = serde_json::Map::new();
             rest.insert("runtimeId".to_string(), Value::String(header.runtime_id));
             host.log_registered(&rest);
+            let runtime_id = rest
+                .get("runtimeId")
+                .and_then(Value::as_str)
+                .expect("runtimeId should be set")
+                .to_string();
+            if let Some(registered_runtime_ids) = registered_runtime_ids.as_deref_mut() {
+                registered_runtime_ids.insert(runtime_id.clone());
+                host.queue_runtime_health(sender, &runtime_id).await?;
+            }
         }
         "router.control" => {
             let (header, payload) = decode_typed_binary_frame::<RouterControlFrameHeader>(bytes)

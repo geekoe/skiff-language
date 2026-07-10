@@ -29,6 +29,7 @@ import type { JsonSchema } from '../src/manifest/types.js';
 const runtimeFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
+  'runtime.health',
   'actor.put.request',
   'actor.put.response',
   'actor.put.error',
@@ -68,6 +69,7 @@ const runtimeFrameHeaderTypes = [
 const runtimeToRouterFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
+  'runtime.health',
   'actor.put.request',
   'actor.find.request',
   'actor.remove.request',
@@ -190,7 +192,7 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
     });
   });
 
@@ -220,6 +222,27 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error: 'invalid runtime.capabilities envelope: capabilities must be an object'
+    });
+  });
+
+  it('accepts and rejects runtime health frames', () => {
+    expect(validateRuntimeToRouterFrameHeader(runtimeFrameHeaderFixtures['runtime.health'])).toEqual({
+      ok: true,
+      envelope: runtimeFrameHeaderFixtures['runtime.health']
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.health'],
+        counters: {
+          ...runtimeFrameHeaderFixtures['runtime.health'].counters,
+          spawnedTasksActive: -1
+        }
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid runtime.health envelope: counters.spawnedTasksActive must be a non-negative integer'
     });
   });
 
@@ -1016,6 +1039,7 @@ describe('runtime binary frame foundations', () => {
   it('allows header-only register, control, cancel, and error frames', () => {
     const runtimeToRouterHeaderOnly = [
       'runtime.register',
+      'runtime.health',
       'request.cancel',
       'response.error'
     ] as const satisfies readonly RuntimeToRouterFrameHeaderName[];

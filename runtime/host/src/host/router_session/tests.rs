@@ -27,8 +27,8 @@ use skiff_runtime_transport::protocol::{
     encode_binary_frame, PackageTestStartFrameHeader, RequestCancelFrameHeader,
     ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
     ResponseStartFrameHeader, RouterControlFrameHeader, RuntimeCallerFrameHeader,
-    RuntimeErrorFramePayload, RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader,
-    RuntimeTraceContextFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeErrorFramePayload, RuntimeHealthFrameHeader, RuntimeHttpResponseFrameHeader,
+    RuntimeRegisteredFrameHeader, RuntimeTraceContextFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
@@ -159,6 +159,42 @@ fn writer_encodes_outbound_control_command_as_binary_frame() {
     assert_eq!(header.request_id, "request-cancel-from-control");
     assert_eq!(header.reason, "caller_cancel");
     assert!(payload.is_empty());
+}
+
+#[tokio::test]
+async fn runtime_health_frame_reports_loop_risk_counters() {
+    let host = test_host();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let stream_baseline = crate::capability_context::stream_runtime_streams_active();
+    let flag_waiter_baseline = skiff_runtime_capability_context::flag_backed_cancel_waiters_active();
+
+    host.queue_runtime_health(&sender, "runtime-health-zero")
+        .await
+        .expect("runtime.health should encode");
+
+    let frame = match receiver
+        .recv()
+        .await
+        .expect("runtime.health frame should be queued")
+    {
+        super::super::RouterWriterMessage::Binary(frame) => frame,
+        other => panic!("expected binary runtime.health frame, got {other:?}"),
+    };
+    let (header, payload): (RuntimeHealthFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).expect("runtime.health should decode");
+
+    assert!(payload.is_empty());
+    assert_eq!(header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
+    assert_eq!(header.envelope_type, "runtime.health");
+    assert_eq!(header.runtime_id, "runtime-health-zero");
+    assert_eq!(header.counters.outbound_requests_pending, 0);
+    assert_eq!(header.counters.outbound_stream_leases_active, 0);
+    assert_eq!(header.counters.stream_runtime_streams_active, stream_baseline);
+    assert_eq!(
+        header.counters.flag_backed_cancel_waiters_active,
+        flag_waiter_baseline
+    );
+    assert_eq!(header.counters.spawned_tasks_active, 0);
 }
 
 #[tokio::test]

@@ -22,6 +22,7 @@ use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
 };
+use skiff_runtime_request::cancellation::CancellationToken;
 use tokio::time::sleep;
 
 use super::*;
@@ -494,11 +495,11 @@ async fn runtime_program_time_sleep_observes_cancellation() {
     let program = Arc::new(program_with_executable(time_sleep_executable(100)));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
-    let cancelled = frame.cancelled.clone();
+    let cancellation = frame.cancellation.clone();
 
     let cancel_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(15)).await;
-        cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        cancellation.cancel();
     });
     let error = tokio::time::timeout(
         Duration::from_secs(1),
@@ -2125,10 +2126,10 @@ async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
-    let cancel_flag = frame.cancelled.clone();
+    let cancellation = frame.cancellation.clone();
     let cancel_task = tokio::spawn(async move {
         sleep(Duration::from_millis(10)).await;
-        cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        cancellation.cancel();
     });
 
     let error = tokio::time::timeout(
@@ -2155,10 +2156,10 @@ async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
-    let cancel_flag = frame.cancelled.clone();
+    let cancellation = frame.cancellation.clone();
     let cancel_task = tokio::spawn(async move {
         sleep(Duration::from_millis(10)).await;
-        cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        cancellation.cancel();
     });
 
     let value = tokio::time::timeout(
@@ -3259,6 +3260,7 @@ struct ProgramTestInvocation {
     receiver_const: Option<ConstAddr>,
     runtime_id: String,
     service_id: String,
+    cancellation: CancellationToken,
     cancelled: Arc<AtomicBool>,
     service_http_response_max_bytes: usize,
     config: RuntimeConfigView,
@@ -3323,6 +3325,8 @@ impl ProgramTestInvocation {
 
 fn test_invocation(target: &str) -> ProgramTestInvocation {
     let operation_abi_id = format!("operation:{target}");
+    let cancellation = CancellationToken::new();
+    let cancelled = cancellation.cancel_flag();
     ProgramTestInvocation {
         request: RequestEnvelope {
             request_id: "request-program".to_string(),
@@ -3356,7 +3360,8 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
         receiver_const: None,
         runtime_id: "runtime-program".to_string(),
         service_id: "svc".to_string(),
-        cancelled: Arc::new(AtomicBool::new(false)),
+        cancellation,
+        cancelled,
         service_http_response_max_bytes: DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         config: RuntimeConfigView::empty(),
         package_configs: Vec::new(),
@@ -3417,7 +3422,7 @@ fn runtime_activation_from_program(program: &RuntimeProgram) -> RuntimeActivatio
 fn concrete_execution_control(
     frame: &ProgramTestInvocation,
 ) -> crate::request::ExecutionControl<'_> {
-    crate::request::ExecutionControl::new(&frame.cancelled, &frame.execution_budget)
+    crate::request::ExecutionControl::new(frame.cancellation.clone(), &frame.execution_budget)
 }
 
 fn test_execution_control(
@@ -3446,7 +3451,7 @@ fn test_outbound_context(frame: &ProgramTestInvocation) -> OutboundServiceContex
             &frame.request,
             frame.operation.target.as_str(),
             frame.execution_budget.clone(),
-            execution.cancel_flag(),
+            execution.cancellation_token(),
             frame.request_heap_limits.clone(),
             frame.router_sender.clone(),
             frame.outbound_requests.clone(),
@@ -3611,14 +3616,13 @@ fn program_invocation_context<'a>(
         &frame.operation,
         frame.router_sender.as_ref(),
         &frame.outbound_requests,
-        frame.cancelled.as_ref(),
-        execution.cancel_flag(),
+        execution.cancellation_token(),
     );
     let effects = eval_capability_adapter::effects(
         eval_capability_adapter::effect_dispatch_context_from_request(
             &frame.request,
             frame.service_http_response_max_bytes,
-            execution.cancel_flag(),
+            execution.cancellation_token(),
             frame.telemetry_context(),
             skiff_runtime_capability_context::HttpRuntimeOptions::from_env(),
         ),

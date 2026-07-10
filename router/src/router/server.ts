@@ -180,6 +180,16 @@ const webSocketGateway = initialSnapshot.manifest.websocketEntry
   : undefined;
 const webSocketServer = webSocketGateway ? await webSocketGateway.listen() : undefined;
 
+controlPlane.setLoopRiskCounterSources({
+  httpStream: () => gateway.streamLifecycleCounters(),
+  websocketReceive: () =>
+    webSocketGateway?.receiveLifecycleCounters() ?? {
+      inFlight: 0,
+      queued: 0,
+      abortOnClose: 0
+    }
+});
+
 console.log(
   JSON.stringify(
     {
