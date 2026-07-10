@@ -67,6 +67,7 @@ pub fn build_package_unit_from_refs(
         abi_identity_projection: Default::default(),
         publication_abi,
         files,
+        resources: Vec::new(),
         implementation_links,
         dependencies,
         recoverable_metadata: RecoverableArtifactMetadata::default(),

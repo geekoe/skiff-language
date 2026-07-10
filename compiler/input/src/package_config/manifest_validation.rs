@@ -8,12 +8,13 @@ use super::{
     is_enabled_standard_package_id, is_reserved_package_alias, is_standard_package_id,
     PackageConfigError, PackageDependency, PackageManifest,
 };
+use crate::collect_publication_resource_spec_violations;
 use crate::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
     is_publication_dependency_id, is_safe_publication_artifact_id_component,
     is_safe_publication_artifact_path_segment, parse_publication_id_field,
     validate_publication_version_field, ManifestOwner, ManifestProvenance, PublicationApiSpec,
-    PublicationManifest,
+    PublicationManifest, PublicationResourceSpec,
 };
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +26,8 @@ pub(super) struct RawPackageManifest {
     exports: Option<Value>,
     #[serde(default)]
     packages: Vec<PackageDependency>,
+    #[serde(default)]
+    resources: Vec<PublicationResourceSpec>,
     requires: Option<RawPackageRequires>,
     dependencies: Option<RawPackageDependencies>,
     #[serde(default)]
@@ -79,6 +82,7 @@ pub(super) fn validate_package_manifest(
         violations.push("dependencies.services has been removed; service dependencies are only valid in service.yml top-level services".to_string());
     }
     validate_removed_requires(raw.requires, &mut violations);
+    collect_publication_resource_spec_violations(&raw.resources, &mut violations);
     if raw.values_requirements.is_some() {
         violations.push(
             "valuesRequirements has been removed; use config.require<T>(path) or config.optional<T>(path) in Skiff source".to_string(),
@@ -155,11 +159,12 @@ pub(super) fn validate_package_manifest(
         });
     }
 
-    let mut publication = PublicationManifest::new(
+    let publication = PublicationManifest::new_with_resources(
         id.expect("validated package id"),
         version.expect("validated package version"),
         api,
         dependencies,
+        raw.resources,
         ManifestProvenance::file(path, owner),
     );
     Ok(PackageManifest::new(publication))

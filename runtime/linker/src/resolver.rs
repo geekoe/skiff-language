@@ -46,6 +46,13 @@ pub enum ProgramError {
         package_count: usize,
         package_file_slot_count: usize,
     },
+    #[error(
+        "package resource slots ({package_resource_slot_count}) must match packages ({package_count})"
+    )]
+    PackageResourceSlotMismatch {
+        package_count: usize,
+        package_resource_slot_count: usize,
+    },
     #[error("package {package_id} required by package dependencies is not loaded")]
     PackageDependencyPackageNotLoaded { package_id: String },
     #[error("package {package_id} required by package ABI expectations is not loaded")]

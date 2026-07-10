@@ -127,6 +127,37 @@ package dependency entry。
 package public entry 时传入 `any I` 参数；该值可以来自本地装箱，也可以来自 service dependency public
 instance 装箱，例如 `remoteLlm/managedLlm as api.LlmClient`。
 
+### Publication resources
+
+`package.yml` 和 `service.yml` 可以用顶层 `resources` 声明随当前 publication 一起发布的静态资源。
+`resources` 是字符串路径列表；每个路径都是相对当前 manifest root 的 canonical logical path。
+
+资源路径必须满足：
+
+- 使用 `/` 分隔，不能是绝对路径、Windows 绝对路径、glob pattern、空路径、尾随 `/`、重复 `/`、
+  `.` 或 `..` segment。
+- 不包含 hidden file / directory segment。
+- 不指向 `.skiff` source file，也不指向 Skiff control file。control file 判断按文件名进行，包括
+  `package.yml`、`service.yml`、`service.<profile>.yml`、`api.yml`、`config.yml`、
+  `config.<profile>.yml` 和 `*.secret.yml`。
+- filesystem 解析必须 exact-case match，且最终目标必须是普通文件；symlink 和目录都无效。
+
+同一个 manifest 内的资源 logical path 必须唯一。compiler 读取资源 bytes、长度和 `sha256`，并在
+`PackageUnit.resources` 或 `ServiceUnit.resources` 中记录资源引用。artifact writer 把资源 bytes 写到
+`resources/sha256/<sha256>`；package source archive、package pull 和 dev sync 必须把 manifest 声明的
+资源文件纳入闭包。
+
+资源内容属于 build 输入：更改资源 bytes 会改变 package/service build identity 和 artifact 内容校验。
+资源不属于 public ABI、service protocol schema 或 ingress entry schema；只改资源内容不应改变 ABI
+identity、service protocol identity 或 ingress entry identity。
+
+runtime activation 会随 Service Unit 和 resolved Package Units 加载 service/package resource table。
+`std.resource.exists(path)`、`std.resource.text(path)` 和 `std.resource.json<T>(path)` 总是按当前执行
+call site 的 owner 查找资源：service code 读取 service resources，package code 读取该 package 的
+resources。资源路径无效或缺失时，`exists` 返回 `false`；`text` 和 `json<T>` 抛出 resource error。
+`text` 要求 UTF-8；`json<T>` 先按 UTF-8 读取，再用 Skiff boundary JSON decode 到目标类型，JSON syntax
+和类型错误使用 JSON decode error shape。
+
 HTTP ingress metadata 区分 raw route 和 compiler-generated typed route。Typed HTTP route 的
 effective method 固定为 `POST`，manifest 必须记录 literal path、wrapper target、inferred body /
 response schema refs 和 typed HTTP ingress identity。该 identity 由 service id、effective method、

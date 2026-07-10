@@ -24,3 +24,4 @@ uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }

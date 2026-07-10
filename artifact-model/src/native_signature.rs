@@ -59,6 +59,7 @@ const FILE_CREATE_OPTIONS: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.f
 const FILE_CREATE_OPTIONS_NULLABLE: NativeTypeExprDef =
     NativeTypeExprDef::Nullable(&FILE_CREATE_OPTIONS);
 const FILE_INFO: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.file.FileInfo");
+const RESOURCE_INFO: NativeTypeExprDef = NativeTypeExprDef::Builtin("std.resource.ResourceInfo");
 const ACTOR_REF_T0: NativeTypeExprDef = NativeTypeExprDef::ActorRef(&T0);
 const ACTOR_REF_T0_NULLABLE: NativeTypeExprDef = NativeTypeExprDef::Nullable(&ACTOR_REF_T0);
 
@@ -622,6 +623,46 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         type_param_count: 0,
         params: &[BYTE_STREAM, FILE_CREATE_OPTIONS_NULLABLE],
         return_type: FILE_IMMUTABLE,
+    },
+    NativeSignatureDef {
+        target: "std.resource.bytes",
+        binding_key: "std.resource.bytes",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING],
+        return_type: BYTES,
+    },
+    NativeSignatureDef {
+        target: "std.resource.text",
+        binding_key: "std.resource.text",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING],
+        return_type: STRING,
+    },
+    NativeSignatureDef {
+        target: "std.resource.json",
+        binding_key: "std.resource.json",
+        aliases: &[],
+        type_param_count: 1,
+        params: &[STRING],
+        return_type: T0,
+    },
+    NativeSignatureDef {
+        target: "std.resource.info",
+        binding_key: "std.resource.info",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING],
+        return_type: RESOURCE_INFO,
+    },
+    NativeSignatureDef {
+        target: "std.resource.exists",
+        binding_key: "std.resource.exists",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING],
+        return_type: BOOL,
     },
     NativeSignatureDef {
         target: "std.telemetry.emit",

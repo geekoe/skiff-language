@@ -10,6 +10,15 @@ pub struct PublishedJsonArtifact {
     pub path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedResourceArtifact {
+    pub logical_path: String,
+    pub artifact_path: String,
+    pub sha256: String,
+    pub byte_len: u64,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArtifactUnit<T> {
     pub model: T,
@@ -81,6 +90,7 @@ impl PublishedFileIrArtifact {
 pub struct PublishedServiceArtifacts {
     pub file_ir_units: Vec<PublishedFileIrArtifact>,
     pub package_file_ir_units: Vec<PublishedFileIrArtifact>,
+    pub resource_blobs: Vec<PublishedResourceArtifact>,
     pub package_assemblies: Vec<PublishedJsonArtifact>,
     pub package_indexes: Vec<PublishedJsonArtifact>,
     pub package_units: Vec<PublishedJsonArtifact>,
@@ -100,10 +110,32 @@ pub struct PublishedArtifactVisitOptions {
 pub struct PublishedArtifactEntry {
     pub path: String,
     pub kind: &'static str,
-    pub value: serde_json::Value,
+    pub payload: PublishedArtifactPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PublishedArtifactPayload {
+    Json(serde_json::Value),
+    Bytes(Vec<u8>),
 }
 
 impl PublishedServiceArtifacts {
+    pub fn try_visit_artifacts<E>(
+        &self,
+        options: PublishedArtifactVisitOptions,
+        mut visit: impl FnMut(PublishedArtifactEntry) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.try_visit_json_artifacts(options, &mut visit)?;
+        for artifact in &self.resource_blobs {
+            visit(PublishedArtifactEntry {
+                path: artifact.artifact_path.clone(),
+                kind: "resource blob",
+                payload: PublishedArtifactPayload::Bytes(artifact.bytes.clone()),
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn try_visit_json_artifacts<E>(
         &self,
         options: PublishedArtifactVisitOptions,
@@ -113,14 +145,14 @@ impl PublishedServiceArtifacts {
             visit(PublishedArtifactEntry {
                 path: artifact.path.clone(),
                 kind: "file IR unit",
-                value: artifact.value(),
+                payload: PublishedArtifactPayload::Json(artifact.value()),
             })?;
         }
         for artifact in &self.package_file_ir_units {
             visit(PublishedArtifactEntry {
                 path: artifact.path.clone(),
                 kind: "package file IR unit",
-                value: artifact.value(),
+                payload: PublishedArtifactPayload::Json(artifact.value()),
             })?;
         }
         visit(json_artifact_entry(
@@ -156,6 +188,6 @@ fn json_artifact_entry(
     PublishedArtifactEntry {
         path: artifact.path.clone(),
         kind,
-        value: artifact.value.clone(),
+        payload: PublishedArtifactPayload::Json(artifact.value.clone()),
     }
 }

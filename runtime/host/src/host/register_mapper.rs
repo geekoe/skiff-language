@@ -422,6 +422,8 @@ mod tests {
                 service_files: Vec::new(),
                 packages: Vec::new(),
                 package_files: Vec::new(),
+                service_resources: Default::default(),
+                package_resources: Vec::new(),
                 routes: HashMap::from([
                     ("service.test.Api.alpha".to_string(), alpha.clone()),
                     ("service.test.Api.beta".to_string(), beta.clone()),

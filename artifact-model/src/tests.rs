@@ -19,11 +19,11 @@ use crate::{
     OperationConstReceiverRef, OperationTargetRef, PackageDependencyConstraint,
     PackageOperationTarget, PackageRefIr, PackageSymbolRef, PackageTestAssembly,
     PackageTestAssemblyKind, PackageTestEntrypointKind, PackageUnit, PublicationAbiUnit,
-    PublicationOperationKind, ReceiverCallAbi, RecoverableAdapterSchemaCompatibility,
-    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
-    RecoverableBoundaryPlan, RecoverableCapabilityFlag, RecoverableCustomRestorePlan,
-    RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot,
-    RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    PublicationOperationKind, PublicationResourceRef, ReceiverCallAbi,
+    RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata, RecoverableBoundaryContext,
+    RecoverableBoundaryKind, RecoverableBoundaryPlan, RecoverableCapabilityFlag,
+    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
     RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
     RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
     RecoverableNativeAdapterOwner, RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef,
@@ -1018,6 +1018,7 @@ fn package_unit_empty_uses_canonical_defaults() {
 
     assert_eq!(unit.schema_version, "skiff-package-unit-v1");
     assert_eq!(unit.package_id, "example.com/mongo");
+    assert!(unit.resources.is_empty());
     assert_eq!(
         serde_json::to_value(unit).unwrap(),
         json!({
@@ -1042,11 +1043,15 @@ fn package_unit_empty_uses_canonical_defaults() {
 fn empty_service_and_package_units_skip_recoverable_metadata() {
     let service = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
     let service_value = serde_json::to_value(&service).unwrap();
+    assert!(service.resources.is_empty());
+    assert!(service_value.get("resources").is_none());
     assert!(service.recoverable_metadata.is_empty());
     assert!(service_value.get("recoverableMetadata").is_none());
 
     let package = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
     let package_value = serde_json::to_value(&package).unwrap();
+    assert!(package.resources.is_empty());
+    assert!(package_value.get("resources").is_none());
     assert!(package.recoverable_metadata.is_empty());
     assert!(package_value.get("recoverableMetadata").is_none());
 }
@@ -1064,6 +1069,7 @@ fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
         "config": {}
     });
     let service: ServiceUnit = serde_json::from_value(old_service).unwrap();
+    assert!(service.resources.is_empty());
     assert!(service.recoverable_metadata.is_empty());
     assert!(serde_json::to_value(&service)
         .unwrap()
@@ -1081,11 +1087,47 @@ fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
         "configAndEffectMetadata": {}
     });
     let package: PackageUnit = serde_json::from_value(old_package).unwrap();
+    assert!(package.resources.is_empty());
     assert!(package.recoverable_metadata.is_empty());
     assert!(serde_json::to_value(&package)
         .unwrap()
         .get("recoverableMetadata")
         .is_none());
+}
+
+#[test]
+fn publication_resource_refs_round_trip_on_service_and_package_units() {
+    let resource = PublicationResourceRef {
+        path: "prompts/system.md".to_string(),
+        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string(),
+        byte_len: 5,
+        content_type: None,
+        artifact_path: Some(
+            "resources/sha256/2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                .to_string(),
+        ),
+    };
+
+    let mut service = ServiceUnit::empty("remoteLlm", "0.1.0", "protocol:1");
+    service.resources.push(resource.clone());
+    assert_eq!(
+        serde_json::to_value(&service).unwrap()["resources"],
+        json!([{
+            "path": "prompts/system.md",
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "byteLen": 5,
+            "artifactPath": "resources/sha256/2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        }])
+    );
+    let decoded_service: ServiceUnit =
+        serde_json::from_value(serde_json::to_value(&service).unwrap()).unwrap();
+    assert_eq!(decoded_service.resources, vec![resource.clone()]);
+
+    let mut package = PackageUnit::empty("example.com/mongo", "1.0.0", "build:1", "abi:1");
+    package.resources.push(resource.clone());
+    let decoded_package: PackageUnit =
+        serde_json::from_value(serde_json::to_value(&package).unwrap()).unwrap();
+    assert_eq!(decoded_package.resources, vec![resource]);
 }
 
 #[test]
@@ -1386,6 +1428,7 @@ fn service_unit_round_trips_canonical_operation_shape() {
         abi_identity_projection: Default::default(),
         publication_abi: PublicationAbiUnit::empty("users", "dev", ""),
         files: vec![FileIrRef::new("file:users", "svc.users")],
+        resources: Vec::new(),
         package_dependencies: vec![PackageDependencyConstraint {
             id: "example.com/mongo".to_owned(),
             version: "1.0.0".to_owned(),

@@ -13,6 +13,7 @@ pub mod package_sources;
 pub mod publication;
 pub mod raw_sources;
 pub mod registry_helpers;
+pub mod resources;
 pub mod service_config;
 pub mod service_dependencies;
 pub mod service_ingress;
@@ -44,8 +45,13 @@ pub use manifest::{
     ManifestProvenance, PublicationManifest,
 };
 pub use package_job::{build_package_jobs, RawPackagePublicationJob};
-pub use publication::{assemble_publication, RawPublication};
+pub use publication::{assemble_publication, assemble_publication_with_resources, RawPublication};
 pub use raw_sources::read_publication_sources;
+pub use resources::{
+    collect_publication_resource_spec_violations, read_publication_resources,
+    validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,
+    MAX_PUBLICATION_RESOURCE_BYTE_LEN, MAX_PUBLICATION_RESOURCE_TOTAL_BYTE_LEN,
+};
 pub use service_ingress::{
     ServiceHttpIngressSeed, ServiceHttpRouteIngressSeed, ServiceIngressSeed,
     ServiceWebSocketIngressSeed,
@@ -55,8 +61,9 @@ pub use service_packages::{
     PackageManifestDiscoveryResult, ResolvedServicePackages, ServiceSourcePackageFacts,
 };
 pub use skiff_compiler_input_model::{
-    CompilerRawSourceFile, RawPublicationSourceGraph, RawSourceFileMeta, RawSourceOrigin,
-    RawSourceTree, RawSourceTreeFile,
+    CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,
+    RawPublicationSourceGraph, RawSourceFileMeta, RawSourceOrigin, RawSourceTree,
+    RawSourceTreeFile,
 };
 
 pub use api_yml::read_publication_api_yml;

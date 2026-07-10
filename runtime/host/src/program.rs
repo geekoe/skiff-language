@@ -20,11 +20,11 @@ pub use skiff_runtime_linked_program::{
     OperationRouteBinding, OperationTargetRef, OperationTargetRefRuntimeExt, PackageAbiExpectation,
     PackageBuildIdentity, PackageDependencyConstraint, PackageOperationSymbolRef, PackageRefIr,
     PackageSlot, PackageSymbolRef, PackageUnit, PackageUsedSymbol, PackageUsedSymbolKind, ParamIr,
-    PatternIr, ReceiverCallAbi, ResolvedSymbol, RuntimeProgramIdentity, RuntimeTypeContext,
-    ServiceDependencyConstraint, ServiceDependencyOperationRef, ServiceMeta, ServiceOperation,
-    ServiceSymbolRef, ServiceTimeoutConfig, ServiceUnit, SlotBindingIr, SlotIr, SlotLayoutIr,
-    SourceMapDto, SpawnTargetIr, SpawnTargetKindIr, StmtRefIr, TypeAddr, TypeDeclIr, TypeIndex,
-    UnaryOpIr, UnitAddr,
+    PatternIr, PublicationResourceTable, ReceiverCallAbi, ResolvedSymbol, RuntimeProgramIdentity,
+    RuntimeTypeContext, ServiceDependencyConstraint, ServiceDependencyOperationRef, ServiceMeta,
+    ServiceOperation, ServiceSymbolRef, ServiceTimeoutConfig, ServiceUnit, SlotBindingIr, SlotIr,
+    SlotLayoutIr, SourceMapDto, SpawnTargetIr, SpawnTargetKindIr, StmtRefIr, TypeAddr, TypeDeclIr,
+    TypeIndex, UnaryOpIr, UnitAddr,
 };
 pub(crate) use skiff_runtime_linker::{ProgramError, ProgramResult};
 
@@ -68,6 +68,8 @@ impl RuntimeProgramLayers {
             service_files: self.image.service_files.clone(),
             packages: self.image.packages.clone(),
             package_files: self.image.package_files.clone(),
+            service_resources: self.image.service_resources.clone(),
+            package_resources: self.image.package_resources.clone(),
             package_configs: self
                 .activation
                 .package_configs
@@ -99,6 +101,8 @@ pub struct TestRuntimeProgram {
     pub service_files: Vec<Arc<LinkedFileUnit>>,
     pub packages: Vec<Arc<PackageUnit>>,
     pub package_files: Vec<Vec<Arc<LinkedFileUnit>>>,
+    pub service_resources: PublicationResourceTable,
+    pub package_resources: Vec<PublicationResourceTable>,
     pub package_configs: Vec<RuntimeConfigView>,
     pub service_dependencies: Vec<ServiceDependencyConstraint>,
     pub timeout: ServiceTimeoutConfig,
@@ -126,6 +130,8 @@ impl TestRuntimeProgram {
             service_files: self.service_files.clone(),
             packages: self.packages.clone(),
             package_files: self.package_files.clone(),
+            service_resources: self.service_resources.clone(),
+            package_resources: self.package_resources.clone(),
             routes: self.routes.clone(),
             spawn_routes: self.spawn_routes.clone(),
             operations: self.operations.clone(),

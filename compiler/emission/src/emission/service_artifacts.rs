@@ -1,10 +1,11 @@
 use crate::emission::artifact::{
     ArtifactUnit, ArtifactUnitSet, FileIrRef, PublishedFileIrArtifact, PublishedJsonArtifact,
-    ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,
-    FILE_IR_SCHEMA_VERSION, PACKAGE_UNIT_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND,
-    SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
+    PublishedResourceArtifact, ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION,
+    CONTRACT_SCHEMA_ARTIFACT_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_UNIT_SCHEMA_VERSION,
+    SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
 use crate::emission::identity::identity;
+use crate::emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts};
 use crate::error::{EmissionError, Result};
 use crate::projection::context::{PackageApiSourceProjection, ProjectedServiceDependencyLockEntry};
 use crate::projection::contract::{CanonicalContractProjectionSchema, ContractProjection};
@@ -343,6 +344,7 @@ pub(crate) struct PublishedArtifacts {
     pub(crate) contract_schema: PublishedJsonArtifact,
     pub(crate) bundle: PublishedJsonArtifact,
     pub(crate) index: PublishedJsonArtifact,
+    pub(crate) resource_blobs: Vec<PublishedResourceArtifact>,
 }
 
 impl PublishedArtifacts {
@@ -360,6 +362,7 @@ struct PublishedArtifactUnits<'a> {
     contract_schema: ArtifactUnit<ContractSchemaArtifact<'a>>,
     bundle: ArtifactUnit<ServiceBundleArtifact<'a>>,
     index: ArtifactUnit<ServiceIndexArtifact<'a>>,
+    resource_blobs: Vec<PublishedResourceArtifact>,
 }
 
 impl<'a> ArtifactUnitSet<PublishedArtifactUnits<'a>> {
@@ -372,6 +375,7 @@ impl<'a> ArtifactUnitSet<PublishedArtifactUnits<'a>> {
             contract_schema: units.contract_schema.to_published_json(),
             bundle: units.bundle.to_published_json(),
             index: units.index.to_published_json(),
+            resource_blobs: units.resource_blobs.clone(),
         }
     }
 }
@@ -445,10 +449,12 @@ fn build_published_artifact_units<'a>(
     };
 
     let mut service_unit_model = artifact_projection.service_unit.clone();
+    let resource_blobs = publish_resource_artifacts(&artifact_projection.resources)?;
     attach_published_file_paths_to_service_unit(
         &mut service_unit_model.files,
         context.file_ir_units,
-    );
+    )?;
+    attach_resource_artifact_paths(&mut service_unit_model.resources, &resource_blobs)?;
     let service_unit_hash = service_unit_hash(&service_unit_model)?;
     let service_unit_identity = service_unit_identity(&service_unit_model)?;
     let service_id_path = service_id_artifact_path(context.service_id);
@@ -577,6 +583,7 @@ fn build_published_artifact_units<'a>(
         contract_schema,
         bundle: service_bundle,
         index,
+        resource_blobs,
     }))
 }
 
@@ -590,17 +597,24 @@ where
 fn attach_published_file_paths_to_service_unit(
     refs: &mut [FileIrRef],
     artifacts: &[PublishedFileIrArtifact],
-) {
+) -> Result<()> {
     let by_identity = artifacts
         .iter()
         .map(|artifact| (artifact.identity.as_str(), artifact))
         .collect::<std::collections::BTreeMap<_, _>>();
     for file_ref in refs {
-        if let Some(artifact) = by_identity.get(file_ref.file_ir_identity.as_str()) {
-            file_ref.artifact_path = Some(artifact.path.clone());
-            file_ref.source_ast_hash = Some(artifact.unit.source_ast_hash.clone());
-        }
+        let Some(artifact) = by_identity.get(file_ref.file_ir_identity.as_str()) else {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "service unit File IR ref {} did not emit an artifact path",
+                    file_ref.file_ir_identity
+                ),
+            });
+        };
+        file_ref.artifact_path = Some(artifact.path.clone());
+        file_ref.source_ast_hash = Some(artifact.unit.source_ast_hash.clone());
     }
+    Ok(())
 }
 
 /// Pointer to a published File IR unit, embedded in service assemblies,

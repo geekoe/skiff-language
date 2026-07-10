@@ -195,6 +195,11 @@ mod tests {
                 NativeRequiredContext::Websocket,
             ),
             ("std.telemetry.emit", NativeRequiredContext::Telemetry),
+            ("std.resource.bytes", NativeRequiredContext::Resource),
+            ("std.resource.text", NativeRequiredContext::Resource),
+            ("std.resource.json", NativeRequiredContext::Resource),
+            ("std.resource.info", NativeRequiredContext::Resource),
+            ("std.resource.exists", NativeRequiredContext::Resource),
             ("std.json.encode", NativeRequiredContext::None),
         ];
 

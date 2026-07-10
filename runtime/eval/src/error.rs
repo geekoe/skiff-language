@@ -47,6 +47,8 @@ pub enum RuntimeError {
     DbDecode { target: String, message: String },
     #[error("file error: {message}")]
     FileError { message: String },
+    #[error("resource error for {path}: {message}")]
+    ResourceError { path: String, message: String },
     #[error("http error: {message}")]
     HttpError {
         message: String,
@@ -210,6 +212,9 @@ impl From<skiff_runtime_native::error::RuntimeError> for RuntimeError {
             }
             skiff_runtime_native::error::RuntimeError::FileError { message } => {
                 RuntimeError::FileError { message }
+            }
+            skiff_runtime_native::error::RuntimeError::ResourceError { path, message } => {
+                RuntimeError::ResourceError { path, message }
             }
             skiff_runtime_native::error::RuntimeError::HttpError { message, detail } => {
                 RuntimeError::HttpError { message, detail }
@@ -440,6 +445,10 @@ fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
         RuntimeError::FileError { message } => RuntimeError::FileError {
             message: message.clone(),
         },
+        RuntimeError::ResourceError { path, message } => RuntimeError::ResourceError {
+            path: path.clone(),
+            message: message.clone(),
+        },
         RuntimeError::HttpError { message, detail } => RuntimeError::HttpError {
             message: message.clone(),
             detail: detail.clone(),
@@ -596,6 +605,12 @@ fn runtime_error_from_native_ref(
         }
         skiff_runtime_native::error::RuntimeError::FileError { message } => {
             RuntimeError::FileError {
+                message: message.clone(),
+            }
+        }
+        skiff_runtime_native::error::RuntimeError::ResourceError { path, message } => {
+            RuntimeError::ResourceError {
+                path: path.clone(),
                 message: message.clone(),
             }
         }
@@ -894,6 +909,9 @@ pub fn eval_error_to_native(error: RuntimeError) -> skiff_runtime_native::error:
         }
         RuntimeError::FileError { message } => {
             skiff_runtime_native::error::RuntimeError::FileError { message }
+        }
+        RuntimeError::ResourceError { path, message } => {
+            skiff_runtime_native::error::RuntimeError::ResourceError { path, message }
         }
         RuntimeError::HttpError { message, detail } => {
             skiff_runtime_native::error::RuntimeError::HttpError { message, detail }
@@ -1266,6 +1284,13 @@ impl RuntimeError {
         }
     }
 
+    pub fn resource_error(path: impl Into<String>, message: impl Into<String>) -> Self {
+        RuntimeError::ResourceError {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
     pub fn http_error(message: impl Into<String>, detail: Option<Value>) -> Self {
         RuntimeError::HttpError {
             message: message.into(),
@@ -1365,6 +1390,15 @@ impl RuntimeError {
                 message: message.clone(),
                 status: None,
                 details: None,
+            },
+            RuntimeError::ResourceError { path, message } => RuntimeErrorPayload {
+                code: "std.resource.ResourceError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "path": path,
+                    "message": message,
+                })),
             },
             RuntimeError::HttpError { message, detail } => RuntimeErrorPayload {
                 code: "std.http.HttpError".to_string(),
@@ -1533,6 +1567,13 @@ impl WirePayload for RuntimeError {
                     "message": message,
                 }),
             )),
+            RuntimeError::ResourceError { path, message } => Some((
+                TypeIdentity::builtin("std.resource.ResourceError"),
+                serde_json::json!({
+                    "path": path,
+                    "message": message,
+                }),
+            )),
             RuntimeError::HttpError { message, detail } => Some((
                 TypeIdentity::builtin("std.http.HttpError"),
                 serde_json::json!({
@@ -1616,7 +1657,7 @@ pub fn unwrap_diagnostic_source_context(error: &RuntimeError) -> &RuntimeError {
 
 pub fn decode_target_error_code(target: &str) -> Option<&'static str> {
     match target {
-        "std.json.decode" | "std.json.encode" => Some("std.json.DecodeError"),
+        "std.json.decode" | "std.json.encode" | "std.resource.json" => Some("std.json.DecodeError"),
         "config.require" | "config.optional" | "config.has" => Some("config.DecodeError"),
         "number.parse" | "number.assertSafeInteger" => Some("std.number.DecodeError"),
         target if target.starts_with("Date.") || target.starts_with("Duration.") => {
@@ -1850,6 +1891,14 @@ mod tests {
             "std.file.FileError",
             serde_json::json!({
                 "message": "std.file not found",
+            }),
+        );
+        assert_catch_projection(
+            RuntimeError::resource_error("prompts/system.md", "missing"),
+            "std.resource.ResourceError",
+            serde_json::json!({
+                "path": "prompts/system.md",
+                "message": "missing",
             }),
         );
         assert_catch_projection(

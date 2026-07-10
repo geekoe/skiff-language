@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap as StdBTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap as StdBTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use crate::context::ProjectedPackageDependency;
 use crate::error::ProjectionError;
@@ -21,7 +24,8 @@ use crate::ConfigProjection;
 use skiff_artifact_model::{
     interface_instantiation_ref, type_ref_abi_key, ConstIr, ExecutableIr, FileIrRef, FileIrUnit,
     InterfaceInstantiationRef, LocalReceiverExecutableRef, MetadataValue, PackageRefIr,
-    PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr, PACKAGE_UNIT_SCHEMA_VERSION,
+    PackageSymbolRef, PublicationResourceRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_UNIT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_core::naming::impl_method_declaration_name;
@@ -30,6 +34,7 @@ use skiff_compiler_core::package_publication_abi::{
     package_public_instance_method_operation, public_signature_from_interface_method_signature,
     public_signature_from_receiver_executable_signature,
 };
+use skiff_compiler_projection_input::PublicationResourceProjectionInput;
 
 #[derive(Debug, Clone)]
 pub struct PackageFileIrProjection {
@@ -56,6 +61,7 @@ pub struct PackageIrProjectionSource<'a> {
     pub exports: &'a PackageExports,
     pub abi_identity_projection: &'a skiff_artifact_model::AbiIdentityFacts,
     pub config_projection: &'a ConfigProjection,
+    pub resources: &'a [PublicationResourceProjectionInput],
     pub file_ir_units: Vec<PackageFileIrProjection>,
 }
 
@@ -64,6 +70,16 @@ pub struct ProjectedPackageIrArtifacts {
     pub unit: PackageUnit,
     pub config_projection: ConfigProjection,
     pub file_ir_units: Vec<PackageFileIrProjection>,
+    pub resources: Vec<ProjectedPublicationResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedPublicationResource {
+    pub path: String,
+    pub absolute_path: PathBuf,
+    pub byte_len: u64,
+    pub sha256: String,
+    pub content_type: Option<String>,
 }
 
 pub fn project_package_ir_artifacts(
@@ -71,6 +87,8 @@ pub fn project_package_ir_artifacts(
     dependencies: &[ProjectedPackageDependency],
 ) -> Result<ProjectedPackageIrArtifacts, ProjectionError> {
     let file_refs = file_ir_refs_for_projected(&package.file_ir_units);
+    let resources = projected_publication_resources(package.resources);
+    let resource_refs = resource_refs_for_projected(&resources);
     let exports = package_unit_export_index(&package, &package.file_ir_units, dependencies)?;
     let dependency_constraints = package_unit_dependency_constraints(
         dependencies,
@@ -93,6 +111,7 @@ pub fn project_package_ir_artifacts(
         abi_identity_projection: package.abi_identity_projection.clone(),
         publication_abi,
         files: file_refs,
+        resources: resource_refs,
         implementation_links,
         dependencies: dependency_constraints,
         recoverable_metadata: RecoverableArtifactMetadata::default(),
@@ -104,6 +123,7 @@ pub fn project_package_ir_artifacts(
         unit,
         config_projection: package.config_projection.clone(),
         file_ir_units: std::mem::take(&mut package.file_ir_units),
+        resources,
     })
 }
 
@@ -115,6 +135,36 @@ pub fn file_ir_refs_for_projected(artifacts: &[PackageFileIrProjection]) -> Vec<
             module_path: artifact.module_path.clone(),
             artifact_path: None,
             source_ast_hash: Some(artifact.source_ast_hash.clone()),
+        })
+        .collect()
+}
+
+pub fn projected_publication_resources(
+    resources: &[PublicationResourceProjectionInput],
+) -> Vec<ProjectedPublicationResource> {
+    resources
+        .iter()
+        .map(|resource| ProjectedPublicationResource {
+            path: resource.path().to_string(),
+            absolute_path: resource.absolute_path().to_path_buf(),
+            byte_len: resource.byte_len(),
+            sha256: resource.sha256().to_string(),
+            content_type: resource.content_type().map(str::to_string),
+        })
+        .collect()
+}
+
+pub fn resource_refs_for_projected(
+    resources: &[ProjectedPublicationResource],
+) -> Vec<PublicationResourceRef> {
+    resources
+        .iter()
+        .map(|resource| PublicationResourceRef {
+            path: resource.path.clone(),
+            sha256: resource.sha256.clone(),
+            byte_len: resource.byte_len,
+            content_type: resource.content_type.clone(),
+            artifact_path: None,
         })
         .collect()
 }

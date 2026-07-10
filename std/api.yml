@@ -64,6 +64,14 @@ file:
   info: file.info
   delete: file.delete
   createFromStream: file.createFromStream
+resource:
+  ResourceError: resource.ResourceError
+  ResourceInfo: resource.ResourceInfo
+  bytes: resource.bytes
+  text: resource.text
+  json: resource.json
+  info: resource.info
+  exists: resource.exists
 time:
   DecodeError: time.DecodeError
   Duration: time.Duration

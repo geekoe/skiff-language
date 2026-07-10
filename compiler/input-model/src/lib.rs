@@ -3,6 +3,7 @@ pub mod compile_policy;
 pub mod dependencies;
 pub mod manifest;
 pub mod raw_source;
+pub mod resources;
 pub mod service_ingress;
 
 pub use compile_input::{
@@ -27,6 +28,7 @@ pub use raw_source::{
     CompilerRawSourceFile, RawPublicationSourceGraph, RawSourceFileMeta, RawSourceOrigin,
     RawSourceTree, RawSourceTreeFile,
 };
+pub use resources::{PublicationResourceInput, PublicationResourceSpec};
 pub use service_ingress::{
     ServiceHttpIngressSeed, ServiceHttpRouteIngressSeed, ServiceIngressSeed,
     ServiceWebSocketIngressSeed,

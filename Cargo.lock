@@ -2322,8 +2322,10 @@ name = "skiff-runtime-loader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-model",
@@ -2336,6 +2338,7 @@ dependencies = [
  "bytes",
  "serde",
  "serde_json",
+ "skiff-artifact-model",
  "thiserror",
 ]
 

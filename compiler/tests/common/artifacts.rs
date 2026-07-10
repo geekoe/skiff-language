@@ -4,8 +4,8 @@ use std::{fs, path::Path};
 
 use skiff_compiler::{
     build_service_publication, collect_source_tree, read_service_config, BuiltServicePublication,
-    PackageResolutionDirs, PublishedArtifactVisitOptions, PublishedFileIrArtifact,
-    PublishedJsonArtifact, ServicePublicationBuildInput,
+    PackageResolutionDirs, PublishedArtifactPayload, PublishedArtifactVisitOptions,
+    PublishedFileIrArtifact, PublishedJsonArtifact, ServicePublicationBuildInput,
 };
 
 pub fn build_temp_service_publication(root: &Path) -> BuiltServicePublication {
@@ -180,16 +180,30 @@ pub fn assert_file_ir_contains_package_symbol(
 pub fn write_test_artifact_root(root: &Path, published: &BuiltServicePublication) {
     published
         .artifacts
-        .try_visit_json_artifacts(
+        .try_visit_artifacts(
             PublishedArtifactVisitOptions {
                 include_contract_schema: false,
             },
             |artifact| {
-                write_json(&root.join(&artifact.path), &artifact.value);
+                match artifact.payload {
+                    PublishedArtifactPayload::Json(value) => {
+                        write_json(&root.join(&artifact.path), &value)
+                    }
+                    PublishedArtifactPayload::Bytes(bytes) => {
+                        write_bytes(&root.join(&artifact.path), &bytes)
+                    }
+                }
                 Ok::<_, std::convert::Infallible>(())
             },
         )
         .expect("test artifact visitor should not fail");
+}
+
+fn write_bytes(path: &Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, bytes).unwrap();
 }
 
 pub fn json_contains_package_symbol(

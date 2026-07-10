@@ -1,5 +1,6 @@
 use crate::error::{Result, RuntimeError};
 use crate::{boundary::NativeBoundaryAdapter, runtime_value_facade::RuntimeTypePlan};
+use skiff_runtime_model::addr::UnitAddr;
 use skiff_runtime_native_contract::{NativeCallPlan, NativeRequiredContext};
 
 pub struct RuntimeNativeInvocation {
@@ -7,6 +8,7 @@ pub struct RuntimeNativeInvocation {
     binding_key: String,
     plan: Option<NativeCallPlan>,
     actor_metadata: Option<RuntimeActorNativeMetadata>,
+    resource_owner: Option<UnitAddr>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,12 +40,14 @@ impl RuntimeNativeInvocation {
         binding_key: &str,
         plan: Option<NativeCallPlan>,
         actor_metadata: Option<RuntimeActorNativeMetadata>,
+        resource_owner: Option<UnitAddr>,
     ) -> Self {
         Self {
             target_name,
             binding_key: binding_key.to_string(),
             plan,
             actor_metadata,
+            resource_owner,
         }
     }
 
@@ -107,6 +111,15 @@ impl RuntimeNativeInvocation {
         self.actor_metadata.as_ref().ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!(
                 "{} resolved actor native call is missing actor metadata",
+                self.target_name
+            ))
+        })
+    }
+
+    pub fn resource_owner(&self) -> Result<&UnitAddr> {
+        self.resource_owner.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "{} resolved resource native call is missing call-site owner",
                 self.target_name
             ))
         })

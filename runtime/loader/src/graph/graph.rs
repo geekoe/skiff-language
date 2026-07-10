@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use skiff_artifact_model::{FileIrUnit, PackageUnit, ServiceUnit};
+use skiff_runtime_model::PublicationResourceTable;
 
 #[derive(Debug, Clone)]
 pub struct ArtifactGraph {
@@ -8,6 +9,8 @@ pub struct ArtifactGraph {
     pub service_files: Vec<Arc<FileIrUnit>>,
     pub package_units: Vec<Arc<PackageUnit>>,
     pub package_files: Vec<Vec<Arc<FileIrUnit>>>,
+    pub service_resources: PublicationResourceTable,
+    pub package_resources: Vec<PublicationResourceTable>,
     pub identities: ArtifactGraphIdentities,
 }
 

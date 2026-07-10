@@ -40,7 +40,14 @@ async function main() {
   try {
     const packageRoot = join(tempRoot, 'pkg');
     const outDir = join(tempRoot, 'out');
-    const manifestText = `id: ${id}\nversion: ${version}\n`;
+    const manifestText = [
+      `id: ${id}`,
+      `version: ${version}`,
+      'resources:',
+      '  - prompts/system.md',
+      '',
+    ].join('\n');
+    const resourceText = `live prompt ${stamp}\n`;
     const sourceText = [
       'export function packageLiveValue() -> string {',
       `  return "ok-${stamp}"`,
@@ -48,9 +55,10 @@ async function main() {
       '',
     ].join('\n');
 
-    await mkdir(packageRoot, { recursive: true });
+    await mkdir(join(packageRoot, 'prompts'), { recursive: true });
     await writeFile(join(packageRoot, 'package.yml'), manifestText);
     await writeFile(join(packageRoot, 'main.skiff'), sourceText);
+    await writeFile(join(packageRoot, 'prompts', 'system.md'), resourceText);
 
     const publishResponse = await runCliJson(['package', 'publish', packageRoot, '--wait', '--json']);
     assert(publishResponse?.revision?.revisionId, 'publish --wait did not return a built revision');
@@ -65,8 +73,10 @@ async function main() {
 
     const pulledManifest = await readFile(join(outDir, 'package.yml'), 'utf8');
     const pulledSource = await readFile(join(outDir, 'main.skiff'), 'utf8');
+    const pulledResource = await readFile(join(outDir, 'prompts', 'system.md'), 'utf8');
     assert(pulledManifest === manifestText, 'pulled package.yml did not match the published manifest');
     assert(pulledSource === sourceText, 'pulled main.skiff did not match the published source');
+    assert(pulledResource === resourceText, 'pulled resource did not match the published resource');
 
     output = {
       ok: true,

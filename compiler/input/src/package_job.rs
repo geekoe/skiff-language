@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::{
-    assemble_publication, error::InputAssemblyError,
+    assemble_publication_with_resources, error::InputAssemblyError,
     package_sources::read_resolved_package_sources, PublicationManifest, RawPublication,
     ResolvedPackage, ResolvedPackageGraph,
 };
@@ -85,13 +85,27 @@ fn package_publication_dependencies_ready(
 fn build_package_publication_job(
     package: ResolvedPackage,
 ) -> Result<RawPackagePublicationJob, InputAssemblyError> {
+    let package_root = package
+        .manifest
+        .provenance
+        .path
+        .parent()
+        .expect("package manifest has parent directory")
+        .to_path_buf();
     let sources = read_resolved_package_sources(&package)?;
     let source_tree = sources.source_tree();
     let source_graph = sources.into_source_graph();
     let manifest = package.manifest.into_publication();
+    let resources = crate::read_publication_resources(&package_root, &manifest.resources)?;
     let dependency_config = package.config;
     let package_graph = ResolvedPackageGraph::declared_only(manifest.dependencies.clone());
-    let publication = assemble_publication(manifest, source_tree, source_graph, package_graph);
+    let publication = assemble_publication_with_resources(
+        manifest,
+        source_tree,
+        source_graph,
+        package_graph,
+        resources,
+    );
     Ok(RawPackagePublicationJob::new(
         publication,
         dependency_config,
@@ -106,6 +120,7 @@ mod tests {
     use crate::{
         package_config::{empty_dependency_config, PackageApi, PackageManifest},
         ManifestOwner, ManifestProvenance, PackageDependency, PublicationManifest,
+        PublicationResourceSpec,
     };
     use skiff_compiler_core::id::PublicationId;
 
@@ -149,6 +164,46 @@ mod tests {
             .package_graph
             .declared_dependencies();
         assert_eq!(declared_dependencies, &[dependency]);
+    }
+
+    #[test]
+    fn package_publication_job_collects_resources_outside_source_tree() {
+        let temp = TestDir::new("skiff-compiler-input", "package-publication-resources");
+        let package_root = temp.path().join("package");
+        std::fs::create_dir_all(package_root.join("prompts")).unwrap();
+        std::fs::write(
+            package_root.join("main.skiff"),
+            "type Main { value: string }\n",
+        )
+        .unwrap();
+        std::fs::write(package_root.join("prompts/system.md"), "system prompt\n").unwrap();
+        let manifest = PackageManifest::new(PublicationManifest::new_with_resources(
+            PublicationId::parse("example.com/facade").unwrap(),
+            "0.1.0".to_string(),
+            PackageApi::default(),
+            Vec::new(),
+            vec![PublicationResourceSpec::new("prompts/system.md")],
+            ManifestProvenance::file(
+                package_root.join("package.yml"),
+                ManifestOwner::UserOrBuiltinPackage,
+            ),
+        ));
+        let package = ResolvedPackage {
+            manifest,
+            config: empty_dependency_config(),
+        };
+
+        let publications = build_package_jobs(vec![package]).unwrap();
+
+        let publication = &publications[0].publication;
+        assert_eq!(publication.resources.len(), 1);
+        assert_eq!(publication.resources[0].path, "prompts/system.md");
+        assert_eq!(publication.resources[0].byte_len, 14);
+        assert_eq!(publication.source_tree.sources.len(), 1);
+        assert_eq!(
+            publication.source_tree.sources[0].file_path,
+            std::path::Path::new("main.skiff")
+        );
     }
 
     struct TestDir {

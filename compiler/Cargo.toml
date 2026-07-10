@@ -59,6 +59,10 @@ name = "profile_overlay"
 path = "tests/profile_overlay.rs"
 
 [[test]]
+name = "publication_resources"
+path = "tests/publication_resources.rs"
+
+[[test]]
 name = "provider_connect_packages"
 path = "tests/provider_connect_packages.rs"
 

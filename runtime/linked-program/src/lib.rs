@@ -53,6 +53,10 @@ pub use service_unit::{
     ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
     ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
 };
+pub use skiff_runtime_model::resource::{
+    LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,
+    PublicationResourceTable, RuntimeProgramResourceLookupError, RuntimeProgramResourceView,
+};
 pub use type_params::executable_type_param_names;
 pub use types::{
     anonymous_type_decl, publication_id_for_type_addr, service_symbol_key_from_ref,

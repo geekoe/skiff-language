@@ -191,6 +191,7 @@ fn standard_error_type_identity(name: &str) -> Option<TypeIdentity> {
         | "std.json.DecodeError"
         | "std.db.DecodeError"
         | "std.file.FileError"
+        | "std.resource.ResourceError"
         | "std.time.DecodeError"
         | "std.service.ProviderUnavailableError"
         | "std.service.ProtocolError"

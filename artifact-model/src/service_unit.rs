@@ -13,6 +13,7 @@ use crate::{
     publication_abi::{OperationAbiRef, PublicationAbiUnit},
     recoverable::RecoverableArtifactMetadata,
     refs::FileIrRef,
+    resources::PublicationResourceRef,
     schema::SERVICE_UNIT_SCHEMA_VERSION,
     types::TypeRefIr,
 };
@@ -28,6 +29,8 @@ pub struct ServiceUnit {
     pub abi_identity_projection: AbiIdentityFacts,
     pub publication_abi: PublicationAbiUnit,
     pub files: Vec<FileIrRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<PublicationResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_dependencies: Vec<PackageDependencyConstraint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -74,6 +77,7 @@ impl ServiceUnit {
             abi_identity_projection: AbiIdentityFacts::default(),
             publication_abi: PublicationAbiUnit::empty(service_id, version, ""),
             files: Vec::new(),
+            resources: Vec::new(),
             package_dependencies: Vec::new(),
             service_dependencies: Vec::new(),
             package_abi_expectations: Vec::new(),

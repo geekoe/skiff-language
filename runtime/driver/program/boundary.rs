@@ -53,6 +53,8 @@ impl RuntimeProgramLayers {
             service_files: self.image.service_files.clone(),
             packages: self.image.packages.clone(),
             package_files: self.image.package_files.clone(),
+            service_resources: self.image.service_resources.clone(),
+            package_resources: self.image.package_resources.clone(),
             package_configs: self
                 .activation
                 .package_configs
@@ -88,6 +90,8 @@ impl TestRuntimeProgram {
             service_files: self.service_files.clone(),
             packages: self.packages.clone(),
             package_files: self.package_files.clone(),
+            service_resources: self.service_resources.clone(),
+            package_resources: self.package_resources.clone(),
             routes: self.routes.clone(),
             spawn_routes: self.spawn_routes.clone(),
             operations: self.operations.clone(),

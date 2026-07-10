@@ -26,7 +26,7 @@ pub(crate) use skiff_compiler_input::service_ingress::ServiceIngressSeed;
 pub use skiff_compiler_input::source_tree::{SourceTree, SourceTreeFile};
 pub use skiff_compiler_input::{
     ManifestOwner, ManifestProvenance, PackageDependency, PublicationCompilePolicy,
-    PublicationManifest, ServiceDependency,
+    PublicationManifest, PublicationResourceInput, ServiceDependency,
 };
 pub(crate) use skiff_compiler_input::{
     ResolvedPackage, ResolvedPackageGraph, ResolvedServiceDependencies,

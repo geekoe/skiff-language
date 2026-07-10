@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::{collections::HashMap, sync::Arc};
 
 use skiff_runtime_capability_context::RequestPayloadContext;
@@ -7,7 +8,8 @@ use skiff_runtime_model::type_plan::RuntimeTypePlan;
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkOverlay, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit,
-    LinkedTypeRef, PackageUnit, ResolvedSymbol, RuntimeTypeContext, TypeAddr, UnitAddr,
+    LinkedTypeRef, PackageUnit, PublicationResourceTable, ResolvedSymbol,
+    RuntimeProgramResourceView, RuntimeTypeContext, TypeAddr, UnitAddr,
 };
 
 use super::program_ir::executable_has_explicit_self_binding;
@@ -25,6 +27,8 @@ pub struct EvalProgramProjection<'a> {
     pub service_files: &'a [Arc<LinkedFileUnit>],
     pub packages: &'a [Arc<PackageUnit>],
     pub package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+    pub service_resources: &'a PublicationResourceTable,
+    pub package_resources: &'a [PublicationResourceTable],
     pub spawn_routes: &'a HashMap<String, ExecutableAddr>,
     pub link_overlay: &'a LinkOverlay,
     pub types: &'a RuntimeTypeContext,
@@ -40,11 +44,38 @@ impl<'a> EvalProgramProjection<'a> {
         link_overlay: &'a LinkOverlay,
         types: &'a RuntimeTypeContext,
     ) -> Self {
+        let (service_resources, package_resources) = empty_resource_tables();
+        Self::new_with_resources(
+            service_id,
+            service_files,
+            packages,
+            package_files,
+            service_resources,
+            package_resources,
+            spawn_routes,
+            link_overlay,
+            types,
+        )
+    }
+
+    pub fn new_with_resources(
+        service_id: &'a str,
+        service_files: &'a [Arc<LinkedFileUnit>],
+        packages: &'a [Arc<PackageUnit>],
+        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        service_resources: &'a PublicationResourceTable,
+        package_resources: &'a [PublicationResourceTable],
+        spawn_routes: &'a HashMap<String, ExecutableAddr>,
+        link_overlay: &'a LinkOverlay,
+        types: &'a RuntimeTypeContext,
+    ) -> Self {
         Self {
             service_id,
             service_files,
             packages,
             package_files,
+            service_resources,
+            package_resources,
             spawn_routes,
             link_overlay,
             types,
@@ -59,6 +90,10 @@ impl<'a> EvalProgramProjection<'a> {
             self.link_overlay,
             self.types,
         )
+    }
+
+    pub fn resource_view(&self) -> RuntimeProgramResourceView<'a> {
+        RuntimeProgramResourceView::new(self.service_resources, self.package_resources)
     }
 
     pub fn resolved_service_symbol(
@@ -192,6 +227,17 @@ impl<'a> EvalProgramProjection<'a> {
             }
         }
     }
+}
+
+fn empty_resource_tables() -> (
+    &'static PublicationResourceTable,
+    &'static [PublicationResourceTable],
+) {
+    static EMPTY: OnceLock<(PublicationResourceTable, Vec<PublicationResourceTable>)> =
+        OnceLock::new();
+    let (service_resources, package_resources) =
+        EMPTY.get_or_init(|| (PublicationResourceTable::default(), Vec::new()));
+    (service_resources, package_resources.as_slice())
 }
 
 fn linked_package_slot_out_of_bounds_message(slot: usize, package_count: usize) -> String {

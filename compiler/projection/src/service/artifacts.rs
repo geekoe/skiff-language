@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::context::ProjectedServiceDependencyLockEntry;
+use crate::package_unit_artifacts::ProjectedPublicationResource;
 use crate::runtime::{GatewayEntry, OperationEntryIr, TimeoutEntry};
 use crate::service::service_unit::ServicePackageConfigEntry;
 use crate::source_map::PublicationSourceMap;
@@ -22,5 +23,6 @@ pub struct ServiceArtifactProjection {
     pub source_map: PublicationSourceMap,
     pub service_unit: ServiceUnit,
     pub file_ir_units: Vec<FileIrUnit>,
+    pub resources: Vec<ProjectedPublicationResource>,
     pub package_units_typed: Vec<PackageUnit>,
 }

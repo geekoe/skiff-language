@@ -223,6 +223,7 @@ fn project_package_ir_publication(
             exports: &bundle.exports,
             abi_identity_projection: &bundle.abi_identity_projection,
             config_projection: &bundle.config_projection,
+            resources: package_publication.compiled().resources(),
             file_ir_units: bundle
                 .input
                 .file_ir_units()

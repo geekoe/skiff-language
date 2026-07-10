@@ -88,6 +88,8 @@ struct LinkPlanBuilder {
     service_files: Vec<Arc<FileIrUnit>>,
     packages: Vec<Arc<PackageUnit>>,
     package_files: Vec<Vec<Arc<FileIrUnit>>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
 }
 
 impl LinkPlanBuilder {
@@ -97,6 +99,8 @@ impl LinkPlanBuilder {
             service_files: input.service_files,
             packages: input.packages,
             package_files: input.package_files,
+            service_resources: input.service_resources,
+            package_resources: input.package_resources,
         }
     }
 
@@ -106,6 +110,8 @@ impl LinkPlanBuilder {
             service_files,
             packages,
             package_files,
+            service_resources,
+            package_resources,
         } = self;
 
         if packages.len() != package_files.len() {
@@ -114,6 +120,16 @@ impl LinkPlanBuilder {
                 package_file_slot_count: package_files.len(),
             });
         }
+        let package_resources = if package_resources.is_empty() {
+            vec![crate::program::PublicationResourceTable::default(); packages.len()]
+        } else if packages.len() != package_resources.len() {
+            return Err(ProgramError::PackageResourceSlotMismatch {
+                package_count: packages.len(),
+                package_resource_slot_count: package_resources.len(),
+            });
+        } else {
+            package_resources
+        };
 
         let service_files =
             linkable_files_for_unit(UnitAddr::Service, &service.files, service_files)?;
@@ -132,6 +148,8 @@ impl LinkPlanBuilder {
         Ok(CanonicalizedLinkPlanBuilder {
             service,
             packages,
+            service_resources,
+            package_resources,
             canonical_inputs: CanonicalLinkInputs {
                 files: RuntimeProgramFiles {
                     service_files,
@@ -147,6 +165,8 @@ impl LinkPlanBuilder {
 struct CanonicalizedLinkPlanBuilder {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     canonical_inputs: CanonicalLinkInputs,
 }
 
@@ -162,6 +182,8 @@ impl CanonicalizedLinkPlanBuilder {
         Ok(IndexedLinkPlanBuilder {
             service: self.service,
             packages: self.packages,
+            service_resources: self.service_resources,
+            package_resources: self.package_resources,
             canonical_inputs: self.canonical_inputs,
             package_slot_indexes: PackageSlotIndexes {
                 by_id: package_slots_by_id,
@@ -174,6 +196,8 @@ impl CanonicalizedLinkPlanBuilder {
 struct IndexedLinkPlanBuilder {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     canonical_inputs: CanonicalLinkInputs,
     package_slot_indexes: PackageSlotIndexes,
 }
@@ -199,6 +223,8 @@ impl IndexedLinkPlanBuilder {
         Ok(ValidatedLinkPlanBuilder {
             service: self.service,
             packages: self.packages,
+            service_resources: self.service_resources,
+            package_resources: self.package_resources,
             canonical_inputs: self.canonical_inputs,
             package_slot_indexes: self.package_slot_indexes,
             activation_facts,
@@ -209,6 +235,8 @@ impl IndexedLinkPlanBuilder {
 struct ValidatedLinkPlanBuilder {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     canonical_inputs: CanonicalLinkInputs,
     package_slot_indexes: PackageSlotIndexes,
     activation_facts: LinkedImageActivationFacts,
@@ -230,6 +258,8 @@ impl ValidatedLinkPlanBuilder {
         Ok(RoutedLinkPlanBuilder {
             service: self.service,
             packages: self.packages,
+            service_resources: self.service_resources,
+            package_resources: self.package_resources,
             canonical_inputs: self.canonical_inputs,
             package_slot_indexes: self.package_slot_indexes,
             activation_facts: self.activation_facts,
@@ -242,6 +272,8 @@ impl ValidatedLinkPlanBuilder {
 struct RoutedLinkPlanBuilder {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     canonical_inputs: CanonicalLinkInputs,
     package_slot_indexes: PackageSlotIndexes,
     activation_facts: LinkedImageActivationFacts,
@@ -254,6 +286,8 @@ impl RoutedLinkPlanBuilder {
         let Self {
             service,
             packages,
+            service_resources,
+            package_resources,
             canonical_inputs,
             package_slot_indexes,
             activation_facts,
@@ -289,6 +323,8 @@ impl RoutedLinkPlanBuilder {
         Ok(OverlayLinkPlanBuilder {
             service,
             packages,
+            service_resources,
+            package_resources,
             files,
             activation_facts,
             route_index,
@@ -300,6 +336,8 @@ impl RoutedLinkPlanBuilder {
 struct OverlayLinkPlanBuilder {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     files: RuntimeProgramFiles,
     activation_facts: LinkedImageActivationFacts,
     route_index: RouteIndex,
@@ -318,6 +356,8 @@ impl OverlayLinkPlanBuilder {
         Ok(LinkPlan {
             service: self.service,
             packages: self.packages,
+            service_resources: self.service_resources,
+            package_resources: self.package_resources,
             files: self.files,
             activation_facts: self.activation_facts,
             route_index: self.route_index,
@@ -347,6 +387,8 @@ struct RuntimeProgramFiles {
 struct LinkPlan {
     service: Arc<ServiceUnit>,
     packages: Vec<Arc<PackageUnit>>,
+    service_resources: crate::program::PublicationResourceTable,
+    package_resources: Vec<crate::program::PublicationResourceTable>,
     files: RuntimeProgramFiles,
     activation_facts: LinkedImageActivationFacts,
     route_index: RouteIndex,
@@ -394,6 +436,8 @@ impl LinkPlan {
             service_files: linked_files.service_files,
             packages: self.packages.clone(),
             package_files: linked_files.package_files,
+            service_resources: self.service_resources,
+            package_resources: self.package_resources,
             routes: self.route_index.routes,
             spawn_routes: self.route_index.spawn_routes,
             operations: self.route_index.operations,

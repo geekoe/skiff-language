@@ -32,6 +32,8 @@ pub enum RuntimeError {
     DbDecode { target: String, message: String },
     #[error("file error: {message}")]
     FileError { message: String },
+    #[error("resource error for {path}: {message}")]
+    ResourceError { path: String, message: String },
     #[error("http error: {message}")]
     HttpError {
         message: String,
@@ -94,6 +96,13 @@ impl RuntimeError {
         }
     }
 
+    pub fn resource_error(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::ResourceError {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
     pub fn http_error(message: impl Into<String>, detail: Option<serde_json::Value>) -> Self {
         Self::HttpError {
             message: message.into(),
@@ -151,6 +160,15 @@ impl WirePayload for RuntimeError {
                 message: message.clone(),
                 status: None,
                 details: None,
+            },
+            Self::ResourceError { path, message } => RuntimeErrorPayload {
+                code: "std.resource.ResourceError".to_string(),
+                message: message.clone(),
+                status: None,
+                details: Some(json!({
+                    "path": path,
+                    "message": message,
+                })),
             },
             Self::HttpError { message, detail } => RuntimeErrorPayload {
                 code: "std.http.HttpError".to_string(),
@@ -256,6 +274,13 @@ impl WirePayload for RuntimeError {
             Self::FileError { message } => Some((
                 TypeIdentity::builtin("std.file.FileError"),
                 json!({
+                    "message": message,
+                }),
+            )),
+            Self::ResourceError { path, message } => Some((
+                TypeIdentity::builtin("std.resource.ResourceError"),
+                json!({
+                    "path": path,
                     "message": message,
                 }),
             )),
@@ -859,6 +884,16 @@ mod tests {
                 TypeIdentity::builtin("std.file.FileError"),
                 serde_json::json!({
                     "message": "std.file denied",
+                })
+            ))
+        );
+        assert_eq!(
+            RuntimeError::resource_error("prompts/system.md", "missing").catch_projection(),
+            Some((
+                TypeIdentity::builtin("std.resource.ResourceError"),
+                serde_json::json!({
+                    "path": "prompts/system.md",
+                    "message": "missing",
                 })
             ))
         );

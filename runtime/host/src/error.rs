@@ -719,7 +719,7 @@ fn native_error_is_request_cancelled(error: &skiff_runtime_native::error::Runtim
 
 pub(crate) fn decode_target_error_code(target: &str) -> Option<&'static str> {
     match target {
-        "std.json.decode" | "std.json.encode" => Some("std.json.DecodeError"),
+        "std.json.decode" | "std.json.encode" | "std.resource.json" => Some("std.json.DecodeError"),
         "config.require" | "config.optional" | "config.has" => Some("config.DecodeError"),
         "number.parse" | "number.assertSafeInteger" => Some("std.number.DecodeError"),
         target if target.starts_with("Date.") || target.starts_with("Duration.") => {

@@ -281,6 +281,8 @@ mod tests {
             service_files,
             packages: Vec::new(),
             package_files,
+            service_resources: Default::default(),
+            package_resources: Vec::new(),
             routes: HashMap::new(),
             spawn_routes: HashMap::new(),
             operations: HashMap::new(),

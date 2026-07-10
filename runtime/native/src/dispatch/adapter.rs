@@ -6,8 +6,8 @@ use crate::error::{Result, RuntimeError};
 use crate::{
     capability::{
         NativeActorCapability, NativeConfigCapability, NativeFileCapabilityBundle,
-        NativeHttpClientCapability, NativeHttpResponseStreamCapability, NativeTelemetryCapability,
-        NativeTimeCapability, NativeWebsocketCapability,
+        NativeHttpClientCapability, NativeHttpResponseStreamCapability, NativeResourceCapability,
+        NativeTelemetryCapability, NativeTimeCapability, NativeWebsocketCapability,
     },
     runtime_value_facade::{RequestHeap, RuntimeTypePlan, RuntimeValue},
 };
@@ -68,6 +68,7 @@ impl NativeDispatch {
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -78,6 +79,7 @@ impl NativeDispatch {
             HttpResponseStreamContext,
             WebsocketContext,
             TelemetryContext,
+            ResourceContext,
         >,
         invocation: RuntimeNativeInvocation,
         args: Vec<RuntimeValue>,
@@ -91,6 +93,7 @@ impl NativeDispatch {
         HttpResponseStreamContext: NativeHttpResponseStreamCapability,
         WebsocketContext: NativeWebsocketCapability,
         TelemetryContext: NativeTelemetryCapability,
+        ResourceContext: NativeResourceCapability,
     {
         core::dispatch_resolved_native_call(native_capability_context, invocation, args, heap).await
     }

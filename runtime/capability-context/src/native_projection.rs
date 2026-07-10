@@ -85,6 +85,7 @@ pub enum NativeCapabilityContexts<
     HttpResponseStreamContext,
     WebsocketContext,
     TelemetryContext,
+    ResourceContext,
 > {
     None,
     Actor(ActorContext),
@@ -94,6 +95,7 @@ pub enum NativeCapabilityContexts<
     HttpResponseStream(HttpResponseStreamContext),
     Websocket(WebsocketContext),
     Telemetry(TelemetryContext),
+    Resource(ResourceContext),
 }
 
 impl<
@@ -104,6 +106,7 @@ impl<
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >
     NativeCapabilityContexts<
         ActorContext,
@@ -113,6 +116,7 @@ impl<
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >
 {
     pub fn required_context(&self) -> NativeRequiredContext {
@@ -125,6 +129,7 @@ impl<
             Self::HttpResponseStream(_) => NativeRequiredContext::HttpResponseStream,
             Self::Websocket(_) => NativeRequiredContext::Websocket,
             Self::Telemetry(_) => NativeRequiredContext::Telemetry,
+            Self::Resource(_) => NativeRequiredContext::Resource,
         }
     }
 }
@@ -137,6 +142,7 @@ pub trait NativeCapabilityProjectionSource {
     type HttpResponseStream;
     type Websocket;
     type Telemetry;
+    type Resource;
 
     fn actor(&self) -> Self::Actor;
     fn file(&self) -> Self::File;
@@ -145,6 +151,7 @@ pub trait NativeCapabilityProjectionSource {
     fn http_response_stream(&self) -> Self::HttpResponseStream;
     fn websocket(&self) -> Self::Websocket;
     fn telemetry(&self) -> Self::Telemetry;
+    fn resource(&self) -> Self::Resource;
 }
 
 pub fn project_native_capability_context<Source>(
@@ -158,6 +165,7 @@ pub fn project_native_capability_context<Source>(
     Source::HttpResponseStream,
     Source::Websocket,
     Source::Telemetry,
+    Source::Resource,
 >
 where
     Source: NativeCapabilityProjectionSource,
@@ -175,6 +183,7 @@ where
         }
         NativeRequiredContext::Websocket => NativeCapabilityContexts::Websocket(source.websocket()),
         NativeRequiredContext::Telemetry => NativeCapabilityContexts::Telemetry(source.telemetry()),
+        NativeRequiredContext::Resource => NativeCapabilityContexts::Resource(source.resource()),
     }
 }
 
@@ -193,6 +202,7 @@ mod tests {
         http_response_stream: Cell<usize>,
         websocket: Cell<usize>,
         telemetry: Cell<usize>,
+        resource: Cell<usize>,
     }
 
     impl TestProjectionSource {
@@ -201,7 +211,7 @@ mod tests {
             value
         }
 
-        fn call_counts(&self) -> [usize; 7] {
+        fn call_counts(&self) -> [usize; 8] {
             [
                 self.actor.get(),
                 self.file.get(),
@@ -210,6 +220,7 @@ mod tests {
                 self.http_response_stream.get(),
                 self.websocket.get(),
                 self.telemetry.get(),
+                self.resource.get(),
             ]
         }
     }
@@ -222,6 +233,7 @@ mod tests {
         type HttpResponseStream = NativeHttpResponseStreamCapabilityContext<&'static str>;
         type Websocket = &'static str;
         type Telemetry = NativeTelemetryCapabilityContext<&'static str>;
+        type Resource = &'static str;
 
         fn actor(&self) -> Self::Actor {
             Self::increment(&self.actor, "actor")
@@ -260,6 +272,10 @@ mod tests {
         fn telemetry(&self) -> Self::Telemetry {
             NativeTelemetryCapabilityContext::new(Self::increment(&self.telemetry, "telemetry"))
         }
+
+        fn resource(&self) -> Self::Resource {
+            Self::increment(&self.resource, "resource")
+        }
     }
 
     #[test]
@@ -273,6 +289,7 @@ mod tests {
             NativeRequiredContext::HttpResponseStream,
             NativeRequiredContext::Websocket,
             NativeRequiredContext::Telemetry,
+            NativeRequiredContext::Resource,
         ];
 
         for required_context in cases {
@@ -282,44 +299,48 @@ mod tests {
             assert_eq!(projected.required_context(), required_context);
             match (required_context, projected) {
                 (NativeRequiredContext::None, NativeCapabilityContexts::None) => {
-                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0]);
+                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 0]);
                 }
                 (NativeRequiredContext::Actor, NativeCapabilityContexts::Actor(value)) => {
                     assert_eq!(value, "actor");
-                    assert_eq!(source.call_counts(), [1, 0, 0, 0, 0, 0, 0]);
+                    assert_eq!(source.call_counts(), [1, 0, 0, 0, 0, 0, 0, 0]);
                 }
                 (NativeRequiredContext::File, NativeCapabilityContexts::File(value)) => {
                     assert_eq!(
                         value.into_parts(),
                         ("file", "file_source_stream", "heap_limits")
                     );
-                    assert_eq!(source.call_counts(), [0, 1, 0, 0, 0, 0, 0]);
+                    assert_eq!(source.call_counts(), [0, 1, 0, 0, 0, 0, 0, 0]);
                 }
                 (NativeRequiredContext::Time, NativeCapabilityContexts::Time(value)) => {
                     assert_eq!(value, "time");
-                    assert_eq!(source.call_counts(), [0, 0, 1, 0, 0, 0, 0]);
+                    assert_eq!(source.call_counts(), [0, 0, 1, 0, 0, 0, 0, 0]);
                 }
                 (
                     NativeRequiredContext::HttpClient,
                     NativeCapabilityContexts::HttpClient(value),
                 ) => {
                     assert_eq!(value.into_effect_context(), "http_client");
-                    assert_eq!(source.call_counts(), [0, 0, 0, 1, 0, 0, 0]);
+                    assert_eq!(source.call_counts(), [0, 0, 0, 1, 0, 0, 0, 0]);
                 }
                 (
                     NativeRequiredContext::HttpResponseStream,
                     NativeCapabilityContexts::HttpResponseStream(value),
                 ) => {
                     assert_eq!(value.into_execution_context(), "http_response_stream");
-                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 1, 0, 0]);
+                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 1, 0, 0, 0]);
                 }
                 (NativeRequiredContext::Websocket, NativeCapabilityContexts::Websocket(value)) => {
                     assert_eq!(value, "websocket");
-                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 1, 0]);
+                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 1, 0, 0]);
                 }
                 (NativeRequiredContext::Telemetry, NativeCapabilityContexts::Telemetry(value)) => {
                     assert_eq!(value.into_effect_context(), "telemetry");
-                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 1]);
+                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 1, 0]);
+                }
+                (NativeRequiredContext::Resource, NativeCapabilityContexts::Resource(value)) => {
+                    assert_eq!(value, "resource");
+                    assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 1]);
                 }
                 (expected, actual) => panic!(
                     "required context {expected:?} projected unexpected variant {:?}",

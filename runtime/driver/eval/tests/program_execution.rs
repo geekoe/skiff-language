@@ -26,7 +26,8 @@ use tokio::time::sleep;
 
 use super::*;
 use crate::eval::InterpreterEnv as Env;
-use skiff_artifact_model::{builtin_receiver_op_by_name, DbMetadataIr};
+use skiff_artifact_model::{builtin_receiver_op_by_name, DbMetadataIr, PublicationResourceRef};
+use skiff_runtime_linked_program::{LoadedPublicationResource, PublicationResourceTable};
 
 const PROTOCOL_OUTBOUND: &str =
     "skiff-protocol-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -874,6 +875,142 @@ async fn runtime_program_telemetry_native_uses_registered_signature_dispatch() {
 }
 
 #[tokio::test]
+async fn runtime_program_resource_text_reads_service_resource() {
+    let mut program = program_with_executable(resource_text_native_executable("prompts/system.md"));
+    program.service_resources = resource_table("prompts/system.md", b"service text");
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("std.resource.text should read service resources");
+
+    assert_eq!(value, json!("service text"));
+}
+
+#[tokio::test]
+async fn runtime_program_resource_exists_returns_false_for_invalid_and_missing_paths() {
+    for path in ["./bad", "missing.txt"] {
+        let program = Arc::new(program_with_executable(resource_exists_native_executable(
+            path,
+        )));
+        let interpreter = Interpreter::with_program(program, runtime_factory());
+        let frame = test_invocation("svc.main.run");
+
+        let value = execute_test_program_route(&interpreter, &frame)
+            .await
+            .expect("std.resource.exists should not throw for invalid or missing paths");
+
+        assert_eq!(value, json!(false), "path {path}");
+    }
+}
+
+#[tokio::test]
+async fn runtime_program_resource_text_missing_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable(resource_text_native_executable(
+        "missing.txt",
+    )));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.text should throw ResourceError for missing resources");
+
+    assert_resource_error(&error, "missing.txt");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_text_invalid_path_throws_resource_error() {
+    let program = Arc::new(program_with_executable(resource_text_native_executable(
+        "./bad",
+    )));
+    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.text should throw ResourceError for invalid paths");
+
+    assert_resource_error(&error, "./bad");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_text_invalid_utf8_throws_resource_error() {
+    let mut program = program_with_executable(resource_text_native_executable("bad.txt"));
+    program.service_resources = resource_table("bad.txt", &[0xff, 0xfe]);
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.text should throw ResourceError for invalid UTF-8");
+
+    assert_resource_error(&error, "bad.txt");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_json_syntax_error_uses_json_decode_error_shape() {
+    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    program.service_resources = resource_table("bad.json", b"{");
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.json should map syntax errors to std.json.DecodeError");
+
+    assert_resource_json_decode_error(&error, "bad.json");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape() {
+    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    program.service_resources = resource_table("bad.json", b"[]");
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.json should map type errors to std.json.DecodeError");
+
+    assert_resource_json_decode_error(&error, "bad.json");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
+    let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
+    program.service_resources = resource_table("bad.json", &[0xff, 0xfe]);
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.json should throw ResourceError for invalid UTF-8");
+
+    assert_resource_error(&error, "bad.json");
+}
+
+#[tokio::test]
+async fn runtime_program_resource_package_call_site_reads_package_resource() {
+    let mut program = program_with_service_and_package_executables(
+        service_calls_package_resource_text_executable(),
+        resource_text_native_executable("prompts/system.md"),
+    );
+    program.packages = vec![Arc::new(package_unit("example.com/pkg"))];
+    program.service_resources = resource_table("prompts/system.md", b"service text");
+    program.package_resources = vec![resource_table("prompts/system.md", b"package text")];
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("package call-site owner should read package resources");
+
+    assert_eq!(value, json!("package text"));
+}
+
+#[tokio::test]
 async fn runtime_program_config_reads_called_package_slot_scope() {
     let mut program = program_with_executable(run_executable());
     program.packages = vec![
@@ -892,6 +1029,7 @@ async fn runtime_program_config_reads_called_package_slot_scope() {
             config_require_string_executable("sessionSecret"),
         ))],
     ];
+    program.package_resources = vec![Default::default(), Default::default()];
     let target = "package.skiff.run%2Ftrack.record";
     program
         .routes
@@ -1704,7 +1842,7 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
     let program = Arc::new(program_with_executable(
         emit_response_stream_helper_executable(),
     ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     frame.service_db = Some(
         Arc::new(
@@ -1758,8 +1896,10 @@ async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
     };
     let invocation = resolve_runtime_native_invocation(&interpreter, &addr, &env, &call, &target)
         .expect("createFromStream invocation should resolve");
+    let eval_program = crate::eval::EvalRuntimeProgram::from_source(program.as_ref());
     let native_capability_context = project_runtime_native_capability_context(
         &execution_context,
+        eval_program.projection(),
         env.stream_capability_context(),
         invocation.required_context(),
     );
@@ -1824,8 +1964,10 @@ async fn runtime_program_emit_response_stream_uses_response_sink_not_inner_sink(
         &emit_response_target,
     )
     .expect("emitResponseStream invocation should resolve");
+    let eval_program = crate::eval::EvalRuntimeProgram::from_source(program.as_ref());
     let native_capability_context = project_runtime_native_capability_context(
         &execution_context,
+        eval_program.projection(),
         env.stream_capability_context(),
         invocation.required_context(),
     );
@@ -1871,8 +2013,10 @@ async fn runtime_program_emit_response_stream_uses_response_sink_not_inner_sink(
         &emit_response_target,
     )
     .expect("emitResponseStream invocation should resolve");
+    let eval_program = crate::eval::EvalRuntimeProgram::from_source(program.as_ref());
     let native_capability_context = project_runtime_native_capability_context(
         &execution_context,
+        eval_program.projection(),
         env.stream_capability_context(),
         invocation.required_context(),
     );
@@ -1894,7 +2038,7 @@ async fn runtime_program_emit_response_stream_requires_response_stream_context()
     let program = Arc::new(program_with_executable_and_std_http_types(
         emit_response_stream_helper_executable(),
     ));
-    let interpreter = Interpreter::with_program(program, runtime_factory());
+    let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
     let frame = test_invocation("svc.main.run");
     let addr = ExecutableAddr::service(0, 0);
     let mut heap = RequestHeap::default();
@@ -1918,8 +2062,10 @@ async fn runtime_program_emit_response_stream_requires_response_stream_context()
         &emit_response_target,
     )
     .expect("emitResponseStream invocation should resolve");
+    let eval_program = crate::eval::EvalRuntimeProgram::from_source(program.as_ref());
     let native_capability_context = project_runtime_native_capability_context(
         &execution_context,
+        eval_program.projection(),
         env.stream_capability_context(),
         invocation.required_context(),
     );
@@ -2462,6 +2608,7 @@ fn runtime_type_plan_resolves_package_db_object_symbol_from_file_declarations() 
     }];
     program.packages = vec![Arc::new(package_unit("skiff.run/http-session"))];
     program.package_files = vec![vec![Arc::new(package_file)]];
+    program.package_resources = vec![Default::default()];
     program.types.descriptors.insert(
         TypeAddr {
             unit: UnitAddr::Package(0),
@@ -3877,6 +4024,8 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
         })],
         packages: Vec::new(),
         package_files: Vec::new(),
+        service_resources: Default::default(),
+        package_resources: Vec::new(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
@@ -3913,6 +4062,7 @@ fn install_std_http_types(program: &mut RuntimeProgram) {
     program
         .packages
         .push(Arc::new(package_unit("skiff.run/std")));
+    program.package_resources.push(Default::default());
     program
         .link_overlay
         .package_slots_by_id
@@ -5579,6 +5729,194 @@ fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable {
             ],
         },
     }
+}
+
+fn resource_text_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "text",
+        "std.resource.text",
+        path,
+        None,
+        builtin_type("string"),
+    )
+}
+
+fn resource_exists_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "exists",
+        "std.resource.exists",
+        path,
+        None,
+        builtin_type("bool"),
+    )
+}
+
+fn resource_json_object_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "json",
+        "std.resource.json",
+        path,
+        Some(json!({
+            "T0": { "kind": "builtin", "name": "JsonObject" }
+        })),
+        builtin_type("JsonObject"),
+    )
+}
+
+fn resource_native_executable(
+    symbol: &str,
+    binding_key: &str,
+    path: &str,
+    type_args: Option<Value>,
+    return_type: LinkedTypeRef,
+) -> LinkedExecutable {
+    let mut call = json!({
+        "target": {
+            "kind": "native",
+            "target": {
+                "namespace": "std.resource",
+                "symbol": symbol,
+                "bindingKey": binding_key
+            }
+        },
+        "args": [
+            { "expression": 0 }
+        ]
+    });
+    if let Some(type_args) = type_args {
+        call["typeArgs"] = type_args;
+    }
+
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: Some(return_type),
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "return",
+                    "value": { "expression": 1 }
+                }
+            ],
+            "expressions": [
+                { "kind": "literal", "value": { "kind": "string", "value": path } },
+                {
+                    "kind": "call",
+                    "call": call
+                }
+            ]
+        })),
+    }
+}
+
+fn service_calls_package_resource_text_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: Some(builtin_type("string")),
+        self_type: None,
+        slots: SlotLayoutIr::default(),
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                {
+                    "label": "entry",
+                    "statements": [
+                        { "statement": 0 }
+                    ]
+                }
+            ],
+            "statements": [
+                {
+                    "kind": "return",
+                    "value": { "expression": 0 }
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "call",
+                    "call": {
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
+                        },
+                        "args": []
+                    }
+                }
+            ]
+        })),
+    }
+}
+
+fn resource_table(path: &str, bytes: &[u8]) -> PublicationResourceTable {
+    let mut table = PublicationResourceTable::default();
+    table.insert(path.to_string(), loaded_resource(path, bytes));
+    table
+}
+
+fn loaded_resource(path: &str, bytes: &[u8]) -> LoadedPublicationResource {
+    LoadedPublicationResource {
+        meta: PublicationResourceRef {
+            path: path.to_string(),
+            sha256: format!("test-sha256:{}", bytes.len()),
+            byte_len: bytes.len() as u64,
+            content_type: Some("text/plain".to_string()),
+            artifact_path: Some(format!("resources/{path}")),
+        },
+        bytes: Arc::from(bytes.to_vec().into_boxed_slice()),
+    }
+}
+
+fn builtin_type(name: &str) -> LinkedTypeRef {
+    LinkedTypeRef::Native {
+        name: name.to_string(),
+        args: Vec::new(),
+    }
+}
+
+fn assert_resource_error(error: &RuntimeError, path: &str) {
+    let payload = error.payload();
+    assert_eq!(payload.code, "std.resource.ResourceError");
+    assert_eq!(
+        payload
+            .details
+            .as_ref()
+            .and_then(|details| details["path"].as_str()),
+        Some(path),
+        "unexpected payload: {payload:?}"
+    );
+}
+
+fn assert_resource_json_decode_error(error: &RuntimeError, path: &str) {
+    let payload = error.payload();
+    assert_eq!(payload.code, "std.json.DecodeError");
+    assert_eq!(
+        payload
+            .details
+            .as_ref()
+            .and_then(|details| details["target"].as_str()),
+        Some("std.resource.json"),
+        "unexpected payload: {payload:?}"
+    );
+    assert!(
+        payload.message.contains(path),
+        "decode error message should include resource path {path}: {payload:?}"
+    );
 }
 
 fn for_in_value_block_executable() -> LinkedExecutable {

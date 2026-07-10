@@ -52,7 +52,7 @@ export function parseSimpleYamlObject(source, label) {
   return root;
 }
 
-function stripYamlComment(line) {
+export function stripYamlComment(line) {
   let quote = null;
   let escaped = false;
   for (let index = 0; index < line.length; index += 1) {

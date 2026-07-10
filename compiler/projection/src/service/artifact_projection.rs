@@ -2,7 +2,9 @@ use std::collections::BTreeMap as StdBTreeMap;
 
 use crate::context::{ProjectedPackageDependency, ProjectedServiceDependencyLockEntry};
 use crate::error::ProjectionError;
-use crate::package_unit_artifacts::ProjectedPackageIrArtifacts;
+use crate::package_unit_artifacts::{
+    projected_publication_resources, resource_refs_for_projected, ProjectedPackageIrArtifacts,
+};
 use crate::recoverable_boundary::{
     recoverable_metadata_for_service_artifacts,
     validate_recoverable_metadata_type_policy_with_packages, RecoverableInputs,
@@ -224,6 +226,8 @@ pub fn project_service_artifact_projection(
     service_unit.spawn_targets = spawn_targets;
     service_unit.recoverable_metadata = recoverable_metadata;
     service_unit.abi_identity_projection = abi_identity_projection.clone();
+    let resources = projected_publication_resources(service_input.resources());
+    service_unit.resources = resource_refs_for_projected(&resources);
 
     Ok(ServiceArtifactProjection {
         package_configs,
@@ -235,6 +239,7 @@ pub fn project_service_artifact_projection(
         source_map: service_source_map,
         service_unit,
         file_ir_units: service_file_ir_unit_values,
+        resources,
         package_units_typed,
     })
 }

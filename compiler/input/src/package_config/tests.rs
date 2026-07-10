@@ -811,6 +811,56 @@ packages:
     );
 }
 
+#[test]
+fn parses_package_manifest_resources() {
+    let manifest = read_temp_manifest(
+        "resources",
+        r#"
+id: example.com/app
+version: 1.0.0
+resources:
+  - prompts/system.md
+  - schemas/tool_input.schema.json
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        manifest
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["prompts/system.md", "schemas/tool_input.schema.json"]
+    );
+}
+
+#[test]
+fn rejects_package_manifest_invalid_resources() {
+    let error = read_temp_manifest(
+        "invalid-resources",
+        r#"
+id: example.com/app
+version: 1.0.0
+resources:
+  - ./prompts/system.md
+  - prompts/system.md
+  - prompts/system.md
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("resources[0] ./prompts/system.md is invalid"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("resources[2] prompts/system.md is declared more than once"),
+        "unexpected error: {error}"
+    );
+}
+
 fn read_temp_manifest(name: &str, text: &str) -> Result<PackageManifest, PackageConfigError> {
     let temp = temp_dir(name);
     let manifest_path = temp.join("package.yml");

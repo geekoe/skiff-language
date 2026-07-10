@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::OnceLock};
 
 use bytes::Bytes;
 use serde_json::Value;
@@ -8,6 +8,7 @@ use skiff_runtime_capability_context::{
     FileCapabilityFuture, FileChunkFuture, FileChunkSource,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
+use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
 
 use crate::error::Result;
 use crate::runtime_value_facade::{
@@ -166,4 +167,18 @@ pub trait NativeWebsocketCapability {
 
 pub trait NativeTelemetryCapability {
     fn emit_native(&self, target: &str, args: &[Value]) -> Result<Value>;
+}
+
+pub trait NativeResourceCapability {
+    fn resources(&self) -> RuntimeProgramResourceView<'_>;
+}
+
+impl NativeResourceCapability for () {
+    fn resources(&self) -> RuntimeProgramResourceView<'_> {
+        static EMPTY: OnceLock<(PublicationResourceTable, Vec<PublicationResourceTable>)> =
+            OnceLock::new();
+        let (service_resources, package_resources) =
+            EMPTY.get_or_init(|| (PublicationResourceTable::default(), Vec::new()));
+        RuntimeProgramResourceView::new(service_resources, package_resources)
+    }
 }

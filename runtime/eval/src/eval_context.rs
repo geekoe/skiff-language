@@ -966,6 +966,7 @@ impl<'a> EvalContext<'a> {
                 )?;
                 let native_capability_context = project_runtime_native_capability_context(
                     &self.context,
+                    self.program,
                     self.env.stream_capability_context(),
                     invocation.required_context(),
                 );
@@ -1226,6 +1227,7 @@ impl<'a> EvalContext<'a> {
         }
         let native_capability_context = project_runtime_native_capability_context(
             &self.context,
+            self.program,
             self.env.stream_capability_context(),
             invocation.required_context(),
         );
