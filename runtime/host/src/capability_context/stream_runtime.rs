@@ -298,13 +298,21 @@ impl Drop for StreamRuntime {
 }
 
 impl StreamState {
-    fn finish(&self, _terminal: StreamTerminalReason) -> bool {
+    fn finish(&self, terminal: StreamTerminalReason) -> bool {
         if self
             .ended
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
             self.cancelled.store(true, Ordering::SeqCst);
+            if matches!(
+                terminal,
+                StreamTerminalReason::Cancelled | StreamTerminalReason::SourceDropped
+            ) {
+                if let Some(cancellation) = &self.cancellation {
+                    cancellation.cancel();
+                }
+            }
             self.cancel_notify.notify_waiters();
             true
         } else {

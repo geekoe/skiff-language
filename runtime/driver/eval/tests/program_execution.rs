@@ -979,6 +979,45 @@ async fn runtime_program_resource_json_type_error_uses_json_decode_error_shape()
 }
 
 #[tokio::test]
+async fn runtime_program_resource_json_allows_non_stream_skiff_fields() {
+    let value = json!({
+        "id": {
+            "__skiffRepresentationType": "UserId",
+            "value": "u1"
+        },
+        "avatar": {
+            "__skiffBytesBase64": "YWJj"
+        }
+    });
+    let mut program = program_with_executable(resource_json_object_native_executable("ok.json"));
+    let resource_bytes = serde_json::to_vec(&value).expect("resource fixture JSON should encode");
+    program.service_resources = resource_table("ok.json", &resource_bytes);
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let output = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("std.resource.json should allow non-stream Skiff-looking JSON fields");
+
+    assert_eq!(output, value);
+}
+
+#[tokio::test]
+async fn runtime_program_resource_json_rejects_stream_return_type() {
+    let mut program =
+        program_with_executable(resource_json_stream_native_executable("stream.json"));
+    program.service_resources = resource_table("stream.json", br#"{"__skiffStreamId":"stream-0"}"#);
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let error = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect_err("std.resource.json should not decode resource bytes as a Stream");
+
+    assert_resource_json_decode_error(&error, "stream.json");
+}
+
+#[tokio::test]
 async fn runtime_program_resource_json_invalid_utf8_throws_resource_error() {
     let mut program = program_with_executable(resource_json_object_native_executable("bad.json"));
     program.service_resources = resource_table("bad.json", &[0xff, 0xfe]);
@@ -5764,6 +5803,22 @@ fn resource_json_object_native_executable(path: &str) -> LinkedExecutable {
             "T0": { "kind": "builtin", "name": "JsonObject" }
         })),
         builtin_type("JsonObject"),
+    )
+}
+
+fn resource_json_stream_native_executable(path: &str) -> LinkedExecutable {
+    resource_native_executable(
+        "json",
+        "std.resource.json",
+        path,
+        Some(json!({
+            "T0": {
+                "kind": "builtin",
+                "name": "Stream",
+                "args": [{ "kind": "builtin", "name": "string" }]
+            }
+        })),
+        linked_stream_type(builtin_type("string")),
     )
 }
 

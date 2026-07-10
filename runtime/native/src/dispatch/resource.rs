@@ -1,6 +1,7 @@
 use serde_json::json;
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
 use skiff_runtime_model::{
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
     LoadedPublicationResource, PublicationResourcePath, RuntimeProgramResourceLookupError,
 };
 
@@ -62,6 +63,7 @@ impl ResourceNativeDispatch {
                 let (path, resource) =
                     resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
                 let text = resource_text(path.as_str(), resource)?;
+                validate_resource_json(path.as_str(), text, invocation.return_plan()?)?;
                 RuntimeBoundaryContract::default()
                     .codec_for_expected(
                         invocation.return_plan()?,
@@ -159,6 +161,54 @@ fn resource_text<'a>(path: &str, resource: &'a LoadedPublicationResource) -> Res
     std::str::from_utf8(resource.bytes.as_ref()).map_err(|error| {
         RuntimeError::resource_error(path, format!("resource is not valid UTF-8: {error}"))
     })
+}
+
+fn validate_resource_json(path: &str, text: &str, return_plan: &RuntimeTypePlan) -> Result<()> {
+    if type_plan_contains_stream(return_plan) {
+        return Err(resource_json_decode_error(
+            path,
+            RuntimeError::Decode(
+                "publication resources cannot decode runtime-owned Stream values".to_string(),
+            ),
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
+        resource_json_decode_error(
+            path,
+            RuntimeError::Decode(format!("std.resource.json decode failed: {error}")),
+        )
+    })?;
+    Ok(())
+}
+
+fn type_plan_contains_stream(plan: &RuntimeTypePlan) -> bool {
+    match plan.node() {
+        RuntimeTypeNode::Alias(target)
+        | RuntimeTypeNode::Nullable(target)
+        | RuntimeTypeNode::Representation {
+            payload: target, ..
+        } => type_plan_contains_stream(target),
+        RuntimeTypeNode::Union(types) => types.iter().any(type_plan_contains_stream),
+        RuntimeTypeNode::Stream(_) => true,
+        RuntimeTypeNode::Array(item) => type_plan_contains_stream(item),
+        RuntimeTypeNode::Map { key, value } => {
+            type_plan_contains_stream(key) || type_plan_contains_stream(value)
+        }
+        RuntimeTypeNode::Record { fields, .. } => fields
+            .iter()
+            .any(|field| type_plan_contains_stream(&field.ty)),
+        RuntimeTypeNode::LiteralString(_)
+        | RuntimeTypeNode::Json
+        | RuntimeTypeNode::JsonObject
+        | RuntimeTypeNode::Bytes
+        | RuntimeTypeNode::Date
+        | RuntimeTypeNode::String
+        | RuntimeTypeNode::Bool
+        | RuntimeTypeNode::Number
+        | RuntimeTypeNode::Integer
+        | RuntimeTypeNode::Null
+        | RuntimeTypeNode::Unknown => false,
+    }
 }
 
 fn resource_json_decode_error(path: &str, error: RuntimeError) -> RuntimeError {

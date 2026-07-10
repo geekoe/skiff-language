@@ -296,7 +296,20 @@ async fn stream_runtime_pull_stream_normal_end_does_not_cancel_request_token() {
         runtime.next(&stream).await.unwrap(),
         StreamPoll::End
     ));
+
     assert!(!token.is_cancelled());
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_pull_stream_explicit_cancel_cancels_source_token() {
+    let runtime = StreamRuntime::default();
+    let token = CancellationToken::new();
+    let stream = runtime.pull_stream_with_cancellation(PendingPullSource, token.clone());
+
+    runtime.cancel(&stream);
+
+    assert!(token.is_cancelled());
     assert_eq!(runtime.active_stream_count(), 0);
 }
 
