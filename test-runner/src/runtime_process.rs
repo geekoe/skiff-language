@@ -65,6 +65,8 @@ const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sh
 const PACKAGE_TEST_ACTIVATION_ID_PREFIX: &str = "skiff-package-test-run-v1:";
 const PACKAGE_TEST_SERVICE_DB_PREFIX: &str = "skiff.run/package-test-db-";
 const SYNC_TEST_DB_CLEANUP_ENV: &str = "SKIFF_TEST_SYNC_CLEANUP";
+const TEST_DB_CLEANUP_SETTLE_MS_ENV: &str = "SKIFF_TEST_DB_CLEANUP_SETTLE_MS";
+const DEFAULT_TEST_DB_CLEANUP_SETTLE_MS: u64 = 6_500;
 const TEST_RUNNER_STATE_DIR: &str = ".skiff-test-runner";
 const TEST_RUNNER_LOCK_FILE: &str = "artifact.lock";
 const TEST_RUNNER_RUNS_DIR: &str = "runs";
@@ -1074,9 +1076,11 @@ fn service_id_storage_database_name(service_id: &str) -> String {
 /// Drop the per-test service Mongo databases created by a run so they do not
 /// accumulate run-over-run. Each test runs under a unique service id (=>
 /// unique database), so this only drops databases the run itself created. By
-/// default, cleanup waits for `mongosh` and reports cleanup errors to the
-/// caller. Set `SKIFF_TEST_SYNC_CLEANUP=0` to restore background best-effort
-/// cleanup for local speed.
+/// default, cleanup waits briefly for delayed spawned work to settle, then waits
+/// for `mongosh` and reports cleanup errors to the caller. Set
+/// `SKIFF_TEST_DB_CLEANUP_SETTLE_MS=0` to skip the settle delay. Set
+/// `SKIFF_TEST_SYNC_CLEANUP=0` to restore background best-effort cleanup for
+/// local speed.
 ///
 /// The test path already depends on a live local dev stack (router + runtime +
 /// Mongo), so it relies on `mongosh` being available for cleanup.
@@ -1092,24 +1096,24 @@ pub(super) fn drop_test_service_databases(
         .map(|service_id| service_id_storage_database_name(service_id))
         .collect::<Vec<_>>();
     let script = test_database_drop_script(&database_names)?;
+    let settle_delay = test_database_cleanup_settle_duration();
     if !sync_test_database_cleanup_enabled() {
-        let child = Command::new("mongosh")
-            .arg(mongo_url)
-            .arg("--quiet")
-            .arg("--eval")
-            .arg(&script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else {
-            return Ok(());
-        };
+        let mongo_url = mongo_url.to_string();
         thread::spawn(move || {
-            let _ = child.wait();
+            wait_for_test_database_cleanup_settle(settle_delay);
+            let _ = Command::new("mongosh")
+                .arg(mongo_url)
+                .arg("--quiet")
+                .arg("--eval")
+                .arg(script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         });
         return Ok(());
     }
+    wait_for_test_database_cleanup_settle(settle_delay);
     let output = Command::new("mongosh")
         .arg(mongo_url)
         .arg("--quiet")
@@ -1134,6 +1138,25 @@ fn test_database_drop_script(database_names: &[String]) -> Result<String, String
     Ok(format!(
         "for (const name of {database_names_json}) {{ db.getSiblingDB(name).dropDatabase(); }}"
     ))
+}
+
+fn wait_for_test_database_cleanup_settle(delay: Duration) {
+    if !delay.is_zero() {
+        thread::sleep(delay);
+    }
+}
+
+fn test_database_cleanup_settle_duration() -> Duration {
+    test_database_cleanup_settle_duration_from_env_value(
+        env::var(TEST_DB_CLEANUP_SETTLE_MS_ENV).ok().as_deref(),
+    )
+}
+
+fn test_database_cleanup_settle_duration_from_env_value(value: Option<&str>) -> Duration {
+    value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(DEFAULT_TEST_DB_CLEANUP_SETTLE_MS))
 }
 
 fn sync_test_database_cleanup_enabled() -> bool {
@@ -3267,6 +3290,7 @@ mod tests {
     use std::{
         collections::{BTreeSet, HashMap},
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use serde_json::json;
@@ -3278,10 +3302,12 @@ mod tests {
         preflight_runtime_artifact_cleanup, runtime_cleanup_needs_reload,
         service_id_storage_database_name, sync_test_database_cleanup_enabled_from_env_value,
         synthetic_service_runtime_visible_paths, synthetic_test_target,
-        test_database_cleanup_env_value_enabled, test_database_drop_script,
+        test_database_cleanup_env_value_enabled,
+        test_database_cleanup_settle_duration_from_env_value, test_database_drop_script,
         test_runner_reload_marker_path, test_runner_runs_dir, validate_runtime_cleanup_path,
         write_runtime_artifact_manifest, PackageTestDispatchInput, RuntimeArtifactManifestPath,
-        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions, RUNTIME_ARTIFACT_LOCK,
+        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions,
+        DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, RUNTIME_ARTIFACT_LOCK,
         TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
     };
 
@@ -3417,6 +3443,26 @@ mod tests {
                 "{value:?} should disable sync cleanup"
             );
         }
+    }
+
+    #[test]
+    fn test_database_cleanup_settle_duration_defaults_and_parses_ms() {
+        assert_eq!(
+            test_database_cleanup_settle_duration_from_env_value(None),
+            Duration::from_millis(DEFAULT_TEST_DB_CLEANUP_SETTLE_MS)
+        );
+        assert_eq!(
+            test_database_cleanup_settle_duration_from_env_value(Some("0")),
+            Duration::from_millis(0)
+        );
+        assert_eq!(
+            test_database_cleanup_settle_duration_from_env_value(Some(" 42 ")),
+            Duration::from_millis(42)
+        );
+        assert_eq!(
+            test_database_cleanup_settle_duration_from_env_value(Some("not-a-number")),
+            Duration::from_millis(DEFAULT_TEST_DB_CLEANUP_SETTLE_MS)
+        );
     }
 
     #[test]
