@@ -1076,11 +1076,11 @@ fn service_id_storage_database_name(service_id: &str) -> String {
 /// Drop the per-test service Mongo databases created by a run so they do not
 /// accumulate run-over-run. Each test runs under a unique service id (=>
 /// unique database), so this only drops databases the run itself created. By
-/// default, cleanup waits briefly for delayed spawned work to settle, then waits
-/// for `mongosh` and reports cleanup errors to the caller. Set
-/// `SKIFF_TEST_DB_CLEANUP_SETTLE_MS=0` to skip the settle delay. Set
-/// `SKIFF_TEST_SYNC_CLEANUP=0` to restore background best-effort cleanup for
-/// local speed.
+/// default, cleanup runs one synchronous drop and schedules a best-effort
+/// delayed finalizer for spawned work that may write after the test request
+/// returns. Set `SKIFF_TEST_DB_CLEANUP_SETTLE_MS=0` to skip the delayed
+/// finalizer. Set `SKIFF_TEST_SYNC_CLEANUP=0` to restore background best-effort
+/// cleanup for local speed.
 ///
 /// The test path already depends on a live local dev stack (router + runtime +
 /// Mongo), so it relies on `mongosh` being available for cleanup.
@@ -1098,22 +1098,10 @@ pub(super) fn drop_test_service_databases(
     let script = test_database_drop_script(&database_names)?;
     let settle_delay = test_database_cleanup_settle_duration();
     if !sync_test_database_cleanup_enabled() {
-        let mongo_url = mongo_url.to_string();
-        thread::spawn(move || {
-            wait_for_test_database_cleanup_settle(settle_delay);
-            let _ = Command::new("mongosh")
-                .arg(mongo_url)
-                .arg("--quiet")
-                .arg("--eval")
-                .arg(script)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        });
+        spawn_background_test_database_drop(mongo_url, &script);
+        spawn_delayed_test_database_cleanup(mongo_url, &script, settle_delay);
         return Ok(());
     }
-    wait_for_test_database_cleanup_settle(settle_delay);
     let output = Command::new("mongosh")
         .arg(mongo_url)
         .arg("--quiet")
@@ -1122,6 +1110,7 @@ pub(super) fn drop_test_service_databases(
         .output()
         .map_err(|error| format!("failed to run mongosh for test database drop: {error}"))?;
     if output.status.success() {
+        spawn_delayed_test_database_cleanup(mongo_url, &script, settle_delay);
         return Ok(());
     }
     Err(format!(
@@ -1140,10 +1129,62 @@ fn test_database_drop_script(database_names: &[String]) -> Result<String, String
     ))
 }
 
-fn wait_for_test_database_cleanup_settle(delay: Duration) {
-    if !delay.is_zero() {
-        thread::sleep(delay);
+fn spawn_background_test_database_drop(mongo_url: &str, script: &str) {
+    let child = Command::new("mongosh")
+        .arg(mongo_url)
+        .arg("--quiet")
+        .arg("--eval")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return;
+    };
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+fn spawn_delayed_test_database_cleanup(mongo_url: &str, script: &str, settle_delay: Duration) {
+    if settle_delay.is_zero() {
+        return;
     }
+    spawn_test_database_cleanup_shell(
+        r#"sleep "$3"; mongosh "$1" --quiet --eval "$2" >/dev/null 2>&1 </dev/null"#,
+        mongo_url,
+        script,
+        settle_delay,
+    );
+}
+
+fn spawn_test_database_cleanup_shell(
+    command: &str,
+    mongo_url: &str,
+    script: &str,
+    settle_delay: Duration,
+) {
+    let mut child = Command::new("sh");
+    child
+        .arg("-c")
+        .arg(command)
+        .arg("skiff-test-db-cleanup")
+        .arg(mongo_url)
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if !settle_delay.is_zero() {
+        child.arg(test_database_cleanup_sleep_arg(settle_delay));
+    }
+    let _ = child.spawn();
+}
+
+fn test_database_cleanup_sleep_arg(delay: Duration) -> String {
+    let millis = delay.as_millis();
+    let seconds = ((millis + 999) / 1000).max(1);
+    seconds.to_string()
 }
 
 fn test_database_cleanup_settle_duration() -> Duration {
@@ -3303,11 +3344,11 @@ mod tests {
         service_id_storage_database_name, sync_test_database_cleanup_enabled_from_env_value,
         synthetic_service_runtime_visible_paths, synthetic_test_target,
         test_database_cleanup_env_value_enabled,
-        test_database_cleanup_settle_duration_from_env_value, test_database_drop_script,
-        test_runner_reload_marker_path, test_runner_runs_dir, validate_runtime_cleanup_path,
-        write_runtime_artifact_manifest, PackageTestDispatchInput, RuntimeArtifactManifestPath,
-        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions,
-        DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, RUNTIME_ARTIFACT_LOCK,
+        test_database_cleanup_settle_duration_from_env_value, test_database_cleanup_sleep_arg,
+        test_database_drop_script, test_runner_reload_marker_path, test_runner_runs_dir,
+        validate_runtime_cleanup_path, write_runtime_artifact_manifest, PackageTestDispatchInput,
+        RuntimeArtifactManifestPath, RuntimeArtifactRun, RuntimeArtifactRunManifest,
+        SkiffTestOptions, DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, RUNTIME_ARTIFACT_LOCK,
         TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
     };
 
@@ -3462,6 +3503,28 @@ mod tests {
         assert_eq!(
             test_database_cleanup_settle_duration_from_env_value(Some("not-a-number")),
             Duration::from_millis(DEFAULT_TEST_DB_CLEANUP_SETTLE_MS)
+        );
+    }
+
+    #[test]
+    fn test_database_cleanup_sleep_arg_rounds_up_to_whole_seconds() {
+        assert_eq!(
+            test_database_cleanup_sleep_arg(Duration::from_millis(1)),
+            "1"
+        );
+        assert_eq!(
+            test_database_cleanup_sleep_arg(Duration::from_millis(1000)),
+            "1"
+        );
+        assert_eq!(
+            test_database_cleanup_sleep_arg(Duration::from_millis(1001)),
+            "2"
+        );
+        assert_eq!(
+            test_database_cleanup_sleep_arg(Duration::from_millis(
+                DEFAULT_TEST_DB_CLEANUP_SETTLE_MS
+            )),
+            "7"
         );
     }
 
