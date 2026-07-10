@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
 
 import {
+  decodeRuntimeFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  type RequestCancelFrameHeader,
   type RequestStartFrameHeader,
   type RuntimeHealthCounters,
   type RuntimeHealthFrameHeader
@@ -139,6 +142,173 @@ describe('loop-risk health detail', () => {
       zeroRuntimeCounters()
     );
   });
+
+  it('retains runtime.health per runtime session when a runtimeId reconnects', async () => {
+    const harness = await RouterHarness.create({
+      manifest: loadRawHttpManifest()
+    });
+    const first = await harness.registerRuntime({
+      runtimeId: 'runtime-loop-risk-reconnect'
+    });
+    first.ws.send(
+      encodeRuntimeFrame(runtimeHealthFrame('runtime-loop-risk-reconnect', {
+        outboundRequestsPending: 3,
+        outboundStreamLeasesActive: 2,
+        streamRuntimeStreamsActive: 1,
+        flagBackedCancelWaitersActive: 0,
+        spawnedTasksActive: 0
+      }))
+    );
+    await waitForRuntimeCounters(
+      harness,
+      'runtime-loop-risk-reconnect',
+      {
+        outboundRequestsPending: 3,
+        outboundStreamLeasesActive: 2,
+        streamRuntimeStreamsActive: 1,
+        flagBackedCancelWaitersActive: 0,
+        spawnedTasksActive: 0
+      }
+    );
+
+    const second = await harness.registerRuntime({
+      runtimeId: 'runtime-loop-risk-reconnect'
+    });
+    second.ws.send(
+      encodeRuntimeFrame(runtimeHealthFrame('runtime-loop-risk-reconnect', zeroRuntimeCounters()))
+    );
+
+    const health = await waitForRuntimeCounters(
+      harness,
+      'runtime-loop-risk-reconnect',
+      zeroRuntimeCounters()
+    );
+    const sessions = health.runtimes.filter(
+      (runtime) => runtime.runtimeId === 'runtime-loop-risk-reconnect'
+    );
+    expect(sessions.filter((runtime) => runtime.connected)).toHaveLength(1);
+    expect(sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runtimeId: 'runtime-loop-risk-reconnect',
+          connected: false,
+          fresh: false,
+          counters: {
+            outboundRequestsPending: 3,
+            outboundStreamLeasesActive: 2,
+            streamRuntimeStreamsActive: 1,
+            flagBackedCancelWaitersActive: 0,
+            spawnedTasksActive: 0
+          }
+        }),
+        expect.objectContaining({
+          runtimeId: 'runtime-loop-risk-reconnect',
+          connected: true,
+          fresh: true,
+          counters: zeroRuntimeCounters()
+        })
+      ])
+    );
+  });
+
+  it('drains a bounded runtime dispatch cancel storm to zero-window health', async () => {
+    // Router unit tests keep this below the 1000-attempt stable-instance stress
+    // target so the suite stays deterministic while still exercising the same
+    // dispatcher cancel terminal path and health zero-window schema.
+    const stormAttempts = 96;
+    const manifest = loadRawHttpManifest();
+    const harness = await RouterHarness.create({ manifest });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-loop-risk-cancel-storm'
+    });
+    runtime.ws.send(
+      encodeRuntimeFrame(runtimeHealthFrame('runtime-loop-risk-cancel-storm', {
+        outboundRequestsPending: stormAttempts,
+        outboundStreamLeasesActive: stormAttempts,
+        streamRuntimeStreamsActive: stormAttempts,
+        flagBackedCancelWaitersActive: 0,
+        spawnedTasksActive: stormAttempts
+      }))
+    );
+    await waitForRuntimeCounters(
+      harness,
+      'runtime-loop-risk-cancel-storm',
+      {
+        outboundRequestsPending: stormAttempts,
+        outboundStreamLeasesActive: stormAttempts,
+        streamRuntimeStreamsActive: stormAttempts,
+        flagBackedCancelWaitersActive: 0,
+        spawnedTasksActive: stormAttempts
+      }
+    );
+
+    const operation = manifest.operations[0]!;
+    const requestFrames = runtime.collectRequestFrames(
+      stormAttempts,
+      'loop-risk cancel storm request frames'
+    );
+    const cancelFrames = collectRuntimeCancelFrames(
+      runtime.ws,
+      stormAttempts,
+      'loop-risk cancel storm cancels'
+    );
+    const controllers: AbortController[] = [];
+    const dispatches: Array<Promise<unknown>> = [];
+
+    for (let index = 0; index < stormAttempts; index += 1) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      const request = createRequestStart({
+        requestId: `request-loop-risk-cancel-storm-${index}`,
+        target: operation.target,
+        serviceId: manifest.service.id,
+        serviceProtocolIdentity: manifest.service.protocolIdentity
+      });
+      dispatches.push(
+        dispatchBinaryJson(harness, request, 10_000, controller.signal).then(
+          () => 'resolved',
+          (error: unknown) => error
+        )
+      );
+    }
+
+    await requestFrames;
+    for (const controller of controllers) {
+      controller.abort();
+    }
+    const cancels = await cancelFrames;
+    expect(cancels).toHaveLength(stormAttempts);
+    expect(cancels.every((cancel) => cancel.reason === 'caller_cancel')).toBe(true);
+    const dispatchResults = await Promise.all(dispatches);
+    expect(dispatchResults.every((result) => result !== 'resolved')).toBe(true);
+
+    runtime.ws.send(
+      encodeRuntimeFrame(
+        runtimeHealthFrame('runtime-loop-risk-cancel-storm', zeroRuntimeCounters())
+      )
+    );
+    const health = await waitForLoopRiskZeroWindow(
+      harness,
+      'runtime-loop-risk-cancel-storm',
+      5000
+    );
+    expect(health.router).toEqual({
+      dispatcher: {
+        pendingUnary: 0,
+        pendingStream: 0,
+        pendingForward: 0
+      },
+      httpStream: {
+        backpressureWaiters: 0,
+        backpressureCancels: 0
+      },
+      websocketReceive: {
+        inFlight: 0,
+        queued: 0,
+        abortOnClose: 0
+      }
+    });
+  });
 });
 
 function runtimeHealthFrame(
@@ -235,6 +405,54 @@ async function waitForRuntimeCounters(
   return latest;
 }
 
+async function waitForLoopRiskZeroWindow(
+  harness: RouterHarness,
+  runtimeId: string,
+  timeoutMs: number
+): Promise<LoopRiskHealthPayload> {
+  const startedAt = Date.now();
+  let latest = await readLoopRiskHealth(harness);
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (routerLoopRiskCountersAreZero(latest)) {
+      const runtime = latest.runtimes.find(
+        (snapshot) =>
+          snapshot.runtimeId === runtimeId &&
+          snapshot.connected &&
+          snapshot.fresh &&
+          JSON.stringify(snapshot.counters) === JSON.stringify(zeroRuntimeCounters())
+      );
+      if (runtime) {
+        return latest;
+      }
+    }
+    await delay(25);
+    latest = await readLoopRiskHealth(harness);
+  }
+  expect(routerLoopRiskCountersAreZero(latest)).toBe(true);
+  expect(latest.runtimes).toContainEqual(
+    expect.objectContaining({
+      runtimeId,
+      connected: true,
+      fresh: true,
+      counters: zeroRuntimeCounters()
+    })
+  );
+  return latest;
+}
+
+function routerLoopRiskCountersAreZero(health: LoopRiskHealthPayload): boolean {
+  return (
+    health.router.dispatcher.pendingUnary === 0 &&
+    health.router.dispatcher.pendingStream === 0 &&
+    health.router.dispatcher.pendingForward === 0 &&
+    health.router.httpStream.backpressureWaiters === 0 &&
+    health.router.httpStream.backpressureCancels === 0 &&
+    health.router.websocketReceive.inFlight === 0 &&
+    health.router.websocketReceive.queued === 0 &&
+    health.router.websocketReceive.abortOnClose === 0
+  );
+}
+
 function runtimeSnapshot(
   health: LoopRiskHealthPayload,
   runtimeId: string
@@ -247,7 +465,8 @@ function runtimeSnapshot(
 async function dispatchBinaryJson(
   harness: RouterHarness,
   request: ReturnType<typeof createRequestStart>,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<unknown> {
   const { type: _type, args: _args, ...metadata } = request;
   const header: RequestStartFrameHeader = {
@@ -260,10 +479,46 @@ async function dispatchBinaryJson(
       header,
       payloadBytes: Buffer.from('opaque test payload')
     },
-    timeoutMs
+    timeoutMs,
+    signal ? { signal } : {}
   );
   if (response.payloadBytes.byteLength === 0) {
     return null;
   }
   return JSON.parse(Buffer.from(response.payloadBytes).toString('utf8'));
+}
+
+function collectRuntimeCancelFrames(
+  ws: WebSocket,
+  count: number,
+  label: string
+): Promise<RequestCancelFrameHeader[]> {
+  return new Promise((resolve, reject) => {
+    const cancels: RequestCancelFrameHeader[] = [];
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 2000);
+    const onMessage = (data: WebSocket.RawData) => {
+      let frame: ReturnType<typeof decodeRuntimeFrame>;
+      try {
+        frame = decodeRuntimeFrame(data);
+      } catch {
+        return;
+      }
+      if (frame.header.type !== 'request.cancel') {
+        return;
+      }
+      cancels.push(frame.header);
+      if (cancels.length === count) {
+        cleanup();
+        resolve(cancels);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
+  });
 }

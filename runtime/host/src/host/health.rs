@@ -14,12 +14,15 @@ use crate::{
 use super::{RouterWriterMessage, RuntimeHost};
 
 impl RuntimeHost {
-    pub(crate) async fn queue_runtime_health(
+    pub(crate) async fn queue_runtime_health_with_counters(
         &self,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
         runtime_id: &str,
+        counters: RuntimeHealthCountersFrameHeader,
     ) -> Result<()> {
-        let header = self.runtime_health_frame_header(runtime_id).await?;
+        let header = self
+            .runtime_health_frame_header_with_counters(runtime_id, counters)
+            .await?;
         let frame = encode_binary_frame(&header, &[])
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;
         sender
@@ -28,9 +31,10 @@ impl RuntimeHost {
         Ok(())
     }
 
-    pub(crate) async fn runtime_health_frame_header(
+    async fn runtime_health_frame_header_with_counters(
         &self,
         runtime_id: &str,
+        counters: RuntimeHealthCountersFrameHeader,
     ) -> Result<RuntimeHealthFrameHeader> {
         Ok(RuntimeHealthFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -39,7 +43,7 @@ impl RuntimeHost {
             observed_at: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
                 .map_err(|error| RuntimeError::Decode(error.to_string()))?,
-            counters: self.runtime_health_counters().await,
+            counters,
         })
     }
 

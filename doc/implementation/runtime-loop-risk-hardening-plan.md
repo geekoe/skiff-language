@@ -739,6 +739,8 @@ Integration / smoke：
   `curl 'http://127.0.0.1:4001/__router/health?detail=loop-risk'`
 - Run Agine smoke:
   `npm run e2e:chat-smoke` in `/Users/geek/workspace/internals/agine`
+- After chat smoke, check loop-risk health from this repository:
+  `node scripts/check-loop-risk-health.mjs --url http://127.0.0.1:4001/__router/health?detail=loop-risk --timeout-ms 5000`
 
 Stress acceptance：
 
