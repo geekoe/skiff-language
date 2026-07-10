@@ -212,11 +212,16 @@ node deploy-runtime-stack.mjs \
 
 node deploy-runtime-stack.mjs \
   --service-db-mongo-url 'mongodb://127.0.0.1:27017'
+
+node deploy-runtime-stack.mjs \
+  --service-db-encryption-keyring-file /run/secrets/skiff-service-db-keyring.json
 ```
 
 Useful environment overrides are `SKIFF_TELEMETRY_MONGO_URL` or `MONGO_URL`, `SKIFF_TELEMETRY_DB`, `SKIFF_TELEMETRY_PORT`, `SKIFF_TELEMETRY_CONFIG`, and `SKIFF_TELEMETRY_ENDPOINT`. Set `--telemetry-memory true` or `SKIFF_TELEMETRY_IN_MEMORY=true` when deploying to a host without MongoDB; the generated `telemetry.yml` will contain `memory: true` and omit the `mongo:` block.
 
 Set `--service-db-mongo-url`, `SKIFF_SERVICE_DB_MONGO_URL`, or `SERVICE_DB_MONGO_URL` to include a router `serviceDb.mongoUrl` in `${remoteSkiff}/config/router.yml`; the router forwards it to runtime service activations for Skiff DB-backed services.
+
+Set `--service-db-encryption-keyring-file` or `SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE` to an absolute path on the remote runtime host to include `serviceDb.encryption.keyringFile` in `${remoteSkiff}/config/runtime.yml`. Provision the keyring separately on that host before deployment. The deploy script never reads, validates, creates, copies, rsyncs, or backs up the keyring itself; it transfers only the generated runtime config containing the mount path. Its JSON summary reports only whether a keyring path was configured, never the path or key material. Omitting both settings omits the runtime encryption block.
 
 ## Package Remote CLI Live Test
 

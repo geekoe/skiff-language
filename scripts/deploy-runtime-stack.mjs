@@ -76,6 +76,13 @@ const serviceDbMongoUrl =
   args.serviceDbMongoUrl ||
   process.env.SKIFF_SERVICE_DB_MONGO_URL ||
   process.env.SERVICE_DB_MONGO_URL;
+const serviceDbEncryptionKeyringFile = readRemoteAbsolutePath(
+  args.serviceDbEncryptionKeyringFile ||
+    process.env.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE,
+  args.serviceDbEncryptionKeyringFile !== undefined
+    ? '--service-db-encryption-keyring-file'
+    : 'SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE',
+);
 const remoteSsh = [remote];
 
 await validateSelectedBuildUnits(deploySelection);
@@ -87,7 +94,9 @@ try {
     telemetryEndpoint,
     serviceDbMongoUrl,
   });
-  await writeRuntimeConfig(path.join(configDir, 'runtime.yml'), remoteSkiff);
+  await writeRuntimeConfig(path.join(configDir, 'runtime.yml'), remoteSkiff, {
+    serviceDbEncryptionKeyringFile,
+  });
   await writeTelemetryConfig(path.join(configDir, 'telemetry.yml'), {
     host: telemetryHost,
     port: telemetryPort,
@@ -186,6 +195,7 @@ try {
     serviceDb: {
       configured: serviceDbMongoUrl !== undefined,
       mongoUrl: serviceDbMongoUrl ?? null,
+      encryptionKeyringConfigured: serviceDbEncryptionKeyringFile !== undefined,
     },
     deployed: Object.fromEntries(
       [...deploySelection].map((unit) => [
@@ -325,11 +335,12 @@ async function writeRouterConfig(file, remoteSkiff, options) {
   }));
 }
 
-async function writeRuntimeConfig(file, remoteSkiff) {
+async function writeRuntimeConfig(file, remoteSkiff, options) {
   await mkdirp(path.dirname(file));
   await writeFile(file, renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: `${remoteSkiff}/runtime-home`,
+    serviceDbEncryptionKeyringFile: options.serviceDbEncryptionKeyringFile,
     httpResponseMaxBytes: 8388608,
   }));
 }
@@ -573,6 +584,8 @@ function optionKey(arg) {
       return 'telemetryMongoUrl';
     case '--service-db-mongo-url':
       return 'serviceDbMongoUrl';
+    case '--service-db-encryption-keyring-file':
+      return 'serviceDbEncryptionKeyringFile';
     case '--telemetry-db':
       return 'telemetryDb';
     case '--telemetry-host':
@@ -610,4 +623,14 @@ function readOptionalBoolean(value, name) {
     return false;
   }
   throw new Error(`${name} must be true or false`);
+}
+
+function readRemoteAbsolutePath(value, name) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!path.posix.isAbsolute(value)) {
+    throw new Error(`${name} must be an absolute path on the remote runtime host`);
+  }
+  return value;
 }
