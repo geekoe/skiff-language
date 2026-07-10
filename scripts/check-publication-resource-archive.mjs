@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectPackageSourceArchivePaths } from './lib/package-source-archive.mjs';
@@ -16,6 +16,8 @@ try {
 
 async function checkPackageSourceArchiveIncludesManifestResources() {
   const packageRoot = join(root, 'pkg');
+  const outsideRoot = join(root, 'outside');
+  await mkdir(outsideRoot, { recursive: true });
   await mkdir(join(packageRoot, 'nested'), { recursive: true });
   await mkdir(join(packageRoot, 'prompts'), { recursive: true });
   await mkdir(join(packageRoot, 'src'), { recursive: true });
@@ -35,6 +37,8 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
   await writeFile(join(packageRoot, 'nested', 'package.yml'), 'id: nested\n');
   await writeFile(join(packageRoot, 'src', 'main.skiff'), 'function main() -> string { return "ok" }\n');
   await writeFile(join(packageRoot, 'node_modules', 'ignored', 'ignored.skiff'), 'ignored\n');
+  await writeFile(join(outsideRoot, 'leak.txt'), 'leak\n');
+  await symlink(outsideRoot, join(packageRoot, 'link'), 'dir');
 
   await expectFailure(
     collectPackageSourceArchivePaths(packageRoot),
@@ -61,7 +65,24 @@ async function checkPackageSourceArchiveIncludesManifestResources() {
     [
       'id: example.com/pkg',
       'version: 1.0.0',
-      'resources: ["prompts/system.md"]',
+      'resources: ["link/leak.txt"]',
+      '',
+    ].join('\n'),
+  );
+
+  await expectFailure(
+    collectPackageSourceArchivePaths(packageRoot),
+    'symlink',
+  );
+
+  await writeFile(
+    join(packageRoot, 'package.yml'),
+    [
+      'id: example.com/pkg',
+      'version: 1.0.0',
+      'resources: [',
+      '  "prompts/system.md",',
+      ']',
       '',
     ].join('\n'),
   );

@@ -64,7 +64,7 @@ export function parsePublicationResourceList(text, label = 'manifest') {
       return [];
     }
     if (rawValue.startsWith('[')) {
-      return parseYamlFlowStringList(rawValue, label);
+      return parseYamlFlowStringList(collectYamlFlowListValue(lines, index, rawValue, label), label);
     }
     if (rawValue.length > 0) {
       throw new Error(`${label} resources must be a string list`);
@@ -88,6 +88,60 @@ export function parsePublicationResourceList(text, label = 'manifest') {
     return resources;
   }
   return [];
+}
+
+function collectYamlFlowListValue(lines, startIndex, rawValue, label) {
+  let value = rawValue;
+  if (yamlFlowListIsClosed(value)) {
+    return value;
+  }
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = stripYamlComment(lines[index]).trim();
+    if (line.length === 0) {
+      continue;
+    }
+    value = `${value}\n${line}`;
+    if (yamlFlowListIsClosed(value)) {
+      return value;
+    }
+  }
+  throw new Error(`${label} resources flow list must close with ]`);
+}
+
+function yamlFlowListIsClosed(value) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === '"') {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") {
+        if (value[index + 1] === "'") {
+          index += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ']') {
+      return value.slice(index + 1).trim().length === 0;
+    }
+  }
+  return false;
 }
 
 function parseYamlFlowStringList(rawValue, label) {
@@ -201,13 +255,23 @@ async function validatePublicationResourceFile(root, logicalPath, label) {
 
 async function exactCasePath(root, logicalPath, label) {
   let current = root;
-  for (const segment of logicalPath.split('/')) {
+  const segments = logicalPath.split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
     const entries = await readdir(current, { withFileTypes: true });
     const entry = entries.find((candidate) => candidate.name === segment);
     if (!entry) {
       throw new Error(`${label} resource path does not exist with exact case: ${logicalPath}`);
     }
-    current = join(current, segment);
+    const next = join(current, segment);
+    const metadata = await lstat(next);
+    if (metadata.isSymbolicLink()) {
+      throw new Error(`${label} resource path must not pass through a symlink: ${logicalPath}`);
+    }
+    if (index + 1 < segments.length && !metadata.isDirectory()) {
+      throw new Error(`${label} resource path parent must be a directory: ${logicalPath}`);
+    }
+    current = next;
   }
   return current;
 }
