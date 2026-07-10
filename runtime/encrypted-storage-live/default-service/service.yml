@@ -10,6 +10,9 @@ http:
       path: /encrypted-live/default/insert-many
       handler: root.internal.live.insertMany
     - method: POST
+      path: /encrypted-live/default/insert-bulk
+      handler: root.internal.live.insertBulk
+    - method: POST
       path: /encrypted-live/default/read
       handler: root.internal.live.readOne
     - method: POST

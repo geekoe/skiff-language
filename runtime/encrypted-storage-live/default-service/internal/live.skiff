@@ -61,6 +61,10 @@ type InsertManyInput {
   startSequence: number,
 }
 
+type BulkCredentialInput {
+  rows: Array<Credential>,
+}
+
 type ArchiveInput {
   id: string,
   apiKey: string,
@@ -216,6 +220,14 @@ function insertMany(request: std.http.HttpRequest) -> std.http.HttpResponse {
     sequence: input.startSequence + 1,
   })
   const result = db insert many Credential values rows
+  return std.http.json(200, result)
+}
+
+function insertBulk(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<BulkCredentialInput>(request)
+  const result = db insert many Credential values input.rows
   return std.http.json(200, result)
 }
 

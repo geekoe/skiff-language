@@ -22,6 +22,21 @@ http:
       path: /encrypted-live/mapped/rewrite
       handler: root.internal.live.rewrite
     - method: POST
+      path: /encrypted-live/mapped/service-probe-insert
+      handler: root.internal.live.insertServiceContextProbe
+    - method: POST
+      path: /encrypted-live/mapped/service-probe-read
+      handler: root.internal.live.readServiceContextProbe
+    - method: POST
+      path: /encrypted-live/mapped/service-probe-scan
+      handler: root.internal.live.scanServiceContextProbe
+    - method: POST
+      path: /encrypted-live/mapped/service-probe-rewrite
+      handler: root.internal.live.rewriteServiceContextProbe
+    - method: POST
+      path: /encrypted-live/mapped/service-probe-restore
+      handler: root.internal.live.restoreServiceContextProbe
+    - method: POST
       path: /encrypted-live/mapped/barrier
       handler: root.internal.live.activateBarrier
     - method: POST

@@ -17,6 +17,7 @@ const MAPPED_DATABASE = storageDatabaseName(MAPPED_SERVICE);
 const DEFAULT_COLLECTION = 'Credential';
 const ARCHIVE_COLLECTION = 'CredentialArchive';
 const MAPPED_COLLECTION = 'mapped_package_secret';
+const ROTATION_PAGE_SIZE = 100;
 const DEFAULT_BASE = '/encrypted-live/default';
 const MAPPED_BASE = '/encrypted-live/mapped';
 
@@ -156,6 +157,9 @@ async function run() {
   });
   await resumed.beginWriteBarrier();
   await resumed.migrateCollection(crashEntry);
+  const resumedCursors = resumed.scanCursors(crashEntry);
+  assert(resumedCursors.length >= 2, 'default rotation must cross at least two scan pages');
+  assert(resumedCursors.some((cursor) => cursor > 0), 'default rotation never issued a non-zero lastId scan');
   const afterResume = await rawDefault(state.main.id);
   assert(
     envelopeCiphertext(afterCrashedWrite.apiKey) !== envelopeCiphertext(afterResume.apiKey),
@@ -225,9 +229,9 @@ async function run() {
   }
 
   console.log('PASS operation matrix: insert/read/projection/insert-many/replace/upsert/key-update');
-  console.log('PASS raw Mongo: plaintext absent, nonce independent, default+mapped collection AAD enforced');
+  console.log('PASS raw Mongo: plaintext absent, nonce independent, field/collection/record/service AAD enforced');
   console.log('PASS keyring lifecycle: restart, wrong-root/delete fail closed, old-read/new-write, fingerprint events');
-  console.log('PASS rotation cohort: barrier, tuple checkpoints, crash replay, inventory refusal, raw $ne=0, offline recovery');
+  console.log('PASS rotation cohort: multi-page cursor, barrier, tuple checkpoints, crash replay, inventory refusal, raw $ne=0, offline recovery');
   await liveHarness.cleanup({ forceFallbackForTest: true });
   assert(liveHarness.cleanupFallbackUsed, 'cleanup fallback path must be exercised');
   assert(liveHarness.cleanupFallbackGroups.length >= 3, 'cleanup fallback did not own all managed process groups');
@@ -384,9 +388,28 @@ async function exerciseOperationMatrix() {
   archiveRows.set(archiveOne.id, archiveOne);
   plaintexts.push(archiveOne.apiKey);
 
-  const defaultCursorRows = await callDefault('/scan', { lastId: 4 });
+  const paginationRows = Array.from({ length: 105 }, (_, index) => ({
+    id: `credential-page-${String(index).padStart(3, '0')}`,
+    apiKey: 'sk-live-page-api',
+    refreshToken: 'sk-live-page-refresh',
+    label: `page-${index}`,
+    sequence: 1000 + index,
+  }));
+  await callDefault('/insert-bulk', { rows: paginationRows });
+  plaintexts.push(paginationRows[0].apiKey, paginationRows[0].refreshToken);
+
+  const serviceProbe = {
+    id: main.id,
+    apiKey: main.apiKey,
+    label: 'mapped-service-context',
+    sequence: 1,
+  };
+  await callMapped('/service-probe-insert', serviceProbe);
+  plaintexts.push(serviceProbe.apiKey);
+
+  const defaultCursorRows = await callDefault('/scan', { lastId: 1103 });
   assert(
-    defaultCursorRows.length === 1 && defaultCursorRows[0].sequence === 5,
+    defaultCursorRows.length === 1 && defaultCursorRows[0].sequence === 1104,
     'default scan must apply its non-zero lastId cursor',
   );
   const mappedCursorRows = await callMapped('/scan', { lastId: 1 });
@@ -395,7 +418,17 @@ async function exerciseOperationMatrix() {
     'mapped scan must apply its non-zero lastId cursor',
   );
 
-  return { plaintexts, defaultRows, archiveRows, mappedRows, main, mappedOne, archiveOne };
+  return {
+    plaintexts,
+    defaultRows,
+    archiveRows,
+    mappedRows,
+    paginationRows,
+    main,
+    mappedOne,
+    archiveOne,
+    serviceProbe,
+  };
 }
 
 async function assertPhysicalStorage(state, keyId) {
@@ -404,12 +437,15 @@ async function assertPhysicalStorage(state, keyId) {
   assert(defaultCollections.includes(DEFAULT_COLLECTION), 'default physical collection missing');
   assert(defaultCollections.includes(ARCHIVE_COLLECTION), 'second default physical collection missing');
   assert(mappedCollections.includes(MAPPED_COLLECTION), 'mapped final physical collection missing');
+  assert(mappedCollections.includes(DEFAULT_COLLECTION), 'mapped service-owned Credential collection missing');
   assert(!mappedCollections.includes('package_secret'), 'unmapped package collection must not be used');
 
   const documents = await liveHarness.rawDocuments(DEFAULT_DATABASE, DEFAULT_COLLECTION);
   const archiveDocuments = await liveHarness.rawDocuments(DEFAULT_DATABASE, ARCHIVE_COLLECTION);
   const mappedDocuments = await liveHarness.rawDocuments(MAPPED_DATABASE, MAPPED_COLLECTION);
-  const raw = JSON.stringify([documents, archiveDocuments, mappedDocuments]);
+  const mappedServiceDocuments = await liveHarness.rawDocuments(MAPPED_DATABASE, DEFAULT_COLLECTION);
+  const raw = JSON.stringify([documents, archiveDocuments, mappedDocuments, mappedServiceDocuments]);
+  assert(documents.length > ROTATION_PAGE_SIZE, 'default rotation fixture must span more than one scan page');
   for (const plaintext of state.plaintexts) {
     assert(!raw.includes(plaintext), `raw Mongo contains plaintext sentinel ${plaintext}`);
   }
@@ -422,6 +458,9 @@ async function assertPhysicalStorage(state, keyId) {
   }
   for (const document of archiveDocuments) {
     assertEnvelope(document.apiKey, keyId, 'archive apiKey envelope');
+  }
+  for (const document of mappedServiceDocuments) {
+    assertEnvelope(document.apiKey, keyId, 'mapped service-owned apiKey envelope');
   }
   const first = documents.find((document) => document._id === 'credential-many-a');
   const second = documents.find((document) => document._id === 'credential-many-b');
@@ -452,6 +491,28 @@ async function assertCrossContextCopyFails(state) {
   });
   await assertReadFailsClosed(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, target._id, state.plaintexts);
   await callDefault('/update', state.defaultRows.get(target._id));
+
+  source = await rawDefault(state.main.id);
+  const mappedServiceTarget = await liveHarness.rawDocument(
+    MAPPED_DATABASE,
+    DEFAULT_COLLECTION,
+    state.serviceProbe.id,
+  );
+  assert(source._id === mappedServiceTarget._id, 'service-only AAD probe must keep record id unchanged');
+  assert(
+    state.main.apiKey === state.serviceProbe.apiKey,
+    'service-only AAD probe must keep the encrypted plaintext unchanged',
+  );
+  await liveHarness.setRawFields(MAPPED_DATABASE, DEFAULT_COLLECTION, state.serviceProbe.id, {
+    apiKey: source.apiKey,
+  });
+  await assertReadFailsClosed(
+    MAPPED_SERVICE,
+    `${MAPPED_BASE}/service-probe-read`,
+    state.serviceProbe.id,
+    state.plaintexts,
+  );
+  await callMapped('/service-probe-restore', state.serviceProbe);
 
   const mapped = await liveHarness.rawDocument(MAPPED_DATABASE, MAPPED_COLLECTION, state.mappedOne.id);
   await liveHarness.setRawFields(DEFAULT_DATABASE, DEFAULT_COLLECTION, state.main.id, {
@@ -497,6 +558,17 @@ function rotationInventory(testRunnerStorage) {
       barrierStatusPath: `${MAPPED_BASE}/barrier-status`,
     },
     {
+      storageServiceId: MAPPED_SERVICE,
+      database: MAPPED_DATABASE,
+      collection: DEFAULT_COLLECTION,
+      fields: ['apiKey'],
+      scanPath: `${MAPPED_BASE}/service-probe-scan`,
+      rewritePath: `${MAPPED_BASE}/service-probe-rewrite`,
+      service: MAPPED_SERVICE,
+      barrierPath: `${MAPPED_BASE}/barrier`,
+      barrierStatusPath: `${MAPPED_BASE}/barrier-status`,
+    },
+    {
       storageServiceId: testRunnerStorage.storageServiceId,
       database: testRunnerStorage.database,
       collection: testRunnerStorage.collection,
@@ -524,6 +596,7 @@ class RotationCohort {
     Object.assign(this, input);
     this.checkpoints = checkpoints;
     this.writeBarrier = false;
+    this.scanHistory = new Map();
   }
 
   async beginWriteBarrier() {
@@ -540,6 +613,10 @@ class RotationCohort {
 
   checkpoint(entry) {
     return this.checkpoints.get(this.checkpointKey(entry));
+  }
+
+  scanCursors(entry) {
+    return this.scanHistory.get(this.checkpointKey(entry)) ?? [];
   }
 
   assertRetirementInventory(candidate) {
@@ -577,31 +654,43 @@ class RotationCohort {
       await this.saveCheckpoint(entry, { lastId: null, complete: true });
       return;
     }
-    const cursor = this.checkpoint(entry)?.lastId ?? 0;
-    const rows = await this.harness.request(entry.service, entry.scanPath, {
-      lastId: cursor,
-    });
-    assert(
-      rows.every((row) => row.sequence > cursor),
-      `${entry.collection} scan did not honor lastId ${cursor}`,
-    );
+    let cursor = this.checkpoint(entry)?.lastId ?? 0;
     const batchSize = 2;
-    for (let offset = 0; offset < rows.length; offset += batchSize) {
-      const batch = rows.slice(offset, offset + batchSize);
-      for (const row of batch) {
-        await this.harness.request(entry.service, entry.rewritePath, row, {
-          rotationToken: this.barrierToken,
-        });
+    while (true) {
+      const key = this.checkpointKey(entry);
+      const cursors = this.scanHistory.get(key) ?? [];
+      cursors.push(cursor);
+      this.scanHistory.set(key, cursors);
+      const rows = await this.harness.request(entry.service, entry.scanPath, {
+        lastId: cursor,
+      });
+      assert(rows.length <= ROTATION_PAGE_SIZE, `${entry.collection} scan exceeded its page limit`);
+      assert(
+        rows.every((row) => row.sequence > cursor),
+        `${entry.collection} scan did not honor lastId ${cursor}`,
+      );
+      if (rows.length === 0) {
+        await this.saveCheckpoint(entry, { lastId: cursor, complete: true });
+        return;
       }
-      if (crashAfterFirstBatchBeforeCheckpoint && offset === 0) {
-        throw new SimulatedCheckpointCrash();
+      for (let offset = 0; offset < rows.length; offset += batchSize) {
+        const batch = rows.slice(offset, offset + batchSize);
+        for (const row of batch) {
+          await this.harness.request(entry.service, entry.rewritePath, row, {
+            rotationToken: this.barrierToken,
+          });
+        }
+        if (crashAfterFirstBatchBeforeCheckpoint && offset === 0) {
+          throw new SimulatedCheckpointCrash();
+        }
+        cursor = batch.at(-1).sequence;
+        await this.saveCheckpoint(entry, { lastId: cursor, complete: false });
       }
-      await this.saveCheckpoint(entry, { lastId: batch.at(-1).sequence, complete: false });
+      if (rows.length < ROTATION_PAGE_SIZE) {
+        await this.saveCheckpoint(entry, { lastId: cursor, complete: true });
+        return;
+      }
     }
-    await this.saveCheckpoint(entry, {
-      lastId: rows.at(-1)?.sequence ?? cursor,
-      complete: true,
-    });
   }
 
   async retireOldKey(candidateInventory, nextKeyring) {
@@ -654,6 +743,14 @@ async function assertAllBusinessRowsReadable(state) {
   }
   for (const row of state.archiveRows.values()) {
     await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/archive-read`, row);
+  }
+  await assertBusinessRead(
+    MAPPED_SERVICE,
+    `${MAPPED_BASE}/service-probe-read`,
+    state.serviceProbe,
+  );
+  for (const index of [0, 99, 104]) {
+    await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, state.paginationRows[index]);
   }
 }
 

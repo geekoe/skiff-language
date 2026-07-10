@@ -18,6 +18,34 @@ type BarrierStatus {
   active: bool,
 }
 
+type Credential {
+  id: string,
+  apiKey: string,
+  label: string,
+  sequence: number,
+}
+
+db object Credential {
+  name "Credential"
+  primary key(id)
+  storage apiKey using encrypted
+}
+
+type CredentialInput {
+  id: string,
+  apiKey: string,
+  label: string,
+  sequence: number,
+}
+
+type IdInput {
+  id: string,
+}
+
+type ScanInput {
+  lastId: number,
+}
+
 function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
   return null
 }
@@ -49,6 +77,50 @@ function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse
 function barrierStatus(request: std.http.HttpRequest) -> std.http.HttpResponse {
   const barrier = db find RotationBarrier("encrypted-storage-live")
   return std.http.json(200, BarrierStatus { active: barrier != null && barrier.active })
+}
+
+function insertServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db insert Credential {
+    id = input.id
+    apiKey = input.apiKey
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function readServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  return std.http.json(200, db require Credential(input.id))
+}
+
+function scanServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<ScanInput>(request)
+  const rows = db find many Credential { where sequence > input.lastId order sequence asc limit 100 }
+  return std.http.json(200, rows)
+}
+
+function rewriteServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) { apiKey = input.apiKey }
+  return std.http.json(200, row)
+}
+
+function restoreServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) {
+    apiKey = input.apiKey
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
