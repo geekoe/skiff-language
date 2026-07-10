@@ -7,7 +7,6 @@ pub mod file_unit;
 pub mod linked;
 mod overlay;
 pub mod package_unit;
-mod resource;
 pub mod resolver;
 pub mod service_unit;
 mod type_params;
@@ -43,10 +42,6 @@ pub use package_unit::{
     LinkedTypeExport, PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint,
     PackageExportIndex, PackageUnit, TypeExport,
 };
-pub use resource::{
-    LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,
-    PublicationResourceTable, RuntimeProgramResourceLookupError, RuntimeProgramResourceView,
-};
 pub use resolver::{
     resolve_executable_from_units, resolve_file_from_units, LinkedProgramImageResolverExt,
     LinkedProgramResolveError, LinkedProgramResolveResult, ResolvedLinkedExecutable,
@@ -57,6 +52,10 @@ pub use service_unit::{
     PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceDependencyConstraint,
     ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
     ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+};
+pub use skiff_runtime_model::resource::{
+    LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,
+    PublicationResourceTable, RuntimeProgramResourceLookupError, RuntimeProgramResourceView,
 };
 pub use type_params::executable_type_param_names;
 pub use types::{

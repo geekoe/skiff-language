@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use skiff_artifact_model::PublicationResourceRef;
 
-use crate::UnitAddr;
+use crate::addr::UnitAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationResourcePath {
@@ -55,9 +55,7 @@ fn validate_publication_resource_path(path: &str) -> Result<(), PublicationResou
         return Err(invalid_resource_path("resource path must be relative"));
     }
     if path.contains('\\') {
-        return Err(invalid_resource_path(
-            "resource path must use / separators",
-        ));
+        return Err(invalid_resource_path("resource path must use / separators"));
     }
     if path.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(invalid_resource_path(
@@ -189,7 +187,9 @@ mod tests {
 
     #[test]
     fn publication_resource_path_rejects_non_canonical_paths() {
-        for path in ["", "/a", "./a", "a/./b", "a//b", "a\\b", "../a", "a/..", "a/"] {
+        for path in [
+            "", "/a", "./a", "a/./b", "a//b", "a\\b", "../a", "a/..", "a/",
+        ] {
             assert!(
                 PublicationResourcePath::parse(path).is_err(),
                 "{path:?} should be invalid"

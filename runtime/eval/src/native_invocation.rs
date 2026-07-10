@@ -43,9 +43,9 @@ pub fn resolve_runtime_native_invocation(
         };
     let program = interpreter.program_projection()?.type_view();
     let actor_metadata = resolve_actor_native_metadata(binding_key, &target_name, call)?;
-    let resource_owner =
-        (runtime_shared_native_route(binding_key) == Some(RuntimeNativeRoute::Resource))
-            .then(|| current_addr.unit.clone());
+    let resource_owner = (runtime_shared_native_route(binding_key)
+        == Some(RuntimeNativeRoute::Resource))
+    .then(|| current_addr.unit.clone());
     let plan = match resolve_runtime_native_call_plan(
         program,
         current_addr,

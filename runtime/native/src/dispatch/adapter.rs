@@ -6,8 +6,8 @@ use crate::error::{Result, RuntimeError};
 use crate::{
     capability::{
         NativeActorCapability, NativeConfigCapability, NativeFileCapabilityBundle,
-        NativeHttpClientCapability, NativeHttpResponseStreamCapability, NativeTelemetryCapability,
-        NativeTimeCapability, NativeWebsocketCapability, NativeResourceCapability,
+        NativeHttpClientCapability, NativeHttpResponseStreamCapability, NativeResourceCapability,
+        NativeTelemetryCapability, NativeTimeCapability, NativeWebsocketCapability,
     },
     runtime_value_facade::{RequestHeap, RuntimeTypePlan, RuntimeValue},
 };

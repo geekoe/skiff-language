@@ -10,7 +10,7 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     FileIrRef, FileIrUnit, PackageUnit, PublicationResourceRef, ServiceUnit,
 };
-use skiff_runtime_linked_program::{
+use skiff_runtime_model::{
     LoadedPublicationResource, PublicationResourcePath, PublicationResourceTable,
 };
 

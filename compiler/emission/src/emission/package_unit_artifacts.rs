@@ -171,7 +171,10 @@ mod tests {
         let package_unit = package_unit_artifact(&unit);
 
         assert_eq!(resource_blobs.len(), 1);
-        assert_eq!(resource_blobs[0].artifact_path, format!("resources/sha256/{sha256}"));
+        assert_eq!(
+            resource_blobs[0].artifact_path,
+            format!("resources/sha256/{sha256}")
+        );
         assert_eq!(resource_blobs[0].sha256, sha256);
         assert_eq!(resource_blobs[0].byte_len, 14);
         assert_eq!(resource_blobs[0].bytes, b"hello resource");

@@ -2328,7 +2328,6 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-runtime-linked-program",
  "skiff-runtime-model",
 ]
 
@@ -2339,6 +2338,7 @@ dependencies = [
  "bytes",
  "serde",
  "serde_json",
+ "skiff-artifact-model",
  "thiserror",
 ]
 
@@ -2355,7 +2355,6 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
- "skiff-runtime-linked-program",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
  "thiserror",

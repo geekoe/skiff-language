@@ -4,8 +4,8 @@ use crate::emission::artifact::{
     CONTRACT_SCHEMA_ARTIFACT_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_UNIT_SCHEMA_VERSION,
     SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
-use crate::emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts};
 use crate::emission::identity::identity;
+use crate::emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts};
 use crate::error::{EmissionError, Result};
 use crate::projection::context::{PackageApiSourceProjection, ProjectedServiceDependencyLockEntry};
 use crate::projection::contract::{CanonicalContractProjectionSchema, ContractProjection};

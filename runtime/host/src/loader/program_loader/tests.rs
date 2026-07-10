@@ -317,8 +317,7 @@ fn artifact_loader_rejects_service_resource_missing_blob() {
     let error_text = format!("{error:#}");
     assert!(
         error_text.contains("resources/system.md")
-            && (error_text.contains("failed to resolve")
-                || error_text.contains("No such file")),
+            && (error_text.contains("failed to resolve") || error_text.contains("No such file")),
         "unexpected error: {error_text}"
     );
 }

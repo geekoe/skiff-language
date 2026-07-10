@@ -1,6 +1,6 @@
 use serde_json::json;
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
-use skiff_runtime_linked_program::{
+use skiff_runtime_model::{
     LoadedPublicationResource, PublicationResourcePath, RuntimeProgramResourceLookupError,
 };
 
@@ -39,7 +39,8 @@ impl ResourceNativeDispatch {
         let binding_key = invocation.binding_key();
         match binding_key {
             "std.resource.bytes" => {
-                let (path, resource) = resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
+                let (path, resource) =
+                    resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
                 let value = RuntimeValue::Heap(heap.alloc_bytes(resource.bytes.as_ref())?);
                 invocation.native_boundary()?.coerce_return(
                     &value,
@@ -48,7 +49,8 @@ impl ResourceNativeDispatch {
                 )
             }
             "std.resource.text" => {
-                let (path, resource) = resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
+                let (path, resource) =
+                    resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
                 let text = resource_text(path.as_str(), resource)?;
                 invocation.native_boundary()?.coerce_return(
                     &RuntimeValue::String(text.to_string()),
@@ -57,7 +59,8 @@ impl ResourceNativeDispatch {
                 )
             }
             "std.resource.json" => {
-                let (path, resource) = resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
+                let (path, resource) =
+                    resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
                 let text = resource_text(path.as_str(), resource)?;
                 RuntimeBoundaryContract::default()
                     .codec_for_expected(
@@ -69,7 +72,8 @@ impl ResourceNativeDispatch {
                     .map_err(|error| resource_json_decode_error(path.as_str(), error.into()))
             }
             "std.resource.info" => {
-                let (path, resource) = resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
+                let (path, resource) =
+                    resource_arg(resource_context, invocation, diagnostic_target, &args, heap)?;
                 let value = json!({
                     "path": path.as_str(),
                     "size": resource.meta.byte_len,
@@ -159,10 +163,9 @@ fn resource_text<'a>(path: &str, resource: &'a LoadedPublicationResource) -> Res
 
 fn resource_json_decode_error(path: &str, error: RuntimeError) -> RuntimeError {
     match error {
-        RuntimeError::Decode(message) => RuntimeError::decode_target(
-            "std.resource.json",
-            format!("resource {path}: {message}"),
-        ),
+        RuntimeError::Decode(message) => {
+            RuntimeError::decode_target("std.resource.json", format!("resource {path}: {message}"))
+        }
         RuntimeError::DecodeTarget { target, message } => RuntimeError::decode_target(
             "std.resource.json",
             format!("resource {path}: decode error for {target}: {message}"),

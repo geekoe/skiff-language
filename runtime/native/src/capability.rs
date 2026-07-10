@@ -7,8 +7,8 @@ use skiff_runtime_capability_context::{
     ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
     FileCapabilityFuture, FileChunkFuture, FileChunkSource,
 };
-use skiff_runtime_linked_program::{PublicationResourceTable, RuntimeProgramResourceView};
 use skiff_runtime_model::addr::ExecutableAddr;
+use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
 
 use crate::error::Result;
 use crate::runtime_value_facade::{
