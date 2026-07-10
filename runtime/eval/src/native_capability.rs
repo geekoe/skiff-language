@@ -8,12 +8,13 @@ use super::capabilities::{
     StreamCapabilityContext,
 };
 use super::program_execution::ProgramExecutionContext;
+use crate::invocation::EvalProgramProjection;
 use skiff_runtime_capability_context::{
     project_native_capability_context, NativeCapabilityContexts, NativeCapabilityProjectionSource,
 };
 use skiff_runtime_native_contract::NativeRequiredContext;
 
-type RuntimeNativeCapabilityContexts<'execution> = NativeCapabilityContexts<
+type RuntimeNativeCapabilityContexts<'context, 'execution> = NativeCapabilityContexts<
     RuntimeNativeActorCapabilityContext<'execution>,
     RuntimeNativeFileCapabilityContext<'execution>,
     RuntimeNativeTimeCapabilityContext<'execution>,
@@ -21,22 +22,45 @@ type RuntimeNativeCapabilityContexts<'execution> = NativeCapabilityContexts<
     RuntimeNativeHttpResponseStreamCapabilityContext<'execution>,
     RuntimeNativeWebsocketCapabilityContext<'execution>,
     RuntimeNativeTelemetryCapabilityContext,
+    RuntimeNativeResourceCapabilityContext<'context>,
 >;
 
 struct RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
     context: &'context ProgramExecutionContext<'execution>,
+    program: EvalProgramProjection<'context>,
     stream_context: StreamCapabilityContext,
 }
 
 impl<'context, 'execution> RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
     fn new(
         context: &'context ProgramExecutionContext<'execution>,
+        program: EvalProgramProjection<'context>,
         stream_context: StreamCapabilityContext,
     ) -> Self {
         Self {
             context,
+            program,
             stream_context,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RuntimeNativeResourceCapabilityContext<'a> {
+    resources: skiff_runtime_linked_program::RuntimeProgramResourceView<'a>,
+}
+
+impl<'a> RuntimeNativeResourceCapabilityContext<'a> {
+    fn new(resources: skiff_runtime_linked_program::RuntimeProgramResourceView<'a>) -> Self {
+        Self { resources }
+    }
+}
+
+impl skiff_runtime_native::capability::NativeResourceCapability
+    for RuntimeNativeResourceCapabilityContext<'_>
+{
+    fn resources(&self) -> skiff_runtime_linked_program::RuntimeProgramResourceView<'_> {
+        self.resources
     }
 }
 
@@ -50,6 +74,7 @@ impl<'context, 'execution> NativeCapabilityProjectionSource
     type HttpResponseStream = RuntimeNativeHttpResponseStreamCapabilityContext<'execution>;
     type Websocket = RuntimeNativeWebsocketCapabilityContext<'execution>;
     type Telemetry = RuntimeNativeTelemetryCapabilityContext;
+    type Resource = RuntimeNativeResourceCapabilityContext<'context>;
 
     fn actor(&self) -> Self::Actor {
         RuntimeNativeActorCapabilityContext::new(self.context.actor_context())
@@ -90,13 +115,18 @@ impl<'context, 'execution> NativeCapabilityProjectionSource
     fn telemetry(&self) -> Self::Telemetry {
         RuntimeNativeTelemetryCapabilityContext::new(self.context.telemetry_context())
     }
+
+    fn resource(&self) -> Self::Resource {
+        RuntimeNativeResourceCapabilityContext::new(self.program.resource_view())
+    }
 }
 
 pub fn project_runtime_native_capability_context<'context, 'execution>(
     context: &'context ProgramExecutionContext<'execution>,
+    program: EvalProgramProjection<'context>,
     stream_context: StreamCapabilityContext,
     required_context: NativeRequiredContext,
-) -> RuntimeNativeCapabilityContexts<'execution> {
-    let source = RuntimeNativeCapabilityProjectionSource::new(context, stream_context);
+) -> RuntimeNativeCapabilityContexts<'context, 'execution> {
+    let source = RuntimeNativeCapabilityProjectionSource::new(context, program, stream_context);
     project_native_capability_context(required_context, &source)
 }

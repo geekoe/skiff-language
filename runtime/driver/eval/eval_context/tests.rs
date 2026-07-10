@@ -1811,6 +1811,8 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
         })],
         packages: Vec::new(),
         package_files: Vec::new(),
+        service_resources: Default::default(),
+        package_resources: Vec::new(),
         package_configs: Vec::new(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),

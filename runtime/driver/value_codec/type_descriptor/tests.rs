@@ -1587,6 +1587,8 @@ fn type_descriptor_program(
             "pkg:abi",
         ))],
         package_files: vec![package_files],
+        service_resources: Default::default(),
+        package_resources: vec![Default::default()],
         package_configs: Vec::new(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),

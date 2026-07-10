@@ -1,15 +1,15 @@
 use super::{
     actor::ActorNativeDispatch, bytes::BytesNativeDispatch, external::ExternalNativeDispatch,
     file::FileNativeDispatch, http::HttpNativeDispatch, invocation::RuntimeNativeInvocation,
-    json::JsonNativeDispatch, telemetry::TelemetryNativeDispatch, time::TimeNativeDispatch,
-    websocket::WebsocketNativeDispatch,
+    json::JsonNativeDispatch, resource::ResourceNativeDispatch, telemetry::TelemetryNativeDispatch,
+    time::TimeNativeDispatch, websocket::WebsocketNativeDispatch,
 };
 use crate::error::{Result, RuntimeError};
 use crate::{
     capability::{
         NativeActorCapability, NativeFileCapabilityBundle, NativeHttpClientCapability,
         NativeHttpResponseStreamCapability, NativeTelemetryCapability, NativeTimeCapability,
-        NativeWebsocketCapability,
+        NativeWebsocketCapability, NativeResourceCapability,
     },
     registry::NativeRegistry,
     runtime_value_facade::{RequestHeap, RuntimeValue},
@@ -27,6 +27,7 @@ pub enum RuntimeNativeRoute {
     Http,
     Websocket,
     Telemetry,
+    Resource,
     NativeRegistry,
     ReceiverMethod,
 }
@@ -55,6 +56,9 @@ pub fn runtime_shared_native_route(target: &str) -> Option<RuntimeNativeRoute> {
     }
     if TelemetryNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Telemetry);
+    }
+    if ResourceNativeDispatch::matches(target) {
+        return Some(RuntimeNativeRoute::Resource);
     }
     if is_runtime_receiver_native_binding_key(target) {
         return Some(RuntimeNativeRoute::ReceiverMethod);
@@ -121,6 +125,7 @@ pub(super) async fn dispatch_resolved_native_call<
     HttpResponseStreamContext,
     WebsocketContext,
     TelemetryContext,
+    ResourceContext,
 >(
     native_capability_context: NativeCapabilityContexts<
         ActorContext,
@@ -130,6 +135,7 @@ pub(super) async fn dispatch_resolved_native_call<
         HttpResponseStreamContext,
         WebsocketContext,
         TelemetryContext,
+        ResourceContext,
     >,
     invocation: RuntimeNativeInvocation,
     args: Vec<RuntimeValue>,
@@ -143,6 +149,7 @@ where
     HttpResponseStreamContext: NativeHttpResponseStreamCapability,
     WebsocketContext: NativeWebsocketCapability,
     TelemetryContext: NativeTelemetryCapability,
+    ResourceContext: NativeResourceCapability,
 {
     let binding_key = invocation.binding_key();
     let diagnostic_target = invocation.target_name();
@@ -255,6 +262,25 @@ where
         };
         return TelemetryNativeDispatch::dispatch(
             &telemetry_context,
+            &invocation,
+            diagnostic_target,
+            args,
+            heap,
+        );
+    }
+    if ResourceNativeDispatch::matches(binding_key) {
+        let resource_context = match native_capability_context {
+            NativeCapabilityContexts::Resource(resource_context) => resource_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    binding_key,
+                    NativeRequiredContext::Resource,
+                    other.required_context(),
+                ));
+            }
+        };
+        return ResourceNativeDispatch::dispatch(
+            &resource_context,
             &invocation,
             diagnostic_target,
             args,

@@ -1,0 +1,17 @@
+type ResourceError implements ErrorPayload {
+  path: string,
+  message: string,
+}
+
+type ResourceInfo {
+  path: string,
+  size: integer,
+  sha256: string,
+  contentType: string?,
+}
+
+native function bytes(path: string) -> bytes
+native function text(path: string) -> string
+native function json<T>(path: string) -> T
+native function info(path: string) -> ResourceInfo
+native function exists(path: string) -> bool

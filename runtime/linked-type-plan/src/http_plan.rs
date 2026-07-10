@@ -243,6 +243,8 @@ mod tests {
                 )),
             ],
             package_files: vec![Vec::new(), Vec::new()],
+            service_resources: Default::default(),
+            package_resources: vec![Default::default(), Default::default()],
             routes: HashMap::new(),
             spawn_routes: HashMap::new(),
             operations: HashMap::new(),

@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{file_ir_identity, package_abi_identity, package_build_identity};
 
 use super::*;
@@ -228,6 +229,308 @@ fn artifact_loader_rejects_package_file_ref_missing_artifact_path() {
     assert!(
         error_text.contains("requires artifactPath"),
         "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_service_resource_missing_artifact_path() {
+    let temp = TempDir::new("runtime-program-resource-missing-artifact-path");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        Vec::new(),
+        Vec::new(),
+    );
+    service["resources"] = json!([resource_ref_without_artifact_path(
+        "prompts/system.md",
+        b"system"
+    )]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("resource refs must declare artifactPath");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("requires artifactPath"),
+        "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_service_resource_missing_blob() {
+    let temp = TempDir::new("runtime-program-resource-missing-blob");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        Vec::new(),
+        Vec::new(),
+    );
+    service["resources"] = json!([resource_ref(
+        "prompts/system.md",
+        "resources/system.md",
+        b"system"
+    )]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("resource artifactPath must point at an existing blob");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("resources/system.md")
+            && (error_text.contains("failed to resolve")
+                || error_text.contains("No such file")),
+        "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_service_resource_hash_mismatch() {
+    let temp = TempDir::new("runtime-program-resource-hash-mismatch");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_resource_blob(&root, "resources/system.md", b"actual");
+    let mut resource = resource_ref("prompts/system.md", "resources/system.md", b"expected");
+    resource["byteLen"] = json!(6);
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        Vec::new(),
+        Vec::new(),
+    );
+    service["resources"] = json!([resource]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("resource sha256 mismatch must fail");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("sha256 mismatch"),
+        "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_service_resource_size_mismatch() {
+    let temp = TempDir::new("runtime-program-resource-size-mismatch");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_resource_blob(&root, "resources/system.md", b"actual");
+    let mut resource = resource_ref("prompts/system.md", "resources/system.md", b"actual");
+    resource["byteLen"] = json!(5);
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        Vec::new(),
+        Vec::new(),
+    );
+    service["resources"] = json!([resource]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("resource byte_len mismatch must fail");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("byte_len mismatch"),
+        "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_rejects_service_resource_duplicate_path() {
+    let temp = TempDir::new("runtime-program-resource-duplicate-path");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_resource_blob(&root, "resources/a.md", b"a");
+    write_resource_blob(&root, "resources/b.md", b"b");
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        Vec::new(),
+        Vec::new(),
+    );
+    service["resources"] = json!([
+        resource_ref("prompts/system.md", "resources/a.md", b"a"),
+        resource_ref("prompts/system.md", "resources/b.md", b"b")
+    ]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect_err("duplicate resource paths for one owner must fail closed");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("duplicate resource path"),
+        "unexpected error: {error_text}"
+    );
+}
+
+#[test]
+fn artifact_loader_keeps_service_and_package_resources_separate() {
+    let temp = TempDir::new("runtime-program-service-package-resource-same-path");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_resource_blob(&root, "resources/service-system.md", b"service bytes");
+    write_resource_blob(&root, "resources/package-system.md", b"package bytes");
+    let mut service = service_unit_json(
+        "example.com/svc",
+        "v1",
+        "file:service",
+        "units/files/service.json",
+        vec![json!({
+            "id": "example.com/pkg",
+            "version": "1.0.0",
+            "alias": "pkg"
+        })],
+        Vec::new(),
+    );
+    service["resources"] = json!([resource_ref(
+        "prompts/system.md",
+        "resources/service-system.md",
+        b"service bytes"
+    )]);
+    write_service_unit(&root, "units/services/svc-v1.json", service);
+    write_package_index(
+        &root,
+        "example.com/pkg",
+        "1.0.0",
+        "units/packages/pkg-1.0.0.json",
+    );
+    let mut package = package_unit_json("example.com/pkg", "1.0.0", "pkg:build:1.0.0", "abi:pkg");
+    package["resources"] = json!([resource_ref(
+        "prompts/system.md",
+        "resources/package-system.md",
+        b"package bytes"
+    )]);
+    write_json(&root, "units/packages/pkg-1.0.0.json", package);
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "v1",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let layers = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "v1"),
+    )
+    .expect("service and package resources with the same logical path should load");
+
+    assert_eq!(
+        layers
+            .image
+            .service_resources
+            .get("prompts/system.md")
+            .expect("service resource")
+            .bytes
+            .as_ref(),
+        b"service bytes"
+    );
+    assert_eq!(
+        layers.image.package_resources[0]
+            .get("prompts/system.md")
+            .expect("package resource")
+            .bytes
+            .as_ref(),
+        b"package bytes"
     );
 }
 
@@ -2419,6 +2722,35 @@ fn package_unit_json(
             }
         }
     })
+}
+
+fn resource_ref(path: &str, artifact_path: &str, bytes: &[u8]) -> Value {
+    let mut value = resource_ref_without_artifact_path(path, bytes);
+    value["artifactPath"] = json!(artifact_path);
+    value
+}
+
+fn resource_ref_without_artifact_path(path: &str, bytes: &[u8]) -> Value {
+    json!({
+        "path": path,
+        "sha256": sha256_hex(bytes),
+        "byteLen": bytes.len(),
+        "contentType": "text/plain"
+    })
+}
+
+fn write_resource_blob(root: &Path, relative_path: &str, bytes: &[u8]) {
+    let path = root.join(relative_path);
+    fs::create_dir_all(
+        path.parent()
+            .expect("test resource path should have parent"),
+    )
+    .expect("resource directory should be created");
+    fs::write(path, bytes).expect("test resource blob should be written");
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn write_release_pointer(

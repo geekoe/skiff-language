@@ -168,6 +168,9 @@ fn file_capability_error_from_native(error: RuntimeError) -> FileCapabilityError
             FileCapabilityError::Decode(format!("db decode error for {target}: {message}"))
         }
         RuntimeError::FileError { message } => FileCapabilityError::File(message),
+        RuntimeError::ResourceError { path, message } => {
+            FileCapabilityError::Decode(format!("resource error for {path}: {message}"))
+        }
         RuntimeError::Cancelled => FileCapabilityError::Execution(
             skiff_runtime_capability_context::ExecutionControlError::Cancelled,
         ),
