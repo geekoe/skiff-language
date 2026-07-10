@@ -6,6 +6,7 @@ use std::{
 use crate::file_ir::{assign_file_ir_identity, FileIrUnit};
 use skiff_compiler_source::{
     parsed_sources::{parse_publication_sources, ParsedCompilerSource},
+    publication_db_metadata_index,
     semantic::{
         DbAttachmentIndex, PublicationSemanticContext, SemanticPublication, SemanticSource,
         SourceOrigin, SourceSemanticContext,
@@ -158,14 +159,27 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
             "single-file expression source model failed:\n- {message}"
         ))
     })?;
-    let expression_types =
-        ExpressionTypeModel::build(&parsed_sources, &expression_sources, &type_resolution, None)
-            .map_err(|error| {
-                CompileError::Semantic(format!(
-                    "single-file expression type model failed:\n- {}",
-                    error.message()
-                ))
-            })?;
+    let mut expression_db_metadata = publication_db_metadata_index(
+        parsed_sources
+            .iter()
+            .map(|source| (source.module_path(), source.ast())),
+        ctx.package_aliases,
+        ctx.external_type_symbols,
+    )?;
+    expression_db_metadata.extend(ctx.publication_db_metadata.clone());
+    let expression_types = ExpressionTypeModel::build(
+        &parsed_sources,
+        &expression_sources,
+        &type_resolution,
+        &expression_db_metadata,
+        None,
+    )
+    .map_err(|error| {
+        CompileError::Semantic(format!(
+            "single-file expression type model failed:\n- {}",
+            error.message()
+        ))
+    })?;
 
     let semantic_source = SemanticSource::new(
         parsed.relative_path().display().to_string(),

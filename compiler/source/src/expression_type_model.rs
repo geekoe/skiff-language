@@ -19,13 +19,15 @@ use crate::{
 };
 
 use super::{
-    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap,
+    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, PublicationDbMetadataIndex,
     RemotePublicInstanceOperationProjection, RemotePublicInstanceOperationResolver,
     ResolvedDependencies, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 
+mod db_projection;
 mod expression_assignability;
 
+use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
 
 #[derive(Clone, Debug, Default)]
@@ -191,6 +193,7 @@ struct OwnerChecker<'a> {
     owner: ExpressionOwnerKey,
     next_index: u32,
     type_resolution: &'a TypeResolutionModel,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
     expression_sources: &'a ExpressionSourceMap,
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
@@ -212,6 +215,7 @@ impl ExpressionTypeModel {
         parsed_sources: &[ParsedCompilerSource],
         expression_sources: &ExpressionSourceMap,
         type_resolution: &TypeResolutionModel,
+        publication_db_metadata: &PublicationDbMetadataIndex,
         dependencies: Option<&ResolvedDependencies>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
@@ -230,6 +234,7 @@ impl ExpressionTypeModel {
                 parsed.ast(),
                 expression_sources,
                 type_resolution,
+                publication_db_metadata,
                 &callable_signatures,
                 remote_public_instances.clone(),
                 &mut facts,
@@ -321,6 +326,7 @@ fn check_source(
     ast: &SourceFile,
     expression_sources: &ExpressionSourceMap,
     type_resolution: &TypeResolutionModel,
+    publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
@@ -348,6 +354,7 @@ fn check_source(
             &[],
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             &const_env,
@@ -375,6 +382,7 @@ fn check_source(
                 &inherited,
                 expression_sources,
                 type_resolution,
+                publication_db_metadata,
                 callable_signatures,
                 remote_public_instances,
                 &const_env,
@@ -395,6 +403,7 @@ fn check_source(
             BTreeMap::new(),
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             None,
@@ -425,6 +434,7 @@ fn check_source(
             const_env.clone(),
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             None,
@@ -452,6 +462,7 @@ fn check_source(
                     env,
                     expression_sources,
                     type_resolution,
+                    publication_db_metadata,
                     callable_signatures,
                     remote_public_instances,
                     None,
@@ -503,6 +514,7 @@ fn check_function_owner(
     inherited_type_params: &[String],
     expression_sources: &ExpressionSourceMap,
     type_resolution: &TypeResolutionModel,
+    publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     const_env: &BTreeMap<String, ResolvedTypeRef>,
@@ -539,6 +551,7 @@ fn check_function_owner(
         env,
         expression_sources,
         type_resolution,
+        publication_db_metadata,
         callable_signatures,
         remote_public_instances,
         Some(function.return_type.clone()),
@@ -561,6 +574,7 @@ impl<'a> OwnerChecker<'a> {
         env: BTreeMap<String, ResolvedTypeRef>,
         expression_sources: &'a ExpressionSourceMap,
         type_resolution: &'a TypeResolutionModel,
+        publication_db_metadata: &'a PublicationDbMetadataIndex,
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
         remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
         return_type: Option<TypeRef>,
@@ -581,6 +595,7 @@ impl<'a> OwnerChecker<'a> {
             owner,
             next_index: 0,
             type_resolution,
+            publication_db_metadata,
             expression_sources,
             callable_signatures,
             remote_public_instances,
@@ -2472,18 +2487,14 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn db_operation_type(
-        &self,
+        &mut self,
         operation: &crate::shared::ast::DbOperation,
     ) -> Option<ResolvedTypeRef> {
         let target = self
             .type_resolution
             .resolve_type_ref(&operation.target, &self.type_context)
             .ok()?;
-        let read = if operation.projection.is_some() {
-            projection_record_type("ReadonlyProjectionRecord", &target)
-        } else {
-            target.clone()
-        };
+        let read = self.db_read_type(operation, &target)?;
         match operation.op {
             crate::shared::ast::DbOperationKind::Find if operation.many => Some(array_type(read)),
             crate::shared::ast::DbOperationKind::Find
@@ -2507,6 +2518,35 @@ impl<'a> OwnerChecker<'a> {
             crate::shared::ast::DbOperationKind::Delete
             | crate::shared::ast::DbOperationKind::Exists => self.resolve_builtin("bool"),
             crate::shared::ast::DbOperationKind::Count => self.resolve_builtin("number"),
+        }
+    }
+
+    fn db_read_type(
+        &mut self,
+        operation: &crate::shared::ast::DbOperation,
+        target: &ResolvedTypeRef,
+    ) -> Option<ResolvedTypeRef> {
+        let Some(projection) = operation.projection.as_ref() else {
+            return Some(target.clone());
+        };
+        let paths = projection
+            .fields
+            .iter()
+            .map(|field| field.segments.clone())
+            .collect::<Vec<_>>();
+        match DbProjectionTypeResolver::new(
+            self.module_path,
+            self.type_resolution,
+            self.publication_db_metadata,
+        )
+        .project_read_type(&operation.target.name, target.ir.clone(), &paths)
+        {
+            Ok(ty) => Some(resolved_type_from_ir(&ty)),
+            Err(error) => {
+                self.diagnostics
+                    .push(format!("{}: {error}", self.module_path));
+                None
+            }
         }
     }
 
@@ -3302,8 +3342,8 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
-        parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-        PublicationTypeSymbolIndex,
+        parsed_sources::parse_publication_sources, publication_db_metadata_index,
+        source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     };
 
     use super::*;
@@ -3334,7 +3374,21 @@ mod tests {
         .expect("type resolution should build");
         let expression_sources = ExpressionSourceMap::build(&parsed_sources)
             .expect("expression source facts should build");
-        ExpressionTypeModel::build(&parsed_sources, &expression_sources, &type_resolution, None)
+        let db_metadata = publication_db_metadata_index(
+            parsed_sources
+                .iter()
+                .map(|source| (source.module_path(), source.ast())),
+            &BTreeMap::new(),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("DB metadata should build");
+        ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &db_metadata,
+            None,
+        )
     }
 
     fn boxing_source(body: &str) -> String {
@@ -3359,6 +3413,103 @@ mod tests {
               {body}
             "#
         )
+    }
+
+    #[test]
+    fn db_read_projection_publishes_selected_fields_and_automatic_key() {
+        expression_type_result(
+            r#"
+              type Credential {
+                id: string,
+                label: string,
+                apiKey: string,
+              }
+
+              db object Credential {
+                primary key(id)
+                storage apiKey using encrypted
+              }
+
+              function projected(id: string) -> { id: string, apiKey: string } {
+                const credential = db require Credential(id) {
+                  fields { apiKey }
+                }
+                return { id: credential.id, apiKey: credential.apiKey }
+              }
+            "#,
+        )
+        .expect("projected fields and the automatic key should be available to source typing");
+    }
+
+    #[test]
+    fn db_read_projection_preserves_nested_nullable_and_many_wrappers() {
+        expression_type_result(
+            r#"
+              type Profile {
+                displayName: string,
+                ignored: number,
+              }
+
+              type User {
+                id: string,
+                profile: Profile?,
+              }
+
+              db object User {
+                primary key(id)
+              }
+
+              function projectedMany() -> Array<{ id: string, profile: { displayName: string }? }> {
+                return db find many User {
+                  fields { profile.displayName }
+                }
+              }
+
+              function projectedOptional(id: string) -> { id: string, profile: { displayName: string }? }? {
+                return db optional User(id) {
+                  fields { profile.displayName }
+                }
+              }
+            "#,
+        )
+        .expect("nested projected shape should preserve nullable and many wrappers");
+    }
+
+    #[test]
+    fn db_read_projection_rejects_unknown_duplicate_and_parent_child_paths() {
+        let source = |fields: &str| {
+            format!(
+                r#"
+                  type Profile {{ displayName: string }}
+                  type User {{ id: string, profile: Profile, label: string }}
+                  db object User {{ primary key(id) }}
+
+                  function projected(id: string) -> void {{
+                    db require User(id) {{ fields {{ {fields} }} }}
+                  }}
+                "#
+            )
+        };
+
+        for (fields, expected) in [
+            (
+                "missing",
+                "db projection references unknown field `missing`",
+            ),
+            ("label, label", "duplicate db projection field `label`"),
+            (
+                "profile, profile.displayName",
+                "cannot include both `profile` and child path `profile.displayName`",
+            ),
+        ] {
+            let error = expression_type_result(&source(fields))
+                .expect_err("invalid projection should fail source typing")
+                .message();
+            assert!(
+                error.contains(expected),
+                "projection {fields:?} should report {expected:?}, got:\n{error}"
+            );
+        }
     }
 
     #[test]
@@ -3431,6 +3582,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect("interface boxing const return should type-check");
@@ -3585,6 +3737,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect_err("invalid constructor should fail expression type checking");
@@ -3660,8 +3813,14 @@ mod tests {
         let expression_sources = ExpressionSourceMap::build(&parsed_sources)
             .expect("expression source facts should build");
 
-        ExpressionTypeModel::build(&parsed_sources, &expression_sources, &type_resolution, None)
-            .expect("DbUpsertResult.inserted and .value fields should type-check statically");
+        ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &PublicationDbMetadataIndex::default(),
+            None,
+        )
+        .expect("DbUpsertResult.inserted and .value fields should type-check statically");
 
         let user_ir = TypeRefIr::Record {
             fields: BTreeMap::from([(
@@ -3750,6 +3909,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect("config strings and receiver builtin string calls should type-check statically");

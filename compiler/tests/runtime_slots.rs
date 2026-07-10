@@ -826,6 +826,75 @@ fn object_db_single_write_results_are_not_read_record_wrappers() {
 }
 
 #[test]
+fn object_db_projection_type_matches_source_access_and_runtime_descriptor() {
+    let artifact = compile_source_file_ir_artifact(
+        r#"
+            import std
+
+            type Profile {
+              displayName: string,
+              ignored: number
+            }
+
+            type Credential {
+              id: string,
+              profile: Profile?,
+              apiKey: string
+            }
+
+            db object Credential {
+              primary key(id)
+              storage apiKey using encrypted
+            }
+
+            function projected(id: string) -> { id: string, apiKey: string } {
+              const row = db require Credential(id) { fields { apiKey } }
+              return { id: row.id, apiKey: row.apiKey }
+            }
+
+            function encoded(id: string) -> string {
+              const row = db require Credential(id) { fields { apiKey } }
+              return std.json.encode(row)
+            }
+
+            function projectedMany() -> Array<{ id: string, profile: { displayName: string }? }> {
+              return db find many Credential { fields { profile.displayName } }
+            }
+
+            function projectedOptional(id: string) -> { id: string, profile: { displayName: string }? }? {
+              return db optional Credential(id) { fields { profile.displayName } }
+            }
+        "#,
+        "internal/db_projection_result.skiff",
+        "internal.db_projection_result",
+        "service",
+    )
+    .expect("projected fields should be accessible and JSON encodable");
+    let value = artifact.value();
+
+    for name in ["projected", "encoded"] {
+        let operations = db_operations(executable_entry(&value, name));
+        let operation = db_operation(&operations, "require", false);
+        assert_record_fields(&operation["resultType"], &["apiKey", "id"]);
+    }
+
+    let many_operations = db_operations(executable_entry(&value, "projectedMany"));
+    let many = db_operation(&many_operations, "find", true);
+    assert_eq!(many["resultType"]["kind"], "builtin");
+    assert_eq!(many["resultType"]["name"], "Array");
+    let many_item = &many["resultType"]["args"][0];
+    assert_record_fields(many_item, &["id", "profile"]);
+    assert_nullable_profile_projection(&many_item["fields"]["profile"]);
+
+    let optional_operations = db_operations(executable_entry(&value, "projectedOptional"));
+    let optional = db_operation(&optional_operations, "optional", false);
+    assert_eq!(optional["resultType"]["kind"], "nullable");
+    let optional_inner = &optional["resultType"]["inner"];
+    assert_record_fields(optional_inner, &["id", "profile"]);
+    assert_nullable_profile_projection(&optional_inner["fields"]["profile"]);
+}
+
+#[test]
 fn object_db_upsert_result_fields_lower_to_static_field_access() {
     let artifact = compile_source_file_ir_artifact(
         r#"
@@ -1367,6 +1436,23 @@ fn db_operation<'a>(operations: &'a [&Value], op: &str, many: bool) -> &'a Value
         .copied()
         .find(|operation| operation["op"] == op && operation["many"] == many)
         .unwrap_or_else(|| panic!("db {op} many={many} operation should be present"))
+}
+
+fn assert_record_fields(ty: &Value, expected: &[&str]) {
+    assert_eq!(ty["kind"], "record", "expected record type: {ty}");
+    let fields = ty["fields"]
+        .as_object()
+        .expect("record fields should be an object");
+    let names = fields.keys().map(String::as_str).collect::<Vec<_>>();
+    assert_eq!(names, expected, "unexpected record fields: {ty}");
+}
+
+fn assert_nullable_profile_projection(ty: &Value) {
+    assert_eq!(ty["kind"], "nullable");
+    let profile = &ty["inner"];
+    assert_record_fields(profile, &["displayName"]);
+    assert_eq!(profile["fields"]["displayName"]["kind"], "builtin");
+    assert_eq!(profile["fields"]["displayName"]["name"], "string");
 }
 
 fn assert_user_db_object_symbol(ty: &Value) {

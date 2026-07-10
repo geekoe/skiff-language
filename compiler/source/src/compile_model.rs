@@ -226,6 +226,7 @@ impl SourceCompileModel {
             &input.parsed_sources,
             &expression_sources,
             &type_resolution,
+            indexes.publication_db_metadata_index(),
             Some(&dependencies),
         )
         .map_err(|error| PublicationError::ContractValidation {

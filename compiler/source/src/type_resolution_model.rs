@@ -3932,6 +3932,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &crate::PublicationDbMetadataIndex::default(),
             None,
         )
         .expect_err("Concrete argument should not be assignable to bare interface parameter");
