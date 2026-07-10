@@ -95,6 +95,9 @@ Service 是 Publication 的远程运行形态：
 - 在 `ServiceUnit.operations` 中保存 `operation_abi_id` 到 service-local target 的 runtime table。
 - 在 `ServiceUnit.operationRouteBindings` 中保存 gateway / service ingress selector 到
   `operation_abi_id` 的预编译映射。
+- `ServiceUnit.gateway.routes` 的 HTTP route collection 以 canonical `METHOD /literal/path`
+  为 key；method 必须大写。同一 literal path 的不同 method 是不同 route identity，并各自投影为
+  同名格式的 `HttpGateway` operation route selector，不能按 path 覆盖。
 - 拥有 service version、protocol identity、ingress metadata、runtime activation 和 release pointer。
 - 可以被 router / runtime 作为远程请求目标。
 

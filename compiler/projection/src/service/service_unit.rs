@@ -2659,15 +2659,13 @@ fn executable_index_by_identity_and_symbol(
 pub fn service_unit_gateway(gateway: &GatewayEntry) -> GatewayConfig {
     let mut config = GatewayConfig::default();
     for route in gateway.http_routes() {
-        config.routes.insert(
-            route.path.clone(),
-            GatewayRoute {
-                operation: route.operation.clone(),
-                operation_abi_id: route.operation_abi_id.clone().unwrap_or_default(),
-                method: route.method.clone(),
-                path: route.path.clone(),
-            },
-        );
+        let route = GatewayRoute {
+            operation: route.operation.clone(),
+            operation_abi_id: route.operation_abi_id.clone().unwrap_or_default(),
+            method: route.method.clone(),
+            path: route.path.clone(),
+        };
+        config.routes.insert(route.route_identity(), route);
     }
     if let Some(websocket) = gateway.websocket_default() {
         config.web_sockets.insert(

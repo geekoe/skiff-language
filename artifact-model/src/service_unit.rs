@@ -343,6 +343,7 @@ pub struct OperationParam {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayConfig {
+    /// HTTP routes keyed by their canonical `METHOD /literal/path` identity.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub routes: BTreeMap<String, GatewayRoute>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -359,6 +360,14 @@ pub struct GatewayRoute {
     pub operation_abi_id: String,
     pub method: String,
     pub path: String,
+}
+
+impl GatewayRoute {
+    /// Returns the canonical identity shared by the gateway route collection and
+    /// the HTTP gateway operation-route selector.
+    pub fn route_identity(&self) -> String {
+        format!("{} {}", self.method.to_ascii_uppercase(), self.path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1757,7 +1757,7 @@ function packageEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
             .expect("service unit operations should be an array");
 
         assert_eq!(
-            routes["/package"]["operation"],
+            routes["POST /package"]["operation"],
             serde_json::json!(
                 "http.route.skiff_test_package_http_routes.package_httpKit_packageEcho"
             )

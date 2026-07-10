@@ -142,12 +142,107 @@ http:
         operation_abi_id
     );
     assert_eq!(
-        published.artifacts.service_unit.value["gateway"]["routes"]["/track"]["operation"],
+        published.artifacts.service_unit.value["gateway"]["routes"]["POST /track"]["operation"],
         "http.route.internal.http.record"
     );
     assert_eq!(
-        published.artifacts.service_unit.value["gateway"]["routes"]["/track"]["operationAbiId"],
+        published.artifacts.service_unit.value["gateway"]["routes"]["POST /track"]
+            ["operationAbiId"],
         operation_abi_id
+    );
+}
+
+#[test]
+fn http_routes_with_the_same_path_keep_method_scoped_route_identities_and_bindings() {
+    let temp = TestDir::new("skiff-http-routes", "same-path-methods");
+    fs::create_dir_all(temp.path().join("internal")).unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        r#"
+id: example.com/example
+version: 1.0.0
+http:
+  routes:
+    - method: GET
+      path: /session
+      handler: root.internal.http.getSession
+    - method: POST
+      path: /session
+      handler: root.internal.http.createSession
+    - method: DELETE
+      path: /session
+      handler: root.internal.http.deleteSession
+    - method: OPTIONS
+      path: /session
+      handler: root.internal.http.optionsSession
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("internal").join("http.skiff"),
+        r#"
+            function getSession(request: std.http.HttpRequest) -> std.http.HttpResponse {
+              return std.http.noContent()
+            }
+
+            function createSession(request: std.http.HttpRequest) -> std.http.HttpResponse {
+              return std.http.noContent()
+            }
+
+            function deleteSession(request: std.http.HttpRequest) -> std.http.HttpResponse {
+              return std.http.noContent()
+            }
+
+            function optionsSession(request: std.http.HttpRequest) -> std.http.HttpResponse {
+              return std.http.noContent()
+            }
+        "#,
+    )
+    .unwrap();
+
+    let published = build_temp_service_publication(temp.path());
+    let service_unit = &published.artifacts.service_unit.value;
+    let routes = service_unit["gateway"]["routes"]
+        .as_object()
+        .expect("gateway routes should be an object");
+    let bindings = service_unit["operationRouteBindings"]
+        .as_array()
+        .expect("operation route bindings should be an array");
+
+    for (method, handler) in [
+        ("GET", "getSession"),
+        ("POST", "createSession"),
+        ("DELETE", "deleteSession"),
+        ("OPTIONS", "optionsSession"),
+    ] {
+        let route_identity = format!("{method} /session");
+        let operation = format!("http.route.internal.http.{handler}");
+        let route = routes
+            .get(&route_identity)
+            .unwrap_or_else(|| panic!("missing gateway route {route_identity}"));
+        let operation_abi_id = service_unit_operation(service_unit, &operation)["operation"]
+            ["operationAbiId"]
+            .as_str()
+            .expect("route operation should carry operationAbiId");
+
+        assert_eq!(route["method"], method);
+        assert_eq!(route["path"], "/session");
+        assert_eq!(route["operation"], operation);
+        assert_eq!(route["operationAbiId"], operation_abi_id);
+        assert!(bindings.iter().any(|binding| {
+            binding["ingressKind"] == "httpGateway"
+                && binding["selector"] == route_identity
+                && binding["operationAbiId"] == operation_abi_id
+        }));
+    }
+
+    assert_eq!(routes.len(), 4);
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|binding| binding["ingressKind"] == "httpGateway")
+            .count(),
+        4
     );
 }
 
@@ -1031,7 +1126,8 @@ issue: session_impl.issue
         route_operation.operation_abi_id
     );
     assert_eq!(
-        published.artifacts.service_unit.value["gateway"]["routes"]["/session"]["operationAbiId"],
+        published.artifacts.service_unit.value["gateway"]["routes"]["POST /session"]
+            ["operationAbiId"],
         route_operation.operation_abi_id
     );
     assert_source_artifact_absent(&published, "__skiff/http_routes.skiff");

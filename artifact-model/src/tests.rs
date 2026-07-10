@@ -13,7 +13,7 @@ use crate::{
 use crate::{
     BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
     ExecutableLinkTargetIr, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
-    GatewayConfig, InterfaceInstantiationRef, InterfaceMethodSlotPlanIr,
+    GatewayConfig, GatewayRoute, InterfaceInstantiationRef, InterfaceMethodSlotPlanIr,
     InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
     LiteralIr, LocalReceiverExecutableRef, OperationAbiRef, OperationCallableKind,
     OperationConstReceiverRef, OperationTargetRef, PackageDependencyConstraint,
@@ -1054,6 +1054,18 @@ fn empty_service_and_package_units_skip_recoverable_metadata() {
     assert!(package_value.get("resources").is_none());
     assert!(package.recoverable_metadata.is_empty());
     assert!(package_value.get("recoverableMetadata").is_none());
+}
+
+#[test]
+fn gateway_route_identity_is_method_and_path() {
+    let route = GatewayRoute {
+        operation: "http.route.internal.session.read".to_string(),
+        operation_abi_id: "operation:1".to_string(),
+        method: "get".to_string(),
+        path: "/session".to_string(),
+    };
+
+    assert_eq!(route.route_identity(), "GET /session");
 }
 
 #[test]

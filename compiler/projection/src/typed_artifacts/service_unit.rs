@@ -377,7 +377,7 @@ fn service_route_operation_ids_by_name(
 }
 
 fn http_gateway_selector(route: &GatewayRoute) -> String {
-    format!("{} {}", route.method.to_ascii_uppercase(), route.path)
+    route.route_identity()
 }
 
 fn service_operation_public_signature(
