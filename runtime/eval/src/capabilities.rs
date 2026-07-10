@@ -9,7 +9,9 @@ use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
-use skiff_runtime_capability_context::{CancellationToken, RequestEffectDoubleControl};
+use skiff_runtime_capability_context::{
+    CancellationToken, OutboundRequestLease, RequestEffectDoubleControl,
+};
 use skiff_runtime_linked_program::ServiceDependencyConstraint;
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -37,22 +39,22 @@ pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 
 pub use skiff_runtime_capability_context::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, ActorFindControlRequest,
     ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError, CapabilityFuture,
-    CapabilityResult, CompletionSignal, ConfigCapabilityApi, ConfigCapabilityContext,
-    DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture,
-    DbCapabilityLeaseHandle, DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle,
-    DbCapabilityResult, DbCapabilityStore, DbCapabilityStoreApi, DbRecoverableRuntimeContext,
-    DbRecoverableRuntimeExpectedPlans, DbRuntimeChange, DbRuntimeSetOp, ExecutionControl,
-    ExecutionControlApi, FileCapabilityApi, FileCapabilityContext, FileCapabilityError,
-    FileCapabilityFuture, FileCapabilityRecord, FileCapabilityResult, FileCapabilitySource,
-    FileCapabilitySourceApi, FileChunkSource, FileSourceStreamApi, FileSourceStreamContext,
-    HttpCapabilityFuture, HttpClientCapabilityApi, HttpClientCapabilityContext,
-    HttpResponseStreamCapabilityContext, HttpRuntimeOptions, OutboundServiceRequestStart,
-    OutboundStartedRequest, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
-    OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
-    SpawnSubmitControlRequest, StreamCancelSignal, StreamCancelSignalApi, StreamCapabilityContext,
-    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamSink, StreamSinkApi,
-    TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink,
-    WebsocketCapabilityApi, WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    CapabilityResult, ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext,
+    DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture, DbCapabilityLeaseHandle,
+    DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore,
+    DbCapabilityStoreApi, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
+    DbRuntimeChange, DbRuntimeSetOp, ExecutionControl, ExecutionControlApi, FileCapabilityApi,
+    FileCapabilityContext, FileCapabilityError, FileCapabilityFuture, FileCapabilityRecord,
+    FileCapabilityResult, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
+    FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
+    HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, HttpRuntimeOptions,
+    OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
+    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
+    OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
+    StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
+    StreamRuntimeApi, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
+    WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -287,18 +289,12 @@ pub trait OutboundServiceApi: Send + Sync {
     }
     fn receive_response<'a>(
         &'a self,
-        request_id: &'a str,
+        lease: &'a OutboundRequestLease,
         target: &'a str,
         receiver: &'a mut skiff_runtime_capability_context::OutboundResponseReceiver,
         timeout_ms: Option<u64>,
     ) -> EvalCapabilityFuture<'a, skiff_runtime_capability_context::OutboundResponse>;
-    fn abort_outbound_request(&self, request_id: &str, reason: &str);
-    fn spawn_stream_cancel_task(
-        &self,
-        request_id: String,
-        cancellation: CancellationToken,
-        completed: CompletionSignal,
-    );
+    fn cancel_signal(&self) -> CancellationToken;
 }
 
 #[derive(Clone)]
@@ -361,28 +357,18 @@ impl OutboundServiceContext {
 
     pub async fn receive_response(
         &self,
-        request_id: &str,
+        lease: &OutboundRequestLease,
         target: &str,
         receiver: &mut skiff_runtime_capability_context::OutboundResponseReceiver,
         timeout_ms: Option<u64>,
     ) -> Result<skiff_runtime_capability_context::OutboundResponse> {
         self.inner
-            .receive_response(request_id, target, receiver, timeout_ms)
+            .receive_response(lease, target, receiver, timeout_ms)
             .await
     }
 
-    pub fn abort_outbound_request(&self, request_id: &str, reason: &str) {
-        self.inner.abort_outbound_request(request_id, reason);
-    }
-
-    pub fn spawn_stream_cancel_task(
-        &self,
-        request_id: String,
-        cancellation: CancellationToken,
-        completed: CompletionSignal,
-    ) {
-        self.inner
-            .spawn_stream_cancel_task(request_id, cancellation, completed);
+    pub fn cancel_signal(&self) -> CancellationToken {
+        self.inner.cancel_signal()
     }
 }
 

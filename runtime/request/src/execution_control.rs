@@ -4,39 +4,47 @@ use std::{
 };
 
 use skiff_runtime_capability_context::{
-    ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError, ExecutionControlResult,
-    RequestAbortSignal,
+    CancellationToken, ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError,
+    ExecutionControlResult, RequestAbortSignal,
 };
 
 use crate::execution_budget::ExecutionBudget;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ExecutionControl<'a> {
-    cancelled: &'a Arc<AtomicBool>,
+    cancellation: CancellationToken,
     execution_budget: &'a Arc<ExecutionBudget>,
 }
 
 impl<'a> ExecutionControl<'a> {
-    pub fn new(cancelled: &'a Arc<AtomicBool>, execution_budget: &'a Arc<ExecutionBudget>) -> Self {
+    pub fn new(
+        cancellation: CancellationToken,
+        execution_budget: &'a Arc<ExecutionBudget>,
+    ) -> Self {
         Self {
-            cancelled,
+            cancellation,
             execution_budget,
         }
     }
 
     pub fn abort_signal(&self) -> RequestAbortSignal<'_> {
-        RequestAbortSignal::from_borrowed_flag(self.cancelled.as_ref())
+        RequestAbortSignal::from_token(self.cancellation.clone())
     }
 
     pub fn owned(&self) -> OwnedExecutionControl {
         OwnedExecutionControl {
-            cancelled: self.cancelled.clone(),
+            cancellation: self.cancellation.clone(),
+            cancel_flag: self.cancellation.cancel_flag(),
             execution_budget: self.execution_budget.clone(),
         }
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
-        self.cancelled.clone()
+        self.cancellation.cancel_flag()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
@@ -79,16 +87,21 @@ impl<'a> ExecutionControl<'a> {
 
 #[derive(Clone)]
 pub struct OwnedExecutionControl {
-    cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
+    cancel_flag: Arc<AtomicBool>,
     execution_budget: Arc<ExecutionBudget>,
 }
 
 impl OwnedExecutionControl {
     pub fn borrow(&self) -> ExecutionControl<'_> {
-        ExecutionControl::new(&self.cancelled, &self.execution_budget)
+        ExecutionControl::new(self.cancellation.clone(), &self.execution_budget)
     }
 
     pub fn cancelled(&self) -> &AtomicBool {
-        self.cancelled.as_ref()
+        self.cancel_flag.as_ref()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 }

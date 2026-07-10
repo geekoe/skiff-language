@@ -3,6 +3,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
+use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
     EvalRequestEffectDouble, EvalRequestExecutionInput, EvalRequestExecutor,
     EvalRequestExecutorInput, EvalRequestInvocation, EvalRuntimeProgram,
@@ -23,6 +24,7 @@ pub(crate) struct IngressDispatchInput<'a> {
     pub(crate) metadata: &'a RequestServiceMetadata,
     pub(crate) request: &'a RequestEnvelope,
     pub(crate) execution: super::ExecutionControl<'a>,
+    pub(crate) cancellation: CancellationToken,
     pub(crate) cancelled: &'a AtomicBool,
     pub(crate) execution_budget: Arc<ExecutionBudget>,
     pub(crate) handles: &'a RequestExecutionHandles,
@@ -94,6 +96,7 @@ pub(super) struct RequestIngressContext<'a> {
     pub(super) metadata: &'a RequestServiceMetadata,
     pub(super) request: &'a RequestEnvelope,
     pub(super) execution: super::ExecutionControl<'a>,
+    pub(super) cancellation: CancellationToken,
     pub(super) cancelled: &'a AtomicBool,
     pub(super) execution_budget: Arc<ExecutionBudget>,
     pub(super) handles: &'a RequestExecutionHandles,
@@ -107,7 +110,8 @@ impl<'a> RequestIngressContext<'a> {
             addr: input.addr,
             metadata: input.metadata,
             request: input.request,
-            execution: input.execution,
+            execution: input.execution.clone(),
+            cancellation: input.cancellation.clone(),
             cancelled: input.cancelled,
             execution_budget: input.execution_budget.clone(),
             handles: input.handles,
@@ -140,7 +144,8 @@ impl<'a> RequestIngressContext<'a> {
             RequestEvalExecutionInputParts {
                 operation: self.operation,
                 request: self.request,
-                execution: self.execution,
+                execution: self.execution.clone(),
+                cancellation: self.cancellation.clone(),
                 cancelled: self.cancelled,
                 execution_budget: self.execution_budget.clone(),
                 request_heap_limits: self.handles.request_heap_limits.clone(),

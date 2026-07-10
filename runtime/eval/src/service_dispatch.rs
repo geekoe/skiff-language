@@ -6,8 +6,8 @@ use skiff_runtime_boundary::{
     payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef},
 };
 use skiff_runtime_capability_context::{
-    CancellationToken, CompletionSignal, OutboundResponse, OutboundResponseReceiver,
-    RequestEffectDoubleControl, StreamRuntimeError, StreamRuntimeResult,
+    OutboundRequestLease, OutboundResponse, OutboundResponseReceiver, RequestEffectDoubleControl,
+    StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_linked_program::{
     CallIr, ExecutableAddr, ServiceDependencyConstraint, ServiceDependencySymbolRef,
@@ -104,14 +104,13 @@ async fn send_outbound_service_request(
             interpreter,
             context,
             dispatch,
-            started.request_id,
+            started.lease,
             started.response_rx,
             heap,
         )?
     } else {
         let response =
-            await_outbound_response(context, dispatch, started.request_id, started.response_rx)
-                .await?;
+            await_outbound_response(context, dispatch, started.lease, started.response_rx).await?;
         let boundary = PayloadBoundary::cross_service(
             PayloadBoundaryKind::InboundServiceCall,
             dispatch.service_ref(),
@@ -138,19 +137,27 @@ async fn send_outbound_service_request(
 async fn await_outbound_response(
     context: &OutboundServiceContext,
     dispatch: &OutboundServiceDispatch,
-    request_id: String,
+    lease: OutboundRequestLease,
     mut receiver: OutboundResponseReceiver,
 ) -> Result<OutboundServiceResponse> {
     let timeout = context.effective_timeout_ms(dispatch.timeout_ms);
-    match context
-        .receive_response(&request_id, &dispatch.target, &mut receiver, timeout)
-        .await?
+    let response = match context
+        .receive_response(&lease, &dispatch.target, &mut receiver, timeout)
+        .await
     {
+        Ok(response) => response,
+        Err(error) => {
+            lease.cancel("response_channel_closed");
+            return Err(error);
+        }
+    };
+    match response {
         response @ (OutboundResponse::End { .. } | OutboundResponse::Error(_)) => {
+            lease.complete();
             outbound_router_response_into_result(response, &dispatch.target)
         }
         other => {
-            context.abort_outbound_request(&request_id, "unexpected_stream_response");
+            lease.cancel("unexpected_stream_response");
             Err(RuntimeError::ProviderUnavailable {
                 target: dispatch.target.clone(),
                 reason: format!("unary outbound service call received {}", other.kind()),
@@ -163,16 +170,13 @@ fn outbound_service_stream_value(
     interpreter: &Interpreter,
     context: &OutboundServiceContext,
     dispatch: &OutboundServiceDispatch,
-    request_id: String,
+    lease: OutboundRequestLease,
     receiver: OutboundResponseReceiver,
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
-    let cancellation = CancellationToken::new();
-    let completed = CompletionSignal::new();
-    context.spawn_stream_cancel_task(request_id.clone(), cancellation.clone(), completed.clone());
     let stream_value = interpreter.stream_runtime.pull_stream_with_cancellation(
         OutboundServiceStreamSource {
-            request_id,
+            lease,
             context: context.clone(),
             target: dispatch.target.clone(),
             target_service: dispatch.service_ref(),
@@ -180,9 +184,8 @@ fn outbound_service_stream_value(
             item_plan: dispatch.response_plan.clone(),
             next_seq: 0,
             started: false,
-            completed,
         },
-        cancellation,
+        context.cancel_signal(),
     );
     runtime_from_wire_internal_handle_required_plan(
         &stream_value,
@@ -193,7 +196,7 @@ fn outbound_service_stream_value(
 }
 
 struct OutboundServiceStreamSource {
-    request_id: String,
+    lease: OutboundRequestLease,
     context: OutboundServiceContext,
     target: String,
     target_service: PayloadServiceRef,
@@ -201,7 +204,6 @@ struct OutboundServiceStreamSource {
     item_plan: RuntimeTypePlan,
     next_seq: u64,
     started: bool,
-    completed: CompletionSignal,
 }
 
 impl StreamPullSource for OutboundServiceStreamSource {
@@ -272,7 +274,6 @@ impl OutboundServiceStreamSource {
                     };
                 }
                 OutboundResponse::End { payload } => {
-                    self.completed.mark_completed();
                     if !payload.is_empty() {
                         self.abort_pending("stream_end_payload");
                         return Err(StreamRuntimeError::producer(
@@ -283,10 +284,11 @@ impl OutboundServiceStreamSource {
                             },
                         ));
                     }
+                    self.lease.complete();
                     return Ok(None);
                 }
                 OutboundResponse::Error(error) => {
-                    self.completed.mark_completed();
+                    self.lease.complete();
                     return Err(StreamRuntimeError::producer(
                         RuntimeError::ProviderUnavailable {
                             target: self.target.clone(),
@@ -318,9 +320,7 @@ impl OutboundServiceStreamSource {
     }
 
     fn abort_pending(&self, reason: &str) {
-        self.completed.mark_completed();
-        self.context
-            .abort_outbound_request(&self.request_id, reason);
+        self.lease.cancel(reason);
     }
 }
 
@@ -732,6 +732,115 @@ fn outbound_router_response_into_result(
             target: target.to_string(),
             reason: format!("unary outbound service call received {}", other.kind()),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use skiff_runtime_capability_context::{
+        CancellationToken, OutboundRequestCancelSendError, OutboundRequestCancelSender,
+        OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
+        OutboundStartedRequest,
+    };
+    use skiff_runtime_linked_program::ServiceDependencyConstraint;
+    use skiff_runtime_model::request_heap::{RequestHeap, RequestHeapLimits};
+    use tokio::sync::mpsc;
+
+    use super::super::capabilities::{EvalCapabilityFuture, OutboundServiceApi};
+    use super::*;
+
+    #[tokio::test]
+    async fn outbound_service_stream_source_drop_cancels_lease_and_registry() {
+        let registry = OutboundRequestRegistry::default();
+        let (response_sender, response_rx) = mpsc::unbounded_channel();
+        let (cancel_sender, mut cancel_rx) = mpsc::unbounded_channel();
+        let cancel_sender: OutboundRequestCancelSender = Arc::new(move |request_id, reason| {
+            cancel_sender
+                .send((request_id.to_string(), reason.to_string()))
+                .map_err(|_| OutboundRequestCancelSendError::Closed)
+        });
+        let lease = registry
+            .insert_with_lease(
+                "request-stream".to_string(),
+                response_sender,
+                Some(cancel_sender),
+                "stream_cancelled",
+            )
+            .expect("stream lease should insert");
+        let source = OutboundServiceStreamSource {
+            lease,
+            context: OutboundServiceContext::new(DummyOutboundService),
+            target: "service.stream".to_string(),
+            target_service: PayloadServiceRef::new("service.test".to_string()),
+            receiver: response_rx,
+            item_plan: RuntimeTypePlan::json_value_plan(),
+            next_seq: 0,
+            started: false,
+        };
+
+        drop(source);
+
+        let (request_id, reason) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), cancel_rx.recv())
+                .await
+                .expect("source drop should send cancel")
+                .expect("cancel receiver should stay open");
+        assert_eq!(request_id, "request-stream");
+        assert_eq!(reason, "stream_cancelled");
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.active_lease_count(), 0);
+    }
+
+    struct DummyOutboundService;
+
+    impl OutboundServiceApi for DummyOutboundService {
+        fn service_dependencies(&self) -> &[ServiceDependencyConstraint] {
+            &[]
+        }
+
+        fn test_effects_enabled(&self) -> bool {
+            false
+        }
+
+        fn test_effect_doubles(&self) -> HashMap<String, Vec<RequestEffectDoubleControl>> {
+            HashMap::new()
+        }
+
+        fn request_heap(&self) -> RequestHeap {
+            RequestHeap::new(RequestHeapLimits::default())
+        }
+
+        fn effective_timeout_ms(&self, _operation_timeout_ms: Option<u64>) -> Option<u64> {
+            None
+        }
+
+        fn outbound_deadline_error(&self) -> RuntimeError {
+            RuntimeError::Cancelled
+        }
+
+        fn start_request(
+            &self,
+            _start: OutboundServiceRequestStart,
+            _payload: Vec<u8>,
+        ) -> Result<OutboundStartedRequest> {
+            panic!("dummy outbound service is not used by this test")
+        }
+
+        fn receive_response<'a>(
+            &'a self,
+            _lease: &'a OutboundRequestLease,
+            _target: &'a str,
+            _receiver: &'a mut OutboundResponseReceiver,
+            _timeout_ms: Option<u64>,
+        ) -> EvalCapabilityFuture<'a, OutboundResponse> {
+            Box::pin(async { panic!("dummy outbound service is not used by this test") })
+        }
+
+        fn cancel_signal(&self) -> CancellationToken {
+            CancellationToken::new()
+        }
     }
 }
 

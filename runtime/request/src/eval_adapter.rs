@@ -1,5 +1,6 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
+use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{capabilities::EvalRuntimeFactory, EvalRequestExecutionInput};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 
@@ -21,6 +22,7 @@ pub struct RequestEvalExecutionInputParts<'a> {
     pub operation: &'a RuntimeOperation,
     pub request: &'a RequestEnvelope,
     pub execution: ExecutionControl<'a>,
+    pub cancellation: CancellationToken,
     pub cancelled: &'a AtomicBool,
     pub execution_budget: Arc<ExecutionBudget>,
     pub request_heap_limits: RequestHeapLimits,

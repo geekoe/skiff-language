@@ -40,7 +40,7 @@ pub use operation_context::{
 };
 pub use outbound::{
     ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest,
-    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage,
+    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage, OutboundRequestLease,
     OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver, RequestCancelControl,
     RequestEffectDoubleControl, RequestStartControl, RouterWriterMessage, RuntimeCallerControl,
     RuntimeDeadlineControl, RuntimeTraceContextControl, SpawnSubmitControlRequest,

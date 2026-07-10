@@ -13,6 +13,7 @@ use super::StreamRuntime;
 async fn stream_runtime_reads_items_and_normal_end_in_order() {
     let runtime = StreamRuntime::default();
     let (stream, sink) = runtime.channel_stream();
+    assert_eq!(runtime.active_stream_count(), 1);
 
     tokio::spawn(async move {
         sink.send(json!(1)).await.unwrap();
@@ -32,6 +33,7 @@ async fn stream_runtime_reads_items_and_normal_end_in_order() {
         runtime.next(&stream).await.unwrap(),
         StreamPoll::End
     ));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
@@ -49,6 +51,7 @@ async fn stream_runtime_marks_cancel_on_early_break() {
 
     tokio::task::yield_now().await;
     assert!(cancel_flag.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
@@ -91,6 +94,7 @@ async fn stream_sink_send_blocked_by_backpressure_returns_on_cancel() {
         .expect("send task should not panic")
         .unwrap_err();
     assert!(matches!(error, StreamRuntimeError::Cancelled));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
@@ -210,12 +214,11 @@ async fn stream_runtime_next_with_cancellation_token_cancels_inner_stream() {
 }
 
 #[tokio::test]
-async fn stream_runtime_next_with_cancellation_token_flag_store_cancels_inner_stream() {
+async fn stream_runtime_next_with_cancellation_token_removes_inner_stream() {
     let runtime = StreamRuntime::default();
     let (inner_stream, inner_sink) = runtime.channel_stream();
     let inner_cancel_flag = inner_sink.cancel_flag();
     let token = CancellationToken::new();
-    let token_flag = token.cancel_flag();
 
     let pending_next = tokio::spawn({
         let runtime = runtime.clone();
@@ -238,15 +241,16 @@ async fn stream_runtime_next_with_cancellation_token_flag_store_cancels_inner_st
         "inner next should wait for producer"
     );
 
-    token_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    token.cancel();
 
     let error = tokio::time::timeout(std::time::Duration::from_secs(1), pending_next)
         .await
-        .expect("token flag store should wake inner next")
+        .expect("token cancel should wake inner next")
         .expect("next task should not panic")
         .unwrap_err();
     assert!(matches!(error, StreamRuntimeError::Cancelled));
     assert!(inner_cancel_flag.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
@@ -278,17 +282,21 @@ async fn stream_runtime_pull_stream_token_cancel_wakes_pending_next() {
         .expect("next task should not panic")
         .unwrap_err();
     assert!(matches!(error, StreamRuntimeError::Cancelled));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
 async fn stream_runtime_outer_cancel_stops_next_read() {
     let runtime = StreamRuntime::default();
     let (stream, _sink) = runtime.channel_stream();
+    assert_eq!(runtime.active_stream_count(), 1);
 
+    runtime.cancel(&stream);
     runtime.cancel(&stream);
 
     let error = runtime.next(&stream).await.unwrap_err();
-    assert!(matches!(error, StreamRuntimeError::Cancelled));
+    assert!(error.to_string().contains("unknown Stream value"));
+    assert_eq!(runtime.active_stream_count(), 0);
 }
 
 #[tokio::test]
@@ -303,6 +311,36 @@ async fn stream_runtime_maps_producer_error_to_consumer_error() {
 
     let error = runtime.next(&stream).await.unwrap_err();
     assert!(error.to_string().contains("producer failed"));
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_removes_entry_on_source_drop() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    assert_eq!(runtime.active_stream_count(), 1);
+
+    drop(sink);
+
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::End
+    ));
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_repeated_terminal_is_idempotent() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    let cancel_flag = sink.cancel_flag();
+
+    runtime.cancel(&stream);
+    runtime.cancel(&stream);
+
+    assert!(cancel_flag.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(runtime.active_stream_count(), 0);
+    assert!(sink.send(json!("after-terminal")).await.is_err());
 }
 
 #[test]

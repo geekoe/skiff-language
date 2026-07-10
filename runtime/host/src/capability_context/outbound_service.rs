@@ -1,16 +1,13 @@
-use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
-    time::Instant,
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    CancellationToken, CompletionSignal, ExecutionBudgetFailure, ExecutionBudgetReason,
-    ExecutionControlError, OutboundControlMessage, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestCancelControl, RequestEffectDoubleControl,
-    RequestStartControl, RouterWriterMessage, RuntimeCallerControl, RuntimeClientSessionControl,
-    RuntimeDeadlineControl, RuntimeTraceContextControl,
+    CancellationToken, ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError,
+    OutboundControlMessage, OutboundRequestCancelSendError, OutboundRequestCancelSender,
+    OutboundRequestLease, OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
+    RequestCancelControl, RequestEffectDoubleControl, RequestStartControl, RouterWriterMessage,
+    RuntimeCallerControl, RuntimeClientSessionControl, RuntimeDeadlineControl,
+    RuntimeTraceContextControl,
 };
 pub use skiff_runtime_capability_context::{OutboundServiceRequestStart, OutboundStartedRequest};
 use skiff_runtime_linked_program::{ServiceDependencyConstraint, ServiceTimeoutConfig};
@@ -53,7 +50,7 @@ pub struct OutboundServiceContextInput {
     pub test_effects_enabled: bool,
     pub test_effect_doubles: HashMap<String, Vec<RequestEffectDoubleControl>>,
     pub execution_budget: Arc<ExecutionBudget>,
-    pub cancel_flag: Arc<AtomicBool>,
+    pub cancellation: CancellationToken,
     pub request_heap_limits: RequestHeapLimits,
     pub router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
     pub outbound_requests: Arc<OutboundRequestRegistry>,
@@ -72,7 +69,7 @@ impl OutboundServiceContext {
             test_effects_enabled: input.test_effects_enabled,
             test_effect_doubles: input.test_effect_doubles,
             execution_budget: input.execution_budget,
-            cancel_signal: CancellationToken::from_flag(input.cancel_flag),
+            cancel_signal: input.cancellation,
             request_heap_limits: input.request_heap_limits,
             router_sender: input.router_sender,
             outbound_requests: input.outbound_requests,
@@ -97,6 +94,10 @@ impl OutboundServiceContext {
 
     pub fn request_heap(&self) -> RequestHeap {
         RequestHeap::new(self.request_heap_limits.clone())
+    }
+
+    pub fn cancel_signal(&self) -> CancellationToken {
+        self.cancel_signal.clone()
     }
 
     pub fn effective_timeout_ms(&self, operation_timeout_ms: Option<u64>) -> Option<u64> {
@@ -135,16 +136,23 @@ impl OutboundServiceContext {
         payload: Vec<u8>,
     ) -> Result<OutboundStartedRequest> {
         let request_id = self.next_request_id();
+        let drop_cancel_reason = if start.mode == "serverStream" {
+            "stream_cancelled"
+        } else {
+            "caller_cancel"
+        };
         let request = self.request_start_control(start, request_id.clone());
         let command = OutboundControlMessage::RequestStart { request, payload };
-        let response_rx = self.register_outbound_response(&request_id)?;
+        let (response_rx, lease) =
+            self.open_outbound_response_lease(&request_id, drop_cancel_reason)?;
         if let Err(error) = self.send_outbound_request(&request_id, command) {
-            self.outbound_requests.remove(&request_id);
+            lease.cancel("runtime_disconnect");
             return Err(error);
         }
         Ok(OutboundStartedRequest {
             request_id,
             response_rx,
+            lease,
         })
     }
 
@@ -159,7 +167,7 @@ impl OutboundServiceContext {
 
     pub async fn receive_response(
         &self,
-        request_id: &str,
+        lease: &OutboundRequestLease,
         target: &str,
         receiver: &mut OutboundResponseReceiver,
         timeout_ms: Option<u64>,
@@ -172,45 +180,14 @@ impl OutboundServiceContext {
                 })
             }
             _ = self.cancel_signal.wait_cancelled() => {
-                self.abort_outbound_request(request_id, "caller_cancel");
+                lease.cancel("caller_cancel");
                 Err(RuntimeError::cancelled())
             }
             _ = wait_outbound_deadline(timeout_ms), if timeout_ms.is_some() => {
-                self.abort_outbound_request(request_id, "deadline_exceeded");
+                lease.cancel("deadline_exceeded");
                 Err(self.outbound_deadline_error())
             }
         }
-    }
-
-    pub fn abort_outbound_request(&self, request_id: &str, reason: &str) {
-        self.outbound_requests.remove(request_id);
-        let _ = self.send_outbound_cancel(request_id, reason);
-    }
-
-    pub fn spawn_stream_cancel_task(
-        &self,
-        request_id: String,
-        cancellation: CancellationToken,
-        completed: CompletionSignal,
-    ) {
-        let _ = self.spawn_stream_cancel_task_handle(request_id, cancellation, completed);
-    }
-
-    fn spawn_stream_cancel_task_handle(
-        &self,
-        request_id: String,
-        cancellation: CancellationToken,
-        completed: CompletionSignal,
-    ) -> tokio::task::JoinHandle<()> {
-        let context = self.clone();
-        tokio::spawn(async move {
-            match wait_stream_cancel_or_completed(&cancellation, &completed).await {
-                StreamCancelTaskOutcome::Completed => {}
-                StreamCancelTaskOutcome::Cancelled => {
-                    context.abort_outbound_request(&request_id, "stream_cancelled");
-                }
-            }
-        })
     }
 
     fn next_request_id(&self) -> String {
@@ -221,11 +198,19 @@ impl OutboundServiceContext {
         )
     }
 
-    fn register_outbound_response(&self, request_id: &str) -> Result<OutboundResponseReceiver> {
+    fn open_outbound_response_lease(
+        &self,
+        request_id: &str,
+        drop_cancel_reason: &'static str,
+    ) -> Result<(OutboundResponseReceiver, OutboundRequestLease)> {
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.outbound_requests
-            .insert(request_id.to_string(), sender)?;
-        Ok(receiver)
+        let lease = self.outbound_requests.insert_with_lease(
+            request_id.to_string(),
+            sender,
+            self.outbound_cancel_sender(),
+            drop_cancel_reason,
+        )?;
+        Ok((receiver, lease))
     }
 
     fn send_outbound_request(
@@ -242,30 +227,19 @@ impl OutboundServiceContext {
                 })?;
         sender
             .send(RouterWriterMessage::Control(command))
-            .map_err(|_| {
-                self.outbound_requests.remove(request_id);
-                RuntimeError::ProviderUnavailable {
-                    target: request_id.to_string(),
-                    reason: "router writer channel closed".to_string(),
-                }
-            })
-    }
-
-    fn send_outbound_cancel(&self, request_id: &str, reason: &str) -> Result<()> {
-        let sender =
-            self.router_sender
-                .as_ref()
-                .ok_or_else(|| RuntimeError::ProviderUnavailable {
-                    target: request_id.to_string(),
-                    reason: "router writer is not available".to_string(),
-                })?;
-        let message = cancel_message(request_id, reason);
-        sender
-            .send(message)
             .map_err(|_| RuntimeError::ProviderUnavailable {
                 target: request_id.to_string(),
                 reason: "router writer channel closed".to_string(),
             })
+    }
+
+    fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender> {
+        let sender = self.router_sender.clone()?;
+        Some(Arc::new(move |request_id, reason| {
+            sender
+                .send(cancel_message(request_id, reason))
+                .map_err(|_| OutboundRequestCancelSendError::Closed)
+        }))
     }
 
     fn request_deadline_ms(&self) -> Option<u64> {
@@ -424,23 +398,6 @@ async fn wait_outbound_deadline(timeout_ms: Option<u64>) {
     tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum StreamCancelTaskOutcome {
-    Cancelled,
-    Completed,
-}
-
-async fn wait_stream_cancel_or_completed(
-    cancellation: &CancellationToken,
-    completed: &CompletionSignal,
-) -> StreamCancelTaskOutcome {
-    tokio::select! {
-        biased;
-        _ = cancellation.wait_cancelled() => StreamCancelTaskOutcome::Cancelled,
-        _ = completed.wait_completed() => StreamCancelTaskOutcome::Completed,
-    }
-}
-
 fn deadline_expires_at(timeout_ms: u64) -> String {
     let millis = timeout_ms.min(i64::MAX as u64) as i64;
     (OffsetDateTime::now_utc() + TimeDuration::milliseconds(millis))
@@ -460,7 +417,6 @@ fn cancel_message(request_id: &str, reason: &str) -> RouterWriterMessage {
 mod tests {
     use super::*;
     use skiff_runtime_request::execution_budget::ExecutionBudget;
-    use tokio::sync::mpsc::error::TryRecvError;
 
     fn cancel_reason(reason: &str) -> String {
         match cancel_message("request-test", reason) {
@@ -492,7 +448,7 @@ mod tests {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),
-            cancel_signal: CancellationToken::from_flag(Arc::new(AtomicBool::new(false))),
+            cancel_signal: CancellationToken::new(),
             request_heap_limits: RequestHeapLimits::default(),
             router_sender,
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
@@ -530,59 +486,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_cancel_task_exits_after_completed_without_cancel() {
+    async fn outbound_request_lease_complete_drop_does_not_cancel() {
         let (router_sender, mut router_rx) = mpsc::unbounded_channel();
         let context = test_context(Some(router_sender));
-        let cancellation = CancellationToken::new();
-        let completed = CompletionSignal::new();
+        let (_response_rx, lease) = context
+            .open_outbound_response_lease("request-stream", "stream_cancelled")
+            .expect("lease should open");
 
-        let task = context.spawn_stream_cancel_task_handle(
-            "request-stream".to_string(),
-            cancellation,
-            completed.clone(),
-        );
+        assert_eq!(context.outbound_requests.pending_count(), 1);
+        assert_eq!(context.outbound_requests.active_lease_count(), 1);
 
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished());
+        lease.complete();
+        drop(lease);
 
-        completed.mark_completed();
-        tokio::time::timeout(std::time::Duration::from_secs(1), task)
-            .await
-            .expect("completed stream should stop cancel watcher")
-            .expect("cancel watcher task should succeed");
-
-        assert!(matches!(router_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+        assert!(router_rx.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn stream_cancel_task_sends_cancel_when_cancelled_before_completed() {
+    async fn outbound_request_lease_drop_sends_stream_dropped_cancel() {
         let (router_sender, mut router_rx) = mpsc::unbounded_channel();
         let context = test_context(Some(router_sender));
-        let cancellation = CancellationToken::new();
-        let completed = CompletionSignal::new();
         let request_id = "request-stream".to_string();
+        let (_response_rx, lease) = context
+            .open_outbound_response_lease(&request_id, "stream_cancelled")
+            .expect("lease should open");
 
-        let task = context.spawn_stream_cancel_task_handle(
-            request_id.clone(),
-            cancellation.clone(),
-            completed.clone(),
-        );
-
-        tokio::task::yield_now().await;
-        cancellation.cancel();
-        completed.mark_completed();
+        drop(lease);
 
         let message = tokio::time::timeout(std::time::Duration::from_secs(1), router_rx.recv())
             .await
-            .expect("stream cancellation should emit request cancel")
+            .expect("stream drop should emit request cancel")
             .expect("router writer channel should stay open");
         assert_cancel_message(message, &request_id, "stream_dropped");
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+    }
+
+    #[test]
+    fn outbound_request_lease_sender_closed_records_counter() {
+        let (router_sender, router_rx) = mpsc::unbounded_channel();
+        let context = test_context(Some(router_sender));
+        let (_response_rx, lease) = context
+            .open_outbound_response_lease("request-stream", "stream_cancelled")
+            .expect("lease should open");
+
+        drop(router_rx);
+        drop(lease);
+
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
+        assert_eq!(
+            context.outbound_requests.cancel_send_failed_closed_count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_request_lease_repeated_terminal_sends_cancel_once() {
+        let (router_sender, mut router_rx) = mpsc::unbounded_channel();
+        let context = test_context(Some(router_sender));
+        let (_response_rx, lease) = context
+            .open_outbound_response_lease("request-stream", "stream_cancelled")
+            .expect("lease should open");
+
+        lease.cancel("stream_cancelled");
+        lease.complete();
+        drop(lease);
+
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), router_rx.recv())
             .await
-            .expect("cancelled stream should stop cancel watcher")
-            .expect("cancel watcher task should succeed");
-        assert!(completed.is_completed());
+            .expect("first terminal should emit request cancel")
+            .expect("router writer channel should stay open");
+        assert_cancel_message(message, "request-stream", "stream_dropped");
+        assert!(router_rx.try_recv().is_err());
+        assert_eq!(context.outbound_requests.pending_count(), 0);
+        assert_eq!(context.outbound_requests.active_lease_count(), 0);
     }
 
     #[test]
@@ -605,7 +586,7 @@ mod tests {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),
-            cancel_signal: CancellationToken::from_flag(Arc::new(AtomicBool::new(false))),
+            cancel_signal: CancellationToken::new(),
             request_heap_limits: RequestHeapLimits::default(),
             router_sender: None,
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),

@@ -46,7 +46,7 @@ impl eval_capabilities::OutboundServiceApi for RuntimeOutboundServiceContext {
 
     fn receive_response<'a>(
         &'a self,
-        request_id: &'a str,
+        lease: &'a skiff_runtime_capability_context::OutboundRequestLease,
         target: &'a str,
         receiver: &'a mut skiff_runtime_capability_context::OutboundResponseReceiver,
         timeout_ms: Option<u64>,
@@ -56,23 +56,13 @@ impl eval_capabilities::OutboundServiceApi for RuntimeOutboundServiceContext {
     > {
         Box::pin(async move {
             self.0
-                .receive_response(request_id, target, receiver, timeout_ms)
+                .receive_response(lease, target, receiver, timeout_ms)
                 .await
                 .into_eval_result()
         })
     }
 
-    fn abort_outbound_request(&self, request_id: &str, reason: &str) {
-        self.0.abort_outbound_request(request_id, reason);
-    }
-
-    fn spawn_stream_cancel_task(
-        &self,
-        request_id: String,
-        cancellation: CancellationToken,
-        completed: CompletionSignal,
-    ) {
-        self.0
-            .spawn_stream_cancel_task(request_id, cancellation, completed);
+    fn cancel_signal(&self) -> CancellationToken {
+        self.0.cancel_signal()
     }
 }

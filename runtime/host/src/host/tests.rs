@@ -14,8 +14,8 @@ use skiff_runtime_model::{
     runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
 };
 use skiff_runtime_request::{
-    ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest, ExecutionBudget,
-    OutboundResponse, RequestEnvelope,
+    cancellation::CancellationToken, ActorFindControlRequest, ActorKeyControlMetadata,
+    ActorPutControlRequest, ExecutionBudget, OutboundResponse, RequestEnvelope,
 };
 use skiff_runtime_transport::control_mapper::encode_outbound_control_message;
 use skiff_runtime_transport::control_response_mapper::spawn_claim_response_control_payload;
@@ -2294,6 +2294,8 @@ async fn runtime_binary_http_server_stream_missing_sender_precedes_input_plan_va
         b"stream chunk".to_vec(),
     );
     let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(&request.extra));
+    let cancellation = CancellationToken::new();
+    let cancelled = cancellation.cancel_flag();
     let route = host
         .lookup_operation(&request)
         .expect("stream route should resolve");
@@ -2304,7 +2306,8 @@ async fn runtime_binary_http_server_stream_missing_sender_precedes_input_plan_va
             route.operation,
             route.addr,
             request,
-            Arc::new(AtomicBool::new(false)),
+            cancelled,
+            cancellation,
             execution_budget,
             None,
         )

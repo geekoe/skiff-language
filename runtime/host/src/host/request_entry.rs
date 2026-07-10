@@ -154,6 +154,7 @@ impl RuntimeHost {
             }
         }
         let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let request_operation_context = operation_context.request_operation_context();
 
@@ -168,6 +169,7 @@ impl RuntimeHost {
                     operation_context: request_operation_context,
                     request,
                     cancelled,
+                    cancellation,
                     execution_budget: execution_budget.clone(),
                     handles: host.request_execution_handles(
                         service.clone(),
@@ -465,6 +467,7 @@ impl RuntimeHost {
         addr: ExecutableAddr,
         request: RequestEnvelope,
         cancelled: Arc<AtomicBool>,
+        cancellation: skiff_runtime_request::cancellation::CancellationToken,
         execution_budget: Arc<ExecutionBudget>,
         router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
     ) -> Result<request_runner::RuntimeResponse> {
@@ -476,6 +479,7 @@ impl RuntimeHost {
             operation_context: request_operation_context.clone(),
             request,
             cancelled,
+            cancellation,
             execution_budget,
             handles: self.request_execution_handles(
                 operation_context.service.clone(),

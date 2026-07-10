@@ -21,7 +21,9 @@ pub use actor::{
     ActorCapabilityApi, ActorCapabilityContext, ActorClient, OwnedActorCapabilityContext,
 };
 pub use cancellation::{
-    CancellationSignals, CancellationToken, CompletionSignal, RequestAbortSignal,
+    flag_backed_cancel_waiters_active, CancellationPollingFallbackAllowlistEntry,
+    CancellationSignals, CancellationSource, CancellationToken, CompletionSignal,
+    RequestAbortSignal, FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST,
 };
 pub use capability_error::{CapabilityError, CapabilityFuture, CapabilityResult};
 pub use config::{ConfigCapabilityApi, ConfigCapabilityContext, OwnedConfigCapabilityContext};
@@ -63,8 +65,9 @@ pub use outbound_control::{
 };
 pub use outbound_request::{OutboundServiceRequestStart, OutboundStartedRequest};
 pub use outbound_response::{
-    OutboundRequestRegistry, OutboundRequestRegistryError, OutboundResponse,
-    OutboundResponseReceiver, OutboundResponseSender,
+    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
+    OutboundRequestRegistry, OutboundRequestRegistryError, OutboundRequestTerminalSignal,
+    OutboundResponse, OutboundResponseReceiver, OutboundResponseSender,
 };
 pub use request_payload::{
     binary_http_request_parts, http_name_value_context, http_name_value_contexts,

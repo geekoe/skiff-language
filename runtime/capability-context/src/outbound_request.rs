@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{OutboundResponseReceiver, RequestEffectDoubleControl};
+use crate::{OutboundRequestLease, OutboundResponseReceiver, RequestEffectDoubleControl};
 
 pub struct OutboundServiceRequestStart {
     pub mode: String,
@@ -19,4 +19,5 @@ pub struct OutboundServiceRequestStart {
 pub struct OutboundStartedRequest {
     pub request_id: String,
     pub response_rx: OutboundResponseReceiver,
+    pub lease: OutboundRequestLease,
 }

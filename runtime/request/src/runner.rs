@@ -1,6 +1,7 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use serde_json::Value;
+use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 
 use crate::{
@@ -46,6 +47,7 @@ pub struct RequestExecutionInput {
     pub operation_context: RequestOperationContext,
     pub request: RequestEnvelope,
     pub cancelled: Arc<AtomicBool>,
+    pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
     pub handles: RequestExecutionHandles,
 }
@@ -63,6 +65,7 @@ pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExe
         operation_context,
         request,
         cancelled,
+        cancellation,
         execution_budget,
         handles,
     } = input;
@@ -72,7 +75,7 @@ pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExe
         operation,
         addr,
     } = operation_context;
-    let execution = super::ExecutionControl::new(&cancelled, &execution_budget);
+    let execution = super::ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
     super::ingress::IngressDispatcher::validate_request(&request)?;
 
@@ -82,6 +85,7 @@ pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExe
         metadata: &metadata,
         request: &request,
         execution,
+        cancellation,
         cancelled: cancelled.as_ref(),
         execution_budget: execution_budget.clone(),
         handles: &handles,

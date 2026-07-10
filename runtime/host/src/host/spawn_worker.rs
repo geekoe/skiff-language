@@ -9,7 +9,8 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use skiff_runtime_request::{
-    cancellation::CancellationToken, OutboundResponse, RequestEnvelope, RuntimeOperation,
+    cancellation::CancellationToken, OutboundRequestLease, OutboundResponse, RequestEnvelope,
+    RuntimeOperation,
 };
 use skiff_runtime_transport::{
     control_response_mapper::{spawn_claim_response_payload_bytes, SpawnClaimControlResponse},
@@ -445,6 +446,7 @@ impl SpawnWorker {
             .begin(&request, telemetry_context, "spawn.request.start")
             .await;
         let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
         let (renew_stop_tx, renew_stop_rx) = oneshot::channel();
         let renew_task = tokio::spawn(self.clone().renew_spawn_loop(
             descriptor.clone(),
@@ -463,6 +465,7 @@ impl SpawnWorker {
                 addr,
                 request,
                 cancelled,
+                cancellation,
                 execution_budget.clone(),
                 Some(self.sender.clone()),
             )
@@ -624,14 +627,14 @@ impl SpawnWorker {
         let rpc_id = header.rpc_id().to_string();
         let frame = encode_binary_frame(&header, &payload)
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let response_rx = self.register_outbound_response(&rpc_id)?;
+        let (response_rx, lease) = self.open_outbound_response_lease(&rpc_id)?;
         if let Err(error) = self.send_frame(&rpc_id, frame) {
-            self.host.outbound_requests.remove(&rpc_id);
+            lease.cancel("runtime_disconnect");
             return Err(error);
         }
 
         let payload = self
-            .await_control_response(target, &rpc_id, response_rx)
+            .await_control_response(target, lease, response_rx)
             .await?;
         serde_json::from_slice(&payload).map_err(|error| {
             RuntimeError::decode_target(
@@ -641,51 +644,63 @@ impl SpawnWorker {
         })
     }
 
-    fn register_outbound_response(&self, rpc_id: &str) -> Result<super::OutboundResponseReceiver> {
+    fn open_outbound_response_lease(
+        &self,
+        rpc_id: &str,
+    ) -> Result<(super::OutboundResponseReceiver, OutboundRequestLease)> {
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.host
-            .outbound_requests
-            .insert(rpc_id.to_string(), sender)?;
-        Ok(receiver)
+        let lease = self.host.outbound_requests.insert_with_lease(
+            rpc_id.to_string(),
+            sender,
+            None,
+            "caller_cancel",
+        )?;
+        Ok((receiver, lease))
     }
 
     fn send_frame(&self, rpc_id: &str, frame: Vec<u8>) -> Result<()> {
         self.sender
             .send(super::RouterWriterMessage::Binary(frame))
-            .map_err(|_| {
-                self.host.outbound_requests.remove(rpc_id);
-                RuntimeError::ProviderUnavailable {
-                    target: rpc_id.to_string(),
-                    reason: "router writer channel closed".to_string(),
-                }
+            .map_err(|_| RuntimeError::ProviderUnavailable {
+                target: rpc_id.to_string(),
+                reason: "router writer channel closed".to_string(),
             })
     }
 
     async fn await_control_response(
         &self,
         target: &str,
-        rpc_id: &str,
+        lease: OutboundRequestLease,
         mut receiver: super::OutboundResponseReceiver,
     ) -> Result<Vec<u8>> {
         match timeout(CONTROL_RPC_TIMEOUT, receiver.recv()).await {
-            Ok(Some(OutboundResponse::End { payload })) => Ok(payload),
-            Ok(Some(OutboundResponse::Error(error))) => Err(RuntimeError::ProviderUnavailable {
-                target: target.to_string(),
-                reason: error.message,
-            }),
+            Ok(Some(OutboundResponse::End { payload })) => {
+                lease.complete();
+                Ok(payload)
+            }
+            Ok(Some(OutboundResponse::Error(error))) => {
+                lease.complete();
+                Err(RuntimeError::ProviderUnavailable {
+                    target: target.to_string(),
+                    reason: error.message,
+                })
+            }
             Ok(Some(other)) => {
-                self.host.outbound_requests.remove(rpc_id);
+                lease.cancel("unexpected_control_response");
                 Err(RuntimeError::ProviderUnavailable {
                     target: target.to_string(),
                     reason: format!("control RPC received {}", other.kind()),
                 })
             }
-            Ok(None) => Err(RuntimeError::ProviderUnavailable {
-                target: target.to_string(),
-                reason: "control response channel closed".to_string(),
-            }),
+            Ok(None) => {
+                lease.cancel("response_channel_closed");
+                Err(RuntimeError::ProviderUnavailable {
+                    target: target.to_string(),
+                    reason: "control response channel closed".to_string(),
+                })
+            }
             Err(_) => {
-                self.host.outbound_requests.remove(rpc_id);
+                lease.cancel("timeout");
                 Err(RuntimeError::ProviderUnavailable {
                     target: target.to_string(),
                     reason: "control response timed out".to_string(),

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    future::Future,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -41,6 +42,14 @@ enum StreamEvent {
     Item(Value),
     End,
     Error(StreamRuntimeError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamTerminalReason {
+    End,
+    Error,
+    Cancelled,
+    SourceDropped,
 }
 
 struct StreamState {
@@ -131,6 +140,24 @@ impl StreamRuntime {
         stream_value(&id)
     }
 
+    fn finish_stream(&self, id: &str, terminal: StreamTerminalReason) {
+        let state = self
+            .streams
+            .lock()
+            .expect("stream registry mutex poisoned")
+            .remove(id);
+        if let Some(state) = state {
+            state.finish(terminal);
+        }
+    }
+
+    pub fn active_stream_count(&self) -> usize {
+        self.streams
+            .lock()
+            .expect("stream registry mutex poisoned")
+            .len()
+    }
+
     #[allow(dead_code)]
     pub fn buffered_stream(&self, items: impl IntoIterator<Item = Value>) -> Value {
         let (value, sink) = self.channel_stream();
@@ -179,44 +206,47 @@ impl StreamRuntime {
             .cloned()
             .ok_or_else(|| StreamRuntimeError::decode("unknown Stream value"))?;
         if state.ended.load(Ordering::SeqCst) {
+            self.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::decode(
                 "Stream value has already been consumed",
             ));
         }
         if state.cancelled.load(Ordering::SeqCst) {
-            state.ended.store(true, Ordering::SeqCst);
+            self.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
         if external_cancelled(signals, cancellation) {
-            self.cancel(value);
-            state.ended.store(true, Ordering::SeqCst);
+            self.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
 
         match &state.source {
             StreamSource::Channel(receiver) => {
                 let event =
-                    next_channel_event(self, value, &state, receiver, signals, cancellation)
-                        .await?;
+                    next_channel_event(self, id, &state, receiver, signals, cancellation).await?;
                 match event {
                     Some(StreamEvent::Item(value)) => Ok(StreamPoll::Item(value)),
-                    Some(StreamEvent::End) | None => {
-                        state.ended.store(true, Ordering::SeqCst);
+                    Some(StreamEvent::End) => {
+                        self.finish_stream(id, StreamTerminalReason::End);
+                        Ok(StreamPoll::End)
+                    }
+                    None => {
+                        self.finish_stream(id, StreamTerminalReason::SourceDropped);
                         Ok(StreamPoll::End)
                     }
                     Some(StreamEvent::Error(error)) => {
-                        state.ended.store(true, Ordering::SeqCst);
+                        self.finish_stream(id, StreamTerminalReason::Error);
                         Err(error)
                     }
                 }
             }
             StreamSource::Pull(source) => {
                 let event =
-                    next_pull_event(self, value, &state, source, signals, cancellation).await?;
+                    next_pull_event(self, id, &state, source, signals, cancellation).await?;
                 match event {
                     Some(value) => Ok(StreamPoll::Item(value)),
                     None => {
-                        state.ended.store(true, Ordering::SeqCst);
+                        self.finish_stream(id, StreamTerminalReason::End);
                         Ok(StreamPoll::End)
                     }
                 }
@@ -228,23 +258,29 @@ impl StreamRuntime {
         let Some(id) = stream_id(value) else {
             return;
         };
-        let Some(state) = self
-            .streams
-            .lock()
-            .expect("stream registry mutex poisoned")
-            .get(id)
-            .cloned()
-        else {
-            return;
-        };
-        state.cancelled.store(true, Ordering::SeqCst);
-        state.cancel_notify.notify_waiters();
+        self.finish_stream(id, StreamTerminalReason::Cancelled);
+    }
+}
+
+impl StreamState {
+    fn finish(&self, _terminal: StreamTerminalReason) -> bool {
+        if self
+            .ended
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.cancelled.store(true, Ordering::SeqCst);
+            self.cancel_notify.notify_waiters();
+            true
+        } else {
+            false
+        }
     }
 }
 
 async fn next_channel_event(
     runtime: &StreamRuntime,
-    value: &Value,
+    id: &str,
     state: &StreamState,
     receiver: &AsyncMutex<mpsc::Receiver<StreamEvent>>,
     signals: &[StreamCancelSignal],
@@ -255,18 +291,17 @@ async fn next_channel_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     let mut receiver = tokio::select! {
         receiver = receiver.lock() => receiver,
         _ = &mut lock_cancel_notified => {
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
         _ = &mut external_cancel_notified => {
-            runtime.cancel(value);
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
     };
@@ -275,24 +310,22 @@ async fn next_channel_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     if external_cancelled(signals, cancellation) {
-        runtime.cancel(value);
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
 
     tokio::select! {
         event = receiver.recv() => Ok(event),
         _ = &mut cancel_notified => {
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
         _ = &mut external_cancel_notified => {
-            runtime.cancel(value);
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
     }
@@ -300,7 +333,7 @@ async fn next_channel_event(
 
 async fn next_pull_event(
     runtime: &StreamRuntime,
-    value: &Value,
+    id: &str,
     state: &StreamState,
     source: &AsyncMutex<Box<dyn StreamPullSource>>,
     signals: &[StreamCancelSignal],
@@ -311,18 +344,17 @@ async fn next_pull_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     let mut source = tokio::select! {
         source = source.lock() => source,
         _ = &mut lock_cancel_notified => {
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
         _ = &mut external_cancel_notified => {
-            runtime.cancel(value);
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
     };
@@ -331,24 +363,22 @@ async fn next_pull_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     if external_cancelled(signals, cancellation) {
-        runtime.cancel(value);
-        state.ended.store(true, Ordering::SeqCst);
+        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
 
     tokio::select! {
         event = source.next() => event,
         _ = &mut cancel_notified => {
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
         _ = &mut external_cancel_notified => {
-            runtime.cancel(value);
-            state.ended.store(true, Ordering::SeqCst);
+            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
     }
@@ -471,14 +501,10 @@ async fn wait_for_external_cancel(
         std::future::pending::<()>().await;
         return;
     }
-    loop {
-        if external_cancelled(signals, cancellation) {
-            return;
-        }
+    while !external_cancelled(signals, cancellation) {
         tokio::select! {
-            _ = wait_for_any_signal(signals), if !signals.is_empty() => return,
-            _ = cancellation.wait_cancelled(), if !cancellation.is_empty() => return,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => {},
+            _ = wait_for_any_signal(signals), if !signals.is_empty() => {},
+            _ = cancellation.wait_cancelled(), if !cancellation.is_empty() => {},
         }
     }
 }
@@ -511,11 +537,42 @@ async fn wait_for_any_signal(signals: &[StreamCancelSignal]) {
         std::future::pending::<()>().await;
         return;
     }
-    let mut futures = signals
-        .iter()
-        .map(|signal| signal.cancel_notify.notified())
-        .collect::<futures_util::stream::FuturesUnordered<_>>();
-    futures_util::StreamExt::next(&mut futures).await;
+    loop {
+        if signals
+            .iter()
+            .any(|signal| signal.cancelled.load(Ordering::SeqCst))
+        {
+            return;
+        }
+        let mut futures = signals
+            .iter()
+            .map(|signal| Box::pin(signal.cancel_notify.notified()))
+            .collect::<Vec<_>>();
+        for future in &mut futures {
+            future.as_mut().enable();
+        }
+        if signals
+            .iter()
+            .any(|signal| signal.cancelled.load(Ordering::SeqCst))
+        {
+            return;
+        }
+        std::future::poll_fn(|context| {
+            if signals
+                .iter()
+                .any(|signal| signal.cancelled.load(Ordering::SeqCst))
+            {
+                return std::task::Poll::Ready(());
+            }
+            for future in &mut futures {
+                if future.as_mut().poll(context).is_ready() {
+                    return std::task::Poll::Ready(());
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+    }
 }
 
 async fn wait_for_cancellation(cancellation: &CancellationSignals<'_>) {

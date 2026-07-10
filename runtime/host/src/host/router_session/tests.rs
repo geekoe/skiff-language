@@ -966,8 +966,14 @@ async fn binary_response_end_completes_pending_outbound_request() {
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    host.outbound_requests
-        .insert("request-outbound-1".to_string(), response_sender)
+    let _lease = host
+        .outbound_requests
+        .insert_with_lease(
+            "request-outbound-1".to_string(),
+            response_sender,
+            None,
+            "caller_cancel",
+        )
         .expect("pending outbound response should register");
     let frame = encode_binary_frame(
         &ResponseEndFrameHeader {
@@ -1016,8 +1022,14 @@ async fn binary_response_error_completes_pending_outbound_request() {
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    host.outbound_requests
-        .insert("request-outbound-error".to_string(), response_sender)
+    let _lease = host
+        .outbound_requests
+        .insert_with_lease(
+            "request-outbound-error".to_string(),
+            response_sender,
+            None,
+            "caller_cancel",
+        )
         .expect("pending outbound response should register");
     let frame = encode_binary_frame(
         &ResponseErrorFrameHeader {
@@ -1069,8 +1081,14 @@ async fn binary_response_start_for_pending_outbound_sends_stream_event_without_c
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    host.outbound_requests
-        .insert("request-outbound-stream".to_string(), response_sender)
+    let _lease = host
+        .outbound_requests
+        .insert_with_lease(
+            "request-outbound-stream".to_string(),
+            response_sender,
+            None,
+            "caller_cancel",
+        )
         .expect("pending outbound response should register");
     let frame = encode_binary_frame(
         &ResponseStartFrameHeader {
@@ -1116,8 +1134,14 @@ async fn binary_response_chunk_for_pending_outbound_sends_stream_event_without_c
     let mut control = None;
     let mut artifact_fingerprint = None;
     let (response_sender, mut response_receiver) = mpsc::unbounded_channel();
-    host.outbound_requests
-        .insert("request-outbound-stream".to_string(), response_sender)
+    let _lease = host
+        .outbound_requests
+        .insert_with_lease(
+            "request-outbound-stream".to_string(),
+            response_sender,
+            None,
+            "caller_cancel",
+        )
         .expect("pending outbound response should register");
     let frame = encode_binary_frame(
         &ResponseChunkFrameHeader {

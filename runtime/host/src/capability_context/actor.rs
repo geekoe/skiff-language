@@ -2,12 +2,13 @@ use std::sync::atomic::AtomicBool;
 
 use serde::de::DeserializeOwned;
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, InvocationContext,
-    OutboundControlMessage, OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
-    RequestAbortSignal, RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
+    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
+    CancellationSignals, InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
+    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
+    OutboundResponseReceiver, RequestAbortSignal, RequestCancelControl, RouterWriterMessage,
+    SpawnSubmitControlRequest,
 };
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
 
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_boundary::value::decode_base64;
@@ -123,13 +124,13 @@ impl<'a> ActorClient<'a> {
         rpc_id: &str,
         command: OutboundControlMessage,
     ) -> Result<Vec<u8>> {
-        let response_rx = self.context.register_outbound_response(rpc_id)?;
+        let (response_rx, lease) = self.context.open_outbound_response_lease(rpc_id)?;
         if let Err(error) = self.context.send_outbound_request(rpc_id, command) {
-            self.context.remove_outbound_response(rpc_id);
+            lease.cancel("runtime_disconnect");
             return Err(error);
         }
 
-        await_control_response(&self.context, target, rpc_id, response_rx).await
+        await_control_response(&self.context, target, lease, response_rx).await
     }
 
     fn control_rpc_id(&self, target: &str) -> String {
@@ -263,15 +264,18 @@ impl<'a> ActorClientContext<'a> {
         self.trace_id
     }
 
-    fn register_outbound_response(&self, request_id: &str) -> Result<OutboundResponseReceiver> {
+    fn open_outbound_response_lease(
+        &self,
+        request_id: &str,
+    ) -> Result<(OutboundResponseReceiver, OutboundRequestLease)> {
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.outbound_requests
-            .insert(request_id.to_string(), sender)?;
-        Ok(receiver)
-    }
-
-    fn remove_outbound_response(&self, request_id: &str) {
-        self.outbound_requests.remove(request_id);
+        let lease = self.outbound_requests.insert_with_lease(
+            request_id.to_string(),
+            sender,
+            self.outbound_cancel_sender(),
+            "caller_cancel",
+        )?;
+        Ok((receiver, lease))
     }
 
     fn send_outbound_request(
@@ -287,24 +291,6 @@ impl<'a> ActorClientContext<'a> {
             })?;
         sender
             .send(RouterWriterMessage::Control(command))
-            .map_err(|_| {
-                self.outbound_requests.remove(request_id);
-                RuntimeError::ProviderUnavailable {
-                    target: request_id.to_string(),
-                    reason: "router writer channel closed".to_string(),
-                }
-            })
-    }
-
-    fn send_outbound_cancel(&self, request_id: &str, reason: &str) -> Result<()> {
-        let sender = self
-            .router_sender
-            .ok_or_else(|| RuntimeError::ProviderUnavailable {
-                target: request_id.to_string(),
-                reason: "router writer is not available".to_string(),
-            })?;
-        sender
-            .send(cancel_message(request_id, reason))
             .map_err(|_| RuntimeError::ProviderUnavailable {
                 target: request_id.to_string(),
                 reason: "router writer channel closed".to_string(),
@@ -314,39 +300,55 @@ impl<'a> ActorClientContext<'a> {
     fn abort_signal(&self) -> RequestAbortSignal<'a> {
         RequestAbortSignal::from_borrowed_flag(self.cancelled)
     }
+
+    fn outbound_cancel_sender(&self) -> Option<OutboundRequestCancelSender> {
+        let sender = self.router_sender.cloned()?;
+        Some(std::sync::Arc::new(move |request_id, reason| {
+            sender
+                .send(cancel_message(request_id, reason))
+                .map_err(|_| OutboundRequestCancelSendError::Closed)
+        }))
+    }
 }
 
 async fn await_control_response(
     context: &ActorClientContext<'_>,
     target: &str,
-    rpc_id: &str,
+    lease: OutboundRequestLease,
     mut receiver: OutboundResponseReceiver,
 ) -> Result<Vec<u8>> {
     tokio::select! {
         result = receiver.recv() => {
             match result {
-                Some(OutboundResponse::End { payload }) => Ok(payload),
-                Some(OutboundResponse::Error(error)) => Err(RuntimeError::ProviderUnavailable {
-                    target: target.to_string(),
-                    reason: error.message,
-                }),
+                Some(OutboundResponse::End { payload }) => {
+                    lease.complete();
+                    Ok(payload)
+                }
+                Some(OutboundResponse::Error(error)) => {
+                    lease.complete();
+                    Err(RuntimeError::ProviderUnavailable {
+                        target: target.to_string(),
+                        reason: error.message,
+                    })
+                }
                 Some(other) => {
-                    context.remove_outbound_response(rpc_id);
-                    let _ = context.send_outbound_cancel(rpc_id, "unexpected_control_response");
+                    lease.cancel("unexpected_control_response");
                     Err(RuntimeError::ProviderUnavailable {
                         target: target.to_string(),
                         reason: format!("control RPC received {}", other.kind()),
                     })
                 }
-                None => Err(RuntimeError::ProviderUnavailable {
-                    target: target.to_string(),
-                    reason: "control response channel closed".to_string(),
-                }),
+                None => {
+                    lease.cancel("response_channel_closed");
+                    Err(RuntimeError::ProviderUnavailable {
+                        target: target.to_string(),
+                        reason: "control response channel closed".to_string(),
+                    })
+                }
             }
         }
         _ = wait_request_cancelled(context) => {
-            context.remove_outbound_response(rpc_id);
-            let _ = context.send_outbound_cancel(rpc_id, "caller_cancel");
+            lease.cancel("caller_cancel");
             Err(RuntimeError::cancelled())
         }
     }
@@ -354,9 +356,9 @@ async fn await_control_response(
 
 async fn wait_request_cancelled(context: &ActorClientContext<'_>) {
     let abort_signal = context.abort_signal();
-    while !abort_signal.is_cancelled() {
-        sleep(Duration::from_millis(1)).await;
-    }
+    CancellationSignals::from_signals([abort_signal])
+        .wait_cancelled()
+        .await;
 }
 
 fn cancel_message(request_id: &str, reason: &str) -> RouterWriterMessage {
