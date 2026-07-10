@@ -23,6 +23,8 @@ import type {
   RuntimeRegistry
 } from './runtimeRegistry.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
+import type { HttpStreamLifecycleCounters } from './httpGateway.js';
+import type { WebSocketReceiveLifecycleCounters } from '../gateway/webSocketGateway.js';
 
 export interface RuntimeControlBroadcaster {
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void;
@@ -31,10 +33,16 @@ export interface RuntimeControlBroadcaster {
 export interface ControlPlaneOptions {
   controlBroadcaster: RuntimeControlBroadcaster;
   dispatcher: RuntimeDispatcher;
+  loopRiskCounters?: RouterLoopRiskCounterSources;
   registry: RuntimeRegistry;
   reloadArtifacts?: (overrides?: ReloadArtifactsOverrides) => Promise<RouterActiveSnapshot>;
   requestTimeoutMs?: number;
   snapshotStore: RouterActiveSnapshotStore;
+}
+
+export interface RouterLoopRiskCounterSources {
+  httpStream?: () => HttpStreamLifecycleCounters;
+  websocketReceive?: () => WebSocketReceiveLifecycleCounters;
 }
 
 export interface ReloadArtifactsOverrides {
@@ -108,11 +116,21 @@ export class RouterControlPlane {
   ): Promise<boolean> {
     const url = requestUrl(request);
     if (url.pathname === '/__router/health') {
-      this.writeJson(response, 200, {
+      const payload = {
         ok: true,
         ...summarizeRouterActiveSnapshot(this.options.snapshotStore.get()),
         runtimes: this.options.registry.snapshot()
-      });
+      };
+      this.writeJson(
+        response,
+        200,
+        url.searchParams.get('detail') === 'loop-risk'
+          ? {
+              ...payload,
+              loopRisk: this.loopRiskHealthSnapshot()
+            }
+          : payload
+      );
       return true;
     }
 
@@ -147,6 +165,43 @@ export class RouterControlPlane {
       });
       return true;
     }
+  }
+
+  setLoopRiskCounterSources(sources: RouterLoopRiskCounterSources): void {
+    this.options.loopRiskCounters = sources;
+  }
+
+  private loopRiskHealthSnapshot(): {
+    observedAt: string;
+    router: {
+      dispatcher: ReturnType<RuntimeDispatcher['pendingLifecycleCounters']>;
+      httpStream: {
+        backpressureWaiters: number;
+        backpressureCancels: number;
+      };
+      websocketReceive: WebSocketReceiveLifecycleCounters;
+    };
+    runtimes: ReturnType<RuntimeRegistry['loopRiskRuntimeHealthSnapshot']>;
+  } {
+    const observedAt = new Date();
+    const httpStream = this.options.loopRiskCounters?.httpStream?.();
+    const websocketReceive = this.options.loopRiskCounters?.websocketReceive?.();
+    return {
+      observedAt: observedAt.toISOString(),
+      router: {
+        dispatcher: this.options.dispatcher.pendingLifecycleCounters(),
+        httpStream: {
+          backpressureWaiters: httpStream?.backpressureWaiters ?? 0,
+          backpressureCancels: httpStream?.backpressureCancels ?? 0
+        },
+        websocketReceive: websocketReceive ?? {
+          inFlight: 0,
+          queued: 0,
+          abortOnClose: 0
+        }
+      },
+      runtimes: this.options.registry.loopRiskRuntimeHealthSnapshot(observedAt.getTime())
+    };
   }
 
   private async handleReloadArtifacts(

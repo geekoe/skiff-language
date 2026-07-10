@@ -54,6 +54,7 @@ pub use store::{
     HostCapabilityFuture,
 };
 pub use stream::{HttpResponseStreamCapabilityContext, StreamCapabilityContext, TypedStreamSink};
+pub(crate) use stream_runtime::stream_runtime_streams_active;
 pub use stream_runtime::{StreamCancelSignal, StreamRuntime, StreamSink};
 pub use telemetry::TelemetryCapabilityContext;
 pub use test_effect_double::TestEffectDouble;

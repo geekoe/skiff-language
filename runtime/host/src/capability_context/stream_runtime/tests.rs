@@ -287,6 +287,20 @@ async fn stream_runtime_pull_stream_token_cancel_wakes_pending_next() {
 }
 
 #[tokio::test]
+async fn stream_runtime_pull_stream_normal_end_does_not_cancel_request_token() {
+    let runtime = StreamRuntime::default();
+    let token = CancellationToken::new();
+    let stream = runtime.pull_stream_with_cancellation(EndPullSource, token.clone());
+
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::End
+    ));
+    assert!(!token.is_cancelled());
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
 async fn stream_runtime_outer_cancel_stops_next_read() {
     let runtime = StreamRuntime::default();
     let (stream, _sink) = runtime.channel_stream();
@@ -432,6 +446,16 @@ impl StreamPullSource for PendingPullSource {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {
         Box::pin(std::future::pending())
+    }
+}
+
+struct EndPullSource;
+
+impl StreamPullSource for EndPullSource {
+    fn next<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 }
 

@@ -56,6 +56,7 @@ export class BinaryFrameDecodeError extends Error {
 export type RuntimeFrameHeaderName =
   | 'runtime.register'
   | 'runtime.capabilities'
+  | 'runtime.health'
   | 'runtime.registered'
   | 'router.control'
   | 'actor.put.request'
@@ -203,6 +204,24 @@ export interface RuntimeCapabilitiesEnvelope {
 
 export type RuntimeCapabilitiesFrameHeader = RuntimeFrameHeaderBase<'runtime.capabilities'> &
   Omit<RuntimeCapabilitiesEnvelope, 'type'>;
+
+export interface RuntimeHealthCounters {
+  outboundRequestsPending: number;
+  outboundStreamLeasesActive: number;
+  streamRuntimeStreamsActive: number;
+  flagBackedCancelWaitersActive: number;
+  spawnedTasksActive: number;
+}
+
+export interface RuntimeHealthEnvelope {
+  type: 'runtime.health';
+  runtimeId: string;
+  observedAt: string;
+  counters: RuntimeHealthCounters;
+}
+
+export type RuntimeHealthFrameHeader = RuntimeFrameHeaderBase<'runtime.health'> &
+  Omit<RuntimeHealthEnvelope, 'type'>;
 
 export interface RuntimeRegisteredEnvelope {
   type: 'runtime.registered';
@@ -742,6 +761,7 @@ export type RouterToRuntimeFrameHeader =
 export type RuntimeToRouterFrameHeader =
   | RuntimeRegisterFrameHeader
   | RuntimeCapabilitiesFrameHeader
+  | RuntimeHealthFrameHeader
   | ActorSpawnRuntimeRequestFrameHeader
   | RequestStartFrameHeader
   | RequestCancelFrameHeader

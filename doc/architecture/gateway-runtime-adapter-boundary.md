@@ -50,7 +50,7 @@ Runtime endpoint 是 router 对 runtime 暴露的内部 WebSocket listener，通
 
 - 接收 runtime 连接。
 - 编码/解码 runtime frame envelope。
-- 接收 `runtime.register`、`runtime.capabilities`、`response.*`、runtime-originated `request.start`、`request.cancel`、`connection.send`。
+- 接收 `runtime.register`、`runtime.capabilities`、`runtime.health`、`response.*`、runtime-originated `request.start`、`request.cancel`、`connection.send`。
 - 将已验证 frame 交给 `RuntimeRegistry` 或 `RuntimeDispatcher`。
 
 Runtime endpoint 不负责选择业务 runtime，也不持有长期 pending request 策略。

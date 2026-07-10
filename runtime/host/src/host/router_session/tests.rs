@@ -27,8 +27,9 @@ use skiff_runtime_transport::protocol::{
     encode_binary_frame, PackageTestStartFrameHeader, RequestCancelFrameHeader,
     ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
     ResponseStartFrameHeader, RouterControlFrameHeader, RuntimeCallerFrameHeader,
-    RuntimeErrorFramePayload, RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader,
-    RuntimeTraceContextFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
+    RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader, RuntimeTraceContextFrameHeader,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
@@ -162,6 +163,101 @@ fn writer_encodes_outbound_control_command_as_binary_frame() {
 }
 
 #[tokio::test]
+async fn runtime_health_frame_reports_loop_risk_counters() {
+    let host = test_host();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let stream_baseline = crate::capability_context::stream_runtime_streams_active();
+    let flag_waiter_baseline = skiff_runtime_capability_context::flag_backed_cancel_waiters_active();
+
+    let counters = host.runtime_health_counters().await;
+    host.queue_runtime_health_with_counters(&sender, "runtime-health-zero", counters)
+        .await
+        .expect("runtime.health should encode");
+
+    let frame = match receiver
+        .recv()
+        .await
+        .expect("runtime.health frame should be queued")
+    {
+        super::super::RouterWriterMessage::Binary(frame) => frame,
+        other => panic!("expected binary runtime.health frame, got {other:?}"),
+    };
+    let (header, payload): (RuntimeHealthFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).expect("runtime.health should decode");
+
+    assert!(payload.is_empty());
+    assert_eq!(header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
+    assert_eq!(header.envelope_type, "runtime.health");
+    assert_eq!(header.runtime_id, "runtime-health-zero");
+    assert_eq!(header.counters.outbound_requests_pending, 0);
+    assert_eq!(header.counters.outbound_stream_leases_active, 0);
+    assert_eq!(header.counters.stream_runtime_streams_active, stream_baseline);
+    assert_eq!(
+        header.counters.flag_backed_cancel_waiters_active,
+        flag_waiter_baseline
+    );
+    assert_eq!(header.counters.spawned_tasks_active, 0);
+}
+
+#[tokio::test]
+async fn runtime_health_reporter_sends_immediate_zero_transition() {
+    let host = test_host();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut reporter = RuntimeHealthReporter::default();
+    reporter
+        .registered_runtime_ids
+        .insert("runtime-health-zero-transition".to_string());
+
+    reporter
+        .send_counters(
+            &host,
+            &sender,
+            runtime_health_counters_for_test(1, 1, 0, 0, 0),
+        )
+        .await
+        .expect("nonzero runtime.health should send");
+    let nonzero = recv_runtime_health(&mut receiver).await;
+    assert_eq!(nonzero.runtime_id, "runtime-health-zero-transition");
+    assert_eq!(nonzero.counters.outbound_requests_pending, 1);
+    assert!(reporter.should_probe_zero_transition());
+
+    let sent = reporter
+        .send_zero_transition_for_counters(
+            &host,
+            &sender,
+            runtime_health_counters_for_test(0, 0, 0, 0, 0),
+        )
+        .await
+        .expect("zero transition runtime.health should send");
+    assert!(sent);
+    let zero = recv_runtime_health(&mut receiver).await;
+    assert_eq!(zero.runtime_id, "runtime-health-zero-transition");
+    assert_eq!(zero.counters.outbound_requests_pending, 0);
+    assert_eq!(zero.counters.outbound_stream_leases_active, 0);
+    assert!(!reporter.should_probe_zero_transition());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn runtime_health_reporter_sends_final_frame_before_session_close() {
+    let host = test_host();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut reporter = RuntimeHealthReporter::default();
+    reporter
+        .registered_runtime_ids
+        .insert("runtime-health-final".to_string());
+
+    reporter
+        .send_final(&host, &sender)
+        .await
+        .expect("final runtime.health should send before session close");
+    let final_health = recv_runtime_health(&mut receiver).await;
+    assert_eq!(final_health.runtime_id, "runtime-health-final");
+    assert_eq!(final_health.envelope_type, "runtime.health");
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn binary_runtime_registered_with_empty_payload_is_accepted() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
@@ -189,6 +285,40 @@ async fn binary_runtime_registered_with_empty_payload_is_accepted() {
 
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
+}
+
+async fn recv_runtime_health(
+    receiver: &mut mpsc::UnboundedReceiver<super::super::RouterWriterMessage>,
+) -> RuntimeHealthFrameHeader {
+    match receiver
+        .recv()
+        .await
+        .expect("runtime.health frame should be queued")
+    {
+        super::super::RouterWriterMessage::Binary(frame) => {
+            let (header, payload): (RuntimeHealthFrameHeader, Vec<u8>) =
+                decode_typed_binary_frame(&frame).expect("runtime.health should decode");
+            assert!(payload.is_empty());
+            header
+        }
+        other => panic!("expected binary runtime.health frame, got {other:?}"),
+    }
+}
+
+fn runtime_health_counters_for_test(
+    outbound_requests_pending: usize,
+    outbound_stream_leases_active: usize,
+    stream_runtime_streams_active: usize,
+    flag_backed_cancel_waiters_active: usize,
+    spawned_tasks_active: usize,
+) -> RuntimeHealthCountersFrameHeader {
+    RuntimeHealthCountersFrameHeader {
+        outbound_requests_pending,
+        outbound_stream_leases_active,
+        stream_runtime_streams_active,
+        flag_backed_cancel_waiters_active,
+        spawned_tasks_active,
+    }
 }
 
 #[tokio::test]

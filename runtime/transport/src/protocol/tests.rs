@@ -12,9 +12,9 @@ use crate::protocol::{
     RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
-    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
-    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, TelemetryProtocol, TelemetryTopic,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpNameValueFrameHeader,
+    RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope, RuntimeRegisterFrameHeader,
+    RuntimeTraceContextFrameHeader, TelemetryProtocol, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 const SERVICE_PROTOCOL_A: &str =
@@ -141,6 +141,37 @@ fn runtime_capabilities_frame_header_round_trips_empty_payload() {
             ..RuntimeCapabilitiesFrameHeaderMetadata::default()
         }
     );
+}
+
+#[test]
+fn runtime_health_frame_header_round_trips_empty_payload() {
+    let header = RuntimeHealthFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "runtime.health".to_string(),
+        runtime_id: "runtime-health-1".to_string(),
+        observed_at: "2026-07-10T00:00:00.000Z".to_string(),
+        counters: RuntimeHealthCountersFrameHeader {
+            outbound_requests_pending: 1,
+            outbound_stream_leases_active: 2,
+            stream_runtime_streams_active: 3,
+            flag_backed_cancel_waiters_active: 4,
+            spawned_tasks_active: 5,
+        },
+    };
+
+    let frame = encode_binary_frame(&header, &[]).expect("runtime.health frame encodes");
+    let decoded_json = decode_binary_frame(&frame).expect("runtime.health should decode as JSON");
+    assert_eq!(decoded_json.header["type"], "runtime.health");
+    assert_eq!(decoded_json.header["counters"]["outboundRequestsPending"], 1);
+    assert_eq!(decoded_json.header["counters"]["outboundStreamLeasesActive"], 2);
+    assert_eq!(decoded_json.header["counters"]["streamRuntimeStreamsActive"], 3);
+    assert_eq!(decoded_json.header["counters"]["flagBackedCancelWaitersActive"], 4);
+    assert_eq!(decoded_json.header["counters"]["spawnedTasksActive"], 5);
+
+    let (decoded, payload): (RuntimeHealthFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).expect("runtime.health frame decodes");
+    assert_eq!(decoded, header);
+    assert!(payload.is_empty());
 }
 
 #[test]

@@ -181,6 +181,10 @@ impl RequestSupervisor {
         }
         true
     }
+
+    pub(crate) async fn active_count(&self) -> usize {
+        self.active.lock().await.len()
+    }
 }
 
 impl SupervisedRequest {

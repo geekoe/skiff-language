@@ -54,6 +54,7 @@ export type EnvelopeValidationResult<TEnvelope> =
 const runtimeToRouterFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
+  'runtime.health',
   'actor.put.request',
   'actor.find.request',
   'actor.remove.request',
@@ -188,6 +189,28 @@ const runtimeCapabilitiesProperties = {
   type: { type: 'string', enum: ['runtime.capabilities'] },
   runtimeId: { type: 'string' },
   capabilities: runtimeCapabilitiesProtocolSchema
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const runtimeHealthCountersProperties = {
+  outboundRequestsPending: { type: 'integer' },
+  outboundStreamLeasesActive: { type: 'integer' },
+  streamRuntimeStreamsActive: { type: 'integer' },
+  flagBackedCancelWaitersActive: { type: 'integer' },
+  spawnedTasksActive: { type: 'integer' }
+} as const satisfies Record<string, ProtocolSchemaProperty>;
+
+const runtimeHealthCountersProtocolSchema = {
+  type: 'object',
+  required: Object.keys(runtimeHealthCountersProperties),
+  properties: runtimeHealthCountersProperties,
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
+const runtimeHealthProperties = {
+  type: { type: 'string', enum: ['runtime.health'] },
+  runtimeId: { type: 'string' },
+  observedAt: { type: 'string' },
+  counters: runtimeHealthCountersProtocolSchema
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
 const runtimeRegisteredProperties = {
@@ -643,6 +666,15 @@ export const runtimeFrameHeaderSchemas = {
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       ...runtimeCapabilitiesProperties
+    },
+    additionalProperties: false
+  },
+  'runtime.health': {
+    type: 'object',
+    required: ['schemaVersion', 'type', 'runtimeId', 'observedAt', 'counters'],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      ...runtimeHealthProperties
     },
     additionalProperties: false
   },
@@ -1308,6 +1340,19 @@ const runtimeCapabilitiesFixture = {
   }
 } as const;
 
+const runtimeHealthFixture = {
+  type: 'runtime.health',
+  runtimeId: 'runtime-fixture-1',
+  observedAt: '2026-07-10T00:00:00.000Z',
+  counters: {
+    outboundRequestsPending: 0,
+    outboundStreamLeasesActive: 0,
+    streamRuntimeStreamsActive: 0,
+    flagBackedCancelWaitersActive: 0,
+    spawnedTasksActive: 0
+  }
+} as const;
+
 const routerControlFixture = {
   type: 'router.control',
   artifactRoots: ['/var/lib/skiff/artifacts'],
@@ -1430,6 +1475,10 @@ export const runtimeFrameHeaderFixtures = {
   'runtime.capabilities': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     ...runtimeCapabilitiesFixture
+  },
+  'runtime.health': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    ...runtimeHealthFixture
   },
   'runtime.registered': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -1751,6 +1800,8 @@ export function validateRuntimeToRouterFrameHeader(
       ? validateRuntimeRegister(envelope)
       : type === 'runtime.capabilities'
         ? validateRuntimeCapabilities(envelope)
+      : type === 'runtime.health'
+        ? validateRuntimeHealth(envelope)
       : type === 'actor.put.request'
         ? validateActorPutRequest(envelope)
       : type === 'actor.find.request'
@@ -1959,6 +2010,43 @@ function validateRuntimeCapabilities(envelope: Record<string, unknown>): string 
     requireString(envelope, 'runtime.capabilities', 'runtimeId') ??
     validateRuntimeCapabilitiesMetadata(envelope.capabilities, 'runtime.capabilities', 'capabilities', true)
   );
+}
+
+function validateRuntimeHealth(envelope: Record<string, unknown>): string | null {
+  const counterFields = Object.keys(runtimeHealthCountersProperties);
+  return (
+    rejectUnsupportedFrameHeaderFields(envelope, 'runtime.health', [
+      'schemaVersion',
+      'type',
+      'runtimeId',
+      'observedAt',
+      'counters'
+    ]) ??
+    requireString(envelope, 'runtime.health', 'runtimeId') ??
+    requireString(envelope, 'runtime.health', 'observedAt') ??
+    requireObject(envelope, 'runtime.health', 'counters') ??
+    validateRuntimeHealthCounters(envelope.counters, counterFields)
+  );
+}
+
+function validateRuntimeHealthCounters(
+  counters: unknown,
+  counterFields: readonly string[]
+): string | null {
+  if (!isRecord(counters)) {
+    return 'invalid runtime.health envelope: counters must be an object';
+  }
+  const unsupported = Object.keys(counters).find((key) => !counterFields.includes(key));
+  if (unsupported !== undefined) {
+    return `invalid runtime.health envelope: counters.${unsupported} is not supported`;
+  }
+  for (const field of counterFields) {
+    const value = counters[field];
+    if (!Number.isInteger(value) || Number(value) < 0) {
+      return `invalid runtime.health envelope: counters.${field} must be a non-negative integer`;
+    }
+  }
+  return null;
 }
 
 function validateRuntimeCapabilitiesMetadata(

@@ -8,6 +8,8 @@ import {
   type RouterToRuntimeFrameHeader,
   type RuntimeCapabilitiesEnvelope,
   type RuntimeCapabilitiesMetadata,
+  type RuntimeHealthCounters,
+  type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
 import type {
@@ -78,6 +80,13 @@ export interface RuntimePruneResult {
   kept: RuntimeSnapshot[];
 }
 
+export interface RuntimeLoopRiskHealthSnapshot {
+  runtimeId: string;
+  connected: boolean;
+  fresh: boolean;
+  counters: RuntimeHealthCounters;
+}
+
 export type RuntimeDispatchFrameHeader = RequestStartFrameHeader | PackageTestStartFrameHeader;
 
 export interface RuntimeDispatchConnection {
@@ -93,6 +102,7 @@ export interface RuntimeInFlightRequest {
 }
 
 export interface RuntimeRegistryRuntime {
+  sessionId: string;
   runtimeId: string;
   serviceId: string;
   version?: string;
@@ -144,12 +154,24 @@ interface RuntimeCapabilityRegistration {
   ws: WebSocket;
 }
 
+interface RuntimeHealthRecord {
+  sessionId: string;
+  runtimeId: string;
+  observedAt: string;
+  counters: RuntimeHealthCounters;
+  connected: boolean;
+  disconnectedAtMs?: number;
+  ws: WebSocket;
+}
+
 export class RuntimeRegistry {
   private readonly runtimes = new Map<string, RegisteredRuntime>();
   private readonly runtimeCapabilitiesByConnection = new Map<
     WebSocket,
     RuntimeCapabilityRegistration
   >();
+  private readonly runtimeHealthBySessionId = new Map<string, RuntimeHealthRecord>();
+  private nextRuntimeSessionOrdinal = 0;
   private readonly activeRevisionByRoute = new Map<string, string>();
   private readonly roundRobinCursorByRoute = new Map<string, number>();
   private readonly actorSpawnControl: ActorSpawnRuntimeControl;
@@ -229,7 +251,13 @@ export class RuntimeRegistry {
       throw new Error('runtime.register.targets must be a non-empty array');
     }
 
+    const existing = this.runtimes.get(envelope.runtimeId);
+    if (existing) {
+      this.markRuntimeHealthDisconnected(existing.sessionId, existing.ws);
+    }
+
     const runtime: RegisteredRuntime = {
+      sessionId: this.nextRuntimeSessionId(envelope.runtimeId),
       runtimeId: envelope.runtimeId,
       serviceId: envelope.serviceId,
       ...(envelope.version !== undefined ? { version: envelope.version } : {}),
@@ -285,6 +313,23 @@ export class RuntimeRegistry {
     });
   }
 
+  recordRuntimeHealth(ws: WebSocket, envelope: RuntimeHealthEnvelope): void {
+    const runtime = this.runtimes.get(envelope.runtimeId);
+    if (!runtime || runtime.ws !== ws) {
+      throw new Error(
+        `runtime.health requires registered runtime connection for ${envelope.runtimeId}`
+      );
+    }
+    this.runtimeHealthBySessionId.set(runtime.sessionId, {
+      sessionId: runtime.sessionId,
+      runtimeId: envelope.runtimeId,
+      observedAt: envelope.observedAt,
+      counters: envelope.counters,
+      connected: true,
+      ws
+    });
+  }
+
   pruneRuntimes(options: RuntimePruneOptions): RuntimePruneResult {
     const keep = new Set(
       options.keep.map((entry) => runtimeBuildKey(entry.serviceId, entry.buildId))
@@ -311,6 +356,7 @@ export class RuntimeRegistry {
         affectedRouteKeys.add(key);
       }
       this.runtimes.delete(runtimeId);
+      this.markRuntimeHealthDisconnected(runtime.sessionId, runtime.ws);
       deleted.push(snapshot);
     }
 
@@ -329,6 +375,7 @@ export class RuntimeRegistry {
           affectedRouteKeys.add(key);
         }
         this.runtimes.delete(runtimeId);
+        this.markRuntimeHealthDisconnected(runtime.sessionId, ws);
       }
     }
 
@@ -339,6 +386,7 @@ export class RuntimeRegistry {
   closeRuntimeConnections(): void {
     for (const runtime of this.runtimes.values()) {
       runtime.revisionState = 'retired';
+      this.markRuntimeHealthDisconnected(runtime.sessionId, runtime.ws);
       runtime.ws.close();
     }
     this.runtimeCapabilitiesByConnection.clear();
@@ -349,6 +397,28 @@ export class RuntimeRegistry {
 
   registeredConnections(): Set<WebSocket> {
     return new Set(Array.from(this.runtimes.values()).map((runtime) => runtime.ws));
+  }
+
+  loopRiskRuntimeHealthSnapshot(nowMs = Date.now()): RuntimeLoopRiskHealthSnapshot[] {
+    const snapshots: RuntimeLoopRiskHealthSnapshot[] = [];
+    for (const record of this.runtimeHealthBySessionId.values()) {
+      if (
+        !record.connected &&
+        record.disconnectedAtMs !== undefined &&
+        nowMs - record.disconnectedAtMs > 30_000 &&
+        runtimeHealthCountersAllZero(record.counters)
+      ) {
+        continue;
+      }
+      const observedAtMs = Date.parse(record.observedAt);
+      snapshots.push({
+        runtimeId: record.runtimeId,
+        connected: record.connected,
+        fresh: record.connected && Number.isFinite(observedAtMs) && nowMs - observedAtMs <= 5000,
+        counters: { ...record.counters }
+      });
+    }
+    return snapshots;
   }
 
   isConnectionRegisteredForService(ws: WebSocket, serviceId: string): boolean {
@@ -1041,10 +1111,34 @@ export class RuntimeRegistry {
     }
     return snapshot;
   }
+
+  private nextRuntimeSessionId(runtimeId: string): string {
+    this.nextRuntimeSessionOrdinal += 1;
+    return `${runtimeId}\u0000session:${this.nextRuntimeSessionOrdinal}`;
+  }
+
+  private markRuntimeHealthDisconnected(sessionId: string, ws: WebSocket): void {
+    const record = this.runtimeHealthBySessionId.get(sessionId);
+    if (!record || record.ws !== ws) {
+      return;
+    }
+    record.connected = false;
+    record.disconnectedAtMs = Date.now();
+  }
 }
 
 function runtimeBuildKey(serviceId: string, buildId: string): string {
   return `${serviceId}\u0000${buildId}`;
+}
+
+function runtimeHealthCountersAllZero(counters: RuntimeHealthCounters): boolean {
+  return (
+    counters.outboundRequestsPending === 0 &&
+    counters.outboundStreamLeasesActive === 0 &&
+    counters.streamRuntimeStreamsActive === 0 &&
+    counters.flagBackedCancelWaitersActive === 0 &&
+    counters.spawnedTasksActive === 0
+  );
 }
 
 function runtimeRouteKey(input: {

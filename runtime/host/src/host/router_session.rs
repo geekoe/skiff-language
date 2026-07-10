@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -11,8 +13,8 @@ use skiff_runtime_transport::{
         PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
         ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
         ResponseStartFrameHeader, RouterControlEnvelope, RouterControlFrameHeader,
-        RuntimeErrorFramePayload, RuntimeRegisteredFrameHeader, SpawnClaimResponseFrameHeader,
-        SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
+        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
         SpawnRenewResponseFrameHeader, SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::{request_cancel_from_frame_header, request_envelope_from_start_frame},
@@ -75,8 +77,13 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 
     let mut control: Option<RouterControlEnvelope> = None;
     let mut artifact_fingerprint: Option<String> = None;
+    let mut health_reporter = RuntimeHealthReporter::default();
     let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
     reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut health_interval = tokio::time::interval(Duration::from_secs(1));
+    health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
+    health_zero_transition_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -91,12 +98,13 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                         reject_router_text_message(text.as_str())?;
                     }
                     Message::Binary(bytes) => {
-                        dispatch_router_binary_frame(
+                        dispatch_router_binary_frame_with_health(
                             &host,
                             &bytes,
                             &sender,
                             &mut control,
                             &mut artifact_fingerprint,
+                            &mut health_reporter,
                         )
                         .await?;
                     }
@@ -108,20 +116,172 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                 maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
                     .await;
             }
+            _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
+                health_reporter.send_periodic(&host, &sender).await?;
+            }
+            _ = health_zero_transition_interval.tick(), if health_reporter.should_probe_zero_transition() => {
+                health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
+            }
         }
     }
 
+    health_reporter.send_final(&host, &sender).await?;
     drop(sender);
     let _ = writer_task.await;
     Ok(())
 }
 
+#[derive(Default)]
+struct RuntimeHealthReporter {
+    registered_runtime_ids: HashSet<String>,
+    last_counters_nonzero: bool,
+}
+
+impl RuntimeHealthReporter {
+    fn has_registered_runtimes(&self) -> bool {
+        !self.registered_runtime_ids.is_empty()
+    }
+
+    fn should_probe_zero_transition(&self) -> bool {
+        self.has_registered_runtimes() && self.last_counters_nonzero
+    }
+
+    async fn record_registered(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+        runtime_id: String,
+    ) -> Result<()> {
+        self.registered_runtime_ids.insert(runtime_id);
+        self.send_current(host, sender).await
+    }
+
+    async fn send_periodic(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    ) -> Result<()> {
+        self.send_current(host, sender).await
+    }
+
+    async fn send_zero_transition_if_needed(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    ) -> Result<bool> {
+        if !self.should_probe_zero_transition() {
+            return Ok(false);
+        }
+        let counters = host.runtime_health_counters().await;
+        self.send_zero_transition_for_counters(host, sender, counters)
+            .await
+    }
+
+    async fn send_zero_transition_for_counters(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+        counters: RuntimeHealthCountersFrameHeader,
+    ) -> Result<bool> {
+        if !self.should_probe_zero_transition() {
+            return Ok(false);
+        }
+        if !runtime_health_counters_all_zero(&counters) {
+            self.last_counters_nonzero = true;
+            return Ok(false);
+        }
+        self.send_counters(host, sender, counters).await?;
+        Ok(true)
+    }
+
+    async fn send_final(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    ) -> Result<()> {
+        if !self.has_registered_runtimes() {
+            return Ok(());
+        }
+        self.send_current(host, sender).await
+    }
+
+    async fn send_current(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    ) -> Result<()> {
+        let counters = host.runtime_health_counters().await;
+        self.send_counters(host, sender, counters).await
+    }
+
+    async fn send_counters(
+        &mut self,
+        host: &super::RuntimeHost,
+        sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+        counters: RuntimeHealthCountersFrameHeader,
+    ) -> Result<()> {
+        self.last_counters_nonzero = !runtime_health_counters_all_zero(&counters);
+        for runtime_id in self.registered_runtime_ids.iter() {
+            host.queue_runtime_health_with_counters(sender, runtime_id, counters.clone())
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+fn runtime_health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader) -> bool {
+    counters.outbound_requests_pending == 0
+        && counters.outbound_stream_leases_active == 0
+        && counters.stream_runtime_streams_active == 0
+        && counters.flag_backed_cancel_waiters_active == 0
+        && counters.spawned_tasks_active == 0
+}
+
+#[cfg(test)]
 async fn dispatch_router_binary_frame(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
+) -> Result<()> {
+    dispatch_router_binary_frame_inner(
+        host,
+        bytes,
+        sender,
+        control,
+        artifact_fingerprint,
+        None,
+    )
+    .await
+}
+
+async fn dispatch_router_binary_frame_with_health(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    control: &mut Option<RouterControlEnvelope>,
+    artifact_fingerprint: &mut Option<String>,
+    health_reporter: &mut RuntimeHealthReporter,
+) -> Result<()> {
+    dispatch_router_binary_frame_inner(
+        host,
+        bytes,
+        sender,
+        control,
+        artifact_fingerprint,
+        Some(health_reporter),
+    )
+    .await
+}
+
+async fn dispatch_router_binary_frame_inner(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    control: &mut Option<RouterControlEnvelope>,
+    artifact_fingerprint: &mut Option<String>,
+    mut health_reporter: Option<&mut RuntimeHealthReporter>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
@@ -138,6 +298,16 @@ async fn dispatch_router_binary_frame(
             let mut rest = serde_json::Map::new();
             rest.insert("runtimeId".to_string(), Value::String(header.runtime_id));
             host.log_registered(&rest);
+            let runtime_id = rest
+                .get("runtimeId")
+                .and_then(Value::as_str)
+                .expect("runtimeId should be set")
+                .to_string();
+            if let Some(health_reporter) = health_reporter.as_deref_mut() {
+                health_reporter
+                    .record_registered(host, sender, runtime_id)
+                    .await?;
+            }
         }
         "router.control" => {
             let (header, payload) = decode_typed_binary_frame::<RouterControlFrameHeader>(bytes)

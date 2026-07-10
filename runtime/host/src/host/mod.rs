@@ -1,6 +1,7 @@
 pub mod blob_store;
 mod control_plane;
 pub mod file_runtime;
+mod health;
 pub(crate) mod http_client_runtime;
 pub(crate) mod http_runtime;
 mod lifecycle;
