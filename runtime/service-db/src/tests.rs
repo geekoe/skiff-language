@@ -2804,6 +2804,55 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
         .expect("encrypted activation with keyring");
 }
 
+#[test]
+fn forged_encrypted_primary_key_field_fails_activation_even_with_keyring() {
+    let forged = db_metadata(json!([{
+        "modulePath": "internal.credential",
+        "kind": "object",
+        "typeName": "Credential",
+        "collectionName": "credential",
+        "key": { "name": "id", "type": { "kind": "builtin", "name": "string" } },
+        "fields": [
+            { "name": "id", "type": { "kind": "builtin", "name": "string" }, "storage": "encrypted" },
+            { "name": "label", "type": { "kind": "builtin", "name": "string" } }
+        ],
+        "indexes": []
+    }]));
+    let cipher = test_encryption_keyring().cipher();
+
+    let metadata_error = match ServiceDbMetadata::from_runtime_program_db_with_encryption(
+        &forged,
+        "example.com/credential",
+        Some(cipher),
+    ) {
+        Ok(_) => {
+            panic!("forged encrypted primary key must fail before either mapping path is built")
+        }
+        Err(error) => error,
+    };
+    assert!(
+        metadata_error
+            .to_string()
+            .contains("encrypted storage cannot target primary key field id"),
+        "{metadata_error}"
+    );
+
+    let provider_error = match MongoServiceDbProviderFactory::new(Some(test_encryption_keyring()))
+        .build(DbProviderBuildInput {
+            service_id: "example.com/credential".to_string(),
+            config: DbProviderConfig::opaque(
+                json!({ "mongoUrl": inert_mongo_url("forged-encrypted-key") }),
+            ),
+            runtime_program_db: forged,
+        }) {
+        Ok(_) => panic!("provider must reject forged encrypted primary key metadata"),
+        Err(error) => error,
+    };
+    assert!(provider_error
+        .to_string()
+        .contains("encrypted storage cannot target primary key field id"));
+}
+
 fn object_metadata_with_retention(retention: Value) -> Vec<DbMetadataIr> {
     db_metadata(json!([
         {

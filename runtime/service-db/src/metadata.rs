@@ -228,6 +228,12 @@ impl DbCollectionMetadata {
             .values()
             .filter(|field| field.storage == DbFieldStorageIr::Encrypted)
         {
+            if field.name == self.key_field {
+                return Err(ServiceDbError::InvalidDbMetadata(format!(
+                    "runtime program db[{index}] encrypted storage cannot target primary key field {}",
+                    field.name
+                )));
+            }
             if !field
                 .ty
                 .as_ref()
