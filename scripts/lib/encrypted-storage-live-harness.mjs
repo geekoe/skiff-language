@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -92,8 +93,11 @@ export class EncryptedStorageLiveHarness {
     this.routerReloadUrl = `http://127.0.0.1:${this.ports.base + 1}/__skiff/reload-artifacts`;
     this.mongoUrl = `mongodb://127.0.0.1:${this.ports.mongo}/?directConnection=true&replicaSet=rs0&retryWrites=false`;
     this.instanceInitialized = false;
-    this.writerBarrier = false;
+    this.retirementGateActive = false;
+    this.currentKeyring = undefined;
     this.cleaned = false;
+    this.cleanupFallbackUsed = false;
+    this.cleanupFallbackGroups = [];
   }
 
   async initialize(keyring) {
@@ -143,7 +147,8 @@ export class EncryptedStorageLiveHarness {
   async runLiveTestRunner(testFile, config) {
     const configPath = join(this.paths.tempRoot, 'test-runner-live.json');
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-    await runCommand(
+    const databasesBefore = new Set(await this.databaseNames());
+    const run = runCommand(
       'cargo',
       [
         'run',
@@ -167,9 +172,28 @@ export class EncryptedStorageLiveHarness {
         },
       },
     );
+    const observation = this.observeTransientEncryptedStorage(databasesBefore);
+    const [, storage] = await Promise.all([run, observation]);
+    let droppedBy = 'test-runner';
+    if (await this.databaseExists(storage.database)) {
+      await this.dropDatabase(storage.database);
+      droppedBy = 'live-harness';
+    }
+    if (await this.databaseExists(storage.database)) {
+      throw new Error(`failed to retire transient test-runner database ${storage.database}`);
+    }
+    return { ...storage, dropped: true, droppedBy };
   }
 
-  async restartRuntime(keyring) {
+  async restartRuntime(keyring, { retirementAuthorized = false } = {}) {
+    if (
+      this.retirementGateActive
+      && this.currentKeyring !== undefined
+      && removesExistingKey(this.currentKeyring, keyring)
+      && !retirementAuthorized
+    ) {
+      throw new Error('key removal requires the rotation cohort retirement API');
+    }
     await this.writeKeyring(keyring);
     await this.runSkiff(['instance', 'restart', this.paths.configPath, 'runtime']);
     await this.assertRuntimeKeyringEvent(keyring);
@@ -181,16 +205,18 @@ export class EncryptedStorageLiveHarness {
       mode: 0o600,
     });
     await chmod(this.paths.keyring, 0o600);
+    this.currentKeyring = structuredClone(keyring);
   }
 
-  beginWriterBarrier() {
-    this.writerBarrier = true;
+  requireRetirementGate() {
+    this.retirementGateActive = true;
   }
 
-  async request(service, path, body, { expectFailure = false, rotation = false } = {}) {
-    if (this.writerBarrier && isBusinessWritePath(path) && !rotation) {
-      throw new Error(`writer barrier blocked ${service}${path}`);
-    }
+  async readKeyring() {
+    return JSON.parse(await readFile(this.paths.keyring, 'utf8'));
+  }
+
+  async request(service, path, body, { expectFailure = false, rotationToken } = {}) {
     const url = new URL(path, this.routerHttpUrl);
     url.searchParams.set('service', service);
     url.searchParams.set('version', '0.1.0');
@@ -203,6 +229,7 @@ export class EncryptedStorageLiveHarness {
             'content-type': 'application/json',
             'x-skiff-service': service,
             'x-skiff-version': '0.1.0',
+            ...(rotationToken === undefined ? {} : { 'x-skiff-rotation-token': rotationToken }),
           },
           body: JSON.stringify(body),
         });
@@ -249,6 +276,21 @@ export class EncryptedStorageLiveHarness {
 
   async collectionNames(database) {
     return this.mongoJson(database, 'db.getCollectionNames().sort()');
+  }
+
+  async databaseNames() {
+    return this.mongoJson(
+      'admin',
+      'db.adminCommand({listDatabases:1,nameOnly:true}).databases.map((entry)=>entry.name).sort()',
+    );
+  }
+
+  async databaseExists(database) {
+    return (await this.databaseNames()).includes(database);
+  }
+
+  async dropDatabase(database) {
+    return this.mongoJson(database, 'db.dropDatabase()');
   }
 
   async replaceRawDocument(database, collection, id, document) {
@@ -311,15 +353,60 @@ export class EncryptedStorageLiveHarness {
     throw new Error(`runtime did not emit ${EVENT_NAME} for ${keyring.activeKeyId}/${expectedFingerprint}`);
   }
 
-  async cleanup() {
+  async observeTransientEncryptedStorage(databasesBefore) {
+    for (let attempt = 0; attempt < 3000; attempt += 1) {
+      const databases = await this.databaseNames();
+      for (const database of databases) {
+        if (databasesBefore.has(database) || ['admin', 'config', 'local'].includes(database)) {
+          continue;
+        }
+        const collections = await this.collectionNames(database);
+        for (const collection of collections) {
+          const documents = await this.rawDocuments(database, collection);
+          const fields = encryptedEnvelopeFields(documents);
+          if (fields.length > 0) {
+            return {
+              storageServiceId: storageServiceIdFromDatabase(database),
+              database,
+              collection,
+              fields,
+              keyIds: encryptedEnvelopeKeyIds(documents, fields),
+              rawSnapshot: JSON.stringify(documents),
+            };
+          }
+        }
+      }
+      await delay(50);
+    }
+    throw new Error('did not observe transient test-runner encrypted storage');
+  }
+
+  async cleanup({ forceFallbackForTest = false } = {}) {
     if (this.cleaned) {
       return;
     }
-    this.cleaned = true;
-    let cleanupError;
     if (this.instanceInitialized) {
+      let downError;
       try {
+        if (forceFallbackForTest) {
+          throw new Error('simulated instance down failure for cleanup fallback coverage');
+        }
         await this.runSkiff(['instance', 'down', this.paths.configPath]);
+      } catch (error) {
+        downError = error;
+      }
+      if (downError !== undefined) {
+        try {
+          await this.stopOwnedProcessGroups();
+          this.cleanupFallbackUsed = true;
+        } catch (fallbackError) {
+          throw new Error(
+            `instance cleanup failed; preserving ${this.paths.tempRoot}: ${downError.message}; fallback: ${fallbackError.message}`,
+            { cause: fallbackError },
+          );
+        }
+      }
+      try {
         await assertPortsClosed([
           this.ports.base,
           this.ports.base + 1,
@@ -327,13 +414,56 @@ export class EncryptedStorageLiveHarness {
           this.ports.mongo,
         ]);
       } catch (error) {
-        cleanupError = error;
+        throw new Error(
+          `instance cleanup left listeners; preserving ${this.paths.tempRoot}: ${error.message}`,
+          { cause: error },
+        );
       }
     }
     await this.portLease.release();
     await rm(this.paths.tempRoot, { recursive: true, force: true });
-    if (cleanupError !== undefined) {
-      throw cleanupError;
+    this.cleaned = true;
+  }
+
+  async stopOwnedProcessGroups() {
+    let entries;
+    try {
+      entries = await readdir(join(this.paths.instanceRoot, 'pids'));
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
+    const groups = [];
+    for (const entry of entries) {
+      if (!entry.endsWith('.pid')) {
+        continue;
+      }
+      const raw = await readFile(join(this.paths.instanceRoot, 'pids', entry), 'utf8');
+      const metadata = JSON.parse(raw);
+      if (
+        metadata.configPath !== this.paths.configPath
+        || metadata.instanceRoot !== this.paths.instanceRoot
+        || !Number.isInteger(metadata.pgid)
+        || metadata.pgid <= 1
+      ) {
+        throw new Error(`refusing to stop unowned process metadata ${entry}`);
+      }
+      groups.push(metadata.pgid);
+    }
+    this.cleanupFallbackGroups = [...groups];
+    for (const pgid of groups) {
+      signalProcessGroup(pgid, 'SIGTERM');
+    }
+    await waitForProcessGroups(groups, 40);
+    for (const pgid of groups.filter(processGroupAlive)) {
+      signalProcessGroup(pgid, 'SIGKILL');
+    }
+    await waitForProcessGroups(groups, 20);
+    const survivors = groups.filter(processGroupAlive);
+    if (survivors.length > 0) {
+      throw new Error(`owned process groups did not stop: ${survivors.join(', ')}`);
     }
   }
 
@@ -418,10 +548,6 @@ async function leaseIsolatedPorts() {
 
 function isForbiddenPort(port) {
   return port < PORT_MIN || port > PORT_MAX || FORBIDDEN_PORTS.has(port);
-}
-
-function isBusinessWritePath(path) {
-  return !path.endsWith('/read') && !path.endsWith('/project') && !path.endsWith('/scan');
 }
 
 function assertPortAvailable(port) {
@@ -526,4 +652,70 @@ function runCommandCapture(command, args, options) {
 
 function range(start, end) {
   return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function removesExistingKey(currentKeyring, nextKeyring) {
+  return Object.keys(currentKeyring.keys).some((keyId) => nextKeyring.keys[keyId] === undefined);
+}
+
+function encryptedEnvelopeFields(documents) {
+  const fields = new Set();
+  for (const document of documents) {
+    for (const [field, value] of Object.entries(document)) {
+      if (
+        field !== '_id'
+        && value !== null
+        && typeof value === 'object'
+        && value._skiff_encrypted !== undefined
+      ) {
+        fields.add(field);
+      }
+    }
+  }
+  return [...fields].sort();
+}
+
+function encryptedEnvelopeKeyIds(documents, fields) {
+  const keyIds = new Set();
+  for (const document of documents) {
+    for (const field of fields) {
+      const keyId = document[field]?._skiff_encrypted?.keyId;
+      if (keyId !== undefined) {
+        keyIds.add(keyId);
+      }
+    }
+  }
+  return [...keyIds].sort();
+}
+
+function storageServiceIdFromDatabase(database) {
+  return database.replaceAll('~~', '/').replaceAll('~', '.');
+}
+
+function signalProcessGroup(pgid, signal) {
+  try {
+    process.kill(-pgid, signal);
+  } catch (error) {
+    if (error.code !== 'ESRCH') {
+      throw error;
+    }
+  }
+}
+
+function processGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+
+async function waitForProcessGroups(groups, attempts) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!groups.some(processGroupAlive)) {
+      return;
+    }
+    await delay(100);
+  }
 }

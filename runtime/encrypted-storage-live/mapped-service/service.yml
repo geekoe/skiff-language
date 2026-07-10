@@ -21,5 +21,11 @@ http:
     - method: POST
       path: /encrypted-live/mapped/rewrite
       handler: root.internal.live.rewrite
+    - method: POST
+      path: /encrypted-live/mapped/barrier
+      handler: root.internal.live.activateBarrier
+    - method: POST
+      path: /encrypted-live/mapped/barrier-status
+      handler: root.internal.live.barrierStatus
 timeout:
   default: 120000

@@ -36,5 +36,26 @@ http:
     - method: POST
       path: /encrypted-live/default/identity-date
       handler: root.internal.live.identityDate
+    - method: POST
+      path: /encrypted-live/default/archive-insert
+      handler: root.internal.live.insertArchive
+    - method: POST
+      path: /encrypted-live/default/archive-read
+      handler: root.internal.live.readArchive
+    - method: POST
+      path: /encrypted-live/default/archive-scan
+      handler: root.internal.live.scanArchive
+    - method: POST
+      path: /encrypted-live/default/archive-rewrite
+      handler: root.internal.live.rewriteArchive
+    - method: POST
+      path: /encrypted-live/default/archive-restore
+      handler: root.internal.live.restoreArchive
+    - method: POST
+      path: /encrypted-live/default/barrier
+      handler: root.internal.live.activateBarrier
+    - method: POST
+      path: /encrypted-live/default/barrier-status
+      handler: root.internal.live.barrierStatus
 timeout:
   default: 120000

@@ -15,6 +15,7 @@ const MAPPED_SERVICE = 'example.com/encrypted-live-mapped';
 const DEFAULT_DATABASE = storageDatabaseName(DEFAULT_SERVICE);
 const MAPPED_DATABASE = storageDatabaseName(MAPPED_SERVICE);
 const DEFAULT_COLLECTION = 'Credential';
+const ARCHIVE_COLLECTION = 'CredentialArchive';
 const MAPPED_COLLECTION = 'mapped_package_secret';
 const DEFAULT_BASE = '/encrypted-live/default';
 const MAPPED_BASE = '/encrypted-live/mapped';
@@ -63,9 +64,10 @@ async function run() {
   assertPortsInAllowedRange(liveHarness.ports);
 
   await liveHarness.initialize(oldOnly);
-  await runOuterRuntimeLiveTest(oldOnly);
+  const testRunnerStorage = await runOuterRuntimeLiveTest(oldOnly);
 
   const state = await exerciseOperationMatrix();
+  state.plaintexts.push(testRunnerStorage.plaintextSentinel);
   await assertPhysicalStorage(state, 'old-v1');
   await assertCrossContextCopyFails(state);
 
@@ -89,6 +91,7 @@ async function run() {
     apiKey: 'sk-live-next-api',
     refreshToken: 'sk-live-next-refresh',
     label: 'next-key',
+    sequence: 6,
   };
   await callDefault('/insert', nextRow);
   state.defaultRows.set(nextRow.id, nextRow);
@@ -98,29 +101,36 @@ async function run() {
   assertEnvelope(nextRaw.refreshToken, 'next-v2', 'all encrypted fields must use active key');
 
   const oldBackupDocument = await rawDefault(state.main.id);
-  const inventory = rotationInventory();
+  const inventory = rotationInventory(testRunnerStorage);
   const checkpointPath = join(liveHarness.paths.tempRoot, 'rotation-checkpoints.json');
   const targetFingerprint = keyringFingerprint(oldAndNext);
+  const barrierToken = randomRootKey();
   const firstAttempt = await RotationCohort.create({
     harness: liveHarness,
     expectedInventory: inventory,
     inventory,
     targetFingerprint,
     checkpointPath,
+    barrierToken,
   });
-  firstAttempt.beginWriteBarrier();
+  await firstAttempt.beginWriteBarrier();
+  await assertDirectFetchWriterBarrier(state);
+  const keyringBeforeRefusals = await liveHarness.readKeyring();
   await assertRejects(
-    () => callDefault('/update', state.main),
-    'full-writer barrier must reject ordinary business writes',
-  );
-  assertThrows(
-    () => firstAttempt.assertRetirementInventory(inventory.slice(1)),
+    () => firstAttempt.retireOldKey(inventoryWithMissingService(inventory), nextOnly),
     'missing service must block old-key retirement',
   );
-  assertThrows(
-    () => firstAttempt.assertRetirementInventory(inventoryWithMissingField(inventory)),
-    'incomplete cohort inventory must block old-key retirement',
+  assertKeyringUnchanged(keyringBeforeRefusals, await liveHarness.readKeyring());
+  await assertRejects(
+    () => firstAttempt.retireOldKey(inventoryWithMissingField(inventory), nextOnly),
+    'missing field must block old-key retirement',
   );
+  assertKeyringUnchanged(keyringBeforeRefusals, await liveHarness.readKeyring());
+  await assertRejects(
+    () => firstAttempt.retireOldKey(inventory, nextOnly),
+    'incomplete checkpoints must block old-key retirement',
+  );
+  assertKeyringUnchanged(keyringBeforeRefusals, await liveHarness.readKeyring());
 
   const crashEntry = inventory[0];
   let crashed = false;
@@ -142,16 +152,18 @@ async function run() {
     inventory,
     targetFingerprint,
     checkpointPath,
+    barrierToken,
   });
-  resumed.beginWriteBarrier();
+  await resumed.beginWriteBarrier();
   await resumed.migrateCollection(crashEntry);
   const afterResume = await rawDefault(state.main.id);
   assert(
     envelopeCiphertext(afterCrashedWrite.apiKey) !== envelopeCiphertext(afterResume.apiKey),
     'replayed crash batch must safely rewrite with a fresh nonce',
   );
-  await resumed.migrateCollection(inventory[1]);
-  resumed.assertRetirementInventory(inventory);
+  for (const entry of inventory.slice(1)) {
+    await resumed.migrateCollection(entry);
+  }
 
   for (const entry of inventory) {
     for (const field of entry.fields) {
@@ -171,12 +183,13 @@ async function run() {
     inventory,
     targetFingerprint: keyringFingerprint(futureCohort),
     checkpointPath,
+    barrierToken,
   });
   for (const entry of inventory) {
     assert(future.checkpoint(entry) === undefined, 'a new target fingerprint must not reuse the previous cursor');
   }
 
-  await liveHarness.restartRuntime(nextOnly);
+  await resumed.retireOldKey(inventory, nextOnly);
   await assertAllBusinessRowsReadable(state);
   const onlineDocument = await rawDefault(state.main.id);
 
@@ -195,11 +208,16 @@ async function run() {
     state.main.id,
     onlineDocument,
   );
-  await liveHarness.restartRuntime(nextOnly);
+  await resumed.retireOldKey(inventory, nextOnly);
   await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, state.main);
 
-  const logs = await liveHarness.runtimeLogs();
-  for (const secret of [...state.plaintexts, ...Object.values(roots)]) {
+  const logs = await liveHarness.readLogs([
+    liveHarness.paths.runtimeLog,
+    liveHarness.paths.runtimeErrorLog,
+    liveHarness.paths.routerLog,
+    liveHarness.paths.routerErrorLog,
+  ]);
+  for (const secret of [...state.plaintexts, barrierToken, ...Object.values(roots)]) {
     assert(!logs.includes(secret), 'runtime logs must not contain plaintext or root key material');
   }
   for (const eventLine of logs.split(/\r?\n/).filter((line) => line.includes('service_db.encryption_keyring_loaded'))) {
@@ -210,37 +228,56 @@ async function run() {
   console.log('PASS raw Mongo: plaintext absent, nonce independent, default+mapped collection AAD enforced');
   console.log('PASS keyring lifecycle: restart, wrong-root/delete fail closed, old-read/new-write, fingerprint events');
   console.log('PASS rotation cohort: barrier, tuple checkpoints, crash replay, inventory refusal, raw $ne=0, offline recovery');
+  await liveHarness.cleanup({ forceFallbackForTest: true });
+  assert(liveHarness.cleanupFallbackUsed, 'cleanup fallback path must be exercised');
+  assert(liveHarness.cleanupFallbackGroups.length >= 3, 'cleanup fallback did not own all managed process groups');
+  console.log(`PASS cleanup fallback: stopped PGIDs ${liveHarness.cleanupFallbackGroups.join(', ')} and removed isolated root`);
 }
 
 async function runOuterRuntimeLiveTest(keyring) {
+  const plaintextSentinel = 'sk-live-test-runner-secret';
   const testFile = join(
     liveHarness.paths.fixtureRoot,
     'default-service',
     'internal',
     'encrypted.live.test.skiff',
   );
-  await liveHarness.runLiveTestRunner(testFile, {
-    encryptedLive: { testRunnerSecret: 'sk-live-test-runner-secret' },
+  const storage = await liveHarness.runLiveTestRunner(testFile, {
+    encryptedLive: { testRunnerSecret: plaintextSentinel },
     serviceDb: { mongoUrl: liveHarness.mongoUrl },
   });
+  assert(storage.fields.includes('secret'), 'test-runner encrypted field was not dynamically discovered');
+  assert(
+    storage.keyIds.length === 1 && storage.keyIds[0] === keyring.activeKeyId,
+    'test-runner transient storage did not use the host runtime active key',
+  );
+  assert(!storage.rawSnapshot.includes(plaintextSentinel), 'test-runner raw Mongo snapshot leaked plaintext');
+  assert(!(await liveHarness.databaseExists(storage.database)), 'retired test-runner database must be dropped');
   await liveHarness.assertRuntimeKeyringEvent(keyring);
+  return { ...storage, plaintextSentinel };
 }
 
 async function exerciseOperationMatrix() {
   const plaintexts = [];
   const defaultRows = new Map();
+  const archiveRows = new Map();
   const mappedRows = new Map();
   const main = {
     id: 'credential-main',
     apiKey: 'sk-live-insert-api',
     refreshToken: 'sk-live-insert-refresh',
     label: 'inserted',
+    sequence: 1,
   };
   await callDefault('/insert', main);
   defaultRows.set(main.id, main);
   plaintexts.push(main.apiKey, main.refreshToken);
   await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, main);
   const projected = await callDefault('/project', { id: main.id });
+  assert(
+    JSON.stringify(Object.keys(projected).sort()) === JSON.stringify(['apiKey', 'id', 'refreshToken']),
+    `encrypted projection returned the wrong shape: ${JSON.stringify(projected)}`,
+  );
   assert(projected.id === main.id, 'encrypted projection must materialize primary key');
   assert(projected.apiKey === main.apiKey, 'encrypted projection must decrypt apiKey');
   assert(projected.refreshToken === main.refreshToken, 'encrypted projection must decrypt refreshToken');
@@ -249,6 +286,7 @@ async function exerciseOperationMatrix() {
     prefix: 'credential-many',
     apiKey: 'sk-live-many-api',
     refreshToken: 'sk-live-many-refresh',
+    startSequence: 2,
   };
   await callDefault('/insert-many', many);
   for (const suffix of ['a', 'b']) {
@@ -257,6 +295,7 @@ async function exerciseOperationMatrix() {
       apiKey: many.apiKey,
       refreshToken: many.refreshToken,
       label: `many-${suffix}`,
+      sequence: many.startSequence + (suffix === 'a' ? 0 : 1),
     };
     defaultRows.set(row.id, row);
   }
@@ -275,6 +314,7 @@ async function exerciseOperationMatrix() {
     apiKey: 'sk-live-query-insert-api',
     refreshToken: 'sk-live-query-insert-refresh',
     label: 'query-match',
+    sequence: 4,
   };
   await callDefault('/insert', queryRow);
   plaintexts.push(queryRow.apiKey, queryRow.refreshToken);
@@ -284,6 +324,7 @@ async function exerciseOperationMatrix() {
     apiKey: 'sk-live-query-replace-api',
     refreshToken: 'sk-live-query-replace-refresh',
     label: 'query-replaced',
+    sequence: queryRow.sequence,
   };
   await callDefault('/replace-query', queryReplacement);
   Object.assign(queryRow, queryReplacement);
@@ -296,6 +337,7 @@ async function exerciseOperationMatrix() {
     apiKey: 'sk-live-upsert-insert-api',
     refreshToken: 'sk-live-upsert-insert-refresh',
     label: 'upsert-insert',
+    sequence: 5,
   };
   await callDefault('/upsert', upsert);
   plaintexts.push(upsert.apiKey, upsert.refreshToken);
@@ -324,27 +366,50 @@ async function exerciseOperationMatrix() {
   assert(identityDate.note === 'identity-plain-smoke', 'identity field smoke failed');
   assert(identityDate.recordedAt === '2026-07-10T12:34:56.000Z', 'Date projection smoke failed');
 
-  const mappedOne = { id: 'mapped-one', token: 'sk-live-mapped-one', label: 'mapped-one' };
-  const mappedTwo = { id: 'mapped-two', token: 'sk-live-mapped-two', label: 'mapped-two' };
+  const mappedOne = { id: 'mapped-one', token: 'sk-live-mapped-one', label: 'mapped-one', sequence: 1 };
+  const mappedTwo = { id: 'mapped-two', token: 'sk-live-mapped-two', label: 'mapped-two', sequence: 2 };
   await callMapped('/insert', mappedOne);
   await callMapped('/insert', mappedTwo);
   mappedRows.set(mappedOne.id, mappedOne);
   mappedRows.set(mappedTwo.id, mappedTwo);
   plaintexts.push(mappedOne.token, mappedTwo.token);
 
-  return { plaintexts, defaultRows, mappedRows, main, mappedOne };
+  const archiveOne = {
+    id: main.id,
+    apiKey: main.apiKey,
+    label: 'archive-main',
+    sequence: 1,
+  };
+  await callDefault('/archive-insert', archiveOne);
+  archiveRows.set(archiveOne.id, archiveOne);
+  plaintexts.push(archiveOne.apiKey);
+
+  const defaultCursorRows = await callDefault('/scan', { lastId: 4 });
+  assert(
+    defaultCursorRows.length === 1 && defaultCursorRows[0].sequence === 5,
+    'default scan must apply its non-zero lastId cursor',
+  );
+  const mappedCursorRows = await callMapped('/scan', { lastId: 1 });
+  assert(
+    mappedCursorRows.length === 1 && mappedCursorRows[0].sequence === 2,
+    'mapped scan must apply its non-zero lastId cursor',
+  );
+
+  return { plaintexts, defaultRows, archiveRows, mappedRows, main, mappedOne, archiveOne };
 }
 
 async function assertPhysicalStorage(state, keyId) {
   const defaultCollections = await liveHarness.collectionNames(DEFAULT_DATABASE);
   const mappedCollections = await liveHarness.collectionNames(MAPPED_DATABASE);
   assert(defaultCollections.includes(DEFAULT_COLLECTION), 'default physical collection missing');
+  assert(defaultCollections.includes(ARCHIVE_COLLECTION), 'second default physical collection missing');
   assert(mappedCollections.includes(MAPPED_COLLECTION), 'mapped final physical collection missing');
   assert(!mappedCollections.includes('package_secret'), 'unmapped package collection must not be used');
 
   const documents = await liveHarness.rawDocuments(DEFAULT_DATABASE, DEFAULT_COLLECTION);
+  const archiveDocuments = await liveHarness.rawDocuments(DEFAULT_DATABASE, ARCHIVE_COLLECTION);
   const mappedDocuments = await liveHarness.rawDocuments(MAPPED_DATABASE, MAPPED_COLLECTION);
-  const raw = JSON.stringify([documents, mappedDocuments]);
+  const raw = JSON.stringify([documents, archiveDocuments, mappedDocuments]);
   for (const plaintext of state.plaintexts) {
     assert(!raw.includes(plaintext), `raw Mongo contains plaintext sentinel ${plaintext}`);
   }
@@ -355,6 +420,9 @@ async function assertPhysicalStorage(state, keyId) {
   for (const document of mappedDocuments) {
     assertEnvelope(document.token, keyId, 'mapped package token envelope');
   }
+  for (const document of archiveDocuments) {
+    assertEnvelope(document.apiKey, keyId, 'archive apiKey envelope');
+  }
   const first = documents.find((document) => document._id === 'credential-many-a');
   const second = documents.find((document) => document._id === 'credential-many-b');
   assert(envelopeNonce(first.apiKey) !== envelopeNonce(second.apiKey), 'insert-many rows must use independent nonces');
@@ -362,7 +430,22 @@ async function assertPhysicalStorage(state, keyId) {
 }
 
 async function assertCrossContextCopyFails(state) {
-  const source = await rawDefault(state.main.id);
+  let source = await rawDefault(state.main.id);
+
+  await liveHarness.setRawFields(DEFAULT_DATABASE, DEFAULT_COLLECTION, state.main.id, {
+    refreshToken: source.apiKey,
+  });
+  await assertReadFailsClosed(DEFAULT_SERVICE, `${DEFAULT_BASE}/read`, state.main.id, state.plaintexts);
+  await callDefault('/update', state.main);
+
+  source = await rawDefault(state.main.id);
+  await liveHarness.setRawFields(DEFAULT_DATABASE, ARCHIVE_COLLECTION, state.archiveOne.id, {
+    apiKey: source.apiKey,
+  });
+  await assertReadFailsClosed(DEFAULT_SERVICE, `${DEFAULT_BASE}/archive-read`, state.archiveOne.id, state.plaintexts);
+  await callDefault('/archive-restore', state.archiveOne);
+
+  source = await rawDefault(state.main.id);
   const target = await rawDefault('credential-many-a');
   await liveHarness.setRawFields(DEFAULT_DATABASE, DEFAULT_COLLECTION, target._id, {
     apiKey: source.apiKey,
@@ -378,7 +461,7 @@ async function assertCrossContextCopyFails(state) {
   await callDefault('/update', state.main);
 }
 
-function rotationInventory() {
+function rotationInventory(testRunnerStorage) {
   return [
     {
       storageServiceId: DEFAULT_SERVICE,
@@ -388,6 +471,19 @@ function rotationInventory() {
       scanPath: `${DEFAULT_BASE}/scan`,
       rewritePath: `${DEFAULT_BASE}/rewrite`,
       service: DEFAULT_SERVICE,
+      barrierPath: `${DEFAULT_BASE}/barrier`,
+      barrierStatusPath: `${DEFAULT_BASE}/barrier-status`,
+    },
+    {
+      storageServiceId: DEFAULT_SERVICE,
+      database: DEFAULT_DATABASE,
+      collection: ARCHIVE_COLLECTION,
+      fields: ['apiKey'],
+      scanPath: `${DEFAULT_BASE}/archive-scan`,
+      rewritePath: `${DEFAULT_BASE}/archive-rewrite`,
+      service: DEFAULT_SERVICE,
+      barrierPath: `${DEFAULT_BASE}/barrier`,
+      barrierStatusPath: `${DEFAULT_BASE}/barrier-status`,
     },
     {
       storageServiceId: MAPPED_SERVICE,
@@ -397,6 +493,15 @@ function rotationInventory() {
       scanPath: `${MAPPED_BASE}/scan`,
       rewritePath: `${MAPPED_BASE}/rewrite`,
       service: MAPPED_SERVICE,
+      barrierPath: `${MAPPED_BASE}/barrier`,
+      barrierStatusPath: `${MAPPED_BASE}/barrier-status`,
+    },
+    {
+      storageServiceId: testRunnerStorage.storageServiceId,
+      database: testRunnerStorage.database,
+      collection: testRunnerStorage.collection,
+      fields: [...testRunnerStorage.fields],
+      retired: true,
     },
   ];
 }
@@ -421,9 +526,16 @@ class RotationCohort {
     this.writeBarrier = false;
   }
 
-  beginWriteBarrier() {
+  async beginWriteBarrier() {
+    for (const endpoint of barrierEndpoints(this.expectedInventory)) {
+      const result = await this.harness.request(endpoint.service, endpoint.barrierPath, {
+        token: this.barrierToken,
+      });
+      assert(result.active === true, `failed to activate writer barrier for ${endpoint.service}`);
+    }
     this.writeBarrier = true;
-    this.harness.beginWriterBarrier();
+    this.harness.requireRetirementGate();
+    await this.assertRealBarrierActive();
   }
 
   checkpoint(entry) {
@@ -437,24 +549,89 @@ class RotationCohort {
     assert(actual === expected, 'cohort inventory is incomplete; refusing old-key retirement');
   }
 
+  async assertRealBarrierActive() {
+    assert(this.writeBarrier, 'cohort requires an active full-writer barrier');
+    for (const endpoint of barrierEndpoints(this.expectedInventory)) {
+      const status = await this.harness.request(
+        endpoint.service,
+        endpoint.barrierStatusPath,
+        {},
+      );
+      assert(status.active === true, `writer barrier is not active for ${endpoint.service}`);
+    }
+  }
+
   async migrateCollection(entry, { crashAfterFirstBatchBeforeCheckpoint = false } = {}) {
     assert(this.writeBarrier, 'rotation migration requires an active full-writer barrier');
+    if (entry.retired) {
+      assert(!(await this.harness.databaseExists(entry.database)), `${entry.database} must remain retired`);
+      for (const field of entry.fields) {
+        const count = await this.harness.countNotKeyId(
+          entry.database,
+          entry.collection,
+          field,
+          'next-v2',
+        );
+        assert(numberFromEjson(count) === 0, `retired ${entry.collection}.${field} is not empty`);
+      }
+      await this.saveCheckpoint(entry, { lastId: null, complete: true });
+      return;
+    }
+    const cursor = this.checkpoint(entry)?.lastId ?? 0;
     const rows = await this.harness.request(entry.service, entry.scanPath, {
-      lastId: this.checkpoint(entry) ?? '',
+      lastId: cursor,
     });
-    const remaining = rows.filter((row) => row.id > (this.checkpoint(entry) ?? ''));
+    assert(
+      rows.every((row) => row.sequence > cursor),
+      `${entry.collection} scan did not honor lastId ${cursor}`,
+    );
     const batchSize = 2;
-    for (let offset = 0; offset < remaining.length; offset += batchSize) {
-      const batch = remaining.slice(offset, offset + batchSize);
+    for (let offset = 0; offset < rows.length; offset += batchSize) {
+      const batch = rows.slice(offset, offset + batchSize);
       for (const row of batch) {
-        await this.harness.request(entry.service, entry.rewritePath, row, { rotation: true });
+        await this.harness.request(entry.service, entry.rewritePath, row, {
+          rotationToken: this.barrierToken,
+        });
       }
       if (crashAfterFirstBatchBeforeCheckpoint && offset === 0) {
         throw new SimulatedCheckpointCrash();
       }
-      this.checkpoints.set(this.checkpointKey(entry), batch.at(-1).id);
-      await writeFile(this.checkpointPath, `${JSON.stringify([...this.checkpoints], null, 2)}\n`, 'utf8');
+      await this.saveCheckpoint(entry, { lastId: batch.at(-1).sequence, complete: false });
     }
+    await this.saveCheckpoint(entry, {
+      lastId: rows.at(-1)?.sequence ?? cursor,
+      complete: true,
+    });
+  }
+
+  async retireOldKey(candidateInventory, nextKeyring) {
+    this.assertRetirementInventory(candidateInventory);
+    await this.assertRealBarrierActive();
+    for (const entry of this.expectedInventory) {
+      const checkpoint = this.checkpoint(entry);
+      assert(checkpoint?.complete === true, `checkpoint is incomplete for ${entry.storageServiceId}/${entry.collection}`);
+      if (entry.retired) {
+        assert(!(await this.harness.databaseExists(entry.database)), `${entry.database} unexpectedly returned`);
+      }
+      for (const field of entry.fields) {
+        const count = await this.harness.countNotKeyId(
+          entry.database,
+          entry.collection,
+          field,
+          nextKeyring.activeKeyId,
+        );
+        assert(
+          numberFromEjson(count) === 0,
+          `${entry.storageServiceId}/${entry.collection}.${field} blocks old-key retirement`,
+        );
+      }
+    }
+    await this.harness.restartRuntime(nextKeyring, { retirementAuthorized: true });
+  }
+
+  async saveCheckpoint(entry, value) {
+    this.checkpoints.set(this.checkpointKey(entry), value);
+    await writeFile(this.checkpointPath, `${JSON.stringify([...this.checkpoints], null, 2)}\n`, 'utf8');
   }
 
   checkpointKey(entry) {
@@ -475,6 +652,9 @@ async function assertAllBusinessRowsReadable(state) {
   for (const row of state.mappedRows.values()) {
     await assertBusinessRead(MAPPED_SERVICE, `${MAPPED_BASE}/read`, row);
   }
+  for (const row of state.archiveRows.values()) {
+    await assertBusinessRead(DEFAULT_SERVICE, `${DEFAULT_BASE}/archive-read`, row);
+  }
 }
 
 async function assertBusinessRead(service, path, expected) {
@@ -489,6 +669,38 @@ async function assertReadFailsClosed(service, path, id, plaintexts) {
   assert(response.status >= 400, `${service}${path} must return an error`);
   for (const plaintext of plaintexts) {
     assert(!response.text.includes(plaintext), 'fail-closed response leaked plaintext');
+  }
+}
+
+async function assertDirectFetchWriterBarrier(state) {
+  const blockedSentinel = 'blocked-writer-secret';
+  state.plaintexts.push(blockedSentinel);
+  const cases = [
+    {
+      service: DEFAULT_SERVICE,
+      path: `${DEFAULT_BASE}/update`,
+      body: state.main,
+    },
+    {
+      service: MAPPED_SERVICE,
+      path: `${MAPPED_BASE}/insert`,
+      body: { id: 'blocked-writer', token: blockedSentinel, label: 'blocked', sequence: 99 },
+    },
+  ];
+  for (const probe of cases) {
+    const url = new URL(probe.path, liveHarness.routerHttpUrl);
+    url.searchParams.set('service', probe.service);
+    url.searchParams.set('version', '0.1.0');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-skiff-service': probe.service,
+        'x-skiff-version': '0.1.0',
+      },
+      body: JSON.stringify(probe.body),
+    });
+    assert(response.status === 423, `direct writer bypass was not blocked for ${probe.service}`);
   }
 }
 
@@ -535,6 +747,10 @@ function inventoryWithMissingField(inventory) {
   }));
 }
 
+function inventoryWithMissingService(inventory) {
+  return inventory.filter((entry) => entry.storageServiceId !== MAPPED_SERVICE);
+}
+
 function canonicalInventory(inventory) {
   return JSON.stringify(
     inventory
@@ -542,8 +758,31 @@ function canonicalInventory(inventory) {
         storageServiceId: entry.storageServiceId,
         collection: entry.collection,
         fields: [...entry.fields].sort(),
+        retired: entry.retired === true,
       }))
       .sort((left, right) => `${left.storageServiceId}/${left.collection}`.localeCompare(`${right.storageServiceId}/${right.collection}`)),
+  );
+}
+
+function barrierEndpoints(inventory) {
+  const endpoints = new Map();
+  for (const entry of inventory) {
+    if (entry.retired || entry.barrierPath === undefined) {
+      continue;
+    }
+    endpoints.set(`${entry.service}:${entry.barrierPath}`, {
+      service: entry.service,
+      barrierPath: entry.barrierPath,
+      barrierStatusPath: entry.barrierStatusPath,
+    });
+  }
+  return [...endpoints.values()];
+}
+
+function assertKeyringUnchanged(before, after) {
+  assert(
+    keyringFingerprint(before) === keyringFingerprint(after),
+    'rejected retirement attempt changed the runtime keyring',
   );
 }
 
@@ -558,16 +797,6 @@ function assertPortsInAllowedRange(ports) {
     assert(!(port >= 4000 && port <= 4007), `port ${port} overlaps stable workspace range`);
     assert(port !== 27017, 'managed live test must not use stable Mongo');
   }
-}
-
-function assertThrows(callback, message) {
-  let threw = false;
-  try {
-    callback();
-  } catch {
-    threw = true;
-  }
-  assert(threw, message);
 }
 
 async function assertRejects(callback, message) {

@@ -4,6 +4,7 @@ type PackageSecret {
   id: string,
   token: string,
   label: string,
+  sequence: number,
 }
 
 db object PackageSecret {
@@ -16,6 +17,7 @@ type PackageSecretInput {
   id: string,
   token: string,
   label: string,
+  sequence: number,
 }
 
 type IdInput {
@@ -23,7 +25,7 @@ type IdInput {
 }
 
 type ScanInput {
-  lastId: string,
+  lastId: number,
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
@@ -32,6 +34,7 @@ function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
     id = input.id
     token = input.token
     label = input.label
+    sequence = input.sequence
   }
   return std.http.json(200, row)
 }
@@ -42,8 +45,8 @@ function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  std.http.decodeJson<ScanInput>(request)
-  const rows = db find many PackageSecret { where id != null order id asc limit 100 }
+  const input = std.http.decodeJson<ScanInput>(request)
+  const rows = db find many PackageSecret { where sequence > input.lastId order sequence asc limit 100 }
   return std.http.json(200, rows)
 }
 

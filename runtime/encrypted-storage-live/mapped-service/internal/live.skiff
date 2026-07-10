@@ -1,10 +1,59 @@
 import std
 
+type RotationBarrier {
+  id: string,
+  token: string,
+  active: bool,
+}
+
+db object RotationBarrier {
+  primary key(id)
+}
+
+type BarrierInput {
+  token: string,
+}
+
+type BarrierStatus {
+  active: bool,
+}
+
 function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
   return null
 }
 
+function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  const barrier = db find RotationBarrier("encrypted-storage-live")
+  if barrier == null || !barrier.active {
+    return null
+  }
+  const provided = std.http.header(request, "x-skiff-rotation-token")
+  if provided != null && provided == barrier.token {
+    return null
+  }
+  return std.http.errorResponse(423, "rotation_writer_barrier", "rotation writer barrier is active", null)
+}
+
+function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<BarrierInput>(request)
+  const result = db upsert RotationBarrier("encrypted-storage-live") {
+    token = input.token
+    active = true
+  } {
+    token = input.token
+    active = true
+  }
+  return std.http.json(200, BarrierStatus { active: result.value.active })
+}
+
+function barrierStatus(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const barrier = db find RotationBarrier("encrypted-storage-live")
+  return std.http.json(200, BarrierStatus { active: barrier != null && barrier.active })
+}
+
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
   return encryptedStore.insertOne(request)
 }
 
@@ -17,5 +66,7 @@ function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
   return encryptedStore.rewrite(request)
 }
