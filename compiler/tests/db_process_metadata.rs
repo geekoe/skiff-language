@@ -534,6 +534,36 @@ packages:
 }
 
 #[test]
+fn package_db_string_cursor_uses_package_target_field_type() {
+    let project = package_collection_mapping_project(
+        "package-db-string-cursor",
+        r#"
+packages:
+  - id: skiff.run/http-session
+    version: 1.0.0
+    alias: httpSession
+    collection_name_mapping:
+      Session: registry_session
+"#,
+        "",
+    )
+    .write_source(
+        "internal/package_db_cursor.skiff",
+        r#"
+        function sessionsAfter(lastId: string) -> Array<httpSession.session.Session> {
+          return db find many httpSession.session.Session {
+            where id > lastId
+            order id asc
+            limit 100
+          }
+        }
+        "#,
+    );
+
+    build_temp_service_publication(project.root());
+}
+
+#[test]
 fn package_collection_name_mapping_is_validated_against_package_metadata() {
     for (name, packages_yaml, service_db, expected) in [
         (

@@ -1070,17 +1070,26 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
-        self.check_expr_with_field_diagnostics(expr, true)
+        self.check_expr_with_field_diagnostics(expr, true, None)
     }
 
     fn check_callee_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
-        self.check_expr_with_field_diagnostics(expr, false)
+        self.check_expr_with_field_diagnostics(expr, false, None)
+    }
+
+    fn check_db_predicate_expr(
+        &mut self,
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_expr_with_field_diagnostics(expr, true, Some(fields))
     }
 
     fn check_expr_with_field_diagnostics(
         &mut self,
         expr: &Expr,
         diagnose_unknown_field: bool,
+        db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
     ) -> Option<ResolvedTypeRef> {
         let key = self.next_key();
         let refined_ty = expr_path(expr).and_then(|path| self.path_refinements.get(&path).cloned());
@@ -1121,23 +1130,53 @@ impl<'a> OwnerChecker<'a> {
                 None
             }
             Expr::Binary { op, left, right } => {
-                let left_ty = self.check_expr(left);
-                let right_ty = match op {
-                    BinaryOp::And => {
-                        let narrowing = self.condition_narrowings(left).when_true;
-                        self.check_expr_scoped(right, &narrowing)
-                    }
-                    BinaryOp::Or => {
-                        let narrowing = self.condition_narrowings(left).when_false;
-                        self.check_expr_scoped(right, &narrowing)
-                    }
-                    _ => self.check_expr(right),
+                let db_relational = db_predicate_fields.is_some()
+                    && matches!(
+                        op,
+                        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                    );
+                let db_logical =
+                    db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
+                let db_field_relational = db_relational
+                    && db_predicate_fields
+                        .is_some_and(|fields| Self::is_db_field_operand(left, fields));
+                let left_ty = if db_field_relational {
+                    self.check_db_field_operand(left, db_predicate_fields.expect("checked above"))
+                } else if db_logical {
+                    self.check_db_predicate_expr(left, db_predicate_fields.expect("checked above"))
+                } else {
+                    self.check_expr(left)
                 };
-                self.check_binary_operands(&key, *op, left_ty.as_ref(), right_ty.as_ref());
+                let right_ty = if db_logical {
+                    self.check_db_predicate_expr(right, db_predicate_fields.expect("checked above"))
+                } else {
+                    match op {
+                        BinaryOp::And => {
+                            let narrowing = self.condition_narrowings(left).when_true;
+                            self.check_expr_scoped(right, &narrowing)
+                        }
+                        BinaryOp::Or => {
+                            let narrowing = self.condition_narrowings(left).when_false;
+                            self.check_expr_scoped(right, &narrowing)
+                        }
+                        _ => self.check_expr(right),
+                    }
+                };
+                self.check_binary_operands(
+                    &key,
+                    *op,
+                    left_ty.as_ref(),
+                    right_ty.as_ref(),
+                    db_field_relational,
+                );
                 self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
             }
             Expr::Unary { op, expr } => {
-                let operand_ty = self.check_expr(expr);
+                let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
+                    self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
+                } else {
+                    self.check_expr(expr)
+                };
                 self.check_unary_operand(&key, *op, operand_ty.as_ref());
                 self.unary_type(*op)
             }
@@ -1685,12 +1724,36 @@ impl<'a> OwnerChecker<'a> {
             .resolve_constructor_target_text(&target.name, &self.type_context)
             .map(|target| target.fields)
             .unwrap_or_default();
+        let actual = self.check_db_predicate_expr(predicate, &fields);
+        let (Some(actual), Some(expected)) = (actual, self.resolve_builtin("bool")) else {
+            return;
+        };
+        if !self
+            .type_resolution
+            .assignable_in_context(&actual, &expected, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: db where predicate type mismatch at {}: expected bool, found {}",
+                self.module_path,
+                self.current_expression_span_label(),
+                actual.source_text
+            ));
+        }
+    }
+
+    fn check_db_field_operand(
+        &mut self,
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        if !Self::is_db_field_operand(expr, fields) {
+            return self.check_expr(expr);
+        }
         let mut previous = Vec::with_capacity(fields.len());
         for (name, ty) in fields {
-            let old = self.env.insert(name.clone(), ty);
-            previous.push((name, old));
+            previous.push((name.clone(), self.env.insert(name.clone(), ty.clone())));
         }
-        self.check_condition(predicate, "db where predicate");
+        let ty = self.check_expr(expr);
         for (name, old) in previous.into_iter().rev() {
             if let Some(old) = old {
                 self.env.insert(name, old);
@@ -1698,6 +1761,13 @@ impl<'a> OwnerChecker<'a> {
                 self.env.remove(&name);
             }
         }
+        ty
+    }
+
+    fn is_db_field_operand(expr: &Expr, fields: &BTreeMap<String, ResolvedTypeRef>) -> bool {
+        expr_path(expr)
+            .and_then(|path| path.split('.').next().map(str::to_string))
+            .is_some_and(|root| fields.contains_key(&root))
     }
 
     fn check_db_body(&mut self, body: &DbBody) {
@@ -1810,6 +1880,7 @@ impl<'a> OwnerChecker<'a> {
         op: BinaryOp,
         left: Option<&ResolvedTypeRef>,
         right: Option<&ResolvedTypeRef>,
+        db_field_relational: bool,
     ) {
         match op {
             BinaryOp::Add if self.operands_string_concat(left, right) => {}
@@ -1818,7 +1889,7 @@ impl<'a> OwnerChecker<'a> {
                 self.check_operand_assignable(key, "binary arithmetic operand", right, "number");
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                if self.operands_both_assignable_to(left, right, "string") {
+                if db_field_relational && self.operands_both_assignable_to(left, right, "string") {
                     return;
                 }
                 self.check_operand_assignable(key, "binary comparison operand", left, "number");
@@ -3555,24 +3626,44 @@ mod tests {
     }
 
     #[test]
-    fn relational_comparison_accepts_numbers_and_same_type_strings() {
+    fn relational_comparison_accepts_numbers_and_db_string_cursor() {
         expression_type_result(
             r#"
-              function stringOrder(left: string, right: string) -> bool {
-                return left < right || left <= right || left > right || left >= right
+              type Credential { id: string }
+              db object Credential { primary key(id) }
+
+              function scan(lastId: string) -> Array<Credential> {
+                return db find many Credential {
+                  where id > lastId
+                  order id asc
+                  limit 100
+                }
               }
 
               function numberOrder(left: number, right: number) -> bool {
                 return left < right || left <= right || left > right || left >= right
               }
+
+              function lexicalBindingSurvivesDbPredicate(id: number) -> number {
+                const count = db count Credential { where id > "credential-0" }
+                return id + count
+              }
             "#,
         )
-        .expect("same-type string and numeric relational comparisons should type-check");
+        .expect("DB string cursor and numeric relational comparisons should type-check");
     }
 
     #[test]
-    fn relational_comparison_rejects_mixed_nullable_and_other_types() {
+    fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types() {
         for (source, label) in [
+            (
+                r#"
+                  function invalid(left: string, right: string) -> bool {
+                    return left > right
+                  }
+                "#,
+                "ordinary runtime string relation",
+            ),
             (
                 r#"
                   function invalid(left: string, right: number) -> bool {
@@ -3596,6 +3687,17 @@ mod tests {
                   }
                 "#,
                 "non-orderable bool",
+            ),
+            (
+                r#"
+                  type Credential { id: string }
+                  db object Credential { primary key(id) }
+
+                  function invalid(id: number) -> Array<Credential> {
+                    return db find many Credential { where id > id }
+                  }
+                "#,
+                "DB field and shadowed lexical value",
             ),
         ] {
             let error = expression_type_result(source)

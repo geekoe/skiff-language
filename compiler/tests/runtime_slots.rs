@@ -62,32 +62,47 @@ fn function_ir_emits_typed_slot_layout_and_refs() {
 }
 
 #[test]
-fn string_relational_comparison_preserves_bool_descriptor_and_binary_lowering() {
+fn string_cursor_comparison_lowers_to_db_predicate_descriptor() {
     let artifact = compile_source_file_ir_artifact(
         r#"
-            function ordered(left: string, right: string) -> bool {
-                return left > right
+            type Credential { id: string, label: string }
+            db object Credential { primary key(id) }
+
+            function scan(lastId: string) -> Array<Credential> {
+                return db find many Credential {
+                  where id > lastId
+                  order id asc
+                  limit 100
+                }
             }
         "#,
-        "internal/string_order.skiff",
-        "internal.string_order",
+        "internal/string_cursor.skiff",
+        "internal.string_cursor",
         "service",
     )
-    .expect("string relational comparison should compile");
+    .expect("string cursor DB comparison should compile");
     let artifact_value = artifact.value();
-    let ordered = executable_entry(&artifact_value, "ordered");
+    let scan = executable_entry(&artifact_value, "scan");
+    let operations = db_operations(scan);
+    let operation = db_operation(&operations, "find", true);
+    let predicate = &operation["query"]["where"][0];
+    let last_id_slot = slot_index(scan, "lastId", "param");
 
-    assert_builtin_type(&ordered["params"][0]["ty"], "string");
-    assert_builtin_type(&ordered["params"][1]["ty"], "string");
-    assert_builtin_type(&ordered["returnType"], "bool");
+    assert_builtin_type(&scan["params"][0]["ty"], "string");
+    assert_eq!(predicate["kind"], "compare");
+    assert_eq!(predicate["field"]["segments"], serde_json::json!(["id"]));
+    assert_eq!(predicate["op"], "gt");
+    assert_eq!(
+        load_slot(expr_for_ref(scan, &predicate["value"])),
+        last_id_slot
+    );
     assert!(
-        ordered["body"]["expressions"]
+        scan["body"]["expressions"]
             .as_array()
             .expect("expressions should be an array")
             .iter()
-            .any(|expression| expression["kind"] == "binary"
-                && expression["op"] == "greaterThan"),
-        "string comparison should lower to the ordinary greaterThan binary descriptor",
+            .all(|expression| expression["kind"] != "binary"),
+        "DB string cursor must not lower to the runtime numeric binary path",
     );
 }
 
