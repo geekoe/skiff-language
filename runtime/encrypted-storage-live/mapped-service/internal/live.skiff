@@ -1,0 +1,21 @@
+import std
+
+function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  return null
+}
+
+function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return encryptedStore.insertOne(request)
+}
+
+function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return encryptedStore.readOne(request)
+}
+
+function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return encryptedStore.scan(request)
+}
+
+function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return encryptedStore.rewrite(request)
+}

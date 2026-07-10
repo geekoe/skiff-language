@@ -1,0 +1,4 @@
+insertOne: store.insertOne
+readOne: store.readOne
+scan: store.scan
+rewrite: store.rewrite

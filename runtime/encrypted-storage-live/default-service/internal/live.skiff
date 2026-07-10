@@ -1,0 +1,185 @@
+import std
+
+type Credential {
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+}
+
+db object Credential {
+  primary key(id)
+  storage apiKey using encrypted
+  storage refreshToken using encrypted
+}
+
+type IdentityDateRecord {
+  id: string,
+  note: string,
+  recordedAt: Date,
+}
+
+db object IdentityDateRecord {
+  primary key(id)
+}
+
+type CredentialInput {
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+}
+
+type InsertManyInput {
+  prefix: string,
+  apiKey: string,
+  refreshToken: string,
+}
+
+type IdInput {
+  id: string,
+}
+
+type ReplaceQueryInput {
+  matchLabel: string,
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+}
+
+type ScanInput {
+  lastId: string,
+}
+
+type IdentityDateInput {
+  id: string,
+  note: string,
+  recordedAt: string,
+}
+
+type IdentityDateOutput {
+  id: string,
+  note: string,
+  recordedAt: string,
+}
+
+function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  return null
+}
+
+function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db insert Credential {
+    id = input.id
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  }
+  return std.http.json(200, row)
+}
+
+function insertMany(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<InsertManyInput>(request)
+  const rows = Array.empty<Credential>()
+  rows.push(Credential {
+    id: input.prefix.concat("-a"),
+    apiKey: input.apiKey,
+    refreshToken: input.refreshToken,
+    label: "many-a",
+  })
+  rows.push(Credential {
+    id: input.prefix.concat("-b"),
+    apiKey: input.apiKey,
+    refreshToken: input.refreshToken,
+    label: "many-b",
+  })
+  const result = db insert many Credential values rows
+  return std.http.json(200, result)
+}
+
+function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  return std.http.json(200, db require Credential(input.id))
+}
+
+function projectOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  db require Credential(input.id) { fields { apiKey, refreshToken } }
+  return std.http.json(200, db require Credential(input.id))
+}
+
+function replaceByKey(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db replace Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  }
+  return std.http.json(200, row)
+}
+
+function replaceByQuery(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<ReplaceQueryInput>(request)
+  const row = db replace Credential { where label == input.matchLabel } {
+    id = input.id
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  }
+  return std.http.json(200, row)
+}
+
+function upsertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const result = db upsert Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  } {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  }
+  return std.http.json(200, result.value)
+}
+
+function updateOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+  }
+  return std.http.json(200, row)
+}
+
+function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  std.http.decodeJson<ScanInput>(request)
+  const rows = db find many Credential { where id != null order id asc limit 100 }
+  return std.http.json(200, rows)
+}
+
+function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+  }
+  return std.http.json(200, row)
+}
+
+function identityDate(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdentityDateInput>(request)
+  const inserted = db insert IdentityDateRecord {
+    id = input.id
+    note = input.note
+    recordedAt = Date.requireParse(input.recordedAt)
+  }
+  const row = db require IdentityDateRecord(inserted.id)
+  return std.http.json(200, IdentityDateOutput {
+    id: row.id,
+    note: row.note,
+    recordedAt: row.recordedAt.toISOString(),
+  })
+}

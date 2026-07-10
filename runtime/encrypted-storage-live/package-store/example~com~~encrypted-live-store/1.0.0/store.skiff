@@ -1,0 +1,54 @@
+import std
+
+type PackageSecret {
+  id: string,
+  token: string,
+  label: string,
+}
+
+db object PackageSecret {
+  name "package_secret"
+  primary key(id)
+  storage token using encrypted
+}
+
+type PackageSecretInput {
+  id: string,
+  token: string,
+  label: string,
+}
+
+type IdInput {
+  id: string,
+}
+
+type ScanInput {
+  lastId: string,
+}
+
+function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<PackageSecretInput>(request)
+  const row = db insert PackageSecret {
+    id = input.id
+    token = input.token
+    label = input.label
+  }
+  return std.http.json(200, row)
+}
+
+function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  return std.http.json(200, db require PackageSecret(input.id))
+}
+
+function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  std.http.decodeJson<ScanInput>(request)
+  const rows = db find many PackageSecret { where id != null order id asc limit 100 }
+  return std.http.json(200, rows)
+}
+
+function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<PackageSecretInput>(request)
+  const row = db update PackageSecret(input.id) { token = input.token }
+  return std.http.json(200, row)
+}

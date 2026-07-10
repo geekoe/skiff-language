@@ -1,0 +1,20 @@
+test defaultRun false
+
+type TestRunnerEncryptedDoc {
+  id: string,
+  secret: string,
+}
+
+db object TestRunnerEncryptedDoc {
+  primary key(id)
+  storage secret using encrypted
+}
+
+test "live test runner uses outer runtime keyring" {
+  const secret = config.require<string>("encryptedLive.testRunnerSecret")
+  const id = "encrypted-live-test-runner"
+  const inserted = db insert TestRunnerEncryptedDoc { id = id secret = secret }
+  assert inserted.secret == secret
+  const read = db require TestRunnerEncryptedDoc(id)
+  assert read.secret == secret
+}
