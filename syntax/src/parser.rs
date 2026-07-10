@@ -6,12 +6,12 @@ use crate::{
         DbBody, DbChange, DbChangeOp, DbDecl, DbIndexDirection, DbIndexEntry, DbIndexField,
         DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead, DbObjectFieldValue,
         DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection, DbQuery,
-        DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbTransaction, DbWhereClause,
-        ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl, FieldPath, ForBinding,
-        FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl, InterfaceOperation, Literal, MatchArm,
-        PackageId, Param, Pattern, PatternField, RecordFieldSourceSpans,
-        RemotePublicInstanceSource, SourceFile, SourceSpanTable, Stmt, StmtSourceSpans, TypeDecl,
-        TypeRef, UnaryOp,
+        DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec, DbStorageDecl,
+        DbTransaction, DbWhereClause, ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl,
+        FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl,
+        InterfaceOperation, Literal, MatchArm, PackageId, Param, Pattern, PatternField,
+        RecordFieldSourceSpans, RemotePublicInstanceSource, SourceFile, SourceSpanTable, Stmt,
+        StmtSourceSpans, TypeDecl, TypeRef, UnaryOp,
     },
     ast_utils::{expr_path, without_generic},
     error::{CompileError, Result, SourceLocation, SourceSpan},
@@ -729,6 +729,7 @@ impl Parser {
         let mut key = None;
         let mut retention = None;
         let mut leases = Vec::new();
+        let mut storage = Vec::new();
         let mut indexes = Vec::new();
         while !self.check_symbol("}") && !self.is_at_end() {
             if self.match_symbol(";") {
@@ -745,6 +746,28 @@ impl Parser {
                 retention = Some(self.parse_db_retention()?);
             } else if self.match_ident("lease") {
                 leases.push(self.parse_db_lease_decl()?);
+            } else if self.match_ident("storage") {
+                let field = self.expect_ident("expected db storage field name")?;
+                if self.check_symbol(".") {
+                    return Err(CompileError::syntax(
+                        "db storage field must be a single top-level identifier",
+                        self.peek().span.start,
+                    ));
+                }
+                self.expect_ident_value("using")?;
+                let codec = match self
+                    .expect_ident("expected db storage codec `encrypted`")?
+                    .as_str()
+                {
+                    "encrypted" => DbStorageCodec::Encrypted,
+                    _ => {
+                        return Err(CompileError::syntax(
+                            "expected db storage codec `encrypted`",
+                            self.previous().span.start,
+                        ));
+                    }
+                };
+                storage.push(DbStorageDecl { field, codec });
             } else if self.match_ident("key") {
                 return Err(CompileError::syntax(
                     "db object key type belongs on the attached type; use primary key(field)",
@@ -788,6 +811,7 @@ impl Parser {
             key,
             retention,
             leases,
+            storage,
             indexes,
             span: SourceSpan { start, end },
         })

@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::file_ir::{
     BlockIr, CallIr, CallTargetIr, DbBlockModeIr, DbBodyIr, DbChangeIr, DbChangeOpIr,
-    DbDeclarationIr, DbIndexDirectionIr, DbIndexFieldIr, DbIndexIr, DbLeaseClaimIr, DbLeaseIr,
-    DbLeaseReadIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, DbOpKindIr, DbOperationIr,
-    DbOrderEntryIr, DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr,
-    DbQueryValueIr, DbRetentionIr, DbRetentionUnitIr, DbSelectorIr, DbTargetIr, DbTransactionIr,
-    ExprIr, ExprRefIr, FieldPathIr, FileIrUnit, FunctionTypeParamIr, LiteralIr, MetadataValue,
-    ServiceSymbolRef, SlotKind, StmtIr, TypeDescriptorIr, TypeRefIr,
+    DbDeclarationIr, DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr, DbIndexIr,
+    DbLeaseClaimIr, DbLeaseIr, DbLeaseReadIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr,
+    DbOpKindIr, DbOperationIr, DbOrderEntryIr, DbPredicateCompareOpIr, DbPredicateIr,
+    DbProjectionIr, DbQueryIr, DbQueryValueIr, DbRetentionIr, DbRetentionUnitIr, DbSelectorIr,
+    DbTargetIr, DbTransactionIr, ExprIr, ExprRefIr, FieldPathIr, FileIrUnit, FunctionTypeParamIr,
+    LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_source::{
     semantic::DbAttachmentIndex, LocalDbObjectIndex, PublicationDbMetadata,
@@ -17,7 +17,7 @@ use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbBody, DbChange, DbChangeOp, DbIndexDirection, DbLeaseClaim,
         DbLeaseRead, DbOperation, DbOperationKind, DbQuery, DbQueryBlock, DbRetentionUnit,
-        DbSelector, DbWhereClause, Expr, FieldPath, Stmt, TypeRef, UnaryOp,
+        DbSelector, DbStorageCodec, DbWhereClause, Expr, FieldPath, Stmt, TypeRef, UnaryOp,
     },
     ast_utils::db_collection_name,
     error::{CompileError, Result},
@@ -45,6 +45,53 @@ pub(super) struct DbMetadataIr {
     pub(super) fields: BTreeSet<String>,
     pub(super) field_types: BTreeMap<String, TypeRefIr>,
     pub(super) field_type_texts: BTreeMap<String, String>,
+    pub(super) field_storage: BTreeMap<String, DbFieldStorageIr>,
+}
+
+impl DbMetadataIr {
+    fn storage_for_top_level_field(&self, name: &str) -> DbFieldStorageIr {
+        self.field_storage.get(name).copied().unwrap_or_default()
+    }
+
+    fn validate_storage_field_use(
+        &self,
+        path: &[String],
+        use_case: DbFieldUse,
+        selector_kind: DbSelectorKind,
+    ) -> Result<()> {
+        let Some(field) = path.first() else {
+            return Ok(());
+        };
+        match self.storage_for_top_level_field(field) {
+            DbFieldStorageIr::Identity => Ok(()),
+            DbFieldStorageIr::Encrypted => {
+                let top_level = path.len() == 1;
+                let allowed = match use_case {
+                    DbFieldUse::Projection => top_level,
+                    DbFieldUse::WholeSet => {
+                        top_level && selector_kind == DbSelectorKind::KnownRecordKey
+                    }
+                    DbFieldUse::Predicate
+                    | DbFieldUse::Order
+                    | DbFieldUse::Index
+                    | DbFieldUse::PartialChange => false,
+                };
+                if allowed {
+                    return Ok(());
+                }
+                Err(CompileError::Semantic(format!(
+                    "db object {} encrypted storage field `{field}` cannot be used for {}{}",
+                    self.type_name,
+                    use_case.label(),
+                    if use_case == DbFieldUse::WholeSet {
+                        " without a key selector"
+                    } else {
+                        ""
+                    }
+                )))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +158,35 @@ pub(super) enum DbBodyValidationMode {
     ReplaceByKey,
     ReplaceByQuery,
     UpsertByKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DbSelectorKind {
+    KnownRecordKey,
+    UnknownRecordKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbFieldUse {
+    Projection,
+    Predicate,
+    Order,
+    Index,
+    WholeSet,
+    PartialChange,
+}
+
+impl DbFieldUse {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Projection => "nested projection",
+            Self::Predicate => "predicate",
+            Self::Order => "order",
+            Self::Index => "index",
+            Self::WholeSet => "whole-field set",
+            Self::PartialChange => "partial change",
+        }
+    }
 }
 
 fn lower_publication_db_metadata(
@@ -192,6 +268,11 @@ fn lower_publication_db_metadata(
         fields: metadata.fields.clone(),
         field_types,
         field_type_texts: metadata.field_type_texts.clone(),
+        field_storage: metadata
+            .field_storage
+            .iter()
+            .map(|(field, codec)| (field.clone(), lower_db_storage_codec(*codec)))
+            .collect(),
     })
 }
 
@@ -314,13 +395,43 @@ pub(super) fn lower_db_declarations(
                         )?,
                         unit,
                     )?,
+                    storage: attachment
+                        .storage_map()
+                        .get(&field.name)
+                        .copied()
+                        .map(lower_db_storage_codec)
+                        .unwrap_or_default(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let lowered_metadata = DbMetadataIr {
+            type_ref: type_ref.clone(),
+            type_name: db.name.clone(),
+            canonical_type_name: canonical_db_type_name(attachment.module_path, &db.name),
+            collection_name: collection_name.clone(),
+            retention: retention.clone(),
+            leases: lease_map,
+            key: key.clone(),
+            fields: db_field_names,
+            field_types,
+            field_type_texts,
+            field_storage: attachment
+                .storage_map()
+                .iter()
+                .map(|(field, codec)| (field.clone(), lower_db_storage_codec(*codec)))
+                .collect(),
+        };
         let indexes = db
             .indexes
             .iter()
             .map(|index| {
+                for field in &index.fields {
+                    lowered_metadata.validate_storage_field_use(
+                        &field.field_path,
+                        DbFieldUse::Index,
+                        DbSelectorKind::UnknownRecordKey,
+                    )?;
+                }
                 Ok(DbIndexIr {
                     name: index.name.clone(),
                     unique: index.unique,
@@ -359,21 +470,7 @@ pub(super) fn lower_db_declarations(
                 source_span: Some(source_span.clone()),
             },
         );
-        metadata.insert(
-            db.name.clone(),
-            DbMetadataIr {
-                type_ref,
-                type_name: db.name.clone(),
-                canonical_type_name: canonical_db_type_name(attachment.module_path, &db.name),
-                collection_name,
-                retention,
-                leases: lease_map,
-                key,
-                fields: db_field_names,
-                field_types,
-                field_type_texts,
-            },
-        );
+        metadata.insert(db.name.clone(), lowered_metadata);
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,
@@ -383,6 +480,12 @@ pub(super) fn lower_db_declarations(
         );
     }
     Ok(metadata)
+}
+
+fn lower_db_storage_codec(codec: DbStorageCodec) -> DbFieldStorageIr {
+    match codec {
+        DbStorageCodec::Encrypted => DbFieldStorageIr::Encrypted,
+    }
 }
 
 fn db_storage_type_ref(ty: TypeRefIr, unit: &FileIrUnit) -> Result<TypeRefIr> {
@@ -1116,7 +1219,13 @@ impl<'a> FunctionLowerer<'a> {
             _ => {}
         }
         if let Some(change) = &operation.change {
-            self.validate_db_change(change, db)?;
+            let selector_kind =
+                if !operation.many && matches!(operation.selector, Some(DbSelector::Key { .. })) {
+                    DbSelectorKind::KnownRecordKey
+                } else {
+                    DbSelectorKind::UnknownRecordKey
+                };
+            self.validate_db_change(change, db, selector_kind)?;
         }
         Ok(())
     }
@@ -1169,11 +1278,25 @@ impl<'a> FunctionLowerer<'a> {
         Ok(())
     }
 
-    pub(super) fn validate_db_change(&self, change: &DbChange, db: &DbMetadataIr) -> Result<()> {
+    pub(super) fn validate_db_change(
+        &self,
+        change: &DbChange,
+        db: &DbMetadataIr,
+        selector_kind: DbSelectorKind,
+    ) -> Result<()> {
         let mut paths = Vec::new();
         for op in &change.ops {
             let path = db_change_op_path(op);
             self.validate_db_change_path(path, db)?;
+            db.validate_storage_field_use(
+                &path.segments,
+                if matches!(op, DbChangeOp::Set { .. }) {
+                    DbFieldUse::WholeSet
+                } else {
+                    DbFieldUse::PartialChange
+                },
+                selector_kind,
+            )?;
             self.validate_db_change_op_type(op, path, db)?;
             paths.push(path);
         }
@@ -1291,6 +1414,11 @@ impl<'a> FunctionLowerer<'a> {
                     db.type_name
                 )));
             }
+            db.validate_storage_field_use(
+                &field.segments,
+                DbFieldUse::Projection,
+                DbSelectorKind::UnknownRecordKey,
+            )?;
             seen.insert(&field, db)?;
             fields.push(field);
         }
@@ -1328,14 +1456,21 @@ impl<'a> FunctionLowerer<'a> {
             order: query
                 .order
                 .iter()
-                .map(|entry| DbOrderEntryIr {
-                    field: db_field_path_ir(&entry.field),
-                    direction: match entry.direction {
-                        skiff_syntax::ast::DbIndexDirection::Asc => DbIndexDirectionIr::Asc,
-                        skiff_syntax::ast::DbIndexDirection::Desc => DbIndexDirectionIr::Desc,
-                    },
+                .map(|entry| {
+                    db.validate_storage_field_use(
+                        &entry.field.segments,
+                        DbFieldUse::Order,
+                        DbSelectorKind::UnknownRecordKey,
+                    )?;
+                    Ok(DbOrderEntryIr {
+                        field: db_field_path_ir(&entry.field),
+                        direction: match entry.direction {
+                            skiff_syntax::ast::DbIndexDirection::Asc => DbIndexDirectionIr::Asc,
+                            skiff_syntax::ast::DbIndexDirection::Desc => DbIndexDirectionIr::Desc,
+                        },
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>>>()?,
             limit: query
                 .limit
                 .as_ref()
@@ -1522,6 +1657,11 @@ impl<'a> FunctionLowerer<'a> {
                 first, db.type_name
             )));
         }
+        db.validate_storage_field_use(
+            path,
+            DbFieldUse::Predicate,
+            DbSelectorKind::UnknownRecordKey,
+        )?;
         Ok(())
     }
 

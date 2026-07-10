@@ -126,6 +126,7 @@ fn validate_source_config_metadata_input(
         }
     };
     root_refs::validate_source_root_refs(diagnostic_root, production_sources, root_ref_policy)?;
+    crate::service_storage_rules::validate_db_storage_sources(parsed_sources)?;
     if matches!(policy, PublicationCompilePolicy::Service { .. }) {
         crate::service_storage_rules::validate_service_storage_sources(parsed_sources)?;
     }

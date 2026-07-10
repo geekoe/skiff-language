@@ -2808,6 +2808,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "widget".to_string(),
                 ty: TypeRefIr::LocalType { type_index: 0 },
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -2902,6 +2903,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "handle".to_string(),
                 ty: host_handle_type(),
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3152,6 +3154,7 @@ mod tests {
                         canonical_type_args: Vec::new(),
                     },
                 },
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3311,6 +3314,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "settings".to_string(),
                 ty: TypeRefIr::LocalType { type_index: 0 },
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3360,6 +3364,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "settings".to_string(),
                 ty: TypeRefIr::LocalType { type_index: 0 },
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3396,6 +3401,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "settings".to_string(),
                 ty: map_type(TypeRefIr::native("number"), TypeRefIr::native("string")),
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3452,6 +3458,7 @@ mod tests {
             fields: vec![DbObjectFieldIr {
                 name: "handle".to_string(),
                 ty: native_ty,
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),
@@ -3798,6 +3805,7 @@ mod tests {
                         canonical_type_args: vec![TypeRefIr::native("string")],
                     },
                 },
+                storage: Default::default(),
             }],
             retention: None,
             leases: Vec::new(),

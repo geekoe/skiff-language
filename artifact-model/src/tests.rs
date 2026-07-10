@@ -6,9 +6,9 @@ use serde_json::json;
 use crate::service_unit::{PublicInstanceExport, PublicInstanceOperation};
 use crate::{builtin_receiver_op_by_name, BuiltinReceiverOp};
 use crate::{
-    ActorMetadataIr, ActorMethodMetadataIr, DbIndexDirectionIr, DbIndexFieldIr, DbMetadataIndexIr,
-    DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FieldPathIr, SpawnTargetIr,
-    SpawnTargetKindIr,
+    ActorMetadataIr, ActorMethodMetadataIr, DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr,
+    DbMetadataIndexIr, DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FieldPathIr,
+    SpawnTargetIr, SpawnTargetKindIr,
 };
 use crate::{
     BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
@@ -1470,6 +1470,7 @@ fn service_unit_round_trips_canonical_operation_shape() {
             fields: vec![DbObjectFieldIr {
                 name: "name".to_owned(),
                 ty: string_type(),
+                storage: DbFieldStorageIr::Encrypted,
             }],
             retention: None,
             leases: Vec::new(),
@@ -1534,6 +1535,7 @@ fn service_unit_round_trips_canonical_operation_shape() {
     // Byte-shape parity with runtime artifact shapes:
     // nested `type` key, always-present nullable `key`/`retention`, and `where` emitted as null.
     assert_eq!(value["db"][0]["type"]["name"], "User");
+    assert_eq!(value["db"][0]["fields"][0]["storage"], "encrypted");
     assert_eq!(value["db"][0]["retention"], serde_json::Value::Null);
     assert_eq!(
         value["db"][0]["indexes"][0]["where"],
@@ -1551,6 +1553,32 @@ fn service_unit_round_trips_canonical_operation_shape() {
 
     let decoded: ServiceUnit = serde_json::from_value(value).unwrap();
     assert_eq!(decoded, unit);
+}
+
+#[test]
+fn db_field_storage_uses_compact_identity_and_explicit_encrypted_json() {
+    let identity = DbObjectFieldIr {
+        name: "name".to_string(),
+        ty: string_type(),
+        storage: DbFieldStorageIr::Identity,
+    };
+    let encrypted = DbObjectFieldIr {
+        storage: DbFieldStorageIr::Encrypted,
+        ..identity.clone()
+    };
+
+    let identity_json = serde_json::to_value(&identity).unwrap();
+    let encrypted_json = serde_json::to_value(&encrypted).unwrap();
+    assert!(identity_json.get("storage").is_none());
+    assert_eq!(encrypted_json["storage"], "encrypted");
+    assert_eq!(
+        serde_json::from_value::<DbObjectFieldIr>(identity_json).unwrap(),
+        identity
+    );
+    assert_eq!(
+        serde_json::from_value::<DbObjectFieldIr>(encrypted_json).unwrap(),
+        encrypted
+    );
 }
 
 #[test]

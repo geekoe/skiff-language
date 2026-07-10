@@ -1220,6 +1220,7 @@ mod tests {
                 fields: vec![DbObjectFieldIr {
                     name: field_name.to_string(),
                     ty: field_ty,
+                    storage: Default::default(),
                 }],
                 leases: Vec::new(),
                 indexes: Vec::new(),

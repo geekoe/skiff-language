@@ -2,13 +2,136 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
-    semantic::validate_db_attachments,
+    semantic::{validate_db_attachments, validate_db_storage_declarations},
     shared::ast::{Block, DbDecl, Expr, Stmt, TypeRef},
     shared::ast_utils::db_collection_name,
     shared::publication_error::PublicationError,
 };
 
 use super::SourceSymbolKey;
+
+pub fn validate_db_storage_sources(
+    parsed_sources: &[ParsedCompilerSource],
+) -> Result<(), PublicationError> {
+    let type_index = ServiceTypeIndex::build(parsed_sources);
+    let mut violations = Vec::new();
+
+    for parsed in parsed_sources {
+        for db in &parsed.ast().dbs {
+            if db.storage.is_empty() {
+                continue;
+            }
+            let Some(record) = type_index.resolve_local_record(parsed, &db.name) else {
+                continue;
+            };
+            let fields = record
+                .fields
+                .iter()
+                .map(|field| (field.name.as_str(), field.ty))
+                .collect::<BTreeMap<_, _>>();
+            validate_db_storage_declarations(
+                db,
+                &fields.keys().copied().collect(),
+                &mut violations,
+            );
+            let Some(key) = db.key.as_ref() else {
+                continue;
+            };
+
+            let mut storage_fields = BTreeSet::new();
+            for storage in &db.storage {
+                if !storage_fields.insert(storage.field.as_str()) {
+                    continue;
+                }
+                let Some(field_ty) = fields.get(storage.field.as_str()) else {
+                    continue;
+                };
+                if storage.field == key.name {
+                    continue;
+                }
+                if !is_exact_non_nullable_string(&field_ty.name, parsed.alias_targets()) {
+                    violations.push(format!(
+                        "db object {} encrypted storage field `{}` must be a non-null string",
+                        db.name, storage.field
+                    ));
+                }
+            }
+
+            if let Some(key_ty) = fields.get(key.name.as_str()) {
+                if !is_exact_non_nullable_string(&key_ty.name, parsed.alias_targets()) {
+                    violations.push(format!(
+                        "db object {} with encrypted storage field must use a non-null string primary key `{}`",
+                        db.name, key.name
+                    ));
+                }
+            }
+
+            for index in &db.indexes {
+                for field in &index.fields {
+                    if field
+                        .field_path
+                        .first()
+                        .is_some_and(|field| storage_fields.contains(field.as_str()))
+                    {
+                        violations.push(format!(
+                            "db object {} encrypted storage field `{}` cannot be used by index `{}`",
+                            db.name, field.field_path[0], index.name
+                        ));
+                    }
+                }
+                if let Some(where_expr) = &index.where_expr {
+                    collect_db_index_where_identifiers(where_expr, &mut |path| {
+                        if path
+                            .first()
+                            .is_some_and(|field| storage_fields.contains(field.as_str()))
+                        {
+                            violations.push(format!(
+                                "db object {} encrypted storage field `{}` cannot be used by partial index `{}` where",
+                                db.name, path[0], index.name
+                            ));
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(PublicationError::ContractValidation {
+            message: violations
+                .into_iter()
+                .map(|violation| format!("- {violation}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+    }
+}
+
+fn is_exact_non_nullable_string(ty: &str, alias_targets: &BTreeMap<String, String>) -> bool {
+    let mut current = ty.trim();
+    let mut seen = BTreeSet::new();
+    loop {
+        if current == "string" {
+            return true;
+        }
+        if current.ends_with('?')
+            || current.contains('|')
+            || current.contains('<')
+            || current.contains('{')
+        {
+            return false;
+        }
+        if !seen.insert(current.to_string()) {
+            return false;
+        }
+        let Some(target) = alias_targets.get(current) else {
+            return false;
+        };
+        current = target.trim();
+    }
+}
 
 pub fn validate_service_storage_sources(
     parsed_sources: &[ParsedCompilerSource],

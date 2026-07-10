@@ -139,6 +139,7 @@ fn build_from_linked(
         root_ref_policy,
     )?;
     let parsed_sources = linked.parsed_sources;
+    service_storage_rules::validate_db_storage_sources(&parsed_sources)?;
     if matches!(linked.policy, PublicationCompilePolicy::Service { .. }) {
         service_storage_rules::validate_service_storage_sources(&parsed_sources)?;
     }

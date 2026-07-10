@@ -897,9 +897,9 @@ mod tests {
 
     use super::*;
     use crate::program::linked::{
-        DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FileDeclarations,
-        FileLinkTargets, LinkedInterfaceInstantiationRef, ServiceSymbolRef, SourceMapDto,
-        TypeDeclIr, TypeDeclarationIr,
+        DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr,
+        FileDeclarations, FileLinkTargets, LinkedInterfaceInstantiationRef, ServiceSymbolRef,
+        SourceMapDto, TypeDeclIr, TypeDeclarationIr,
     };
     use skiff_artifact_model::{FileIrRef, TypeExport};
 
@@ -1149,6 +1149,7 @@ mod tests {
                     ty: LinkedTypeRef::Nullable {
                         inner: Box::new(service_symbol("ApiError")),
                     },
+                    storage: DbFieldStorageIr::Identity,
                 }],
                 leases: Vec::new(),
                 indexes: Vec::new(),
@@ -1305,6 +1306,7 @@ mod tests {
                             canonical_type_args: Vec::new(),
                         },
                     },
+                    storage: DbFieldStorageIr::Identity,
                 }],
                 leases: Vec::new(),
                 indexes: Vec::new(),

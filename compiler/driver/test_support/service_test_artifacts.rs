@@ -1891,6 +1891,7 @@ mod tests {
             .push(DbObjectFieldIr {
                 name: "callback".to_string(),
                 ty: callback_ty.clone(),
+                storage: Default::default(),
             });
 
         let TypeDescriptorIr::Record { fields } = &mut db_file.type_table[0].descriptor else {
@@ -2202,14 +2203,17 @@ mod tests {
                     DbObjectFieldIr {
                         name: "id".to_string(),
                         ty: TypeRefIr::native("string"),
+                        storage: Default::default(),
                     },
                     DbObjectFieldIr {
                         name: "currentConfig".to_string(),
                         ty: current_config_ty,
+                        storage: Default::default(),
                     },
                     DbObjectFieldIr {
                         name: "runtimeBindings".to_string(),
                         ty: runtime_bindings_ty,
+                        storage: Default::default(),
                     },
                 ],
                 retention: None,
