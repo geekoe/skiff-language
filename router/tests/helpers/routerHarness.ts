@@ -152,6 +152,7 @@ export class RouterHarness {
 
   async listenHttp(input: {
     activationByServiceOperation?: ActivationLookup;
+    backpressureDrainTimeoutMs?: HttpGatewayOptions['backpressureDrainTimeoutMs'];
     snapshotStore?: RouterActiveSnapshotStore;
     rewrite?: HttpGatewayOptions['rewrite'];
     telemetry?: HttpGatewayOptions['telemetry'];
@@ -164,6 +165,9 @@ export class RouterHarness {
     };
     if (input.activationByServiceOperation) {
       options.activationByServiceOperation = input.activationByServiceOperation;
+    }
+    if (input.backpressureDrainTimeoutMs) {
+      options.backpressureDrainTimeoutMs = input.backpressureDrainTimeoutMs;
     }
     if (input.snapshotStore) {
       options.snapshotStore = input.snapshotStore;
@@ -185,6 +189,8 @@ export class RouterHarness {
     rewrite?: WebSocketGatewayOptions['rewrite'];
     server?: HttpServer;
     snapshotStore?: RouterActiveSnapshotStore;
+    verifiedReceiveInFlightLimit?: WebSocketGatewayOptions['verifiedReceiveInFlightLimit'];
+    verifiedReceiveQueueLimit?: WebSocketGatewayOptions['verifiedReceiveQueueLimit'];
   } = {}): Promise<WebSocketGatewayListenResult> {
     const options: WebSocketGatewayOptions = {
       manifest: this.manifest,
@@ -197,6 +203,12 @@ export class RouterHarness {
     }
     if (input.path) {
       options.path = input.path;
+    }
+    if (input.verifiedReceiveInFlightLimit) {
+      options.verifiedReceiveInFlightLimit = input.verifiedReceiveInFlightLimit;
+    }
+    if (input.verifiedReceiveQueueLimit) {
+      options.verifiedReceiveQueueLimit = input.verifiedReceiveQueueLimit;
     }
     if (input.rewrite) {
       options.rewrite = input.rewrite;

@@ -31,6 +31,10 @@ import type {
   WebSocketContextCodecFrameMetadata
 } from '../protocol/envelope.js';
 import { isRecord, RUNTIME_FRAME_SCHEMA_VERSION } from '../protocol/envelope.js';
+import {
+  REQUEST_CANCEL_SITUATION,
+  requestCancelReasonForSituation
+} from '../protocol/cancelReason.js';
 import { isPublicationId, publicationStorageSegment } from '../publicationId.js';
 import {
   readCookiesForGatewayMetadata,
@@ -58,6 +62,7 @@ import type {
 import type { RuntimeConnectionSendSource } from '../router/runtimeEndpoint.js';
 
 const MAX_PENDING_CONNECTION_MESSAGES = 100;
+const DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT = 1;
 const MAX_CONNECTIONS = 5000;
 const MAX_SOCKET_BUFFERED_AMOUNT = 16 * 1024 * 1024;
 const CONNECTION_DOWNLINK_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
@@ -75,9 +80,17 @@ export interface WebSocketGatewayOptions {
   host?: string;
   path?: string;
   port?: number;
+  verifiedReceiveInFlightLimit?: number;
+  verifiedReceiveQueueLimit?: number;
   requestTimeoutMs?: number;
   rewrite?: readonly RouterRewriteRule[];
   server?: HttpServer;
+}
+
+export interface WebSocketReceiveLifecycleCounters {
+  inFlight: number;
+  queued: number;
+  abortOnClose: number;
 }
 
 export interface WebSocketGatewayListenResult {
@@ -105,7 +118,10 @@ interface Connection {
   latestRequest: IncomingMessage;
   latestUrl: URL;
   pendingMessages: PendingClientMessage[];
+  receiveAbortControllers: Set<AbortController>;
   receiveGatewayEntryIdentity: string;
+  receiveInFlight: number;
+  receiveQueue: PendingClientMessage[];
   receiveServiceProtocolIdentity: string;
   version?: string;
   service: string;
@@ -168,6 +184,13 @@ class WebSocketCloseError extends Error {
 }
 
 export class WebSocketGateway {
+  private readonly receiveInFlightLimit: number;
+  private readonly receiveQueueLimit: number;
+  private readonly receiveCounters: WebSocketReceiveLifecycleCounters = {
+    inFlight: 0,
+    queued: 0,
+    abortOnClose: 0
+  };
   private readonly requestTimeoutMs: number;
   private readonly snapshotStore: RouterActiveSnapshotStore;
   private readonly deliveryKeyByClient = new WeakMap<WebSocket, string>();
@@ -181,6 +204,10 @@ export class WebSocketGateway {
   private webSocketServer: WebSocketServer | undefined;
 
   constructor(private readonly options: WebSocketGatewayOptions) {
+    this.receiveInFlightLimit =
+      options.verifiedReceiveInFlightLimit ?? DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT;
+    this.receiveQueueLimit =
+      options.verifiedReceiveQueueLimit ?? MAX_PENDING_CONNECTION_MESSAGES;
     this.snapshotStore =
       options.snapshotStore ??
       new RouterActiveSnapshotStore({
@@ -278,6 +305,10 @@ export class WebSocketGateway {
     this.webSocketServer = undefined;
     this.upgradeHandler = undefined;
     this.server = undefined;
+  }
+
+  receiveLifecycleCounters(): WebSocketReceiveLifecycleCounters {
+    return { ...this.receiveCounters };
   }
 
   private hasWebSocketPath(pathname: string): boolean {
@@ -426,7 +457,13 @@ export class WebSocketGateway {
         'websocket path does not match any gateway entry'
       );
     }
-    const prepared = await this.prepareUpgrade(request, url);
+    const connectAbort = this.upgradeClientDisconnectSignal(request, socket);
+    let prepared: PreparedUpgrade;
+    try {
+      prepared = await this.prepareUpgrade(request, url, connectAbort.signal);
+    } finally {
+      connectAbort.complete();
+    }
     try {
       webSocketServer.handleUpgrade(request, socket, head, (ws) => {
         this.attachSocket(prepared.connection, ws);
@@ -442,7 +479,8 @@ export class WebSocketGateway {
 
   private async prepareUpgrade(
     request: IncomingMessage,
-    url: URL
+    url: URL,
+    signal: AbortSignal
   ): Promise<PreparedUpgrade> {
     const { entry, service, buildId, version } = this.selectEntry(request, url);
     const upgradeSession = resolveClientUpgradeSession();
@@ -458,7 +496,7 @@ export class WebSocketGateway {
     });
 
     try {
-      await this.verifyConnection(connection, request, url);
+      await this.verifyConnection(connection, request, url, signal);
     } catch (error) {
       connection.state = 'rejected';
       this.connectionsById.delete(connection.id);
@@ -482,6 +520,8 @@ export class WebSocketGateway {
       });
     });
     ws.on('close', () => {
+      this.abortConnectionReceives(connection);
+      this.dropQueuedReceives(connection);
       this.removeIdentityIndex(ws);
       connection.sockets.delete(ws);
       if (connection.sockets.size > 0) {
@@ -529,7 +569,10 @@ export class WebSocketGateway {
       latestRequest: input.request,
       latestUrl: input.url,
       pendingMessages: [],
+      receiveAbortControllers: new Set(),
       receiveGatewayEntryIdentity: input.entry.receive.gatewayEntryIdentity,
+      receiveInFlight: 0,
+      receiveQueue: [],
       receiveServiceProtocolIdentity: this.resolveOperationServiceProtocolIdentity(
         input.entry.receive.operationManifest
       ),
@@ -549,10 +592,11 @@ export class WebSocketGateway {
   private async verifyConnection(
     connection: Connection,
     request: IncomingMessage,
-    url: URL
+    url: URL,
+    signal: AbortSignal
   ): Promise<void> {
     const accepted = connection.entry.connect
-      ? await this.dispatchConnect(connection.entry.connect, request, url, connection)
+      ? await this.dispatchConnect(connection.entry.connect, request, url, connection, signal)
       : {
           contextBytes: new Uint8Array()
         };
@@ -596,7 +640,8 @@ export class WebSocketGateway {
     connect: LoadedWebSocketConnect,
     request: IncomingMessage,
     url: URL,
-    connection: Connection
+    connection: Connection,
+    signal: AbortSignal
   ): Promise<ConnectAccept> {
     if (connect.operationManifest.mode !== 'unary') {
       throw new GatewayError(
@@ -619,7 +664,8 @@ export class WebSocketGateway {
       serviceId: connection.entry.serviceId,
       callerTarget: `gateway.${publicationStorageSegment(connection.entry.serviceId)}.websocket.${connection.entry.id}.connect`,
       buildId: connection.buildId,
-      clientSession: connection.clientSession
+      clientSession: connection.clientSession,
+      signal
     });
 
     return decodeWebSocketConnectResponse(response);
@@ -653,13 +699,7 @@ export class WebSocketGateway {
       throw new DecodeError(`websocket connection is ${connection.state}`);
     }
 
-    const receiveDispatch = this.buildWebSocketReceiveDispatch(connection, data, isBinary);
-    await this.dispatchReceive(
-      connection.entry.receive,
-      receiveDispatch.websocketAdapter,
-      receiveDispatch.payloadBytes,
-      connection
-    );
+    this.enqueueVerifiedReceive(connection, { data, isBinary, ws });
   }
 
   private bufferPendingMessage(
@@ -693,11 +733,120 @@ export class WebSocketGateway {
     }
   }
 
+  private enqueueVerifiedReceive(connection: Connection, message: PendingClientMessage): void {
+    if (connection.receiveInFlight < this.receiveInFlightLimit) {
+      this.startVerifiedReceive(connection, message);
+      return;
+    }
+    if (connection.receiveQueue.length >= this.receiveQueueLimit) {
+      throw new WebSocketCloseError(1008, 'websocket receive queue is full');
+    }
+    connection.receiveQueue.push(message);
+    this.receiveCounters.queued += 1;
+  }
+
+  private drainVerifiedReceiveQueue(connection: Connection): void {
+    while (
+      connection.state === 'verified' &&
+      connection.receiveInFlight < this.receiveInFlightLimit &&
+      connection.receiveQueue.length > 0
+    ) {
+      const message = connection.receiveQueue.shift();
+      this.receiveCounters.queued = Math.max(0, this.receiveCounters.queued - 1);
+      if (!message || message.ws.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      this.startVerifiedReceive(connection, message);
+    }
+  }
+
+  private startVerifiedReceive(connection: Connection, message: PendingClientMessage): void {
+    const controller = new AbortController();
+    connection.receiveAbortControllers.add(controller);
+    connection.receiveInFlight += 1;
+    this.receiveCounters.inFlight += 1;
+
+    const finish = () => {
+      if (!connection.receiveAbortControllers.delete(controller)) {
+        return;
+      }
+      connection.receiveInFlight = Math.max(0, connection.receiveInFlight - 1);
+      this.receiveCounters.inFlight = Math.max(0, this.receiveCounters.inFlight - 1);
+      this.drainVerifiedReceiveQueue(connection);
+    };
+
+    const receiveDispatch = this.buildWebSocketReceiveDispatch(
+      connection,
+      message.data,
+      message.isBinary
+    );
+    this.dispatchReceive(
+      connection.entry.receive,
+      receiveDispatch.websocketAdapter,
+      receiveDispatch.payloadBytes,
+      connection,
+      controller.signal
+    )
+      .catch((error: unknown) => {
+        if (message.ws.readyState === WebSocket.OPEN) {
+          this.closeWithError(message.ws, error);
+        }
+      })
+      .finally(finish);
+  }
+
+  private abortConnectionReceives(connection: Connection): void {
+    for (const controller of Array.from(connection.receiveAbortControllers)) {
+      if (!controller.signal.aborted) {
+        this.receiveCounters.abortOnClose += 1;
+        controller.abort();
+      }
+    }
+  }
+
+  private dropQueuedReceives(connection: Connection): void {
+    const queued = connection.receiveQueue.length;
+    if (queued === 0) {
+      return;
+    }
+    connection.receiveQueue = [];
+    this.receiveCounters.queued = Math.max(0, this.receiveCounters.queued - queued);
+  }
+
+  private upgradeClientDisconnectSignal(
+    request: IncomingMessage,
+    socket: Socket
+  ): { signal: AbortSignal; complete(): void } {
+    const controller = new AbortController();
+    let completed = false;
+    const abort = () => {
+      if (!completed && !controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+    socket.once('close', abort);
+    socket.once('end', abort);
+    request.once('aborted', abort);
+    if (socket.destroyed) {
+      queueMicrotask(abort);
+    }
+    return {
+      signal: controller.signal,
+      complete: () => {
+        completed = true;
+        socket.off('close', abort);
+        socket.off('end', abort);
+        request.off('aborted', abort);
+      }
+    };
+  }
+
   private async dispatchReceive(
     receive: LoadedWebSocketReceive,
     websocketAdapter: WebSocketAdapterFrameMetadata,
     payloadBytes: Uint8Array,
-    connection: Connection
+    connection: Connection,
+    signal: AbortSignal
   ): Promise<unknown> {
     if (receive.operationManifest.mode !== 'unary') {
       throw new GatewayError(
@@ -721,7 +870,8 @@ export class WebSocketGateway {
       ...(connection.businessIdentity !== undefined
         ? { businessIdentity: connection.businessIdentity }
         : {}),
-      clientSession: connection.clientSession
+      clientSession: connection.clientSession,
+      signal
     });
   }
 
@@ -818,6 +968,7 @@ export class WebSocketGateway {
     serviceProtocolIdentity: string;
     callerTarget: string;
     buildId: string;
+    signal?: AbortSignal;
   }): Promise<RuntimeBinaryDispatchResponse> {
     const timeoutMs = this.resolveTimeoutMs(
       input.operation.operation,
@@ -870,7 +1021,15 @@ export class WebSocketGateway {
         header: request,
         payloadBytes: input.payloadBytes
       },
-      timeoutMs
+      timeoutMs,
+      input.signal
+        ? {
+            signal: input.signal,
+            cancelReason: requestCancelReasonForSituation(
+              REQUEST_CANCEL_SITUATION.clientDisconnect
+            )
+          }
+        : {}
     );
   }
 
