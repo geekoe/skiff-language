@@ -1,6 +1,6 @@
 # Skiff DB Reference
 
-本文负责：稳定描述 Skiff service-owned database 的用户可见语言规则，包括 `db object`、读写操作、query block、projection、返回类型、transaction、lease、数据库归属和当前不支持事项。
+本文负责：稳定描述 Skiff service-owned database 的用户可见语言规则，包括 `db object`、读写操作、query block、projection、返回类型、transaction、lease、数据库归属、encrypted storage mapping 和当前不支持事项。
 
 本文不负责：compiler lowering、runtime Mongo adapter、artifact DTO、索引 rollout、schema migration、跨 service 数据复制、actor / queue / timer 调度和实现迁移计划。
 
@@ -72,6 +72,8 @@ db find many User {
 Nested projection 只穿过静态可验证的 stored record shape。`Json`、array、map、union 或未来动态对象字段不提供可投影的子字段，除非对应能力另行定义。穿过 nullable record 时，projection 保留 nullable 边界。
 使用 recoverable-envelope lane 的 stored field 第一版也不可穿透：可以选择整个 top-level 字段，但不能对其内部
 field path 做 projection、predicate、order 或 index。
+使用 encrypted storage mapping 的字段同样只能作为整个 top-level 字段读写，不能作为 field path 的父级，也不能
+用于 predicate、order 或 index。
 
 ```skiff
 type UserProfile {
@@ -336,18 +338,217 @@ const slot = db lease Thread(threadId).drain
 
 底层 Mongo 映射是 adapter 细节。Skiff DB reference 不定义 Mongo collection API、Mongo filter、Mongo update operator 或索引创建流程。
 
-## 10. Recoverable Stored Fields
+## 10. Encrypted Stored Fields
+
+Encrypted stored field 用于把低频 secret string（例如 API key）以认证密文形式存入 service-owned database，同时在
+Skiff 源码、service API 和运行时内存中维持普通 `string` 语义。它不是新的 secret 类型，也不会阻止业务代码记录、
+返回或以其他方式泄漏已经解密的值。
+
+### 10.1 声明与静态约束
+
+Canonical syntax 是在 `db object` 中为已有 stored field 增加 storage mapping：
+
+```skiff
+type ProviderCredential {
+  id: string
+  provider: string
+  apiKey: string
+}
+
+db object ProviderCredential {
+  name "provider_credential"
+  primary key(id)
+  storage apiKey using encrypted
+}
+```
+
+约束：
+
+- `storage`、`using`、`encrypted` 只在 `db object` declaration 中是 contextual keyword；`storage` 后只接受单个
+  top-level identifier，`using` 后只接受 `encrypted`，行尾分号沿用其他 DB entry 的可选规则。
+- encrypted field 必须是 top-level、非 nullable 的精确 `string`；最终展开为 `string` 的 alias 也可以。
+- 声明 encrypted field 的 object，其单字段 primary key 也必须是非 nullable `string`。
+- primary key 自身不能 encrypted；encrypted field 也不能 nullable、nested、indexed，不能与 recoverable-envelope 或
+  immutable-file storage mapping 重叠。
+- 同一字段重复声明 storage mapping 是 compile error；未声明 mapping 的字段保持 identity storage behavior。
+- `storage ... using encrypted` 只声明物理存储方式，不改变源码 field type、构造规则、projection 返回类型或 service
+  protocol ABI。调用方不能选择算法、nonce、key id 或密文格式。
+- encrypted field 面向 API key 等低频 secret。单个 derived field key 达到 `2^32` 次写入前必须轮换 root key；
+  runtime 不维护持久写次数计数，容量核算属于运维责任。
+
+### 10.2 Operation contract
+
+| Operation / field use | Contract |
+| --- | --- |
+| full read，或 `fields { apiKey }` | 允许；runtime 在返回前解密，projection 仍自动包含 primary key |
+| `where`、`order`、index，或 nested path | 拒绝；不提供 searchable encryption |
+| `db insert` / `db insert many` | 允许；每行、每个 encrypted field 独立生成随机 nonce |
+| `db replace` | 允许；replacement 必须提供可确定的 string record id |
+| 按 key 的 `db update` / `db upsert`，top-level `set` encrypted field | 允许；selector key 进入认证上下文 |
+| query selector / `update many` 设置 encrypted field | 拒绝；多行写入不能复用 ciphertext 或缺失 record id |
+| `unset`、`add`、`remove`、数值 change 或 nested change | 拒绝 |
+
+query、count 和 exists 可以继续使用同一 object 的普通可查询字段，但任何 predicate 都不能引用 encrypted field。
+读取完整 row 会解密其中全部 encrypted field；只需要 secret 时可显式使用 `fields { apiKey }`，其逻辑结果仍包含
+primary key，例如 `{ id: string, apiKey: string }`。
+
+### 10.3 密文、认证上下文与失败语义
+
+当前格式固定使用 32-byte root key、HKDF-SHA256 派生的 32-byte field key、AES-256-GCM、每次写入由 OS CSPRNG
+生成的 12-byte nonce，以及原始 UTF-8 string bytes 作为 plaintext。每个 root key id、storage service、最终物理
+collection 和 top-level field 都派生出不同的 field key。
+
+物理 BSON 值是 Skiff 保留 envelope：
+
+```javascript
+{
+  _skiff_encrypted: {
+    version: 1,
+    keyId: "2026-01",
+    nonce: BinData(0, "..."),
+    ciphertext: BinData(0, "...")
+  }
+}
+```
+
+AEAD additional authenticated data（AAD）确定性绑定以下逻辑上下文：
+
+```text
+keyId
+storageServiceId
+finalPhysicalCollectionName
+topLevelFieldName
+logicalStringRecordId
+```
+
+因此同一明文重复写入会得到不同密文；把合法 envelope 移到另一个 record、service、collection 或 field，修改
+`keyId` / nonce / ciphertext，或使用错误 key 都会认证失败。缺字段、多字段、错误 BSON type、未知 version、未知
+key id、认证失败和 UTF-8 失败都返回 sanitized DB decode error；runtime 不接受明文 string fallback，也不会把
+malformed envelope 当成普通业务 record。当前格式没有数据库之外的可信 freshness state，所以同一
+record/service/collection/field 上的历史合法 envelope 回放不在防护范围内。
+
+该能力保护 Mongo 数据文件、备份和磁盘副本泄漏，以及跨上下文复制或篡改；它不保护已经控制 runtime 进程、能读取
+keyring、业务代码主动暴露 plaintext 或进程 memory dump 的攻击者。解密后的 `string` 会进入 runtime / service 内存；
+应用仍必须避免把它写入日志、错误、telemetry 或 API response。
+
+### 10.4 Runtime host keyring
+
+Keyring 是 runtime host secret，不属于 router、service activation、control frame、resolved service config 或 artifact。
+`runtime.yml` 中的唯一引用是：
+
+```yaml
+serviceDb:
+  encryption:
+    keyringFile: /run/secrets/skiff-service-db-keyring.json
+```
+
+相对路径按 `runtime.yml` 所在目录解析。生产部署应使用远端 runtime host 上的绝对 secret-mount 路径，并在运行
+deploy script 前由部署平台 provision 文件；deploy script 只把路径写入 `runtime.yml`，不读取、传输、创建或备份
+keyring，也不在部署摘要中输出路径或 material。
+
+Keyring 文件格式：
+
+```json
+{
+  "format": "skiff-service-db-keyring-v1",
+  "activeKeyId": "2026-01",
+  "keys": {
+    "2026-01": "<canonical-base64-32-bytes>",
+    "2025-02": "<canonical-base64-32-bytes>"
+  }
+}
+```
+
+`activeKeyId` 指定新写入使用的 key，`keys` 中保留的旧 key 只用于读取历史 envelope。每个 key 是 32-byte 随机
+material 的 RFC 4648 canonical Base64 表示；key id 最多 64 UTF-8 bytes，只允许 `[A-Za-z0-9._-]`。Unix 上必须是
+regular file，且 group/other permission bits 为 `0`（推荐 `0400` 或 `0600`）。空文件、缺失、权限不安全、重复 key、
+未知字段、无效格式或 active key 缺失都会让 runtime 启动失败；文件只在 runtime 启动时读取，更新后必须 restart。
+
+runtime 未配置 keyring 时，不含 encrypted field 的 service 正常激活；含 encrypted field 的 service 在 DB provider
+build 阶段 fail closed，不注册可用路由。runtime 不生成临时 key，也不把字段降级为明文。
+
+同一个 storage service 的所有 runtime replica 必须挂载完全相同的 keyring。runtime 成功加载后发出不含路径或
+material 的 `service_db.encryption_keyring_loaded` 事件，携带 format、active key id 和覆盖整个 keyring 的非 secret
+fingerprint；部署与轮换必须用该事件核对 replica 一致性。
+
+### 10.5 启用、发布、重命名与灾难恢复
+
+Encrypted mapping 只允许在全新 DB object / 物理 collection，或已确认完全为空的 collection 上启用。已有非空
+collection 的明文 string 不会自动升级：直接增加 mapping 会让旧 string fail closed；新增非 nullable encrypted
+field 也会让缺字段的旧 row 失败。需要保留数据时，必须新建使用最终 storage identity 的 object / collection，通过
+正常 encrypted insert 做 out-of-place copy，并在停写窗口校验和切流。
+
+发布顺序固定为：
+
+1. 部署理解 encrypted metadata / codec、但尚未加载 encrypted schema 的 runtime。
+2. 在所有 runtime replica 上安装相同 keyring，并用加载事件核对 fingerprint。
+3. 加载含 encrypted field 的 service artifact。
+4. 最后开放业务写入。
+
+一旦写入 envelope，旧 runtime / artifact 无法把保留 BSON document 当成 plaintext string。回滚 service artifact 前必须
+停写并迁移或清空 encrypted 数据，不能只删除 `storage` declaration。AAD 使用最终
+`storageServiceId + physicalCollectionName + fieldName`；更改 service storage identity、collection mapping 或 field name
+都会让旧密文无法解密，必须按显式存储迁移处理，不能把 rename 当作 metadata-only change。
+
+Keyring 丢失等同于密文不可恢复。数据库备份与 keyring 备份必须分开保存、分别授权，并进行成对恢复演练；恢复任一可能
+包含旧 envelope 的数据库备份时，recovery keyring 必须仍含对应旧 key。不要把 key material 写入源码、artifact、deploy
+manifest、日志或数据库备份。
+
+### 10.6 停写轮换 runbook
+
+轮换作用域是整个 **keyring deployment cohort**：所有加载该 keyring material、或曾用其中 key 写入密文的 runtime、
+writer 和 `storageServiceId`。当前只支持维护窗口内的停写轮换，不提供在线轮换或通用 rotation CLI。
+
+1. 从部署 inventory 枚举整个 cohort，包括所有当前/历史 writer、`storageServiceId`，以及最终物理 collection/field；
+   inventory 不完整时停止，继续保留旧 key。
+2. 阻断 cohort 内全部 service 的新业务写入，drain 正在执行的请求，并停止所有 runtime replica / writer。
+3. 在每个 runtime 安装完全相同的 old+new keyring，把 `activeKeyId` 切到新 key。
+4. 启动所有 replica，但维持写屏障；确认每个进程的加载事件都有相同 `format + activeKeyId + keyringFingerprint`，且没有
+   旧 writer 存活。
+5. 对 inventory 中每个 `storageServiceId + finalPhysicalCollectionName` 运行一次服务迁移。按 string primary key 做
+   `where id > lastId order id asc limit batchSize` 分页，读出一行全部 encrypted field 的 plaintext，再在同一次按-key
+   update 中 top-level set 回当前值。checkpoint key 固定为
+   `(targetKeyringFingerprint, storageServiceId, finalPhysicalCollectionName)`，每批 transaction 完成后记录 `lastId`；
+   写入后、checkpoint 前崩溃时可安全重跑该批。
+6. 具备受控、只读 Mongo 运维权限的操作者对 inventory 中每个 encrypted field 验证 active key，且在全部扫描归零前
+   保持写屏障：
+
+   ```javascript
+   db.getCollection("<collection>").countDocuments({
+     "<field>._skiff_encrypted.keyId": { $ne: "NEW_ID" }
+   })
+   ```
+
+   `$ne` 也匹配缺字段；服务迁移的全量 read 会另外让 malformed envelope fail closed。保存 inventory、扫描命令和结果
+   作为轮换记录。
+7. 再次停止 cohort 全部 replica / writer，从在线 keyring 删除旧 key；启动后用新的共同 fingerprint 再次确认一致。
+8. 解除 cohort 写屏障。旧 material 进入与数据库备份分离的离线 recovery keyring，直到所有可能包含旧 envelope 的备份
+   过期或已完成恢复后重加密，不能立即销毁。
+
+普通 read 不隐式写回旧 key envelope。不能在并发写入时用 read+set 轮换，不能只迁移一个 storage service、只滚动部分
+replica，或在 cohort 外 writer 尚未纳管时删除旧 key。
+
+### 10.7 当前非目标
+
+Encrypted stored fields 当前不提供 KMS / HSM 接入、自动 key rotation、在线 re-encryption、searchable / deterministic
+encryption、nullable 或 nested encrypted field、用户自定义 codec、通用 schema migration、plaintext 自动升级、secret
+taint type，或对业务内存和输出的自动脱敏。
+
+## 11. Recoverable Stored Fields
 
 DB stored field 是 owner-internal recoverable boundary。DB 的底线是“写入值必须可恢复”，再叠加 DB 自己的
 projection、predicate 和 index policy。完整 recoverable contract 见
 [`../architecture/recoverable-value.md`](../architecture/recoverable-value.md)。
 
-DB storage lane 分两类：
+DB recoverability lane 分两类：
 
 - schema-projectable lane：plain data、record、array、map 等不需要 code/carrier/adapter state 的字段保持现有 storage
   shape，可按本文件规则 projection、predicate、order 和 index。
 - recoverable-envelope lane：静态类型图可能需要 code identity、`any I` carrier/self state、nominal behavior state、
   custom restore state 或 native adapter state 的 top-level stored field，整体存为 opaque recoverable envelope。
+
+Encrypted mapping 是 schema-projectable `string` 的额外物理 storage policy，不是第三种 runtime value lane；它的查询和
+写入限制见上一节。
 
 第一版 recoverable-envelope lane 不可穿透。示例：
 
@@ -369,7 +570,7 @@ stream / transaction / live connection / 无 adapter native handle，写入 fail
 对 `provider.someField` 做 `fields` projection、`where`、`order` 或 index 第一版不支持。需要可查询字段时，应把可查询事实
 作为普通 schema-projectable 字段单独建模。
 
-## 11. Current Unsupported Surface
+## 12. Current Unsupported Surface
 
 当前不支持：
 
@@ -385,7 +586,7 @@ stream / transaction / live connection / 无 adapter native handle，写入 fail
 - 读取对象字段赋值后自动落库。
 - 长批量修复作为普通在线 transaction。
 
-## 12. Open Questions
+## 13. Open Questions
 
 未定问题只记录方向，不作为当前语义：
 
