@@ -57,7 +57,7 @@ pub struct DbEncryptionKeyring {
 }
 
 impl DbEncryptionKeyring {
-    fn parse_json(bytes: &[u8]) -> Result<Self, DbEncryptionKeyringError> {
+    pub(crate) fn parse_json(bytes: &[u8]) -> Result<Self, DbEncryptionKeyringError> {
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
         let raw = RawKeyring::deserialize(&mut deserializer)
             .map_err(|_| DbEncryptionKeyringError::Invalid)?;

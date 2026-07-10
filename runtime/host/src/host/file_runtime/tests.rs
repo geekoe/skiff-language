@@ -96,6 +96,7 @@ fn unused_store() -> ServiceDbCapabilityStore {
             format!("example.com/file_{}", uuid::Uuid::new_v4().simple()),
             ServiceDbConfig {
                 mongo_url: "mongodb://127.0.0.1:1/?directConnection=true".to_string(),
+                encryption_cipher: None,
             },
             &[],
         )

@@ -16,7 +16,8 @@ use skiff_runtime_model::{
     runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
 };
 
-use crate::{DbRuntimeChange, Result, ServiceDbError};
+use crate::{DbEncryptedFieldContext, DbRuntimeChange, Result, ServiceDbError};
+use skiff_artifact_model::DbFieldStorageIr;
 use skiff_runtime_boundary::{
     date_value,
     json::{decode_untyped_wire_json, encode_untyped_wire_json},
@@ -30,6 +31,28 @@ use super::metadata::DbCollectionMetadata;
 use skiff_runtime_boundary::db as db_boundary;
 
 const DB_DECODE_TARGET: &str = "std.db";
+
+#[derive(Clone)]
+pub struct EncryptedRecordContext {
+    record_id: String,
+}
+
+pub struct NormalizedOneSelector {
+    pub filter: Document,
+    pub sort: Option<Document>,
+    normalized_key: Option<Bson>,
+    encrypted_context: Option<EncryptedRecordContext>,
+}
+
+impl NormalizedOneSelector {
+    pub fn normalized_key(&self) -> Option<&Bson> {
+        self.normalized_key.as_ref()
+    }
+
+    pub fn encrypted_context(&self) -> Option<&EncryptedRecordContext> {
+        self.encrypted_context.as_ref()
+    }
+}
 
 pub struct DbRecoverableRuntimeWriteContext<'a> {
     pub behavior_hooks: &'a dyn RecoverableBehaviorHooks,
@@ -63,37 +86,84 @@ impl DbCollectionMetadata {
         &self,
         value: &RuntimeValue,
         heap: &RequestHeap,
-        mut recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
+        recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
     ) -> Result<Document> {
-        let fields = runtime_object_fields(value, heap, "db.create value")?;
-        let key = fields.get(&self.key_field).ok_or_else(|| {
-            db_decode_error(format!("db value missing key field {}", self.key_field))
-        })?;
-        let mut document = Document::new();
-        document.insert(
-            "_id",
-            self.bson_from_runtime_business_value(
+        self.runtime_document_from_business_value(value, heap, recoverable_context, None, None)
+    }
+
+    pub fn replacement_document_from_runtime_business_value(
+        &self,
+        value: &RuntimeValue,
+        heap: &RequestHeap,
+        recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
+        expected_key: Option<&Bson>,
+        encrypted_context: Option<&EncryptedRecordContext>,
+    ) -> Result<Document> {
+        self.runtime_document_from_business_value(
+            value,
+            heap,
+            recoverable_context,
+            expected_key,
+            encrypted_context,
+        )
+    }
+
+    fn runtime_document_from_business_value(
+        &self,
+        value: &RuntimeValue,
+        heap: &RequestHeap,
+        mut recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
+        expected_key: Option<&Bson>,
+        encrypted_context: Option<&EncryptedRecordContext>,
+    ) -> Result<Document> {
+        let fields = runtime_object_fields(value, heap, "db write value")?;
+        let body_key = fields.get(&self.key_field);
+        let key_bson = match body_key {
+            Some(key) => self.bson_from_runtime_business_value(
                 key,
                 heap,
                 self.key_write_projection_plan(),
                 recoverable_context.as_mut().map(|context| &mut **context),
                 Some(&self.key_field),
             )?,
-        );
+            None => {
+                let expected_key = expected_key.ok_or_else(|| {
+                    db_decode_error(format!("db value missing key field {}", self.key_field))
+                })?;
+                expected_key.clone()
+            }
+        };
+        if body_key.is_some() {
+            if let Some(expected_key) = expected_key {
+                if &key_bson != expected_key {
+                    return Err(db_decode_error(format!(
+                        "db replace value key field {} must match selected object",
+                        self.key_field
+                    )));
+                }
+            }
+        }
+        let mut document = Document::new();
+        let encrypted_context = match encrypted_context {
+            Some(context) => Some(context.clone()),
+            None => self.encrypted_context_from_key_bson(&key_bson)?,
+        };
+        document.insert("_id", key_bson);
         for (field, value) in fields {
             if field == &self.key_field {
                 continue;
             }
             validate_db_business_field_name(field)?;
+            let plaintext = self.bson_from_runtime_business_value(
+                value,
+                heap,
+                self.field_write_projection_plan_for_path(field),
+                recoverable_context.as_mut().map(|context| &mut **context),
+                Some(field),
+            )?;
             document.insert(
                 field.clone(),
-                self.bson_from_runtime_business_value(
-                    value,
-                    heap,
-                    self.field_write_projection_plan_for_path(field),
-                    recoverable_context.as_mut().map(|context| &mut **context),
-                    Some(field),
-                )?,
+                self.encode_field_storage(field, encrypted_context.as_ref(), plaintext)?,
             );
         }
         Ok(document)
@@ -163,7 +233,8 @@ impl DbCollectionMetadata {
     pub fn replacement_document_from_business_value(
         &self,
         value: DbDocument,
-        expected_key: Option<&DbKey>,
+        expected_key: Option<&Bson>,
+        encrypted_context: Option<&EncryptedRecordContext>,
     ) -> Result<Document> {
         let value = value.into_value();
         let object = value
@@ -173,18 +244,28 @@ impl DbCollectionMetadata {
         validate_db_business_json_object(&object)?;
         let mut object = object;
         object.remove("_id");
-        if let Some(body_key) = object.remove(&self.key_field) {
-            if let Some(expected_key) = expected_key {
-                if &body_key != expected_key.as_value() {
+        let body_key = object.remove(&self.key_field);
+        let key_bson = match body_key {
+            Some(body_key) => {
+                let body_key =
+                    self.bson_from_business_value(&body_key, self.key_write_projection_plan())?;
+                if expected_key.is_some_and(|expected_key| expected_key != &body_key) {
                     return Err(db_decode_error(format!(
                         "db replace value key field {} must match selected object",
                         self.key_field
                     )));
                 }
+                body_key
             }
-            object.insert("_id".to_string(), body_key);
-        }
-        self.document_from_stored_object(object)
+            None => expected_key.cloned().ok_or_else(|| {
+                db_decode_error(format!("db value missing key field {}", self.key_field))
+            })?,
+        };
+        let encrypted_context = match encrypted_context {
+            Some(context) => Some(context.clone()),
+            None => self.encrypted_context_from_key_bson(&key_bson)?,
+        };
+        self.document_from_business_object_with_key(object, key_bson, encrypted_context.as_ref())
     }
 
     pub fn documents_from_business_values(
@@ -208,7 +289,9 @@ impl DbCollectionMetadata {
                 self.collection_name
             ))
         })?;
-        let mut object = self.business_object_from_stored_document(document)?;
+        let encrypted_context = self.encrypted_context_from_key_bson(&key)?;
+        let mut object =
+            self.business_object_from_stored_document(document, encrypted_context.as_ref())?;
         object.insert(
             self.key_field.clone(),
             self.business_value_from_bson(key, self.key_result_decode_plan())?,
@@ -247,11 +330,29 @@ impl DbCollectionMetadata {
         &self,
         selector: DbOneSelector,
     ) -> Result<(Document, Option<Document>)> {
+        let normalized = self.normalize_one_selector(selector)?;
+        Ok((normalized.filter, normalized.sort))
+    }
+
+    pub fn normalize_one_selector(&self, selector: DbOneSelector) -> Result<NormalizedOneSelector> {
         match selector {
-            DbOneSelector::Key(key) => Ok((self.key_filter(&key)?, None)),
-            DbOneSelector::Query { query, order } => {
-                Ok((self.query_filter(query)?, self.order_document(&order)?))
+            DbOneSelector::Key(key) => {
+                let key = self
+                    .bson_from_business_value(key.as_value(), self.key_write_projection_plan())?;
+                let encrypted_context = self.encrypted_context_from_key_bson(&key)?;
+                Ok(NormalizedOneSelector {
+                    filter: mongodb::bson::doc! { "_id": key.clone() },
+                    sort: None,
+                    normalized_key: Some(key),
+                    encrypted_context,
+                })
             }
+            DbOneSelector::Query { query, order } => Ok(NormalizedOneSelector {
+                filter: self.query_filter(query)?,
+                sort: self.order_document(&order)?,
+                normalized_key: None,
+                encrypted_context: None,
+            }),
         }
     }
 
@@ -316,8 +417,17 @@ impl DbCollectionMetadata {
         type_name: &str,
         change: ServiceDbChange,
     ) -> Result<Document> {
+        self.validated_change_update_with_context(type_name, change, None)
+    }
+
+    pub fn validated_change_update_with_context(
+        &self,
+        type_name: &str,
+        change: ServiceDbChange,
+        encrypted_context: Option<&EncryptedRecordContext>,
+    ) -> Result<Document> {
         let change = self.validated_change(type_name, change)?;
-        self.change_update_document(&change)
+        self.change_update_document(&change, encrypted_context)
     }
 
     pub fn validated_change(
@@ -332,7 +442,11 @@ impl DbCollectionMetadata {
         Ok(change)
     }
 
-    pub fn change_update_document(&self, change: &ServiceDbChange) -> Result<Document> {
+    pub fn change_update_document(
+        &self,
+        change: &ServiceDbChange,
+        encrypted_context: Option<&EncryptedRecordContext>,
+    ) -> Result<Document> {
         let mut set = Document::new();
         let mut inc = Document::new();
         let mut unset = Document::new();
@@ -343,28 +457,37 @@ impl DbCollectionMetadata {
             match op {
                 ServiceDbChangeOp::Set { field, value } => {
                     let resolved = self.resolve_business_field_path(field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::Set)?;
+                    self.validate_storage_field_use(
+                        &resolved,
+                        DbFieldUse::WholeSet,
+                        encrypted_context,
+                    )?;
+                    let plaintext = self.bson_from_business_value(
+                        value.as_value(),
+                        self.field_write_projection_plan_for_path(field),
+                    )?;
                     set.insert(
                         field.clone(),
-                        self.bson_from_business_value(
-                            value.as_value(),
-                            self.field_write_projection_plan_for_path(field),
+                        self.encode_field_storage(
+                            resolved.top_level(),
+                            encrypted_context,
+                            plaintext,
                         )?,
                     );
                 }
                 ServiceDbChangeOp::Inc { field, value } => {
                     let resolved = self.resolve_business_field_path(field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::PartialChange)?;
+                    self.validate_storage_field_use(&resolved, DbFieldUse::PartialChange, None)?;
                     inc.insert(field.clone(), bson::to_bson(value.as_value())?);
                 }
                 ServiceDbChangeOp::Unset { field } => {
                     let resolved = self.resolve_business_field_path(field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::PartialChange)?;
+                    self.validate_storage_field_use(&resolved, DbFieldUse::PartialChange, None)?;
                     unset.insert(field.clone(), Bson::Int32(1));
                 }
                 ServiceDbChangeOp::AddToSet { field, value } => {
                     let resolved = self.resolve_business_field_path(field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::PartialChange)?;
+                    self.validate_storage_field_use(&resolved, DbFieldUse::PartialChange, None)?;
                     add_to_set.insert(
                         field.clone(),
                         self.bson_from_business_value(
@@ -375,7 +498,7 @@ impl DbCollectionMetadata {
                 }
                 ServiceDbChangeOp::Pull { field, value } => {
                     let resolved = self.resolve_business_field_path(field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::PartialChange)?;
+                    self.validate_storage_field_use(&resolved, DbFieldUse::PartialChange, None)?;
                     pull.insert(
                         field.clone(),
                         self.bson_from_business_value(
@@ -412,8 +535,13 @@ impl DbCollectionMetadata {
         change: DbRuntimeChange,
         heap: &RequestHeap,
         mut recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
+        encrypted_context: Option<&EncryptedRecordContext>,
     ) -> Result<Document> {
-        let mut update = self.validated_change_update(type_name, change.wire_change)?;
+        let mut update = self.validated_change_update_with_context(
+            type_name,
+            change.wire_change,
+            encrypted_context,
+        )?;
         if change.set_ops.is_empty() {
             return Ok(update);
         }
@@ -431,16 +559,17 @@ impl DbCollectionMetadata {
 
         for op in change.set_ops {
             let resolved = self.resolve_business_field_path(&op.field)?;
-            self.validate_recoverable_field_use(&resolved, DbFieldUse::Set)?;
+            self.validate_storage_field_use(&resolved, DbFieldUse::WholeSet, encrypted_context)?;
+            let plaintext = self.bson_from_runtime_business_value(
+                &op.value,
+                heap,
+                self.field_write_projection_plan_for_path(&op.field),
+                recoverable_context.as_mut().map(|context| &mut **context),
+                Some(&op.field),
+            )?;
             set.insert(
                 op.field.clone(),
-                self.bson_from_runtime_business_value(
-                    &op.value,
-                    heap,
-                    self.field_write_projection_plan_for_path(&op.field),
-                    recoverable_context.as_mut().map(|context| &mut **context),
-                    Some(&op.field),
-                )?,
+                self.encode_field_storage(resolved.top_level(), encrypted_context, plaintext)?,
             );
         }
         if !set.is_empty() {
@@ -480,7 +609,7 @@ impl DbCollectionMetadata {
                 self.fields.contains_key(top)
             })
             .map_err(db_path_policy_error)?;
-        self.validate_recoverable_field_use(&resolved, use_case)?;
+        self.validate_storage_field_use(&resolved, use_case, None)?;
         Ok(resolved.mongo_path().to_string())
     }
 
@@ -501,7 +630,7 @@ impl DbCollectionMetadata {
                 }
                 _ => {
                     let resolved = self.resolve_business_field_path(&field)?;
-                    self.validate_recoverable_field_use(&resolved, DbFieldUse::Predicate)?;
+                    self.validate_storage_field_use(&resolved, DbFieldUse::Predicate, None)?;
                     filter.insert(
                         resolved.mongo_path().to_string(),
                         self.field_query_value(resolved.business_path(), value)?,
@@ -558,15 +687,36 @@ impl DbCollectionMetadata {
     }
 
     fn document_from_stored_object(&self, object: Map<String, Value>) -> Result<Document> {
+        let key_value = object.get(db_boundary::MONGO_ID_FIELD).ok_or_else(|| {
+            db_decode_error(format!("db value missing key field {}", self.key_field))
+        })?;
+        let key_bson =
+            self.bson_from_business_value(key_value, self.key_write_projection_plan())?;
+        let encrypted_context = self.encrypted_context_from_key_bson(&key_bson)?;
+        self.document_from_business_object_with_key(object, key_bson, encrypted_context.as_ref())
+    }
+
+    fn document_from_business_object_with_key(
+        &self,
+        object: Map<String, Value>,
+        key_bson: Bson,
+        encrypted_context: Option<&EncryptedRecordContext>,
+    ) -> Result<Document> {
         let mut document = Document::new();
+        document.insert(db_boundary::MONGO_ID_FIELD, key_bson);
         for (field, value) in object {
+            if field == db_boundary::MONGO_ID_FIELD {
+                continue;
+            }
             validate_db_business_field_name(&field)?;
-            let plan = if field == db_boundary::MONGO_ID_FIELD {
-                self.key_write_projection_plan()
-            } else {
-                self.field_write_projection_plan_for_path(&field)
-            };
-            document.insert(field, self.bson_from_business_value(&value, plan)?);
+            let plaintext = self.bson_from_business_value(
+                &value,
+                self.field_write_projection_plan_for_path(&field),
+            )?;
+            document.insert(
+                field.clone(),
+                self.encode_field_storage(&field, encrypted_context, plaintext)?,
+            );
         }
         Ok(document)
     }
@@ -574,6 +724,7 @@ impl DbCollectionMetadata {
     fn business_object_from_stored_document(
         &self,
         document: Document,
+        encrypted_context: Option<&EncryptedRecordContext>,
     ) -> Result<Map<String, Value>> {
         let mut object = Map::new();
         for (field, value) in document {
@@ -581,10 +732,11 @@ impl DbCollectionMetadata {
                 continue;
             }
             validate_db_business_field_name(&field)?;
+            let plaintext = self.decode_field_storage(&field, encrypted_context, value)?;
             object.insert(
                 field.clone(),
                 self.business_value_from_bson(
-                    value,
+                    plaintext,
                     self.field_result_decode_plan_for_path(&field),
                 )?,
             );
@@ -604,6 +756,7 @@ impl DbCollectionMetadata {
                 self.collection_name
             ))
         })?;
+        let encrypted_context = self.encrypted_context_from_key_bson(&key)?;
         let mut fields = RuntimeObjectFields::new();
         fields.insert(
             self.key_field.clone(),
@@ -620,10 +773,11 @@ impl DbCollectionMetadata {
                 continue;
             }
             validate_db_business_field_name(&field)?;
+            let plaintext = self.decode_field_storage(&field, encrypted_context.as_ref(), value)?;
             fields.insert(
                 field.clone(),
                 self.runtime_value_from_bson(
-                    value,
+                    plaintext,
                     self.field_result_decode_plan_for_path(&field),
                     heap,
                     recoverable_context,
@@ -1131,34 +1285,131 @@ impl DbCollectionMetadata {
         db_boundary::DbFieldPathPolicy::new(&self.key_field)
     }
 
-    fn validate_recoverable_field_use(
+    fn validate_storage_field_use(
         &self,
         resolved: &db_boundary::DbResolvedFieldPath<'_>,
         use_case: DbFieldUse,
+        encrypted_context: Option<&EncryptedRecordContext>,
     ) -> Result<()> {
         let Some(field) = self.fields.get(resolved.top_level()) else {
             return Ok(());
         };
+        let is_top_level = resolved.business_path() == resolved.top_level()
+            || resolved.mongo_path() == resolved.top_level();
+        let operation = if use_case == DbFieldUse::WholeSet && !is_top_level {
+            "partial set"
+        } else {
+            use_case.label()
+        };
+        if field.storage == DbFieldStorageIr::Encrypted {
+            if (use_case == DbFieldUse::Projection && is_top_level)
+                || (use_case == DbFieldUse::WholeSet && is_top_level && encrypted_context.is_some())
+            {
+                return Ok(());
+            }
+            return Err(db_decode_error(format!(
+                "encrypted DB field {} cannot be used for {}",
+                resolved.top_level(),
+                operation
+            )));
+        }
         let Some(plan) = field.ty.as_ref() else {
             return Ok(());
         };
         if !plan.is_recoverable_envelope_lane() {
             return Ok(());
         }
-        let is_top_level = resolved.business_path() == resolved.top_level()
-            || resolved.mongo_path() == resolved.top_level();
         if use_case == DbFieldUse::Projection && is_top_level {
             return Ok(());
         }
-        if use_case == DbFieldUse::Set && is_top_level {
+        if use_case == DbFieldUse::WholeSet && is_top_level {
             return Ok(());
         }
         Err(db_decode_error(format!(
             "recoverable-envelope DB field {} is opaque; {} on {} is not supported in P5; only full field read/write is supported",
             resolved.top_level(),
-            use_case.label(),
+            operation,
             resolved.business_path()
         )))
+    }
+
+    fn encrypted_context_from_key_bson(
+        &self,
+        key: &Bson,
+    ) -> Result<Option<EncryptedRecordContext>> {
+        if !self.has_encrypted_fields() {
+            return Ok(None);
+        }
+        let Bson::String(record_id) = key else {
+            return Err(db_decode_error("encrypted DB object key must be a string"));
+        };
+        Ok(Some(EncryptedRecordContext {
+            record_id: record_id.clone(),
+        }))
+    }
+
+    fn encode_field_storage(
+        &self,
+        field_name: &str,
+        context: Option<&EncryptedRecordContext>,
+        plaintext: Bson,
+    ) -> Result<Bson> {
+        let Some(field) = self.fields.get(field_name) else {
+            return Ok(plaintext);
+        };
+        if field.storage == DbFieldStorageIr::Identity {
+            return Ok(plaintext);
+        }
+        let Bson::String(plaintext) = plaintext else {
+            return Err(db_decode_error("encrypted DB field encode failed"));
+        };
+        let context = context.ok_or_else(|| db_decode_error("encrypted DB field encode failed"))?;
+        let cipher = self
+            .encryption_cipher
+            .as_ref()
+            .ok_or_else(|| db_decode_error("encrypted DB field encode failed"))?;
+        cipher
+            .encrypt_string(
+                DbEncryptedFieldContext {
+                    storage_service_id: &self.storage_service_id,
+                    collection_name: &self.collection_name,
+                    field_name,
+                    record_id: &context.record_id,
+                },
+                &plaintext,
+            )
+            .map_err(|_| db_decode_error("encrypted DB field encode failed"))
+    }
+
+    fn decode_field_storage(
+        &self,
+        field_name: &str,
+        context: Option<&EncryptedRecordContext>,
+        stored: Bson,
+    ) -> Result<Bson> {
+        let Some(field) = self.fields.get(field_name) else {
+            return Ok(stored);
+        };
+        if field.storage == DbFieldStorageIr::Identity {
+            return Ok(stored);
+        }
+        let context = context.ok_or_else(|| db_decode_error("encrypted DB field decode failed"))?;
+        let cipher = self
+            .encryption_cipher
+            .as_ref()
+            .ok_or_else(|| db_decode_error("encrypted DB field decode failed"))?;
+        cipher
+            .decrypt_string(
+                DbEncryptedFieldContext {
+                    storage_service_id: &self.storage_service_id,
+                    collection_name: &self.collection_name,
+                    field_name,
+                    record_id: &context.record_id,
+                },
+                &stored,
+            )
+            .map(Bson::String)
+            .map_err(|_| db_decode_error("encrypted DB field decode failed"))
     }
 }
 
@@ -1167,7 +1418,7 @@ enum DbFieldUse {
     Projection,
     Predicate,
     Order,
-    Set,
+    WholeSet,
     PartialChange,
     Index,
 }
@@ -1178,7 +1429,7 @@ impl DbFieldUse {
             Self::Projection => "nested projection",
             Self::Predicate => "predicate",
             Self::Order => "order",
-            Self::Set => "partial set",
+            Self::WholeSet => "whole-field set",
             Self::PartialChange => "partial change",
             Self::Index => "index",
         }

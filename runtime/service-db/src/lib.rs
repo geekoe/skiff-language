@@ -71,9 +71,10 @@ use mongo::{
 pub use store::ServiceDbStore;
 pub type DbStore = ServiceDbStore;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServiceDbConfig {
     pub mongo_url: String,
+    pub encryption_cipher: Option<DbEncryptionCipher>,
 }
 
 #[derive(Debug)]
@@ -176,7 +177,10 @@ impl ServiceDbRuntime {
     ) -> Result<Self> {
         Self::new_with_config(
             service_id,
-            ServiceDbConfig { mongo_url },
+            ServiceDbConfig {
+                mongo_url,
+                encryption_cipher: None,
+            },
             runtime_program_db,
         )
     }
@@ -193,8 +197,10 @@ impl ServiceDbRuntime {
         Ok(Self {
             mongo_url,
             database_name,
-            metadata: Arc::new(ServiceDbMetadata::from_runtime_program_db(
+            metadata: Arc::new(ServiceDbMetadata::from_runtime_program_db_with_encryption(
                 runtime_program_db,
+                &service_id,
+                config.encryption_cipher,
             )?),
             client,
         })
@@ -445,13 +451,19 @@ impl ServiceDbRuntime {
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
         let cascade_paths = binding.immutable_file_paths_for_change(&change);
-        let update = binding.validated_change_update(type_name, change.clone())?;
+        let normalized = binding.normalize_one_selector(selector.clone())?;
+        let update = binding.validated_change_update_with_context(
+            type_name,
+            change.clone(),
+            normalized.encrypted_context(),
+        )?;
         if update.is_empty() {
             return self
                 .find_one_for_selector(binding, selector, None, session)
                 .await;
         }
-        let (filter, sort) = binding.selector_filter_sort(selector)?;
+        let filter = normalized.filter;
+        let sort = normalized.sort;
         let guarded_filter =
             guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
         let mut executor = self
@@ -547,6 +559,7 @@ impl ServiceDbRuntime {
         mut session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
         let cascade_paths = binding.immutable_file_paths_for_change(&change.wire_change);
+        let normalized = binding.normalize_one_selector(selector.clone())?;
         let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
         let mut root_store = CollectedRecoverableRootStore::default();
         let update = {
@@ -557,6 +570,7 @@ impl ServiceDbRuntime {
                 change.clone(),
                 heap,
                 Some(&mut write_context),
+                normalized.encrypted_context(),
             )?
         };
         if update.is_empty() {
@@ -564,12 +578,13 @@ impl ServiceDbRuntime {
                 .find_one_for_selector_runtime(binding, selector, None, heap, &context, session)
                 .await;
         }
+        let filter = normalized.filter;
+        let sort = normalized.sort;
         self.persist_recoverable_artifact_retention_roots(
             &root_store.roots,
             session.as_deref_mut(),
         )
         .await?;
-        let (filter, sort) = binding.selector_filter_sort(selector)?;
         let guarded_filter =
             guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
         let mut executor = self
@@ -697,7 +712,9 @@ impl ServiceDbRuntime {
         session: Option<&mut ClientSession>,
     ) -> Result<DbWriteResult> {
         let binding = self.metadata.collection_for_type(type_name)?;
-        let filter = binding.key_filter(&key)?;
+        let normalized = binding.normalize_one_selector(DbOneSelector::Key(key.clone()))?;
+        let encrypted_context = normalized.encrypted_context().cloned();
+        let filter = normalized.filter;
         let guarded_filter =
             guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
         let insert = binding.upsert_insert_value_with_key(insert, &key)?;
@@ -714,7 +731,7 @@ impl ServiceDbRuntime {
         for field in change.touched_fields() {
             insert_document.remove(skiff_runtime_boundary::db::top_level_field(field));
         }
-        let mut update = binding.change_update_document(&change)?;
+        let mut update = binding.change_update_document(&change, encrypted_context.as_ref())?;
         update.insert("$setOnInsert", Bson::Document(insert_document));
         let (inserted, value) = {
             let mut executor = self
@@ -827,13 +844,14 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         session: Option<&mut ClientSession>,
     ) -> Result<Option<DbDocument>> {
-        let key_selector = match &selector {
-            DbOneSelector::Key(key) => Some(key),
-            DbOneSelector::Query { .. } => None,
-        };
-        let mut replacement =
-            binding.replacement_document_from_business_value(value, key_selector)?;
-        let (filter, sort) = binding.selector_filter_sort(selector)?;
+        let normalized = binding.normalize_one_selector(selector)?;
+        let mut replacement = binding.replacement_document_from_business_value(
+            value,
+            normalized.normalized_key(),
+            normalized.encrypted_context(),
+        )?;
+        let filter = normalized.filter;
+        let sort = normalized.sort;
         let guarded_filter =
             guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
         let mut executor = self
@@ -937,32 +955,27 @@ impl ServiceDbRuntime {
         lease_guards: &[DbLeaseHold],
         mut session: Option<&mut ClientSession>,
     ) -> Result<Option<RuntimeValue>> {
-        let key_selector = match &selector {
-            DbOneSelector::Key(key) => Some(key),
-            DbOneSelector::Query { .. } => None,
-        };
+        let normalized = binding.normalize_one_selector(selector)?;
         let artifact_store = CurrentRequestRecoverableArtifactStore::new(&context);
         let mut root_store = CollectedRecoverableRootStore::default();
         let mut replacement = {
             let mut write_context =
                 recoverable_write_context(&context, &artifact_store, &mut root_store);
-            binding.document_from_runtime_business_value(value, heap, Some(&mut write_context))?
+            binding.replacement_document_from_runtime_business_value(
+                value,
+                heap,
+                Some(&mut write_context),
+                normalized.normalized_key(),
+                normalized.encrypted_context(),
+            )?
         };
-        if let Some(key_selector) = key_selector {
-            let create_key = binding.key_from_document(&replacement)?;
-            if &create_key != key_selector {
-                return Err(ServiceDbError::Decode(format!(
-                    "db replace value key field {} must match selected object",
-                    binding.key_field
-                )));
-            }
-        }
         self.persist_recoverable_artifact_retention_roots(
             &root_store.roots,
             session.as_deref_mut(),
         )
         .await?;
-        let (filter, sort) = binding.selector_filter_sort(selector)?;
+        let filter = normalized.filter;
+        let sort = normalized.sort;
         let guarded_filter =
             guarded_filter(binding, filter.clone(), lease_guards, service_db_now_ms())?;
         let mut executor = self
