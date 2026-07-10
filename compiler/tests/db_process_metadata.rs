@@ -500,6 +500,70 @@ packages:
 }
 
 #[test]
+fn package_db_projection_uses_package_metadata_for_source_field_access() {
+    let project = package_collection_mapping_project(
+        "package-db-projected-read",
+        r#"
+packages:
+  - id: skiff.run/http-session
+    version: 1.0.0
+    alias: httpSession
+    collection_name_mapping:
+      Session: registry_session
+"#,
+        "",
+    )
+    .write_source(
+        "internal/package_db_projection.skiff",
+        r#"
+        import std
+
+        function projectedSession(id: string) -> { id: string, token: string } {
+          const session = db require httpSession.session.Session(id) { fields { token } }
+          return { id: session.id, token: session.token }
+        }
+
+        function encodedSession(id: string) -> string {
+          const session = db require httpSession.session.Session(id) { fields { token } }
+          return std.json.encode(session)
+        }
+        "#,
+    );
+
+    build_temp_service_publication(project.root());
+}
+
+#[test]
+fn package_db_string_cursor_uses_package_target_field_type() {
+    let project = package_collection_mapping_project(
+        "package-db-string-cursor",
+        r#"
+packages:
+  - id: skiff.run/http-session
+    version: 1.0.0
+    alias: httpSession
+    collection_name_mapping:
+      Session: registry_session
+"#,
+        "",
+    )
+    .write_source(
+        "internal/package_db_cursor.skiff",
+        r#"
+        function sessionsAfter(lastId: string) -> Array<httpSession.session.Session> {
+          return db find many httpSession.session.Session {
+            where id > lastId
+            order id asc
+            limit 100
+          }
+        }
+        "#,
+    );
+
+    build_temp_service_publication(project.root());
+}
+
+#[test]
 fn package_collection_name_mapping_is_validated_against_package_metadata() {
     for (name, packages_yaml, service_db, expected) in [
         (
@@ -885,6 +949,31 @@ fn encrypted_storage_allows_projection_full_writes_and_key_selector_set() {
         "service",
     )
     .expect("encrypted full writes, projection, and key update should compile");
+}
+
+#[test]
+fn string_primary_key_cursor_comparison_compiles_through_db_lowering() {
+    compile_source_file_ir_artifact(
+        r#"
+            type Credential { id: string, apiKey: string }
+            db object Credential {
+              primary key(id)
+              storage apiKey using encrypted
+            }
+
+            function scan(lastId: string) -> Array<Credential> {
+                return db find many Credential {
+                  where id > lastId
+                  order id asc
+                  limit 100
+                }
+            }
+        "#,
+        "internal/string_cursor.skiff",
+        "internal.string_cursor",
+        "service",
+    )
+    .expect("string primary-key cursor should compile through DB lowering");
 }
 
 #[test]

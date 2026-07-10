@@ -31,6 +31,7 @@ const SCRIPT_SYNTAX_CHECK_FILES = [
   'scripts/check-crate-public-api.mjs',
   'scripts/check-skiff-source-layout.mjs',
   'scripts/check-package-store-discovery.mjs',
+  'scripts/check-db-encrypted-storage-live.mjs',
   'scripts/build-runtime-stack.mjs',
   'scripts/deploy-runtime-stack.mjs',
   'scripts/lib/cargo-target-dir.mjs',
@@ -206,6 +207,12 @@ function unitPhases(unit) {
       ];
     case 'runtime-live':
       return runtimeLivePhases();
+    case 'db-encrypted-storage-live':
+      return [{
+        name: 'db-encrypted-storage-live:isolated-managed-instance',
+        command: 'node',
+        args: ['scripts/check-db-encrypted-storage-live.mjs'],
+      }];
     default:
       throw new Error(`unknown test unit ${unit.name}`);
   }
@@ -277,10 +284,11 @@ function expandTestSelector(rawOnly) {
     case 'scripts':
     case 'vscode':
     case 'runtime-live':
+    case 'db-encrypted-storage-live':
       return [unit(rawOnly)];
     default:
       throw new Error(
-        `invalid --only ${rawOnly}; expected all, build, support, rs, ts, artifact-model, compiler, runtime, router, telemetry, test-runner, operation-abi-identity, scripts, vscode, or runtime-live`,
+        `invalid --only ${rawOnly}; expected all, build, support, rs, ts, artifact-model, compiler, runtime, router, telemetry, test-runner, operation-abi-identity, scripts, vscode, runtime-live, or db-encrypted-storage-live`,
       );
   }
 }
@@ -436,5 +444,6 @@ selectors:
   ts              router, telemetry
   artifact-model  compiler  runtime  router  telemetry  test-runner  operation-abi-identity  scripts  vscode
   runtime-live    explicit live runtime fixtures; requires --runtime-live-config or SKIFF_RUNTIME_LIVE_CONFIG
+  db-encrypted-storage-live  isolated managed Mongo/runtime/keyring encryption and rotation live test
 `);
 }

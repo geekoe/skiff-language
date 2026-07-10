@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::file_ir::DbProjectionIr;
 use skiff_compiler_core::package_export_resolver::PackageExportResolver;
 use skiff_compiler_source::{
     type_text_with_args, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel, SourceSymbolKey,
@@ -14,7 +13,7 @@ use skiff_syntax::{
 };
 
 use super::db_lowering::{
-    db_field_path_ir, db_lease_read_result_type_text, db_operation_result_type_text_no_db,
+    db_lease_read_result_type_text, db_operation_result_type_text_without_metadata,
 };
 use super::function_lowering::{expr_path, is_builtin_call_root};
 use super::type_lowering::{bare_type_name, type_root};
@@ -672,16 +671,7 @@ impl SuspendContext<'_, '_> {
             | Expr::Catch { .. }
             | Expr::DbQuery(_) => None,
             Expr::DbOperation(operation) => {
-                let projection = operation
-                    .projection
-                    .as_ref()
-                    .map(|projection| DbProjectionIr {
-                        fields: projection.fields.iter().map(db_field_path_ir).collect(),
-                    });
-                Some(db_operation_result_type_text_no_db(
-                    operation,
-                    projection.as_ref(),
-                ))
+                db_operation_result_type_text_without_metadata(operation)
             }
             Expr::DbTransaction(transaction) => match transaction.mode {
                 DbBlockMode::Effect => Some("null".to_string()),
@@ -879,4 +869,64 @@ fn type_roots_match(declared: &str, actual: &str) -> bool {
         return false;
     }
     bare_type_name(declared_root) == bare_type_name(actual_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_syntax::parser::parse_source;
+
+    #[test]
+    fn missing_expression_facts_do_not_invent_full_type_for_projected_db_read() {
+        let ast = parse_source(
+            r#"
+              function projected(id: string) -> void {
+                const credential = db require Credential(id) { fields { label } }
+              }
+
+              function full(id: string) -> void {
+                const credential = db require Credential(id)
+              }
+            "#,
+        )
+        .expect("test source should parse");
+        let package_aliases = BTreeMap::new();
+        let service_dependency_aliases = BTreeSet::new();
+        let analyzer = SuspendAnalyzer::new(
+            &ast,
+            "test.db_projection",
+            &package_aliases,
+            &service_dependency_aliases,
+            None,
+        );
+        let values = BTreeMap::new();
+        let context = SuspendContext {
+            analyzer: &analyzer,
+            values: &values,
+            env: SuspendTypeEnv::default(),
+            owner: ExpressionOwnerKey::Function("projected".to_string()),
+            next_expression_index: 0,
+        };
+
+        let projected = let_value(&ast.functions[0].body.statements[0]);
+        assert_eq!(
+            context.legacy_expr_type_for_missing_facts(projected),
+            None,
+            "a projected DB read cannot be typed without DB field metadata"
+        );
+
+        let full = let_value(&ast.functions[1].body.statements[0]);
+        assert_eq!(
+            context.legacy_expr_type_for_missing_facts(full),
+            Some("Credential".to_string()),
+            "legacy nominal typing remains available for an unprojected DB read"
+        );
+    }
+
+    fn let_value(stmt: &Stmt) -> &Expr {
+        let Stmt::Let { value, .. } = stmt else {
+            panic!("expected let statement, got {stmt:?}");
+        };
+        value
+    }
 }

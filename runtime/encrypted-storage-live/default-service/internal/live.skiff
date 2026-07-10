@@ -1,0 +1,370 @@
+import std
+
+type Credential {
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+  sequence: number,
+}
+
+db object Credential {
+  primary key(id)
+  storage apiKey using encrypted
+  storage refreshToken using encrypted
+}
+
+type CredentialArchive {
+  id: string,
+  apiKey: string,
+  label: string,
+  sequence: number,
+}
+
+db object CredentialArchive {
+  primary key(id)
+  storage apiKey using encrypted
+}
+
+type RotationBarrier {
+  id: string,
+  token: string,
+  active: bool,
+}
+
+db object RotationBarrier {
+  primary key(id)
+}
+
+type IdentityDateRecord {
+  id: string,
+  note: string,
+  recordedAt: Date,
+}
+
+db object IdentityDateRecord {
+  primary key(id)
+}
+
+type CredentialInput {
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+  sequence: number,
+}
+
+type InsertManyInput {
+  prefix: string,
+  apiKey: string,
+  refreshToken: string,
+  startSequence: number,
+}
+
+type BulkCredentialInput {
+  rows: Array<Credential>,
+}
+
+type ArchiveInput {
+  id: string,
+  apiKey: string,
+  label: string,
+  sequence: number,
+}
+
+type CredentialBatchInput {
+  rows: Array<Credential>,
+}
+
+type ArchiveBatchInput {
+  rows: Array<CredentialArchive>,
+}
+
+type IdInput {
+  id: string,
+}
+
+type ReplaceQueryInput {
+  matchLabel: string,
+  id: string,
+  apiKey: string,
+  refreshToken: string,
+  label: string,
+  sequence: number,
+}
+
+type ScanInput {
+  lastId: string,
+}
+
+type BarrierInput {
+  token: string,
+}
+
+type BarrierStatus {
+  active: bool,
+}
+
+type IdentityDateInput {
+  id: string,
+  note: string,
+  recordedAt: string,
+}
+
+type IdentityDateOutput {
+  id: string,
+  note: string,
+  recordedAt: string,
+}
+
+function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  return null
+}
+
+function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  const barrier = db find RotationBarrier("encrypted-storage-live")
+  if barrier == null || !barrier.active {
+    return null
+  }
+  const provided = std.http.header(request, "x-skiff-rotation-token")
+  if provided != null && provided == barrier.token {
+    return null
+  }
+  return std.http.errorResponse(423, "rotation_writer_barrier", "rotation writer barrier is active", null)
+}
+
+function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<BarrierInput>(request)
+  const result = db upsert RotationBarrier("encrypted-storage-live") {
+    token = input.token
+    active = true
+  } {
+    token = input.token
+    active = true
+  }
+  return std.http.json(200, BarrierStatus { active: result.value.active })
+}
+
+function barrierStatus(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const barrier = db find RotationBarrier("encrypted-storage-live")
+  return std.http.json(200, BarrierStatus { active: barrier != null && barrier.active })
+}
+
+function insertArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ArchiveInput>(request)
+  const row = db insert CredentialArchive {
+    id = input.id
+    apiKey = input.apiKey
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function readArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  return std.http.json(200, db require CredentialArchive(input.id))
+}
+
+function scanArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<ScanInput>(request)
+  const rows = db find many CredentialArchive { where id > input.lastId order id asc limit 100 }
+  return std.http.json(200, rows)
+}
+
+function rewriteArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ArchiveInput>(request)
+  const row = db update CredentialArchive(input.id) { apiKey = input.apiKey }
+  return std.http.json(200, row)
+}
+
+function rewriteArchiveBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ArchiveBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update CredentialArchive(row.id) { apiKey = row.apiKey }
+    }
+  }
+  return std.http.json(200, input.rows)
+}
+
+function restoreArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ArchiveInput>(request)
+  const row = db update CredentialArchive(input.id) {
+    apiKey = input.apiKey
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db insert Credential {
+    id = input.id
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function insertMany(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<InsertManyInput>(request)
+  const rows = Array.empty<Credential>()
+  rows.push(Credential {
+    id: input.prefix.concat("-a"),
+    apiKey: input.apiKey,
+    refreshToken: input.refreshToken,
+    label: "many-a",
+    sequence: input.startSequence,
+  })
+  rows.push(Credential {
+    id: input.prefix.concat("-b"),
+    apiKey: input.apiKey,
+    refreshToken: input.refreshToken,
+    label: "many-b",
+    sequence: input.startSequence + 1,
+  })
+  const result = db insert many Credential values rows
+  return std.http.json(200, result)
+}
+
+function insertBulk(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<BulkCredentialInput>(request)
+  const result = db insert many Credential values input.rows
+  return std.http.json(200, result)
+}
+
+function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  return std.http.json(200, db require Credential(input.id))
+}
+
+function projectOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<IdInput>(request)
+  const row = db require Credential(input.id) { fields { apiKey, refreshToken } }
+  return std.http.json(200, row)
+}
+
+function replaceByKey(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db replace Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function replaceByQuery(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<ReplaceQueryInput>(request)
+  const row = db replace Credential { where label == input.matchLabel } {
+    id = input.id
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function upsertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const result = db upsert Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  } {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, result.value)
+}
+
+function updateOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+    label = input.label
+    sequence = input.sequence
+  }
+  return std.http.json(200, row)
+}
+
+function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const input = std.http.decodeJson<ScanInput>(request)
+  const rows = db find many Credential { where id > input.lastId order id asc limit 100 }
+  return std.http.json(200, rows)
+}
+
+function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialInput>(request)
+  const row = db update Credential(input.id) {
+    apiKey = input.apiKey
+    refreshToken = input.refreshToken
+  }
+  return std.http.json(200, row)
+}
+
+function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<CredentialBatchInput>(request)
+  db transaction {
+    for row in input.rows {
+      db update Credential(row.id) {
+        apiKey = row.apiKey
+        refreshToken = row.refreshToken
+      }
+    }
+  }
+  return std.http.json(200, input.rows)
+}
+
+function identityDate(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  const blocked = writerBarrier(request)
+  if blocked != null { return blocked }
+  const input = std.http.decodeJson<IdentityDateInput>(request)
+  const inserted = db insert IdentityDateRecord {
+    id = input.id
+    note = input.note
+    recordedAt = Date.requireParse(input.recordedAt)
+  }
+  const row = db require IdentityDateRecord(inserted.id)
+  return std.http.json(200, IdentityDateOutput {
+    id: row.id,
+    note: row.note,
+    recordedAt: row.recordedAt.toISOString(),
+  })
+}

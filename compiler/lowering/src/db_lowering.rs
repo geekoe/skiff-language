@@ -9,6 +9,7 @@ use crate::file_ir::{
     DbTargetIr, DbTransactionIr, ExprIr, ExprRefIr, FieldPathIr, FileIrUnit, FunctionTypeParamIr,
     LiteralIr, MetadataValue, ServiceSymbolRef, SlotKind, StmtIr, TypeDescriptorIr, TypeRefIr,
 };
+use skiff_compiler_core::db_projection::project_db_read_type;
 use skiff_compiler_source::{
     semantic::DbAttachmentIndex, LocalDbObjectIndex, PublicationDbMetadata,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, SourceSymbolKey,
@@ -639,15 +640,21 @@ pub(super) fn is_db_readonly_result_operation(operation: &DbOperation) -> bool {
         ) && !operation.many
 }
 
-/// Variant used from `suspend_analysis` where the db metadata is never available.
-pub(super) fn db_operation_result_type_text_no_db(
+/// Best-effort DB operation typing for callers that do not have DB metadata.
+///
+/// A projected read has a structural result type derived from DB field metadata,
+/// so using the nominal target here would invent a wider type than the expression
+/// actually returns.
+pub(super) fn db_operation_result_type_text_without_metadata(
     operation: &DbOperation,
-    projection: Option<&DbProjectionIr>,
-) -> String {
-    db_operation_result_type_text(operation, projection, None)
+) -> Option<String> {
+    operation
+        .projection
+        .is_none()
+        .then(|| db_operation_result_type_text(operation, None, None))
 }
 
-pub(super) fn db_operation_result_type_text(
+fn db_operation_result_type_text(
     operation: &DbOperation,
     projection: Option<&DbProjectionIr>,
     db: Option<&DbMetadataIr>,
@@ -721,179 +728,35 @@ fn db_read_result_type_ir(
     full_target: TypeRefIr,
     projection: Option<&DbProjectionIr>,
 ) -> Result<TypeRefIr> {
-    let Some(projection) = projection else {
-        return Ok(full_target);
-    };
-    let mut root = ProjectionTypeNode::default();
-    for field in &projection.fields {
-        insert_projection_type_path(&mut root, &field.segments, db)?;
-    }
-    Ok(TypeRefIr::Record {
-        fields: root
-            .children
-            .into_iter()
-            .map(|(name, node)| {
-                let ty = db
-                    .field_types
-                    .get(&name)
-                    .expect("projection lowering validates top-level DB fields");
-                Ok((name.clone(), projection_node_type(db, &name, ty, &node)?))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?,
-    })
-}
-
-#[derive(Debug, Default)]
-struct ProjectionTypeNode {
-    terminal: bool,
-    children: BTreeMap<String, ProjectionTypeNode>,
-}
-
-fn insert_projection_type_path(
-    root: &mut ProjectionTypeNode,
-    segments: &[String],
-    db: &DbMetadataIr,
-) -> Result<()> {
-    let Some(first) = segments.first() else {
-        return Err(CompileError::Semantic(format!(
-            "db projection field path on {} cannot be empty",
-            db.type_name
-        )));
-    };
-    if !db.fields.contains(first) {
-        return Err(CompileError::Semantic(format!(
-            "db projection references unknown field `{first}` on {}",
-            db.type_name
-        )));
-    }
-    let text = segments.join(".");
-    let mut node = root;
-    for (index, segment) in segments.iter().enumerate() {
-        if node.terminal {
-            let parent = segments[..index].join(".");
-            return Err(CompileError::Semantic(format!(
-                "db projection cannot include both `{parent}` and child path `{text}` on {}",
-                db.type_name
-            )));
-        }
-        node = node.children.entry(segment.clone()).or_default();
-    }
-    if node.terminal {
-        return Err(CompileError::Semantic(format!(
-            "duplicate db projection field `{text}` on {}",
-            db.type_name
-        )));
-    }
-    if !node.children.is_empty() {
-        let child = first_projection_child_path(segments, node);
-        return Err(CompileError::Semantic(format!(
-            "db projection cannot include both `{text}` and child path `{child}` on {}",
-            db.type_name
-        )));
-    }
-    node.terminal = true;
-    Ok(())
-}
-
-fn first_projection_child_path(parent: &[String], node: &ProjectionTypeNode) -> String {
-    let mut path = parent.to_vec();
-    let mut current = node;
-    while let Some((name, next)) = current.children.iter().next() {
-        path.push(name.clone());
-        current = next;
-    }
-    path.join(".")
-}
-
-fn projection_node_type(
-    db: &DbMetadataIr,
-    path: &str,
-    ty: &TypeRefIr,
-    node: &ProjectionTypeNode,
-) -> Result<TypeRefIr> {
-    if node.terminal {
-        return Ok(ty.clone());
-    }
-    let (inner, nullable) = unwrap_nullable_type(ty);
-    let TypeRefIr::Record { fields } = inner else {
-        let attempted_path = first_projection_child_type_path(path, node);
-        return Err(CompileError::Semantic(format!(
-            "db projection field `{attempted_path}` on {} cannot traverse non-record type",
-            db.type_name
-        )));
-    };
-    let projected = TypeRefIr::Record {
-        fields: node
-            .children
+    let projection_paths = projection.map(|projection| {
+        projection
+            .fields
             .iter()
-            .map(|(name, child)| {
-                let child_path = format!("{path}.{name}");
-                let Some(child_ty) = fields.get(name) else {
-                    return Err(CompileError::Semantic(format!(
-                        "db projection references unknown field `{child_path}` on {}",
-                        db.type_name
-                    )));
-                };
-                Ok((
-                    name.clone(),
-                    projection_node_type(db, &child_path, child_ty, child)?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?,
-    };
-    if nullable {
-        Ok(TypeRefIr::Nullable {
-            inner: Box::new(projected),
-        })
-    } else {
-        Ok(projected)
-    }
-}
-
-fn first_projection_child_type_path(parent: &str, node: &ProjectionTypeNode) -> String {
-    let mut path = vec![parent.to_string()];
-    let mut current = node;
-    while let Some((name, next)) = current.children.iter().next() {
-        path.push(name.clone());
-        current = next;
-    }
-    path.join(".")
-}
-
-fn unwrap_nullable_type(ty: &TypeRefIr) -> (&TypeRefIr, bool) {
-    match ty {
-        TypeRefIr::Nullable { inner } => (inner, true),
-        _ => (ty, false),
-    }
+            .map(|field| field.segments.clone())
+            .collect::<Vec<_>>()
+    });
+    project_db_read_type(
+        &db.type_name,
+        &db.key.name,
+        full_target,
+        &db.field_types,
+        projection_paths.as_deref(),
+    )
+    .map_err(CompileError::Semantic)
 }
 
 fn db_read_result_type_text(db: &DbMetadataIr, projection: Option<&DbProjectionIr>) -> String {
     let Some(projection) = projection else {
         return db_full_result_type_text(db);
     };
-    db_read_result_type_ir(db, TypeRefIr::native(&db.type_name), Some(projection))
-        .map(|ty| type_ref_ir_type_text(&ty))
-        .unwrap_or_else(|_| projection_record_type_text_legacy(db, projection))
+    type_ref_ir_type_text(
+        &db_read_result_type_ir(db, TypeRefIr::native(&db.type_name), Some(projection))
+            .expect("validated DB projection must have a result type"),
+    )
 }
 
 fn db_full_result_type_text(db: &DbMetadataIr) -> String {
     db.type_name.clone()
-}
-
-fn projection_record_type_text_legacy(db: &DbMetadataIr, projection: &DbProjectionIr) -> String {
-    let fields = projection
-        .fields
-        .iter()
-        .filter_map(|field| {
-            field
-                .segments
-                .first()
-                .and_then(|name| db.field_type_texts.get(name).map(|ty| (name, ty)))
-        })
-        .map(|(name, ty)| format!("{name}: {ty}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{{ {fields} }}")
 }
 
 pub(super) fn db_query_type_ref(object: TypeRefIr) -> TypeRefIr {
@@ -1399,27 +1262,13 @@ impl<'a> FunctionLowerer<'a> {
         projection: &skiff_syntax::ast::DbProjection,
     ) -> Result<DbProjectionIr> {
         let mut fields = Vec::new();
-        let mut seen = ProjectionPathSet::default();
         for field in &projection.fields {
             let field = db_field_path_ir(field);
-            let Some(name) = field.segments.first() else {
-                return Err(CompileError::Semantic(format!(
-                    "db projection field path on {} cannot be empty",
-                    db.type_name
-                )));
-            };
-            if !db.fields.contains(name) {
-                return Err(CompileError::Semantic(format!(
-                    "db projection references unknown field `{name}` on {}",
-                    db.type_name
-                )));
-            }
             db.validate_storage_field_use(
                 &field.segments,
                 DbFieldUse::Projection,
                 DbSelectorKind::UnknownRecordKey,
             )?;
-            seen.insert(&field, db)?;
             fields.push(field);
         }
         if !fields
@@ -2042,42 +1891,6 @@ fn parent_child_db_paths<'a>(
 fn is_parent_db_path(parent: &FieldPath, child: &FieldPath) -> bool {
     parent.segments.len() < child.segments.len()
         && child.segments.starts_with(parent.segments.as_slice())
-}
-
-#[derive(Default)]
-struct ProjectionPathSet {
-    paths: Vec<FieldPathIr>,
-}
-
-impl ProjectionPathSet {
-    fn insert(&mut self, field: &FieldPathIr, db: &DbMetadataIr) -> Result<()> {
-        for existing in &self.paths {
-            if existing.segments == field.segments {
-                return Err(CompileError::Semantic(format!(
-                    "duplicate db projection field `{}` on {}",
-                    field.text, db.type_name
-                )));
-            }
-            if existing.segments.len() < field.segments.len()
-                && field.segments.starts_with(existing.segments.as_slice())
-            {
-                return Err(CompileError::Semantic(format!(
-                    "db projection cannot include both `{}` and child path `{}` on {}",
-                    existing.text, field.text, db.type_name
-                )));
-            }
-            if field.segments.len() < existing.segments.len()
-                && existing.segments.starts_with(field.segments.as_slice())
-            {
-                return Err(CompileError::Semantic(format!(
-                    "db projection cannot include both `{}` and child path `{}` on {}",
-                    field.text, existing.text, db.type_name
-                )));
-            }
-        }
-        self.paths.push(field.clone());
-        Ok(())
-    }
 }
 
 fn is_numeric_db_field(ty: &TypeRefIr) -> bool {

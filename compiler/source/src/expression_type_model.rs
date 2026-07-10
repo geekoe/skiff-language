@@ -19,13 +19,15 @@ use crate::{
 };
 
 use super::{
-    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap,
+    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, PublicationDbMetadataIndex,
     RemotePublicInstanceOperationProjection, RemotePublicInstanceOperationResolver,
     ResolvedDependencies, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 
+mod db_projection;
 mod expression_assignability;
 
+use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
 
 #[derive(Clone, Debug, Default)]
@@ -191,6 +193,7 @@ struct OwnerChecker<'a> {
     owner: ExpressionOwnerKey,
     next_index: u32,
     type_resolution: &'a TypeResolutionModel,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
     expression_sources: &'a ExpressionSourceMap,
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
@@ -212,6 +215,7 @@ impl ExpressionTypeModel {
         parsed_sources: &[ParsedCompilerSource],
         expression_sources: &ExpressionSourceMap,
         type_resolution: &TypeResolutionModel,
+        publication_db_metadata: &PublicationDbMetadataIndex,
         dependencies: Option<&ResolvedDependencies>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
@@ -230,6 +234,7 @@ impl ExpressionTypeModel {
                 parsed.ast(),
                 expression_sources,
                 type_resolution,
+                publication_db_metadata,
                 &callable_signatures,
                 remote_public_instances.clone(),
                 &mut facts,
@@ -321,6 +326,7 @@ fn check_source(
     ast: &SourceFile,
     expression_sources: &ExpressionSourceMap,
     type_resolution: &TypeResolutionModel,
+    publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
@@ -348,6 +354,7 @@ fn check_source(
             &[],
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             &const_env,
@@ -375,6 +382,7 @@ fn check_source(
                 &inherited,
                 expression_sources,
                 type_resolution,
+                publication_db_metadata,
                 callable_signatures,
                 remote_public_instances,
                 &const_env,
@@ -395,6 +403,7 @@ fn check_source(
             BTreeMap::new(),
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             None,
@@ -425,6 +434,7 @@ fn check_source(
             const_env.clone(),
             expression_sources,
             type_resolution,
+            publication_db_metadata,
             callable_signatures,
             remote_public_instances,
             None,
@@ -452,6 +462,7 @@ fn check_source(
                     env,
                     expression_sources,
                     type_resolution,
+                    publication_db_metadata,
                     callable_signatures,
                     remote_public_instances,
                     None,
@@ -503,6 +514,7 @@ fn check_function_owner(
     inherited_type_params: &[String],
     expression_sources: &ExpressionSourceMap,
     type_resolution: &TypeResolutionModel,
+    publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
     remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     const_env: &BTreeMap<String, ResolvedTypeRef>,
@@ -539,6 +551,7 @@ fn check_function_owner(
         env,
         expression_sources,
         type_resolution,
+        publication_db_metadata,
         callable_signatures,
         remote_public_instances,
         Some(function.return_type.clone()),
@@ -561,6 +574,7 @@ impl<'a> OwnerChecker<'a> {
         env: BTreeMap<String, ResolvedTypeRef>,
         expression_sources: &'a ExpressionSourceMap,
         type_resolution: &'a TypeResolutionModel,
+        publication_db_metadata: &'a PublicationDbMetadataIndex,
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
         remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
         return_type: Option<TypeRef>,
@@ -581,6 +595,7 @@ impl<'a> OwnerChecker<'a> {
             owner,
             next_index: 0,
             type_resolution,
+            publication_db_metadata,
             expression_sources,
             callable_signatures,
             remote_public_instances,
@@ -1055,17 +1070,26 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
-        self.check_expr_with_field_diagnostics(expr, true)
+        self.check_expr_with_field_diagnostics(expr, true, None)
     }
 
     fn check_callee_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
-        self.check_expr_with_field_diagnostics(expr, false)
+        self.check_expr_with_field_diagnostics(expr, false, None)
+    }
+
+    fn check_db_predicate_expr(
+        &mut self,
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        self.check_expr_with_field_diagnostics(expr, true, Some(fields))
     }
 
     fn check_expr_with_field_diagnostics(
         &mut self,
         expr: &Expr,
         diagnose_unknown_field: bool,
+        db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
     ) -> Option<ResolvedTypeRef> {
         let key = self.next_key();
         let refined_ty = expr_path(expr).and_then(|path| self.path_refinements.get(&path).cloned());
@@ -1106,23 +1130,53 @@ impl<'a> OwnerChecker<'a> {
                 None
             }
             Expr::Binary { op, left, right } => {
-                let left_ty = self.check_expr(left);
-                let right_ty = match op {
-                    BinaryOp::And => {
-                        let narrowing = self.condition_narrowings(left).when_true;
-                        self.check_expr_scoped(right, &narrowing)
-                    }
-                    BinaryOp::Or => {
-                        let narrowing = self.condition_narrowings(left).when_false;
-                        self.check_expr_scoped(right, &narrowing)
-                    }
-                    _ => self.check_expr(right),
+                let db_relational = db_predicate_fields.is_some()
+                    && matches!(
+                        op,
+                        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+                    );
+                let db_logical =
+                    db_predicate_fields.is_some() && matches!(op, BinaryOp::And | BinaryOp::Or);
+                let db_field_relational = db_relational
+                    && db_predicate_fields
+                        .is_some_and(|fields| Self::is_db_field_operand(left, fields));
+                let left_ty = if db_field_relational {
+                    self.check_db_field_operand(left, db_predicate_fields.expect("checked above"))
+                } else if db_logical {
+                    self.check_db_predicate_expr(left, db_predicate_fields.expect("checked above"))
+                } else {
+                    self.check_expr(left)
                 };
-                self.check_binary_operands(&key, *op, left_ty.as_ref(), right_ty.as_ref());
+                let right_ty = if db_logical {
+                    self.check_db_predicate_expr(right, db_predicate_fields.expect("checked above"))
+                } else {
+                    match op {
+                        BinaryOp::And => {
+                            let narrowing = self.condition_narrowings(left).when_true;
+                            self.check_expr_scoped(right, &narrowing)
+                        }
+                        BinaryOp::Or => {
+                            let narrowing = self.condition_narrowings(left).when_false;
+                            self.check_expr_scoped(right, &narrowing)
+                        }
+                        _ => self.check_expr(right),
+                    }
+                };
+                self.check_binary_operands(
+                    &key,
+                    *op,
+                    left_ty.as_ref(),
+                    right_ty.as_ref(),
+                    db_field_relational,
+                );
                 self.binary_type(*op, left_ty.as_ref(), right_ty.as_ref())
             }
             Expr::Unary { op, expr } => {
-                let operand_ty = self.check_expr(expr);
+                let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
+                    self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
+                } else {
+                    self.check_expr(expr)
+                };
                 self.check_unary_operand(&key, *op, operand_ty.as_ref());
                 self.unary_type(*op)
             }
@@ -1309,7 +1363,7 @@ impl<'a> OwnerChecker<'a> {
                 self.db_operation_type(operation)
             }
             Expr::DbQuery(query) => {
-                self.check_db_query_block(&query.query);
+                self.check_db_query_block(&query.query, &query.target);
                 self.db_query_type(&query.target)
             }
             Expr::DbTransaction(transaction) => {
@@ -1603,10 +1657,10 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_db_operation_children(&mut self, operation: &crate::shared::ast::DbOperation) {
         if let Some(selector) = &operation.selector {
-            self.check_db_selector(selector);
+            self.check_db_selector(selector, &operation.target);
         }
         if let Some(query) = operation.independent_query() {
-            self.check_db_query_block(query);
+            self.check_db_query_block(query, &operation.target);
         }
         if let Some(body) = &operation.body {
             self.check_db_body(body);
@@ -1629,27 +1683,27 @@ impl<'a> OwnerChecker<'a> {
         }
     }
 
-    fn check_db_selector(&mut self, selector: &DbSelector) {
+    fn check_db_selector(&mut self, selector: &DbSelector, target: &TypeRef) {
         match selector {
             DbSelector::Key { value } => {
                 self.check_expr(value);
             }
-            DbSelector::Query { query } => self.check_db_query_block(query),
+            DbSelector::Query { query } => self.check_db_query_block(query, target),
         }
     }
 
-    fn check_db_query_block(&mut self, query: &DbQueryBlock) {
+    fn check_db_query_block(&mut self, query: &DbQueryBlock, target: &TypeRef) {
         for clause in &query.where_clauses {
             match clause {
                 DbWhereClause::Predicate { predicate } => {
-                    self.check_condition(predicate, "db where predicate");
+                    self.check_db_predicate(predicate, target);
                 }
                 DbWhereClause::Conditional {
                     condition,
                     predicate,
                 } => {
                     self.check_condition(condition, "db where condition");
-                    self.check_condition(predicate, "db where predicate");
+                    self.check_db_predicate(predicate, target);
                 }
             }
         }
@@ -1662,6 +1716,78 @@ impl<'a> OwnerChecker<'a> {
         if let Some(after) = &query.after {
             self.check_expr(after);
         }
+    }
+
+    fn check_db_predicate(&mut self, predicate: &Expr, target: &TypeRef) {
+        let fields = self
+            .type_resolution
+            .resolve_constructor_target_text(&target.name, &self.type_context)
+            .map(|target| target.fields)
+            .unwrap_or_default();
+        let actual = self.check_db_predicate_expr(predicate, &fields);
+        let (Some(actual), Some(expected)) = (actual, self.resolve_builtin("bool")) else {
+            return;
+        };
+        if !self
+            .type_resolution
+            .assignable_in_context(&actual, &expected, &self.type_context)
+        {
+            self.diagnostics.push(format!(
+                "{}: db where predicate type mismatch at {}: expected bool, found {}",
+                self.module_path,
+                self.current_expression_span_label(),
+                actual.source_text
+            ));
+        }
+    }
+
+    fn check_db_field_operand(
+        &mut self,
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        let Some(root) = Self::db_field_operand_root(expr, fields) else {
+            return self.check_expr(expr);
+        };
+        let target_type = fields
+            .get(&root)
+            .expect("DB field operand root must come from target fields")
+            .clone();
+        let previous_env = self.env.insert(root.clone(), target_type);
+        let descendant_prefix = format!("{root}.");
+        let conflicting_paths = self
+            .path_refinements
+            .keys()
+            .filter(|path| *path == &root || path.starts_with(&descendant_prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        let previous_refinements = conflicting_paths
+            .into_iter()
+            .filter_map(|path| self.path_refinements.remove(&path).map(|ty| (path, ty)))
+            .collect::<Vec<_>>();
+        let ty = self.check_expr(expr);
+        if let Some(previous_env) = previous_env {
+            self.env.insert(root.clone(), previous_env);
+        } else {
+            self.env.remove(&root);
+        }
+        for (path, ty) in previous_refinements {
+            self.path_refinements.insert(path, ty);
+        }
+        ty
+    }
+
+    fn is_db_field_operand(expr: &Expr, fields: &BTreeMap<String, ResolvedTypeRef>) -> bool {
+        Self::db_field_operand_root(expr, fields).is_some()
+    }
+
+    fn db_field_operand_root(
+        expr: &Expr,
+        fields: &BTreeMap<String, ResolvedTypeRef>,
+    ) -> Option<String> {
+        expr_path(expr)
+            .and_then(|path| path.split('.').next().map(str::to_string))
+            .filter(|root| fields.contains_key(root))
     }
 
     fn check_db_body(&mut self, body: &DbBody) {
@@ -1774,6 +1900,7 @@ impl<'a> OwnerChecker<'a> {
         op: BinaryOp,
         left: Option<&ResolvedTypeRef>,
         right: Option<&ResolvedTypeRef>,
+        db_field_relational: bool,
     ) {
         match op {
             BinaryOp::Add if self.operands_string_concat(left, right) => {}
@@ -1782,6 +1909,9 @@ impl<'a> OwnerChecker<'a> {
                 self.check_operand_assignable(key, "binary arithmetic operand", right, "number");
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                if db_field_relational && self.operands_both_assignable_to(left, right, "string") {
+                    return;
+                }
                 self.check_operand_assignable(key, "binary comparison operand", left, "number");
                 self.check_operand_assignable(key, "binary comparison operand", right, "number");
             }
@@ -1827,6 +1957,24 @@ impl<'a> OwnerChecker<'a> {
             self.type_resolution
                 .assignable_in_context(right, &expected, &self.type_context)
         })
+    }
+
+    fn operands_both_assignable_to(
+        &self,
+        left: Option<&ResolvedTypeRef>,
+        right: Option<&ResolvedTypeRef>,
+        expected_builtin: &str,
+    ) -> bool {
+        let (Some(left), Some(right), Some(expected)) =
+            (left, right, self.resolve_builtin(expected_builtin))
+        else {
+            return false;
+        };
+        self.type_resolution
+            .assignable_in_context(left, &expected, &self.type_context)
+            && self
+                .type_resolution
+                .assignable_in_context(right, &expected, &self.type_context)
     }
 
     fn check_unary_operand(
@@ -2472,18 +2620,14 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn db_operation_type(
-        &self,
+        &mut self,
         operation: &crate::shared::ast::DbOperation,
     ) -> Option<ResolvedTypeRef> {
         let target = self
             .type_resolution
             .resolve_type_ref(&operation.target, &self.type_context)
             .ok()?;
-        let read = if operation.projection.is_some() {
-            projection_record_type("ReadonlyProjectionRecord", &target)
-        } else {
-            target.clone()
-        };
+        let read = self.db_read_type(operation, &target)?;
         match operation.op {
             crate::shared::ast::DbOperationKind::Find if operation.many => Some(array_type(read)),
             crate::shared::ast::DbOperationKind::Find
@@ -2507,6 +2651,35 @@ impl<'a> OwnerChecker<'a> {
             crate::shared::ast::DbOperationKind::Delete
             | crate::shared::ast::DbOperationKind::Exists => self.resolve_builtin("bool"),
             crate::shared::ast::DbOperationKind::Count => self.resolve_builtin("number"),
+        }
+    }
+
+    fn db_read_type(
+        &mut self,
+        operation: &crate::shared::ast::DbOperation,
+        target: &ResolvedTypeRef,
+    ) -> Option<ResolvedTypeRef> {
+        let Some(projection) = operation.projection.as_ref() else {
+            return Some(target.clone());
+        };
+        let paths = projection
+            .fields
+            .iter()
+            .map(|field| field.segments.clone())
+            .collect::<Vec<_>>();
+        match DbProjectionTypeResolver::new(
+            self.module_path,
+            self.type_resolution,
+            self.publication_db_metadata,
+        )
+        .project_read_type(&operation.target.name, target.ir.clone(), &paths)
+        {
+            Ok(ty) => Some(resolved_type_from_ir(&ty)),
+            Err(error) => {
+                self.diagnostics
+                    .push(format!("{}: {error}", self.module_path));
+                None
+            }
         }
     }
 
@@ -3302,8 +3475,8 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
-        parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-        PublicationTypeSymbolIndex,
+        parsed_sources::parse_publication_sources, publication_db_metadata_index,
+        source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     };
 
     use super::*;
@@ -3334,7 +3507,21 @@ mod tests {
         .expect("type resolution should build");
         let expression_sources = ExpressionSourceMap::build(&parsed_sources)
             .expect("expression source facts should build");
-        ExpressionTypeModel::build(&parsed_sources, &expression_sources, &type_resolution, None)
+        let db_metadata = publication_db_metadata_index(
+            parsed_sources
+                .iter()
+                .map(|source| (source.module_path(), source.ast())),
+            &BTreeMap::new(),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("DB metadata should build");
+        ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &db_metadata,
+            None,
+        )
     }
 
     fn boxing_source(body: &str) -> String {
@@ -3359,6 +3546,219 @@ mod tests {
               {body}
             "#
         )
+    }
+
+    #[test]
+    fn db_read_projection_publishes_selected_fields_and_automatic_key() {
+        expression_type_result(
+            r#"
+              type Credential {
+                id: string,
+                label: string,
+                apiKey: string,
+              }
+
+              db object Credential {
+                primary key(id)
+                storage apiKey using encrypted
+              }
+
+              function projected(id: string) -> { id: string, apiKey: string } {
+                const credential = db require Credential(id) {
+                  fields { apiKey }
+                }
+                return { id: credential.id, apiKey: credential.apiKey }
+              }
+            "#,
+        )
+        .expect("projected fields and the automatic key should be available to source typing");
+    }
+
+    #[test]
+    fn db_read_projection_preserves_nested_nullable_and_many_wrappers() {
+        expression_type_result(
+            r#"
+              type Profile {
+                displayName: string,
+                ignored: number,
+              }
+
+              type User {
+                id: string,
+                profile: Profile?,
+              }
+
+              db object User {
+                primary key(id)
+              }
+
+              function projectedMany() -> Array<{ id: string, profile: { displayName: string }? }> {
+                return db find many User {
+                  fields { profile.displayName }
+                }
+              }
+
+              function projectedOptional(id: string) -> { id: string, profile: { displayName: string }? }? {
+                return db optional User(id) {
+                  fields { profile.displayName }
+                }
+              }
+            "#,
+        )
+        .expect("nested projected shape should preserve nullable and many wrappers");
+    }
+
+    #[test]
+    fn db_read_projection_rejects_unknown_duplicate_and_parent_child_paths() {
+        let source = |fields: &str| {
+            format!(
+                r#"
+                  type Profile {{ displayName: string }}
+                  type User {{ id: string, profile: Profile, label: string }}
+                  db object User {{ primary key(id) }}
+
+                  function projected(id: string) -> void {{
+                    db require User(id) {{ fields {{ {fields} }} }}
+                  }}
+                "#
+            )
+        };
+
+        for (fields, expected) in [
+            (
+                "missing",
+                "db projection references unknown field `missing`",
+            ),
+            ("label, label", "duplicate db projection field `label`"),
+            (
+                "profile, profile.displayName",
+                "cannot include both `profile` and child path `profile.displayName`",
+            ),
+        ] {
+            let error = expression_type_result(&source(fields))
+                .expect_err("invalid projection should fail source typing")
+                .message();
+            assert!(
+                error.contains(expected),
+                "projection {fields:?} should report {expected:?}, got:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn relational_comparison_accepts_numbers_and_db_string_cursor() {
+        expression_type_result(
+            r#"
+              type Credential { id: string }
+              db object Credential { primary key(id) }
+
+              function scan(lastId: string) -> Array<Credential> {
+                return db find many Credential {
+                  where id > lastId
+                  order id asc
+                  limit 100
+                }
+              }
+
+              function numberOrder(left: number, right: number) -> bool {
+                return left < right || left <= right || left > right || left >= right
+              }
+
+              function lexicalBindingSurvivesDbPredicate(id: number) -> number {
+                const count = db count Credential { where id > "credential-0" }
+                return id + count
+              }
+            "#,
+        )
+        .expect("DB string cursor and numeric relational comparisons should type-check");
+    }
+
+    #[test]
+    fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types() {
+        for (source, label) in [
+            (
+                r#"
+                  function invalid(left: string, right: string) -> bool {
+                    return left > right
+                  }
+                "#,
+                "ordinary runtime string relation",
+            ),
+            (
+                r#"
+                  function invalid(left: string, right: number) -> bool {
+                    return left > right
+                  }
+                "#,
+                "mixed string/number",
+            ),
+            (
+                r#"
+                  function invalid(left: string?, right: string) -> bool {
+                    return left > right
+                  }
+                "#,
+                "nullable string",
+            ),
+            (
+                r#"
+                  function invalid(left: bool, right: bool) -> bool {
+                    return left > right
+                  }
+                "#,
+                "non-orderable bool",
+            ),
+            (
+                r#"
+                  type Credential { id: string }
+                  db object Credential { primary key(id) }
+
+                  function invalid(id: number) -> Array<Credential> {
+                    return db find many Credential { where id > id }
+                  }
+                "#,
+                "DB field and shadowed lexical value",
+            ),
+            (
+                r#"
+                  type Credential { id: string }
+                  db object Credential { primary key(id) }
+
+                  function invalid(id: number?) -> bool {
+                    if id != null {
+                      const count = db count Credential { where id > id }
+                    }
+                    return true
+                  }
+                "#,
+                "DB field and non-null-narrowed lexical root",
+            ),
+            (
+                r#"
+                  type StoredProfile { name: number }
+                  type Credential { id: string, profile: StoredProfile }
+                  db object Credential { primary key(id) }
+
+                  type LexicalProfile { name: string? }
+
+                  function invalid(profile: LexicalProfile, lastString: string) -> bool {
+                    if profile.name != null {
+                      const count = db count Credential { where profile.name > lastString }
+                    }
+                    return true
+                  }
+                "#,
+                "nested DB field and narrowed lexical path",
+            ),
+        ] {
+            let error = expression_type_result(source)
+                .expect_err("invalid relational comparison should fail")
+                .message();
+            assert!(
+                error.contains("binary comparison operand type mismatch"),
+                "{label} should report a comparison mismatch, got:\n{error}"
+            );
+        }
     }
 
     #[test]
@@ -3431,6 +3831,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect("interface boxing const return should type-check");
@@ -3585,6 +3986,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect_err("invalid constructor should fail expression type checking");
@@ -3660,8 +4062,14 @@ mod tests {
         let expression_sources = ExpressionSourceMap::build(&parsed_sources)
             .expect("expression source facts should build");
 
-        ExpressionTypeModel::build(&parsed_sources, &expression_sources, &type_resolution, None)
-            .expect("DbUpsertResult.inserted and .value fields should type-check statically");
+        ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &PublicationDbMetadataIndex::default(),
+            None,
+        )
+        .expect("DbUpsertResult.inserted and .value fields should type-check statically");
 
         let user_ir = TypeRefIr::Record {
             fields: BTreeMap::from([(
@@ -3750,6 +4158,7 @@ mod tests {
             &parsed_sources,
             &expression_sources,
             &type_resolution,
+            &PublicationDbMetadataIndex::default(),
             None,
         )
         .expect("config strings and receiver builtin string calls should type-check statically");

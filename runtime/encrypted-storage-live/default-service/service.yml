@@ -1,0 +1,70 @@
+id: example.com/encrypted-live-default
+version: 0.1.0
+http:
+  guard: root.internal.live.guard
+  routes:
+    - method: POST
+      path: /encrypted-live/default/insert
+      handler: root.internal.live.insertOne
+    - method: POST
+      path: /encrypted-live/default/insert-many
+      handler: root.internal.live.insertMany
+    - method: POST
+      path: /encrypted-live/default/insert-bulk
+      handler: root.internal.live.insertBulk
+    - method: POST
+      path: /encrypted-live/default/read
+      handler: root.internal.live.readOne
+    - method: POST
+      path: /encrypted-live/default/project
+      handler: root.internal.live.projectOne
+    - method: POST
+      path: /encrypted-live/default/replace-key
+      handler: root.internal.live.replaceByKey
+    - method: POST
+      path: /encrypted-live/default/replace-query
+      handler: root.internal.live.replaceByQuery
+    - method: POST
+      path: /encrypted-live/default/upsert
+      handler: root.internal.live.upsertOne
+    - method: POST
+      path: /encrypted-live/default/update
+      handler: root.internal.live.updateOne
+    - method: POST
+      path: /encrypted-live/default/scan
+      handler: root.internal.live.scan
+    - method: POST
+      path: /encrypted-live/default/rewrite
+      handler: root.internal.live.rewrite
+    - method: POST
+      path: /encrypted-live/default/rewrite-batch
+      handler: root.internal.live.rewriteBatch
+    - method: POST
+      path: /encrypted-live/default/identity-date
+      handler: root.internal.live.identityDate
+    - method: POST
+      path: /encrypted-live/default/archive-insert
+      handler: root.internal.live.insertArchive
+    - method: POST
+      path: /encrypted-live/default/archive-read
+      handler: root.internal.live.readArchive
+    - method: POST
+      path: /encrypted-live/default/archive-scan
+      handler: root.internal.live.scanArchive
+    - method: POST
+      path: /encrypted-live/default/archive-rewrite
+      handler: root.internal.live.rewriteArchive
+    - method: POST
+      path: /encrypted-live/default/archive-rewrite-batch
+      handler: root.internal.live.rewriteArchiveBatch
+    - method: POST
+      path: /encrypted-live/default/archive-restore
+      handler: root.internal.live.restoreArchive
+    - method: POST
+      path: /encrypted-live/default/barrier
+      handler: root.internal.live.activateBarrier
+    - method: POST
+      path: /encrypted-live/default/barrier-status
+      handler: root.internal.live.barrierStatus
+timeout:
+  default: 120000
