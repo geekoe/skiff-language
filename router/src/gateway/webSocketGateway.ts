@@ -118,6 +118,7 @@ interface Connection {
   latestRequest: IncomingMessage;
   latestUrl: URL;
   pendingMessages: PendingClientMessage[];
+  receiveAbortOnCloseControllers: Set<AbortController>;
   receiveAbortControllers: Set<AbortController>;
   receiveGatewayEntryIdentity: string;
   receiveInFlight: number;
@@ -569,6 +570,7 @@ export class WebSocketGateway {
       latestRequest: input.request,
       latestUrl: input.url,
       pendingMessages: [],
+      receiveAbortOnCloseControllers: new Set(),
       receiveAbortControllers: new Set(),
       receiveGatewayEntryIdentity: input.entry.receive.gatewayEntryIdentity,
       receiveInFlight: 0,
@@ -772,6 +774,9 @@ export class WebSocketGateway {
       }
       connection.receiveInFlight = Math.max(0, connection.receiveInFlight - 1);
       this.receiveCounters.inFlight = Math.max(0, this.receiveCounters.inFlight - 1);
+      if (connection.receiveAbortOnCloseControllers.delete(controller)) {
+        this.receiveCounters.abortOnClose = Math.max(0, this.receiveCounters.abortOnClose - 1);
+      }
       this.drainVerifiedReceiveQueue(connection);
     };
 
@@ -798,6 +803,7 @@ export class WebSocketGateway {
   private abortConnectionReceives(connection: Connection): void {
     for (const controller of Array.from(connection.receiveAbortControllers)) {
       if (!controller.signal.aborted) {
+        connection.receiveAbortOnCloseControllers.add(controller);
         this.receiveCounters.abortOnClose += 1;
         controller.abort();
       }

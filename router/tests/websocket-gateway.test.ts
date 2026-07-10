@@ -211,7 +211,7 @@ describe('router websocket gateway', () => {
     expect(harness.webSocketGateway?.receiveLifecycleCounters()).toMatchObject({
       inFlight: 0,
       queued: 0,
-      abortOnClose: 1
+      abortOnClose: 0
     });
   });
 
@@ -310,7 +310,7 @@ describe('router websocket gateway', () => {
     expect(harness.webSocketGateway?.receiveLifecycleCounters()).toMatchObject({
       inFlight: 0,
       queued: 0,
-      abortOnClose: 1
+      abortOnClose: 0
     });
   });
 

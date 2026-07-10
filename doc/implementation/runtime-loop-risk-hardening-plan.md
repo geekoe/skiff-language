@@ -740,7 +740,9 @@ Integration / smoke：
 - Run Agine smoke:
   `npm run e2e:chat-smoke` in `/Users/geek/workspace/internals/agine`
 - After chat smoke, check loop-risk health from this repository:
-  `node scripts/check-loop-risk-health.mjs --url http://127.0.0.1:4001/__router/health?detail=loop-risk --timeout-ms 5000`
+  `node scripts/check-loop-risk-health.mjs --url http://127.0.0.1:4001/__router/health?detail=loop-risk --runtime-id <touched-runtime-id> --timeout-ms 5000`
+- Stable-instance WebSocket cancel stress entry:
+  `node scripts/stress-loop-risk-websocket-cancel.mjs --ws-url '<stable-websocket-url>' --runtime-id <touched-runtime-id> --runtime-pid <runtime-pid> --runtime-log <runtime-log-file>`
 
 Stress acceptance：
 
