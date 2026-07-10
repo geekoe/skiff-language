@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { request as createHttpRequest } from 'node:http';
+import { request as createHttpRequest, ServerResponse } from 'node:http';
 
 import { buildActivationLookup } from '../src/artifacts/activationLookup.js';
+import type WebSocket from 'ws';
 import {
   loadManifest as loadRuntimeManifest,
   packageHttpHandlerTarget,
@@ -578,6 +579,68 @@ describe('router raw HTTP gateway', () => {
     const cancel = await cancelPromise;
 
     expect(cancel.reason).toBe('client_disconnect');
+  });
+
+  it('cancels raw HTTP serverStream dispatch when downstream drain times out', async () => {
+    const manifest = loadRawHttpStreamManifest();
+    const harness = await RouterHarness.create({ manifest });
+    await harness.listenHttp({ backpressureDrainTimeoutMs: 25 });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-sample-http-stream-backpressure',
+      targets: manifest.operations.map((operation) => operation.target)
+    });
+    const originalWrite = ServerResponse.prototype.write;
+    ServerResponse.prototype.write = function patchedWrite(): boolean {
+      return false;
+    } as typeof ServerResponse.prototype.write;
+    try {
+      const cancelPromise = waitForRuntimeCancel(runtime.ws, 'backpressure cancel');
+      runtime.onRequestFrame((frame) => {
+        runtime.ws.send(
+          encodeRuntimeFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: 'response.start',
+            requestId: frame.header.requestId,
+            httpResponse: {
+              status: 200,
+              headers: [{ name: 'content-type', value: 'text/plain' }]
+            }
+          })
+        );
+        runtime.ws.send(
+          encodeRuntimeFrame(
+            {
+              schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+              type: 'response.chunk',
+              requestId: frame.header.requestId,
+              seq: 0
+            },
+            Buffer.from('blocked chunk')
+          )
+        );
+      });
+
+      const request = createHttpRequest(
+        harness.httpUrl('/stream-backpressure?service=skiff.run/sample'),
+        {
+          method: 'POST'
+        }
+      );
+      request.on('error', () => {
+        // The server may destroy the response after headers were sent.
+      });
+      request.end('ignored');
+      const cancel = await cancelPromise;
+      request.destroy();
+      expect(cancel.reason).toBe('backpressure');
+      expect(harness.httpGateway?.streamLifecycleCounters()).toMatchObject({
+        activeWriters: 0,
+        backpressureWaiters: 0,
+        backpressureCancels: 1
+      });
+    } finally {
+      ServerResponse.prototype.write = originalWrite;
+    }
   });
 
   it('maps serverStream runtime errors before response.start to platform errors', async () => {
@@ -1700,3 +1763,35 @@ describe('router raw HTTP gateway', () => {
     });
   });
 });
+
+function waitForRuntimeCancel(
+  ws: WebSocket,
+  label: string
+): Promise<{ requestId: string; reason: string }> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData) => {
+      try {
+        const frame = decodeRuntimeFrame(data);
+        if (frame.header.type !== 'request.cancel') {
+          return;
+        }
+        cleanup();
+        resolve({
+          requestId: frame.header.requestId,
+          reason: frame.header.reason
+        });
+      } catch {
+        // Ignore non-frame messages while the runtime is registering.
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
+  });
+}

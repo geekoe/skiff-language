@@ -2164,6 +2164,164 @@ describe('router runtime registry dispatch', () => {
     expect(cancel.payloadByteLength).toBe(0);
   });
 
+  it('keeps binary serverStream pending after response.start until response.end terminal', async () => {
+    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
+    const target = 'service.skiff~run~~hello.HelloApi.stream';
+
+    const runtimeRouter = trackResource(createRuntimeRouter());
+    const { dispatcher, endpoint } = runtimeRouter;
+    const registryListen = await endpoint.listen({ port: 0 });
+    const runtime = await openRegisteredRuntime(registryListen.url, {
+      type: 'runtime.register',
+      runtimeId: 'runtime-stream-pending-start',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-stream-pending-start',
+      buildId: DEFAULT_TEST_BUILD_ID,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: [target]
+    });
+
+    let closeCount = 0;
+    const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-pending-start');
+    const dispatch = dispatcher.dispatchBinaryStream(
+      {
+        header: serviceRequestStart({
+          requestId: 'request-stream-pending-start',
+          callerTarget: 'gateway.test.stream',
+          callerKind: 'gateway',
+          target,
+          serviceId: manifest.service.id,
+          serviceProtocolIdentity: manifest.service.protocolIdentity,
+          mode: 'serverStream'
+        }),
+        payloadBytes: Buffer.from('stream payload')
+      },
+      25,
+      {
+        onStart: () => {},
+        onChunk: () => {},
+        onEnd: (_response, requestTerminal) => {
+          requestTerminal({ source: 'runtime_response_end', kind: 'completed' });
+        },
+        closeFromPendingTerminal: () => {
+          closeCount += 1;
+        }
+      }
+    );
+    const request = await requestPromise;
+    runtime.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.start',
+        requestId: request.header.requestId,
+        httpResponse: {
+          status: 200,
+          headers: []
+        }
+      })
+    );
+
+    await delay(50);
+    expect(dispatcher.pendingLifecycleCounters()).toMatchObject({
+      pendingStream: 1
+    });
+
+    runtime.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.end',
+        requestId: request.header.requestId,
+        payloadPresent: false
+      })
+    );
+    await expect(dispatch).resolves.toMatchObject({
+      header: {
+        type: 'response.end',
+        requestId: 'request-stream-pending-start'
+      }
+    });
+    expect(dispatcher.pendingLifecycleCounters()).toMatchObject({
+      pendingStream: 0
+    });
+    expect(closeCount).toBe(1);
+  });
+
+  it('cancels runtime work and closes stream writer on stream callback errors', async () => {
+    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
+    const target = 'service.skiff~run~~hello.HelloApi.streamCallbackError';
+
+    const runtimeRouter = trackResource(createRuntimeRouter());
+    const { dispatcher, endpoint } = runtimeRouter;
+    const registryListen = await endpoint.listen({ port: 0 });
+    const runtime = await openRegisteredRuntime(registryListen.url, {
+      type: 'runtime.register',
+      runtimeId: 'runtime-stream-callback-error',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-stream-callback-error',
+      buildId: DEFAULT_TEST_BUILD_ID,
+      serviceProtocolIdentity: manifest.service.protocolIdentity,
+      targets: [target]
+    });
+
+    let closedTerminalSource: string | undefined;
+    const requestPromise = waitForRuntimeRequestFrame(runtime, 'request-stream-callback-error');
+    const dispatch = dispatcher.dispatchBinaryStream(
+      {
+        header: serviceRequestStart({
+          requestId: 'request-stream-callback-error',
+          callerTarget: 'gateway.test.stream',
+          callerKind: 'gateway',
+          target,
+          serviceId: manifest.service.id,
+          serviceProtocolIdentity: manifest.service.protocolIdentity,
+          mode: 'serverStream'
+        }),
+        payloadBytes: Buffer.from('stream payload')
+      },
+      2000,
+      {
+        onStart: () => {
+          throw new Error('stream writer exploded');
+        },
+        onChunk: () => {},
+        onEnd: () => {},
+        closeFromPendingTerminal: (terminal) => {
+          closedTerminalSource = terminal.source;
+        }
+      }
+    );
+    const request = await requestPromise;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime,
+      request.header.requestId,
+      'stream callback error cancel'
+    );
+    runtime.send(
+      encodeRuntimeFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'response.start',
+        requestId: request.header.requestId,
+        httpResponse: {
+          status: 200,
+          headers: []
+        }
+      })
+    );
+
+    await expect(dispatch).rejects.toThrow('stream writer exploded');
+    await expect(cancelPromise).resolves.toMatchObject({
+      message: {
+        type: 'request.cancel',
+        requestId: request.header.requestId,
+        reason: 'protocol_error'
+      }
+    });
+    expect(closedTerminalSource).toBe('callback_error');
+    expect(dispatcher.pendingLifecycleCounters()).toMatchObject({
+      pendingStream: 0
+    });
+  });
+
 
   it('rejects response.chunk during unary dispatch', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');

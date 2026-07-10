@@ -8,8 +8,10 @@ import type { LoadedManifest } from '../src/manifest/types.js';
 import { buildActivationLookup } from '../src/artifacts/activationLookup.js';
 import { RouterActiveSnapshotStore, type RouterActiveSnapshot } from '../src/router/activeSnapshot.js';
 import {
+  decodeRuntimeFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
+  type RequestCancelFrameHeader,
   type WebSocketConnectionPolicyFrameMetadata
 } from '../src/protocol/envelope.js';
 import { readRedactedHeadersForDiagnostics } from '../src/router/bind.js';
@@ -159,6 +161,115 @@ describe('router websocket gateway', () => {
       target: receiveTarget,
       selector: `operation:${manifest.websocketEntry!.receive.operationAbiId}`,
       buildId: manifest.websocketEntry!.buildId
+    });
+  });
+
+  it('aborts in-flight websocket receive dispatch on client close', async () => {
+    const manifestValue = webSocketManifestValue();
+    const manifest = loadManifest(manifestValue);
+    const harness = await RouterHarness.websocket({ manifest });
+
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-ws-receive-close-abort',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    const receiveRequests: RequestStartEnvelope[] = [];
+    const firstReceive = new Promise<RequestStartEnvelope>((resolve) => {
+      runtime.onRequest((request) => {
+        if (request.target === 'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect') {
+          runtime.sendResponse(request.requestId, websocketAccept('close-abort-user'));
+          return;
+        }
+        receiveRequests.push(request);
+        resolve(request);
+      });
+    });
+
+    const client = new WebSocket(
+      harness.webSocketUrl('?deviceId=close-abort-user&platform=web&clientVersion=1.0.0&language=en'),
+      websocketOptions('close-abort-session')
+    );
+    trackResource({ close: () => client.close() });
+    await onceWithTimeout(client, 'open', 'close abort websocket open');
+
+    client.send(JSON.stringify({ tag: 'close_abort_probe' }));
+    const receiveRequest = await firstReceive;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime.ws,
+      receiveRequest.requestId,
+      'websocket receive close cancel'
+    );
+    await closeSocket(client, 'close abort websocket close');
+
+    await expect(cancelPromise).resolves.toMatchObject({
+      reason: 'client_disconnect'
+    });
+    await delay(20);
+    expect(receiveRequests).toHaveLength(1);
+    expect(harness.webSocketGateway?.receiveLifecycleCounters()).toMatchObject({
+      inFlight: 0,
+      queued: 0,
+      abortOnClose: 1
+    });
+  });
+
+  it('bounds verified websocket receive queue and drops queued messages locally on close', async () => {
+    const manifestValue = webSocketManifestValue();
+    const manifest = loadManifest(manifestValue);
+    const harness = await RouterHarness.create({ manifest });
+    await harness.listenWebSocket({
+      verifiedReceiveInFlightLimit: 1,
+      verifiedReceiveQueueLimit: 1
+    });
+
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-ws-receive-queue-overflow',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    const receiveRequests: RequestStartEnvelope[] = [];
+    const firstReceive = new Promise<RequestStartEnvelope>((resolve) => {
+      runtime.onRequest((request) => {
+        if (request.target === 'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect') {
+          runtime.sendResponse(request.requestId, websocketAccept('queue-overflow-user'));
+          return;
+        }
+        receiveRequests.push(request);
+        if (receiveRequests.length === 1) {
+          resolve(request);
+        }
+      });
+    });
+
+    const client = new WebSocket(
+      harness.webSocketUrl('?deviceId=queue-overflow-user&platform=web&clientVersion=1.0.0&language=en'),
+      websocketOptions('queue-overflow-session')
+    );
+    trackResource({ close: () => client.close() });
+    await onceWithTimeout(client, 'open', 'queue overflow websocket open');
+
+    client.send(JSON.stringify({ tag: 'first' }));
+    const receiveRequest = await firstReceive;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime.ws,
+      receiveRequest.requestId,
+      'websocket receive queue overflow cancel'
+    );
+    client.send(JSON.stringify({ tag: 'queued' }));
+    client.send(JSON.stringify({ tag: 'overflow' }));
+
+    const [code] = await onceWithTimeout(client, 'close', 'queue overflow close');
+    expect(code).toBe(1008);
+    await expect(cancelPromise).resolves.toMatchObject({
+      reason: 'client_disconnect'
+    });
+    await delay(20);
+    expect(receiveRequests).toHaveLength(1);
+    expect(harness.webSocketGateway?.receiveLifecycleCounters()).toMatchObject({
+      inFlight: 0,
+      queued: 0,
+      abortOnClose: 1
     });
   });
 
@@ -1450,6 +1561,37 @@ function sendRuntimeTextConnection(
       Buffer.from(input.text, 'utf8')
     )
   );
+}
+
+function waitForRuntimeCancel(
+  ws: WebSocket,
+  requestId: string,
+  label: string
+): Promise<RequestCancelFrameHeader> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`timed out waiting for ${label}`));
+    }, 1000);
+    const onMessage = (data: WebSocket.RawData) => {
+      let frame: ReturnType<typeof decodeRuntimeFrame>;
+      try {
+        frame = decodeRuntimeFrame(data);
+      } catch {
+        return;
+      }
+      if (frame.header.type !== 'request.cancel' || frame.header.requestId !== requestId) {
+        return;
+      }
+      cleanup();
+      resolve(frame.header);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+    };
+    ws.on('message', onMessage);
+  });
 }
 
 function webSocketVersionSnapshot(input: {
