@@ -128,6 +128,14 @@ async function checkPackagePullDefaultTargetUsesProjectPackageDir() {
     '1.0.0',
     'package.yml',
   ));
+  await assertFileExists(join(
+    project,
+    '.skiff-package-store',
+    publicationStorageSegment('skiff.run/llm'),
+    '1.0.0',
+    'prompts',
+    'system.md',
+  ));
 }
 
 async function checkPackagePullFailsWithoutProjectPackageDir() {
@@ -369,9 +377,13 @@ async function createPackageSourceArchive() {
     [
       'id: skiff.run/llm',
       'version: 1.0.0',
+      'resources:',
+      '  - prompts/system.md',
       '',
     ].join('\n'),
   );
+  await mkdir(join(source, 'prompts'), { recursive: true });
+  await writeFile(join(source, 'prompts', 'system.md'), 'package prompt\n');
   await writeFile(
     join(source, 'api.yml'),
     [
@@ -380,7 +392,7 @@ async function createPackageSourceArchive() {
       '',
     ].join('\n'),
   );
-  await spawnSuccess('tar', ['-czf', archivePath, '-C', source, 'package.yml', 'api.yml']);
+  await spawnSuccess('tar', ['-czf', archivePath, '-C', source, 'package.yml', 'api.yml', 'prompts/system.md']);
   return readFile(archivePath);
 }
 

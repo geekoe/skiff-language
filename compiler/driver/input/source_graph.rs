@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 use crate::{
-    input::{PublicationManifest, ResolvedPackageGraph, SourceTree},
+    input::{PublicationManifest, PublicationResourceInput, ResolvedPackageGraph, SourceTree},
     shared::publication_error::PublicationError,
 };
 use skiff_compiler_input::RawPublication as RawInputPublication;
@@ -19,6 +19,7 @@ pub(crate) struct Publication {
     pub(crate) source_tree: SourceTree,
     pub(crate) source_graph: PublicationSourceGraph,
     pub(crate) package_graph: ResolvedPackageGraph,
+    pub(crate) resources: Vec<PublicationResourceInput>,
 }
 
 impl Publication {
@@ -28,11 +29,28 @@ impl Publication {
         source_graph: PublicationSourceGraph,
         package_graph: ResolvedPackageGraph,
     ) -> Self {
+        Self::new_with_resources(
+            manifest,
+            source_tree,
+            source_graph,
+            package_graph,
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn new_with_resources(
+        manifest: PublicationManifest,
+        source_tree: SourceTree,
+        source_graph: PublicationSourceGraph,
+        package_graph: ResolvedPackageGraph,
+        resources: Vec<PublicationResourceInput>,
+    ) -> Self {
         Self {
             manifest,
             source_tree,
             source_graph,
             package_graph,
+            resources,
         }
     }
 
@@ -68,11 +86,12 @@ pub(crate) fn publication_from_raw_with_source_graph(
     raw: RawInputPublication,
     source_graph: PublicationSourceGraph,
 ) -> Publication {
-    Publication::new(
+    Publication::new_with_resources(
         raw.manifest,
         raw.source_tree,
         source_graph,
         raw.package_graph,
+        raw.resources,
     )
 }
 

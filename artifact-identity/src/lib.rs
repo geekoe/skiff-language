@@ -234,6 +234,7 @@ pub fn package_build_hash(unit: &PackageUnit) -> Result<String> {
             version: &unit.version,
             publication_abi: &unit.publication_abi,
             files: &unit.files,
+            resources: &unit.resources,
             dependencies: &unit.dependencies,
             implementation_links: &unit.implementation_links,
             config_and_effect_metadata: &unit.config_and_effect_metadata,
@@ -563,6 +564,7 @@ struct PackageBuildIdentityPayload<'a> {
     version: &'a str,
     publication_abi: &'a PublicationAbiUnit,
     files: &'a [FileIrRef],
+    resources: &'a [skiff_artifact_model::PublicationResourceRef],
     dependencies: &'a [PackageDependencyConstraint],
     implementation_links: &'a PackageImplementationLinks,
     config_and_effect_metadata: &'a ConfigAndEffectMetadata,
@@ -1019,6 +1021,7 @@ struct RuntimeProgramServiceUnitIdentityPayload {
     protocol_identity: String,
     publication_abi: Value,
     files: Vec<FileIrRefIdentityPayload>,
+    resources: Value,
     package_dependencies: Vec<PackageDependencyIdentityPayload>,
     service_dependencies: Vec<ServiceDependencyIdentityPayload>,
     package_abi_expectations: Vec<PackageAbiExpectationIdentityPayload>,
@@ -1046,6 +1049,8 @@ impl RuntimeProgramServiceUnitIdentityPayload {
                 .iter()
                 .map(FileIrRefIdentityPayload::from_ref)
                 .collect(),
+            resources: serde_json::to_value(&unit.resources)
+                .map_err(ArtifactIdentityError::SerializeRuntimeProgramServiceUnitIdentity)?,
             package_dependencies: unit
                 .package_dependencies
                 .iter()
@@ -1373,7 +1378,8 @@ mod tests {
         PackageTestEntrypointKind, PackageTestExecutableRef, PackageTestFileIrRef,
         PackageTestFileLinkScope, PackageTestLinkPolicy, PackageTestPackageUnitRef,
         PackageTestRuntimeExpectedError, PackageUnit, PublicationOperationAbi,
-        PublicationOperationKind, SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
+        PublicationOperationKind, PublicationResourceRef, SourceCallOperationIndexEntry,
+        SourceMapSource, TypeRefIr,
     };
 
     use super::*;
@@ -2007,6 +2013,46 @@ mod tests {
     }
 
     #[test]
+    fn resource_refs_change_package_build_identity_not_abi_identity() {
+        let mut first = package_fixture("hello");
+        first.resources = vec![resource_ref("prompts/system.md", "aaa")];
+        let mut second = package_fixture("hello");
+        second.resources = vec![resource_ref("prompts/system.md", "bbb")];
+
+        assert_ne!(
+            package_build_identity(&first).expect("first build identity"),
+            package_build_identity(&second).expect("second build identity")
+        );
+        assert_eq!(
+            package_abi_identity(&first).expect("first ABI identity"),
+            package_abi_identity(&second).expect("second ABI identity")
+        );
+    }
+
+    #[test]
+    fn resource_refs_change_service_unit_and_dynamic_build_identity_not_protocol_identity() {
+        let mut first = ServiceUnit::empty("example.com/svc", "1.0.0", "protocol");
+        first.resources = vec![resource_ref("prompts/system.md", "aaa")];
+        let mut second = first.clone();
+        second.resources = vec![resource_ref("prompts/system.md", "bbb")];
+
+        assert_eq!(first.protocol_identity, second.protocol_identity);
+        assert_ne!(
+            service_unit_identity(&first).expect("first service unit identity"),
+            service_unit_identity(&second).expect("second service unit identity")
+        );
+        let first_dynamic = runtime_program_dynamic_build_id(
+            &runtime_program_service_unit_identity_bytes(&first).expect("first dynamic bytes"),
+            [],
+        );
+        let second_dynamic = runtime_program_dynamic_build_id(
+            &runtime_program_service_unit_identity_bytes(&second).expect("second dynamic bytes"),
+            [],
+        );
+        assert_ne!(first_dynamic, second_dynamic);
+    }
+
+    #[test]
     fn assign_package_unit_identities_sets_publication_and_package_identities() {
         let mut unit = package_fixture("hello");
         unit.publication_abi.publication_id = "stale-publication".to_string();
@@ -2027,6 +2073,16 @@ mod tests {
             publication_abi_identity(&unit.publication_abi).expect("publication ABI identity")
         );
         validate_package_unit_identities(&unit).expect("assigned package identities validate");
+    }
+
+    fn resource_ref(path: &str, sha256: &str) -> PublicationResourceRef {
+        PublicationResourceRef {
+            path: path.to_string(),
+            sha256: sha256.to_string(),
+            byte_len: sha256.len() as u64,
+            content_type: None,
+            artifact_path: Some(format!("resources/sha256/{sha256}")),
+        }
     }
 
     fn package_test_assembly_fixture() -> PackageTestAssembly {

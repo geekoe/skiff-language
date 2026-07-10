@@ -7,8 +7,9 @@ use std::{
 use skiff_compiler::{
     build_service_publication, classify_publication_root, collect_source_tree,
     read_service_config_with_profile, PackageResolutionDirs, PublicationId, PublicationInputError,
-    PublicationInputKind, PublishedArtifactVisitOptions, PublishedServiceArtifacts, ServiceConfig,
-    ServicePublicationBuildInput, SkiffRuntimeManifest, SourceTree, SERVICE_CONFIG_FILE,
+    PublicationInputKind, PublishedArtifactPayload, PublishedArtifactVisitOptions,
+    PublishedServiceArtifacts, ServiceConfig, ServicePublicationBuildInput, SkiffRuntimeManifest,
+    SourceTree, SERVICE_CONFIG_FILE,
 };
 
 const USAGE: &str = "usage: skiff-compiler [--test] [--live --allow-network --config <config-json>] <service-root> [--out <artifact-json>] [--manifest-out <router-manifest-json>] [--assembly-out <service-assembly-json>] [--ir-out <deprecated-service-assembly-alias>] [--artifact-root <dir>] [--service-id <id>] [--profile <name>] [--packages-dir <dir>]... [--service-artifact-root <dir>]...";
@@ -335,12 +336,45 @@ fn write_json_artifact(
 }
 
 fn write_artifact_root(root: &Path, artifacts: &PublishedServiceArtifacts) -> Result<(), CliError> {
-    artifacts.try_visit_json_artifacts(
+    artifacts.try_visit_artifacts(
         PublishedArtifactVisitOptions {
             include_contract_schema: true,
         },
-        |artifact| write_json_artifact(&root.join(&artifact.path), &artifact.value, artifact.kind),
+        |artifact| {
+            write_published_artifact(&root.join(&artifact.path), artifact.payload, artifact.kind)
+        },
     )
+}
+
+fn write_published_artifact(
+    path: &Path,
+    payload: PublishedArtifactPayload,
+    kind: &str,
+) -> Result<(), CliError> {
+    match payload {
+        PublishedArtifactPayload::Json(value) => write_json_artifact(path, &value, kind),
+        PublishedArtifactPayload::Bytes(bytes) => write_raw_artifact(path, &bytes, kind),
+    }
+}
+
+fn write_raw_artifact(path: &Path, bytes: &[u8], kind: &str) -> Result<(), CliError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::message(format!(
+                "failed to create output directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    fs::write(path, bytes).map_err(|error| {
+        CliError::message(format!(
+            "failed to write {kind} {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn write_pretty_json<T>(path: &Path, value: &T, kind: &str) -> Result<(), CliError>

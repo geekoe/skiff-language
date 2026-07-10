@@ -70,6 +70,10 @@ pub(crate) fn build_service_artifacts(
         .iter()
         .map(|package| package.unit.clone())
         .collect::<Vec<_>>();
+    let package_resource_blobs = package_ir_artifacts
+        .iter()
+        .flat_map(|package| package.resource_blobs.iter().cloned())
+        .collect::<Vec<_>>();
     let package_assemblies = package_artifacts
         .iter()
         .map(|package| package.assembly.clone())
@@ -111,9 +115,16 @@ pub(crate) fn build_service_artifacts(
         ),
     )?;
 
+    let resource_blobs = projections
+        .resource_blobs
+        .into_iter()
+        .chain(package_resource_blobs)
+        .collect();
+
     Ok(PublishedServiceArtifacts {
         file_ir_units,
         package_file_ir_units,
+        resource_blobs,
         package_assemblies,
         package_indexes,
         package_units,

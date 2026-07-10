@@ -46,7 +46,7 @@ const PAYLOAD_TAG_BOOL_TRUE: u8 = 2;
 const PAYLOAD_TAG_STRING: u8 = 4;
 const PAYLOAD_TAG_OBJECT: u8 = 7;
 const TEST_REQUEST_PAYLOAD_PARAM: &str = "__skiffPayload";
-const SERVICE_DEPENDENCY_SHARED_ARTIFACT_DIRS: &[&str] = &["bundles", "contracts"];
+const SERVICE_DEPENDENCY_SHARED_ARTIFACT_DIRS: &[&str] = &["bundles", "contracts", "resources"];
 const SERVICE_DEPENDENCY_PACKAGE_ARTIFACT_DIRS: &[(&str, &str)] = &[
     ("assemblies", "packages"),
     ("files", "packages"),
@@ -3663,6 +3663,27 @@ mod tests {
         assert!(!artifact_root.join("dev/package-tests").exists());
         assert!(!artifact_root.join("assemblies/package-tests").exists());
         assert!(!artifact_root.join("configs/package-tests").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn service_dependency_sync_copies_resource_artifact_dir() {
+        let dir = temp_runtime_artifact_dir("dependency-resources-copy");
+        let dependency_root = dir.join("dependency");
+        let artifact_root = dir.join("artifact");
+        write_test_file(
+            &dependency_root,
+            "resources/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+
+        copy_service_dependency_artifact_root(&dependency_root, &artifact_root, None)
+            .expect("dependency sync should run");
+
+        assert!(artifact_root
+            .join(
+                "resources/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            .is_file());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -34,14 +34,14 @@ const canonicalRequirements = [
 
 const adapterRequirements = [
   {
-    relPath: 'compiler/source/src/shared/operation_abi_identity.rs',
+    relPath: 'compiler/driver/shared/operation_abi_identity.rs',
     helper: 'public_function_operation_abi_id',
-    regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
+    regexp: /\bskiff_compiler_emission::identity::public_function_operation_abi_id\b/,
   },
   {
-    relPath: 'compiler/source/src/shared/operation_abi_identity.rs',
+    relPath: 'compiler/driver/shared/operation_abi_identity.rs',
     helper: 'public_instance_method_operation_abi_id',
-    regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
+    regexp: /\bskiff_compiler_emission::identity::public_instance_method_operation_abi_id\b/,
   },
   {
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
@@ -195,7 +195,7 @@ function runSelfTest() {
       name: 'rejects compiler duplicate struct',
       files: [
         {
-          relPath: 'compiler/source/src/shared/operation_abi_identity.rs',
+          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
           text: 'struct OperationAbiIdentityInput;\n',
         },
       ],
@@ -225,7 +225,7 @@ function runSelfTest() {
       name: 'ignores cfg test modules',
       files: [
         {
-          relPath: 'compiler/source/src/shared/operation_abi_identity.rs',
+          relPath: 'compiler/driver/shared/operation_abi_identity.rs',
           text: '#[cfg(test)]\nmod tests { struct OperationAbiIdentityInput; }\n',
         },
       ],

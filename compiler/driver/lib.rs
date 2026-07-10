@@ -14,13 +14,13 @@ pub use skiff_compiler_core::id::PublicationId;
 pub use skiff_compiler_emission::artifact::{
     ArtifactUnit, ArtifactUnitSet, FileIrRef, FileIrUnit, FunctionTypeParamIr, LiteralIr,
     MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PublishedArtifactEntry,
-    PublishedArtifactVisitOptions, PublishedFileIrArtifact, PublishedJsonArtifact,
-    PublishedServiceArtifacts, ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition,
-    SourceSpanRef, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ARTIFACT_INDEX_SCHEMA_VERSION,
-    BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION, FILE_IR_FORMAT_VERSION,
-    FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_ASSEMBLY_KIND,
-    PACKAGE_UNIT_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_UNIT_SCHEMA_VERSION,
+    PublishedArtifactPayload, PublishedArtifactVisitOptions, PublishedFileIrArtifact,
+    PublishedJsonArtifact, PublishedResourceArtifact, PublishedServiceArtifacts,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef, TypeDeclIr,
+    TypeDescriptorIr, TypeRefIr, ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION,
+    CONTRACT_SCHEMA_ARTIFACT_VERSION, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
+    FILE_IR_SCHEMA_VERSION, PACKAGE_ASSEMBLY_KIND, PACKAGE_UNIT_SCHEMA_VERSION,
+    SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
 pub use skiff_compiler_emission::service_artifacts::{
     BUNDLE_IDENTITY_PREFIX, SERVICE_ASSEMBLY_IDENTITY_PREFIX,

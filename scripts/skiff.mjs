@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
@@ -16,6 +16,7 @@ import {
   serviceDevWatchOptions,
 } from './lib/dev-sync-args.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
+import { collectPackageSourceArchivePaths } from './lib/package-source-archive.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import {
   defaultProjectPackageDir,
@@ -1806,51 +1807,6 @@ async function createPackageSourceArchive(root) {
     hash: `sha256:${sha256Buffer(bytes)}`,
     size: bytes.length,
   };
-}
-
-async function collectPackageSourceArchivePaths(root) {
-  const files = ['package.yml'];
-  await collectSkiffFilePaths(root, root, files);
-  return files.sort((left, right) => left.localeCompare(right));
-}
-
-async function collectSkiffFilePaths(root, directory, files) {
-  const entries = (await readdir(directory, { withFileTypes: true }))
-    .sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    if (entry.name === 'package.yml') {
-      continue;
-    }
-    const entryPath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      if (shouldSkipSourceArchiveDirectory(entry.name)) {
-        continue;
-      }
-      await collectSkiffFilePaths(root, entryPath, files);
-      continue;
-    }
-    if (!entry.isFile() || !entry.name.endsWith('.skiff')) {
-      continue;
-    }
-    const relPath = relative(root, entryPath).split(sep).join('/');
-    safeArchivePathParts(relPath);
-    files.push(relPath);
-  }
-}
-
-function shouldSkipSourceArchiveDirectory(name) {
-  const lower = name.toLowerCase();
-  return name.startsWith('.')
-    || lower === 'node_modules'
-    || lower === 'build'
-    || lower === 'dist'
-    || lower === 'out'
-    || lower === 'target'
-    || lower === 'coverage'
-    || lower === 'tmp'
-    || lower === 'temp'
-    || lower === 'cache'
-    || lower.includes('cache');
 }
 
 async function uploadPackageSourceArchive(upload, archive) {

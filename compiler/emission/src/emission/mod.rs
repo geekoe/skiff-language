@@ -5,6 +5,7 @@ pub mod identity;
 pub mod package_artifacts;
 pub mod package_test_artifacts;
 pub mod package_unit_artifacts;
+pub mod resources;
 pub mod service_artifact_assembly;
 pub mod service_artifacts;
 pub mod service_publication;

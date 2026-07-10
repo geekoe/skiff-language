@@ -10,6 +10,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
+import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
 import { readProjectPackageDirs } from './lib/project-config.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +24,7 @@ const defaultCompilerManifest = join(skiffRoot, 'compiler', 'Cargo.toml');
 const defaultSharedInputs = [join(skiffRoot, 'prelude'), join(skiffRoot, 'std')];
 const defaultPollIntervalMs = 500;
 const lockTimeoutMs = 120_000;
-const artifactRootContentDirs = new Set(['assemblies', 'bundles', 'contracts', 'files', 'units']);
+const artifactRootContentDirs = new Set(['assemblies', 'bundles', 'contracts', 'files', 'resources', 'units']);
 const artifactPathKeys = new Set(['artifactPath', 'assemblyPath', 'bundlePath', 'fileIrPath', 'path', 'schemaPath', 'unitPath']);
 const generatedArtifactRootEntries = new Set(['indexes', ...artifactRootContentDirs]);
 const rootConfigSourcePattern = /^config(?:\.[A-Za-z_][A-Za-z0-9_-]*)?(?:\.secret)?\.yml$/;
@@ -1063,7 +1064,9 @@ function artifactReferencePaths(value) {
 function collectArtifactReferencePaths(value, result, key) {
   if (typeof value === 'string') {
     const normalized = value.replaceAll('\\', '/');
-    if (artifactPathKeys.has(key) && normalized.endsWith('.json')) {
+    if (key === 'artifactPath') {
+      result.add(normalized);
+    } else if (artifactPathKeys.has(key) && normalized.endsWith('.json')) {
       result.add(normalized);
     }
     return;
@@ -1110,11 +1113,13 @@ async function discoverWatchInputs(config) {
   const inputs = config.configPath === undefined ? [] : [config.configPath];
   for (const service of config.services) {
     inputs.push(...await listFilesIfDirectory(service.root, isServiceWatchInput));
+    inputs.push(...await discoverDeclaredResourceFiles(service.root, new Set(['service.yml'])));
     for (const projectConfigPath of service.projectConfigPaths ?? []) {
       inputs.push(projectConfigPath);
     }
     for (const packageDir of effectivePackageDirs(config, service)) {
       inputs.push(...await listFilesIfDirectory(packageDir, isSharedWatchInput));
+      inputs.push(...await discoverDeclaredResourceFiles(packageDir, new Set(['package.yml'])));
     }
   }
   for (const sharedInputRoot of config.sharedInputs) {
