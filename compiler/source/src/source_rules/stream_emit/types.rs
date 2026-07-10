@@ -280,7 +280,7 @@ pub(super) fn infer_expr_type(
         | Expr::Throw { .. }
         | Expr::Rethrow { .. }
         | Expr::Catch { .. } => None,
-        Expr::DbOperation(operation) => Some(db_operation_result_type(operation)),
+        Expr::DbOperation(operation) => db_operation_result_type(operation),
         Expr::DbQuery(query) => Some(format!("DbQuery<{}>", query.target.name)),
         Expr::DbTransaction(transaction) => match transaction.mode {
             crate::shared::ast::DbBlockMode::Effect => Some("null".to_string()),
@@ -302,70 +302,41 @@ pub(super) fn infer_expr_type(
 }
 
 #[cfg(test)]
-fn db_operation_result_type(operation: &crate::shared::ast::DbOperation) -> String {
+fn db_operation_result_type(operation: &crate::shared::ast::DbOperation) -> Option<String> {
+    let read_target = operation
+        .projection
+        .is_none()
+        .then_some(operation.target.name.as_str());
     match operation.op {
         crate::shared::ast::DbOperationKind::Find if operation.many => {
-            format!(
-                "Array<{}>",
-                db_read_projection_record_type(operation, &operation.target.name)
-            )
+            read_target.map(|target| format!("Array<{target}>"))
         }
         crate::shared::ast::DbOperationKind::Find
         | crate::shared::ast::DbOperationKind::Optional => {
-            format!(
-                "{}?",
-                db_read_projection_record_type(operation, &operation.target.name)
-            )
+            read_target.map(|target| format!("{target}?"))
         }
         crate::shared::ast::DbOperationKind::Insert if operation.many => {
-            "DbInsertManyResult".to_string()
+            Some("DbInsertManyResult".to_string())
         }
         crate::shared::ast::DbOperationKind::Update if operation.many => {
-            "DbUpdateManyResult".to_string()
+            Some("DbUpdateManyResult".to_string())
         }
         crate::shared::ast::DbOperationKind::Delete if operation.many => {
-            "DbDeleteManyResult".to_string()
+            Some("DbDeleteManyResult".to_string())
         }
-        crate::shared::ast::DbOperationKind::Require => {
-            db_read_projection_record_type(operation, &operation.target.name)
-        }
-        crate::shared::ast::DbOperationKind::Insert => {
-            db_full_projection_record_type(&operation.target.name)
-        }
+        crate::shared::ast::DbOperationKind::Require => read_target.map(str::to_string),
+        crate::shared::ast::DbOperationKind::Insert => Some(operation.target.name.clone()),
         crate::shared::ast::DbOperationKind::Update
         | crate::shared::ast::DbOperationKind::Replace => {
-            format!(
-                "{}?",
-                db_full_projection_record_type(&operation.target.name)
-            )
+            Some(format!("{}?", operation.target.name))
         }
         crate::shared::ast::DbOperationKind::Upsert => {
-            format!(
-                "DbUpsertResult<{}>",
-                db_full_projection_record_type(&operation.target.name)
-            )
+            Some(format!("DbUpsertResult<{}>", operation.target.name))
         }
         crate::shared::ast::DbOperationKind::Delete
-        | crate::shared::ast::DbOperationKind::Exists => "bool".to_string(),
-        crate::shared::ast::DbOperationKind::Count => "number".to_string(),
+        | crate::shared::ast::DbOperationKind::Exists => Some("bool".to_string()),
+        crate::shared::ast::DbOperationKind::Count => Some("number".to_string()),
     }
-}
-
-#[cfg(test)]
-fn db_read_projection_record_type(
-    operation: &crate::shared::ast::DbOperation,
-    target_name: &str,
-) -> String {
-    if operation.projection.is_some() {
-        format!("ReadonlyProjectionRecord<{target_name}>")
-    } else {
-        db_full_projection_record_type(target_name)
-    }
-}
-
-#[cfg(test)]
-fn db_full_projection_record_type(target_name: &str) -> String {
-    format!("FullReadonlyProjectionRecord<{target_name}>")
 }
 
 #[cfg(test)]

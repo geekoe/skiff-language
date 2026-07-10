@@ -1,4 +1,5 @@
 pub mod api_spec;
+pub mod db_projection;
 pub mod artifact {
     pub use skiff_artifact_model::*;
 }
