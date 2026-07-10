@@ -6,14 +6,23 @@ use skiff_runtime_capability_context::{
     DbProviderConfig, DbProviderFactory,
 };
 
-use crate::{ServiceDbConfig, ServiceDbRuntime};
+use crate::{DbEncryptionKeyring, ServiceDbConfig, ServiceDbRuntime};
 
 #[derive(Clone, Default)]
-pub struct MongoServiceDbProviderFactory;
+pub struct MongoServiceDbProviderFactory {
+    keyring: Option<Arc<DbEncryptionKeyring>>,
+}
+
+impl MongoServiceDbProviderFactory {
+    pub fn new(keyring: Option<Arc<DbEncryptionKeyring>>) -> Self {
+        Self { keyring }
+    }
+}
 
 impl DbProviderFactory for MongoServiceDbProviderFactory {
     fn build(&self, input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource> {
-        let config = service_db_config_from_provider_config(input.config)?;
+        let mut config = service_db_config_from_provider_config(input.config)?;
+        config.encryption_cipher = self.keyring.as_ref().map(|keyring| keyring.cipher());
         let runtime =
             ServiceDbRuntime::new_with_config(input.service_id, config, &input.runtime_program_db)
                 .map_err(DbCapabilityError::opaque)?;
@@ -38,6 +47,7 @@ fn service_db_config_from_provider_config(
     match object.get("mongoUrl") {
         Some(Value::String(value)) if !value.trim().is_empty() => Ok(ServiceDbConfig {
             mongo_url: value.clone(),
+            encryption_cipher: None,
         }),
         Some(Value::String(_)) => Err(DbCapabilityError::decode(
             "serviceDb provider config field mongoUrl must be a non-empty string",

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    DbIndexDirectionIr, DbIndexFieldIr, DbLeaseIr, DbMetadataIndexIr, DbMetadataIr,
-    DbObjectFieldIr, DbObjectKeyIr, FieldPathIr, PackageRefIr, TypeRefIr,
+    DbFieldStorageIr, DbIndexDirectionIr, DbIndexFieldIr, DbLeaseIr, DbMetadataIndexIr,
+    DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, FieldPathIr, PackageRefIr, TypeRefIr,
 };
 use skiff_runtime_boundary::db as db_boundary;
 
@@ -11,21 +12,23 @@ use skiff_runtime_capability_context::{
     DbOrderDirection, DbOrderEntry, FieldPath, ServiceDbChange,
 };
 
-use crate::{Result, ServiceDbError};
+use crate::{DbEncryptionCipher, Result, ServiceDbError};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServiceDbMetadata {
     collections: Vec<DbCollectionMetadata>,
     collections_by_canonical_type: HashMap<String, usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DbCollectionMetadata {
     pub module_path: Option<String>,
     pub type_name: String,
     pub collection_name: String,
     pub key_field: String,
     pub key_ty: Option<db_boundary::DbBoundaryValuePlan>,
+    pub storage_service_id: String,
+    pub encryption_cipher: Option<DbEncryptionCipher>,
     pub fields: HashMap<String, DbFieldMetadata>,
     pub leases: HashMap<String, DbLeaseMetadata>,
     pub immutable_file_paths: Vec<Vec<String>>,
@@ -35,10 +38,23 @@ pub struct DbCollectionMetadata {
     pub indexes: Vec<DbIndexMetadata>,
 }
 
+impl fmt::Debug for DbCollectionMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DbCollectionMetadata")
+            .field("type_name", &self.type_name)
+            .field("collection_name", &self.collection_name)
+            .field("key_field", &self.key_field)
+            .field("fields", &self.fields)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DbFieldMetadata {
     pub name: String,
     pub ty: Option<db_boundary::DbBoundaryValuePlan>,
+    pub storage: DbFieldStorageIr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,11 +73,25 @@ pub struct DbIndexMetadata {
 }
 
 impl ServiceDbMetadata {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_runtime_program_db(entries: &[DbMetadataIr]) -> Result<Self> {
+        Self::from_runtime_program_db_with_encryption(entries, "test.local/service", None)
+    }
+
+    pub fn from_runtime_program_db_with_encryption(
+        entries: &[DbMetadataIr],
+        storage_service_id: &str,
+        encryption_cipher: Option<DbEncryptionCipher>,
+    ) -> Result<Self> {
         let mut collections = Vec::new();
         let mut collections_by_canonical_type = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
-            let binding = DbCollectionMetadata::from_ir(entry, index)?;
+            let binding = DbCollectionMetadata::from_ir_with_encryption(
+                entry,
+                index,
+                storage_service_id,
+                encryption_cipher.clone(),
+            )?;
             if let Some(canonical_type_name) = binding.canonical_type_name() {
                 if collections_by_canonical_type.contains_key(&canonical_type_name) {
                     return Err(ServiceDbError::InvalidDbMetadata(format!(
@@ -121,7 +151,17 @@ impl DbCollectionMetadata {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_ir(ir: &DbMetadataIr, index: usize) -> Result<Self> {
+        Self::from_ir_with_encryption(ir, index, "test.local/service", None)
+    }
+
+    pub fn from_ir_with_encryption(
+        ir: &DbMetadataIr,
+        index: usize,
+        storage_service_id: &str,
+        encryption_cipher: Option<DbEncryptionCipher>,
+    ) -> Result<Self> {
         let module_path = non_empty_optional_string(&ir.module_path);
         let type_name = required_typed_string(
             &ir.type_name,
@@ -143,6 +183,8 @@ impl DbCollectionMetadata {
             collection_name,
             key_field: key.name,
             key_ty: key.ty,
+            storage_service_id: storage_service_id.to_string(),
+            encryption_cipher,
             fields,
             leases,
             immutable_file_paths,
@@ -153,7 +195,51 @@ impl DbCollectionMetadata {
                 "runtime program db[{index}].indexes are invalid: {error}"
             ))
         })?;
+        metadata.validate_encrypted_storage(index)?;
         Ok(metadata)
+    }
+
+    pub fn has_encrypted_fields(&self) -> bool {
+        self.fields
+            .values()
+            .any(|field| field.storage == DbFieldStorageIr::Encrypted)
+    }
+
+    fn validate_encrypted_storage(&self, index: usize) -> Result<()> {
+        if !self.has_encrypted_fields() {
+            return Ok(());
+        }
+        if self.encryption_cipher.is_none() {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}] declares encrypted storage but the runtime host has no service DB encryption keyring"
+            )));
+        }
+        if !self
+            .key_ty
+            .as_ref()
+            .is_some_and(|plan| is_plain_string_type(plan.artifact_type_ref()))
+        {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}] with encrypted storage must use a plain string key"
+            )));
+        }
+        for field in self
+            .fields
+            .values()
+            .filter(|field| field.storage == DbFieldStorageIr::Encrypted)
+        {
+            if !field
+                .ty
+                .as_ref()
+                .is_some_and(|plan| is_plain_string_type(plan.artifact_type_ref()))
+            {
+                return Err(ServiceDbError::InvalidDbMetadata(format!(
+                    "runtime program db[{index}] encrypted field {} must be a plain string",
+                    field.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn has_immutable_file_cascade(&self) -> bool {
@@ -283,9 +369,30 @@ fn parse_fields(
         let ty = Some(db_boundary::DbBoundaryValuePlan::from_artifact_type_ref(
             entry.ty.clone(),
         ));
-        fields.insert(name.clone(), DbFieldMetadata { name, ty });
+        if fields
+            .insert(
+                name.clone(),
+                DbFieldMetadata {
+                    name,
+                    ty,
+                    storage: entry.storage,
+                },
+            )
+            .is_some()
+        {
+            return Err(ServiceDbError::InvalidDbMetadata(format!(
+                "runtime program db[{index}] has duplicate field name"
+            )));
+        }
     }
     Ok(fields)
+}
+
+fn is_plain_string_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Native { name, args } if name == "string" && args.is_empty()
+    )
 }
 
 fn parse_leases(entries: &[DbLeaseIr], index: usize) -> Result<HashMap<String, DbLeaseMetadata>> {
