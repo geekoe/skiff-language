@@ -12,6 +12,7 @@ import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
 import { readProjectPackageDirs } from './lib/project-config.mjs';
+import { startRecoveringPoll, withOwnedDirectoryLock } from './lib/dev-sync-recovery.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -89,49 +90,32 @@ if (cli.watch) {
 }
 
 async function watch(cli, initialConfig, pollIntervalMs) {
-  let { config, fingerprint } = await buildWatchedConfigUntilStable(cli, initialConfig, {
-    syncShared: true,
-    reloadRouter: !cli.noReload,
-  });
-  let building = false;
-  let pending = false;
+  let config = initialConfig;
+  let fingerprint;
 
   console.log(`[skiff-dev-sync] watching ${config.services.length} service(s)`);
 
-  async function runWatchCycle() {
-    if (building) {
-      pending = true;
-      return;
-    }
-    building = true;
-    try {
-      do {
-        pending = false;
-        const currentFingerprint = await inputFingerprint(config);
-        if (currentFingerprint === fingerprint) {
-          continue;
-        }
-        const previousConfig = config;
-        const nextConfig = await loadConfig(cli);
-        const stable = await buildWatchedConfigUntilStable(cli, nextConfig, {
-          syncShared: true,
-          reloadRouter: !cli.noReload,
-          initialFingerprint: await inputFingerprint(nextConfig),
-          pruneServiceIds: removedServiceIds(previousConfig.services, nextConfig.services),
-        });
-        config = stable.config;
-        fingerprint = stable.fingerprint;
-      } while (pending);
-    } catch (error) {
+  await startRecoveringPoll({
+    pollIntervalMs,
+    async runCycle() {
+      const nextConfig = await loadConfig(cli);
+      const currentFingerprint = await inputFingerprint(nextConfig);
+      if (fingerprint !== undefined && currentFingerprint === fingerprint) {
+        return;
+      }
+      const stable = await buildWatchedConfigUntilStable(cli, nextConfig, {
+        syncShared: true,
+        reloadRouter: !cli.noReload,
+        initialFingerprint: currentFingerprint,
+        pruneServiceIds: removedServiceIds(config.services, nextConfig.services),
+      });
+      config = stable.config;
+      fingerprint = stable.fingerprint;
+    },
+    onError(error) {
       console.error(`[skiff-dev-sync] rebuild failed: ${formatError(error)}`);
-    } finally {
-      building = false;
-    }
-  }
-
-  setInterval(() => {
-    void runWatchCycle();
-  }, pollIntervalMs);
+    },
+  });
 }
 
 async function buildWatchedConfigUntilStable(cli, initialConfig, options) {
@@ -284,33 +268,16 @@ function effectivePackageDirs(config, service) {
 }
 
 async function withBuildLock(service, lockDir, action) {
-  await mkdir(dirname(lockDir), { recursive: true });
-  const startedAt = Date.now();
-  while (true) {
-    try {
-      await mkdir(lockDir);
-      await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
-        pid: process.pid,
-        serviceId: service.serviceId,
-        startedAt: new Date().toISOString(),
-      }, null, 2));
-      break;
-    } catch (error) {
-      if (error?.code !== 'EEXIST') {
-        throw error;
-      }
-      if (Date.now() - startedAt > lockTimeoutMs) {
-        throw new Error(`timed out waiting for ${lockDir}`);
-      }
-      await sleep(200);
-    }
-  }
-
-  try {
-    return await action();
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
+  return withOwnedDirectoryLock({
+    lockDir,
+    owner: { serviceId: service.serviceId },
+    action,
+    timeoutMs: lockTimeoutMs,
+    sleep,
+    onReclaim(path) {
+      console.warn(`[skiff-dev-sync] reclaimed dead-owner build lock ${path}`);
+    },
+  });
 }
 
 async function syncArtifactRoot(service, sourceRoot, targetRoot) {

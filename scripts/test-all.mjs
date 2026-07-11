@@ -31,6 +31,7 @@ const SCRIPT_SYNTAX_CHECK_FILES = [
   'scripts/check-crate-public-api.mjs',
   'scripts/check-skiff-source-layout.mjs',
   'scripts/check-package-store-discovery.mjs',
+  'scripts/lib/dev-sync-recovery.mjs',
   'scripts/check-db-encrypted-storage-live.mjs',
   'scripts/build-runtime-stack.mjs',
   'scripts/deploy-runtime-stack.mjs',
@@ -145,6 +146,11 @@ function unitPhases(unit) {
           command: 'node',
           args: ['--check', file],
         })),
+        {
+          name: 'scripts:dev-sync-recovery',
+          command: 'node',
+          args: ['--test', 'scripts/tests/dev-sync-recovery.test.mjs'],
+        },
         {
           name: 'scripts:local-instance',
           command: 'node',

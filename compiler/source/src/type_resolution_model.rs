@@ -2945,12 +2945,17 @@ fn type_ref_debug_text(ty: &TypeRefIr) -> String {
         }
         TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path.clone(),
         TypeRefIr::AnyInterface { interface } => {
+            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map_or_else(
+                    |_| interface.interface_abi_id.clone(),
+                    |identity| type_ref_debug_text(&identity),
+                );
             if interface.canonical_type_args.is_empty() {
-                format!("any {}", interface.interface_abi_id)
+                format!("any {interface_name}")
             } else {
                 format!(
                     "any {}<{}>",
-                    interface.interface_abi_id,
+                    interface_name,
                     interface
                         .canonical_type_args
                         .iter()
@@ -3445,6 +3450,26 @@ mod tests {
                 "expected `{raw}` error to contain `{expected}`, got: {error}"
             );
         }
+    }
+
+    #[test]
+    fn externalized_any_interface_source_text_remains_parseable() {
+        let (_parsed_sources, type_resolution) = type_resolution(object_safe_interface_source());
+        let context = context();
+        let resolved = type_resolution
+            .resolve_type_text("any Provider", &context)
+            .expect("any Provider should resolve");
+
+        let externalized = type_resolution.externalize_local_type_refs(&resolved, MODULE);
+
+        assert_eq!(
+            externalized.source_text,
+            "any internal.assignability.Provider"
+        );
+        let reparsed = type_resolution
+            .resolve_type_text(&externalized.source_text, &context)
+            .expect("externalized interface text should remain valid source syntax");
+        assert_eq!(reparsed.ir, externalized.ir);
     }
 
     #[test]

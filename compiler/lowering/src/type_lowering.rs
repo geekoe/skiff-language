@@ -153,12 +153,17 @@ pub(super) fn type_ref_ir_type_text(ty: &TypeRefIr) -> String {
         ),
         TypeRefIr::Nullable { inner } => format!("{}?", type_ref_ir_type_text(inner)),
         TypeRefIr::AnyInterface { interface } => {
+            let interface_name = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+                .map_or_else(
+                    |_| interface.interface_abi_id.clone(),
+                    |identity| type_ref_ir_type_text(&identity),
+                );
             if interface.canonical_type_args.is_empty() {
-                format!("any {}", interface.interface_abi_id)
+                format!("any {interface_name}")
             } else {
                 format!(
                     "any {}<{}>",
-                    interface.interface_abi_id,
+                    interface_name,
                     interface
                         .canonical_type_args
                         .iter()
