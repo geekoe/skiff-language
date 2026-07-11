@@ -2451,6 +2451,21 @@ fn encrypted_metadata(key_type: &str, field_type: &str, indexes: Value) -> Vec<D
     }]))
 }
 
+fn encrypted_metadata_with_field_type(field_type: Value) -> Vec<DbMetadataIr> {
+    db_metadata(json!([{
+        "modulePath": "internal.credential",
+        "kind": "object",
+        "typeName": "Credential",
+        "collectionName": "credential",
+        "key": { "name": "id", "type": { "kind": "builtin", "name": "string" } },
+        "fields": [
+            { "name": "apiKey", "type": field_type, "storage": "encrypted" },
+            { "name": "label", "type": { "kind": "builtin", "name": "string" } }
+        ],
+        "indexes": []
+    }]))
+}
+
 fn test_encryption_keyring() -> Arc<DbEncryptionKeyring> {
     Arc::new(
         DbEncryptionKeyring::parse_json(
@@ -2762,25 +2777,37 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
         "fields": [{ "field": { "text": "apiKey", "segments": ["apiKey"] }, "direction": "asc" }],
         "where": null
     }]);
-    assert!(DbCollectionMetadata::from_ir_with_encryption(
+    let indexed_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", indexed)[0],
         0,
         "example.com/credential",
-        Some(test_encryption_keyring().cipher())
+        Some(test_encryption_keyring().cipher()),
     )
-    .is_err());
+    .expect_err("runtime-forged encrypted index must fail");
+    assert!(
+        indexed_error
+            .to_string()
+            .contains("encrypted DB field apiKey cannot be used for index"),
+        "{indexed_error}"
+    );
     let partial_index = json!([{
         "name": "byLabelWhenApiKeyExists", "unique": false,
         "fields": [{ "field": { "text": "label", "segments": ["label"] }, "direction": "asc" }],
         "where": { "apiKey": "forbidden" }
     }]);
-    assert!(DbCollectionMetadata::from_ir_with_encryption(
+    let partial_index_error = DbCollectionMetadata::from_ir_with_encryption(
         &encrypted_metadata("string", "string", partial_index)[0],
         0,
         "example.com/credential",
-        Some(test_encryption_keyring().cipher())
+        Some(test_encryption_keyring().cipher()),
     )
-    .is_err());
+    .expect_err("runtime-forged encrypted partial-index predicate must fail");
+    assert!(
+        partial_index_error
+            .to_string()
+            .contains("encrypted DB field apiKey cannot be used for predicate"),
+        "{partial_index_error}"
+    );
 
     let error = match MongoServiceDbProviderFactory::default().build(DbProviderBuildInput {
         service_id: "example.com/credential".to_string(),
@@ -2802,6 +2829,53 @@ fn encrypted_metadata_and_provider_activation_fail_closed() {
             runtime_program_db: valid,
         })
         .expect("encrypted activation with keyring");
+}
+
+#[test]
+fn forged_encrypted_metadata_rejects_nullable_recoverable_and_immutable_file_lanes() {
+    let cases = [
+        (
+            "nullable string",
+            json!({
+                "kind": "nullable",
+                "inner": { "kind": "builtin", "name": "string" }
+            }),
+        ),
+        (
+            "recoverable envelope",
+            json!({
+                "kind": "anyInterface",
+                "interface": {
+                    "interfaceAbiId": "pkg.ToolProvider",
+                    "canonicalTypeArgs": []
+                }
+            }),
+        ),
+        (
+            "immutable file",
+            json!({
+                "kind": "serviceSymbol",
+                "symbol": { "modulePath": "std.file", "symbol": "ImmutableFile" }
+            }),
+        ),
+    ];
+
+    for (label, field_type) in cases {
+        let forged = encrypted_metadata_with_field_type(field_type);
+        let error = DbCollectionMetadata::from_ir_with_encryption(
+            &forged[0],
+            0,
+            "example.com/credential",
+            Some(test_encryption_keyring().cipher()),
+        )
+        .expect_err(label);
+        assert!(
+            error
+                .to_string()
+                .contains("encrypted field apiKey must be a plain string"),
+            "{label}: {error}"
+        );
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # DB Object Encrypted Storage Field 实现文档
 
-状态：implementation design
+状态：implemented
 日期：2026-07-10
 
 ## 0. 结论
@@ -772,7 +772,7 @@ cargo test -p skiff-runtime-linked-program
 
 ```bash
 cargo test -p skiff-runtime-service-db --no-fail-fast
-cargo test -p skiff-runtime --no-fail-fast
+cargo test -p skiff-runtime-host --no-fail-fast
 ```
 
 ### 11.4 Config/test-runner/live tests
@@ -787,14 +787,11 @@ cargo test -p skiff-runtime --no-fail-fast
 - runtime 重启后使用同 keyring 仍可读；换 root key 或删旧 key 后 fail closed。
 - rotation fixture 至少包含两个 `storageServiceId` 共用同一 keyring，且至少一个 collection 有两个 encrypted field：在 cohort 写屏障下，每个 collection 单次扫描并按行同时重写全部 encrypted field，再对所有 collection/field 执行 §8.1 的 raw Mongo `$ne` count 归零检查；遗漏任一 storage service/field 时禁止删除旧 key。测试覆盖批次写入后、checkpoint 前崩溃恢复，以及下一次 rotation 使用新 target fingerprint 不复用旧游标。完整迁移后删除在线旧 key 仍可读，离线 recovery keyring 保留旧备份恢复能力；文档明确不声称并发在线 rotation。
 
-修改 runtime/artifact schema 后按仓库约定构建当前二进制，再启动独立 instance 做 live 验证：
+live 验证使用隔离 harness；它在 `45000`–`45999` 租用端口，启动并清理独立 Mongo、router、runtime、
+keyring 和 artifact root，不接触 stable instance：
 
 ```bash
-cd /Users/geek/workspace/skiff-db-encrypted-integration
-node scripts/skiff.mjs instance init .skiff-instance/config.yml
-# 如 4100–4102 已占用，先在该 config 中设置未占用的 ports.base
-node scripts/skiff.mjs instance build .skiff-instance/config.yml
-node scripts/skiff.mjs instance up .skiff-instance/config.yml
+node scripts/check-db-encrypted-storage-live.mjs
 ```
 
 最终验证：
