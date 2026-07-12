@@ -14,6 +14,7 @@ pub(super) struct RuntimeOwnedActorParts {
     pub(super) trace_id: Option<String>,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(super) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(super) cancellation: CancellationToken,
 }
 
@@ -117,13 +118,12 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        Box::pin(async move {
-            concrete::ActorClient::new(self.context.clone())
-                .submit_spawn(request, args_payload)
-                .await
-                .map(|_| ())
-                .map_err(capability_contract::CapabilityError::opaque)
-        })
+        Box::pin(submit_spawn_and_wake(
+            self.context.clone(),
+            self.owned.spawn_workers.clone(),
+            request,
+            args_payload,
+        ))
     }
 }
 
@@ -234,12 +234,118 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         request: SpawnSubmitControlRequest,
         args_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ()> {
-        Box::pin(async move {
-            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .submit_spawn(request, args_payload)
-                .await
-                .map(|_| ())
-                .map_err(capability_contract::CapabilityError::opaque)
-        })
+        Box::pin(submit_spawn_and_wake(
+            concrete_actor_context_from_owned(&self.0),
+            self.0.spawn_workers.clone(),
+            request,
+            args_payload,
+        ))
+    }
+}
+
+async fn submit_spawn_and_wake(
+    context: concrete::ActorCapabilityContext<'_>,
+    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
+    request: SpawnSubmitControlRequest,
+    args_payload: Vec<u8>,
+) -> capability_contract::CapabilityResult<()> {
+    let build_id = request.build_id.clone();
+    concrete::ActorClient::new(context)
+        .submit_spawn(request, args_payload)
+        .await
+        .map_err(capability_contract::CapabilityError::opaque)?;
+    if let Some(build_id) = build_id {
+        spawn_workers.wake_build(&build_id);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_runtime_transport::protocol::{
+        SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+    };
+    use tokio::time::{timeout, Duration};
+
+    const BUILD_ID: &str =
+        "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[tokio::test]
+    async fn successful_spawn_submit_wakes_the_target_build() {
+        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
+        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
+        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
+        let registration = spawn_workers.registration_for_test();
+        let wake = spawn_workers
+            .wake_signal_for_test(&registration, BUILD_ID)
+            .expect("test registration should exist");
+        let context = concrete::ActorClientContext::from_parts(
+            "runtime-test",
+            "service-test",
+            "v1",
+            "request-test",
+            "program.test",
+            BUILD_ID,
+            "protocol-test",
+            Some("protocol-test"),
+            None,
+            None,
+            Some(&router_sender),
+            outbound_requests.as_ref(),
+            CancellationToken::new(),
+        );
+        let submit =
+            submit_spawn_and_wake(context, spawn_workers, spawn_submit_request(), Vec::new());
+        tokio::pin!(submit);
+
+        let rpc_id = tokio::select! {
+            result = &mut submit => panic!("spawn submit completed before its response: {result:?}"),
+            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
+                concrete::RouterWriterMessage::Control(
+                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
+                ) => request.rpc_id,
+                other => panic!("unexpected router message: {other:?}"),
+            }
+        };
+        let response = SpawnSubmitResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "spawn.submit.response".to_string(),
+            rpc_id: rpc_id.clone(),
+            spawn_id: "spawn-test".to_string(),
+            item_id: "item-test".to_string(),
+            status: "submitted".to_string(),
+        };
+        outbound_requests
+            .complete_for_test(&rpc_id)
+            .expect("spawn submit response should be pending")
+            .send(skiff_runtime_request::OutboundResponse::End {
+                payload: serde_json::to_vec(&response).expect("response should serialize"),
+            })
+            .expect("spawn submit response should be delivered");
+
+        submit.await.expect("spawn submit should succeed");
+        timeout(Duration::from_millis(50), wake.notified())
+            .await
+            .expect("successful submit should preserve a build wake permit");
+    }
+
+    fn spawn_submit_request() -> SpawnSubmitControlRequest {
+        SpawnSubmitControlRequest {
+            rpc_id: String::new(),
+            runtime_id: String::new(),
+            target_kind: "function".to_string(),
+            service_id: "service-test".to_string(),
+            service_version: "v1".to_string(),
+            service_protocol_identity: "protocol-test".to_string(),
+            target: "function:program.test".to_string(),
+            spawn_id: None,
+            build_id: Some(BUILD_ID.to_string()),
+            activation_identity: None,
+            caller_request_id: Some("request-test".to_string()),
+            trace_id: None,
+            caller_target: Some("program.test".to_string()),
+            max_queue_wait_ms: None,
+        }
     }
 }

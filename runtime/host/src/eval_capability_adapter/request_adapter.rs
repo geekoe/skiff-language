@@ -5,6 +5,7 @@ pub(crate) struct RuntimeRequestEvalAdapterInput {
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
+    pub(crate) spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     pub(crate) telemetry_context: Option<RequestTelemetryContext>,
     pub(crate) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
 }
@@ -17,6 +18,7 @@ pub(crate) fn request_eval_adapter(
         file_source: input.file_source,
         http_options: input.http_options,
         outbound_requests: input.outbound_requests,
+        spawn_workers: input.spawn_workers,
         telemetry_context: input.telemetry_context,
         router_sender: input.router_sender,
     })
@@ -45,6 +47,7 @@ struct RuntimeRequestEvalAdapter {
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
     outbound_requests: Arc<OutboundRequestRegistry>,
+    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     telemetry_context: Option<RequestTelemetryContext>,
     router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
 }
@@ -97,6 +100,7 @@ impl RequestEvalAdapter for RuntimeRequestEvalAdapter {
             operation,
             self.router_sender.as_ref(),
             &self.outbound_requests,
+            &self.spawn_workers,
             cancellation.clone(),
         );
         let outbound = outbound(outbound_service_context_from_request(

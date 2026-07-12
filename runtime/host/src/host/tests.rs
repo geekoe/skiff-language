@@ -2905,6 +2905,145 @@ async fn actor_client_put_sends_rpc_and_decodes_response_header() {
 }
 
 #[tokio::test]
+async fn spawn_workers_start_four_independent_claimers_per_build() {
+    let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
+    let host = RuntimeHost::new(RuntimeConfig {
+        db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-base".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
+        artifact_roots: Vec::new(),
+        http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        http_egress_proxy: None,
+        services: vec![runtime_program_service_config(
+            "runtime-base:program",
+            program,
+        )],
+    })
+    .expect("host should build");
+    let service = host.service_snapshot()[0].clone();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let registration = host.spawn_workers.registration_for_test();
+
+    let started = super::spawn_worker::start_spawn_workers_for_services(
+        host.clone(),
+        sender,
+        vec![service],
+        &registration,
+    );
+
+    assert_eq!(started, 4);
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 4);
+    let mut worker_ids = std::collections::HashSet::new();
+    for _ in 0..4 {
+        let message = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("each spawn worker should claim without waiting for another worker")
+            .expect("spawn.claim.request should be sent");
+        let (claim_header, payload): (SpawnClaimRequestFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&router_binary(message))
+                .expect("spawn.claim.request should decode");
+        assert!(payload.is_empty());
+        assert_eq!(claim_header.max_concurrency, Some(1.0));
+        assert!(worker_ids.insert(claim_header.worker_id));
+    }
+}
+
+#[tokio::test]
+async fn spawn_worker_session_cleanup_prevents_reconnect_growth_and_stale_wakes() {
+    let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
+    let host = RuntimeHost::new(RuntimeConfig {
+        db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-base".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
+        artifact_roots: Vec::new(),
+        http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        http_egress_proxy: None,
+        services: vec![runtime_program_service_config(
+            "runtime-base:program",
+            program,
+        )],
+    })
+    .expect("host should build");
+
+    let (first_sender, mut first_receiver) = mpsc::unbounded_channel();
+    let first_registration = super::spawn_worker::start_spawn_workers(host.clone(), first_sender);
+    let stale_wake = host
+        .spawn_workers
+        .wake_signal_for_test(&first_registration, BUILD_A)
+        .expect("first session build should be registered");
+    for _ in 0..4 {
+        timeout(Duration::from_secs(1), first_receiver.recv())
+            .await
+            .expect("first session workers should claim")
+            .expect("first session claim should be sent");
+    }
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 4);
+
+    assert_eq!(
+        timeout(
+            Duration::from_secs(1),
+            host.spawn_workers.stop_registration(&first_registration),
+        )
+        .await
+        .expect("disconnect cleanup should interrupt pending claims"),
+        4
+    );
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 0);
+    assert_eq!(host.spawn_workers.registration_count_for_test(), 0);
+    let (late_sender, _late_receiver) = mpsc::unbounded_channel();
+    assert_eq!(
+        super::spawn_worker::start_spawn_workers_for_services(
+            host.clone(),
+            late_sender,
+            host.service_snapshot(),
+            &first_registration,
+        ),
+        0,
+        "a lazy load finishing after disconnect must not recreate the old registration"
+    );
+
+    let (second_sender, mut second_receiver) = mpsc::unbounded_channel();
+    let second_registration = super::spawn_worker::start_spawn_workers(host.clone(), second_sender);
+    let current_wake = host
+        .spawn_workers
+        .wake_signal_for_test(&second_registration, BUILD_A)
+        .expect("second session build should be registered");
+    for _ in 0..4 {
+        timeout(Duration::from_secs(1), second_receiver.recv())
+            .await
+            .expect("second session workers should claim")
+            .expect("second session claim should be sent");
+    }
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 4);
+    assert_eq!(host.spawn_workers.registration_count_for_test(), 1);
+
+    host.spawn_workers.wake_build(BUILD_A);
+    timeout(Duration::from_millis(50), current_wake.notified())
+        .await
+        .expect("current session should receive the build wake");
+    assert!(
+        timeout(Duration::from_millis(20), stale_wake.notified())
+            .await
+            .is_err(),
+        "removed session must not consume current build wakes"
+    );
+
+    assert_eq!(
+        timeout(
+            Duration::from_secs(1),
+            host.spawn_workers.stop_registration(&second_registration),
+        )
+        .await
+        .expect("second session cleanup should interrupt pending claims"),
+        4
+    );
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 0);
+    assert_eq!(host.spawn_workers.registration_count_for_test(), 0);
+}
+
+#[tokio::test]
 async fn spawn_worker_claim_executes_function_and_completes_item() {
     let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
     let host = RuntimeHost::new(RuntimeConfig {

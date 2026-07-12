@@ -54,8 +54,27 @@ impl RuntimeHost {
         request: RequestEnvelope,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
+        self.spawn_request_inner(request, sender, None).await;
+    }
+
+    pub(crate) async fn spawn_session_request(
+        &self,
+        request: RequestEnvelope,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        registration: &spawn_worker::SpawnWorkerRegistration,
+    ) {
+        self.spawn_request_inner(request, sender, Some(registration))
+            .await;
+    }
+
+    async fn spawn_request_inner(
+        &self,
+        request: RequestEnvelope,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        registration: Option<&spawn_worker::SpawnWorkerRegistration>,
+    ) {
         let operation_context = match self
-            .lookup_or_load_operation(&request, sender.clone())
+            .lookup_or_load_operation_inner(&request, sender.clone(), registration)
             .await
         {
             Ok(operation_context) => operation_context,
@@ -251,6 +270,7 @@ impl RuntimeHost {
                 ),
                 http_options: self.http_runtime_options.clone(),
                 outbound_requests: self.outbound_requests.clone(),
+                spawn_workers: self.spawn_workers.clone(),
                 telemetry_context,
                 router_sender,
             },
@@ -288,7 +308,23 @@ impl RuntimeHost {
         payload: Vec<u8>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        package_test_entry::spawn_package_test_start(self, header, payload, sender);
+        package_test_entry::spawn_package_test_start(self, header, payload, sender, None);
+    }
+
+    pub(crate) fn submit_session_package_test_start(
+        &self,
+        header: skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
+        payload: Vec<u8>,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        registration: spawn_worker::SpawnWorkerRegistration,
+    ) {
+        package_test_entry::spawn_package_test_start(
+            self,
+            header,
+            payload,
+            sender,
+            Some(registration),
+        );
     }
 
     #[cfg(test)]
@@ -334,10 +370,21 @@ impl RuntimeHost {
         self.lookup_operation_in_state(request)
     }
 
+    #[cfg(test)]
     pub(crate) async fn lookup_or_load_operation(
         &self,
         request: &RequestEnvelope,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<ServiceOperationContext> {
+        self.lookup_or_load_operation_inner(request, sender, None)
+            .await
+    }
+
+    async fn lookup_or_load_operation_inner(
+        &self,
+        request: &RequestEnvelope,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        registration: Option<&spawn_worker::SpawnWorkerRegistration>,
     ) -> Result<ServiceOperationContext> {
         match self.lookup_operation_in_state(request) {
             Ok(operation) => return Ok(operation),
@@ -348,7 +395,14 @@ impl RuntimeHost {
         let loaded = self.lazy_load_request_service(request).await?;
         if !loaded.is_empty() {
             self.queue_service_registers(sender.clone(), &loaded)?;
-            spawn_worker::start_spawn_workers_for_services(self.clone(), sender.clone(), loaded);
+            if let Some(registration) = registration {
+                spawn_worker::start_spawn_workers_for_services(
+                    self.clone(),
+                    sender.clone(),
+                    loaded,
+                    registration,
+                );
+            }
         }
         self.lookup_operation_in_state(request)
     }
