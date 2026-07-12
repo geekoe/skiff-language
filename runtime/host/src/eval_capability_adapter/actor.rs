@@ -276,7 +276,10 @@ mod tests {
         let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
         let outbound_requests = Arc::new(OutboundRequestRegistry::default());
         let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
-        let wake = spawn_workers.wake_signal_for_test(BUILD_ID);
+        let registration = spawn_workers.registration_for_test();
+        let wake = spawn_workers
+            .wake_signal_for_test(&registration, BUILD_ID)
+            .expect("test registration should exist");
         let context = concrete::ActorClientContext::from_parts(
             "runtime-test",
             "service-test",

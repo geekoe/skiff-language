@@ -48,13 +48,23 @@ const SPAWN_WORKERS_PER_BUILD: usize = 4;
 
 #[derive(Default)]
 pub(crate) struct SpawnWorkerRegistry {
-    builds: StdMutex<HashMap<String, SpawnWorkerBuild>>,
+    registrations: StdMutex<HashMap<String, SpawnWorkerRegistrationState>>,
+}
+
+#[derive(Default)]
+struct SpawnWorkerRegistrationState {
+    builds: HashMap<String, SpawnWorkerBuild>,
 }
 
 #[derive(Default)]
 struct SpawnWorkerBuild {
     workers: Vec<SpawnWorkerHandle>,
     wake: Arc<Notify>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpawnWorkerRegistration {
+    id: String,
 }
 
 struct SpawnWorkerHandle {
@@ -64,73 +74,136 @@ struct SpawnWorkerHandle {
 }
 
 impl SpawnWorkerRegistry {
-    fn wake_signal(&self, build_id: &str) -> Arc<Notify> {
-        self.builds
-            .lock()
-            .map(|mut builds| builds.entry(build_id.to_string()).or_default().wake.clone())
-            .unwrap_or_else(|_| Arc::new(Notify::new()))
-    }
-
-    fn register(&self, build_id: String, handle: SpawnWorkerHandle) {
-        if let Ok(mut builds) = self.builds.lock() {
-            builds.entry(build_id).or_default().workers.push(handle);
+    fn register_session(&self) -> SpawnWorkerRegistration {
+        let registration = SpawnWorkerRegistration {
+            id: format!("spawn-session-{}", uuid::Uuid::new_v4()),
+        };
+        if let Ok(mut registrations) = self.registrations.lock() {
+            registrations.insert(
+                registration.id.clone(),
+                SpawnWorkerRegistrationState::default(),
+            );
         }
+        registration
     }
 
     pub(crate) fn wake_build(&self, build_id: &str) {
-        let wake = self
-            .builds
+        let wakes = self
+            .registrations
             .lock()
-            .ok()
-            .and_then(|builds| builds.get(build_id).map(|build| build.wake.clone()));
-        if let Some(wake) = wake {
+            .map(|registrations| {
+                registrations
+                    .values()
+                    .filter_map(|registration| {
+                        registration
+                            .builds
+                            .get(build_id)
+                            .map(|build| build.wake.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for wake in wakes {
             wake.notify_one();
         }
     }
 
+    pub(crate) async fn stop_registration(&self, registration: &SpawnWorkerRegistration) -> usize {
+        let handles = self
+            .registrations
+            .lock()
+            .ok()
+            .and_then(|mut registrations| registrations.remove(&registration.id))
+            .map(|registration| {
+                registration
+                    .builds
+                    .into_values()
+                    .flat_map(|build| build.workers)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        stop_worker_handles(handles).await
+    }
+
     pub(super) async fn stop_builds(&self, build_ids: &[String]) -> usize {
         let mut handles = Vec::new();
-        if let Ok(mut builds) = self.builds.lock() {
-            for build_id in build_ids {
-                if let Some(build) = builds.remove(build_id) {
-                    handles.extend(build.workers);
+        if let Ok(mut registrations) = self.registrations.lock() {
+            for registration in registrations.values_mut() {
+                for build_id in build_ids {
+                    if let Some(build) = registration.builds.remove(build_id) {
+                        handles.extend(build.workers);
+                    }
                 }
             }
         }
-        let count = handles.len();
-        for handle in &handles {
-            handle.stop.request_stop();
-        }
-        for handle in handles {
-            if let Err(error) = handle.join.await {
-                warn!(
-                    event = "runtime.spawn_worker_join_error",
-                    worker_id = %handle.worker_id,
-                    error = %error
-                );
-            }
-        }
-        count
+        stop_worker_handles(handles).await
     }
 
     #[cfg(test)]
     #[allow(dead_code)]
     pub(super) fn worker_count_for_build(&self, build_id: &str) -> usize {
-        self.builds
+        self.registrations
             .lock()
-            .map(|builds| {
-                builds
-                    .get(build_id)
+            .map(|registrations| {
+                registrations
+                    .values()
+                    .filter_map(|registration| registration.builds.get(build_id))
                     .map(|build| build.workers.len())
-                    .unwrap_or(0)
+                    .sum()
             })
             .unwrap_or(0)
     }
 
     #[cfg(test)]
-    pub(crate) fn wake_signal_for_test(&self, build_id: &str) -> Arc<Notify> {
-        self.wake_signal(build_id)
+    pub(crate) fn wake_signal_for_test(
+        &self,
+        registration: &SpawnWorkerRegistration,
+        build_id: &str,
+    ) -> Option<Arc<Notify>> {
+        self.registrations
+            .lock()
+            .ok()
+            .and_then(|mut registrations| {
+                registrations.get_mut(&registration.id).map(|registration| {
+                    registration
+                        .builds
+                        .entry(build_id.to_string())
+                        .or_default()
+                        .wake
+                        .clone()
+                })
+            })
     }
+
+    #[cfg(test)]
+    pub(crate) fn registration_for_test(&self) -> SpawnWorkerRegistration {
+        self.register_session()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registration_count_for_test(&self) -> usize {
+        self.registrations
+            .lock()
+            .map(|registrations| registrations.len())
+            .unwrap_or(0)
+    }
+}
+
+async fn stop_worker_handles(handles: Vec<SpawnWorkerHandle>) -> usize {
+    let count = handles.len();
+    for handle in &handles {
+        handle.stop.request_stop();
+    }
+    for handle in handles {
+        if let Err(error) = handle.join.await {
+            warn!(
+                event = "runtime.spawn_worker_join_error",
+                worker_id = %handle.worker_id,
+                error = %error
+            );
+        }
+    }
+    count
 }
 
 struct SpawnWorkerStop {
@@ -173,14 +246,17 @@ pub(super) enum ClaimOutcome {
 pub(super) fn start_spawn_workers(
     host: super::RuntimeHost,
     sender: mpsc::UnboundedSender<super::RouterWriterMessage>,
-) -> usize {
-    start_spawn_workers_for_services(host.clone(), sender, host.service_snapshot())
+) -> SpawnWorkerRegistration {
+    let registration = host.spawn_workers.register_session();
+    start_spawn_workers_for_services(host.clone(), sender, host.service_snapshot(), &registration);
+    registration
 }
 
 pub(super) fn start_spawn_workers_for_services(
     host: super::RuntimeHost,
     sender: mpsc::UnboundedSender<super::RouterWriterMessage>,
     services: Vec<Arc<ServiceRuntimeContext>>,
+    registration: &SpawnWorkerRegistration,
 ) -> usize {
     let mut started = 0;
     for service in services
@@ -188,7 +264,14 @@ pub(super) fn start_spawn_workers_for_services(
         .filter(|service| !service.linked_image.spawn_routes.is_empty())
     {
         let build_id = service.build_id.clone();
-        let wake = host.spawn_workers.wake_signal(&build_id);
+        let Ok(mut registrations) = host.spawn_workers.registrations.lock() else {
+            continue;
+        };
+        let Some(registration_state) = registrations.get_mut(&registration.id) else {
+            continue;
+        };
+        let build = registration_state.builds.entry(build_id).or_default();
+        let wake = build.wake.clone();
         for _ in 0..SPAWN_WORKERS_PER_BUILD {
             let worker_id = format!("spawn-worker-{}", uuid::Uuid::new_v4());
             let stop = Arc::new(SpawnWorkerStop::new());
@@ -202,14 +285,11 @@ pub(super) fn start_spawn_workers_for_services(
                 wake: wake.clone(),
             };
             let join = tokio::spawn(async move { worker.run().await });
-            host.spawn_workers.register(
-                build_id.clone(),
-                SpawnWorkerHandle {
-                    worker_id,
-                    stop,
-                    join,
-                },
-            );
+            build.workers.push(SpawnWorkerHandle {
+                worker_id,
+                stop,
+                join,
+            });
             started += 1;
         }
     }
@@ -495,6 +575,7 @@ impl SpawnWorker {
             .await;
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
+        let stop_cancellation = cancellation.clone();
         let (renew_stop_tx, renew_stop_rx) = oneshot::channel();
         let renew_task = tokio::spawn(self.clone().renew_spawn_loop(
             descriptor.clone(),
@@ -505,19 +586,24 @@ impl SpawnWorker {
 
         let request_id = request.request_id.clone();
         let _build_guard = build_guard;
-        let result = self
-            .host
-            .execute_runtime_request(
-                service.clone(),
-                operation,
-                addr,
-                request,
-                cancelled,
-                cancellation,
-                execution_budget.clone(),
-                Some(self.sender.clone()),
-            )
-            .await;
+        let execution = self.host.execute_runtime_request(
+            service.clone(),
+            operation,
+            addr,
+            request,
+            cancelled,
+            cancellation,
+            execution_budget.clone(),
+            Some(self.sender.clone()),
+        );
+        tokio::pin!(execution);
+        let result = tokio::select! {
+            result = &mut execution => result,
+            _ = self.stop.notified() => {
+                stop_cancellation.cancel();
+                execution.await
+            }
+        };
         let _ = renew_stop_tx.send(());
         let renew_result = match renew_task.await {
             Ok(result) => result,
@@ -721,7 +807,14 @@ impl SpawnWorker {
         lease: OutboundRequestLease,
         mut receiver: super::OutboundResponseReceiver,
     ) -> Result<Vec<u8>> {
-        match timeout(CONTROL_RPC_TIMEOUT, receiver.recv()).await {
+        let response = tokio::select! {
+            response = timeout(CONTROL_RPC_TIMEOUT, receiver.recv()) => response,
+            _ = self.stop.notified() => {
+                lease.cancel("worker_stop");
+                return Err(RuntimeError::cancelled());
+            }
+        };
+        match response {
             Ok(Some(OutboundResponse::End { payload })) => {
                 lease.complete();
                 Ok(payload)
@@ -913,7 +1006,10 @@ mod tests {
     #[tokio::test]
     async fn build_wake_preserves_a_permit_before_worker_waits() {
         let registry = SpawnWorkerRegistry::default();
-        let wake = registry.wake_signal("build-a");
+        let registration = registry.register_session();
+        let wake = registry
+            .wake_signal_for_test(&registration, "build-a")
+            .expect("test registration should exist");
 
         registry.wake_build("build-a");
 
@@ -926,7 +1022,10 @@ mod tests {
     #[tokio::test]
     async fn build_wake_interrupts_an_active_backoff() {
         let registry = Arc::new(SpawnWorkerRegistry::default());
-        let wake = registry.wake_signal("build-a");
+        let registration = registry.register_session();
+        let wake = registry
+            .wake_signal_for_test(&registration, "build-a")
+            .expect("test registration should exist");
         let wake_registry = registry.clone();
         let wake_task = tokio::spawn(async move {
             tokio::task::yield_now().await;

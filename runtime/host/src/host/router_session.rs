@@ -71,64 +71,72 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
 
     host.queue_registers(sender.clone())?;
-    super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
+    let spawn_registration = super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
 
     let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
 
-    let mut control: Option<RouterControlEnvelope> = None;
-    let mut artifact_fingerprint: Option<String> = None;
-    let mut health_reporter = RuntimeHealthReporter::default();
-    let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
-    reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut health_interval = tokio::time::interval(Duration::from_secs(1));
-    health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
-    health_zero_transition_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let session_result = async {
+        let mut control: Option<RouterControlEnvelope> = None;
+        let mut artifact_fingerprint: Option<String> = None;
+        let mut health_reporter = RuntimeHealthReporter::default();
+        let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
+        reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut health_interval = tokio::time::interval(Duration::from_secs(1));
+        health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
+        health_zero_transition_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    loop {
-        tokio::select! {
-            message = reader.next() => {
-                let Some(message) = message else {
-                    break;
-                };
-                let message = message
-                    .map_err(|error| RuntimeError::Decode(format!("router read failed: {error}")))?;
-                match message {
-                    Message::Text(text) => {
-                        reject_router_text_message(text.as_str())?;
+        loop {
+            tokio::select! {
+                message = reader.next() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    let message = message
+                        .map_err(|error| RuntimeError::Decode(format!("router read failed: {error}")))?;
+                    match message {
+                        Message::Text(text) => {
+                            reject_router_text_message(text.as_str())?;
+                        }
+                        Message::Binary(bytes) => {
+                            dispatch_router_binary_frame_with_health(
+                                &host,
+                                &bytes,
+                                &sender,
+                                &spawn_registration,
+                                &mut control,
+                                &mut artifact_fingerprint,
+                                &mut health_reporter,
+                            )
+                            .await?;
+                        }
+                        _ => {}
                     }
-                    Message::Binary(bytes) => {
-                        dispatch_router_binary_frame_with_health(
-                            &host,
-                            &bytes,
-                            &sender,
-                            &mut control,
-                            &mut artifact_fingerprint,
-                            &mut health_reporter,
-                        )
-                        .await?;
-                    }
-                    _ => {}
+                }
+                _ = reload_interval.tick(), if control.as_ref().is_some_and(|control| control.dev_reload.unwrap_or(false)) => {
+                    let control_ref = control.as_ref().expect("control should be present");
+                    maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
+                        .await;
+                }
+                _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
+                    health_reporter.send_periodic(&host, &sender).await?;
+                }
+                _ = health_zero_transition_interval.tick(), if health_reporter.should_probe_zero_transition() => {
+                    health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
                 }
             }
-            _ = reload_interval.tick(), if control.as_ref().is_some_and(|control| control.dev_reload.unwrap_or(false)) => {
-                let control_ref = control.as_ref().expect("control should be present");
-                maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
-                    .await;
-            }
-            _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
-                health_reporter.send_periodic(&host, &sender).await?;
-            }
-            _ = health_zero_transition_interval.tick(), if health_reporter.should_probe_zero_transition() => {
-                health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
-            }
         }
-    }
 
-    health_reporter.send_final(&host, &sender).await?;
+        health_reporter.send_final(&host, &sender).await
+    }
+    .await;
+
+    host.spawn_workers
+        .stop_registration(&spawn_registration)
+        .await;
     drop(sender);
     let _ = writer_task.await;
-    Ok(())
+    session_result
 }
 
 #[derive(Default)]
@@ -249,6 +257,7 @@ async fn dispatch_router_binary_frame(
         host,
         bytes,
         sender,
+        None,
         control,
         artifact_fingerprint,
         None,
@@ -260,6 +269,7 @@ async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    spawn_registration: &super::spawn_worker::SpawnWorkerRegistration,
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
     health_reporter: &mut RuntimeHealthReporter,
@@ -268,6 +278,7 @@ async fn dispatch_router_binary_frame_with_health(
         host,
         bytes,
         sender,
+        Some(spawn_registration),
         control,
         artifact_fingerprint,
         Some(health_reporter),
@@ -279,6 +290,7 @@ async fn dispatch_router_binary_frame_inner(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    spawn_registration: Option<&super::spawn_worker::SpawnWorkerRegistration>,
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
@@ -331,12 +343,26 @@ async fn dispatch_router_binary_frame_inner(
                 .map_err(super::transport_error_into_runtime_error)?;
             let request =
                 request_envelope_from_start_frame(header, payload).map_err(RuntimeError::Decode)?;
-            host.spawn_request(request, sender.clone()).await;
+            if let Some(registration) = spawn_registration {
+                host.spawn_session_request(request, sender.clone(), registration)
+                    .await;
+            } else {
+                host.spawn_request(request, sender.clone()).await;
+            }
         }
         "package-test.start" => {
             let (header, payload) = decode_typed_binary_frame::<PackageTestStartFrameHeader>(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            host.submit_package_test_start(header, payload, sender.clone());
+            if let Some(registration) = spawn_registration {
+                host.submit_session_package_test_start(
+                    header,
+                    payload,
+                    sender.clone(),
+                    registration.clone(),
+                );
+            } else {
+                host.submit_package_test_start(header, payload, sender.clone());
+            }
         }
         "request.cancel" => {
             let (header, payload) = decode_typed_binary_frame::<RequestCancelFrameHeader>(bytes)

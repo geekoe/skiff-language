@@ -89,6 +89,7 @@ impl PackageTestStartExecutor {
         header: PackageTestStartFrameHeader,
         payload: Vec<u8>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        spawn_registration: Option<spawn_worker::SpawnWorkerRegistration>,
     ) {
         let admission_permit = match self.admission_permits.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -107,7 +108,15 @@ impl PackageTestStartExecutor {
                 .acquire_owned()
                 .await
                 .expect("package-test start executor semaphore should remain open");
-            run_package_test_start(&host, header, payload, sender, pending_start).await;
+            run_package_test_start(
+                &host,
+                header,
+                payload,
+                sender,
+                pending_start,
+                spawn_registration,
+            )
+            .await;
         });
     }
 
@@ -392,9 +401,15 @@ pub(super) fn spawn_package_test_start(
     header: PackageTestStartFrameHeader,
     payload: Vec<u8>,
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    spawn_registration: Option<spawn_worker::SpawnWorkerRegistration>,
 ) {
-    host.package_test_start_executor
-        .submit(host.clone(), header, payload, sender);
+    host.package_test_start_executor.submit(
+        host.clone(),
+        header,
+        payload,
+        sender,
+        spawn_registration,
+    );
 }
 
 async fn run_package_test_start(
@@ -403,6 +418,7 @@ async fn run_package_test_start(
     payload: Vec<u8>,
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
     pending_start: PackageTestPendingStart,
+    spawn_registration: Option<spawn_worker::SpawnWorkerRegistration>,
 ) {
     let request = package_test_request_start_envelope(&header, payload);
     if pending_start.is_cancelled() {
@@ -451,7 +467,9 @@ async fn run_package_test_start(
         }
     };
     let addr = loaded.executable_addr.clone();
-    start_package_test_spawn_workers(host, service.clone(), sender.clone());
+    if let Some(registration) = spawn_registration.as_ref() {
+        start_package_test_spawn_workers(host, service.clone(), sender.clone(), registration);
+    }
 
     host.spawn_resolved_package_test_request(
         ServiceOperationContext::new(service, operation, addr),
@@ -793,8 +811,14 @@ fn start_package_test_spawn_workers(
     host: &RuntimeHost,
     service: Arc<ServiceRuntimeContext>,
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    registration: &spawn_worker::SpawnWorkerRegistration,
 ) -> usize {
-    spawn_worker::start_spawn_workers_for_services(host.clone(), sender, vec![service])
+    spawn_worker::start_spawn_workers_for_services(
+        host.clone(),
+        sender,
+        vec![service],
+        registration,
+    )
 }
 
 fn emit_package_test_start_error(
