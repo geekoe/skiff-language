@@ -1,16 +1,33 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { chmod, copyFile, mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
+import { readInstanceConfig } from './lib/local-instance-config.mjs';
+import { installManagedBinary } from './lib/managed-binary.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const skiffRoot = path.resolve(scriptDir, '..');
+const usage = 'usage: node scripts/build-dev-runtime.mjs [--config <path>] [--dev-home <dir>] [--no-refresh]';
 const cli = parseCli(process.argv.slice(2));
+if (cli.help) {
+  console.log(usage);
+  process.exit(0);
+}
 const paths = devRuntimePaths({ devHome: cli.devHome });
+const configPath = path.resolve(cli.config ?? path.join(path.dirname(paths.devHome), 'config.yml'));
+let refreshConfig = null;
+if (!cli.noRefresh) {
+  refreshConfig = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
+  if (refreshConfig.paths.devHome !== paths.devHome) {
+    throw new Error(
+      `selected instance devHome ${refreshConfig.paths.devHome} does not match install devHome ${paths.devHome}`,
+    );
+  }
+}
 const targetDir = cargoTargetDir(skiffRoot);
 const runtimeManifest = path.join(skiffRoot, 'runtime', 'Cargo.toml');
 const identityManifest = path.join(skiffRoot, 'artifact-identity', 'Cargo.toml');
@@ -50,12 +67,8 @@ if (!identityCliBinary.isFile()) {
 }
 
 await mkdir(paths.runtimeBinDir, { recursive: true });
-await copyFile(cargoRuntimeBinary, paths.runtimeBinary);
-await copyFile(cargoIdentityCli, paths.identityCli);
-if (process.platform !== 'win32') {
-  await chmod(paths.runtimeBinary, 0o755);
-  await chmod(paths.identityCli, 0o755);
-}
+await installManagedBinary(cargoRuntimeBinary, paths.runtimeBinary);
+await installManagedBinary(cargoIdentityCli, paths.identityCli);
 
 const installed = await stat(paths.runtimeBinary);
 if (!installed.isFile()) {
@@ -64,6 +77,25 @@ if (!installed.isFile()) {
 const installedIdentityCli = await stat(paths.identityCli);
 if (!installedIdentityCli.isFile()) {
   throw new Error(`artifact identity CLI was not installed at ${paths.identityCli}`);
+}
+
+const refresh = cli.noRefresh
+  ? {
+      action: 'skipped-explicitly',
+      activeRuntimeMayBeStale: true,
+      recovery: `node scripts/skiff.mjs instance refresh-binaries ${configPath}`,
+    }
+  : {
+      action: 'reconciled',
+      configPath: refreshConfig.paths.configPath,
+    };
+if (!cli.noRefresh) {
+  await run(
+    process.execPath,
+    [path.join(scriptDir, 'skiff.mjs'), 'instance', 'refresh-binaries', configPath],
+    skiffRoot,
+    process.env,
+  );
 }
 
 console.log(JSON.stringify({
@@ -75,10 +107,11 @@ console.log(JSON.stringify({
   cargoRuntimeBinary,
   cargoIdentityCli,
   cargoTargetDir: targetDir,
+  refresh,
 }, null, 2));
 
 function parseCli(rawArgs) {
-  const result = { devHome: undefined };
+  const result = { config: undefined, devHome: undefined, help: false, noRefresh: false };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg === '--dev-home') {
@@ -94,7 +127,28 @@ function parseCli(rawArgs) {
       result.devHome = arg.slice('--dev-home='.length);
       continue;
     }
-    throw new Error(`unknown option ${arg}`);
+    if (arg === '--config') {
+      const value = rawArgs[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--config requires a value');
+      }
+      result.config = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--config=')) {
+      result.config = arg.slice('--config='.length);
+      continue;
+    }
+    if (arg === '--no-refresh') {
+      result.noRefresh = true;
+      continue;
+    }
+    if (arg === '--help' || arg === '-h') {
+      result.help = true;
+      continue;
+    }
+    throw new Error(`unknown option ${arg}\n${usage}`);
   }
   return result;
 }

@@ -54,12 +54,17 @@ ports:
 node scripts/skiff.mjs instance down .skiff-instance/config.yml
 ```
 
-如果改动 runtime、artifact identity、artifact schema、native signature、runtime protocol 或 artifact 加载语义，先构建当前仓库二进制再做端到端验证：
+如果改动 runtime、artifact identity、artifact schema、native signature、runtime protocol 或 artifact 加载语义，使用 `instance up` 构建并启动。它会校验受管 runtime binary 的 SHA-256 identity；磁盘 binary 已变化时会自动精确重启该 instance 的 runtime，不需要再人工串联 build 与 restart：
 
 ```bash
-node scripts/skiff.mjs instance build .skiff-instance/config.yml
 node scripts/skiff.mjs instance up .skiff-instance/config.yml
 ```
+
+`node scripts/build-dev-runtime.mjs` 默认读取同一 instance config，安装 binary 后自动执行
+`instance refresh-binaries`。自定义 instance 应传 `--config <path>` 和匹配的 `--dev-home <dir>`。
+只有明确需要纯 build/install 时才传 `--no-refresh`；输出会标记 active runtime 可能 stale，并给出
+`instance refresh-binaries <config>` 恢复命令。`instance build` 同样保留 build-only 语义，但会报告
+仍在运行旧 binary 的 PID 和恢复命令。
 
 纯编译和单元验证不需要启动 instance：
 
