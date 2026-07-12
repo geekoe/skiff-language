@@ -230,10 +230,18 @@ impl SpawnWorkerStop {
     }
 
     async fn notified(&self) {
+        self.notified_with_after_check(|| {}).await;
+    }
+
+    async fn notified_with_after_check(&self, after_check: impl FnOnce()) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if self.is_stopped() {
             return;
         }
-        self.notify.notified().await;
+        after_check();
+        notified.await;
     }
 }
 
@@ -1037,5 +1045,27 @@ mod tests {
             RetryWaitOutcome::Woken
         );
         wake_task.await.expect("wake task should finish");
+    }
+
+    #[tokio::test]
+    async fn worker_stop_does_not_lose_notification_between_check_and_wait() {
+        let stop = SpawnWorkerStop::new();
+
+        timeout(
+            Duration::from_millis(50),
+            stop.notified_with_after_check(|| stop.request_stop()),
+        )
+        .await
+        .expect("stop after the state check should wake the registered waiter");
+    }
+
+    #[tokio::test]
+    async fn worker_stop_before_wait_returns_immediately() {
+        let stop = SpawnWorkerStop::new();
+        stop.request_stop();
+
+        timeout(Duration::from_millis(50), stop.notified())
+            .await
+            .expect("a stop requested before waiting must be observed immediately");
     }
 }
