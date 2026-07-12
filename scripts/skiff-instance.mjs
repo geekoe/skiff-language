@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, copyFile, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,11 @@ import {
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
 import { ensureLocalServiceDbKeyring } from './lib/service-db-keyring.mjs';
+import {
+  binaryIdentitiesEqual,
+  binaryIdentity,
+  installManagedBinary,
+} from './lib/managed-binary.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -41,6 +46,7 @@ const instanceCommands = new Set([
   'doctor',
   'repair',
   'build',
+  'refresh-binaries',
   'up',
   'restart',
   'supervise',
@@ -57,6 +63,7 @@ const usage = `usage:
   skiff instance doctor <config>
   skiff instance repair <config>
   skiff instance build <config>
+  skiff instance refresh-binaries <config>
   skiff instance up <config> [--repair-owned-conflicts]
   skiff instance restart <config> [component]
   skiff instance supervise <config>
@@ -99,6 +106,9 @@ export async function main(rawArgs) {
       return;
     case 'build':
       await buildInstance(args, configPath);
+      return;
+    case 'refresh-binaries':
+      await refreshInstanceBinaries(args, configPath);
       return;
     case 'up':
       await upInstance(args, configPath);
@@ -217,6 +227,10 @@ async function buildInstance(rawArgs, configPath) {
   const config = await loadInstance(configPath);
   await ensureInstanceDirs(config.paths);
   await buildComponentBinaries(config);
+  const status = await instanceStatus(config);
+  const staleProcesses = status.processes
+    .filter((processStatus) => processStatus.category === 'stale-binary')
+    .map(({ name, pid }) => ({ name, pid }));
   console.log(JSON.stringify({
     runtime: {
       path: config.paths.runtimeBinary,
@@ -224,7 +238,41 @@ async function buildInstance(rawArgs, configPath) {
     identityCli: {
       path: config.paths.identityCli,
     },
+    staleProcesses,
+    recovery: staleProcesses.length === 0
+      ? null
+      : `node scripts/skiff.mjs instance refresh-binaries ${config.paths.configPath}`,
   }, null, 2));
+}
+
+async function refreshInstanceBinaries(rawArgs, configPath) {
+  const args = parseFlags(rawArgs, { flags: new Set() });
+  if (args.positionals.length !== 0) {
+    throw new Error(`unexpected argument ${args.positionals[0]}`);
+  }
+  const config = await loadInstance(configPath);
+  const refreshed = [];
+  for (const spec of managedProcessSpecs(config).filter(({ managedBinary }) => managedBinary !== undefined)) {
+    const status = await componentStatus(config, spec.name);
+    if (status.category !== 'stale-binary') {
+      if (['stopped', 'stale-pid'].includes(status.category)) {
+        refreshed.push({ name: spec.name, action: 'not-running', status: status.category });
+        continue;
+      }
+      if (status.category === 'running') {
+        refreshed.push({ name: spec.name, action: 'current', status: status.category });
+        continue;
+      }
+      throw new Error(`${spec.name} is ${status.category}; refusing binary refresh`);
+    }
+    if (status.managedBinary.currentIdentity === null) {
+      throw new Error(`${spec.name} binary cannot be read: ${status.managedBinary.error}`);
+    }
+    const stopped = await stopComponentStatus(config, status);
+    const started = await startManagedProcess(config, spec);
+    refreshed.push({ name: spec.name, action: 'restarted', previousPid: status.pid, stopped, started });
+  }
+  console.log(JSON.stringify({ refreshed, status: await instanceStatus(config) }, null, 2));
 }
 
 async function upInstance(rawArgs, configPath) {
@@ -492,15 +540,7 @@ async function buildRustBinary({ manifest, bin, source, destination, config }) {
 }
 
 async function copyBinary(source, destination) {
-  await assertFile(source);
-  await mkdir(dirname(destination), { recursive: true });
-  if (resolve(source) !== resolve(destination)) {
-    await copyFile(source, destination);
-  }
-  if (process.platform !== 'win32') {
-    await chmod(destination, 0o755);
-  }
-  await assertFile(destination);
+  await installManagedBinary(source, destination);
 }
 
 function managedProcessSpecs(config) {
@@ -545,6 +585,7 @@ function managedProcessSpecs(config) {
       args: [config.paths.runtimeConfig],
       cwd: skiffRoot,
       ports: [],
+      managedBinary: config.paths.runtimeBinary,
     },
     ...(config.components.watch === 'managed'
       ? [{
@@ -588,6 +629,11 @@ async function ensureManagedProcessRunning(config, spec, options) {
       console.log(`[skiff-instance] ${spec.name} already running pid=${status.pid}`);
       return { name: spec.name, started: false, reason: 'already-running' };
     }
+    if (status.category === 'stale-binary') {
+      console.log(`[skiff-instance] ${spec.name} binary changed; restarting pid=${status.pid}`);
+      await stopComponentStatus(config, status);
+      return startManagedProcess(config, spec);
+    }
     if (status.category === 'stopped') {
       return startManagedProcess(config, spec);
     }
@@ -619,6 +665,7 @@ async function componentStatus(config, name) {
 }
 
 async function startManagedProcess(config, spec, options = {}) {
+  const managedBinary = await managedBinaryMetadata(spec);
   await rm(pidPath(config, spec.name), { force: true });
   const out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
   const err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
@@ -637,7 +684,7 @@ async function startManagedProcess(config, spec, options = {}) {
     await err.close();
     throw new Error(`failed to start ${spec.name}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
   }
-  await writePidMetadata(config, spec, child.pid);
+  await writePidMetadata(config, spec, child.pid, managedBinary);
   if (!options.supervised) {
     child.unref();
     await out.close();
@@ -821,6 +868,11 @@ async function instanceStatus(config) {
   for (const spec of specs) {
     pidRecords.set(spec.name, await readPidMetadata(config, spec.name));
   }
+  const managedBinaries = new Map();
+  for (const spec of specs) {
+    const recordedIdentity = pidRecords.get(spec.name)?.metadata?.managedBinary?.identity;
+    managedBinaries.set(spec.name, await inspectManagedBinary(spec, recordedIdentity));
+  }
   const pidProcesses = new Map();
   for (const pidRecord of pidRecords.values()) {
     if (pidRecord.pid !== null && isProcessAlive(pidRecord.pid) && !pidProcesses.has(pidRecord.pid)) {
@@ -844,11 +896,39 @@ async function instanceStatus(config) {
       errors: listenerDiscovery.errors,
     },
     processes: specs.map((spec) =>
-      processStatus(config, spec, pidRecords.get(spec.name), listenerDiscovery.byPort, ownedGroups, specs, pidProcesses)),
+      processStatus(
+        config,
+        spec,
+        pidRecords.get(spec.name),
+        listenerDiscovery.byPort,
+        ownedGroups,
+        specs,
+        pidProcesses,
+        managedBinaries.get(spec.name),
+      )),
   };
 }
 
-function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, specs, pidProcesses) {
+async function inspectManagedBinary(spec, recordedIdentity) {
+  if (spec.managedBinary === undefined) {
+    return null;
+  }
+  try {
+    return {
+      path: spec.managedBinary,
+      identity: await binaryIdentity(spec.managedBinary, { knownIdentity: recordedIdentity }),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      path: spec.managedBinary,
+      identity: null,
+      error: error?.message || String(error),
+    };
+  }
+}
+
+function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, specs, pidProcesses, managedBinary) {
   const metadata = pidRecord.metadata;
   const sameInstance = metadata !== null && isSameInstanceMetadata(config, metadata);
   const pid = pidRecord.pid;
@@ -896,10 +976,20 @@ function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, sp
   const legacyPlainRunning = legacyPlainPidMatchesSpec
     && processGroupAlive !== false
     && missingPorts.length === 0;
+  const recordedBinaryIdentity = metadata?.managedBinary?.identity ?? null;
+  const currentBinaryIdentity = managedBinary?.identity ?? null;
+  const binaryMatches = managedBinary === null
+    ? null
+    : binaryIdentitiesEqual(recordedBinaryIdentity, currentBinaryIdentity);
+  const staleBinary = (jsonMetadataRunning || legacyPlainRunning)
+    && managedBinary !== null
+    && !binaryMatches;
 
   let category;
   if (unknownPortConflicts.length > 0 || ownedPortConflicts.length > 0) {
     category = 'port-conflict';
+  } else if (staleBinary) {
+    category = 'stale-binary';
   } else if (jsonMetadataRunning || legacyPlainRunning) {
     category = 'running';
   } else if (pidRecord.format === 'missing' && allListeners.length === 0) {
@@ -928,6 +1018,13 @@ function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, sp
     pidProcess,
     processGroupAlive,
     metadataMatchesSpec,
+    managedBinary: managedBinary === null ? null : {
+      path: managedBinary.path,
+      recordedIdentity: recordedBinaryIdentity,
+      currentIdentity: currentBinaryIdentity,
+      matches: binaryMatches,
+      error: managedBinary.error,
+    },
     pidPath: pidRecord.path,
     pidMetadata: {
       format: pidRecord.format,
@@ -1261,7 +1358,7 @@ function hasUnknownPortConflict(processStatus) {
 }
 
 function isRepairableProcess(processStatus) {
-  return ['orphaned', 'port-conflict', 'unhealthy'].includes(processStatus.category)
+  return ['orphaned', 'port-conflict', 'stale-binary', 'unhealthy'].includes(processStatus.category)
     && processStatus.repairableGroups.length > 0
     && !hasUnknownPortConflict(processStatus);
 }
@@ -1272,7 +1369,10 @@ function renderProcessStatusLine(processStatus) {
   const pidFormat = processStatus.pidMetadata.format === 'missing'
     ? ''
     : ` pidFile=${processStatus.pidMetadata.format}`;
-  return `${processStatus.name}: ${processStatus.category}${pid}${pgid}${pidFormat}`;
+  const binary = processStatus.managedBinary === null
+    ? ''
+    : ` binary=${processStatus.managedBinary.matches ? 'current' : 'stale'}`;
+  return `${processStatus.name}: ${processStatus.category}${pid}${pgid}${pidFormat}${binary}`;
 }
 
 function recommendationsForProcess(processStatus) {
@@ -1284,6 +1384,9 @@ function recommendationsForProcess(processStatus) {
   }
   if (processStatus.category === 'stale-pid') {
     return ['run skiff instance repair <config> to remove stale pid metadata'];
+  }
+  if (processStatus.category === 'stale-binary') {
+    return ['run skiff instance refresh-binaries <config> or skiff instance up <config>'];
   }
   if (hasUnknownPortConflict(processStatus)) {
     return ['unknown process owns a required port; stop it manually or change the instance port'];
@@ -1332,7 +1435,16 @@ async function readPidMetadata(config, name) {
   }
 }
 
-async function writePidMetadata(config, spec, pid) {
+async function managedBinaryMetadata(spec) {
+  return spec.managedBinary === undefined
+    ? null
+    : {
+        path: spec.managedBinary,
+        identity: await binaryIdentity(spec.managedBinary),
+      };
+}
+
+async function writePidMetadata(config, spec, pid, managedBinary) {
   const metadata = {
     schemaVersion: pidMetadataSchemaVersion,
     component: spec.name,
@@ -1346,6 +1458,7 @@ async function writePidMetadata(config, spec, pid) {
     cwd: spec.cwd,
     ports: spec.ports,
     startedAt: new Date().toISOString(),
+    managedBinary,
   };
   await writeFile(pidPath(config, spec.name), `${JSON.stringify(metadata, null, 2)}\n`);
 }
@@ -1410,13 +1523,6 @@ async function writeIfMissing(path, contents, force) {
   }
   await writeFile(path, contents);
   return { action: force ? 'wrote' : 'created', path };
-}
-
-async function assertFile(path) {
-  const info = await stat(path);
-  if (!info.isFile()) {
-    throw new Error(`${path} must be a file`);
-  }
 }
 
 async function fileExists(path) {

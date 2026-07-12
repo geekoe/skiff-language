@@ -64,6 +64,7 @@ const usage = `usage:
   skiff instance doctor <config>
   skiff instance repair <config>
   skiff instance build <config>
+  skiff instance refresh-binaries <config>
   skiff instance up <config> [--repair-owned-conflicts]
   skiff instance restart <config> [component]
   skiff instance supervise <config>
