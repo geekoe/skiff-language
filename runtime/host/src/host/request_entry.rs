@@ -251,6 +251,7 @@ impl RuntimeHost {
                 ),
                 http_options: self.http_runtime_options.clone(),
                 outbound_requests: self.outbound_requests.clone(),
+                spawn_workers: self.spawn_workers.clone(),
                 telemetry_context,
                 router_sender,
             },

@@ -44,10 +44,17 @@ const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const SPAWN_RENEW_INTERVAL: Duration = Duration::from_secs(10);
 const EMPTY_CLAIM_BACKOFF_MIN: Duration = Duration::from_millis(100);
 const EMPTY_CLAIM_BACKOFF_MAX: Duration = Duration::from_secs(2);
+const SPAWN_WORKERS_PER_BUILD: usize = 4;
 
 #[derive(Default)]
-pub(super) struct SpawnWorkerRegistry {
-    workers: StdMutex<HashMap<String, Vec<SpawnWorkerHandle>>>,
+pub(crate) struct SpawnWorkerRegistry {
+    builds: StdMutex<HashMap<String, SpawnWorkerBuild>>,
+}
+
+#[derive(Default)]
+struct SpawnWorkerBuild {
+    workers: Vec<SpawnWorkerHandle>,
+    wake: Arc<Notify>,
 }
 
 struct SpawnWorkerHandle {
@@ -57,18 +64,36 @@ struct SpawnWorkerHandle {
 }
 
 impl SpawnWorkerRegistry {
+    fn wake_signal(&self, build_id: &str) -> Arc<Notify> {
+        self.builds
+            .lock()
+            .map(|mut builds| builds.entry(build_id.to_string()).or_default().wake.clone())
+            .unwrap_or_else(|_| Arc::new(Notify::new()))
+    }
+
     fn register(&self, build_id: String, handle: SpawnWorkerHandle) {
-        if let Ok(mut workers) = self.workers.lock() {
-            workers.entry(build_id).or_default().push(handle);
+        if let Ok(mut builds) = self.builds.lock() {
+            builds.entry(build_id).or_default().workers.push(handle);
+        }
+    }
+
+    pub(crate) fn wake_build(&self, build_id: &str) {
+        let wake = self
+            .builds
+            .lock()
+            .ok()
+            .and_then(|builds| builds.get(build_id).map(|build| build.wake.clone()));
+        if let Some(wake) = wake {
+            wake.notify_one();
         }
     }
 
     pub(super) async fn stop_builds(&self, build_ids: &[String]) -> usize {
         let mut handles = Vec::new();
-        if let Ok(mut workers) = self.workers.lock() {
+        if let Ok(mut builds) = self.builds.lock() {
             for build_id in build_ids {
-                if let Some(build_handles) = workers.remove(build_id) {
-                    handles.extend(build_handles);
+                if let Some(build) = builds.remove(build_id) {
+                    handles.extend(build.workers);
                 }
             }
         }
@@ -91,10 +116,20 @@ impl SpawnWorkerRegistry {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(super) fn worker_count_for_build(&self, build_id: &str) -> usize {
-        self.workers
+        self.builds
             .lock()
-            .map(|workers| workers.get(build_id).map(Vec::len).unwrap_or(0))
+            .map(|builds| {
+                builds
+                    .get(build_id)
+                    .map(|build| build.workers.len())
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wake_signal_for_test(&self, build_id: &str) -> Arc<Notify> {
+        self.wake_signal(build_id)
     }
 }
 
@@ -152,27 +187,31 @@ pub(super) fn start_spawn_workers_for_services(
         .into_iter()
         .filter(|service| !service.linked_image.spawn_routes.is_empty())
     {
-        let worker_id = format!("spawn-worker-{}", uuid::Uuid::new_v4());
-        let stop = Arc::new(SpawnWorkerStop::new());
         let build_id = service.build_id.clone();
-        let worker = SpawnWorker {
-            host: host.clone(),
-            service,
-            sender: sender.clone(),
-            worker_id: worker_id.clone(),
-            renew_interval: SPAWN_RENEW_INTERVAL,
-            stop: stop.clone(),
-        };
-        let join = tokio::spawn(async move { worker.run().await });
-        host.spawn_workers.register(
-            build_id,
-            SpawnWorkerHandle {
-                worker_id,
-                stop,
-                join,
-            },
-        );
-        started += 1;
+        let wake = host.spawn_workers.wake_signal(&build_id);
+        for _ in 0..SPAWN_WORKERS_PER_BUILD {
+            let worker_id = format!("spawn-worker-{}", uuid::Uuid::new_v4());
+            let stop = Arc::new(SpawnWorkerStop::new());
+            let worker = SpawnWorker {
+                host: host.clone(),
+                service: service.clone(),
+                sender: sender.clone(),
+                worker_id: worker_id.clone(),
+                renew_interval: SPAWN_RENEW_INTERVAL,
+                stop: stop.clone(),
+                wake: wake.clone(),
+            };
+            let join = tokio::spawn(async move { worker.run().await });
+            host.spawn_workers.register(
+                build_id.clone(),
+                SpawnWorkerHandle {
+                    worker_id,
+                    stop,
+                    join,
+                },
+            );
+            started += 1;
+        }
     }
     started
 }
@@ -185,6 +224,14 @@ struct SpawnWorker {
     worker_id: String,
     renew_interval: Duration,
     stop: Arc<SpawnWorkerStop>,
+    wake: Arc<Notify>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryWaitOutcome {
+    Elapsed,
+    Woken,
+    Stopped,
 }
 
 impl SpawnWorker {
@@ -195,12 +242,13 @@ impl SpawnWorker {
                 Ok(ClaimOutcome::Claimed) => {
                     backoff = EMPTY_CLAIM_BACKOFF_MIN;
                 }
-                Ok(ClaimOutcome::Empty) => {
-                    if self.sleep_or_stop(backoff).await {
-                        break;
+                Ok(ClaimOutcome::Empty) => match self.wait_for_retry(backoff).await {
+                    RetryWaitOutcome::Stopped => break,
+                    RetryWaitOutcome::Woken => backoff = EMPTY_CLAIM_BACKOFF_MIN,
+                    RetryWaitOutcome::Elapsed => {
+                        backoff = (backoff * 2).min(EMPTY_CLAIM_BACKOFF_MAX)
                     }
-                    backoff = (backoff * 2).min(EMPTY_CLAIM_BACKOFF_MAX);
-                }
+                },
                 Err(error) => {
                     if self.stop.is_stopped() {
                         break;
@@ -212,20 +260,20 @@ impl SpawnWorker {
                         worker_id = %self.worker_id,
                         error = %error
                     );
-                    if self.sleep_or_stop(backoff).await {
-                        break;
+                    match self.wait_for_retry(backoff).await {
+                        RetryWaitOutcome::Stopped => break,
+                        RetryWaitOutcome::Woken => backoff = EMPTY_CLAIM_BACKOFF_MIN,
+                        RetryWaitOutcome::Elapsed => {
+                            backoff = (backoff * 2).min(EMPTY_CLAIM_BACKOFF_MAX)
+                        }
                     }
-                    backoff = (backoff * 2).min(EMPTY_CLAIM_BACKOFF_MAX);
                 }
             }
         }
     }
 
-    async fn sleep_or_stop(&self, duration: Duration) -> bool {
-        tokio::select! {
-            _ = sleep(duration) => false,
-            _ = self.stop.notified() => true,
-        }
+    async fn wait_for_retry(&self, duration: Duration) -> RetryWaitOutcome {
+        wait_for_retry_signal(&self.stop, &self.wake, duration).await
     }
 
     async fn claim_once(&self) -> Result<ClaimOutcome> {
@@ -730,6 +778,18 @@ impl SpawnWorker {
     }
 }
 
+async fn wait_for_retry_signal(
+    stop: &SpawnWorkerStop,
+    wake: &Notify,
+    duration: Duration,
+) -> RetryWaitOutcome {
+    tokio::select! {
+        _ = stop.notified() => RetryWaitOutcome::Stopped,
+        _ = wake.notified() => RetryWaitOutcome::Woken,
+        _ = sleep(duration) => RetryWaitOutcome::Elapsed,
+    }
+}
+
 trait ControlRequestHeader {
     fn rpc_id(&self) -> &str;
 }
@@ -818,6 +878,7 @@ pub(super) async fn claim_once_for_test(
         worker_id,
         renew_interval: SPAWN_RENEW_INTERVAL,
         stop: Arc::new(SpawnWorkerStop::new()),
+        wake: Arc::new(Notify::new()),
     }
     .claim_once()
     .await
@@ -838,8 +899,44 @@ pub(super) async fn renew_once_for_test(
         worker_id,
         renew_interval: SPAWN_RENEW_INTERVAL,
         stop: Arc::new(SpawnWorkerStop::new()),
+        wake: Arc::new(Notify::new()),
     }
     .renew_spawn(&descriptor)
     .await
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn build_wake_preserves_a_permit_before_worker_waits() {
+        let registry = SpawnWorkerRegistry::default();
+        let wake = registry.wake_signal("build-a");
+
+        registry.wake_build("build-a");
+
+        assert_eq!(
+            wait_for_retry_signal(&SpawnWorkerStop::new(), &wake, Duration::from_secs(30),).await,
+            RetryWaitOutcome::Woken
+        );
+    }
+
+    #[tokio::test]
+    async fn build_wake_interrupts_an_active_backoff() {
+        let registry = Arc::new(SpawnWorkerRegistry::default());
+        let wake = registry.wake_signal("build-a");
+        let wake_registry = registry.clone();
+        let wake_task = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            wake_registry.wake_build("build-a");
+        });
+
+        assert_eq!(
+            wait_for_retry_signal(&SpawnWorkerStop::new(), &wake, Duration::from_secs(30),).await,
+            RetryWaitOutcome::Woken
+        );
+        wake_task.await.expect("wake task should finish");
+    }
 }

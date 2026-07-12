@@ -69,9 +69,10 @@ use outbound::RuntimeOutboundServiceContext;
 use websocket::RuntimeWebsocketCapabilityContext;
 
 pub(crate) use error::root_error_into_eval;
+pub(crate) use factory::actor_from_request;
 pub use factory::{
-    actor_from_request, config_context, db_context, effects, execution_control, file_source,
-    outbound, runtime_factory, websocket, websocket_from_request,
+    config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
+    websocket, websocket_from_request,
 };
 pub(crate) use request_adapter::{
     attach_request_error_diagnostic_frame, request_eval_adapter, RuntimeRequestEvalAdapterInput,

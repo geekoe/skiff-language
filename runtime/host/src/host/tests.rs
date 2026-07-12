@@ -2905,6 +2905,46 @@ async fn actor_client_put_sends_rpc_and_decodes_response_header() {
 }
 
 #[tokio::test]
+async fn spawn_workers_start_four_independent_claimers_per_build() {
+    let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
+    let host = RuntimeHost::new(RuntimeConfig {
+        db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-base".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
+        artifact_roots: Vec::new(),
+        http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        http_egress_proxy: None,
+        services: vec![runtime_program_service_config(
+            "runtime-base:program",
+            program,
+        )],
+    })
+    .expect("host should build");
+    let service = host.service_snapshot()[0].clone();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    let started =
+        super::spawn_worker::start_spawn_workers_for_services(host.clone(), sender, vec![service]);
+
+    assert_eq!(started, 4);
+    assert_eq!(host.spawn_workers.worker_count_for_build(BUILD_A), 4);
+    let mut worker_ids = std::collections::HashSet::new();
+    for _ in 0..4 {
+        let message = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("each spawn worker should claim without waiting for another worker")
+            .expect("spawn.claim.request should be sent");
+        let (claim_header, payload): (SpawnClaimRequestFrameHeader, Vec<u8>) =
+            decode_typed_binary_frame(&router_binary(message))
+                .expect("spawn.claim.request should decode");
+        assert!(payload.is_empty());
+        assert_eq!(claim_header.max_concurrency, Some(1.0));
+        assert!(worker_ids.insert(claim_header.worker_id));
+    }
+}
+
+#[tokio::test]
 async fn spawn_worker_claim_executes_function_and_completes_item() {
     let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
     let host = RuntimeHost::new(RuntimeConfig {

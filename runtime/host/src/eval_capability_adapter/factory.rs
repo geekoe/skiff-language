@@ -69,7 +69,7 @@ pub fn websocket_from_request<'a>(
     )
 }
 
-pub fn actor_from_request<'a>(
+pub(crate) fn actor_from_request<'a>(
     runtime_id: &'a str,
     service_id: &'a str,
     service_version: &'a str,
@@ -77,6 +77,7 @@ pub fn actor_from_request<'a>(
     operation: &'a RuntimeOperation,
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
+    spawn_workers: &'a Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
     cancellation: CancellationToken,
 ) -> eval_capabilities::ActorCapabilityContext<'a> {
     let invocation = invocation_context_from_request(
@@ -107,6 +108,7 @@ pub fn actor_from_request<'a>(
         trace_id: context.trace_id().map(str::to_string),
         router_sender: router_sender.cloned(),
         outbound_requests: outbound_requests.clone(),
+        spawn_workers: spawn_workers.clone(),
         cancellation,
     };
     actor(context, owned)
