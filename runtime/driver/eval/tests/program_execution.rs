@@ -616,6 +616,34 @@ async fn runtime_program_executes_package_function_call() {
 }
 
 #[tokio::test]
+async fn runtime_program_stream_variable_crosses_nested_package_producers() {
+    let mut program = program_with_executables(vec![
+        package_stream_chain_route_executable(),
+        local_string_stream_producer_executable(),
+    ]);
+    let mut package_file = package_file_unit(
+        "file:stream-forwarders",
+        "forwarders",
+        package_string_stream_forwarder_executable(0, Some(1)),
+    );
+    package_file
+        .executables
+        .push(package_string_stream_forwarder_executable(1, None));
+    program.packages = vec![Arc::new(package_unit("example.com/stream-forwarders"))];
+    program.package_files = vec![vec![Arc::new(package_file)]];
+    program.package_resources = vec![Default::default()];
+
+    let interpreter = Interpreter::with_program(Arc::new(program), runtime_factory());
+    let frame = test_invocation("svc.main.run");
+
+    let value = execute_test_program_route(&interpreter, &frame)
+        .await
+        .expect("Stream variables and returned Streams should retain identity across packages");
+
+    assert_eq!(value, json!("abc"));
+}
+
+#[tokio::test]
 async fn runtime_program_executes_package_function_call_by_package_id_ref() {
     let mut program = program_with_service_and_package_executables(
         package_call_executable_with_package_ref(json!({
@@ -7810,6 +7838,168 @@ fn package_echo_executable() -> LinkedExecutable {
                 },
             ],
         })),
+    }
+}
+
+fn package_stream_chain_route_executable() -> LinkedExecutable {
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: "run".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: Some(linked_builtin_type("string")),
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![
+                test_slot(0, "source", "local"),
+                test_slot(1, "forwarded", "local"),
+                test_slot(2, "item", "local"),
+                test_slot(3, "result", "local"),
+            ],
+            frame_size: 4,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                { "label": "entry", "statements": [
+                    { "statement": 0 }, { "statement": 1 }, { "statement": 2 },
+                    { "statement": 3 }, { "statement": 4 }
+                ] },
+                { "label": "append", "statements": [{ "statement": 5 }] }
+            ],
+            "statements": [
+                { "kind": "let", "slot": 0, "value": { "expression": 0 } },
+                { "kind": "let", "slot": 1, "value": { "expression": 2 } },
+                { "kind": "let", "slot": 3, "value": { "expression": 4 } },
+                {
+                    "kind": "forIn", "itemSlot": 2,
+                    "iterable": { "expression": 3 }, "body": "append"
+                },
+                { "kind": "return", "value": { "expression": 8 } },
+                {
+                    "kind": "assign", "target": { "kind": "slot", "slot": 3 },
+                    "value": { "expression": 7 }
+                }
+            ],
+            "expressions": [
+                {
+                    "kind": "call",
+                    "call": {
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(ExecutableAddr::service(0, 1)).unwrap()
+                        },
+                        "args": []
+                    }
+                },
+                { "kind": "loadSlot", "slot": 0 },
+                {
+                    "kind": "call",
+                    "call": {
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(ExecutableAddr::package(0, 0, 0)).unwrap()
+                        },
+                        "args": [{ "expression": 1 }]
+                    }
+                },
+                { "kind": "loadSlot", "slot": 1 },
+                { "kind": "literal", "value": { "kind": "string", "value": "" } },
+                { "kind": "loadSlot", "slot": 3 },
+                { "kind": "loadSlot", "slot": 2 },
+                {
+                    "kind": "binary", "op": "add",
+                    "left": { "expression": 5 }, "right": { "expression": 6 }
+                },
+                { "kind": "loadSlot", "slot": 3 }
+            ]
+        })),
+    }
+}
+
+fn package_string_stream_forwarder_executable(
+    executable_index: usize,
+    nested_index: Option<usize>,
+) -> LinkedExecutable {
+    let (iterable_expression, item_expression, expressions) = match nested_index {
+        Some(nested_index) => (
+            1,
+            2,
+            json!([
+                { "kind": "loadSlot", "slot": 0 },
+                {
+                    "kind": "call",
+                    "call": {
+                        "target": {
+                            "kind": "executable",
+                            "addr": serde_json::to_value(
+                                ExecutableAddr::package(0, 0, nested_index)
+                            ).unwrap()
+                        },
+                        "args": [{ "expression": 0 }]
+                    }
+                },
+                { "kind": "loadSlot", "slot": 1 },
+                { "kind": "literal", "value": { "kind": "null" } }
+            ]),
+        ),
+        None => (
+            0,
+            1,
+            json!([
+                { "kind": "loadSlot", "slot": 0 },
+                { "kind": "loadSlot", "slot": 1 },
+                { "kind": "literal", "value": { "kind": "null" } }
+            ]),
+        ),
+    };
+    let return_expression = expressions
+        .as_array()
+        .expect("forwarder expressions should be an array")
+        .len()
+        - 1;
+    LinkedExecutable {
+        kind: ExecutableKind::Function,
+        symbol: format!("forwarders.forward{executable_index}"),
+        type_params: Vec::new(),
+        params: vec![ParamIr {
+            name: "source".to_string(),
+            slot: 0,
+            ty: linked_stream_type(linked_builtin_type("string")),
+        }],
+        return_type: Some(linked_stream_type(linked_builtin_type("string"))),
+        self_type: None,
+        slots: SlotLayoutIr {
+            slots: vec![
+                test_slot(0, "source", "param"),
+                test_slot(1, "item", "local"),
+            ],
+            frame_size: 2,
+        },
+        may_suspend: false,
+        body: executable_body(json!({
+            "blocks": [
+                { "label": "entry", "statements": [{ "statement": 1 }, { "statement": 2 }] },
+                { "label": "forward", "statements": [{ "statement": 0 }] }
+            ],
+            "statements": [
+                { "kind": "emit", "operation": "emit", "value": { "expression": item_expression } },
+                {
+                    "kind": "forIn", "itemSlot": 1,
+                    "iterable": { "expression": iterable_expression }, "body": "forward"
+                },
+                { "kind": "return", "value": { "expression": return_expression } }
+            ],
+            "expressions": expressions
+        })),
+    }
+}
+
+fn test_slot(index: usize, name: &str, kind: &str) -> SlotIr {
+    SlotIr {
+        index,
+        name: name.to_string(),
+        kind: kind.to_string(),
     }
 }
 
