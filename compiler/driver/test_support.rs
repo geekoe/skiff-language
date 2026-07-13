@@ -195,8 +195,6 @@ pub struct TestCompilerSourceFile {
     pub text: String,
 }
 
-pub use crate::input::test_rules::FriendProductionMatch;
-
 /// Options for [`compile_ast_file_ir_for_test`].
 ///
 /// All fields default to empty, so callers that need no extra context can use
@@ -1235,18 +1233,8 @@ pub fn is_test_file_path(path: &Path) -> bool {
     crate::input::test_rules::is_test_file_path(path)
 }
 
-pub fn module_relative_path_for_test_file_without_friend(path: &Path) -> PathBuf {
-    crate::input::test_rules::module_relative_path_for_test_file_without_friend(path)
-}
-
-pub fn is_friend_test_file_for_production(test_path: &Path, production_path: &Path) -> bool {
-    crate::input::test_rules::is_friend_test_file_for_production(test_path, production_path)
-}
-
-pub fn production_friend_match_for_test_file(
-    path: &Path,
-) -> Result<FriendProductionMatch, std::io::Error> {
-    crate::input::test_rules::production_friend_match_for_test_file(path)
+pub fn module_relative_path_for_test_file(path: &Path) -> PathBuf {
+    crate::input::test_rules::module_relative_path_for_test_file(path)
 }
 
 pub fn validate_no_test_declarations_in_production_source(

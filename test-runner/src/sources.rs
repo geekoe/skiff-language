@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -7,9 +7,8 @@ use std::{
 use skiff_compiler::{
     collect_source_tree,
     test_support::{
-        is_friend_test_file_for_production, production_friend_match_for_test_file,
-        validate_no_test_declarations_in_production_source, FriendProductionMatch,
-        TestPackageManifest as PackageManifest, PACKAGE_CONFIG_FILE,
+        validate_no_test_declarations_in_production_source, TestPackageManifest as PackageManifest,
+        PACKAGE_CONFIG_FILE,
     },
     SERVICE_CONFIG_FILE,
 };
@@ -18,8 +17,7 @@ use skiff_syntax::parser::{parse_source, parse_source_with_bodies_tolerant};
 
 use super::{
     root_paths::{module_path_for_package_production_source, package_module_path},
-    PackageTestCase, PackageTestSource, ParsedSource, PrivateVisibilityScope, SkiffTestError,
-    TestCase,
+    PackageTestCase, PackageTestSource, ParsedSource, SkiffTestError, TestCase,
 };
 
 pub(super) fn read_package_test_sources(
@@ -31,9 +29,11 @@ pub(super) fn read_package_test_sources(
 ) -> Result<Vec<PackageTestSource>, SkiffTestError> {
     let mut paths = Vec::new();
     if input_is_file {
-        paths.push(input.to_path_buf());
-        if !is_test_file_path(input) {
-            paths.extend(friend_test_file_paths(input)?);
+        if is_test_file_path(input) {
+            paths.push(input.to_path_buf());
+        } else {
+            collect_package_test_paths(package_root, &mut paths)?;
+            paths.sort();
         }
     } else {
         collect_package_test_paths(input, &mut paths)?;
@@ -115,25 +115,13 @@ pub(super) fn read_package_test_source(
     if ast.tests.is_empty() {
         return Ok(None);
     }
-    let friend_relative_path = package_friend_relative_path(path, package_root)?;
-    let friend_module_path = friend_relative_path.as_deref().map(|relative| {
-        module_path_for_package_production_source(manifest, relative, export_sources)
-    });
-    let module_path = package_module_path(
-        manifest,
-        &relative_path,
-        friend_relative_path.as_deref(),
-        is_test_file,
-        export_sources,
-    );
+    let module_path = package_module_path(manifest, &relative_path, is_test_file, export_sources);
     Ok(Some(PackageTestSource {
         relative_path,
         module_path,
         is_test_file,
         text,
         ast,
-        synthetic_imports: BTreeSet::new(),
-        friend_module_path,
     }))
 }
 pub(super) fn read_package_production_sources(
@@ -170,8 +158,6 @@ pub(super) fn read_package_production_sources(
             is_test_file: false,
             text,
             ast,
-            synthetic_imports: BTreeSet::new(),
-            friend_module_path: None,
         });
     }
     Ok(sources)
@@ -299,49 +285,6 @@ pub(super) fn package_test_ast_for_cases<'a>(
     }
     ast
 }
-pub(super) fn friend_test_file_paths(path: &Path) -> Result<Vec<PathBuf>, SkiffTestError> {
-    let Some(parent) = path.parent() else {
-        return Ok(Vec::new());
-    };
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(parent).map_err(|source| SkiffTestError::ReadSource {
-        path: parent.display().to_string(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| SkiffTestError::ReadSource {
-            path: parent.display().to_string(),
-            source,
-        })?;
-        let candidate = entry.path();
-        if candidate.is_file() && is_friend_test_file_for_production(&candidate, path) {
-            paths.push(candidate);
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-pub(super) fn package_friend_relative_path(
-    path: &Path,
-    package_root: &Path,
-) -> Result<Option<PathBuf>, SkiffTestError> {
-    match production_friend_match_for_test_file(path).map_err(|source| {
-        SkiffTestError::ReadSource {
-            path: path.display().to_string(),
-            source,
-        }
-    })? {
-        FriendProductionMatch::None => Ok(None),
-        FriendProductionMatch::Unique(production_path) => Ok(Some(
-            production_path
-                .strip_prefix(package_root)
-                .unwrap_or(&production_path)
-                .to_path_buf(),
-        )),
-        FriendProductionMatch::Ambiguous(candidates) => {
-            Err(ambiguous_friend_test_error(path, candidates))
-        }
-    }
-}
 pub(super) fn should_skip_package_dir(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -386,12 +329,6 @@ pub(super) fn read_root_sources(
     _profile: Option<&str>,
 ) -> Result<Vec<ParsedSource>, SkiffTestError> {
     let source_tree = collect_source_tree(root)?;
-    let production_modules = source_tree
-        .sources
-        .iter()
-        .filter(|source| !source.is_test_file)
-        .map(|source| (source.file_path.clone(), source.module_path.clone()))
-        .collect::<BTreeMap<_, _>>();
     source_tree
         .sources
         .iter()
@@ -420,52 +357,13 @@ pub(super) fn read_root_sources(
                     source,
                 })?;
             }
-            let friend_module_path =
-                if source.is_test_file {
-                    let absolute_friend = match production_friend_match_for_test_file(&path)
-                        .map_err(|source| SkiffTestError::ReadSource {
-                            path: path.display().to_string(),
-                            source,
-                        })? {
-                        FriendProductionMatch::None => None,
-                        FriendProductionMatch::Unique(path) => Some(path),
-                        FriendProductionMatch::Ambiguous(candidates) => {
-                            return Err(ambiguous_friend_test_error(&path, candidates))
-                        }
-                    };
-                    absolute_friend
-                        .and_then(|path| {
-                            path.strip_prefix(&source_tree.root)
-                                .ok()
-                                .map(Path::to_path_buf)
-                        })
-                        .and_then(|path| production_modules.get(&path).cloned())
-                } else {
-                    None
-                };
             Ok(ParsedSource {
                 source: source.clone(),
                 text,
                 ast,
-                synthetic_imports: BTreeSet::new(),
-                private_visibility_scope: friend_module_path
-                    .clone()
-                    .map(PrivateVisibilityScope::Module)
-                    .unwrap_or_default(),
-                friend_module_path,
             })
         })
         .collect()
-}
-pub(super) fn ambiguous_friend_test_error(path: &Path, candidates: Vec<PathBuf>) -> SkiffTestError {
-    SkiffTestError::AmbiguousFriendTest {
-        path: path.display().to_string(),
-        candidates: candidates
-            .iter()
-            .map(|candidate| candidate.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-    }
 }
 
 #[cfg(test)]

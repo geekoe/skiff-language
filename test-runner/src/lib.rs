@@ -41,8 +41,8 @@ mod visibility;
 
 use types::{
     PackageDependencyArtifacts, PackageTestCase, PackageTestSource, ParsedSource,
-    PrivateVisibilityScope, ProductionModuleSymbols, ProductionSymbol, ProductionSymbolKind,
-    ResolvedPublicationTestInputs, RuntimeTestArtifact, SymbolUseKind, TestCase, TestLocalSymbols,
+    ProductionModuleSymbols, ProductionSymbol, ProductionSymbolKind, ResolvedPublicationTestInputs,
+    RuntimeTestArtifact, TestCase,
 };
 pub use types::{SkiffTestError, SkiffTestOptions, SkiffTestResult, SkiffTestSummary};
 

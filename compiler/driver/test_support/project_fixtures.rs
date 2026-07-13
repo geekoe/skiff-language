@@ -408,7 +408,7 @@ facade: facade_impl.facade
     );
 }
 
-pub fn write_package_source_with_friend_test(
+pub fn write_package_source_with_test_file(
     root: &Path,
     default_run: &str,
     test_name: &str,

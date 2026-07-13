@@ -5,10 +5,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::test_rules::{
-    is_test_file_path, module_relative_path_for_test_file_without_friend,
-    production_relative_path_for_test_file,
-};
+use crate::test_rules::{is_test_file_path, module_relative_path_for_test_file};
 
 const COMPILER_GENERATED_NAMESPACE: &str = "__skiff";
 
@@ -142,10 +139,7 @@ fn collect_from_dir(
         let relative_path = path.strip_prefix(root).unwrap_or(&path);
         let is_test_file = is_test_file(relative_path);
         let module_relative_path = if is_test_file {
-            let production_path = production_relative_path_for_test_file(&path)
-                .and_then(|path| path.strip_prefix(root).ok().map(Path::to_path_buf));
-            production_path
-                .unwrap_or_else(|| module_relative_path_for_test_file_without_friend(relative_path))
+            module_relative_path_for_test_file(relative_path)
         } else {
             relative_path.to_path_buf()
         };

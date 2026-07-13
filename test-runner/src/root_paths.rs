@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -29,11 +29,7 @@ pub(super) fn resolve_service_test_root_paths(
     sources
         .into_iter()
         .map(|source| {
-            let index = service_exports_index_for_friend_scope(
-                production_sources,
-                production_exports,
-                &source,
-            );
+            let index = service_root_index(production_sources, production_exports);
             resolve_parsed_source_root_paths(source, &index)
         })
         .collect()
@@ -43,7 +39,7 @@ pub(super) fn resolve_parsed_root_paths_with_exports(
     sources: Vec<ParsedSource>,
     production_exports: &BTreeMap<String, ProductionModuleSymbols>,
 ) -> Result<Vec<ParsedSource>, SkiffTestError> {
-    let index = exports_index_from_production_exports(production_exports);
+    let index = service_root_index(&sources, production_exports);
     sources
         .into_iter()
         .map(|source| resolve_parsed_source_root_paths(source, &index))
@@ -58,7 +54,6 @@ pub(super) fn resolve_parsed_source_root_paths(
     if !outcome.errors.is_empty() {
         return Err(root_path_test_error(path, outcome.errors));
     }
-    source.synthetic_imports = synthetic_import_paths(&outcome.synthetic_imports);
     Ok(source)
 }
 pub(super) fn resolve_package_test_root_paths(
@@ -130,16 +125,7 @@ pub(super) fn resolve_package_test_source_root_paths(
     if !outcome.errors.is_empty() {
         return Err(root_path_test_error(path, outcome.errors));
     }
-    source.synthetic_imports = synthetic_import_paths(&outcome.synthetic_imports);
     Ok(source)
-}
-pub(super) fn synthetic_import_paths(
-    synthetic_imports: &BTreeSet<(String, String)>,
-) -> BTreeSet<String> {
-    synthetic_imports
-        .iter()
-        .map(|(module_path, symbol)| format!("{module_path}.{symbol}"))
-        .collect()
 }
 pub(super) fn exports_index_from_production_exports(
     production_exports: &BTreeMap<String, ProductionModuleSymbols>,
@@ -162,19 +148,7 @@ pub(super) fn exports_index_from_production_exports(
             test_default_run_span: None,
             source_spans: Default::default(),
         };
-        for name in &symbols.db_objects {
-            ast.dbs.push(DbDecl {
-                name: name.clone(),
-                collection_name: None,
-                key: None,
-                retention: None,
-                indexes: Vec::new(),
-                leases: Vec::new(),
-                storage: Vec::new(),
-                span: SourceSpan::synthetic(),
-            });
-        }
-        for (name, symbol) in &symbols.symbols {
+        for (name, symbol) in symbols.symbols.iter().filter(|(_, symbol)| symbol.exported) {
             match symbol.kind {
                 ProductionSymbolKind::Type => ast.types.push(TypeDecl {
                     exported: true,
@@ -187,7 +161,16 @@ pub(super) fn exports_index_from_production_exports(
                     fields: Vec::new(),
                     span: SourceSpan::synthetic(),
                 }),
-                ProductionSymbolKind::DbObject => {}
+                ProductionSymbolKind::DbObject => ast.dbs.push(DbDecl {
+                    name: name.clone(),
+                    collection_name: None,
+                    key: None,
+                    retention: None,
+                    indexes: Vec::new(),
+                    leases: Vec::new(),
+                    storage: Vec::new(),
+                    span: SourceSpan::synthetic(),
+                }),
                 ProductionSymbolKind::Interface => ast.interfaces.push(InterfaceDecl {
                     exported: true,
                     name: name.clone(),
@@ -219,35 +202,13 @@ pub(super) fn exports_index_from_production_exports(
     }
     index
 }
-pub(super) fn service_exports_index_for_friend_scope(
+pub(super) fn service_root_index(
     production_sources: &[ParsedSource],
     production_exports: &BTreeMap<String, ProductionModuleSymbols>,
-    source: &ParsedSource,
 ) -> ServiceExportsIndex {
     let mut index = exports_index_from_production_exports(production_exports);
-    if let Some(friend_module_path) = &source.friend_module_path {
-        if let Some(production) = production_sources
-            .iter()
-            .find(|candidate| candidate.source.module_path == *friend_module_path)
-        {
-            index.insert_module_all_symbols(friend_module_path, &production.ast);
-        }
-    }
-    index
-}
-pub(super) fn package_exports_index_for_friend_scope(
-    production_sources: &[PackageTestSource],
-    production_exports: &BTreeMap<String, ProductionModuleSymbols>,
-    source: &PackageTestSource,
-) -> ServiceExportsIndex {
-    let mut index = exports_index_from_production_exports(production_exports);
-    if let Some(friend_module_path) = &source.friend_module_path {
-        if let Some(production) = production_sources
-            .iter()
-            .find(|candidate| candidate.module_path == *friend_module_path)
-        {
-            index.insert_module_all_symbols(friend_module_path, &production.ast);
-        }
+    for source in production_sources {
+        index.insert_module_all_symbols(&source.source.module_path, &source.ast);
     }
     index
 }
@@ -372,13 +333,10 @@ fn api_entry_source_module_hint(entry: &TestPackageApiEntry) -> &str {
 pub(super) fn package_module_path(
     manifest: &PackageManifest,
     relative_path: &Path,
-    friend_relative_path: Option<&Path>,
     is_test_file: bool,
     export_sources: &BTreeMap<PathBuf, String>,
 ) -> String {
-    let production_relative = if let Some(friend_relative) = friend_relative_path {
-        friend_relative.to_path_buf()
-    } else if is_test_file {
+    let production_relative = if is_test_file {
         test_file_production_relative_path(relative_path)
     } else {
         relative_path.to_path_buf()
@@ -391,19 +349,13 @@ pub(super) fn package_module_path(
         };
     }
     if is_test_file {
-        if let Some(friend_relative) = friend_relative_path {
-            return format!(
-                "{}.__test",
-                module_path_for_package_production_source(
-                    manifest,
-                    friend_relative,
-                    export_sources,
-                )
-            );
-        }
         format!(
             "{}.__test",
-            module_path_for_package_source(&production_relative)
+            module_path_for_package_production_source(
+                manifest,
+                &production_relative,
+                export_sources,
+            )
         )
     } else {
         fallback_module_path(relative_path, is_test_file)
@@ -457,7 +409,7 @@ pub(super) fn module_path_for_package_source(relative_path: &Path) -> String {
         .join(".")
 }
 pub(super) fn test_file_production_relative_path(relative_path: &Path) -> PathBuf {
-    skiff_compiler::test_support::module_relative_path_for_test_file_without_friend(relative_path)
+    skiff_compiler::test_support::module_relative_path_for_test_file(relative_path)
 }
 pub(super) fn fallback_module_path(relative_path: &Path, is_test_file: bool) -> String {
     let module_relative_path = if is_test_file {

@@ -44,9 +44,8 @@ use super::{
         read_package_production_sources, read_package_test_sources,
     },
     types::TestEffectDouble,
-    visibility::{merge_production_exports, production_function_exports},
-    PackageDependencyArtifacts, PackageTestCase, PackageTestSource, PrivateVisibilityScope,
-    SkiffTestError, SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
+    PackageDependencyArtifacts, PackageTestCase, PackageTestSource, SkiffTestError,
+    SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
 
 const PACKAGE_TEST_CONCURRENCY_ENV: &str = "SKIFF_PACKAGE_TEST_CONCURRENCY";
@@ -86,12 +85,6 @@ pub(super) fn run_package_tests(
         read_package_production_sources(&current_manifest, package_root, &export_sources)?;
     let production_sources =
         resolve_official_package_private_root_paths(&current_manifest, production_sources)?;
-    let current_package_private_modules = production_sources
-        .iter()
-        .map(|source| source.module_path.clone())
-        .collect::<BTreeSet<_>>();
-    let mut production_exports =
-        production_function_exports(&current_manifest, &production_sources, false);
     let dependency_artifacts = package_dependency_artifacts(
         &current_manifest,
         package_root,
@@ -99,12 +92,6 @@ pub(super) fn run_package_tests(
         &test_sources,
         options,
     )?;
-    merge_production_exports(
-        &mut production_exports,
-        dependency_artifacts.production_exports.clone(),
-    );
-    let mut package_ids = dependency_artifacts.package_ids.clone();
-    package_ids.insert(current_manifest.id.clone());
     let test_package_aliases = package_test_alias_bindings(
         &current_manifest,
         package_root,
@@ -112,10 +99,6 @@ pub(super) fn run_package_tests(
         &options.package_resolution_dirs_for(package_root),
     )?;
     let test_sources = resolve_package_test_root_paths(test_sources, &production_sources)?;
-    let disallowed_import_modules = production_sources
-        .iter()
-        .map(|source| source.module_path.clone())
-        .collect::<BTreeSet<_>>();
     let production_compiled = package_source_file_ir_artifacts_with_dependency_publications(
         &current_manifest,
         package_root,
@@ -146,28 +129,6 @@ pub(super) fn run_package_tests(
     let mut databases_to_drop: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for (result_index, test) in tests.into_iter().enumerate() {
-        let private_visibility_scope =
-            PrivateVisibilityScope::Modules(current_package_private_modules.clone());
-        if let Some(message) = super::visibility::private_visibility_error_in_ast(
-            &test.source.ast,
-            &test.source.synthetic_imports,
-            test.test_index,
-            &production_exports,
-            &private_visibility_scope,
-            &package_ids,
-            &test_package_aliases,
-            &disallowed_import_modules,
-        ) {
-            results[result_index] = Some(SkiffTestResult {
-                module_path: test.module_path,
-                name: test.name,
-                passed: false,
-                skipped: false,
-                message: Some(message),
-            });
-            continue;
-        }
-
         let test_module_paths = [test.module_path.as_str()];
         let test_config = config_for_runtime_test_modules(
             &test_doubles.config,
@@ -1595,8 +1556,6 @@ mod tests {
             is_test_file,
             text: text.to_string(),
             ast: parse_source(text).expect("test source should parse"),
-            synthetic_imports: BTreeSet::new(),
-            friend_module_path: None,
         }
     }
 
