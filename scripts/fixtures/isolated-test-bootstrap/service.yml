@@ -1,0 +1,9 @@
+id: example.com/test-runtime-bootstrap
+version: 0.1.0
+
+http:
+  guard: root.internal.bootstrap.allow
+  routes:
+    - method: GET
+      path: /__skiff/test-runtime-bootstrap
+      handler: root.internal.bootstrap.ready

@@ -1,11 +1,9 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
-import { createConnection, createServer } from 'node:net';
 import {
   chmod,
   mkdir,
   mkdtemp,
-  open,
   readdir,
   readFile,
   rm,
@@ -15,11 +13,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { assertPortsClosed, leaseLocalPorts } from './local-port-lease.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(scriptDir, '..', '..');
 
-const PORT_LEASE_DIR = join(tmpdir(), 'skiff-encrypted-storage-live-port-leases');
 const PORT_MIN = 45000;
 const PORT_MAX = 45999;
 const FORBIDDEN_PORTS = new Set([
@@ -512,7 +510,6 @@ export class EncryptedStorageLiveHarness {
 }
 
 async function leaseIsolatedPorts() {
-  await mkdir(PORT_LEASE_DIR, { recursive: true });
   for (let attempt = 0; attempt < 500; attempt += 1) {
     const base = 45000 + randomInt(0, 400);
     const mongo = 45500 + randomInt(0, 500);
@@ -520,27 +517,14 @@ async function leaseIsolatedPorts() {
     if (new Set(candidates).size !== candidates.length || candidates.some(isForbiddenPort)) {
       continue;
     }
-    const handles = [];
     try {
-      for (const port of candidates) {
-        const handle = await open(join(PORT_LEASE_DIR, `${port}.lock`), 'wx');
-        handles.push({ port, handle });
-        await assertPortAvailable(port);
-      }
+      const lease = await leaseLocalPorts(candidates);
       return {
         ports: { base, mongo },
-        async release() {
-          for (const { port, handle } of handles) {
-            await handle.close();
-            await rm(join(PORT_LEASE_DIR, `${port}.lock`), { force: true });
-          }
-        },
+        release: () => lease.release(),
       };
     } catch {
-      for (const { port, handle } of handles) {
-        await handle.close();
-        await rm(join(PORT_LEASE_DIR, `${port}.lock`), { force: true });
-      }
+      // Try another disjoint port set.
     }
   }
   throw new Error(`no isolated ports available in ${PORT_MIN}-${PORT_MAX}`);
@@ -548,48 +532,6 @@ async function leaseIsolatedPorts() {
 
 function isForbiddenPort(port) {
   return port < PORT_MIN || port > PORT_MAX || FORBIDDEN_PORTS.has(port);
-}
-
-function assertPortAvailable(port) {
-  return new Promise((resolvePromise, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
-      server.close(resolvePromise);
-    });
-  });
-}
-
-async function assertPortsClosed(ports) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const openPorts = [];
-    for (const port of ports) {
-      if (await canConnect(port)) {
-        openPorts.push(port);
-      }
-    }
-    if (openPorts.length === 0) {
-      return;
-    }
-    await delay(100);
-  }
-  throw new Error(`managed instance left a listener on one of: ${ports.join(', ')}`);
-}
-
-function canConnect(port) {
-  return new Promise((resolvePromise) => {
-    const socket = createConnection({ host: '127.0.0.1', port });
-    socket.setTimeout(100);
-    socket.once('connect', () => {
-      socket.destroy();
-      resolvePromise(true);
-    });
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolvePromise(false);
-    });
-    socket.once('error', () => resolvePromise(false));
-  });
 }
 
 function instanceConfigText(paths, ports) {

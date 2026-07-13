@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     fs::{File, OpenOptions},
     io::{Read, Write},
     net::TcpStream,
@@ -39,6 +41,8 @@ use super::{
 
 const DEFAULT_CONTROL_BASE_URL: &str = "http://127.0.0.1:4001";
 const TEST_ARTIFACT_ROOT_ENV: &str = "SKIFF_TEST_ARTIFACT_ROOT";
+const DEV_HOME_ENV: &str = "SKIFF_DEV_HOME";
+const DEV_RELOAD_URL_ENV: &str = "SKIFF_DEV_RELOAD_URL";
 const TEST_SERVICE_VERSION: &str = "test";
 const PAYLOAD_MAGIC: &[u8; 4] = b"SKPV";
 const PAYLOAD_VERSION: u8 = 2;
@@ -1236,7 +1240,7 @@ pub(super) fn execute_runtime_process_test(
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health)?;
+    let artifact_root = test_artifact_root(&health, options.live)?;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1300,7 +1304,7 @@ pub(super) fn execute_dev_synced_service_test(
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health)?;
+    let artifact_root = test_artifact_root(&health, options.live)?;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1413,7 +1417,7 @@ pub(super) fn prepare_dev_synced_service_test_suite(
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health)?;
+    let artifact_root = test_artifact_root(&health, options.live)?;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1708,7 +1712,7 @@ pub(super) fn prepare_dev_synced_package_test(
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
     let control_base_url = router_control_base_url(options)?;
     let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health)?;
+    let artifact_root = test_artifact_root(&health, options.live)?;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -2301,14 +2305,18 @@ fn sync_dev_service_artifacts(
 ) -> Result<(), String> {
     let script = dev_sync_script_path()?;
     let package_dirs = options.package_resolution_dirs_for(service_root);
+    let temporary_build_root = if options.live {
+        Some(RuntimeTempDir::create("dev-sync-build")?)
+    } else {
+        None
+    };
+    let build_root = match &temporary_build_root {
+        Some(temp) => temp.path().to_path_buf(),
+        None => required_isolated_dev_home()?.join("build"),
+    };
     let mut command = Command::new("node");
-    command
-        .arg(script)
-        .arg("--root")
-        .arg(service_root)
-        .arg("--artifact-root")
-        .arg(artifact_root)
-        .arg("--no-reload");
+    command.arg(script).arg("--root").arg(service_root);
+    append_dev_sync_output_roots(&mut command, artifact_root, &build_root).arg("--no-reload");
     for package_dir in package_dirs.package_dirs {
         command.arg("--packages-dir").arg(package_dir);
     }
@@ -2452,6 +2460,11 @@ fn sync_service_dependency_artifact_roots(
     service_ids: Option<&[String]>,
 ) -> Result<(), String> {
     let requested_service_paths = requested_service_artifact_paths(service_ids);
+    let copy_filter = if options.live {
+        requested_service_paths.as_ref()
+    } else {
+        None
+    };
     let mut copied_service_paths = BTreeSet::new();
     for dependency_root in &options.service_artifact_roots {
         if !dependency_root.is_dir() {
@@ -2463,7 +2476,7 @@ fn sync_service_dependency_artifact_roots(
         copied_service_paths.extend(copy_service_dependency_artifact_root(
             dependency_root,
             artifact_root,
-            requested_service_paths.as_ref(),
+            copy_filter,
         )?);
     }
     if let Some(requested) = requested_service_paths {
@@ -2857,8 +2870,14 @@ fn router_control_base_url(options: &SkiffTestOptions) -> Result<String, String>
     let configured = options
         .router_reload_url
         .clone()
-        .or_else(|| std::env::var("SKIFF_DEV_RELOAD_URL").ok())
-        .unwrap_or_else(|| DEFAULT_CONTROL_BASE_URL.to_string());
+        .or_else(|| std::env::var(DEV_RELOAD_URL_ENV).ok())
+        .filter(|value| !value.trim().is_empty());
+    validate_explicit_runtime_environment(
+        options.live,
+        configured.as_deref(),
+        std::env::var_os(TEST_ARTIFACT_ROOT_ENV).as_deref(),
+    )?;
+    let configured = configured.unwrap_or_else(|| DEFAULT_CONTROL_BASE_URL.to_string());
     control_base_url(&configured)
 }
 
@@ -2873,13 +2892,29 @@ fn control_base_url(url: &str) -> Result<String, String> {
     Ok(format!("http://{}:{}", parsed.host, parsed.port))
 }
 
-fn test_artifact_root(health: &JsonValue) -> Result<PathBuf, String> {
-    if let Some(root) = std::env::var_os(TEST_ARTIFACT_ROOT_ENV) {
-        let root = PathBuf::from(root);
+fn test_artifact_root(health: &JsonValue, live: bool) -> Result<PathBuf, String> {
+    test_artifact_root_from_explicit(
+        health,
+        live,
+        std::env::var_os(TEST_ARTIFACT_ROOT_ENV).map(PathBuf::from),
+    )
+}
+
+fn test_artifact_root_from_explicit(
+    health: &JsonValue,
+    live: bool,
+    explicit: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Some(root) = explicit {
         if root.as_os_str().is_empty() {
             return Err(format!("{TEST_ARTIFACT_ROOT_ENV} must not be empty"));
         }
         return Ok(root);
+    }
+    if !live {
+        return Err(format!(
+            "non-live runtime tests require an isolated {TEST_ARTIFACT_ROOT_ENV}"
+        ));
     }
     health
         .pointer("/artifact/artifactRoots/0")
@@ -2891,6 +2926,60 @@ fn test_artifact_root(health: &JsonValue) -> Result<PathBuf, String> {
                 "router health did not include artifact.artifactRoots[0]; set {TEST_ARTIFACT_ROOT_ENV} to the runtime artifact root"
             )
         })
+}
+
+fn required_isolated_dev_home() -> Result<PathBuf, String> {
+    required_isolated_dev_home_from_value(std::env::var_os(DEV_HOME_ENV))
+}
+
+fn required_isolated_dev_home_from_value(
+    value: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    let value = value.ok_or_else(|| {
+        format!("non-live dev-synced runtime tests require isolated {DEV_HOME_ENV}")
+    })?;
+    if value.is_empty() {
+        return Err(format!(
+            "non-live dev-synced runtime tests require non-empty isolated {DEV_HOME_ENV}"
+        ));
+    }
+    Ok(PathBuf::from(value))
+}
+
+fn validate_explicit_runtime_environment(
+    live: bool,
+    reload_url: Option<&str>,
+    artifact_root: Option<&OsStr>,
+) -> Result<(), String> {
+    if live {
+        return Ok(());
+    }
+    let mut missing = Vec::new();
+    if reload_url.map_or(true, |value| value.trim().is_empty()) {
+        missing.push(DEV_RELOAD_URL_ENV);
+    }
+    if artifact_root.map_or(true, OsStr::is_empty) {
+        missing.push(TEST_ARTIFACT_ROOT_ENV);
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "non-live runtime tests require an isolated runtime environment; missing {}",
+        missing.join(" and ")
+    ))
+}
+
+fn append_dev_sync_output_roots<'a>(
+    command: &'a mut Command,
+    artifact_root: &Path,
+    build_root: &Path,
+) -> &'a mut Command {
+    command
+        .arg("--artifact-root")
+        .arg(artifact_root)
+        .arg("--build-root")
+        .arg(build_root)
 }
 
 fn runtime_dispatch_result(
@@ -3330,27 +3419,118 @@ fn current_nanos() -> u128 {
 mod tests {
     use std::{
         collections::{BTreeSet, HashMap},
+        ffi::{OsStr, OsString},
         path::{Path, PathBuf},
+        process::Command,
         time::Duration,
     };
 
     use serde_json::json;
 
     use super::{
-        cleanup_manifest_paths, copy_artifact_file, copy_service_dependency_artifact_root,
-        current_nanos, is_transient_dispatch_error, is_transient_dispatch_response,
-        package_test_dispatch_body, package_test_service_db_service_id,
-        preflight_runtime_artifact_cleanup, runtime_cleanup_needs_reload,
-        service_id_storage_database_name, sync_test_database_cleanup_enabled_from_env_value,
-        synthetic_service_runtime_visible_paths, synthetic_test_target,
+        append_dev_sync_output_roots, cleanup_manifest_paths, copy_artifact_file,
+        copy_service_dependency_artifact_root, current_nanos, is_transient_dispatch_error,
+        is_transient_dispatch_response, package_test_dispatch_body,
+        package_test_service_db_service_id, preflight_runtime_artifact_cleanup,
+        required_isolated_dev_home_from_value, runtime_cleanup_needs_reload,
+        service_id_storage_database_name, sync_service_dependency_artifact_roots,
+        sync_test_database_cleanup_enabled_from_env_value, synthetic_service_runtime_visible_paths,
+        synthetic_test_target, test_artifact_root_from_explicit,
         test_database_cleanup_env_value_enabled,
         test_database_cleanup_settle_duration_from_env_value, test_database_cleanup_sleep_arg,
         test_database_drop_script, test_runner_reload_marker_path, test_runner_runs_dir,
-        validate_runtime_cleanup_path, write_runtime_artifact_manifest, PackageTestDispatchInput,
-        RuntimeArtifactManifestPath, RuntimeArtifactRun, RuntimeArtifactRunManifest,
-        SkiffTestOptions, DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, RUNTIME_ARTIFACT_LOCK,
-        TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
+        validate_explicit_runtime_environment, validate_runtime_cleanup_path,
+        write_runtime_artifact_manifest, PackageTestDispatchInput, RuntimeArtifactManifestPath,
+        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions,
+        DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, DEV_RELOAD_URL_ENV, RUNTIME_ARTIFACT_LOCK,
+        TEST_ARTIFACT_ROOT_ENV, TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
     };
+
+    #[test]
+    fn non_live_runtime_environment_requires_reload_and_artifact_before_network() {
+        let neither = validate_explicit_runtime_environment(false, None, None)
+            .expect_err("both isolated values must be required");
+        assert!(neither.contains(DEV_RELOAD_URL_ENV));
+        assert!(neither.contains(TEST_ARTIFACT_ROOT_ENV));
+
+        let missing_root = validate_explicit_runtime_environment(
+            false,
+            Some("http://127.0.0.1:46001/__skiff/reload-artifacts"),
+            None,
+        )
+        .expect_err("artifact root must be required together with reload URL");
+        assert!(!missing_root.contains(DEV_RELOAD_URL_ENV));
+        assert!(missing_root.contains(TEST_ARTIFACT_ROOT_ENV));
+
+        let missing_reload = validate_explicit_runtime_environment(
+            false,
+            None,
+            Some(OsStr::new("/tmp/isolated-artifacts")),
+        )
+        .expect_err("reload URL must be required together with artifact root");
+        assert!(missing_reload.contains(DEV_RELOAD_URL_ENV));
+        assert!(!missing_reload.contains(TEST_ARTIFACT_ROOT_ENV));
+
+        validate_explicit_runtime_environment(
+            false,
+            Some("http://127.0.0.1:46001/__skiff/reload-artifacts"),
+            Some(OsStr::new("/tmp/isolated-artifacts")),
+        )
+        .expect("explicit isolated values should pass");
+        validate_explicit_runtime_environment(true, None, None)
+            .expect("live mode keeps its existing fallback behavior");
+    }
+
+    #[test]
+    fn non_live_artifact_root_never_falls_back_to_router_health() {
+        let health = json!({ "artifact": { "artifactRoots": ["/stable/artifacts"] } });
+        let error = test_artifact_root_from_explicit(&health, false, None)
+            .expect_err("non-live root must fail closed");
+        assert!(error.contains(TEST_ARTIFACT_ROOT_ENV));
+        assert_eq!(
+            test_artifact_root_from_explicit(&health, true, None)
+                .expect("live root may still come from health"),
+            PathBuf::from("/stable/artifacts")
+        );
+        assert_eq!(
+            test_artifact_root_from_explicit(
+                &health,
+                false,
+                Some(PathBuf::from("/tmp/isolated-artifacts")),
+            )
+            .expect("explicit non-live root should be used"),
+            PathBuf::from("/tmp/isolated-artifacts")
+        );
+    }
+
+    #[test]
+    fn dev_sync_command_uses_explicit_isolated_artifact_and_build_roots() {
+        let mut command = Command::new("node");
+        append_dev_sync_output_roots(
+            &mut command,
+            Path::new("/tmp/isolated/dev-home/artifacts"),
+            Path::new("/tmp/isolated/dev-home/build"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "--artifact-root",
+                "/tmp/isolated/dev-home/artifacts",
+                "--build-root",
+                "/tmp/isolated/dev-home/build",
+            ]
+        );
+        assert_eq!(
+            required_isolated_dev_home_from_value(Some(OsString::from("/tmp/isolated/dev-home",)))
+                .expect("isolated dev home should resolve")
+                .join("build"),
+            PathBuf::from("/tmp/isolated/dev-home/build")
+        );
+    }
 
     #[test]
     fn package_test_dispatch_body_uses_package_only_identity() {
@@ -3874,6 +4054,59 @@ mod tests {
             .join("services")
             .join("example~com~~unrelated.json")
             .exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn non_live_dependency_sync_copies_transitive_service_closure_and_validates_direct_ids() {
+        let dir = temp_runtime_artifact_dir("dependency-transitive-closure");
+        let dependency_root = dir.join("dependency");
+        let artifact_root = dir.join("artifact");
+        let aihub_pointer = "dev/services/skiff~run~~aihub.json";
+        let relay_pointer = "dev/services/skiff~run~~codex-relay.json";
+        write_test_file(&dependency_root, aihub_pointer);
+        write_test_file(&dependency_root, relay_pointer);
+        let source_before = std::fs::read(dependency_root.join(relay_pointer))
+            .expect("source pointer should be readable");
+        let source_modified_before = std::fs::metadata(dependency_root.join(relay_pointer))
+            .and_then(|metadata| metadata.modified())
+            .expect("source pointer mtime should be readable");
+        let options = SkiffTestOptions {
+            service_artifact_roots: vec![dependency_root.clone()],
+            ..SkiffTestOptions::default()
+        };
+        let direct = vec!["skiff.run/aihub".to_string()];
+
+        sync_service_dependency_artifact_roots(&artifact_root, &options, Some(&direct))
+            .expect("non-live sync should copy the full transitive service closure");
+
+        assert!(artifact_root.join(aihub_pointer).is_file());
+        assert!(artifact_root.join(relay_pointer).is_file());
+        assert_eq!(
+            std::fs::read(dependency_root.join(relay_pointer))
+                .expect("source pointer should remain readable"),
+            source_before
+        );
+        assert_eq!(
+            std::fs::metadata(dependency_root.join(relay_pointer))
+                .and_then(|metadata| metadata.modified())
+                .expect("source pointer mtime should remain readable"),
+            source_modified_before
+        );
+
+        let relay_only_root = dir.join("relay-only");
+        write_test_file(&relay_only_root, relay_pointer);
+        let missing_options = SkiffTestOptions {
+            service_artifact_roots: vec![relay_only_root],
+            ..SkiffTestOptions::default()
+        };
+        let error = sync_service_dependency_artifact_roots(
+            &dir.join("missing-output"),
+            &missing_options,
+            Some(&direct),
+        )
+        .expect_err("missing direct AIHub dependency must still fail");
+        assert!(error.contains("skiff~run~~aihub"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
