@@ -3,6 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { runOwnedCommand } from './owned-command.mjs';
+
 const STABLE_MONGO_PORT = 27017;
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
@@ -80,7 +82,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       await mkdir(dirname(configPath), { recursive: true });
       await writeFile(configPath, config, 'utf8');
     },
-    seedBootstrap: ({ artifactRoot, buildRoot, env, signal }) => runCommand(
+    seedBootstrap: ({ artifactRoot, buildRoot, env, signal }) => runOwnedCommand(
       'node',
       bootstrapDevSyncArgs({ skiffRoot, artifactRoot, buildRoot }),
       { cwd: skiffRoot, env, signal },
@@ -190,20 +192,6 @@ function childExit(child) {
   return new Promise((resolvePromise, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolvePromise({ code, signal }));
-  });
-}
-
-function runCommand(command, args, options) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { ...options, stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with ${signal ?? code}`));
-      }
-    });
   });
 }
 

@@ -20,6 +20,7 @@ import {
   runInIsolatedTestRuntime,
   shouldUseIsolatedTestRuntime,
 } from './lib/isolated-test-runtime.mjs';
+import { runOwnedCommand } from './lib/owned-command.mjs';
 import { collectPackageSourceArchivePaths } from './lib/package-source-archive.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import {
@@ -364,7 +365,8 @@ async function test(rawArgs) {
   }
   await runInIsolatedTestRuntime({
     skiffRoot,
-    runTest: (isolatedEnv, signal) => run('cargo', testArgs, skiffRoot, {
+    runTest: (isolatedEnv, signal) => runOwnedCommand('cargo', testArgs, {
+      cwd: skiffRoot,
       env: isolatedEnv,
       signal,
     }),
@@ -2532,13 +2534,12 @@ function requireNext(args, index, optionName) {
   return value;
 }
 
-function run(command, args, cwd, options = {}) {
+function run(command, args, cwd) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
       stdio: 'inherit',
-      env: options.env ?? process.env,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      env: process.env,
     });
     child.on('error', reject);
     child.on('exit', (code, signal) => {

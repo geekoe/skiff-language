@@ -37,6 +37,10 @@ closure 可用；它仍校验 publication 声明的 direct service IDs 确实存
 父 CLI 持有 supervisor，并对正常返回、测试失败、startup 失败、`SIGINT` 和 `SIGTERM`
 执行同一 cleanup：
 
+CLI 启动的 bootstrap dev-sync 和 cargo test 命令各自拥有独立进程组。中断时必须先向整组
+发送终止信号并等待组内后代全部退出，超时则强制终止；命令仍存活时不能开始清理临时
+artifact、build 或 runtime stack。Node child 的 abort/error 事件不等于进程已经退出。
+
 1. 请求 supervisor 停止；
 2. 无论 supervisor 状态如何，使用本次临时 config 执行 owner-verified `instance down`；
 3. 用 `instance status` 确认 router/runtime stopped，再确认所有租约端口关闭；

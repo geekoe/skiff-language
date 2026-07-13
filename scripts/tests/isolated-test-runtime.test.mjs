@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 
 import {
@@ -15,6 +19,7 @@ import {
   isolatedTestRunnerEnvironment,
 } from '../lib/isolated-test-runtime-instance.mjs';
 import { leaseConsecutiveLocalPorts } from '../lib/local-port-lease.mjs';
+import { runOwnedCommand } from '../lib/owned-command.mjs';
 
 test('isolated instance config and runner env stay inside dynamic temp boundaries', () => {
   const devHome = '/tmp/skiff-test-runtime/instance/dev-home';
@@ -236,6 +241,40 @@ test('SIGTERM aborts the test and still completes owned cleanup', async () => {
   ]);
 });
 
+test('aborted owned command waits for its process group before returning', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-owned-command-test-'));
+  const pidPath = join(root, 'pids.json');
+  const grandchildSource = [
+    "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200));",
+    'setInterval(() => {}, 1000);',
+  ].join('');
+  const parentSource = [
+    "const { spawn } = require('node:child_process');",
+    "const { writeFileSync } = require('node:fs');",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { stdio: 'ignore' });`,
+    "writeFileSync(process.argv.at(-1), JSON.stringify([process.pid, child.pid]));",
+    "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200));",
+    'setInterval(() => {}, 1000);',
+  ].join('');
+  const abortController = new AbortController();
+  try {
+    const operation = runOwnedCommand(process.execPath, ['-e', parentSource, pidPath], {
+      signal: abortController.signal,
+      stdio: 'ignore',
+    });
+    const pids = await waitForPidFile(pidPath);
+    const startedAt = Date.now();
+    abortController.abort(new Error('controlled interruption'));
+    await assert.rejects(operation, /controlled interruption/);
+    assert.ok(Date.now() - startedAt >= 150, 'abort must wait for graceful group shutdown');
+    assert.equal(pids.every((pid) => !processAlive(pid)), true);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test('live mode bypasses automatic isolated runtime and leases stay in reserved range', async () => {
   assert.equal(shouldUseIsolatedTestRuntime(true), false);
   assert.equal(shouldUseIsolatedTestRuntime(false), true);
@@ -295,4 +334,27 @@ function lifecycleDouble(overrides = {}) {
 
 function range(start, end) {
   return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+async function waitForPidFile(path) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return JSON.parse(await readFile(path, 'utf8'));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await delay(20);
+  }
+  throw new Error(`owned command did not write ${path}`);
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
 }
