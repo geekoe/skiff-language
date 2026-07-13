@@ -30,23 +30,24 @@ Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 
 - 它不改变 runner mode、network permission、config 注入或 live key policy。
 - 它只接受 literal bool，不接受表达式、config 或运行时条件。
 
-## 3. Friend Test Files
+## 3. Package-Local Visibility
 
-同目录 test-only 文件可以成为某个生产文件的 friend 文件。friend 是 test-runner 建立的
-白盒测试作用域：它允许 test-only 文件访问对应生产文件中未进入 public API 的 top-level
-declarations。
+source file 不是当前 package / service 内的可见性边界。runner 构造测试编译时，选中的
+test-only source 与当前 publication 的全部 production sources 共享同一个 all-symbol
+`root.*` index；测试可以访问任意 production source file 的顶级 function、type、alias、
+interface、const 和 db object，无论它是否进入 public API。
 
-匹配规则：
+这不是 test-runner 额外授予的白名单，也不依赖测试文件名：
 
-- `foo.test.skiff` 是 `foo.skiff` 的 friend。
-- `foo.*.test.skiff` 也是 `foo.skiff` 的 friend。
-- friend 关系只由同目录文件名前缀决定，目录名没有测试级别语义。
-- friend 权限只覆盖对应生产文件，不因 import、目录相近或 package-internal `root.*`
-  规则扩展到其他生产模块。
-- 无法在同目录匹配唯一生产文件的 test-only 文件是普通测试文件，只能访问 production
-  public API 和外部 dependency 的 public API。
+- `foo.test.skiff`、`foo.live.test.skiff` 和其他 `*.test.skiff` 没有对应 production file。
+- 文件名中的 `live`、`fuzz`、`bench` 只是组织约定，不改变可见性。
+- production 编译使用同样的当前 publication all-symbol 规则，但它的 source set 不包含
+  test-only files，因此 production code 不能引用 test-only helper。
+- 外部 package 仍只通过 published public API / exports 可见；测试编译不会把 dependency
+  private symbol 加入当前 publication 的 `root.*` index。
 
-文件名中的 flavor，例如 `live`、`fuzz`、`bench`，只是组织约定，不改变测试语义。
+测试选择和符号可见性是两件独立的事。选择单个测试文件只决定运行哪些 test cases，不会
+缩小或扩大当前 publication 的 production symbol set。
 
 ## 4. Test Discovery
 
@@ -54,14 +55,14 @@ declarations。
 
 普通 source file 输入：
 
-- 运行同目录 matching friend test files。
-- `defaultRun false` 的 friend 文件不会被默认运行。
+- 运行该 source file 所属 service / package 中默认发现的测试。
+- 与目录输入一样跳过 `defaultRun false` 文件；不按 source file 名称匹配 test-only 文件。
 
 test-only source file 输入：
 
 - 只运行该文件中的测试。
-- 若它是 friend 文件，测试编译建立 friend 作用域。
 - 显式指定文件时不受 `defaultRun false` 跳过。
+- 测试编译仍包含所属 service / package 的全部 production 顶级符号。
 
 目录输入：
 
@@ -103,8 +104,8 @@ package 测试归 package 所有，不需要通过 sample service 承载。
 - package test helper 不进入 package production assembly。
 - package integration test 可以是普通 test-only source file。
 - 需要 runtime 的 package 测试由 runner 构造临时 service / activation。
-- friend test 是白盒测试；非 friend test-only 文件按黑盒边界检查，只能访问 production
-  public API。
+- 所有 package test-only 文件都可访问当前 package 的 production 顶级符号；跨 package
+  访问仍受 dependency public API / exports 限制。
 - package public API、`package.yml` 或 shared helper 变化，应运行受影响 package 的相关
   test-only files 或目录。
 
@@ -130,7 +131,7 @@ AI 和 CI 不需要测试配置文件来决定默认测试。它们按改动范�
 
 原则：
 
-- 改生产文件，运行对应 source file 输入。
+- 改生产文件，运行所属 service / package 目录，或显式选择受影响的 test-only 文件。
 - 改 test-only 文件，运行该 test-only 文件。
 - 改 package public API、manifest 或 shared helper，运行受影响 package 的测试。
 - 改 runtime effect、config、HTTP 编码、router activation，运行相关 integration 测试。

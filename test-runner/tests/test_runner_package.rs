@@ -669,7 +669,7 @@ version: 1.0.0
 }
 
 #[test]
-fn cli_test_explicit_package_source_file_runs_friend_test_files() {
+fn cli_test_explicit_package_source_file_runs_package_default_tests() {
     let project = PackageProjectBuilder::new("package-test-source-plus-sibling")
         .with_manifest("example.com/math", public_answer_api_yml())
         .write_source(
@@ -806,7 +806,7 @@ fn cli_test_package_directory_rejects_production_embedded_test() {
 }
 
 #[test]
-fn cli_test_package_live_friend_uses_test_module_identity() {
+fn cli_test_package_test_file_uses_its_own_module_identity() {
     let project = PackageProjectBuilder::new("package-test-live-module-identity")
         .with_manifest("example.com/math", public_answer_api_yml())
         .write_source(
@@ -820,7 +820,7 @@ fn cli_test_package_live_friend_uses_test_module_identity() {
         .write_source(
             "api.live.test.skiff",
             r#"
-            test "live friend module identity" {
+            test "test file module identity" {
                 assert root.api.publicAnswer() == 42
             }
         "#,
@@ -828,13 +828,12 @@ fn cli_test_package_live_friend_uses_test_module_identity() {
 
     let summary = run_tests(&project.path("api.live.test.skiff"));
     assert_counts(&summary, 1, 0, 0);
-    assert_eq!(summary.results[0].module_path, "api.__test");
-    assert_ne!(summary.results[0].module_path, "api.live");
-    assert_passed(&summary, "live friend module identity");
+    assert_eq!(summary.results[0].module_path, "api.live.__test");
+    assert_passed(&summary, "test file module identity");
 }
 
 #[test]
-fn cli_test_package_non_exported_live_friend_uses_production_module_identity() {
+fn cli_test_package_non_exported_test_file_uses_its_own_module_identity() {
     let project = PackageProjectBuilder::new("package-test-non-exported-live-module-identity")
         .with_manifest("example.com/math", public_answer_api_yml())
         .write_source(
@@ -856,7 +855,7 @@ fn cli_test_package_non_exported_live_friend_uses_production_module_identity() {
         .write_source(
             "internal.live.test.skiff",
             r#"
-            test "non-exported live friend module identity" {
+            test "non-exported test module identity" {
                 assert root.internal.privateHelper() == 42
             }
         "#,
@@ -864,14 +863,13 @@ fn cli_test_package_non_exported_live_friend_uses_production_module_identity() {
 
     let summary = run_tests(&project.path("internal.live.test.skiff"));
     assert_counts(&summary, 1, 0, 0);
-    assert_eq!(summary.results[0].module_path, "internal.__test");
-    assert_ne!(summary.results[0].module_path, "internal.live.__test");
-    assert_passed(&summary, "non-exported live friend module identity");
+    assert_eq!(summary.results[0].module_path, "internal.live.__test");
+    assert_passed(&summary, "non-exported test module identity");
 }
 
 #[test]
-fn cli_test_package_friend_file_name_must_match_unique_production_file() {
-    let project = PackageProjectBuilder::new("package-test-friend-ambiguous")
+fn cli_test_package_test_file_name_does_not_create_visibility_scope() {
+    let project = PackageProjectBuilder::new("package-test-independent-module")
         .with_manifest("example.com/math", public_answer_api_yml())
         .write_source(
             "api.skiff",
@@ -892,16 +890,16 @@ fn cli_test_package_friend_file_name_must_match_unique_production_file() {
         .write_source(
             "api.live.test.skiff",
             r#"
-            test "ambiguous package friend test file" {
-                assert true
+            test "package test has independent module identity" {
+                assert root.api.publicAnswer() == 42
+                assert root.api.live.publicLiveAnswer() == 43
             }
         "#,
         );
 
-    let error = run_tests_error(project.root());
-    assert!(error.contains("ambiguous friend test"));
-    assert!(error.contains("api.skiff"));
-    assert!(error.contains("api.live.skiff"));
+    let summary = run_tests(project.root());
+    assert_counts(&summary, 1, 0, 0);
+    assert_passed(&summary, "package test has independent module identity");
 }
 
 #[test]

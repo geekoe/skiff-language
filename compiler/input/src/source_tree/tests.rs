@@ -88,6 +88,16 @@ fn collects_test_skiff_sources_with_test_file_marking() {
         "function run() -> number { return 1 }",
     )
     .unwrap();
+    fs::write(
+        temp.path.join("api").join("handler.live.skiff"),
+        "function runLive() -> number { return 2 }",
+    )
+    .unwrap();
+    fs::write(
+        temp.path.join("api").join("handler.live.test.skiff"),
+        "test \"handler live\" { assert true }\n",
+    )
+    .unwrap();
 
     let source_tree = collect_source_tree(&temp.path).unwrap();
     let test_source = source_tree
@@ -105,6 +115,12 @@ fn collects_test_skiff_sources_with_test_file_marking() {
     assert_eq!(source_source.module_path, "api.handler");
     assert!(test_source.is_test_file);
     assert!(!source_source.is_test_file);
+    let independent_test_source = source_tree
+        .sources
+        .iter()
+        .find(|source| source.file_path.ends_with("handler.live.test.skiff"))
+        .unwrap();
+    assert_eq!(independent_test_source.module_path, "api.handler.live");
 }
 
 #[test]

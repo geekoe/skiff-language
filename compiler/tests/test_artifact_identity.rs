@@ -6,7 +6,7 @@ use common::artifacts::{
 };
 use skiff_compiler::test_support::project_fixtures::{
     write_package_api_yml, write_package_manifest, write_package_source,
-    write_package_source_with_friend_test, ServiceProjectBuilder,
+    write_package_source_with_test_file, ServiceProjectBuilder,
 };
 use skiff_compiler::PublishedJsonArtifact;
 
@@ -119,16 +119,16 @@ ok: util_impl.ok
 }
 
 #[test]
-fn friend_test_files_do_not_change_service_artifact_identity() {
+fn test_files_do_not_change_service_artifact_identity() {
     let left = ServiceProjectBuilder::package_model("source-tests-left", "", "return {}");
-    write_service_handler_with_friend_test(
+    write_service_handler_with_test_file(
         left.root(),
         "false",
         "left case",
         r#"assert helper() == 1, "left""#,
     );
     let right = ServiceProjectBuilder::package_model("source-tests-right", "", "return {}");
-    write_service_handler_with_friend_test(
+    write_service_handler_with_test_file(
         right.root(),
         "true",
         "right case",
@@ -203,7 +203,7 @@ fn service_api_yml_content_hash_changes_service_artifact_identity() {
 }
 
 #[test]
-fn friend_test_files_do_not_change_package_artifact_identity() {
+fn test_files_do_not_change_package_artifact_identity() {
     let left = ServiceProjectBuilder::package_model(
         "package-source-tests-left",
         "import app",
@@ -218,7 +218,7 @@ id: example.com/util
 version: 0.1.0
 "#,
     );
-    write_package_source_with_friend_test(
+    write_package_source_with_test_file(
         left.root(),
         "false",
         "left package case",
@@ -239,7 +239,7 @@ id: example.com/util
 version: 0.1.0
 "#,
     );
-    write_package_source_with_friend_test(
+    write_package_source_with_test_file(
         right.root(),
         "true",
         "right package case",
@@ -518,7 +518,7 @@ api:
         )
 }
 
-fn write_service_handler_with_friend_test(
+fn write_service_handler_with_test_file(
     root: &std::path::Path,
     default_run: &str,
     test_name: &str,

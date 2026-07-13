@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     fs,
     panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
     path::Path,
@@ -31,12 +31,10 @@ use super::{
         service_test_runtime_module_path,
     },
     visibility::{
-        merge_function_return_types, private_visibility_error_in_ast,
-        private_visibility_error_in_test_body, service_function_return_types,
-        service_production_exports, ALL_PRIVATE_MODULES,
+        merge_function_return_types, service_function_return_types, service_production_exports,
     },
-    ParsedSource, PrivateVisibilityScope, ResolvedPublicationTestInputs, SkiffTestError,
-    SkiffTestOptions, SkiffTestResult, SkiffTestSummary, TestCase,
+    ParsedSource, ResolvedPublicationTestInputs, SkiffTestError, SkiffTestOptions, SkiffTestResult,
+    SkiffTestSummary, TestCase,
 };
 
 pub(super) fn run_service_tests(
@@ -80,9 +78,7 @@ pub(super) fn run_service_tests(
     };
     let production_sources =
         resolve_parsed_root_paths_with_exports(production_sources, &production_exports)?;
-    let package_ids = service_dependencies.package_ids.clone();
     let package_aliases = service_dependencies.package_aliases.clone();
-    let disallowed_import_modules = BTreeSet::new();
 
     run_resolved_publication_tests(
         ResolvedPublicationTestInputs {
@@ -91,10 +87,7 @@ pub(super) fn run_service_tests(
             production_sources,
             test_sources,
             test_doubles,
-            production_exports,
-            package_ids,
             package_aliases,
-            disallowed_import_modules,
         },
         input,
         options,
@@ -112,10 +105,7 @@ pub(super) fn run_resolved_publication_tests(
         production_sources,
         test_sources,
         test_doubles,
-        production_exports,
-        package_ids,
         package_aliases,
-        disallowed_import_modules,
     } = inputs;
     let tests = collect_test_cases(&test_sources)?;
     let test_count = tests.len();
@@ -135,40 +125,6 @@ pub(super) fn run_resolved_publication_tests(
         // name from the service id). Reusing one id across the run let a global
         // `db find` in one test observe sibling tests' rows.
         let storage_service_id = synthetic_test_service_id(&service_id_scope);
-        let visibility_error = if test.source.source.is_test_file {
-            private_visibility_error_in_ast(
-                &test.source.ast,
-                &test.source.synthetic_imports,
-                test.test_index,
-                &production_exports,
-                &test.source.private_visibility_scope,
-                &package_ids,
-                &package_aliases,
-                &disallowed_import_modules,
-            )
-        } else {
-            private_visibility_error_in_test_body(
-                &test.source.ast,
-                &test.source.synthetic_imports,
-                test.test_index,
-                &production_exports,
-                &PrivateVisibilityScope::Module(test.source.source.module_path.clone()),
-                &package_ids,
-                &package_aliases,
-                &disallowed_import_modules,
-            )
-        };
-        if let Some(message) = visibility_error {
-            results[result_index] = Some(SkiffTestResult {
-                module_path: test.module_path,
-                name: test.name,
-                passed: false,
-                skipped: false,
-                message: Some(message),
-            });
-            continue;
-        }
-
         let operation_module = service_test_runtime_module_path(&test.source);
         let test_module_paths = [test.module_path.as_str(), operation_module.as_str()];
         let test_config = config_for_runtime_test_modules(
@@ -610,38 +566,24 @@ fn explicit_service_root_test_sources(
     if is_test_file_path(input) {
         return Ok(sources
             .into_iter()
-            .filter_map(|mut source| {
-                if source_path_matches(service_root, &source, input) {
-                    source.friend_module_path = Some(ALL_PRIVATE_MODULES.to_string());
-                    source.private_visibility_scope = PrivateVisibilityScope::AllModules;
-                    Some(source)
-                } else {
-                    None
-                }
-            })
+            .filter(|source| source_path_matches(service_root, source, input))
             .collect());
     }
-    let production_module = sources
-        .iter()
-        .find(|source| source_path_matches(service_root, source, input))
-        .map(|source| source.source.module_path.clone());
     Ok(sources
         .into_iter()
-        .filter(|source| {
-            source.source.is_test_file
-                && source.ast.test_default_run.unwrap_or(true)
-                && production_module
-                    .as_deref()
-                    .is_some_and(|module| source.friend_module_path.as_deref() == Some(module))
-        })
+        .filter(|source| source.source.is_test_file && source.ast.test_default_run.unwrap_or(true))
         .collect())
 }
 
 fn source_path_matches(service_root: &Path, source: &super::ParsedSource, input: &Path) -> bool {
-    let path = if source.source.file_path.is_absolute() {
+    let path = source_absolute_path(service_root, source);
+    path == input || fs::canonicalize(path).ok() == fs::canonicalize(input).ok()
+}
+
+fn source_absolute_path(service_root: &Path, source: &super::ParsedSource) -> std::path::PathBuf {
+    if source.source.file_path.is_absolute() {
         source.source.file_path.clone()
     } else {
         service_root.join(&source.source.file_path)
-    };
-    path == input || fs::canonicalize(path).ok() == fs::canonicalize(input).ok()
+    }
 }

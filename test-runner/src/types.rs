@@ -113,8 +113,6 @@ pub enum SkiffTestError {
     RootPathReference { path: String, message: String },
     #[error("input {path} is neither a file nor a directory")]
     InvalidInput { path: String },
-    #[error("ambiguous friend test {path}: matches multiple production files: {candidates}")]
-    AmbiguousFriendTest { path: String, candidates: String },
 }
 
 #[derive(Debug, Clone)]
@@ -122,9 +120,6 @@ pub(super) struct ParsedSource {
     pub(super) source: SourceTreeFile,
     pub(super) text: String,
     pub(super) ast: AstSourceFile,
-    pub(super) synthetic_imports: BTreeSet<String>,
-    pub(super) friend_module_path: Option<String>,
-    pub(super) private_visibility_scope: PrivateVisibilityScope,
 }
 
 #[derive(Debug, Clone)]
@@ -154,10 +149,7 @@ pub(super) struct ResolvedPublicationTestInputs {
     /// Test sources whose tests should be collected and run (root-resolved).
     pub(super) test_sources: Vec<ParsedSource>,
     pub(super) test_doubles: crate::doubles::RuntimeTestDoubles,
-    pub(super) production_exports: BTreeMap<String, ProductionModuleSymbols>,
-    pub(super) package_ids: BTreeSet<String>,
     pub(super) package_aliases: BTreeMap<String, Vec<String>>,
-    pub(super) disallowed_import_modules: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,17 +159,6 @@ pub(super) struct PackageTestSource {
     pub(super) is_test_file: bool,
     pub(super) text: String,
     pub(super) ast: AstSourceFile,
-    pub(super) synthetic_imports: BTreeSet<String>,
-    pub(super) friend_module_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) enum PrivateVisibilityScope {
-    #[default]
-    PublicOnly,
-    Module(String),
-    AllModules,
-    Modules(BTreeSet<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -194,7 +175,6 @@ pub(super) struct PackageDependencyArtifacts {
     pub(super) dependency_publications: TestPackageDependencyPublications,
     pub(super) production_exports: BTreeMap<String, ProductionModuleSymbols>,
     pub(super) function_return_types: BTreeMap<String, String>,
-    pub(super) package_ids: BTreeSet<String>,
     pub(super) package_aliases: BTreeMap<String, Vec<String>>,
 }
 
@@ -214,7 +194,6 @@ impl Default for PackageDependencyArtifacts {
             dependency_publications: TestPackageDependencyPublications::default(),
             production_exports: BTreeMap::new(),
             function_return_types: BTreeMap::new(),
-            package_ids: BTreeSet::new(),
             package_aliases: BTreeMap::new(),
         }
     }
@@ -241,75 +220,4 @@ pub(super) enum ProductionSymbolKind {
     Function,
     Const,
     Method,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SymbolUseKind {
-    Value,
-    Type,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(super) struct TestLocalSymbols {
-    pub(super) values: BTreeSet<String>,
-    pub(super) types: BTreeSet<String>,
-    pub(super) imports: BTreeSet<String>,
-    pub(super) synthetic_imports: BTreeSet<String>,
-    pub(super) package_ids: BTreeSet<String>,
-    pub(super) package_aliases: BTreeMap<String, Vec<String>>,
-    pub(super) disallowed_import_modules: BTreeSet<String>,
-}
-
-impl TestLocalSymbols {
-    pub(super) fn contains(&self, name: &str, use_kind: SymbolUseKind) -> bool {
-        match use_kind {
-            SymbolUseKind::Value => self.values.contains(name),
-            SymbolUseKind::Type => self.types.contains(name),
-        }
-    }
-
-    pub(super) fn imports_module(&self, module_path: &str) -> bool {
-        self.imports.iter().any(|import| {
-            let alias_match = self.package_aliases.get(import).is_some_and(|roots| {
-                roots
-                    .iter()
-                    .any(|root| module_path == root || module_path.starts_with(&format!("{root}.")))
-            });
-            (module_path == import && !self.disallowed_import_modules.contains(module_path))
-                || alias_match
-                || (self.package_ids.contains(import)
-                    && module_path.starts_with(&format!("{import}.")))
-                || (import == "std" && module_path.starts_with("std."))
-        })
-    }
-
-    pub(super) fn imports_path(&self, path: &str) -> bool {
-        self.imports.contains(path) || self.synthetic_imports.contains(path)
-    }
-}
-
-impl ProductionSymbolKind {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Type => "type",
-            Self::DbObject => "db object",
-            Self::Interface => "interface",
-            Self::Function => "function",
-            Self::Const => "const",
-            Self::Method => "method",
-        }
-    }
-
-    pub(super) fn matches_use(self, use_kind: SymbolUseKind) -> bool {
-        matches!(
-            (self, use_kind),
-            (
-                Self::Type | Self::DbObject | Self::Interface,
-                SymbolUseKind::Type
-            ) | (
-                Self::Function | Self::Const | Self::Method,
-                SymbolUseKind::Value
-            )
-        )
-    }
 }

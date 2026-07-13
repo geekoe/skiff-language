@@ -111,8 +111,8 @@ fn cli_test_directory_discovers_only_test_files() {
 }
 
 #[test]
-fn cli_test_explicit_source_file_runs_friend_test_files() {
-    let project = ServiceProjectBuilder::new("test-source-friends")
+fn cli_test_explicit_source_file_runs_service_default_tests() {
+    let project = ServiceProjectBuilder::new("test-source-default-files")
         .with_default_manifest("example.com/calc")
         .write_source(
             "api/calc.skiff",
@@ -125,7 +125,7 @@ fn cli_test_explicit_source_file_runs_friend_test_files() {
         .write_source(
             "api/calc.test.skiff",
             r#"
-            test "sibling test file" {
+            test "default test file" {
                 assert true
             }
         "#,
@@ -133,7 +133,7 @@ fn cli_test_explicit_source_file_runs_friend_test_files() {
         .write_source(
             "api/calc.live.test.skiff",
             r#"
-            test "sibling live test file" {
+            test "second default test file" {
                 assert root.api.calc.publicAnswer() == 42
             }
         "#,
@@ -141,13 +141,13 @@ fn cli_test_explicit_source_file_runs_friend_test_files() {
 
     let summary = run_tests(&project.path("api/calc.skiff"));
     assert_counts(&summary, 2, 0, 0);
-    assert_passed(&summary, "sibling test file");
-    assert_passed(&summary, "sibling live test file");
+    assert_passed(&summary, "default test file");
+    assert_passed(&summary, "second default test file");
 }
 
 #[test]
-fn cli_test_explicit_source_file_skips_default_run_false_friend_by_default() {
-    let project = ServiceProjectBuilder::new("test-source-friend-default-run")
+fn cli_test_explicit_source_file_skips_default_run_false_tests() {
+    let project = ServiceProjectBuilder::new("test-source-default-run")
         .with_default_manifest("example.com/calc")
         .write_source(
             "api/calc.skiff",
@@ -160,7 +160,7 @@ fn cli_test_explicit_source_file_skips_default_run_false_friend_by_default() {
         .write_source(
             "api/calc.test.skiff",
             r#"
-            test "default friend test file" {
+            test "default test file" {
                 assert root.api.calc.publicAnswer() == 42
             }
         "#,
@@ -170,23 +170,23 @@ fn cli_test_explicit_source_file_skips_default_run_false_friend_by_default() {
             r#"
             test defaultRun false
 
-            test "live friend test file" {
-                assert false, "live friend should only run when explicitly selected"
+            test "live test file" {
+                assert false, "live test should only run when explicitly selected"
             }
         "#,
         );
 
     let summary = run_tests(&project.path("api/calc.skiff"));
     assert_counts(&summary, 1, 0, 0);
-    assert_passed(&summary, "default friend test file");
-    assert_not_run(&summary, "live friend test file");
+    assert_passed(&summary, "default test file");
+    assert_not_run(&summary, "live test file");
 
     let explicit = run_tests(&project.path("api/calc.live.test.skiff"));
     assert_counts(&explicit, 0, 0, 1);
     assert_failed(
         &explicit,
-        "live friend test file",
-        "live friend should only run when explicitly selected",
+        "live test file",
+        "live test should only run when explicitly selected",
     );
 }
 
@@ -273,8 +273,8 @@ fn cli_test_service_directory_requires_service_root() {
 }
 
 #[test]
-fn cli_test_service_friend_file_name_must_match_unique_production_file() {
-    let project = ServiceProjectBuilder::new("test-source-friend-ambiguous")
+fn cli_test_service_test_file_name_does_not_create_visibility_scope() {
+    let project = ServiceProjectBuilder::new("test-source-independent-module")
         .with_default_manifest("example.com/calc")
         .write_source(
             "api/calc.skiff",
@@ -295,16 +295,16 @@ fn cli_test_service_friend_file_name_must_match_unique_production_file() {
         .write_source(
             "api/calc.live.test.skiff",
             r#"
-            test "ambiguous friend test file" {
-                assert true
+            test "test file has independent module identity" {
+                assert root.api.calc.publicAnswer() == 42
+                assert root.api.calc.live.publicLiveAnswer() == 43
             }
         "#,
         );
 
-    let error = run_tests_error(project.root());
-    assert!(error.contains("ambiguous friend test"));
-    assert!(error.contains("calc.skiff"));
-    assert!(error.contains("calc.live.skiff"));
+    let summary = run_tests(project.root());
+    assert_counts(&summary, 1, 0, 0);
+    assert_passed(&summary, "test file has independent module identity");
 }
 
 #[test]

@@ -301,7 +301,7 @@ fn cli_test_package_test_file_uses_exported_package_api() {
 }
 
 #[test]
-fn cli_test_package_test_file_import_prefix_does_not_authorize_exported_module() {
+fn cli_test_package_test_file_can_import_current_package_module() {
     let package = math_project_with_api_yml("package-test-import-prefix", public_answer_api_yml())
         .write_source(
             "api.skiff",
@@ -316,17 +316,15 @@ fn cli_test_package_test_file_import_prefix_does_not_authorize_exported_module()
             r#"
             import api
 
-            test "package prefix import is not enough" {
+            test "package test imports current module" {
                 assert api.publicAnswer() == 42
             }
         "#,
         );
 
-    assert_failed_result_or_error(
-        &package.path("api.test.skiff"),
-        "package prefix import is not enough",
-        &["production function api.publicAnswer must be imported before use"],
-    );
+    let summary = run_tests(&package.path("api.test.skiff"));
+    assert_counts(&summary, 1, 0, 0);
+    assert_passed(&summary, "package test imports current module");
 }
 
 #[test]
@@ -358,7 +356,7 @@ fn cli_test_package_test_file_root_reference_authorizes_exported_module() {
 }
 
 #[test]
-fn cli_test_package_test_file_cannot_import_self_public_root() {
+fn cli_test_package_test_file_can_import_current_public_root() {
     let package = math_project_with_api_yml(
         "package-test-self-public-root-import",
         public_answer_api_yml(),
@@ -376,17 +374,15 @@ fn cli_test_package_test_file_cannot_import_self_public_root() {
         r#"
             import api
 
-            test "package self public root import is rejected" {
+            test "package current public root import works" {
                 assert api.publicAnswer() == 42
             }
         "#,
     );
 
-    assert_failed_result_or_error(
-        &package.path("api.test.skiff"),
-        "package self public root import is rejected",
-        &["unresolved root api", "api.publicAnswer"],
-    );
+    let summary = run_tests(&package.path("api.test.skiff"));
+    assert_counts(&summary, 1, 0, 0);
+    assert_passed(&summary, "package current public root import works");
 }
 
 #[test]
@@ -412,12 +408,10 @@ fn cli_test_package_test_file_unqualified_symbol_import_is_not_runtime_bound() {
         "#,
     );
 
-    let summary = run_tests(&package.path("api.test.skiff"));
-    assert_counts(&summary, 0, 0, 1);
-    assert_failed(
-        &summary,
+    assert_failed_result_or_error(
+        &package.path("api.test.skiff"),
         "symbol import does not create runtime local binding",
-        "production function api.publicAnswer must be accessed through an imported module",
+        &["function call callee `publicAnswer` is not resolved"],
     );
 }
 #[test]
@@ -763,8 +757,8 @@ version: 1.0.0
 }
 
 #[test]
-fn cli_test_package_friend_test_file_can_access_production_private_api() {
-    let temp = TestDir::new("skiff-compiler", "package-test-friend-private");
+fn cli_test_package_test_file_can_access_current_package_top_level_api() {
+    let temp = TestDir::new("skiff-compiler", "package-test-current-top-level");
     let package_dir = temp.path().join("pkg");
     fs::create_dir_all(&package_dir).unwrap();
     fs::write(
@@ -796,7 +790,7 @@ version: 1.0.0
                 return root.api.secretOffset()
             }
 
-            test "package friend test can call private api" {
+            test "package test can call current package api" {
                 assert root.api.secretOffset() == 40
                 assert helper() == 40
                 assert root.api.publicAnswer() == 42
@@ -807,7 +801,7 @@ version: 1.0.0
 
     let summary = run_tests(&package_dir.join("api.test.skiff"));
     assert_counts(&summary, 1, 0, 0);
-    assert_passed(&summary, "package friend test can call private api");
+    assert_passed(&summary, "package test can call current package api");
 }
 
 #[test]
@@ -857,8 +851,8 @@ version: 1.0.0
 }
 
 #[test]
-fn cli_test_package_friend_test_const_does_not_hide_private_root_call() {
-    let temp = TestDir::new("skiff-compiler", "package-test-friend-const-private-call");
+fn cli_test_package_test_const_does_not_hide_current_root_call() {
+    let temp = TestDir::new("skiff-compiler", "package-test-const-root-call");
     let package_dir = temp.path().join("pkg");
     fs::create_dir_all(&package_dir).unwrap();
     fs::write(
@@ -886,7 +880,7 @@ version: 1.0.0
     fs::write(
         package_dir.join("api.test.skiff"),
         r#"
-            test "package friend test local const can coexist with private root call" {
+            test "package test local const can coexist with root call" {
                 const secretOffset = 1
                 assert root.api.secretOffset() == 40
                 assert secretOffset == 1
@@ -899,7 +893,7 @@ version: 1.0.0
     assert_counts(&summary, 1, 0, 0);
     assert_passed(
         &summary,
-        "package friend test local const can coexist with private root call",
+        "package test local const can coexist with root call",
     );
 }
 
@@ -1030,8 +1024,8 @@ version: 1.0.0
 }
 
 #[test]
-fn cli_test_package_friend_test_does_not_blackbox_scan_production_body() {
-    let temp = TestDir::new("skiff-compiler", "package-friend-test-internal-source");
+fn cli_test_package_test_links_current_package_internal_source() {
+    let temp = TestDir::new("skiff-compiler", "package-test-internal-source");
     let package_dir = temp.path().join("pkg");
     fs::create_dir_all(&package_dir).unwrap();
     fs::write(
@@ -1064,7 +1058,7 @@ version: 1.0.0
     fs::write(
         package_dir.join("api.test.skiff"),
         r#"
-            test "friend test can exercise production internal module through exported api" {
+            test "package test can exercise internal module through exported api" {
                 assert root.api.publicAnswer() == 42
             }
         "#,
@@ -1075,7 +1069,7 @@ version: 1.0.0
     assert_counts(&summary, 1, 0, 0);
     assert_passed(
         &summary,
-        "friend test can exercise production internal module through exported api",
+        "package test can exercise internal module through exported api",
     );
 }
 

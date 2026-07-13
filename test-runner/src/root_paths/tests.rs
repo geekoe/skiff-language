@@ -4,6 +4,33 @@ use std::fs;
 use skiff_compiler::test_support::{
     project_fixtures::TestDir, TestPackageApiEntry, TestPackageManifest,
 };
+use skiff_compiler::SourceTreeFile;
+use skiff_syntax::parser::parse_source;
+
+use crate::visibility::{production_symbols_for_ast, service_production_exports};
+
+fn parsed_service_source(module_path: &str, is_test_file: bool, text: &str) -> ParsedSource {
+    ParsedSource {
+        source: SourceTreeFile {
+            module_path: module_path.to_string(),
+            file_path: PathBuf::from(module_path.replace('.', "/")).with_extension("skiff"),
+            is_test_file,
+            byte_len: text.len() as u64,
+        },
+        text: text.to_string(),
+        ast: parse_source(text).expect("source should parse"),
+    }
+}
+
+fn parsed_package_source(module_path: &str, is_test_file: bool, text: &str) -> PackageTestSource {
+    PackageTestSource {
+        relative_path: PathBuf::from(module_path.replace('.', "/")).with_extension("skiff"),
+        module_path: module_path.to_string(),
+        is_test_file,
+        text: text.to_string(),
+        ast: parse_source(text).expect("source should parse"),
+    }
+}
 
 fn official_std_manifest() -> TestPackageManifest {
     TestPackageManifest {
@@ -17,27 +44,120 @@ fn official_std_manifest() -> TestPackageManifest {
 }
 
 #[test]
-fn official_package_friend_test_module_path_uses_internal_production_identity() {
+fn official_package_test_module_path_uses_its_own_source_identity() {
     let manifest = official_std_manifest();
     let export_sources = BTreeMap::from([(PathBuf::from("api.skiff"), "std.api".to_string())]);
 
-    let friend_module_path = package_module_path(
+    let colocated_module_path = package_module_path(
         &manifest,
         Path::new("internal.live.test.skiff"),
-        Some(Path::new("internal.skiff")),
         true,
         &export_sources,
     );
     let integration_module_path = package_module_path(
         &manifest,
         Path::new("integration/internal.live.test.skiff"),
-        None,
         true,
         &export_sources,
     );
 
-    assert_eq!(friend_module_path, "std.internal.__test");
-    assert_eq!(integration_module_path, "integration.internal.live.__test");
+    assert_eq!(colocated_module_path, "std.internal.live.__test");
+    assert_eq!(
+        integration_module_path,
+        "std.integration.internal.live.__test"
+    );
+}
+
+#[test]
+fn service_test_root_index_exposes_all_current_top_level_symbol_kinds() {
+    let production = parsed_service_source(
+        "internal.models",
+        false,
+        r#"
+            type Secret { value: number }
+            type Record { id: string }
+            db object Record { name "record"; primary key(id) }
+            function secret() -> number { return 7 }
+        "#,
+    );
+    let test = parsed_service_source(
+        "checks.visibility",
+        true,
+        r#"
+            function echo(value: root.internal.models.Secret) -> root.internal.models.Secret {
+                return value
+            }
+
+            test "current service symbols are visible" {
+                const rows = db find many root.internal.models.Record {}
+                assert root.internal.models.secret() == 7
+                assert rows.length >= 0
+            }
+        "#,
+    );
+    let exports = service_production_exports(std::slice::from_ref(&production));
+
+    resolve_service_test_root_paths(vec![test], &[production], &exports)
+        .expect("all current service top-level symbols should resolve");
+}
+
+#[test]
+fn dependency_root_index_contains_only_exported_symbols() {
+    let dependency = parse_source(
+        r#"
+            function visible() -> number { return 1 }
+            function hidden() -> number { return 2 }
+        "#,
+    )
+    .unwrap();
+    let mut symbols = production_symbols_for_ast(&dependency, true);
+    symbols.symbols.get_mut("visible").unwrap().exported = true;
+    let exports = BTreeMap::from([("dependency.api".to_string(), symbols)]);
+    let test = parsed_service_source(
+        "checks.dependency",
+        true,
+        r#"
+            test "dependency private symbol is hidden" {
+                assert root.dependency.api.hidden() == 2
+            }
+        "#,
+    );
+
+    let error = resolve_service_test_root_paths(vec![test], &[], &exports)
+        .expect_err("dependency private symbol must stay outside the root index");
+    assert!(error.to_string().contains("hidden"));
+}
+
+#[test]
+fn package_test_root_index_exposes_all_current_top_level_symbol_kinds() {
+    let production = parsed_package_source(
+        "internal.models",
+        false,
+        r#"
+            type Secret { value: number }
+            type Record { id: string }
+            db object Record { name "record"; primary key(id) }
+            function secret() -> number { return 7 }
+        "#,
+    );
+    let test = parsed_package_source(
+        "checks.visibility.__test",
+        true,
+        r#"
+            function echo(value: root.internal.models.Secret) -> root.internal.models.Secret {
+                return value
+            }
+
+            test "current package symbols are visible" {
+                const rows = db find many root.internal.models.Record {}
+                assert root.internal.models.secret() == 7
+                assert rows.length >= 0
+            }
+        "#,
+    );
+
+    resolve_package_test_root_paths(vec![test], &[production])
+        .expect("all current package top-level symbols should resolve");
 }
 
 #[test]

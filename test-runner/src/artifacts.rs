@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use skiff_artifact_model::PackageUnit;
 #[cfg(test)]
@@ -83,13 +80,11 @@ pub(super) fn package_dependency_artifacts(
             .collect::<BTreeMap<_, _>>();
     let mut production_exports = BTreeMap::new();
     let mut function_return_types = BTreeMap::new();
-    let mut package_ids = BTreeSet::new();
     let mut package_test_dependency_packages = Vec::new();
     for package in resolved
         .into_iter()
         .filter(|package| package.manifest.id != current_manifest.id)
     {
-        package_ids.insert(package.manifest.id.clone());
         let package_root =
             package
                 .manifest
@@ -135,7 +130,6 @@ pub(super) fn package_dependency_artifacts(
         dependency_publications,
         production_exports,
         function_return_types,
-        package_ids,
         package_aliases,
     })
 }
@@ -166,9 +160,7 @@ pub(super) fn dependency_artifacts_from_resolved(
 ) -> Result<PackageDependencyArtifacts, SkiffTestError> {
     let mut production_exports = BTreeMap::new();
     let mut function_return_types = BTreeMap::new();
-    let mut package_ids = BTreeSet::new();
     for package in resolved {
-        package_ids.insert(package.manifest.id.clone());
         if package.manifest.synthetic {
             continue;
         }
@@ -198,7 +190,6 @@ pub(super) fn dependency_artifacts_from_resolved(
         dependency_publications: TestPackageDependencyPublications::default(),
         production_exports,
         function_return_types,
-        package_ids,
         package_aliases: package_alias_bindings(dependencies, available),
     })
 }
