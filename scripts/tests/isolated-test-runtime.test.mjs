@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,6 +14,7 @@ import {
 import {
   bootstrapDevSyncArgs,
   bootstrapProbeRequest,
+  isolatedInstanceOperations,
   isolatedRuntimeHealthReady,
   isolatedTestInstanceConfigText,
   isolatedTestRunnerEnvironment,
@@ -67,6 +68,33 @@ test('bootstrap comes from current checkout and uses isolated artifact/build roo
     '--no-reload',
   ]);
   assert.equal(args.some((value) => value.includes('.skiff-instance')), false);
+});
+
+test('default owner shutdown invokes current checkout instance down command', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-owner-shutdown-test-'));
+  const scriptsRoot = join(root, 'scripts');
+  const capturePath = join(root, 'capture.json');
+  const configPath = join(root, 'instance', 'config.yml');
+  try {
+    await mkdir(scriptsRoot, { recursive: true });
+    await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
+      "import { writeFile } from 'node:fs/promises';",
+      "await writeFile(process.env.SKIFF_OWNER_SHUTDOWN_CAPTURE, JSON.stringify(process.argv.slice(2)));",
+    ].join('\n'));
+    const operations = isolatedInstanceOperations({
+      skiffRoot: root,
+      baseEnv: {
+        ...process.env,
+        SKIFF_OWNER_SHUTDOWN_CAPTURE: capturePath,
+      },
+    });
+
+    await operations.stopOwnedInstance(configPath);
+
+    assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['down', configPath]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 test('readiness requires bootstrap runtime registration, not only health and roots', () => {

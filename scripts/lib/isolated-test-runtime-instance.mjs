@@ -94,7 +94,7 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
     ),
     waitReady: waitForIsolatedRuntime,
     stopSupervisor,
-    stopOwnedInstance: (configPath) => runCommand(
+    stopOwnedInstance: (configPath) => runOwnedCommand(
       'node',
       [join(skiffRoot, 'scripts', 'skiff-instance.mjs'), 'down', configPath],
       { cwd: skiffRoot, env: baseEnv },

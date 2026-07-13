@@ -169,45 +169,46 @@ async function cleanupIsolatedTestRuntime(stack, ops) {
     try {
       await ops.stopSupervisor(stack.supervisor);
     } catch (error) {
-      errors.push(error);
+      errors.push(cleanupStepError('stop supervisor', error));
     }
   }
   if (stack.configPath !== undefined) {
     try {
       await ops.stopOwnedInstance(stack.configPath);
     } catch (error) {
-      errors.push(error);
+      errors.push(cleanupStepError('stop owned instance', error));
     }
   }
   if (stack.configPath !== undefined) {
     try {
       await ops.verifyInstanceStopped(stack.configPath);
     } catch (error) {
-      errors.push(error);
+      errors.push(cleanupStepError('verify instance stopped', error));
     }
   }
   try {
     await ops.assertPortsClosed(stack.ports);
   } catch (error) {
-    errors.push(error);
+    errors.push(cleanupStepError('verify ports closed', error));
   }
   try {
     await stack.portLease.release();
   } catch (error) {
-    errors.push(error);
+    errors.push(cleanupStepError('release port lease', error));
   }
   if (errors.length === 0 && stack.tempRoot !== undefined) {
     try {
       await ops.removeTempRoot(stack.tempRoot);
     } catch (error) {
-      errors.push(error);
+      errors.push(cleanupStepError('remove temp workspace', error));
     }
   }
   if (errors.length > 0) {
     const evidence = stack.tempRoot === undefined
       ? ''
       : `; preserving isolated runtime workspace ${stack.tempRoot}`;
-    throw new AggregateError(errors, `isolated runtime cleanup failed${evidence}`);
+    const details = errors.map(errorMessage).join('; ');
+    throw new AggregateError(errors, `isolated runtime cleanup failed: ${details}${evidence}`);
   }
 }
 
@@ -228,6 +229,10 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
 
 function errorMessage(error) {
   return error?.message || String(error);
+}
+
+function cleanupStepError(step, error) {
+  return new Error(`${step}: ${errorMessage(error)}`, { cause: error });
 }
 
 export const isolatedTestRuntimeConstants = {
