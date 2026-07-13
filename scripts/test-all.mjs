@@ -37,6 +37,9 @@ const SCRIPT_SYNTAX_CHECK_FILES = [
   'scripts/build-dev-runtime.mjs',
   'scripts/deploy-runtime-stack.mjs',
   'scripts/lib/cargo-target-dir.mjs',
+  'scripts/lib/isolated-test-runtime-instance.mjs',
+  'scripts/lib/isolated-test-runtime.mjs',
+  'scripts/lib/local-port-lease.mjs',
   'scripts/lib/dev-runtime-paths.mjs',
   'scripts/lib/managed-binary.mjs',
   'scripts/lib/service-db-keyring.mjs',
@@ -152,6 +155,11 @@ function unitPhases(unit) {
           name: 'scripts:dev-sync-recovery',
           command: 'node',
           args: ['--test', 'scripts/tests/dev-sync-recovery.test.mjs'],
+        },
+        {
+          name: 'scripts:isolated-test-runtime',
+          command: 'node',
+          args: ['--test', 'scripts/tests/isolated-test-runtime.test.mjs'],
         },
         {
           name: 'scripts:managed-binary-lifecycle',

@@ -1,0 +1,13 @@
+import std
+
+function allow(request: std.http.HttpRequest) -> std.http.HttpResponse? {
+  return null
+}
+
+function ready(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("ready"),
+  }
+}

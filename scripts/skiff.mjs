@@ -16,6 +16,11 @@ import {
   serviceDevWatchOptions,
 } from './lib/dev-sync-args.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
+import {
+  runInIsolatedTestRuntime,
+  shouldUseIsolatedTestRuntime,
+} from './lib/isolated-test-runtime.mjs';
+import { runOwnedCommand } from './lib/owned-command.mjs';
 import { collectPackageSourceArchivePaths } from './lib/package-source-archive.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import {
@@ -332,7 +337,7 @@ async function test(rawArgs) {
   if (args.options.profile) {
     testArgs.push('--profile', args.options.profile);
   }
-  if (args.flags.has('--live')) {
+  if (!shouldUseIsolatedTestRuntime(args.flags.has('--live'))) {
     testArgs.push('--live');
   }
   if (args.flags.has('--allow-network')) {
@@ -354,7 +359,18 @@ async function test(rawArgs) {
   for (const serviceArtifactRoot of args.options.serviceArtifactRoot ?? []) {
     testArgs.push('--service-artifact-root', serviceArtifactRoot);
   }
-  await run('cargo', testArgs, skiffRoot);
+  if (args.flags.has('--live')) {
+    await run('cargo', testArgs, skiffRoot);
+    return;
+  }
+  await runInIsolatedTestRuntime({
+    skiffRoot,
+    runTest: (isolatedEnv, signal) => runOwnedCommand('cargo', testArgs, {
+      cwd: skiffRoot,
+      env: isolatedEnv,
+      signal,
+    }),
+  });
 }
 
 async function devSync(rawArgs) {
