@@ -239,9 +239,12 @@ Use `node verify.mjs --only <selector> --list` to audit the generated or blocked
 the workload. Registry prerequisites are checked from PATH without executing tools, then checked
 again before the first phase: runtime needs only `cargo` and `node`; encrypted storage needs `node`,
 `cargo`, `pnpm`, `mongod`, and `mongosh`. The managed DB harness retains its isolated temporary root
-and `45000`–`45999` port range. Loop-risk health/stress remain direct manual commands until their
-strict CLI and canonical configuration contract are implemented; they are intentionally not live
-selectors yet.
+and `45000`–`45999` port range. Loop-risk health/stress currently remain direct manual commands and
+are intentionally not live selectors. Their direct CLIs are strict and have no stable target or
+process-discovery defaults: health requires `--url`; stress requires explicit WebSocket/health
+targets, PID (or diagnostic `--runtime-pgrep`), and runtime log unless the corresponding check is
+explicitly skipped. Shared evaluator and canonical configuration work remain before registry
+integration.
 
 ## Package Remote CLI Live Test
 

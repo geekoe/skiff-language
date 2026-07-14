@@ -2,113 +2,87 @@
 
 import assert from 'node:assert/strict';
 
-const args = parseArgs(process.argv.slice(2));
+import {
+  collectLoopRiskUrlArgs,
+  formatLoopRiskJson,
+  parseLoopRiskArgs,
+  readPositiveIntegerArg,
+} from './lib/loop-risk-cli.mjs';
 
-if (hasFlag('help')) {
-  printUsage();
-  process.exit(0);
-}
+const argv = process.argv.slice(2);
+const knownRawUrls = collectLoopRiskUrlArgs(argv, ['url']);
 
-if (hasFlag('self-test')) {
-  runSelfTest();
-  process.exit(0);
-}
+main().catch((error) => {
+  console.error(formatLoopRiskJson({
+    ok: false,
+    message: error instanceof Error ? error.message : String(error),
+  }, knownRawUrls));
+  process.exitCode = 1;
+});
 
-const url =
-  firstArg('url') ?? 'http://127.0.0.1:4001/__router/health?detail=loop-risk';
-const timeoutMs = readPositiveIntegerArg('timeout-ms', 5000);
-const intervalMs = readPositiveIntegerArg('interval-ms', 250);
-const touchedRuntimeIds = parseRuntimeIds();
-const deadline = Date.now() + timeoutMs;
+async function main() {
+  const args = parseLoopRiskArgs(argv, {
+    flags: ['help', 'self-test'],
+    singletonValues: ['url', 'timeout-ms', 'interval-ms'],
+    repeatableValues: ['runtime-id', 'runtime-ids'],
+  });
 
-let latest;
-let latestEvaluation;
-let latestError;
-while (Date.now() <= deadline) {
-  try {
-    latest = await readLoopRiskHealth(url);
-    latestEvaluation = evaluateLoopRiskHealth(latest.loopRisk, {
-      touchedRuntimeIds
-    });
-    latestError = undefined;
-    if (latestEvaluation.ok) {
-      console.log(JSON.stringify({
-        ok: true,
-        url,
-        observedAt: latest.loopRisk.observedAt,
-        touchedRuntimeIds,
-        router: latest.loopRisk.router,
-        runtimes: summarizeRuntimes(latest.loopRisk.runtimes, touchedRuntimeIds)
-      }, null, 2));
-      process.exit(0);
+  if (args.hasFlag('help')) {
+    printUsage();
+    return;
+  }
+
+  if (args.hasFlag('self-test')) {
+    runSelfTest();
+    return;
+  }
+
+  const url = args.value('url');
+  if (!url) {
+    throw new Error('--url is required');
+  }
+  const timeoutMs = readPositiveIntegerArg(args, 'timeout-ms', 5000);
+  const intervalMs = readPositiveIntegerArg(args, 'interval-ms', 250);
+  const touchedRuntimeIds = unique(args.list('runtime-id', 'runtime-ids'));
+  const deadline = Date.now() + timeoutMs;
+
+  let latest;
+  let latestEvaluation;
+  let latestError;
+  while (Date.now() <= deadline) {
+    try {
+      latest = await readLoopRiskHealth(url);
+      latestEvaluation = evaluateLoopRiskHealth(latest.loopRisk, {
+        touchedRuntimeIds
+      });
+      latestError = undefined;
+      if (latestEvaluation.ok) {
+        console.log(formatLoopRiskJson({
+          ok: true,
+          url,
+          observedAt: latest.loopRisk.observedAt,
+          touchedRuntimeIds,
+          router: latest.loopRisk.router,
+          runtimes: summarizeRuntimes(latest.loopRisk.runtimes, touchedRuntimeIds)
+        }, knownRawUrls));
+        return;
+      }
+    } catch (error) {
+      latestError = error instanceof Error ? error.message : String(error);
     }
-  } catch (error) {
-    latestError = error instanceof Error ? error.message : String(error);
+    await sleep(intervalMs);
   }
-  await sleep(intervalMs);
-}
 
-console.error(JSON.stringify({
-  ok: false,
-  url,
-  touchedRuntimeIds,
-  message: `loop-risk counters did not satisfy zero-window within ${timeoutMs}ms`,
-  reasons: latestEvaluation?.reasons ?? [],
-  latestError,
-  latest: latest?.loopRisk ?? null
-}, null, 2));
-process.exit(1);
-
-function parseArgs(argv) {
-  const parsed = new Map();
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith('--')) {
-      continue;
-    }
-    const [key, inlineValue] = arg.slice(2).split('=', 2);
-    let value = inlineValue;
-    if (value === undefined && argv[index + 1] && !argv[index + 1].startsWith('--')) {
-      value = argv[index + 1];
-      index += 1;
-    }
-    const values = parsed.get(key) ?? [];
-    values.push(value ?? 'true');
-    parsed.set(key, values);
-  }
-  return parsed;
-}
-
-function hasFlag(key) {
-  return args.has(key);
-}
-
-function firstArg(key) {
-  return args.get(key)?.[0];
-}
-
-function readPositiveIntegerArg(key, fallback) {
-  const raw = firstArg(key);
-  if (raw === undefined) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`--${key} must be a positive integer`);
-  }
-  return value;
-}
-
-function parseRuntimeIds() {
-  return unique(
-    [
-      ...(args.get('runtime-id') ?? []),
-      ...(args.get('runtime-ids') ?? [])
-    ]
-      .flatMap((value) => value.split(','))
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0)
-  );
+  console.error(formatLoopRiskJson({
+    ok: false,
+    url,
+    touchedRuntimeIds,
+    message: `loop-risk counters did not satisfy zero-window within ${timeoutMs}ms`,
+    reasons: latestEvaluation?.reasons ?? [],
+    latestError,
+    latest: latest?.loopRisk ?? null
+  }, knownRawUrls));
+  process.exitCode = 1;
 }
 
 async function readLoopRiskHealth(endpoint) {
@@ -335,7 +309,7 @@ function printUsage() {
   node scripts/check-loop-risk-health.mjs [options]
 
 Options:
-  --url <url>                 Router health URL. Defaults to local stable control port.
+  --url <url>                 Required router loop-risk health URL.
   --timeout-ms <ms>           Poll timeout. Default: 5000.
   --interval-ms <ms>          Poll interval. Default: 250.
   --runtime-id <id>           Touched runtime id. May be repeated or comma-separated.

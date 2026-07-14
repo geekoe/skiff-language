@@ -7,57 +7,122 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  collectLoopRiskUrlArgs,
+  formatLoopRiskJson,
+  parseLoopRiskArgs,
+  readNonNegativeIntegerArg,
+  readNumberArg,
+  readPositiveIntegerArg,
+} from './lib/loop-risk-cli.mjs';
+
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const args = parseArgs(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const knownRawUrls = unique([
+  ...collectLoopRiskUrlArgs(argv, ['ws-url', 'health-url']),
+  process.env.SKIFF_LOOP_RISK_WS_URL,
+].filter(Boolean));
 
 main().catch((error) => {
-  console.error(JSON.stringify({
+  console.error(formatLoopRiskJson({
     ok: false,
     message: error instanceof Error ? error.message : String(error)
-  }, null, 2));
-  process.exit(1);
+  }, knownRawUrls));
+  process.exitCode = 1;
 });
 
 async function main() {
-  if (hasFlag('help')) {
+  const args = parseLoopRiskArgs(argv, {
+    flags: ['help', 'skip-health', 'skip-cpu', 'skip-log-check'],
+    singletonValues: [
+      'ws-url',
+      'health-url',
+      'messages',
+      'concurrency',
+      'health-timeout-ms',
+      'session-prefix',
+      'payload',
+      'open-timeout-ms',
+      'close-timeout-ms',
+      'close-delay-ms',
+      'max-new-runtime-request-errors',
+      'runtime-pgrep',
+      'cpu-seconds',
+      'cpu-interval-ms',
+      'cpu-median-threshold',
+      'cpu-post-grace-threshold',
+      'cpu-grace-seconds',
+    ],
+    repeatableValues: [
+      'header',
+      'runtime-id',
+      'runtime-ids',
+      'runtime-log',
+      'log-file',
+      'runtime-pid',
+      'runtime-pids',
+    ],
+  });
+
+  if (args.hasFlag('help')) {
     printUsage();
     return;
   }
 
-  const wsUrl = firstArg('ws-url') ?? process.env.SKIFF_LOOP_RISK_WS_URL;
+  const wsUrl = args.value('ws-url') ?? process.env.SKIFF_LOOP_RISK_WS_URL;
   if (!wsUrl) {
-    printUsage();
     throw new Error('--ws-url or SKIFF_LOOP_RISK_WS_URL is required');
   }
 
-  const messages = readPositiveIntegerArg('messages', 1000);
-  const concurrency = readPositiveIntegerArg('concurrency', 50);
-  const healthUrl =
-    firstArg('health-url') ?? 'http://127.0.0.1:4001/__router/health?detail=loop-risk';
-  const healthTimeoutMs = readPositiveIntegerArg('health-timeout-ms', 5000);
-  const headers = parseHeaders();
-  const sessionPrefix = firstArg('session-prefix') ?? `loop-risk-stress-${Date.now()}`;
+  const skipHealth = args.hasFlag('skip-health');
+  const skipCpu = args.hasFlag('skip-cpu');
+  const skipLogCheck = args.hasFlag('skip-log-check');
+  const healthUrl = args.value('health-url');
+  if (!skipHealth && !healthUrl) {
+    throw new Error('--health-url is required unless --skip-health is explicit');
+  }
+
+  const logFiles = args.list('runtime-log', 'log-file');
+  if (!skipLogCheck && logFiles.length === 0) {
+    throw new Error('--runtime-log or --log-file is required unless --skip-log-check is explicit');
+  }
+
+  const explicitRuntimePids = parseRuntimePids(args);
+  const runtimePgrep = args.value('runtime-pgrep');
+  if (!skipCpu && explicitRuntimePids.length === 0 && !runtimePgrep) {
+    throw new Error('--runtime-pid or --runtime-pgrep is required unless --skip-cpu is explicit');
+  }
+  if (explicitRuntimePids.length > 0 && runtimePgrep) {
+    throw new Error('--runtime-pid and --runtime-pgrep are mutually exclusive');
+  }
+
+  const messages = readPositiveIntegerArg(args, 'messages', 1000);
+  const concurrency = readPositiveIntegerArg(args, 'concurrency', 50);
+  const healthTimeoutMs = readPositiveIntegerArg(args, 'health-timeout-ms', 5000);
+  const headers = parseHeaders(args);
+  const sessionPrefix = args.value('session-prefix') ?? `loop-risk-stress-${Date.now()}`;
   const payloadTemplate =
-    firstArg('payload') ?? '{"tag":"loop_risk_ws_cancel_stress","index":{index}}';
-  const openTimeoutMs = readPositiveIntegerArg('open-timeout-ms', 5000);
-  const closeTimeoutMs = readPositiveIntegerArg('close-timeout-ms', 5000);
-  const closeDelayMs = readNonNegativeIntegerArg('close-delay-ms', 0);
-  const skipHealth = hasFlag('skip-health');
-  const skipCpu = hasFlag('skip-cpu');
-  const skipLogCheck = hasFlag('skip-log-check');
-  const logFiles = parseListArgs('runtime-log', 'log-file');
+    args.value('payload') ?? '{"tag":"loop_risk_ws_cancel_stress","index":{index}}';
+  const openTimeoutMs = readPositiveIntegerArg(args, 'open-timeout-ms', 5000);
+  const closeTimeoutMs = readPositiveIntegerArg(args, 'close-timeout-ms', 5000);
+  const closeDelayMs = readNonNegativeIntegerArg(args, 'close-delay-ms', 0);
   const maxNewRuntimeRequestErrors = readNonNegativeIntegerArg(
+    args,
     'max-new-runtime-request-errors',
     0
   );
+  const cpuOptions = readCpuOptions(args);
 
-  let touchedRuntimeIds = parseRuntimeIds();
+  let touchedRuntimeIds = unique(args.list('runtime-id', 'runtime-ids'));
+  const logCountsBefore = skipLogCheck ? [] : await readRuntimeRequestErrorCounts(logFiles);
+  const runtimePids = skipCpu
+    ? []
+    : await resolveRuntimePids(explicitRuntimePids, runtimePgrep);
   if (!skipHealth && touchedRuntimeIds.length === 0) {
     touchedRuntimeIds = await readConnectedRuntimeIds(healthUrl);
   }
 
-  const logCountsBefore = skipLogCheck ? [] : await readRuntimeRequestErrorCounts(logFiles);
   const WebSocket = await loadWebSocket();
   const stormStartedAt = new Date().toISOString();
   const storm = await runWebSocketStorm({
@@ -84,15 +149,14 @@ async function main() {
 
   let cpuSummary = null;
   if (!skipCpu) {
-    const runtimePids = await resolveRuntimePids();
-    cpuSummary = await sampleRuntimeCpu(runtimePids);
+    cpuSummary = await sampleRuntimeCpu(runtimePids, cpuOptions);
   }
 
   const logSummary = skipLogCheck
     ? { checked: false, message: 'skipped by --skip-log-check' }
     : await checkRuntimeRequestErrorLogs(logFiles, logCountsBefore, maxNewRuntimeRequestErrors);
 
-  console.log(JSON.stringify({
+  console.log(formatLoopRiskJson({
     ok: true,
     wsUrl,
     messages,
@@ -108,7 +172,7 @@ async function main() {
       ? { checked: false, message: 'skipped by --skip-cpu' }
       : cpuSummary,
     runtimeRequestErrorLogs: logSummary
-  }, null, 2));
+  }, knownRawUrls));
 }
 
 async function runWebSocketStorm(input) {
@@ -249,17 +313,13 @@ async function readConnectedRuntimeIds(healthUrl) {
   return runtimeIds;
 }
 
-async function resolveRuntimePids() {
-  const explicitPids = parseListArgs('runtime-pid', 'runtime-pids')
-    .map((value) => Number(value))
-    .filter((value) => Number.isInteger(value) && value > 0);
+async function resolveRuntimePids(explicitPids, runtimePgrep) {
   if (explicitPids.length > 0) {
     return unique(explicitPids);
   }
 
-  const pattern = firstArg('runtime-pgrep') ?? 'skiff.*runtime|/runtime( |$)|target/.*/runtime( |$)';
   try {
-    const { stdout } = await execFileAsync('pgrep', ['-f', pattern]);
+    const { stdout } = await execFileAsync('pgrep', ['-f', runtimePgrep]);
     const pids = stdout
       .split(/\s+/)
       .map((value) => Number(value))
@@ -273,12 +333,14 @@ async function resolveRuntimePids() {
   throw new Error('no runtime pid found; pass --runtime-pid or --runtime-pgrep');
 }
 
-async function sampleRuntimeCpu(runtimePids) {
-  const seconds = readPositiveIntegerArg('cpu-seconds', 30);
-  const intervalMs = readPositiveIntegerArg('cpu-interval-ms', 1000);
-  const medianThreshold = readNumberArg('cpu-median-threshold', 5);
-  const postGraceThreshold = readNumberArg('cpu-post-grace-threshold', 25);
-  const graceSeconds = readNonNegativeIntegerArg('cpu-grace-seconds', 10);
+async function sampleRuntimeCpu(runtimePids, options) {
+  const {
+    seconds,
+    intervalMs,
+    medianThreshold,
+    postGraceThreshold,
+    graceSeconds,
+  } = options;
   const samples = [];
 
   for (let index = 0; index < seconds; index += 1) {
@@ -348,10 +410,7 @@ async function readRuntimeRequestErrorCounts(logFiles) {
 
 async function checkRuntimeRequestErrorLogs(logFiles, beforeCounts, maxNewErrors) {
   if (logFiles.length === 0) {
-    return {
-      checked: false,
-      message: 'no log file provided; pass --runtime-log to check runtime.request_error storm'
-    };
+    throw new Error('no runtime log file was provided');
   }
   const afterCounts = await readRuntimeRequestErrorCounts(logFiles);
   const beforeByFile = new Map(beforeCounts.map((entry) => [entry.file, entry.count]));
@@ -379,49 +438,9 @@ function countRuntimeRequestErrors(text) {
   return (text.match(/runtime\.request_error/g) ?? []).length;
 }
 
-function parseArgs(argv) {
-  const parsed = new Map();
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith('--')) {
-      continue;
-    }
-    const [key, inlineValue] = arg.slice(2).split('=', 2);
-    let value = inlineValue;
-    if (value === undefined && argv[index + 1] && !argv[index + 1].startsWith('--')) {
-      value = argv[index + 1];
-      index += 1;
-    }
-    const values = parsed.get(key) ?? [];
-    values.push(value ?? 'true');
-    parsed.set(key, values);
-  }
-  return parsed;
-}
-
-function hasFlag(key) {
-  return args.has(key);
-}
-
-function firstArg(key) {
-  return args.get(key)?.[0];
-}
-
-function parseRuntimeIds() {
-  return unique(parseListArgs('runtime-id', 'runtime-ids'));
-}
-
-function parseListArgs(...keys) {
-  return keys
-    .flatMap((key) => args.get(key) ?? [])
-    .flatMap((value) => value.split(','))
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function parseHeaders() {
+function parseHeaders(args) {
   const headers = {};
-  for (const entry of parseListArgs('header')) {
+  for (const entry of args.values('header')) {
     const separator = entry.indexOf('=');
     if (separator <= 0) {
       throw new Error(`--header must be name=value, got ${entry}`);
@@ -433,32 +452,24 @@ function parseHeaders() {
   return headers;
 }
 
-function readPositiveIntegerArg(key, fallback) {
-  const value = readNumberArg(key, fallback);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`--${key} must be a positive integer`);
-  }
-  return value;
+function parseRuntimePids(args) {
+  return unique(args.list('runtime-pid', 'runtime-pids').map((rawPid) => {
+    const pid = Number(rawPid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      throw new Error(`--runtime-pid must contain only positive integers; got ${rawPid}`);
+    }
+    return pid;
+  }));
 }
 
-function readNonNegativeIntegerArg(key, fallback) {
-  const value = readNumberArg(key, fallback);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`--${key} must be a non-negative integer`);
-  }
-  return value;
-}
-
-function readNumberArg(key, fallback) {
-  const raw = firstArg(key);
-  if (raw === undefined) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    throw new Error(`--${key} must be a number`);
-  }
-  return value;
+function readCpuOptions(args) {
+  return {
+    seconds: readPositiveIntegerArg(args, 'cpu-seconds', 30),
+    intervalMs: readPositiveIntegerArg(args, 'cpu-interval-ms', 1000),
+    medianThreshold: readNumberArg(args, 'cpu-median-threshold', 5),
+    postGraceThreshold: readNumberArg(args, 'cpu-post-grace-threshold', 25),
+    graceSeconds: readNonNegativeIntegerArg(args, 'cpu-grace-seconds', 10),
+  };
 }
 
 function computeMedian(values) {
@@ -484,7 +495,7 @@ function printUsage() {
   node scripts/stress-loop-risk-websocket-cancel.mjs --ws-url <url> [options]
 
 Required:
-  --ws-url <url>                 Stable-instance websocket URL, including service/version query if needed.
+  --ws-url <url>                 Explicit websocket URL, including service/version query if needed.
 
 Stress:
   --messages <n>                 WebSocket send+close attempts. Default: 1000.
@@ -493,20 +504,20 @@ Stress:
   --header name=value            Extra WebSocket header. May be repeated.
 
 Health:
-  --health-url <url>             Router loop-risk health URL. Default: local stable control port.
+  --health-url <url>             Required unless --skip-health is explicit.
   --runtime-id <id>              Touched runtime id. May be repeated or comma-separated.
   --runtime-ids <ids>            Comma-separated touched runtime ids.
   --health-timeout-ms <ms>       Health zero-window timeout. Default: 5000.
 
 CPU:
   --runtime-pid <pid>            Runtime process id. May be repeated or comma-separated.
-  --runtime-pgrep <pattern>      pgrep -f pattern when --runtime-pid is omitted.
+  --runtime-pgrep <pattern>      Explicit pgrep -f diagnostic when --runtime-pid is omitted.
   --cpu-seconds <n>              CPU sample count, one sample per second by default. Default: 30.
   --cpu-median-threshold <pct>   Median CPU threshold. Default: 5.
   --cpu-post-grace-threshold <pct> Max sample after grace. Default: 25.
 
 Logs:
-  --runtime-log <file>           Runtime log file for runtime.request_error delta checks.
+  --runtime-log <file>           Required unless --skip-log-check is explicit.
   --max-new-runtime-request-errors <n> Default: 0.
 
 Escape hatches:

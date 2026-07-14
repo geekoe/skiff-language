@@ -160,11 +160,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, CliErro
     let mut deny_skips = false;
     let mut require_tests = false;
     let mut package_test_concurrency = None;
+    let mut help = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-h" | "--help" => return Err(CliError::Help),
+            "-h" | "--help" => {
+                if help {
+                    return Err(CliError::message("--help was provided more than once"));
+                }
+                help = true;
+            }
             "--live" => {
                 if live {
                     return Err(CliError::message("--live was provided more than once"));
@@ -310,6 +316,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, CliErro
         }
     }
 
+    if help {
+        return Err(CliError::Help);
+    }
     let input = input.ok_or_else(|| CliError::message("missing input path"))?;
     Ok(CliArgs {
         input,

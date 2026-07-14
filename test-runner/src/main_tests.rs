@@ -61,6 +61,24 @@ fn singleton_and_flag_duplicates_fail_closed_across_argument_forms() {
 }
 
 #[test]
+fn help_still_rejects_later_duplicate_and_unknown_options() {
+    for args in [
+        vec!["--help", "--help"],
+        vec!["-h", "--help"],
+        vec!["--help", "--unknown"],
+    ] {
+        let error = parse_args(args.into_iter().map(str::to_string))
+            .expect_err("help must not bypass strict argument validation");
+        assert!(matches!(error, CliError::Message(_)));
+    }
+
+    assert!(matches!(
+        parse_args(["--help".to_string()]),
+        Err(CliError::Help)
+    ));
+}
+
+#[test]
 fn explicit_artifact_root_must_be_a_directory_before_the_test_worker_starts() {
     let root = std::env::temp_dir().join(format!(
         "skiff-test-runner-cli-artifact-root-{}-{}",

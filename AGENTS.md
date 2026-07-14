@@ -110,7 +110,11 @@ schema/data、跨 registry catalog 校验、live plan/precondition 与普通 sel
 `db-encrypted-storage-live` 是 `managed`，要求 `node`、`cargo`、`pnpm`、`mongod` 和 `mongosh`，
 并继续只使用临时目录与 `45000`–`45999` 动态端口。两者 tier 均为 `live/manual`，默认 verify、
 `pnpm test`、Cargo workspace 和 CI 都不展开它们。可以安全运行 `--list` 审计 blocked/command，
-但不要把 loop-risk health/stress 提前注册为 selector；它们要等 direct CLI 安全基线完成后迁入。
+但 loop-risk health/stress 的 direct CLI 已采用严格参数和脱敏输出，暂未注册为 selector；它们要等
+共享 evaluator 与 canonical config 完成后再迁入。`check-loop-risk-health.mjs` 必须显式传
+`--url`；stress 必须显式传 WebSocket target，并为启用的 health、CPU、log 检查分别显式传
+`--health-url`、PID（或诊断用 `--runtime-pgrep`）和 log file。只有显式 `--skip-*` 才能跳过，
+两个命令都不会猜 stable 4001 或默认 pgrep pattern。
 
 `runtime-live` 必须同时显式提供 runtime config、router reload URL 和 artifact root；专用
 verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和
