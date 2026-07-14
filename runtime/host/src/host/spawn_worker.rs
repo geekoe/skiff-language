@@ -45,6 +45,8 @@ const SPAWN_RENEW_INTERVAL: Duration = Duration::from_secs(10);
 const EMPTY_CLAIM_BACKOFF_MIN: Duration = Duration::from_millis(100);
 const EMPTY_CLAIM_BACKOFF_MAX: Duration = Duration::from_secs(2);
 const SPAWN_WORKERS_PER_BUILD: usize = 4;
+const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
+const PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-package-test-run-v1:";
 
 #[derive(Default)]
 pub(crate) struct SpawnWorkerRegistry {
@@ -400,6 +402,11 @@ impl SpawnWorker {
     }
 
     async fn claim_spawn(&self) -> Result<Option<(SpawnClaimDescriptorFrameMetadata, Vec<u8>)>> {
+        let activation_identity = package_test_activation_identity(
+            &self.service.build_id,
+            self.service.activation_identity.as_deref(),
+        )?
+        .map(str::to_string);
         let header = SpawnClaimRequestFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "spawn.claim.request".to_string(),
@@ -412,6 +419,7 @@ impl SpawnWorker {
             supported_targets: self.supported_targets(),
             supported_spawn_compatibility_keys: self.supported_spawn_compatibility_keys(),
             build_id: Some(self.service.build_id.clone()),
+            activation_identity,
             max_execution_ms: None,
             max_concurrency: Some(1.0),
         };
@@ -727,6 +735,20 @@ impl SpawnWorker {
                 ),
             });
         }
+        if let Some(expected_activation_identity) = package_test_activation_identity(
+            &self.service.build_id,
+            self.service.activation_identity.as_deref(),
+        )? {
+            if descriptor.activation_identity.as_deref() != Some(expected_activation_identity) {
+                return Err(RuntimeError::Protocol {
+                    target: CLAIM_CONTROL_TARGET.to_string(),
+                    message: format!(
+                        "claimed package-test activationIdentity {:?} does not match worker activation {}",
+                        descriptor.activation_identity, expected_activation_identity
+                    ),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -879,6 +901,30 @@ impl SpawnWorker {
     }
 }
 
+fn package_test_activation_identity<'a>(
+    build_id: &str,
+    activation_identity: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    if !build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX) {
+        return Ok(None);
+    }
+    let activation_identity = activation_identity.ok_or_else(|| RuntimeError::Protocol {
+        target: CLAIM_CONTROL_TARGET.to_string(),
+        message: format!(
+            "package-test spawn worker for build {build_id} is missing activationIdentity"
+        ),
+    })?;
+    if !activation_identity.starts_with(PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX) {
+        return Err(RuntimeError::Protocol {
+            target: CLAIM_CONTROL_TARGET.to_string(),
+            message: format!(
+                "package-test spawn worker activationIdentity must start with {PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX}"
+            ),
+        });
+    }
+    Ok(Some(activation_identity))
+}
+
 async fn wait_for_retry_signal(
     stop: &SpawnWorkerStop,
     wake: &Notify,
@@ -1010,6 +1056,25 @@ pub(super) async fn renew_once_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_test_worker_activation_fails_closed_without_package_test_identity() {
+        let package_test_build = "skiff-package-test-build-v1:sha256:aaaaaaaa";
+        assert!(package_test_activation_identity(package_test_build, None).is_err());
+        assert!(package_test_activation_identity(
+            package_test_build,
+            Some("skiff-runtime-activation-v1:opaque:runtime-a")
+        )
+        .is_err());
+        assert_eq!(
+            package_test_activation_identity(
+                "skiff-service-build-v1:sha256:aaaaaaaa",
+                Some("skiff-package-test-run-v1:example:test:run")
+            )
+            .expect("service builds should not acquire package-test affinity"),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn build_wake_preserves_a_permit_before_worker_waits() {

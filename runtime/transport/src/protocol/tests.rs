@@ -9,17 +9,75 @@ use crate::protocol::{
     ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
     RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
     RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHttpAdapterArgFrameHeader,
+    RuntimeDispatchModeCapability, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+    RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
-    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpNameValueFrameHeader,
-    RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope, RuntimeRegisterFrameHeader,
-    RuntimeTraceContextFrameHeader, TelemetryProtocol, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterEnvelope,
+    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
+    SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, TelemetryProtocol, TelemetryTopic,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 const SERVICE_PROTOCOL_A: &str =
     "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SERVICE_REVISION: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+#[test]
+fn spawn_claim_package_test_activation_round_trips() {
+    let build_id =
+        "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let activation_identity = "skiff-package-test-run-v1:example.com~hello:test-a:run:1";
+    let request = SpawnClaimRequestFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "spawn.claim.request".to_string(),
+        rpc_id: "rpc-package-test-claim".to_string(),
+        runtime_id: "runtime-package-test".to_string(),
+        worker_id: "worker-package-test".to_string(),
+        service_id: "example.com/hello".to_string(),
+        service_version: "0.1.0".to_string(),
+        service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
+        supported_targets: vec!["function:package.test".to_string()],
+        supported_spawn_compatibility_keys: vec!["compatibility-key".to_string()],
+        build_id: Some(build_id.to_string()),
+        activation_identity: Some(activation_identity.to_string()),
+        max_execution_ms: Some(5_000.0),
+        max_concurrency: Some(1.0),
+    };
+    let request_frame = encode_binary_frame(&request, &[]).expect("spawn claim request encodes");
+    let (decoded_request, payload): (SpawnClaimRequestFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&request_frame).expect("spawn claim request decodes");
+    assert_eq!(decoded_request, request);
+    assert!(payload.is_empty());
+
+    let response = SpawnClaimResponseFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "spawn.claim.response".to_string(),
+        rpc_id: request.rpc_id.clone(),
+        claimed: true,
+        item: Some(SpawnClaimDescriptorFrameMetadata {
+            item_id: "item-package-test".to_string(),
+            lease_id: "lease-package-test".to_string(),
+            spawn_execution_id: "execution-package-test".to_string(),
+            runtime_request_id: "request-package-test".to_string(),
+            spawn_id: "spawn-package-test".to_string(),
+            target_kind: "function".to_string(),
+            target: "function:package.test".to_string(),
+            service_id: "example.com/hello".to_string(),
+            service_version: "0.1.0".to_string(),
+            service_protocol_identity: SERVICE_PROTOCOL_A.to_string(),
+            build_id: build_id.to_string(),
+            activation_identity: Some(activation_identity.to_string()),
+            payload_schema_identity: None,
+            lease_expires_at: None,
+        }),
+    };
+    let response_frame = encode_binary_frame(&response, &[]).expect("spawn claim response encodes");
+    let (decoded_response, payload): (SpawnClaimResponseFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&response_frame).expect("spawn claim response decodes");
+    assert_eq!(decoded_response, response);
+    assert!(payload.is_empty());
+}
 
 #[test]
 fn runtime_register_frame_header_round_trips_empty_payload() {

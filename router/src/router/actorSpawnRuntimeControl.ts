@@ -9,6 +9,8 @@ import type { QueueItem } from '../queue/index.js';
 import {
   InMemorySpawnQueueStore,
   SPAWN_QUEUE_NAME,
+  isPackageTestActivationIdentity,
+  isPackageTestBuildId,
   spawnCompatibilityKey,
   spawnPolicyKey,
   type ClaimedSpawn,
@@ -253,6 +255,9 @@ export class ActorSpawnRuntimeControl {
         409
       );
     }
+    const buildId = header.buildId ?? source.buildId;
+    const activationIdentity = header.activationIdentity ?? source.activationIdentity;
+    this.assertPackageTestSpawnActivationIdentity(header.type, buildId, activationIdentity);
 
     const createdAt = this.now();
     const spawnId = header.spawnId ?? `spawn-${this.id()}`;
@@ -285,10 +290,8 @@ export class ActorSpawnRuntimeControl {
       serviceId: header.serviceId,
       serviceVersion: header.serviceVersion,
       serviceProtocolIdentity: header.serviceProtocolIdentity,
-      buildId: header.buildId ?? source.buildId,
-      ...(header.activationIdentity ?? source.activationIdentity
-        ? { activationIdentity: header.activationIdentity ?? source.activationIdentity }
-        : {}),
+      buildId,
+      ...(activationIdentity ? { activationIdentity } : {}),
       runtimeTarget: header.target,
       ...(header.callerTarget === undefined ? {} : { callerTarget: header.callerTarget }),
       createdAt: createdAt.toISOString(),
@@ -303,10 +306,8 @@ export class ActorSpawnRuntimeControl {
         target: header.target,
         spawnCompatibilityKey: compatibilityKey,
         payload: spawnPayload,
-        buildId: header.buildId ?? source.buildId,
-        ...(header.activationIdentity ?? source.activationIdentity
-          ? { activationIdentity: header.activationIdentity ?? source.activationIdentity }
-          : {}),
+        buildId,
+        ...(activationIdentity ? { activationIdentity } : {}),
         ...(header.callerRequestId === undefined
           ? {}
           : { callerRequestId: header.callerRequestId }),
@@ -358,13 +359,15 @@ export class ActorSpawnRuntimeControl {
     this.assertEmptyPayload(header.type, payloadBytes);
     this.assertRuntime(header.runtimeId, source);
     this.assertSpawnService(header, source);
+    const activationIdentity = header.activationIdentity ?? source.activationIdentity;
+    this.assertPackageTestSpawnActivationIdentity(header.type, source.buildId, activationIdentity);
     const claimKey = spawnClaimSingleFlightKey(header.runtimeId, header.workerId);
     if (this.activeSpawnClaims.has(claimKey)) {
       return this.emptySpawnClaim(header.rpcId);
     }
     this.activeSpawnClaims.add(claimKey);
     try {
-      return await this.handleSpawnClaimSingleFlight(header, source);
+      return await this.handleSpawnClaimSingleFlight(header, source, activationIdentity);
     } finally {
       this.activeSpawnClaims.delete(claimKey);
     }
@@ -372,7 +375,8 @@ export class ActorSpawnRuntimeControl {
 
   private async handleSpawnClaimSingleFlight(
     header: Extract<ActorSpawnRuntimeRequestFrameHeader, { type: 'spawn.claim.request' }>,
-    source: RuntimeControlSource
+    source: RuntimeControlSource,
+    activationIdentity: string | undefined
   ): Promise<ActorSpawnRuntimeControlResult> {
     if (header.maxConcurrency !== undefined && source.inFlightCount >= header.maxConcurrency) {
       return this.emptySpawnClaim(header.rpcId);
@@ -392,6 +396,7 @@ export class ActorSpawnRuntimeControl {
         serviceVersion: header.serviceVersion,
         serviceProtocolIdentity: header.serviceProtocolIdentity,
         buildId: source.buildId,
+        ...(activationIdentity === undefined ? {} : { activationIdentity }),
         supportedTargets,
         supportedSpawnCompatibilityKeys: header.supportedSpawnCompatibilityKeys,
         now,
@@ -411,6 +416,7 @@ export class ActorSpawnRuntimeControl {
         header,
         source,
         supportedTargets,
+        activationIdentity,
         now
       );
       if (claimed === undefined) {
@@ -437,6 +443,7 @@ export class ActorSpawnRuntimeControl {
     header: Extract<ActorSpawnRuntimeRequestFrameHeader, { type: 'spawn.claim.request' }>,
     source: RuntimeControlSource,
     supportedTargets: string[],
+    activationIdentity: string | undefined,
     now: Date
   ): Promise<ClaimedSpawn | undefined> {
     const requiredPolicyKey = spawnPolicyKey(candidate.serviceId, candidate.queue, candidate.target);
@@ -460,6 +467,7 @@ export class ActorSpawnRuntimeControl {
         serviceVersion: header.serviceVersion,
         serviceProtocolIdentity: header.serviceProtocolIdentity,
         buildId: source.buildId,
+        ...(activationIdentity === undefined ? {} : { activationIdentity }),
         supportedTargets,
         supportedSpawnCompatibilityKeys: header.supportedSpawnCompatibilityKeys,
         now,
@@ -604,6 +612,23 @@ export class ActorSpawnRuntimeControl {
       throw new RuntimeControlProtocolError(
         'RuntimeProtocolMismatch',
         'spawn serviceProtocolIdentity must match the registered runtime protocol identity',
+        409
+      );
+    }
+  }
+
+  private assertPackageTestSpawnActivationIdentity(
+    type: 'spawn.submit.request' | 'spawn.claim.request',
+    buildId: string,
+    activationIdentity: string | undefined
+  ): void {
+    if (
+      isPackageTestBuildId(buildId) &&
+      !isPackageTestActivationIdentity(activationIdentity)
+    ) {
+      throw new RuntimeControlProtocolError(
+        'RuntimeActivationMismatch',
+        `${type} requires a package-test activationIdentity for package-test build ${buildId}`,
         409
       );
     }
@@ -813,6 +838,9 @@ function spawnClaimDescriptor(
     serviceVersion: item.serviceVersion,
     serviceProtocolIdentity: item.serviceProtocolIdentity,
     buildId: item.buildId,
+    ...(item.activationIdentity === undefined
+      ? {}
+      : { activationIdentity: item.activationIdentity }),
     ...(item.payloadSchemaIdentity === undefined
       ? {}
       : { payloadSchemaIdentity: item.payloadSchemaIdentity }),
