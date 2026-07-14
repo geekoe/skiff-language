@@ -15,6 +15,13 @@ CLI 的内部编排契约，不改变 `test` 语法、测试发现或 effect pol
   instance 启动；
 - router/runtime binary 和 router source 来自执行 CLI 的当前 Skiff checkout。
 
+仓库测试入口按测试所有权而不是子进程使用的实现语言划分。`pnpm test` 负责 Node/TypeScript
+测试和 type-check，不调度 Rust workspace tests；其中 Node-owned fixture 或 integration test
+仍可能调用 Cargo 构建 Rust 产物。`cargo test --workspace --no-fail-fast` 负责完整 Rust tests；
+test-runner runtime integration 由 Cargo harness 进入，但会通过 Node host 启动这里定义的隔离
+runtime。`pnpm verify` 只组合 Rust、Node/TypeScript 和 checker 三类 canonical scope，不复制其
+底层测试列表。
+
 Router 不接受空 artifact root。CLI 必须在 supervisor 启动前，用当前 checkout 的
 `skiff-dev-sync` 向临时 artifact/build root 写入专用 bootstrap service，并显式
 `--no-reload`。readiness 先通过带 service/version selector 的 isolated HTTP bootstrap 路由

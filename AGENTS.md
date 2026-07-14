@@ -78,10 +78,15 @@ cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 仓库根有三个语义不同的权威入口：
 
 ```bash
-cargo test --workspace --no-fail-fast  # 完整 Rust workspace 测试
-pnpm test                              # 仅 Node/TypeScript 测试和 type-check
-pnpm verify                            # 完整非 live 仓库验证：Rust + Node/TS + checker
+cargo test --workspace --no-fail-fast  # Rust 测试所有权入口
+pnpm test                              # Node/TypeScript 测试和 type-check 所有权入口
+pnpm verify                            # 完整非 live 组合验证：Rust + Node/TS + checker
 ```
+
+这里的入口按测试所有权划分，不代表进程树只使用一种语言工具链。`pnpm test` 不调度 Rust
+workspace tests，但 Node-owned tests 和 fixture build 可能调用 Cargo；`cargo test --workspace
+--no-fail-fast` 拥有完整 Rust tests，其中 test-runner runtime integration 会通过 Node host 启动
+隔离 runtime。`pnpm verify` 组合前两类测试和 checker，不另行维护底层测试清单。
 
 跨语言计划只在 `scripts/verify.mjs` 中维护。可以先审计展开后的命令而不执行：
 

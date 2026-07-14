@@ -79,13 +79,31 @@ export function assertPlanIntegrity(phases) {
   const seenIds = new Set();
   const seenExecutions = new Map();
   for (const phase of phases) {
-    if (!phase.id || !phase.command || !Array.isArray(phase.args) || !phase.cwd) {
+    if (
+      !isNonEmptyString(phase.id)
+      || !isNonEmptyString(phase.kind)
+      || !isNonEmptyString(phase.cwd)
+    ) {
       throw new Error(`invalid verify phase: ${JSON.stringify(phase)}`);
     }
     if (seenIds.has(phase.id)) {
       throw new Error(`duplicate verify phase id: ${phase.id}`);
     }
     seenIds.add(phase.id);
+
+    if (phase.preconditionError !== undefined) {
+      if (
+        !isNonEmptyString(phase.preconditionError)
+        || phase.command !== undefined
+        || phase.args !== undefined
+      ) {
+        throw new Error(`invalid blocked verify phase: ${JSON.stringify(phase)}`);
+      }
+      continue;
+    }
+    if (!isNonEmptyString(phase.command) || !Array.isArray(phase.args)) {
+      throw new Error(`invalid executable verify phase: ${JSON.stringify(phase)}`);
+    }
 
     const execution = JSON.stringify([resolve(phase.cwd), phase.command, phase.args]);
     const previousId = seenExecutions.get(execution);
@@ -186,11 +204,12 @@ async function runtimeLivePhases(root, configuredPath, env) {
   const rawConfigPath = configuredPath || env.SKIFF_RUNTIME_LIVE_CONFIG;
   if (!rawConfigPath) {
     return [
-      {
-        ...phase(root, 'live:runtime:config', 'live/manual', 'node', []),
-        skip:
-          'set SKIFF_RUNTIME_LIVE_CONFIG or pass --runtime-live-config <path> to run live runtime fixtures',
-      },
+      blockedPhase(
+        root,
+        'live:runtime:config',
+        'live/manual',
+        'set SKIFF_RUNTIME_LIVE_CONFIG or pass --runtime-live-config <path> to run live runtime fixtures',
+      ),
     ];
   }
   const configPath = isAbsolute(rawConfigPath) ? rawConfigPath : resolve(root, rawConfigPath);
@@ -226,4 +245,12 @@ function packagePhase(root, id, kind, directory, args) {
 
 function phase(cwd, id, kind, command, args) {
   return { id, kind, command, args, cwd };
+}
+
+function blockedPhase(cwd, id, kind, preconditionError) {
+  return { id, kind, cwd, preconditionError };
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }

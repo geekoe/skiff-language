@@ -6,18 +6,19 @@ export function printVerifyPlan(plan, root) {
   console.log(`phases: ${plan.phases.length}`);
   for (const phase of plan.phases) {
     const cwd = relative(root, phase.cwd) || '.';
-    const suffix = phase.skip ? ` [skip: ${phase.skip}]` : '';
+    const execution = phase.preconditionError !== undefined
+      ? `[blocked: ${phase.preconditionError}]`
+      : formatCommand(phase);
     console.log(
-      `- ${phase.id} | ${phase.kind} | cwd=${cwd} | ${formatCommand(phase)}${suffix}`,
+      `- ${phase.id} | ${phase.kind} | cwd=${cwd} | ${execution}`,
     );
   }
 }
 
 export async function runVerifyPlan(plan, root) {
   for (const phase of plan.phases) {
-    if (phase.skip) {
-      console.log(`\nSKIP ${phase.id}: ${phase.skip}`);
-      continue;
+    if (phase.preconditionError !== undefined) {
+      throw new Error(`${phase.id} cannot run: ${phase.preconditionError}`);
     }
     const cwd = relative(root, phase.cwd) || '.';
     console.log(`\n==> ${phase.id} (${cwd})`);

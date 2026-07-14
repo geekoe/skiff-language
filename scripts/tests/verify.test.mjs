@@ -60,6 +60,33 @@ test('package scripts only forward to canonical verify selectors', async () => {
   );
 });
 
+test('CI runs exactly the three canonical non-live scopes with frozen package installs', async () => {
+  const workflow = await readFile(
+    join(root, '.github', 'workflows', 'verify.yml'),
+    'utf8',
+  );
+  const commands = [...workflow.matchAll(/^            command: (.+)$/gm)]
+    .map((match) => match[1]);
+  assert.deepEqual(commands, [
+    'cargo test --workspace --no-fail-fast',
+    'pnpm test',
+    'node scripts/verify.mjs --only checks',
+  ]);
+  const installedPackages = [
+    ...workflow.matchAll(/pnpm --dir (\S+) install --frozen-lockfile/g),
+  ].map((match) => match[1]);
+  assert.deepEqual(installedPackages, ['router', 'telemetry', 'scripts', 'vscode']);
+  assert.match(workflow, /uses: actions\/checkout@v6\n\s+with:\n\s+persist-credentials: false/);
+  assert.match(workflow, /uses: actions\/setup-node@v6/);
+  assert.match(workflow, /package-manager-cache: false/);
+  assert.doesNotMatch(workflow, /pnpm verify/);
+  assert.doesNotMatch(workflow, /--manifest-path|scripts\/tests|node scripts\/check-/);
+  assert.doesNotMatch(
+    workflow,
+    /runtime-live|db-encrypted-storage-live|compiler-boundaries|loop-risk/,
+  );
+});
+
 test('rust selector contains exactly the workspace Cargo authority', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['rust'] });
   assert.deepEqual(
@@ -96,6 +123,100 @@ test('default verify has one Rust workspace and one operation ABI check, without
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
 
+test('runtime-live lists a blocked phase when its required config is missing', async () => {
+  const result = await runProcess(
+    process.execPath,
+    [verifyPath, '--only', 'runtime-live', '--list'],
+    { cwd: root, env: withoutRuntimeLiveConfig() },
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /live:runtime:config/);
+  assert.match(
+    result.stdout,
+    /\[blocked: set SKIFF_RUNTIME_LIVE_CONFIG or pass --runtime-live-config <path>/,
+  );
+  assert.doesNotMatch(result.stdout, /\| node(?:\s|$)/);
+  assert.doesNotMatch(result.stdout, /SKIP/);
+});
+
+test('runtime-live fails closed without config and never reports success', async () => {
+  const result = await runProcess(
+    process.execPath,
+    [verifyPath, '--only', 'runtime-live'],
+    { cwd: root, env: withoutRuntimeLiveConfig() },
+  );
+  assert.notEqual(result.code, 0, result.stdout);
+  assert.match(
+    `${result.stderr}\n${result.stdout}`,
+    /live:runtime:config cannot run: set SKIFF_RUNTIME_LIVE_CONFIG/,
+  );
+  assert.doesNotMatch(result.stdout, /All selected Skiff verification phases passed/);
+  assert.doesNotMatch(result.stdout, /SKIP/);
+});
+
+test('runtime-live fails closed for a missing config path or missing live fixtures', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-plan-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        selectors: ['runtime-live'],
+        runtimeLiveConfig: configPath,
+      }),
+      /runtime-live config path does not exist/,
+    );
+
+    await writeFile(configPath, '{}\n');
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        selectors: ['runtime-live'],
+        runtimeLiveConfig: configPath,
+      }),
+      /runtime-live found no \*\.live\.test\.skiff fixtures/,
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live builds executable Cargo phases when config and fixtures exist', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-positive-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    await writeFile(configPath, '{}\n');
+    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
+
+    const plan = await buildVerifyPlan({
+      root: fixture,
+      selectors: ['runtime-live'],
+      runtimeLiveConfig: configPath,
+    });
+    assert.deepEqual(plan.phases, [
+      {
+        id: 'live:runtime:runtime/live-tests/example.live.test.skiff',
+        kind: 'live/manual',
+        command: 'cargo',
+        args: [
+          'run',
+          '--manifest-path',
+          'test-runner/Cargo.toml',
+          '--',
+          join(fixture, 'runtime', 'live-tests', 'example.live.test.skiff'),
+          '--live',
+          '--allow-network',
+          '--config',
+          configPath,
+        ],
+        cwd: fixture,
+      },
+    ]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 test('duplicate phase IDs are rejected', () => {
   const duplicate = {
     id: 'duplicate',
@@ -122,6 +243,65 @@ test('duplicate command executions are rejected even when phase IDs differ', () 
     () => assertPlanIntegrity([first, { ...first, id: 'renamed-duplicate' }]),
     /duplicate verify phase execution: first and renamed-duplicate/,
   );
+});
+
+test('blocked phases require a reason and cannot masquerade as executable phases', () => {
+  assert.throws(
+    () => assertPlanIntegrity([{
+      id: 'blocked-without-reason',
+      kind: 'test',
+      cwd: root,
+      preconditionError: '  ',
+    }]),
+    /invalid blocked verify phase/,
+  );
+  assert.throws(
+    () => assertPlanIntegrity([{
+      id: 'blocked-with-command',
+      kind: 'test',
+      cwd: root,
+      preconditionError: 'missing config',
+      command: 'node',
+      args: [],
+    }]),
+    /invalid blocked verify phase/,
+  );
+});
+
+test('runner rejects a blocked phase without spawning later work', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-blocked-runner-'));
+  const marker = join(fixture, 'later-phase-ran');
+  try {
+    const plan = {
+      selectors: ['test'],
+      phases: [
+        {
+          id: 'blocked-phase',
+          kind: 'test',
+          cwd: fixture,
+          preconditionError: 'missing required config',
+        },
+        {
+          id: 'later-must-not-run',
+          kind: 'test',
+          command: process.execPath,
+          args: [
+            '--eval',
+            'require("node:fs").writeFileSync(process.argv[1], "ran")',
+            marker,
+          ],
+          cwd: fixture,
+        },
+      ],
+    };
+    await assert.rejects(
+      runVerifyPlan(plan, fixture),
+      /blocked-phase cannot run: missing required config/,
+    );
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('runner is fail-fast after the first failed phase', async () => {
@@ -253,9 +433,9 @@ async function write(rootPath, relativePath) {
   await writeFile(path, 'export {};\n');
 }
 
-function runProcess(command, args, { cwd }) {
+function runProcess(command, args, { cwd, env = process.env }) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, env: process.env });
+    const child = spawn(command, args, { cwd, env });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -271,4 +451,10 @@ function runProcess(command, args, { cwd }) {
       resolvePromise({ code, signal, stdout, stderr });
     });
   });
+}
+
+function withoutRuntimeLiveConfig() {
+  const env = { ...process.env };
+  delete env.SKIFF_RUNTIME_LIVE_CONFIG;
+  return env;
 }
