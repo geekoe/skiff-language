@@ -5,6 +5,10 @@ edition = "2021"
 publish = false
 autotests = false
 
+[features]
+default = []
+runtime-integration-worker = []
+
 [lints.clippy]
 too_many_lines = "warn"
 
@@ -15,22 +19,32 @@ path = "src/main.rs"
 [[test]]
 name = "test_runner_doubles"
 path = "tests/test_runner_doubles.rs"
+required-features = ["runtime-integration-worker"]
 
 [[test]]
 name = "test_runner_live_smoke"
 path = "tests/test_runner_live_smoke.rs"
+required-features = ["runtime-integration-worker"]
 
 [[test]]
 name = "test_runner_package"
 path = "tests/test_runner_package.rs"
+required-features = ["runtime-integration-worker"]
 
 [[test]]
 name = "test_runner_package_visibility"
 path = "tests/test_runner_package_visibility.rs"
+required-features = ["runtime-integration-worker"]
 
 [[test]]
 name = "test_runner_service"
 path = "tests/test_runner_service.rs"
+required-features = ["runtime-integration-worker"]
+
+[[test]]
+name = "test_runner_runtime_isolation"
+path = "tests/test_runner_runtime_isolation.rs"
+harness = false
 
 [dependencies]
 base64 = "0.22"

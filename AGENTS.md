@@ -75,21 +75,34 @@ cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 
 ## 测试入口
 
-仓库根运行：
+仓库根有三个语义不同的权威入口：
 
 ```bash
-pnpm test
+cargo test --workspace --no-fail-fast  # 完整 Rust workspace 测试
+pnpm test                              # 仅 Node/TypeScript 测试和 type-check
+pnpm verify                            # 完整非 live 仓库验证：Rust + Node/TS + checker
 ```
 
-该命令按 build unit 串行执行 runtime-stack 单元和开发支撑单元。需要全量 Rust 验证时运行：
+跨语言计划只在 `scripts/verify.mjs` 中维护。可以先审计展开后的命令而不执行：
 
 ```bash
-cargo test --workspace --no-fail-fast
+node scripts/verify.mjs --list
+node scripts/verify.mjs --only rust --list
+node scripts/verify.mjs --only node --list
 ```
+
+默认入口不运行 live 检查；需要时显式使用 `--only runtime-live` 或
+`--only db-encrypted-storage-live`。`--only compiler-boundaries` 是当前 known-red 的手动架构检查，
+在边界违规清零前不属于默认 gate。
 
 常用聚焦测试：
 
 ```bash
+node scripts/verify.mjs --only router
+node scripts/verify.mjs --only telemetry
+node scripts/verify.mjs --only scripts
+node scripts/verify.mjs --only vscode
+node scripts/verify.mjs --only checks
 pnpm --filter @skiff/router type-check
 pnpm --filter @skiff/router test
 pnpm --filter @skiff/telemetry type-check

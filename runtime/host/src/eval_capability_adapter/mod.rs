@@ -70,6 +70,8 @@ use websocket::RuntimeWebsocketCapabilityContext;
 
 pub(crate) use error::root_error_into_eval;
 pub(crate) use factory::actor_from_request;
+#[cfg(any(test, feature = "test-support"))]
+pub use factory::TestActorCapabilityFactory;
 pub use factory::{
     config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
     websocket, websocket_from_request,
