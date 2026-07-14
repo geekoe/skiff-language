@@ -100,6 +100,8 @@ function runtimeErrorStatus(error: RuntimeErrorPayload): number {
     case 'std.http.HttpError':
     case 'RequestDecodeError':
       return 400;
+    case 'std.db.ConflictError':
+      return 409;
     case 'std.service.ProviderUnavailableError':
       return 503;
     case 'CancelError':
@@ -122,6 +124,7 @@ function runtimeErrorHttpDetail(status: number, error: RuntimeErrorPayload): unk
     error.code === 'std.bytes.DecodeError' ||
     error.code === 'std.number.DecodeError' ||
     error.code === 'std.json.DecodeError' ||
+    error.code === 'std.db.ConflictError' ||
     error.code === 'std.db.DecodeError' ||
     error.code === 'std.file.FileError' ||
     error.code === 'std.time.DecodeError' ||

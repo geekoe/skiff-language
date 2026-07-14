@@ -189,6 +189,7 @@ fn standard_error_type_identity(name: &str) -> Option<TypeIdentity> {
         | "std.bytes.DecodeError"
         | "std.number.DecodeError"
         | "std.json.DecodeError"
+        | "std.db.ConflictError"
         | "std.db.DecodeError"
         | "std.file.FileError"
         | "std.resource.ResourceError"
@@ -243,6 +244,49 @@ fn package_file_for_addr<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::RuntimeErrorPayload;
+
+    #[derive(Debug)]
+    struct DbConflictWirePayload;
+
+    impl std::fmt::Display for DbConflictWirePayload {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("sanitized database conflict")
+        }
+    }
+
+    impl std::error::Error for DbConflictWirePayload {}
+
+    impl WirePayload for DbConflictWirePayload {
+        fn payload(&self) -> RuntimeErrorPayload {
+            RuntimeErrorPayload {
+                code: "std.db.ConflictError".to_string(),
+                message: "database conflict; retry only at an explicit side-effect-safe boundary"
+                    .to_string(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "target": "std.db",
+                    "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                    "retryable": true,
+                })),
+            }
+        }
+
+        fn catch_projection(&self) -> Option<(TypeIdentity, Value)> {
+            Some((
+                TypeIdentity::builtin("std.db.ConflictError"),
+                serde_json::json!({
+                    "target": "std.db",
+                    "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                    "retryable": true,
+                }),
+            ))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
 
     #[test]
     fn exception_envelope_for_catch_returns_exact_user_exception_envelope() {
@@ -288,6 +332,40 @@ mod tests {
         assert_eq!(
             envelope["__skiffActualPayloadTypeDebug"],
             "std.service.ProtocolError"
+        );
+    }
+
+    #[test]
+    fn db_conflict_opaque_payload_is_catchable_by_standard_error_identity() {
+        assert_eq!(
+            standard_error_type_identity("std.db.ConflictError"),
+            Some(TypeIdentity::builtin("std.db.ConflictError"))
+        );
+        let error = RuntimeError::from(
+            skiff_runtime_capability_context::DbCapabilityError::opaque(DbConflictWirePayload),
+        );
+
+        let envelope =
+            exception_envelope_for_catch(&error, &[TypeIdentity::builtin("std.db.ConflictError")])
+                .expect("conflict catch projection should decode")
+                .expect("database conflict should match its standard catch leaf");
+
+        assert_eq!(
+            envelope["error"],
+            serde_json::json!({
+                "target": "std.db",
+                "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                "retryable": true,
+            })
+        );
+        assert_eq!(
+            envelope["__skiffActualPayloadTypeDebug"],
+            "std.db.ConflictError"
+        );
+        assert_eq!(
+            exception_envelope_for_catch(&error, &[TypeIdentity::builtin("std.db.DecodeError")],)
+                .expect("non-matching catch projection should remain valid"),
+            None
         );
     }
 }

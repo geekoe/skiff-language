@@ -390,11 +390,12 @@ fn std_root_import_allows_official_std_modules_and_records_std_package() {
         .unwrap()
         .clone();
     entries.sort_by_key(|entry| entry["path"].as_str().unwrap().to_string());
-    assert_eq!(entries.len(), 97);
+    assert_eq!(entries.len(), 98);
     for (path, module) in [
         ("actor.Actor", "actor"),
         ("bytes.DecodeError", "bytes"),
         ("crypto.sha256", "crypto"),
+        ("db.ConflictError", "db"),
         ("db.DecodeError", "db"),
         ("file.FileError", "file"),
         ("file.ImmutableFile", "file"),
@@ -452,7 +453,7 @@ fn std_root_import_allows_official_std_modules_and_records_std_package() {
 }
 
 #[test]
-fn module_decode_error_catch_types_are_public_source_types() {
+fn standard_module_error_catch_types_are_public_source_types() {
     let temp = ServiceProjectBuilder::package_model(
         "module-decode-error-catch-types",
         "import std",
@@ -461,6 +462,7 @@ fn module_decode_error_catch_types_are_public_source_types() {
             const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
             const timeResult = catch<std.time.DecodeError>(Date.requireParse("not-a-date"))
             const configResult = catch<config.DecodeError>(config.require<string>("app.secret"))
+            const dbConflictResult = catch<std.db.ConflictError>(null)
             return {}
         "#,
     );
@@ -997,6 +999,7 @@ fn std_normal_type_symbol(name: &str) -> bool {
     matches!(
         name,
         "std.bytes.DecodeError"
+            | "std.db.ConflictError"
             | "std.db.DecodeError"
             | "std.file.FileError"
             | "std.json.DecodeError"

@@ -1,6 +1,20 @@
 use serde_json::json;
 use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
 
+use crate::mongo::is_mongo_db_conflict_error;
+
+const DB_CONFLICT_TARGET: &str = "std.db";
+const DB_CONFLICT_MESSAGE: &str =
+    "database conflict; retry only at an explicit side-effect-safe boundary";
+
+fn db_conflict_details() -> serde_json::Value {
+    json!({
+        "target": DB_CONFLICT_TARGET,
+        "message": DB_CONFLICT_MESSAGE,
+        "retryable": true,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceDbError {
     #[error("{0}")]
@@ -62,6 +76,14 @@ impl WirePayload for ServiceDbError {
                 status: None,
                 details: None,
             },
+            ServiceDbError::Mongo(error) if is_mongo_db_conflict_error(error) => {
+                RuntimeErrorPayload {
+                    code: "std.db.ConflictError".to_string(),
+                    message: DB_CONFLICT_MESSAGE.to_string(),
+                    status: None,
+                    details: Some(db_conflict_details()),
+                }
+            }
             ServiceDbError::Mongo(error) => RuntimeErrorPayload {
                 code: "PlatformMongoError".to_string(),
                 message: error.to_string(),
@@ -86,6 +108,10 @@ impl WirePayload for ServiceDbError {
 
     fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
         match self {
+            ServiceDbError::Mongo(error) if is_mongo_db_conflict_error(error) => Some((
+                TypeIdentity::builtin("std.db.ConflictError"),
+                db_conflict_details(),
+            )),
             ServiceDbError::Opaque(error) => error.catch_projection(),
             _ => None,
         }

@@ -26,4 +26,26 @@ describe('runtime error HTTP mapping', () => {
       });
     }
   });
+
+  it('maps catchable database conflicts to 409 with sanitized details', () => {
+    const error = new RuntimeResponseError({
+      code: 'std.db.ConflictError',
+      message: 'database conflict; retry only at an explicit side-effect-safe boundary',
+      details: {
+        target: 'std.db',
+        message: 'database conflict; retry only at an explicit side-effect-safe boundary',
+        retryable: true
+      }
+    });
+
+    expect(error.statusCode).toBe(409);
+    expect(error.toHttpBody()).toEqual({
+      message: 'database conflict; retry only at an explicit side-effect-safe boundary',
+      detail: {
+        target: 'std.db',
+        message: 'database conflict; retry only at an explicit side-effect-safe boundary',
+        retryable: true
+      }
+    });
+  });
 });

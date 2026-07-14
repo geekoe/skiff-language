@@ -1,7 +1,9 @@
 use futures_util::StreamExt;
 use mongodb::{
     bson::Document,
-    error::{Error as MongoError, ErrorKind as MongoErrorKind, WriteFailure},
+    error::{
+        Error as MongoError, ErrorKind as MongoErrorKind, WriteFailure, TRANSIENT_TRANSACTION_ERROR,
+    },
     options::ReturnDocument,
     results::{DeleteResult, InsertManyResult, UpdateResult},
     ClientSession, Collection,
@@ -213,31 +215,72 @@ impl<'a> MongoSessionExecutor<'a> {
 }
 
 const MONGO_DUPLICATE_KEY_CODE: i32 = 11000;
+const MONGO_WRITE_CONFLICT_CODE: i32 = 112;
 
 pub fn is_mongo_duplicate_key_error(error: &MongoError) -> bool {
+    mongo_error_has_code(error, is_mongo_duplicate_key_code)
+}
+
+pub fn is_mongo_write_conflict_error(error: &MongoError) -> bool {
+    mongo_error_has_code(error, is_mongo_write_conflict_code)
+}
+
+pub fn is_mongo_db_conflict_error(error: &MongoError) -> bool {
+    mongo_db_conflict_markers_match(is_mongo_write_conflict_error(error), |label| {
+        error.contains_label(label)
+    })
+}
+
+pub fn mongo_db_conflict_markers_match(
+    write_conflict_code: bool,
+    contains_label: impl Fn(&str) -> bool,
+) -> bool {
+    write_conflict_code || contains_label(TRANSIENT_TRANSACTION_ERROR)
+}
+
+fn mongo_error_has_code(error: &MongoError, matches_code: impl Fn(i32) -> bool) -> bool {
     match error.kind.as_ref() {
-        MongoErrorKind::Command(command_error) => is_mongo_duplicate_key_code(command_error.code),
+        MongoErrorKind::Command(command_error) => matches_code(command_error.code),
         MongoErrorKind::Write(WriteFailure::WriteError(write_error)) => {
-            is_mongo_duplicate_key_code(write_error.code)
+            matches_code(write_error.code)
         }
-        MongoErrorKind::InsertMany(insert_many_error) => insert_many_error
-            .write_errors
-            .as_ref()
-            .is_some_and(|write_errors| {
-                write_errors
+        MongoErrorKind::Write(WriteFailure::WriteConcernError(write_concern_error)) => {
+            matches_code(write_concern_error.code)
+        }
+        MongoErrorKind::InsertMany(insert_many_error) => {
+            insert_many_error
+                .write_errors
+                .as_ref()
+                .is_some_and(|write_errors| {
+                    write_errors
+                        .iter()
+                        .any(|write_error| matches_code(write_error.code))
+                })
+                || insert_many_error
+                    .write_concern_error
+                    .as_ref()
+                    .is_some_and(|write_concern_error| matches_code(write_concern_error.code))
+        }
+        MongoErrorKind::BulkWrite(bulk_write_error) => {
+            bulk_write_error
+                .write_errors
+                .values()
+                .any(|write_error| matches_code(write_error.code))
+                || bulk_write_error
+                    .write_concern_errors
                     .iter()
-                    .any(|write_error| is_mongo_duplicate_key_code(write_error.code))
-            }),
-        MongoErrorKind::BulkWrite(bulk_write_error) => bulk_write_error
-            .write_errors
-            .values()
-            .any(|write_error| is_mongo_duplicate_key_code(write_error.code)),
+                    .any(|write_concern_error| matches_code(write_concern_error.code))
+        }
         _ => false,
     }
 }
 
 pub fn is_mongo_duplicate_key_code(code: i32) -> bool {
     code == MONGO_DUPLICATE_KEY_CODE
+}
+
+pub fn is_mongo_write_conflict_code(code: i32) -> bool {
+    code == MONGO_WRITE_CONFLICT_CODE
 }
 
 pub fn update_without_set_on_insert(update: &Document) -> Option<Document> {
