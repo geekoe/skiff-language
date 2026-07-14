@@ -25,6 +25,16 @@ impl fmt::Display for DummyWirePayload {
 
 impl std::error::Error for DummyWirePayload {}
 
+fn mongo_command_error(code: i32, code_name: &str) -> mongodb::error::Error {
+    let command_error: mongodb::error::CommandError = serde_json::from_value(json!({
+        "code": code,
+        "codeName": code_name,
+        "errmsg": format!("Mongo command error {code_name}"),
+    }))
+    .expect("mongodb CommandError should deserialize");
+    mongodb::error::ErrorKind::Command(command_error).into()
+}
+
 impl WirePayload for DummyWirePayload {
     fn payload(&self) -> RuntimeErrorPayload {
         dummy_wire_payload()
@@ -171,6 +181,40 @@ fn opaque_catch_projection_delegates_to_boxed_wire_payload() {
     assert_eq!(
         WirePayload::catch_projection(&error),
         dummy_catch_projection()
+    );
+}
+
+#[test]
+fn service_db_conflict_survives_host_opaque_boundary_with_sanitized_projection() {
+    let error = RuntimeError::Opaque(Box::new(skiff_runtime_service_db::ServiceDbError::Mongo(
+        mongo_command_error(112, "WriteConflict-secret-server-detail"),
+    )));
+
+    let payload = error.payload();
+    assert_eq!(payload.code, "std.db.ConflictError");
+    assert_eq!(
+        payload.message,
+        "database conflict; retry only at an explicit side-effect-safe boundary"
+    );
+    assert_eq!(
+        payload.details,
+        Some(json!({
+            "target": "std.db",
+            "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+            "retryable": true,
+        }))
+    );
+    assert!(!payload.message.contains("secret-server-detail"));
+    assert_eq!(
+        WirePayload::catch_projection(&error),
+        Some((
+            TypeIdentity::builtin("std.db.ConflictError"),
+            json!({
+                "target": "std.db",
+                "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                "retryable": true,
+            }),
+        ))
     );
 }
 
@@ -1085,6 +1129,14 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
             )),
             "PlatformMongoError",
             None,
+        ),
+        (
+            "service-db Mongo WriteConflict",
+            Box::new(skiff_runtime_service_db::ServiceDbError::Mongo(
+                mongo_command_error(112, "WriteConflict"),
+            )),
+            "std.db.ConflictError",
+            Some("std.db.ConflictError"),
         ),
         (
             "service-db BsonSer",

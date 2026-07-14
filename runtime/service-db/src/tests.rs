@@ -2,14 +2,20 @@ use super::{
     mapping::{DbRecoverableRuntimeReadContext, DbRecoverableRuntimeWriteContext},
     metadata::{DbCollectionMetadata, ServiceDbMetadata},
     mongo::{
-        is_mongo_duplicate_key_code, is_mongo_duplicate_key_error, update_without_set_on_insert,
+        is_mongo_db_conflict_error, is_mongo_duplicate_key_code, is_mongo_duplicate_key_error,
+        is_mongo_write_conflict_code, is_mongo_write_conflict_error,
+        mongo_db_conflict_markers_match, update_without_set_on_insert,
     },
     *,
 };
 use crate::{DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans, ServiceDbError};
 use mongodb::{
     bson::{doc, spec::BinarySubtype, Bson, DateTime},
-    error::{Error as MongoError, ErrorKind as MongoErrorKind, WriteError, WriteFailure},
+    error::{
+        BulkWriteError, CommandError, Error as MongoError, ErrorKind as MongoErrorKind,
+        InsertManyError, WriteConcernError, WriteError, WriteFailure, TRANSIENT_TRANSACTION_ERROR,
+        UNKNOWN_TRANSACTION_COMMIT_RESULT,
+    },
 };
 use serde_json::{json, Map, Value};
 use skiff_artifact_model::DbMetadataIr;
@@ -64,6 +70,35 @@ fn db_query(value: serde_json::Value) -> DbQuery {
 
 fn db_doc(value: serde_json::Value) -> DbDocument {
     DbDocument::new(value)
+}
+
+fn mongo_command_error(code: i32, code_name: &str) -> MongoError {
+    let command_error: CommandError = serde_json::from_value(json!({
+        "code": code,
+        "codeName": code_name,
+        "errmsg": format!("Mongo command error {code_name}"),
+    }))
+    .expect("mongodb CommandError should deserialize");
+    MongoErrorKind::Command(command_error).into()
+}
+
+fn mongo_write_error(code: i32, code_name: &str) -> WriteError {
+    serde_json::from_value(json!({
+        "code": code,
+        "codeName": code_name,
+        "errmsg": format!("Mongo write error {code_name}"),
+    }))
+    .expect("mongodb WriteError should deserialize")
+}
+
+fn mongo_write_concern_error(code: i32, code_name: &str) -> WriteConcernError {
+    serde_json::from_value(json!({
+        "code": code,
+        "codeName": code_name,
+        "errmsg": format!("Mongo write concern error {code_name}"),
+        "errInfo": null,
+    }))
+    .expect("mongodb WriteConcernError should deserialize")
 }
 
 fn db_metadata(mut value: Value) -> Vec<DbMetadataIr> {
@@ -183,6 +218,49 @@ fn service_db_error_wire_payload_preserves_lease_lost_shape() {
     assert_eq!(payload.message, "db lease Session.owner was lost");
     assert_eq!(payload.status, None);
     assert_eq!(payload.details, None);
+}
+
+#[test]
+fn service_db_write_conflict_is_a_sanitized_catchable_db_error() {
+    let error = ServiceDbError::Mongo(mongo_command_error(112, "WriteConflict"));
+    let payload = error.payload();
+
+    assert_eq!(payload.code, "std.db.ConflictError");
+    assert_eq!(
+        payload.message,
+        "database conflict; retry only at an explicit side-effect-safe boundary"
+    );
+    assert_eq!(
+        payload.details,
+        Some(json!({
+            "target": "std.db",
+            "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+            "retryable": true,
+        }))
+    );
+    assert!(!payload.message.contains("Mongo"));
+    assert_eq!(
+        WirePayload::catch_projection(&error),
+        Some((
+            skiff_runtime_model::error::TypeIdentity::builtin("std.db.ConflictError"),
+            json!({
+                "target": "std.db",
+                "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                "retryable": true,
+            }),
+        ))
+    );
+}
+
+#[test]
+fn service_db_non_conflict_mongo_error_keeps_platform_error_behavior() {
+    let error = ServiceDbError::Mongo(mongo_command_error(113, "ConflictingOperationInProgress"));
+    let payload = error.payload();
+
+    assert_eq!(payload.code, "PlatformMongoError");
+    assert!(payload.message.contains("Error code 113"));
+    assert_eq!(payload.details, None);
+    assert_eq!(WirePayload::catch_projection(&error), None);
 }
 
 #[test]
@@ -2411,6 +2489,70 @@ fn duplicate_key_error_detection_uses_mongo_write_error_code() {
     let error: MongoError = MongoErrorKind::Write(WriteFailure::WriteError(write_error)).into();
 
     assert!(is_mongo_duplicate_key_error(&error));
+}
+
+#[test]
+fn write_conflict_code_detection_is_exact() {
+    assert!(is_mongo_write_conflict_code(112));
+    assert!(!is_mongo_write_conflict_code(111));
+    assert!(!is_mongo_write_conflict_code(113));
+    assert!(!is_mongo_write_conflict_code(11000));
+}
+
+#[test]
+fn write_conflict_error_detection_covers_write_command_variants() {
+    let command = mongo_command_error(112, "WriteConflict");
+    let write_error: MongoError = MongoErrorKind::Write(WriteFailure::WriteError(
+        mongo_write_error(112, "WriteConflict"),
+    ))
+    .into();
+    let write_concern: MongoError = MongoErrorKind::Write(WriteFailure::WriteConcernError(
+        mongo_write_concern_error(112, "WriteConflict"),
+    ))
+    .into();
+    let insert_many: InsertManyError = serde_json::from_value(json!({
+        "writeErrors": [{
+            "index": 0,
+            "code": 112,
+            "codeName": "WriteConflict",
+            "errmsg": "write conflict"
+        }],
+        "writeConcernError": null
+    }))
+    .expect("mongodb InsertManyError should deserialize");
+    let insert_many: MongoError = MongoErrorKind::InsertMany(insert_many).into();
+    let mut bulk_write = BulkWriteError::default();
+    bulk_write
+        .write_errors
+        .insert(0, mongo_write_error(112, "WriteConflict"));
+    bulk_write
+        .write_concern_errors
+        .push(mongo_write_concern_error(112, "WriteConflict"));
+    let bulk_write: MongoError = MongoErrorKind::BulkWrite(bulk_write).into();
+
+    for error in [command, write_error, write_concern, insert_many, bulk_write] {
+        assert!(is_mongo_write_conflict_error(&error), "{error}");
+    }
+    assert!(!is_mongo_write_conflict_error(&mongo_command_error(
+        113,
+        "ConflictingOperationInProgress"
+    )));
+    assert!(is_mongo_db_conflict_error(&mongo_command_error(
+        112,
+        "WriteConflict"
+    )));
+}
+
+#[test]
+fn db_conflict_classification_accepts_code_or_transient_transaction_label() {
+    assert!(mongo_db_conflict_markers_match(true, |_| false));
+    assert!(mongo_db_conflict_markers_match(false, |label| {
+        label == TRANSIENT_TRANSACTION_ERROR
+    }));
+    assert!(!mongo_db_conflict_markers_match(false, |label| {
+        label == UNKNOWN_TRANSACTION_COMMIT_RESULT
+    }));
+    assert!(!mongo_db_conflict_markers_match(false, |_| false));
 }
 
 #[test]

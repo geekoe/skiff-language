@@ -243,7 +243,10 @@ const result = db transaction value {
 - 读取结果仍是 readonly snapshot。
 - 所有持久写入必须显式使用 DB operation。
 - 嵌套 transaction 当前不支持。
-- transaction 冲突不自动重试。
+- transaction 冲突不自动重试。数据库写冲突或 transient transaction conflict 会归一为可捕获的
+  `std.db.ConflictError { target: "std.db", message: string, retryable: true }`；错误消息是稳定、
+  脱敏的 DB 冲突说明，不包含 Mongo 原始详情。调用方只应在确认整个重试边界不包含外部副作用时
+  显式重试。
 
 transaction 内不应执行外部副作用或长时间工作，例如 HTTP、LLM、service call、actor call、`spawn` 或 `db claim`。actor routing、spawn 提交和外部副作用不随 DB rollback 回滚。
 

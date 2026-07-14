@@ -2,3 +2,9 @@ type DecodeError implements ErrorPayload {
   target: string,
   message: string,
 }
+
+type ConflictError implements ErrorPayload {
+  target: string,
+  message: string,
+  retryable: boolean,
+}

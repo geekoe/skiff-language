@@ -58,6 +58,16 @@ mod tests {
     use serde_json::json;
     use skiff_runtime_eval::error::TypeIdentity;
 
+    fn mongo_write_conflict() -> mongodb::error::Error {
+        let command_error: mongodb::error::CommandError = serde_json::from_value(json!({
+            "code": 112,
+            "codeName": "WriteConflict",
+            "errmsg": "raw Mongo conflict detail must not escape",
+        }))
+        .expect("mongodb CommandError should deserialize");
+        mongodb::error::ErrorKind::Command(command_error).into()
+    }
+
     #[test]
     fn diagnosed_root_error_replays_eval_diagnostic_wrappers() {
         let source_frame = json!({
@@ -157,6 +167,35 @@ mod tests {
             Some((
                 TypeIdentity::builtin("std.file.FileError"),
                 json!({ "message": "std.file not found" }),
+            ))
+        );
+    }
+
+    #[test]
+    fn service_db_conflict_enters_eval_as_sanitized_catchable_opaque() {
+        let root_error = root_error::RuntimeError::Opaque(Box::new(
+            skiff_runtime_service_db::ServiceDbError::Mongo(mongo_write_conflict()),
+        ));
+
+        let eval_error = root_error_into_eval(root_error);
+
+        assert!(matches!(eval_error, RuntimeError::Opaque(_)));
+        let payload = eval_error.payload();
+        assert_eq!(payload.code, "std.db.ConflictError");
+        assert_eq!(
+            payload.message,
+            "database conflict; retry only at an explicit side-effect-safe boundary"
+        );
+        assert!(!payload.message.contains("raw Mongo"));
+        assert_eq!(
+            WirePayload::catch_projection(&eval_error),
+            Some((
+                TypeIdentity::builtin("std.db.ConflictError"),
+                json!({
+                    "target": "std.db",
+                    "message": "database conflict; retry only at an explicit side-effect-safe boundary",
+                    "retryable": true,
+                }),
             ))
         );
     }

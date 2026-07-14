@@ -42,9 +42,11 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 
 标准平台错误都是名义 record，并显式 `implements ErrorPayload`。它们可被 `catch<E>` 捕获，前提是错误发生在用户代码已经进入当前 Skiff request 后，或由用户代码发起的 std API / service call 产生。
 
-当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
+当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、`std.db.ConflictError`、`std.file.FileError`、`std.number.DecodeError`、`std.time.DecodeError`、`config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、`std.http.HttpError`、`CancelError` 和 `TimeoutError`。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
+
+`std.db.ConflictError` 表示可重试的数据库写冲突或 transient transaction conflict。runtime 不会自动重放 transaction；调用方只应在确认整个重试边界不含外部副作用且具备幂等性时显式重试。该错误只暴露稳定、脱敏的 `target`、`message` 和 `retryable` 字段。
 
 provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 provider runtime 不可用。
 

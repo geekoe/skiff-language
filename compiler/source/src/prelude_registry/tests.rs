@@ -81,6 +81,7 @@ fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
     for name in [
         "config.DecodeError",
         "std.bytes.DecodeError",
+        "std.db.ConflictError",
         "std.db.DecodeError",
         "std.json.DecodeError",
         "std.number.DecodeError",
