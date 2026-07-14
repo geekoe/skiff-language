@@ -5,8 +5,9 @@ CLI 的内部编排契约，不改变 `test` 语法、测试发现或 effect pol
 
 ## Ownership Boundary
 
-普通 `skiff test` 不借用开发者常驻的 router、runtime、artifact root 或 build root。CLI 为
-每次命令拥有一套临时 instance：
+普通 `skiff test` 和 Cargo workspace 中的 test-runner runtime integration harness 都不借用
+开发者常驻的 router、runtime、artifact root 或 build root。Node host orchestrator 为每次 CLI
+命令或每次 Cargo harness 拥有一套临时 instance：
 
 - router HTTP/control 使用 `46000`–`46999` 内租约保护的动态端口；
 - artifact、build、runtime home、pid、log 和 config 都位于同一个临时 workspace；
@@ -22,10 +23,17 @@ bootstrap service 的 runtime registration。health 200 本身不代表 runtime 
 
 ## Runner Contract
 
-CLI 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
+Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
 `SKIFF_DEV_HOME`。非 live runtime path 在任何 health/reload 网络请求前验证前两个值同时
 存在；缺任一都 fail closed，不能 fallback 到 `127.0.0.1:4001` 或 health 返回的常驻 root。
-live mode 保留显式 harness 和原有 fallback。
+真正的 live fixture 仍使用显式 live selector，不属于 Cargo workspace 默认测试。
+
+`skiff-test-runner` 的 runtime integration targets 是 feature-gated inner workers。默认 Cargo
+只运行一个 `harness = false` wrapper；wrapper 在 Unix 上 `exec` 为 Node host，Node host 一次
+启动临时 instance，再在隔离环境中用 `--no-fail-fast` 嵌套执行全部 worker。inner marker 和
+Cargo target selection 必须阻止 wrapper 递归。filter、`--list`、`--nocapture` 等外层 test
+harness 参数必须透传给 inner workers。worker 不能被 `#[ignore]`、stable fallback 或外层默认
+target 重复执行来规避隔离。
 
 `--service-artifact-root` 始终是只读输入。非 live runner 把输入 root 的全部 service
 pointers 和所需 artifact 复制进临时 root，使 direct dependency 的 transitive runtime
@@ -34,10 +42,10 @@ closure 可用；它仍校验 publication 声明的 direct service IDs 确实存
 
 ## Lifecycle And Recovery
 
-父 CLI 持有 supervisor，并对正常返回、测试失败、startup 失败、`SIGINT` 和 `SIGTERM`
-执行同一 cleanup：
+父 Node host（CLI 或 Cargo harness）持有 supervisor，并对正常返回、测试失败、startup
+失败、`SIGINT` 和 `SIGTERM` 执行同一 cleanup：
 
-CLI 启动的 bootstrap dev-sync 和 cargo test 命令各自拥有独立进程组。中断时必须先向整组
+Node host 启动的 bootstrap dev-sync 和 cargo test 命令各自拥有独立进程组。中断时必须先向整组
 发送终止信号并等待组内后代全部退出，超时则强制终止；命令仍存活时不能开始清理临时
 artifact、build 或 runtime stack。Node child 的 abort/error 事件不等于进程已经退出。
 

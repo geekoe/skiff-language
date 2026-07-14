@@ -3487,6 +3487,7 @@ struct ProgramTestInvocation {
     request_heap_limits: RequestHeapLimits,
     router_sender: Option<tokio::sync::mpsc::UnboundedSender<crate::host::RouterWriterMessage>>,
     outbound_requests: Arc<crate::host::OutboundRequestRegistry>,
+    actor_factory: eval_capability_adapter::TestActorCapabilityFactory,
 }
 
 impl ProgramTestInvocation {
@@ -3606,6 +3607,7 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
         request_heap_limits: RequestHeapLimits::default(),
         router_sender: None,
         outbound_requests: Arc::new(crate::host::OutboundRequestRegistry::default()),
+        actor_factory: eval_capability_adapter::TestActorCapabilityFactory::default(),
     }
 }
 
@@ -3822,7 +3824,7 @@ fn program_invocation_context<'a>(
     frame: &'a ProgramTestInvocation,
 ) -> ProgramInvocationContext<'a> {
     let execution = frame.execution_control();
-    let actor = eval_capability_adapter::actor_from_request(
+    let actor = frame.actor_factory.actor_from_request(
         &frame.runtime_id,
         &frame.service_id,
         "0.0.0-test",

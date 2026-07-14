@@ -114,6 +114,39 @@ pub(crate) fn actor_from_request<'a>(
     actor(context, owned)
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+pub struct TestActorCapabilityFactory {
+    spawn_workers: Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TestActorCapabilityFactory {
+    pub fn actor_from_request<'a>(
+        &'a self,
+        runtime_id: &'a str,
+        service_id: &'a str,
+        service_version: &'a str,
+        request: &'a RequestEnvelope,
+        operation: &'a RuntimeOperation,
+        router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
+        outbound_requests: &'a Arc<OutboundRequestRegistry>,
+        cancellation: CancellationToken,
+    ) -> eval_capabilities::ActorCapabilityContext<'a> {
+        actor_from_request(
+            runtime_id,
+            service_id,
+            service_version,
+            request,
+            operation,
+            router_sender,
+            outbound_requests,
+            &self.spawn_workers,
+            cancellation,
+        )
+    }
+}
+
 #[derive(Clone)]
 struct RuntimeEvalFactory;
 
