@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, lstat, mkdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import {
+  spawn as spawnGitBufferChild,
+  spawn as spawnGitExitChild,
+} from 'node:child_process';
 
 const SCHEMA_VERSION = 1;
 const SOURCE_KEY_PREFIX = 'skiff-source-key-v1:sha256:';
@@ -247,7 +250,8 @@ function gitText(args, cwd) {
 
 function gitBuffer(args, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    // child-process-owner: git-buffer
+    const child = spawnGitBufferChild('git', args, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -269,7 +273,8 @@ function gitBuffer(args, cwd) {
 
 function gitExitCode(args, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    // child-process-owner: git-exit-code
+    const child = spawnGitExitChild('git', args, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'ignore', 'pipe'],

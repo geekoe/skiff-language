@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
 import { relative } from 'node:path';
+
+import { runAttachedCommand } from './command-execution.mjs';
 
 export function printVerifyPlan(plan, root) {
   console.log(`selectors: ${plan.selectors.join(', ')}`);
@@ -74,22 +75,16 @@ function normalizePreflightResult(result, phaseId) {
   throw new Error(`${phaseId} executionPreflight returned an invalid result`);
 }
 
-function runPhase(phase) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(phase.command, phase.args, {
+async function runPhase(phase) {
+  try {
+    await runAttachedCommand(phase.command, phase.args, {
       cwd: phase.cwd,
       env: process.env,
-      stdio: 'inherit',
     });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${phase.id} failed with ${signal ?? code}`));
-    });
-  });
+  } catch (error) {
+    const status = error?.signal ?? error?.code ?? 'UNKNOWN';
+    throw new Error(`${phase.id} failed with ${status}`);
+  }
 }
 
 function formatCommand(phase) {

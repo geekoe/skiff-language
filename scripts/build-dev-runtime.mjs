@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
 import { readInstanceConfig } from './lib/local-instance-config.mjs';
 import { installManagedBinary } from './lib/managed-binary.mjs';
@@ -154,19 +154,5 @@ function parseCli(rawArgs) {
 }
 
 function run(command, args, cwd, env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: 'inherit',
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} ${args.join(' ')} failed with ${signal || code}`));
-    });
-  });
+  return runAttachedCommand(command, args, { cwd, env });
 }

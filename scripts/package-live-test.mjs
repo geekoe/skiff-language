@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn as spawnPackageLiveCapture } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -107,7 +107,8 @@ function runCliJson(args) {
 
 function runCli(args) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [skiffCli, ...args], {
+    // child-process-owner: package-live-capture-pending
+    const child = spawnPackageLiveCapture(process.execPath, [skiffCli, ...args], {
       cwd: workspaceRoot,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],

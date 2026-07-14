@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +9,7 @@ import {
   renderRuntimeConfig,
   renderTelemetryConfig,
 } from './lib/runtime-stack-config.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import { sourceKeyFromInputs } from './lib/source-key.mjs';
 
 const DEFAULT_REMOTE_HOME = '/root';
@@ -476,21 +476,7 @@ function rsync(source, destination, extra = [], options = { delete: true }) {
 }
 
 function run(command, commandArgs, cwd) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, {
-      cwd,
-      env: process.env,
-      stdio: 'inherit',
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} ${commandArgs.join(' ')} failed with ${signal || code}`));
-    });
-  });
+  return runAttachedCommand(command, commandArgs, { cwd, env: process.env });
 }
 
 async function isFile(file) {

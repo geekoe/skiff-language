@@ -1,4 +1,7 @@
-import { spawn } from 'node:child_process';
+import {
+  spawn as spawnIsolatedStatusCapture,
+  spawn as spawnSupervisorChild,
+} from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -87,11 +90,14 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       bootstrapDevSyncArgs({ skiffRoot, artifactRoot, buildRoot }),
       { cwd: skiffRoot, env, signal },
     ),
-    spawnSupervisor: ({ configPath, env }) => spawn(
-      'node',
-      [join(skiffRoot, 'scripts', 'skiff-instance.mjs'), 'supervise', configPath],
-      { cwd: skiffRoot, env, stdio: 'inherit' },
-    ),
+    spawnSupervisor: ({ configPath, env }) => {
+      // child-process-owner: isolated-supervisor
+      return spawnSupervisorChild(
+        'node',
+        [join(skiffRoot, 'scripts', 'skiff-instance.mjs'), 'supervise', configPath],
+        { cwd: skiffRoot, env, stdio: 'inherit' },
+      );
+    },
     waitReady: waitForIsolatedRuntime,
     stopSupervisor,
     stopOwnedInstance: (configPath) => runOwnedCommand(
@@ -197,7 +203,11 @@ function childExit(child) {
 
 function runCommandCapture(command, args, options) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    // child-process-owner: isolated-status-capture-pending
+    const child = spawnIsolatedStatusCapture(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');

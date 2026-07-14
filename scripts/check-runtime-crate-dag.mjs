@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { spawn as spawnRuntimeDagCapture } from 'node:child_process';
 import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -472,7 +472,8 @@ async function cargoMetadata() {
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    // child-process-owner: runtime-dag-capture-pending
+    const child = spawnRuntimeDagCapture(command, args, {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

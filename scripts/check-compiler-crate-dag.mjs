@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { spawn as spawnCompilerDagCapture } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -386,7 +386,8 @@ function printUsage() {
 
 function readCargoMetadata() {
   return new Promise((resolve, reject) => {
-    const child = spawn('cargo', ['metadata', '--format-version', '1'], {
+    // child-process-owner: compiler-dag-capture-pending
+    const child = spawnCompilerDagCapture('cargo', ['metadata', '--format-version', '1'], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

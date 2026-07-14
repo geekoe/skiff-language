@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -9,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
 import { readProjectPackageDirs } from './lib/project-config.mjs';
@@ -1556,21 +1556,7 @@ function printUsage() {
 }
 
 function run(command, runArgs, cwd, env = process.env) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, runArgs, {
-      cwd,
-      env,
-      stdio: 'inherit',
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`${command} exited with ${signal ?? code}`));
-    });
-  });
+  return runAttachedCommand(command, runArgs, { cwd, env });
 }
 
 async function writeStagedFile(targetPath, contents) {

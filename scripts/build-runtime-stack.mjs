@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { spawn as spawnBuildStackCapture } from 'node:child_process';
 import { chmod, copyFile, mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import {
   writeJsonAtomic,
 } from './lib/source-key.mjs';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 
 const DEFAULT_TARGET = 'x86_64-unknown-linux-gnu';
 const DEFAULT_ZIG_DIR = path.join(os.homedir(), '.cache/skiff-tools/zig-aarch64-macos-0.15.2');
@@ -278,21 +279,7 @@ async function runPhase(phase) {
 }
 
 function run(command, commandArgs, cwd, env = process.env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, {
-      cwd,
-      env,
-      stdio: 'inherit',
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} ${commandArgs.join(' ')} failed with ${signal || code}`));
-    });
-  });
+  return runAttachedCommand(command, commandArgs, { cwd, env });
 }
 
 async function selectedBuildUnits(rawOnly) {
@@ -332,7 +319,8 @@ async function currentCommit() {
 
 function capture(command, commandArgs, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, {
+    // child-process-owner: build-stack-capture-pending
+    const child = spawnBuildStackCapture(command, commandArgs, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],

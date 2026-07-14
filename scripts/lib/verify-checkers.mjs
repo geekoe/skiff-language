@@ -6,6 +6,9 @@ export const CHECKER_CLASSIFICATIONS = Object.freeze({
 });
 
 export const CHECKER_REGISTRY = Object.freeze([
+  checker('scripts/check-command-execution-policy.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
+    invocations: [invocation('checks:command-execution-policy', 'checks')],
+  }),
   checker('scripts/check-compiler-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:compiler-boundaries', 'compiler-boundaries')],
   }),

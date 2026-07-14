@@ -955,6 +955,43 @@ test('runner is fail-fast after the first failed phase', async () => {
   }
 });
 
+test('missing phase executable keeps phase identity and stops later commands', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-missing-command-'));
+  const marker = join(fixture, 'later-phase-ran');
+  try {
+    const plan = {
+      selectors: ['test'],
+      phases: [
+        {
+          id: 'missing-executable-phase',
+          kind: 'test',
+          command: `skiff-missing-executable-${process.pid}`,
+          args: ['safe-test-arg'],
+          cwd: fixture,
+        },
+        {
+          id: 'later-must-not-run',
+          kind: 'test',
+          command: process.execPath,
+          args: [
+            '--eval',
+            'require("node:fs").writeFileSync(process.argv[1], "ran")',
+            marker,
+          ],
+          cwd: fixture,
+        },
+      ],
+    };
+    await assert.rejects(
+      runVerifyPlan(plan, fixture),
+      /missing-executable-phase failed with ENOENT/,
+    );
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 test('package arguments cannot extend pnpm test beyond the node selector', async () => {
   const result = await runProcess(
     'pnpm',
@@ -1020,6 +1057,17 @@ test('every checker is classified once; compiler boundaries are default and live
   assert.equal(
     defaultPlan.phases.filter((phase) =>
       phase.args.includes('--all-configured')).length,
+    1,
+  );
+  assert.equal(
+    defaultPlan.phases.filter((phase) =>
+      phase.args.includes('scripts/check-command-execution-policy.mjs')).length,
+    1,
+  );
+  const nodePlan = await buildVerifyPlan({ root, selectors: ['node'] });
+  assert.equal(
+    nodePlan.phases.filter((phase) =>
+      phase.id === 'scripts:test:scripts/tests/command-execution-policy.test.mjs').length,
     1,
   );
   assert.equal(defaultPlan.phases.some((phase) => phase.id.startsWith('live:')), false);

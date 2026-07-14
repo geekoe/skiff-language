@@ -1,5 +1,12 @@
-import { spawn } from 'node:child_process';
+import { spawn as spawnOwnedChild } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+
+import { childCompletion } from './command-execution.mjs';
+import {
+  commandExecutionError,
+  safeErrorClone,
+  safeSpawnFailure,
+} from './command-execution-internal.mjs';
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 
@@ -10,14 +17,26 @@ export async function runOwnedCommand(command, args, {
   stdio = 'inherit',
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
 } = {}) {
-  signal?.throwIfAborted();
+  if (signal?.aborted) {
+    throw safeInterruption(command, signal.reason);
+  }
   const ownsProcessGroup = process.platform !== 'win32';
-  const child = spawn(command, args, {
-    cwd,
-    env,
-    stdio,
-    detached: ownsProcessGroup,
-  });
+  let child;
+  try {
+    // child-process-owner: owned-process-group
+    child = spawnOwnedChild(command, args, {
+      cwd,
+      env,
+      stdio,
+      detached: ownsProcessGroup,
+    });
+  } catch (error) {
+    throw commandExecutionError(command, {
+      code: null,
+      signal: null,
+      error: safeSpawnFailure(command, error),
+    });
+  }
   const completion = childCompletion(child);
   let termination;
   const abort = () => {
@@ -38,35 +57,24 @@ export async function runOwnedCommand(command, args, {
     signal?.removeEventListener('abort', abort);
   }
   if (termination !== undefined) {
-    const interruption = signal?.reason ?? new Error(`${command} interrupted`);
+    const interruption = safeInterruption(command, signal?.reason);
     try {
       await termination;
     } catch (terminationError) {
-      throw new Error(
-        `${errorMessage(interruption)}; owned command cleanup failed: ${errorMessage(terminationError)}`,
-        { cause: new AggregateError([interruption, terminationError]) },
+      const cleanupError = safeErrorClone(
+        terminationError,
+        'owned command cleanup failed',
+      );
+      throw new AggregateError(
+        [interruption, cleanupError],
+        `${interruption.message}; owned command cleanup failed: ${cleanupError.message}`,
       );
     }
     throw interruption;
   }
-  if (outcome.error !== undefined) {
-    throw outcome.error;
+  if (outcome.error !== null || outcome.signal !== null || outcome.code !== 0) {
+    throw commandExecutionError(command, outcome);
   }
-  if (outcome.code !== 0) {
-    throw new Error(`${command} ${args.join(' ')} exited with ${outcome.signal ?? outcome.code}`);
-  }
-}
-
-function childCompletion(child) {
-  return new Promise((resolvePromise) => {
-    let spawnError;
-    child.once('error', (error) => {
-      spawnError = error;
-    });
-    child.once('close', (code, signal) => {
-      resolvePromise({ code, signal, error: spawnError });
-    });
-  });
 }
 
 async function terminateOwnedChild(child, { ownsProcessGroup, stopTimeoutMs }) {
@@ -125,6 +133,6 @@ function ownedChildAlive(child, ownsProcessGroup) {
   }
 }
 
-function errorMessage(error) {
-  return error?.message || String(error);
+function safeInterruption(command, reason) {
+  return safeErrorClone(reason, `${command} interrupted`);
 }

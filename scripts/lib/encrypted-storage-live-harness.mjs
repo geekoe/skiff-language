@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn as spawnMongoshCapture } from 'node:child_process';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import {
   chmod,
@@ -14,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { assertPortsClosed, leaseLocalPorts } from './local-port-lease.mjs';
+import { runAttachedCommand } from './command-execution.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(scriptDir, '..', '..');
@@ -559,22 +560,16 @@ function instanceConfigText(paths, ports) {
 }
 
 function runCommand(command, args, options) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { ...options, stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with ${signal ?? code}`));
-      }
-    });
-  });
+  return runAttachedCommand(command, args, options);
 }
 
 function runCommandCapture(command, args, options) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    // child-process-owner: mongosh-capture-pending
+    const child = spawnMongoshCapture(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');

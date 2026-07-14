@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import {
+  spawn as spawnBrowserChild,
+  spawn as spawnCredentialCapture,
+} from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -8,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import { parseRuntimeReloadUrl } from './lib/runtime-reload-url.mjs';
 import {
   devSyncCheckFlags,
@@ -1694,7 +1698,10 @@ async function deleteMacOSKeychainServiceToken(service, account) {
 
 function spawnCapture(command, args) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // child-process-owner: credential-capture-pending
+    const child = spawnCredentialCapture(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => {
@@ -1719,7 +1726,8 @@ async function openBrowser(url) {
       ? 'cmd'
       : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-  const child = spawn(command, args, {
+  // child-process-owner: browser-unref
+  const child = spawnBrowserChild(command, args, {
     detached: true,
     stdio: 'ignore',
   });
@@ -2587,21 +2595,7 @@ function requireNext(args, index, optionName) {
 }
 
 function run(command, args, cwd) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: 'inherit',
-      env: process.env,
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`${command} exited with ${signal ?? code}`));
-    });
-  });
+  return runAttachedCommand(command, args, { cwd, env: process.env });
 }
 
 function formatError(error) {

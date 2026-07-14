@@ -2,7 +2,7 @@
 
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn as spawnRustdocChild } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -505,7 +505,8 @@ async function assertReadable(path) {
 
 async function runCommand(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    // child-process-owner: rustdoc-timeout
+    const child = spawnRustdocChild(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],

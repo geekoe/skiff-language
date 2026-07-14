@@ -1,13 +1,13 @@
-import { execFile } from 'node:child_process';
+import {
+  execFile as execLoopRiskCpuSample,
+  execFile as execLoopRiskPgrep,
+} from 'node:child_process';
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { pollLoopRiskHealth } from './loop-risk-health.mjs';
-
-const execFileAsync = promisify(execFile);
 
 export async function loadRouterWebSocket(cliUrl) {
   const scriptDir = dirname(fileURLToPath(cliUrl));
@@ -34,7 +34,7 @@ export function createNodeLoopRiskStressAdapters(WebSocket, {
       }
     },
     async readCpu(pid) {
-      const { stdout } = await execFileAsync('ps', ['-o', '%cpu=', '-p', String(pid)]);
+      const { stdout } = await readProcessCpu(pid);
       const value = Number(stdout.trim());
       if (!Number.isFinite(value) || stdout.trim().length === 0) {
         throw new Error(`ps returned no valid CPU sample for runtime PID ${pid}`);
@@ -56,7 +56,7 @@ export async function resolveRuntimePidsFromPgrep(explicitPids, runtimePgrep) {
     return explicitPids;
   }
   try {
-    const { stdout } = await execFileAsync('pgrep', ['-f', runtimePgrep]);
+    const { stdout } = await findRuntimePids(runtimePgrep);
     const pids = stdout
       .split(/\s+/)
       .filter(Boolean)
@@ -74,4 +74,40 @@ export async function resolveRuntimePidsFromPgrep(explicitPids, runtimePgrep) {
     }
   }
   throw new Error('no runtime pid found for explicit --runtime-pgrep');
+}
+
+function readProcessCpu(pid) {
+  return new Promise((resolvePromise, reject) => {
+    // child-process-owner: loop-risk-cpu-sample
+    execLoopRiskCpuSample(
+      'ps',
+      ['-o', '%cpu=', '-p', String(pid)],
+      { encoding: 'utf8' },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolvePromise({ stdout, stderr });
+      },
+    );
+  });
+}
+
+function findRuntimePids(pattern) {
+  return new Promise((resolvePromise, reject) => {
+    // child-process-owner: loop-risk-pgrep
+    execLoopRiskPgrep(
+      'pgrep',
+      ['-f', pattern],
+      { encoding: 'utf8' },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolvePromise({ stdout, stderr });
+      },
+    );
+  });
 }

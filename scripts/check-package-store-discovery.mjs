@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import {
+  spawn as spawnPackageStoreCommand,
+  spawn as spawnPackageStoreExpectedFailure,
+  spawn as spawnPackageStoreSkiff,
+} from 'node:child_process';
 import { createServer } from 'node:http';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -431,7 +435,8 @@ async function assertFileExists(path) {
 
 function runSkiff(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [skiffCli, ...args], {
+    // child-process-owner: package-store-skiff-pending
+    const child = spawnPackageStoreSkiff(process.execPath, [skiffCli, ...args], {
       cwd: tempRoot,
       env: { ...process.env, ...rustEnv, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -501,7 +506,8 @@ function spawnSuccess(command, args) {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    // child-process-owner: package-store-command-pending
+    const child = spawnPackageStoreCommand(command, args, {
       cwd: options.cwd ?? tempRoot,
       env: { ...process.env, ...rustEnv, ...(options.extraEnv ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -523,7 +529,8 @@ function runCommand(command, args, options = {}) {
 
 function runSkiffExpectFailure(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [skiffCli, ...args], {
+    // child-process-owner: package-store-expected-failure-pending
+    const child = spawnPackageStoreExpectedFailure(process.execPath, [skiffCli, ...args], {
       cwd: tempRoot,
       env: { ...process.env, ...rustEnv, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],

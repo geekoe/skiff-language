@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn as spawnLocalCheckCapture } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,6 +13,7 @@ import {
   instanceSummary,
   readInstanceConfig,
 } from './lib/local-instance-config.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import {
   defaultDevHome,
   devRuntimePaths,
@@ -220,26 +221,13 @@ async function assertMissing(path) {
 }
 
 function run(command, args) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd: skiffRoot,
-      stdio: 'inherit',
-      env: process.env,
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`${command} exited with ${signal ?? code}`));
-    });
-  });
+  return runAttachedCommand(command, args, { cwd: skiffRoot, env: process.env });
 }
 
 function runCapture(command, args) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
+    // child-process-owner: local-check-capture-pending
+    const child = spawnLocalCheckCapture(command, args, {
       cwd: skiffRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,

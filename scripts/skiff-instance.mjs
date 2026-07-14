@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import {
+  spawn as spawnInstanceCapture,
+  spawn as spawnManagedChild,
+} from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
@@ -9,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
+import { runAttachedCommand } from './lib/command-execution.mjs';
 import {
   devSyncCheckFlags,
   instanceDevSyncOptions,
@@ -669,7 +673,8 @@ async function startManagedProcess(config, spec, options = {}) {
   await rm(pidPath(config, spec.name), { force: true });
   const out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
   const err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
-  const child = spawn(spec.command, spec.args, {
+  // child-process-owner: managed-component
+  const child = spawnManagedChild(spec.command, spec.args, {
     cwd: spec.cwd,
     env: processEnv(),
     detached: true,
@@ -1598,7 +1603,8 @@ function requireNext(args, index, optionName) {
 
 function capture(command, args, options = {}) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, {
+    // child-process-owner: instance-status-capture-pending
+    const child = spawnInstanceCapture(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1621,19 +1627,5 @@ function capture(command, args, options = {}) {
 }
 
 function run(command, args, cwd, env = process.env) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: 'inherit',
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`${command} exited with ${signal ?? code}`));
-    });
-  });
+  return runAttachedCommand(command, args, { cwd, env });
 }
