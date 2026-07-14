@@ -31,7 +31,7 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
   owner('scripts/lib/source-key.mjs', 'spawn', 'spawnGitExitChild',
     'git-exit-code', 'gitExitCode', 'binary-adapter',
     'source-key comparison preserves git exit-code semantics'),
-  owner('scripts/check-crate-public-api.mjs', 'spawn', 'spawnRustdocChild',
+  owner('scripts/lib/crate-public-api-rustdoc.mjs', 'spawn', 'spawnRustdocChild',
     'rustdoc-timeout', 'runCommand', 'timeout-owner',
     'rustdoc nightly probe owns timeout and kill behavior'),
   owner('scripts/lib/loop-risk-stress-node.mjs', 'execFile', 'execLoopRiskCpuSample',
