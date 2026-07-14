@@ -113,11 +113,11 @@ test('node selector has no top-level Cargo phase and discovers every scripts tes
   assert.ok(plan.phases.some((phase) => phase.id === 'scripts:dev-sync-fixture'));
 });
 
-test('default verify has one Rust workspace and one operation ABI check, without live phases', async () => {
+test('default verify has one Rust workspace and one artifact identity check, without live phases', async () => {
   const plan = await buildVerifyPlan({ root });
   assert.equal(plan.phases.filter((phase) => phase.id === 'rust:workspace').length, 1);
   assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:operation-abi-identity').length,
+    plan.phases.filter((phase) => phase.id === 'checks:artifact-identity').length,
     1,
   );
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
@@ -236,7 +236,7 @@ test('duplicate command executions are rejected even when phase IDs differ', () 
     id: 'first',
     kind: 'test',
     command: 'node',
-    args: ['scripts/check-operation-abi-identity-single-source.mjs'],
+    args: ['scripts/check-artifact-identity-single-source.mjs'],
     cwd: root,
   };
   assert.throws(

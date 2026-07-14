@@ -35,12 +35,12 @@ export const CHECKER_REGISTRY = Object.freeze([
     reason: 'Requires a running router health endpoint and runtime identity.',
   }),
   checker(
-    'scripts/check-operation-abi-identity-single-source.mjs',
+    'scripts/check-artifact-identity-single-source.mjs',
     CHECKER_CLASSIFICATIONS.DEFAULT,
     {
       invocations: [
-        invocation('checks:operation-abi-identity:self-test', 'checks', ['--self-test']),
-        invocation('checks:operation-abi-identity', 'checks'),
+        invocation('checks:artifact-identity:self-test', 'checks', ['--self-test']),
+        invocation('checks:artifact-identity', 'checks'),
       ],
     },
   ),

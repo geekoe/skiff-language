@@ -30,11 +30,11 @@ use skiff_artifact_model::{
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_core::naming::impl_method_declaration_name;
 use skiff_compiler_core::package_interface_methods::instantiate_interface_method_signatures;
-use skiff_compiler_core::package_publication_abi::{
+use skiff_compiler_projection_input::PublicationResourceProjectionInput;
+use skiff_compiler_publication_abi::{
     package_public_instance_method_operation, public_signature_from_interface_method_signature,
     public_signature_from_receiver_executable_signature,
 };
-use skiff_compiler_projection_input::PublicationResourceProjectionInput;
 
 #[derive(Debug, Clone)]
 pub struct PackageFileIrProjection {

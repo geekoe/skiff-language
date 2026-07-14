@@ -7,9 +7,45 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const canonicalRelPath = 'artifact-identity/src/lib.rs';
 const duplicateDefinitionRegexp =
-  /\bstruct\s+OperationAbiIdentityInput\b|\bfn\s+operation_abi_identity\s*\(/g;
+  /\bstruct\s+(?:FileIrIdentityPayload|SourceMapIdentityPayload|ServiceUnitStorageIdentityPayload|PackageBuildIdentityPayload|PublicationAbiIdentityProjection|OperationAbiIdentityInput)\b|\bfn\s+(?:canonical_file_ir_identity_bytes|service_unit_identity_bytes|publication_abi_identity_bytes|operation_abi_identity)\s*\(/g;
 
 const canonicalRequirements = [
+  {
+    name: 'FileIrIdentityPayload',
+    regexp: /\bstruct\s+FileIrIdentityPayload\b/,
+  },
+  {
+    name: 'file_ir_identity',
+    regexp: /\bpub\s+fn\s+file_ir_identity\s*\(/,
+  },
+  {
+    name: 'ServiceUnitStorageIdentityPayload',
+    regexp: /\bstruct\s+ServiceUnitStorageIdentityPayload\b/,
+  },
+  {
+    name: 'service_unit_identity',
+    regexp: /\bpub\s+fn\s+service_unit_identity\s*\(/,
+  },
+  {
+    name: 'PackageBuildIdentityPayload',
+    regexp: /\bstruct\s+PackageBuildIdentityPayload\b/,
+  },
+  {
+    name: 'package_build_identity',
+    regexp: /\bpub\s+fn\s+package_build_identity\s*\(/,
+  },
+  {
+    name: 'package_abi_identity',
+    regexp: /\bpub\s+fn\s+package_abi_identity\s*\(/,
+  },
+  {
+    name: 'PublicationAbiIdentityProjection',
+    regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
+  },
+  {
+    name: 'publication_abi_identity',
+    regexp: /\bpub\s+fn\s+publication_abi_identity\s*\(/,
+  },
   {
     name: 'OperationAbiIdentityInput',
     regexp: /\bpub\s+struct\s+OperationAbiIdentityInput\b/,
@@ -33,6 +69,51 @@ const canonicalRequirements = [
 ];
 
 const adapterRequirements = [
+  {
+    relPath: 'compiler/lowering/src/file_ir/identity.rs',
+    helper: 'File IR identity',
+    regexp: /\bskiff_artifact_identity::file_ir_identity\b/,
+  },
+  {
+    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+    helper: 'File IR identity',
+    regexp: /\bskiff_artifact_identity::file_ir_identity\b/,
+  },
+  {
+    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+    helper: 'service-unit identity',
+    regexp: /\bskiff_artifact_identity::service_unit_identity\b/,
+  },
+  {
+    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+    helper: 'package build identity',
+    regexp: /\bskiff_artifact_identity::package_build_identity\b/,
+  },
+  {
+    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+    helper: 'package ABI identity',
+    regexp: /\bskiff_artifact_identity::package_abi_identity\b/,
+  },
+  {
+    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+    helper: 'publication ABI identity',
+    regexp: /\bskiff_artifact_identity::publication_abi_identity\b/,
+  },
+  {
+    relPath: 'compiler/publication-abi/src/lib.rs',
+    helper: 'public function operation ABI identity',
+    regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
+  },
+  {
+    relPath: 'compiler/publication-abi/src/lib.rs',
+    helper: 'public instance operation ABI identity',
+    regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
+  },
+  {
+    relPath: 'compiler/emission/src/emission/identity.rs',
+    helper: 'artifact identity emission API',
+    regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,
+  },
   {
     relPath: 'compiler/driver/shared/operation_abi_identity.rs',
     helper: 'public_function_operation_abi_id',
@@ -76,18 +157,17 @@ async function runCheck() {
     }
   }
 
-  for (const requirement of adapterRequirements) {
-    const text = await readFile(join(root, requirement.relPath), 'utf8');
-    if (!requirement.regexp.test(text)) {
-      failures.push(
-        `${requirement.relPath} must delegate ${requirement.helper} to skiff_artifact_identity`,
-      );
+  const adapterTextByPath = new Map();
+  for (const { relPath } of adapterRequirements) {
+    if (!adapterTextByPath.has(relPath)) {
+      adapterTextByPath.set(relPath, await readFile(join(root, relPath), 'utf8'));
     }
   }
+  failures.push(...collectAdapterRequirementFailures(adapterRequirements, adapterTextByPath));
 
   for (const violation of collectDuplicateDefinitionViolations(files)) {
     failures.push(
-      `${violation.relPath}:${violation.line} duplicate operation ABI identity projection ${violation.matched}`,
+      `${violation.relPath}:${violation.line} duplicate artifact identity projection ${violation.matched}`,
     );
   }
 
@@ -99,7 +179,25 @@ async function runCheck() {
     return;
   }
 
-  console.log('Operation ABI identity single-source check passed.');
+  console.log('Artifact identity single-source check passed.');
+}
+
+function collectAdapterRequirementFailures(requirements, textByPath) {
+  const failures = [];
+  for (const requirement of requirements) {
+    const text = textByPath.get(requirement.relPath);
+    if (text === undefined) {
+      failures.push(`${requirement.relPath} is missing required ${requirement.helper} adapter`);
+      continue;
+    }
+    const productionText = stripInlineTestModules(text);
+    if (!requirement.regexp.test(productionText)) {
+      failures.push(
+        `${requirement.relPath} must delegate ${requirement.helper} to skiff_artifact_identity`,
+      );
+    }
+  }
+  return failures;
 }
 
 function collectDuplicateDefinitionViolations(files) {
@@ -167,16 +265,7 @@ function isProductionRustFile(relPath) {
   if (relPath.startsWith('compiler/tests/')) {
     return false;
   }
-  return (
-    relPath.startsWith('compiler/driver/')
-    || relPath.startsWith('compiler/core/src/')
-    || relPath.startsWith('compiler/source/src/')
-    || relPath.startsWith('compiler/lowering/src/')
-    || relPath.startsWith('compiler/projection-input/src/')
-    || relPath.startsWith('compiler/compiled/src/')
-    || relPath.startsWith('compiler/projection/src/')
-    || relPath.startsWith('compiler/emission/src/')
-  );
+  return relPath.startsWith('compiler/driver/') || /^compiler\/[^/]+\/src\//.test(relPath);
 }
 
 function runSelfTest() {
@@ -192,11 +281,41 @@ function runSelfTest() {
       expectedViolations: 0,
     },
     {
-      name: 'rejects compiler duplicate struct',
+      name: 'rejects compiler operation identity duplicate struct',
       files: [
         {
           relPath: 'compiler/driver/shared/operation_abi_identity.rs',
           text: 'struct OperationAbiIdentityInput;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects lowering File IR payload duplicate',
+      files: [
+        {
+          relPath: 'compiler/lowering/src/file_ir/identity.rs',
+          text: 'struct FileIrIdentityPayload;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects projection package identity payload duplicate',
+      files: [
+        {
+          relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+          text: 'struct PackageBuildIdentityPayload;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects publication ABI byte projection duplicate',
+      files: [
+        {
+          relPath: 'compiler/publication-abi/src/identity.rs',
+          text: 'fn publication_abi_identity_bytes() {}\n',
         },
       ],
       expectedViolations: 1,
@@ -243,6 +362,52 @@ function runSelfTest() {
     }
   }
 
+  const adapterFixtureRequirement = [
+    {
+      relPath: 'compiler/example/src/identity.rs',
+      helper: 'fixture identity',
+      regexp: /\bskiff_artifact_identity::file_ir_identity\b/,
+    },
+  ];
+  const testOnlyAdapterFailures = collectAdapterRequirementFailures(
+    adapterFixtureRequirement,
+    new Map([
+      [
+        'compiler/example/src/identity.rs',
+        `#[cfg(test)]
+mod tests {
+  fn parity() {
+    skiff_artifact_identity::file_ir_identity();
+  }
+}
+`,
+      ],
+    ]),
+  );
+  if (testOnlyAdapterFailures.length !== 1) {
+    failures.push(
+      `rejects test-only adapter delegation: expected 1 failure, got ${testOnlyAdapterFailures.length}`,
+    );
+  }
+
+  const productionAdapterFailures = collectAdapterRequirementFailures(
+    adapterFixtureRequirement,
+    new Map([
+      [
+        'compiler/example/src/identity.rs',
+        `fn identity() {
+  skiff_artifact_identity::file_ir_identity();
+}
+`,
+      ],
+    ]),
+  );
+  if (productionAdapterFailures.length !== 0) {
+    failures.push(
+      `allows production adapter delegation: expected 0 failures, got ${productionAdapterFailures.length}`,
+    );
+  }
+
   if (failures.length > 0) {
     for (const failure of failures) {
       console.error(`FAIL ${failure}`);
@@ -251,7 +416,7 @@ function runSelfTest() {
     return;
   }
 
-  console.log('Operation ABI identity single-source self-test passed.');
+  console.log('Artifact identity single-source self-test passed.');
 }
 
 function stripInlineTestModules(text) {
@@ -349,10 +514,10 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-  console.log(`Usage: node scripts/check-operation-abi-identity-single-source.mjs [--self-test]
+  console.log(`Usage: node scripts/check-artifact-identity-single-source.mjs [--self-test]
 
 Checks that artifact-identity/src/lib.rs is the only production owner of
-OperationAbiIdentityInput and operation_abi_identity byte projection logic.`);
+File IR, service, package, publication, and operation identity byte projections.`);
 }
 
 function normalizePath(path) {

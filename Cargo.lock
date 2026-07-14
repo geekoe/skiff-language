@@ -2161,6 +2161,7 @@ dependencies = [
  "skiff-compiler-lowering",
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
+ "skiff-compiler-publication-abi",
  "skiff-compiler-source",
  "skiff-syntax",
  "thiserror",
@@ -2186,7 +2187,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-syntax",
  "thiserror",
@@ -2214,7 +2214,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
@@ -2258,6 +2257,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection-input",
+ "skiff-compiler-publication-abi",
  "thiserror",
 ]
 
@@ -2269,6 +2269,16 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-compiler-core",
+]
+
+[[package]]
+name = "skiff-compiler-publication-abi"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skiff-artifact-identity",
+ "skiff-artifact-model",
+ "thiserror",
 ]
 
 [[package]]
@@ -2284,6 +2294,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
+ "skiff-compiler-publication-abi",
  "skiff-syntax",
  "thiserror",
 ]

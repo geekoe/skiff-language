@@ -15,6 +15,18 @@ const approvedExternalValueCrates = ['serde', 'serde_json'];
 
 const defaultConfigs = new Map([
   [
+    'skiff-compiler-publication-abi',
+    {
+      allowedCrates: [
+        'skiff-compiler-publication-abi',
+        'skiff-artifact-model',
+        ...standardCrates,
+        ...approvedExternalValueCrates,
+      ],
+      note: 'publication-abi public API exposes only self/artifact-model/std and approved value crates',
+    },
+  ],
+  [
     'skiff-compiler-input-model',
     {
       allowedCrates: [
@@ -107,11 +119,12 @@ const defaultConfigs = new Map([
         'skiff-compiler-projection',
         'skiff-compiler-core',
         'skiff-compiler-projection-input',
+        'skiff-compiler-publication-abi',
         'skiff-artifact-model',
         ...standardCrates,
         ...approvedExternalValueCrates,
       ],
-      note: 'projection public API allows only self/core/projection-input/artifact-model/std and approved value crates',
+      note: 'projection public API allows only self/core/projection-input/publication-abi/artifact-model/std and approved value crates',
     },
   ],
 ]);
@@ -172,41 +185,80 @@ async function main() {
     return;
   }
 
-  if (!options.crateName) {
+  if (!options.crateName && !options.allConfigured) {
     throw new Error('missing crate name; run with --help for usage');
   }
 
   const metadata = await cargoMetadata();
-  const packageInfo = metadata.packages.find((pkg) => pkg.name === options.crateName);
-  if (!packageInfo) {
-    console.log(
-      `SKIP public API check for ${options.crateName}: package is not present in this workspace yet.`,
-    );
+  const configuredPackages = options.allConfigured
+    ? configuredPackageInfos(metadata)
+    : explicitPackageInfo(metadata, options.crateName);
+  if (configuredPackages.length === 0) {
     return;
   }
+  const nightlyProbe = await probeCargoNightly();
+  let violationCount = 0;
+  for (const packageInfo of configuredPackages) {
+    const extraAllowedCrates = options.allConfigured ? [] : options.extraAllowedCrates;
+    violationCount += await checkPackagePublicApi({
+      metadata,
+      nightlyProbe,
+      packageInfo,
+      extraAllowedCrates,
+    });
+  }
+  if (violationCount > 0) {
+    process.exitCode = 1;
+  }
+}
 
-  const config = configForCrate(options.crateName, options.extraAllowedCrates);
-  await runRustdocJson(options.crateName);
+async function checkPackagePublicApi({
+  metadata,
+  nightlyProbe,
+  packageInfo,
+  extraAllowedCrates,
+}) {
+  const crateName = packageInfo.name;
+  const config = configForCrate(crateName, extraAllowedCrates);
+  await runRustdocJson(crateName, nightlyProbe);
 
   const rustdocPath = rustdocJsonPath(metadata, packageInfo);
   await assertReadable(rustdocPath);
   const rustdocJson = JSON.parse(await readFile(rustdocPath, 'utf8'));
   const result = checkPublicApi(rustdocJson, {
-    crateName: options.crateName,
+    crateName,
     allowedCrates: config.allowedCrates,
   });
-
-  printConfig(options.crateName, config);
+  printConfig(crateName, config);
   printResult(result);
-  if (result.violations.length > 0) {
-    process.exitCode = 1;
+  return result.violations.length;
+}
+
+function configuredPackageInfos(metadata) {
+  const packageByName = new Map(metadata.packages.map((pkg) => [pkg.name, pkg]));
+  const missing = [...defaultConfigs.keys()].filter((crateName) => !packageByName.has(crateName));
+  if (missing.length > 0) {
+    throw new Error(
+      `configured public API crate(s) missing from workspace: ${missing.join(', ')}`,
+    );
   }
+  return [...defaultConfigs.keys()].map((crateName) => packageByName.get(crateName));
+}
+
+function explicitPackageInfo(metadata, crateName) {
+  const packageInfo = metadata.packages.find((pkg) => pkg.name === crateName);
+  if (!packageInfo) {
+    console.log(`SKIP public API check for ${crateName}: package is not present in this workspace yet.`);
+    return [];
+  }
+  return [packageInfo];
 }
 
 function parseArgs(argv) {
   const options = {
     crateName: undefined,
     extraAllowedCrates: [],
+    allConfigured: false,
     help: false,
     selfTest: false,
   };
@@ -219,6 +271,13 @@ function parseArgs(argv) {
     }
     if (arg === '--self-test' || arg === '--test') {
       options.selfTest = true;
+      continue;
+    }
+    if (arg === '--all-configured') {
+      if (options.allConfigured) {
+        throw new Error('--all-configured may be specified only once');
+      }
+      options.allConfigured = true;
       continue;
     }
     if (arg === '--allow-crate' || arg === '--allow') {
@@ -260,12 +319,20 @@ function parseArgs(argv) {
     options.crateName = arg;
   }
 
+  if (options.allConfigured && options.crateName) {
+    throw new Error('--all-configured cannot be combined with an explicit crate');
+  }
+  if (options.allConfigured && options.extraAllowedCrates.length > 0) {
+    throw new Error('--all-configured cannot be combined with --allow-crate/--allow-list');
+  }
+
   return options;
 }
 
 function printUsage() {
   console.log(`Usage:
   node scripts/check-crate-public-api.mjs <crate> [--allow-crate <crate> ...]
+  node scripts/check-crate-public-api.mjs --all-configured
   node scripts/check-crate-public-api.mjs --self-test
 
 Checks exported public API types with rustdoc JSON:
@@ -273,6 +340,7 @@ Checks exported public API types with rustdoc JSON:
   RUSTC_BOOTSTRAP=1 cargo rustdoc -p <crate> --lib -- -Z unstable-options --output-format json
 
 Default gated crates:
+  skiff-compiler-publication-abi
   skiff-compiler-input-model
   skiff-compiler-input
   skiff-compiler-source
@@ -333,8 +401,7 @@ async function cargoMetadata() {
   }
 }
 
-async function runRustdocJson(crateName) {
-  const nightlyProbe = await probeCargoNightly();
+async function runRustdocJson(crateName, nightlyProbe) {
   const attempts = [];
   if (nightlyProbe.available) {
     attempts.push(rustdocJsonCommand(crateName, { nightly: true }));
@@ -1071,6 +1138,23 @@ function uniqueCrates(crates) {
 }
 
 function runSelfTest() {
+  const configuredPackages = [...defaultConfigs.keys()].map((name) => ({ name }));
+  assertEqual(
+    configuredPackageInfos({ packages: configuredPackages }).length,
+    defaultConfigs.size,
+    'all-configured fixture should include every managed crate',
+  );
+  let missingConfiguredError;
+  try {
+    configuredPackageInfos({ packages: configuredPackages.slice(1) });
+  } catch (error) {
+    missingConfiguredError = error;
+  }
+  assert(
+    missingConfiguredError?.message.includes('configured public API crate(s) missing from workspace'),
+    'all-configured must fail closed when a managed crate is absent',
+  );
+
   const config = {
     crateName: 'skiff-compiler-projection-input',
     allowedCrates: defaultConfigs.get('skiff-compiler-projection-input').allowedCrates,

@@ -1,15 +1,8 @@
-use serde::Serialize;
-use serde_json::Value;
-pub use skiff_artifact_identity::FILE_IR_IDENTITY_PREFIX;
-use skiff_artifact_model::{
-    ConstIr, ExecutableIr, ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets,
-    SourceMapSource, SourceMapSpan, TypeDeclIr,
-};
-use skiff_compiler_core::json_utils::{canonical_json_value, sha256_hex};
+use skiff_artifact_model::FileIrUnit;
 
 pub fn file_ir_identity(unit: &FileIrUnit) -> String {
-    let bytes = canonical_file_ir_identity_bytes(unit);
-    format!("{FILE_IR_IDENTITY_PREFIX}:{}", sha256_hex(&bytes))
+    skiff_artifact_identity::file_ir_identity(unit)
+        .expect("lowered File IR must serialize for canonical artifact identity")
 }
 
 pub fn assign_file_ir_identity(unit: &mut FileIrUnit) -> String {
@@ -19,112 +12,18 @@ pub fn assign_file_ir_identity(unit: &mut FileIrUnit) -> String {
 }
 
 #[cfg(test)]
-pub fn canonical_file_ir_identity_value(unit: &FileIrUnit) -> Value {
-    file_ir_identity_value(unit)
-}
-
-fn canonical_file_ir_identity_bytes(unit: &FileIrUnit) -> Vec<u8> {
-    serde_json::to_vec(&file_ir_identity_value(unit)).expect("File IR identity JSON must serialize")
-}
-
-fn file_ir_identity_value(unit: &FileIrUnit) -> Value {
-    let value = serde_json::to_value(FileIrIdentityPayload::from_unit(unit))
-        .expect("File IR identity payload must serialize to JSON value");
-    canonical_json_value(&value)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileIrIdentityPayload<'a> {
-    schema_version: &'a str,
-    module_path: &'a str,
-    ir_format_version: &'a str,
-    opcode_table_version: &'a str,
-    #[serde(skip_serializing_if = "is_zero_u32")]
-    required_receiver_builtin_capability_version: u32,
-    source_map: SourceMapIdentityPayload<'a>,
-    declarations: &'a FileDeclarations,
-    link_targets: &'a FileLinkTargets,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    type_table: &'a Vec<TypeDeclIr>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    constants: &'a Vec<ConstIr>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    executables: &'a Vec<ExecutableIr>,
-    external_refs: &'a ExternalRefTable,
-}
-
-impl<'a> FileIrIdentityPayload<'a> {
-    fn from_unit(unit: &'a FileIrUnit) -> Self {
-        Self {
-            schema_version: &unit.schema_version,
-            module_path: &unit.module_path,
-            ir_format_version: &unit.ir_format_version,
-            opcode_table_version: &unit.opcode_table_version,
-            required_receiver_builtin_capability_version: unit
-                .required_receiver_builtin_capability_version,
-            source_map: SourceMapIdentityPayload::from_unit(unit),
-            declarations: &unit.declarations,
-            link_targets: &unit.link_targets,
-            type_table: &unit.type_table,
-            constants: &unit.constants,
-            executables: &unit.executables,
-            external_refs: &unit.external_refs,
-        }
-    }
-}
-
-fn is_zero_u32(value: &u32) -> bool {
-    *value == 0
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceMapIdentityPayload<'a> {
-    format: &'a str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    sources: Vec<SourceMapSourceIdentityPayload<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    spans: &'a Vec<SourceMapSpan>,
-}
-
-impl<'a> SourceMapIdentityPayload<'a> {
-    fn from_unit(unit: &'a FileIrUnit) -> Self {
-        Self {
-            format: &unit.source_map.format,
-            sources: unit
-                .source_map
-                .sources
-                .iter()
-                .map(SourceMapSourceIdentityPayload::from_source)
-                .collect(),
-            spans: &unit.source_map.spans,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceMapSourceIdentityPayload<'a> {
-    id: u64,
-    path: &'a str,
-    module_path: &'a str,
-}
-
-impl<'a> SourceMapSourceIdentityPayload<'a> {
-    fn from_source(source: &'a SourceMapSource) -> Self {
-        Self {
-            id: source.id,
-            path: &source.path,
-            module_path: &source.module_path,
-        }
-    }
+pub fn canonical_file_ir_identity_value(unit: &FileIrUnit) -> serde_json::Value {
+    skiff_artifact_identity::canonical_file_ir_identity_value(unit)
+        .expect("lowered File IR must serialize for canonical artifact identity")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_file_ir_identity_value;
-    use crate::file_ir::{FileIrUnit, SourceMapSource};
+    use super::{canonical_file_ir_identity_value, file_ir_identity};
+    use crate::file_ir::{
+        ConstIr, ExecutableBody, FileIrUnit, SourceMapSource, TypeDeclIr, TypeDescriptorIr,
+        TypeRefIr,
+    };
 
     #[test]
     fn identity_payload_omits_excluded_fields_by_type() {
@@ -148,6 +47,43 @@ mod tests {
         assert_eq!(
             value.pointer("/sourceMap/sources/0/path"),
             Some(&serde_json::json!("internal/example.skiff"))
+        );
+    }
+
+    #[test]
+    fn nontrivial_file_ir_identity_matches_canonical_owner_and_golden() {
+        let mut unit = FileIrUnit::empty("internal.identity_golden", "source-ast-hash");
+        unit.source_map.sources.push(SourceMapSource {
+            id: 7,
+            path: "internal/identity_golden.skiff".to_string(),
+            module_path: "internal.identity_golden".to_string(),
+            source_ast_hash: Some("excluded-source-map-hash".to_string()),
+        });
+        unit.type_table.push(TypeDeclIr {
+            name: "Payload".to_string(),
+            descriptor: TypeDescriptorIr::Alias {
+                target: TypeRefIr::native("string"),
+            },
+            type_params: Vec::new(),
+            discriminator: None,
+            implements: Vec::new(),
+            source_span: None,
+        });
+        unit.constants.push(ConstIr {
+            name: "greeting".to_string(),
+            ty: TypeRefIr::native("string"),
+            body: ExecutableBody::default(),
+            source_span: None,
+        });
+
+        let adapter_identity = file_ir_identity(&unit);
+        let canonical_identity =
+            skiff_artifact_identity::file_ir_identity(&unit).expect("canonical File IR identity");
+
+        assert_eq!(adapter_identity, canonical_identity);
+        assert_eq!(
+            adapter_identity,
+            "skiff-file-ir-v3:sha256:1a8f6d0038d29e3ed9eb3bbb76540ef7ee6ca1c3b69c77e281be8dd10dafb5f9"
         );
     }
 }

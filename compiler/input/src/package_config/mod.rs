@@ -25,7 +25,6 @@ mod manifest_validation;
 mod transitive_dependencies;
 
 pub const PACKAGE_CONFIG_FILE: &str = "package.yml";
-pub use skiff_artifact_identity::PACKAGE_ASSEMBLY_IDENTITY_PREFIX;
 pub const PACKAGE_SEARCH_DIR: &str = ".skiff-packages";
 
 pub use export_resolver::PackageExportResolver;

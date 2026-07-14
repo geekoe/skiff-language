@@ -11,6 +11,7 @@ const artifactPackages = ['skiff-artifact-model', 'skiff-artifact-identity'];
 const compilerSubCrates = [
   'skiff-syntax',
   'skiff-compiler-core',
+  'skiff-compiler-publication-abi',
   'skiff-compiler-input-model',
   'skiff-compiler-input',
   'skiff-compiler-source',
@@ -26,12 +27,16 @@ const targetPackageNames = [
   facadePackage,
 ];
 
-// skiff-artifact-identity owns shared identity prefixes/projections used by compiler stages.
+// skiff-artifact-identity owns shared identity bytes; publication-abi owns neutral ABI assembly.
 const finalProductionEdges = new Map([
   ['skiff-artifact-model', []],
   ['skiff-artifact-identity', ['skiff-artifact-model']],
   ['skiff-syntax', []],
-  ['skiff-compiler-core', ['skiff-syntax', 'skiff-artifact-model', 'skiff-artifact-identity']],
+  ['skiff-compiler-core', ['skiff-syntax', 'skiff-artifact-model']],
+  [
+    'skiff-compiler-publication-abi',
+    ['skiff-artifact-model', 'skiff-artifact-identity'],
+  ],
   ['skiff-compiler-input-model', ['skiff-syntax', 'skiff-compiler-core', 'skiff-artifact-model']],
   [
     'skiff-compiler-input',
@@ -40,7 +45,6 @@ const finalProductionEdges = new Map([
       'skiff-compiler-core',
       'skiff-compiler-input-model',
       'skiff-artifact-model',
-      'skiff-artifact-identity',
     ],
   ],
   [
@@ -49,6 +53,7 @@ const finalProductionEdges = new Map([
       'skiff-syntax',
       'skiff-compiler-core',
       'skiff-compiler-input-model',
+      'skiff-compiler-publication-abi',
       'skiff-artifact-model',
       'skiff-artifact-identity',
     ],
@@ -79,6 +84,7 @@ const finalProductionEdges = new Map([
     [
       'skiff-compiler-core',
       'skiff-compiler-projection-input',
+      'skiff-compiler-publication-abi',
       'skiff-artifact-model',
       'skiff-artifact-identity',
     ],
@@ -541,6 +547,89 @@ function runSelfTests() {
         const result = checkCompilerCrateDag(metadata);
         assertFail(result, 'sub-crate dependency back on facade must fail');
         assertIncludes(result.failures.join('\n'), 'skiff-compiler-core has disallowed normal dependency on skiff-compiler');
+      },
+    },
+    {
+      name: 'compiler core cannot depend on artifact identity owner',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: ['skiff-compiler-core', 'skiff-artifact-identity'],
+          edges: [
+            {
+              package: 'skiff-compiler-core',
+              dependency: 'skiff-artifact-identity',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'compiler core must stay below the artifact identity owner');
+        assertIncludes(
+          result.failures.join('\n'),
+          'skiff-compiler-core has disallowed normal dependency on skiff-artifact-identity',
+        );
+      },
+    },
+    {
+      name: 'publication ABI cannot depend on core or compiler stages',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [
+            'skiff-compiler-publication-abi',
+            'skiff-compiler-core',
+            'skiff-compiler-source',
+          ],
+          edges: [
+            {
+              package: 'skiff-compiler-publication-abi',
+              dependency: 'skiff-compiler-core',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-publication-abi',
+              dependency: 'skiff-compiler-source',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'publication ABI must stay stage neutral');
+        assertIncludes(
+          result.failures.join('\n'),
+          'skiff-compiler-publication-abi has disallowed normal dependency on skiff-compiler-core',
+        );
+        assertIncludes(
+          result.failures.join('\n'),
+          'skiff-compiler-publication-abi has disallowed normal dependency on skiff-compiler-source',
+        );
+      },
+    },
+    {
+      name: 'source and projection may depend on publication ABI',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [
+            'skiff-compiler-source',
+            'skiff-compiler-projection',
+            'skiff-compiler-publication-abi',
+          ],
+          edges: [
+            {
+              package: 'skiff-compiler-source',
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-projection',
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        assertPass(
+          checkCompilerCrateDag(metadata),
+          'source and projection should consume neutral publication ABI assembly',
+        );
       },
     },
   ];

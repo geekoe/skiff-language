@@ -7,9 +7,9 @@ use crate::service::dependency_abi::{
 };
 use crate::service::service_unit::ensure_service_operation_adapters;
 use crate::source_map::{publication_source_map_from_file_ir_units, PublicationSourceMap};
+use crate::typed_artifacts::assign_file_ir_identity;
 use crate::typed_artifacts::ServiceDependencyConstraint;
 use skiff_artifact_model::FileIrUnit;
-use skiff_compiler_core::file_ir_identity::assign_file_ir_identity;
 
 pub struct ServiceFileIrPreparationInput<'a> {
     pub file_ir_units: &'a [FileIrUnit],

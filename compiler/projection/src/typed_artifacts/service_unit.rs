@@ -4,7 +4,6 @@ use crate::error::{CompileError, Result};
 use crate::publication_visible_types::{
     projection_visible_executable_signature, publication_type_names_from_file_units,
 };
-use skiff_compiler_core::file_ir_identity::file_ir_identity;
 
 pub use skiff_artifact_model::service_unit::{PublicInstanceExport, PublicInstanceOperation};
 #[allow(unused_imports)]
@@ -19,7 +18,7 @@ pub use skiff_artifact_model::{
     ServiceSymbolRef, ServiceUnit, TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
 };
 
-use super::identity::assign_publication_abi_identity;
+use super::identity::{assign_publication_abi_identity, file_ir_identity};
 use super::package_unit::{PackageAbiExpectation, PackageDependencyConstraint};
 use super::publication_abi::{
     public_signature_from_receiver_executable_signature, publication_public_instance_export,

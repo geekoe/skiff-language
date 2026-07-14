@@ -1,5 +1,5 @@
 [package]
-name = "skiff-compiler-core"
+name = "skiff-compiler-publication-abi"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -8,10 +8,7 @@ publish = false
 too_many_lines = "warn"
 
 [dependencies]
+skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-syntax = { path = "../../syntax" }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-hex = "0.4"
-sha2 = "0.10"
 thiserror = "2.0"

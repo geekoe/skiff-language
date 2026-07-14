@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::{CompileError, Result};
-use skiff_compiler_core::file_ir_identity::file_ir_identity;
-use skiff_compiler_core::package_publication_abi as core_package_publication_abi;
+use skiff_compiler_publication_abi as publication_abi;
 
 pub use skiff_artifact_model::package_unit::InterfaceMethodSignature;
 #[allow(unused_imports)]
@@ -19,7 +18,7 @@ pub use skiff_artifact_model::{
     PACKAGE_UNIT_SCHEMA_VERSION,
 };
 
-use super::identity::assign_package_unit_identities;
+use super::identity::{assign_package_unit_identities, file_ir_identity};
 
 use super::interface_methods::{package_interface_method_signatures, PackageTypeSymbolIndex};
 use super::publication_abi::publication_abi_build_error;
@@ -81,7 +80,7 @@ pub fn package_implementation_links(
     exports: &PackageExportIndex,
     publication_abi: &PublicationAbiUnit,
 ) -> PackageImplementationLinks {
-    core_package_publication_abi::package_implementation_links(exports, publication_abi)
+    publication_abi::package_implementation_links(exports, publication_abi)
 }
 
 pub fn package_publication_abi(
@@ -89,7 +88,7 @@ pub fn package_publication_abi(
     version: &str,
     exports: &PackageExportIndex,
 ) -> Result<PublicationAbiUnit> {
-    core_package_publication_abi::package_publication_abi(package_id, version, exports)
+    publication_abi::package_publication_abi(package_id, version, exports)
         .map_err(publication_abi_build_error)
 }
 

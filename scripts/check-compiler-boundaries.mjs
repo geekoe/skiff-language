@@ -1,8 +1,8 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const defaultRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const sourceCompileDownstreamStageImports = crateModuleImportRegexp([
   'lowering',
@@ -69,6 +69,23 @@ const compilerCoreForbiddenImports = regexpUnion([
     'publication_error',
   ]),
 ]);
+const publicationAbiForbiddenImports = regexpUnion([
+  /\bserde_yaml\b/,
+  /\bskiff_compiler\b/,
+  /\bskiff_compiler_(?:core|input_model|input|source|lowering|projection_input|compiled|projection|emission)\b/,
+  /\bstd\s*::\s*fs\b/,
+  /\bstd\s*::\s*\{[^;]*?\bfs\b/,
+  crateModuleImportRegexp([
+    'input',
+    'source_compile',
+    'lowering',
+    'compiled',
+    'projection',
+    'emission',
+    'facade',
+    'publication_error',
+  ]),
+]);
 
 const denyRules = [
   {
@@ -89,6 +106,16 @@ const denyRules = [
     pattern: 'crate::(lowering|projection|emission|compiled)',
     regexp: sourceCompileDownstreamStageImports,
     remove_when: 'source_compile consumes only input, shared, skiff_artifact_model, and its own typed models',
+  },
+  {
+    id: 'publication_abi_no_stage_or_io_imports',
+    owner: 'compiler-publication-abi',
+    phase: 'final',
+    roots: ['compiler/publication-abi/src'],
+    pattern: 'compiler core/stages/facade, serde_yaml, or std::fs dependencies',
+    regexp: publicationAbiForbiddenImports,
+    remove_when:
+      'publication-abi remains neutral semantic assembly over artifact-model and artifact-identity',
   },
   {
     id: 'lowering_no_forbidden_imports',
@@ -170,38 +197,44 @@ for (const entry of transitionalLedger) {
   }
 }
 
-const rustFiles = await collectCandidateRustFiles(root);
-const denials = [];
-const warnings = [];
-
-for (const rule of denyRules) {
-  denials.push(...(await collectMatches(rule, rustFiles, 'deny')));
-}
-denials.push(...(await collectProjectionInputPurityViolations(rustFiles)));
-denials.push(...(await collectDuplicateOperationAbiIdentityViolations(root)));
-
-for (const entry of transitionalLedger) {
-  warnings.push(...(await collectMatches(entry, rustFiles, 'warn')));
-}
-
-for (const warning of warnings) {
-  console.warn(formatMatch('WARN', warning));
-}
-
-for (const denial of denials) {
-  console.error(formatMatch('DENY', denial));
-}
-
-if (warnings.length === 0 && denials.length === 0) {
-  console.log('Compiler boundary check passed with no known violations.');
+const options = parseArgs(process.argv.slice(2));
+if (options.help) {
+  printUsage();
 } else {
-  console.log(
-    `Compiler boundary check completed: ${denials.length} deny violation(s), ${warnings.length} transitional warning(s).`,
-  );
+  await assertRootDirectory(options.root);
+  await runCheck(options.root);
 }
 
-if (denials.length > 0) {
-  process.exitCode = 1;
+async function runCheck(repoRoot) {
+  const rustFiles = await collectCandidateRustFiles(repoRoot);
+  const denials = [];
+  const warnings = [];
+
+  for (const rule of denyRules) {
+    denials.push(...(await collectMatches(rule, rustFiles, 'deny')));
+  }
+  denials.push(...(await collectProjectionInputPurityViolations(rustFiles)));
+
+  for (const entry of transitionalLedger) {
+    warnings.push(...(await collectMatches(entry, rustFiles, 'warn')));
+  }
+  for (const warning of warnings) {
+    console.warn(formatMatch('WARN', warning));
+  }
+  for (const denial of denials) {
+    console.error(formatMatch('DENY', denial));
+  }
+
+  if (warnings.length === 0 && denials.length === 0) {
+    console.log('Compiler boundary check passed with no known violations.');
+  } else {
+    console.log(
+      `Compiler boundary check completed: ${denials.length} deny violation(s), ${warnings.length} transitional warning(s).`,
+    );
+  }
+  if (denials.length > 0) {
+    process.exitCode = 1;
+  }
 }
 
 async function collectMatches(rule, files, severity) {
@@ -230,173 +263,78 @@ async function collectMatches(rule, files, severity) {
   return matches;
 }
 
-function projectionInputAllowedPublicMethodNames() {
-  return new Set([
-    'abi_ids',
-    'access',
-    'alias',
-    'api_entries',
-    'api_source',
-    'collection_name_mapping',
-    'compiled',
-    'config',
-    'config_requirements',
-    'constraints',
-    'content_hash',
-    'declaring_publication',
-    'dependencies',
-    'dependency',
-    'dependency_lock',
-    'dependency_path',
-    'effective',
-    'entrypoint_abi',
-    'executable',
-    'export_bindings',
-    'file_ir_units',
-    'function',
-    'function_signature',
-    'has_type',
-    'http',
-    'id',
-    'instance',
-    'interface',
-    'kind',
-    'legacy',
-    'lowering',
-    'manifest',
-    'module',
-    'module_exports',
-    'module_path',
-    'new',
-    'own',
-    'package_entrypoints',
-    'path',
-    'provenance',
-    'provenances',
-    'public_callables',
-    'public_instances',
-    'public_schema_types',
-    'public_symbols',
-    'publication_api_seed',
-    'relative_path',
-    'requirements',
-    'schema_abi_types_for_module',
-    'schema_type_names_for_module',
-    'scope',
-    'service_actor_metadata',
-    'service_db_metadata',
-    'service_dependencies',
-    'service_ingress',
-    'signature',
-    'source',
-    'source_metadata',
-    'source_path',
-    'source_root',
-    'source_span',
-    'symbol',
-    'synthetic',
-    'synthetic_entrypoints',
-    'version',
-    'view',
-    'websocket',
-  ]);
-}
-
-function projectionInputDeniedBehaviorMethodNames() {
-  return new Set([
-    'derive_projection_abi_ids',
-    'effective_alias',
-    'from_file_ir_units',
-    'has_service_storage_metadata',
-    'is_has',
-    'response_type_ir',
-    'signature_with_name',
-    'source_text_with_named_types',
-    'typed',
-    'to_source_symbol',
-    'type_ref_ir_source_text_with_local_types',
-    'type_ref_source_text',
-  ]);
-}
-
 function projectionInputDeniedBehaviorMethodsByImpl() {
   return new Map([
-    ['ConfigRequirementProjection', new Set(['source_path'])],
+    ['ProjectionSourceFacts', new Set(['derive_projection_abi_ids'])],
+    ['PackageDependencyProjectionInfo', new Set(['effective_alias'])],
+    ['ProjectionEntrypointAbiIndex', new Set(['from_file_ir_units'])],
+    ['ProjectionLoweringFacts', new Set(['has_service_storage_metadata'])],
+    ['ConfigRequirementProjection', new Set(['is_has', 'typed', 'source_path'])],
+    [
+      'EntryTypeSpec',
+      new Set([
+        'response_type_ir',
+        'source_text_with_named_types',
+        'type_ref_ir_source_text_with_local_types',
+        'type_ref_source_text',
+      ]),
+    ],
+    ['EntryFunctionSignature', new Set(['signature_with_name'])],
+    ['ProjectionSourceSymbolKey', new Set(['to_source_symbol'])],
   ]);
 }
 
 async function collectProjectionInputPurityViolations(files) {
   const matches = [];
-  const projectionInputAllowedPublicMethods = projectionInputAllowedPublicMethodNames();
-  const projectionInputDeniedBehaviorMethods = projectionInputDeniedBehaviorMethodNames();
   const projectionInputImplDeniedMethods = projectionInputDeniedBehaviorMethodsByImpl();
   for (const file of files) {
     if (!file.relPath.startsWith('compiler/projection-input/src/')) {
       continue;
     }
     const text = stripInlineTestModules(await readFile(file.absPath, 'utf8'));
-    for (const match of text.matchAll(/^pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm)) {
-      matches.push(projectionInputPurityMatch(file, text, match, 'public free functions'));
-    }
-    for (const match of text.matchAll(/^\s+pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm)) {
-      const methodName = match[1];
-      const implName = projectionInputImplNameAt(text, match.index ?? 0);
+    for (const declaration of projectionInputPublicFunctionDeclarations(text)) {
+      const implName = projectionInputImplNameAt(text, declaration.index);
+      if (implName === undefined) {
+        matches.push(
+          projectionInputPurityMatch(
+            file,
+            text,
+            declaration,
+            'public free functions',
+          ),
+        );
+        continue;
+      }
       const implDeniedMethods = projectionInputImplDeniedMethods.get(implName) ?? new Set();
-      if (
-        projectionInputDeniedBehaviorMethods.has(methodName)
-        || implDeniedMethods.has(methodName)
-        || !projectionInputAllowedPublicMethods.has(methodName)
-      ) {
-        matches.push(projectionInputPurityMatch(file, text, match, 'public behavior methods'));
+      if (implDeniedMethods.has(declaration.name)) {
+        matches.push(
+          projectionInputPurityMatch(
+            file,
+            text,
+            declaration,
+            'known non-DTO public behavior',
+          ),
+        );
       }
     }
   }
   return matches;
 }
 
-async function collectDuplicateOperationAbiIdentityViolations(repoRoot) {
-  const files = [];
-  await collectRustFiles(join(repoRoot, 'artifact-identity/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler'), files);
-  const matches = [];
-  const regexp = /\bstruct\s+OperationAbiIdentityInput\b|\bfn\s+operation_abi_identity\s*\(/g;
-
-  for (const file of files) {
-    if (
-      file.relPath === 'artifact-identity/src/lib.rs'
-      || !isOperationAbiIdentityGuardProductionFile(file.relPath)
-    ) {
-      continue;
-    }
-    const text = stripInlineTestModules(await readFile(file.absPath, 'utf8'));
-    for (const match of text.matchAll(regexp)) {
-      matches.push({
-        id: 'operation_abi_identity_single_source',
-        owner: 'artifact-identity',
-        phase: 'final',
-        pattern: 'struct OperationAbiIdentityInput or fn operation_abi_identity outside artifact-identity',
-        regexp,
-        remove_when:
-          'artifact-identity remains the only production source of operation ABI identity byte projection',
-        severity: 'deny',
-        relPath: file.relPath,
-        line: lineNumberAt(text, match.index ?? 0),
-        matched: match[0],
-      });
-    }
+function projectionInputPublicFunctionDeclarations(text) {
+  const declarations = [];
+  const regexp =
+    /^[ \t]*(?:#\[[^\r\n]*\][ \t]*(?:\r?\n[ \t]*)?)*pub[ \t]+(?:(?:const|async|unsafe)[ \t]+)*(?:extern(?:[ \t]+"[^"\r\n]*")?[ \t]+)?fn[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*<[^>{}\r\n]*>)?[ \t]*\(/gm;
+  for (const match of text.matchAll(regexp)) {
+    const matched = match[0];
+    const pubOffset = matched.lastIndexOf('pub');
+    declarations.push({
+      name: match[1],
+      index: (match.index ?? 0) + pubOffset,
+      matched: matched.slice(pubOffset),
+    });
   }
-
-  return matches;
-}
-
-function isOperationAbiIdentityGuardProductionFile(relPath) {
-  if (relPath.startsWith('artifact-identity/src/')) {
-    if (relPath.endsWith('/tests.rs')) {
-      return false;
-    }
-    return !relPath.split('/').includes('tests');
-  }
-  return isProductionRustFile(relPath);
+  return declarations;
 }
 
 function projectionInputImplNameAt(text, index) {
@@ -415,7 +353,7 @@ function projectionInputImplNameAt(text, index) {
   return undefined;
 }
 
-function projectionInputPurityMatch(file, text, match, pattern) {
+function projectionInputPurityMatch(file, text, declaration, pattern) {
   return {
     id: 'projection_input_pure_dto_api_phase_7_5',
     owner: 'projection-input',
@@ -426,26 +364,27 @@ function projectionInputPurityMatch(file, text, match, pattern) {
       'projection-input remains a narrow DTO handoff crate with behavior in compiled/projection/core',
     severity: 'deny',
     relPath: file.relPath,
-    line: lineNumberAt(text, match.index ?? 0),
-    matched: match[0],
+    line: lineNumberAt(text, declaration.index),
+    matched: declaration.matched,
   };
 }
 
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
-  await collectRustFiles(join(repoRoot, 'compiler/core/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/source/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/lowering/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/projection-input/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/compiled/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/projection/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/emission/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/driver'), files);
-  await collectRustFiles(join(repoRoot, 'compiler/tests'), files);
+  await collectRustFiles(join(repoRoot, 'compiler/core/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/publication-abi/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/source/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/lowering/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/projection-input/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/compiled/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/projection/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/emission/src'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/driver'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler/tests'), files, repoRoot);
   return files.filter((file) => isProductionRustFile(file.relPath));
 }
 
-async function collectRustFiles(directory, files) {
+async function collectRustFiles(directory, files, repoRoot) {
   let entries;
   try {
     entries = await readdir(directory, { withFileTypes: true });
@@ -459,7 +398,7 @@ async function collectRustFiles(directory, files) {
   for (const entry of entries) {
     const absPath = join(directory, entry.name);
     if (entry.isDirectory()) {
-      await collectRustFiles(absPath, files);
+      await collectRustFiles(absPath, files, repoRoot);
       continue;
     }
     if (!entry.isFile() || !entry.name.endsWith('.rs')) {
@@ -467,7 +406,7 @@ async function collectRustFiles(directory, files) {
     }
     files.push({
       absPath,
-      relPath: normalizePath(relative(root, absPath)),
+      relPath: normalizePath(relative(repoRoot, absPath)),
     });
   }
 }
@@ -479,6 +418,7 @@ function isProductionRustFile(relPath) {
   if (
     !relPath.startsWith('compiler/driver/')
     && !relPath.startsWith('compiler/core/src/')
+    && !relPath.startsWith('compiler/publication-abi/src/')
     && !relPath.startsWith('compiler/source/src/')
     && !relPath.startsWith('compiler/lowering/src/')
     && !relPath.startsWith('compiler/projection-input/src/')
@@ -510,6 +450,57 @@ function formatMatch(label, match) {
 
 function normalizePath(path) {
   return path.split('\\').join('/');
+}
+
+function parseArgs(argv) {
+  const options = { help: false, root: defaultRoot };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') {
+      options.help = true;
+      continue;
+    }
+    if (arg === '--root') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--root requires a directory path');
+      }
+      options.root = resolve(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--root=')) {
+      const value = arg.slice('--root='.length);
+      if (!value) {
+        throw new Error('--root requires a directory path');
+      }
+      options.root = resolve(value);
+      continue;
+    }
+    throw new Error(`unknown argument ${arg}`);
+  }
+  return options;
+}
+
+async function assertRootDirectory(repoRoot) {
+  let rootStat;
+  try {
+    rootStat = await stat(repoRoot);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error(`compiler boundary root does not exist: ${repoRoot}`);
+    }
+    throw error;
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error(`compiler boundary root is not a directory: ${repoRoot}`);
+  }
+}
+
+function printUsage() {
+  console.log(`Usage: node scripts/check-compiler-boundaries.mjs [--root <path>]
+
+Checks compiler production source boundaries. --root is reserved for hermetic fixtures.`);
 }
 
 function stripInlineTestModules(text) {

@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     PackageRefIr, PackageSymbolRef, ParamIr, PublicationAbiUnit, ServiceSymbolRef,
     SourceCallOperationIndexEntry, TypeDeclIr, TypeRefIr,
 };
-use skiff_compiler_core::package_publication_abi::{
+use skiff_compiler_publication_abi::{
     package_public_instance_method_operation, public_signature_from_interface_method_signature,
     public_signature_from_receiver_executable_signature, PackagePublicationAbiBuildError,
     PackagePublicationAbiBuilder, PackagePublicationOperation, PackagePublicationPublicInstance,
