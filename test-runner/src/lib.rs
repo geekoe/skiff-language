@@ -46,6 +46,10 @@ use types::{
 };
 pub use types::{SkiffTestError, SkiffTestOptions, SkiffTestResult, SkiffTestSummary};
 
+pub fn validate_runtime_reload_url(value: &str) -> Result<(), String> {
+    runtime_process::validate_runtime_reload_url(value)
+}
+
 pub fn run_skiff_tests(
     input: &Path,
     profile: Option<&str>,

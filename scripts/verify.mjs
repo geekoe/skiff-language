@@ -18,6 +18,8 @@ try {
       root,
       selectors: options.selectors,
       runtimeLiveConfig: options.runtimeLiveConfig,
+      runtimeLiveReloadUrl: options.runtimeLiveReloadUrl,
+      runtimeLiveArtifactRoot: options.runtimeLiveArtifactRoot,
     });
     if (options.list) {
       printVerifyPlan(plan, root);

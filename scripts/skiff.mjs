@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
+import { parseRuntimeReloadUrl } from './lib/runtime-reload-url.mjs';
 import {
   devSyncCheckFlags,
   parseDevSyncArgs,
@@ -56,7 +57,7 @@ const sourceIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const usage = `usage:
   skiff check <root> [--profile <name>] [--artifact-root <dir>] [--packages-dir <dir>]... [--service-artifact-root <dir>]...
-  skiff test <root-or-file> [--profile <name>] [--live] [--allow-network] [--config <path>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--package-test-concurrency <n>]
+  skiff test <root-or-file> [--profile <name>] [--live] [--allow-network] [--config <path>] [--router-reload-url <url>] [--artifact-root <dir>] [--deny-skips] [--require-tests] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--package-test-concurrency <n>]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
@@ -317,10 +318,31 @@ async function check(rawArgs) {
 
 async function test(rawArgs) {
   const args = parseRootCommand(rawArgs, {
-    optionsWithValues: new Set(['--profile', '--config', '--package-test-concurrency']),
+    optionsWithValues: new Set([
+      '--profile',
+      '--config',
+      '--package-test-concurrency',
+      '--router-reload-url',
+      '--artifact-root',
+    ]),
     repeatableOptionsWithValues: new Set(['--packages-dir', '--service-artifact-root']),
-    flags: new Set(['--live', '--allow-network']),
+    flags: new Set(['--live', '--allow-network', '--deny-skips', '--require-tests']),
   });
+  const live = args.flags.has('--live');
+  if (!live && (args.options.routerReloadUrl || args.options.artifactRoot)) {
+    throw new Error(
+      'non-live skiff test owns an isolated runtime target; --router-reload-url and --artifact-root are only accepted with --live',
+    );
+  }
+  const explicitArtifactRoot = args.options.artifactRoot === undefined
+    ? undefined
+    : resolve(args.options.artifactRoot);
+  if (live && explicitArtifactRoot !== undefined) {
+    await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
+  }
+  if (live && args.options.routerReloadUrl !== undefined) {
+    parseRuntimeReloadUrl(args.options.routerReloadUrl);
+  }
   const kind = await detectRootKind(args.root);
   if (kind.kind !== 'service' && kind.kind !== 'package' && kind.kind !== 'file') {
     throw new Error(kind.message);
@@ -337,7 +359,7 @@ async function test(rawArgs) {
   if (args.options.profile) {
     testArgs.push('--profile', args.options.profile);
   }
-  if (!shouldUseIsolatedTestRuntime(args.flags.has('--live'))) {
+  if (!shouldUseIsolatedTestRuntime(live)) {
     testArgs.push('--live');
   }
   if (args.flags.has('--allow-network')) {
@@ -345,6 +367,18 @@ async function test(rawArgs) {
   }
   if (args.options.config) {
     testArgs.push('--config', args.options.config);
+  }
+  if (args.options.routerReloadUrl) {
+    testArgs.push('--router-reload-url', args.options.routerReloadUrl);
+  }
+  if (explicitArtifactRoot !== undefined) {
+    testArgs.push('--artifact-root', explicitArtifactRoot);
+  }
+  if (args.flags.has('--deny-skips')) {
+    testArgs.push('--deny-skips');
+  }
+  if (args.flags.has('--require-tests')) {
+    testArgs.push('--require-tests');
   }
   if (args.options.packageTestConcurrency) {
     testArgs.push('--package-test-concurrency', args.options.packageTestConcurrency);
@@ -359,7 +393,7 @@ async function test(rawArgs) {
   for (const serviceArtifactRoot of args.options.serviceArtifactRoot ?? []) {
     testArgs.push('--service-artifact-root', serviceArtifactRoot);
   }
-  if (args.flags.has('--live')) {
+  if (live) {
     await run('cargo', testArgs, skiffRoot);
     return;
   }
@@ -2032,6 +2066,9 @@ function parseRootCommand(rawArgs, spec) {
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (spec.flags.has(arg)) {
+      if (flags.has(arg)) {
+        throw new Error(`${arg} was provided more than once`);
+      }
       flags.add(arg);
       continue;
     }
@@ -2061,7 +2098,11 @@ function parseRootCommand(rawArgs, spec) {
       if (!value || value.startsWith('--')) {
         throw new Error(`${optionName} requires a value`);
       }
-      options[toCamelOption(optionName)] = value;
+      const key = toCamelOption(optionName);
+      if (Object.hasOwn(options, key)) {
+        throw new Error(`${optionName} was provided more than once`);
+      }
+      options[key] = value;
       if (equalsIndex === -1) {
         index += 1;
       }
@@ -2350,6 +2391,17 @@ async function fileExists(path) {
     }
     throw error;
   }
+}
+
+async function requireExistingDirectory(path, source) {
+  try {
+    if ((await stat(path)).isDirectory()) {
+      return;
+    }
+  } catch {
+    // Render the same fail-closed diagnostic for missing and unreadable paths.
+  }
+  throw new Error(`${source} must be an existing directory: ${path}`);
 }
 
 function routerDevConfig(options) {

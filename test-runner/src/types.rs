@@ -48,6 +48,7 @@ pub struct SkiffTestOptions {
     pub package_dirs: Vec<PathBuf>,
     pub service_artifact_roots: Vec<PathBuf>,
     pub router_reload_url: Option<String>,
+    pub artifact_root: Option<PathBuf>,
     pub package_test_concurrency: Option<usize>,
 }
 

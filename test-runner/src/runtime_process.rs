@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    env,
-    ffi::OsStr,
-    fs,
+    env, fs,
     fs::{File, OpenOptions},
     io::{Read, Write},
     net::TcpStream,
@@ -39,7 +37,6 @@ use super::{
     RuntimeTestArtifact, SkiffTestOptions,
 };
 
-const DEFAULT_CONTROL_BASE_URL: &str = "http://127.0.0.1:4001";
 const TEST_ARTIFACT_ROOT_ENV: &str = "SKIFF_TEST_ARTIFACT_ROOT";
 const DEV_HOME_ENV: &str = "SKIFF_DEV_HOME";
 const DEV_RELOAD_URL_ENV: &str = "SKIFF_DEV_RELOAD_URL";
@@ -1238,9 +1235,9 @@ pub(super) fn execute_runtime_process_test(
     let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
-    let control_base_url = router_control_base_url(options)?;
-    let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health, options.live)?;
+    let runtime_target = explicit_runtime_target(options)?;
+    let control_base_url = runtime_target.control_base_url;
+    let artifact_root = runtime_target.artifact_root;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1302,9 +1299,9 @@ pub(super) fn execute_dev_synced_service_test(
     let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
-    let control_base_url = router_control_base_url(options)?;
-    let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health, options.live)?;
+    let runtime_target = explicit_runtime_target(options)?;
+    let control_base_url = runtime_target.control_base_url;
+    let artifact_root = runtime_target.artifact_root;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1415,9 +1412,9 @@ pub(super) fn prepare_dev_synced_service_test_suite(
     let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
-    let control_base_url = router_control_base_url(options)?;
-    let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health, options.live)?;
+    let runtime_target = explicit_runtime_target(options)?;
+    let control_base_url = runtime_target.control_base_url;
+    let artifact_root = runtime_target.artifact_root;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -1710,9 +1707,9 @@ pub(super) fn prepare_dev_synced_package_test(
     let runtime_artifact_guard = RUNTIME_ARTIFACT_LOCK
         .lock()
         .map_err(|_| "runtime artifact lock was poisoned".to_string())?;
-    let control_base_url = router_control_base_url(options)?;
-    let health = health_check(&control_base_url)?;
-    let artifact_root = test_artifact_root(&health, options.live)?;
+    let runtime_target = explicit_runtime_target(options)?;
+    let control_base_url = runtime_target.control_base_url;
+    let artifact_root = runtime_target.artifact_root;
     let runtime_artifacts = RuntimeArtifactRun::start(
         runtime_artifact_guard,
         &artifact_root,
@@ -2866,66 +2863,50 @@ fn reload_runtime_artifacts_for_live(
     post_json(&reload_url, &json!({})).map_err(|error| dev_reload_error_message(error, live))
 }
 
-fn router_control_base_url(options: &SkiffTestOptions) -> Result<String, String> {
-    let configured = options
-        .router_reload_url
-        .clone()
-        .or_else(|| std::env::var(DEV_RELOAD_URL_ENV).ok())
-        .filter(|value| !value.trim().is_empty());
-    validate_explicit_runtime_environment(
-        options.live,
-        configured.as_deref(),
-        std::env::var_os(TEST_ARTIFACT_ROOT_ENV).as_deref(),
-    )?;
-    let configured = configured.unwrap_or_else(|| DEFAULT_CONTROL_BASE_URL.to_string());
-    control_base_url(&configured)
+#[derive(Debug)]
+struct ExplicitRuntimeTarget {
+    control_base_url: String,
+    artifact_root: PathBuf,
 }
 
-fn health_check(control_base_url: &str) -> Result<JsonValue, String> {
-    let health_url = control_url_with_path(control_base_url, "/__router/health")?;
-    http_request("GET", &health_url, None)
-        .map_err(|error| format!("router health check failed: {error}"))
-}
-
-fn control_base_url(url: &str) -> Result<String, String> {
-    let parsed = HttpUrl::parse(url)?;
-    Ok(format!("http://{}:{}", parsed.host, parsed.port))
-}
-
-fn test_artifact_root(health: &JsonValue, live: bool) -> Result<PathBuf, String> {
-    test_artifact_root_from_explicit(
-        health,
-        live,
+fn explicit_runtime_target(options: &SkiffTestOptions) -> Result<ExplicitRuntimeTarget, String> {
+    explicit_runtime_target_from_values(
+        options,
+        std::env::var(DEV_RELOAD_URL_ENV).ok(),
         std::env::var_os(TEST_ARTIFACT_ROOT_ENV).map(PathBuf::from),
     )
 }
 
-fn test_artifact_root_from_explicit(
-    health: &JsonValue,
-    live: bool,
-    explicit: Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    if let Some(root) = explicit {
-        if root.as_os_str().is_empty() {
-            return Err(format!("{TEST_ARTIFACT_ROOT_ENV} must not be empty"));
-        }
-        return Ok(root);
-    }
-    if !live {
+fn explicit_runtime_target_from_values(
+    options: &SkiffTestOptions,
+    environment_reload_url: Option<String>,
+    environment_artifact_root: Option<PathBuf>,
+) -> Result<ExplicitRuntimeTarget, String> {
+    let reload_url = options
+        .router_reload_url
+        .clone()
+        .or(environment_reload_url)
+        .filter(|value| !value.is_empty());
+    let artifact_root = options
+        .artifact_root
+        .clone()
+        .or(environment_artifact_root)
+        .filter(|path| !path.as_os_str().is_empty());
+    validate_explicit_runtime_environment(reload_url.as_deref(), artifact_root.as_deref())?;
+
+    let reload_target = RuntimeReloadUrl::parse(reload_url.as_deref().expect("validated URL"))
+        .map_err(|error| error.to_string())?;
+    let artifact_root = artifact_root.expect("validated artifact root");
+    if !artifact_root.is_dir() {
         return Err(format!(
-            "non-live runtime tests require an isolated {TEST_ARTIFACT_ROOT_ENV}"
+            "runtime artifact root must be an existing directory: {}",
+            artifact_root.display()
         ));
     }
-    health
-        .pointer("/artifact/artifactRoots/0")
-        .and_then(JsonValue::as_str)
-        .filter(|root| !root.trim().is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            format!(
-                "router health did not include artifact.artifactRoots[0]; set {TEST_ARTIFACT_ROOT_ENV} to the runtime artifact root"
-            )
-        })
+    Ok(ExplicitRuntimeTarget {
+        control_base_url: reload_target.base_url(),
+        artifact_root,
+    })
 }
 
 fn required_isolated_dev_home() -> Result<PathBuf, String> {
@@ -2947,25 +2928,21 @@ fn required_isolated_dev_home_from_value(
 }
 
 fn validate_explicit_runtime_environment(
-    live: bool,
     reload_url: Option<&str>,
-    artifact_root: Option<&OsStr>,
+    artifact_root: Option<&Path>,
 ) -> Result<(), String> {
-    if live {
-        return Ok(());
-    }
     let mut missing = Vec::new();
-    if reload_url.map_or(true, |value| value.trim().is_empty()) {
+    if reload_url.map_or(true, str::is_empty) {
         missing.push(DEV_RELOAD_URL_ENV);
     }
-    if artifact_root.map_or(true, OsStr::is_empty) {
+    if artifact_root.map_or(true, |path| path.as_os_str().is_empty()) {
         missing.push(TEST_ARTIFACT_ROOT_ENV);
     }
     if missing.is_empty() {
         return Ok(());
     }
     Err(format!(
-        "non-live runtime tests require an isolated runtime environment; missing {}",
+        "runtime-backed tests require an explicit runtime target; missing {}",
         missing.join(" and ")
     ))
 }
@@ -3371,6 +3348,132 @@ fn control_url_with_path(url: &str, path: &str) -> Result<String, String> {
     Ok(format!("http://{}:{}{}", parsed.host, parsed.port, path))
 }
 
+const RUNTIME_RELOAD_PATH: &str = "/__skiff/reload-artifacts";
+const REDACTED_RUNTIME_RELOAD_TARGET: &str = "<redacted-runtime-reload-target>";
+
+#[derive(Debug, PartialEq, Eq)]
+struct RuntimeReloadUrl {
+    host: String,
+    port: u16,
+}
+
+impl RuntimeReloadUrl {
+    fn parse(value: &str) -> Result<Self, RuntimeReloadUrlError> {
+        if value.is_empty() {
+            return Err(RuntimeReloadUrlError::new("reload_url_empty"));
+        }
+        if value.trim() != value || value.chars().any(char::is_whitespace) {
+            return Err(RuntimeReloadUrlError::new("reload_url_format"));
+        }
+        let Some(remainder) = value.strip_prefix("http://") else {
+            return Err(RuntimeReloadUrlError::new("reload_url_scheme"));
+        };
+        if remainder.contains('#') {
+            return Err(RuntimeReloadUrlError::new("reload_url_fragment"));
+        }
+        if remainder.contains('?') {
+            return Err(RuntimeReloadUrlError::new("reload_url_query"));
+        }
+        let slash_index = remainder.find('/');
+        let authority = slash_index.map_or(remainder, |index| &remainder[..index]);
+        let path = slash_index.map_or("", |index| &remainder[index..]);
+        if authority.contains('@') {
+            return Err(RuntimeReloadUrlError::new("reload_url_userinfo"));
+        }
+        if authority.contains('[') || authority.contains(']') || authority.matches(':').count() > 1
+        {
+            return Err(RuntimeReloadUrlError::new("reload_url_ipv6"));
+        }
+        let Some((host, raw_port)) = authority.rsplit_once(':') else {
+            return Err(RuntimeReloadUrlError::new("reload_url_port"));
+        };
+        let host = host.to_ascii_lowercase();
+        if !valid_runtime_reload_host(&host) {
+            return Err(RuntimeReloadUrlError::new("reload_url_host"));
+        }
+        if raw_port.is_empty() || !raw_port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(RuntimeReloadUrlError::new("reload_url_port"));
+        }
+        let port = raw_port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .ok_or_else(|| RuntimeReloadUrlError::new("reload_url_port"))?;
+        if !matches!(path, "" | "/" | RUNTIME_RELOAD_PATH) {
+            return Err(RuntimeReloadUrlError::new("reload_url_path"));
+        }
+        Ok(Self { host, port })
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}:{}", self.host, self.port)
+    }
+
+    #[cfg(test)]
+    fn normalized(&self) -> String {
+        format!("{}{}", self.base_url(), RUNTIME_RELOAD_PATH)
+    }
+}
+
+pub(crate) fn validate_runtime_reload_url(value: &str) -> Result<(), String> {
+    RuntimeReloadUrl::parse(value)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RuntimeReloadUrlError {
+    reason: &'static str,
+}
+
+impl RuntimeReloadUrlError {
+    fn new(reason: &'static str) -> Self {
+        Self { reason }
+    }
+}
+
+impl std::fmt::Display for RuntimeReloadUrlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid runtime reload URL ({}; target={REDACTED_RUNTIME_RELOAD_TARGET})",
+            self.reason
+        )
+    }
+}
+
+fn valid_runtime_reload_host(host: &str) -> bool {
+    if host.is_empty()
+        || host.len() > 253
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return false;
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return host.parse::<std::net::Ipv4Addr>().is_ok();
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+    })
+}
+
 struct HttpUrl {
     host: String,
     port: u16,
@@ -3419,42 +3522,42 @@ fn current_nanos() -> u128 {
 mod tests {
     use std::{
         collections::{BTreeSet, HashMap},
-        ffi::{OsStr, OsString},
+        ffi::OsString,
+        net::TcpListener,
         path::{Path, PathBuf},
         process::Command,
         time::Duration,
     };
 
+    use serde::Deserialize;
     use serde_json::json;
 
     use super::{
         append_dev_sync_output_roots, cleanup_manifest_paths, copy_artifact_file,
-        copy_service_dependency_artifact_root, current_nanos, is_transient_dispatch_error,
-        is_transient_dispatch_response, package_test_dispatch_body,
+        copy_service_dependency_artifact_root, current_nanos, explicit_runtime_target_from_values,
+        is_transient_dispatch_error, is_transient_dispatch_response, package_test_dispatch_body,
         package_test_service_db_service_id, preflight_runtime_artifact_cleanup,
         required_isolated_dev_home_from_value, runtime_cleanup_needs_reload,
         service_id_storage_database_name, sync_service_dependency_artifact_roots,
         sync_test_database_cleanup_enabled_from_env_value, synthetic_service_runtime_visible_paths,
-        synthetic_test_target, test_artifact_root_from_explicit,
-        test_database_cleanup_env_value_enabled,
+        synthetic_test_target, test_database_cleanup_env_value_enabled,
         test_database_cleanup_settle_duration_from_env_value, test_database_cleanup_sleep_arg,
         test_database_drop_script, test_runner_reload_marker_path, test_runner_runs_dir,
         validate_explicit_runtime_environment, validate_runtime_cleanup_path,
         write_runtime_artifact_manifest, PackageTestDispatchInput, RuntimeArtifactManifestPath,
-        RuntimeArtifactRun, RuntimeArtifactRunManifest, SkiffTestOptions,
+        RuntimeArtifactRun, RuntimeArtifactRunManifest, RuntimeReloadUrl, SkiffTestOptions,
         DEFAULT_TEST_DB_CLEANUP_SETTLE_MS, DEV_RELOAD_URL_ENV, RUNTIME_ARTIFACT_LOCK,
         TEST_ARTIFACT_ROOT_ENV, TEST_RUNNER_MANIFEST_SCHEMA_VERSION,
     };
 
     #[test]
-    fn non_live_runtime_environment_requires_reload_and_artifact_before_network() {
-        let neither = validate_explicit_runtime_environment(false, None, None)
+    fn every_runtime_environment_requires_reload_and_artifact_before_network() {
+        let neither = validate_explicit_runtime_environment(None, None)
             .expect_err("both isolated values must be required");
         assert!(neither.contains(DEV_RELOAD_URL_ENV));
         assert!(neither.contains(TEST_ARTIFACT_ROOT_ENV));
 
         let missing_root = validate_explicit_runtime_environment(
-            false,
             Some("http://127.0.0.1:46001/__skiff/reload-artifacts"),
             None,
         )
@@ -3462,45 +3565,112 @@ mod tests {
         assert!(!missing_root.contains(DEV_RELOAD_URL_ENV));
         assert!(missing_root.contains(TEST_ARTIFACT_ROOT_ENV));
 
-        let missing_reload = validate_explicit_runtime_environment(
-            false,
-            None,
-            Some(OsStr::new("/tmp/isolated-artifacts")),
-        )
-        .expect_err("reload URL must be required together with artifact root");
+        let missing_reload =
+            validate_explicit_runtime_environment(None, Some(Path::new("/tmp/isolated-artifacts")))
+                .expect_err("reload URL must be required together with artifact root");
         assert!(missing_reload.contains(DEV_RELOAD_URL_ENV));
         assert!(!missing_reload.contains(TEST_ARTIFACT_ROOT_ENV));
 
         validate_explicit_runtime_environment(
-            false,
             Some("http://127.0.0.1:46001/__skiff/reload-artifacts"),
-            Some(OsStr::new("/tmp/isolated-artifacts")),
+            Some(Path::new("/tmp/isolated-artifacts")),
         )
         .expect("explicit isolated values should pass");
-        validate_explicit_runtime_environment(true, None, None)
-            .expect("live mode keeps its existing fallback behavior");
     }
 
     #[test]
-    fn non_live_artifact_root_never_falls_back_to_router_health() {
-        let health = json!({ "artifact": { "artifactRoots": ["/stable/artifacts"] } });
-        let error = test_artifact_root_from_explicit(&health, false, None)
-            .expect_err("non-live root must fail closed");
-        assert!(error.contains(TEST_ARTIFACT_ROOT_ENV));
+    fn options_override_environment_for_the_complete_runtime_target() {
+        let artifact_root = temp_runtime_artifact_dir("explicit-target-options");
+        std::fs::create_dir_all(&artifact_root).expect("artifact root should exist");
+        let options = SkiffTestOptions {
+            router_reload_url: Some("http://router.test:46001".to_string()),
+            artifact_root: Some(artifact_root.clone()),
+            ..SkiffTestOptions::default()
+        };
+        let target = explicit_runtime_target_from_values(
+            &options,
+            Some("http://environment.invalid:1/?token=sentinel".to_string()),
+            Some(PathBuf::from("/stable/artifacts")),
+        )
+        .expect("explicit options should win over environment values");
+        assert_eq!(target.control_base_url, "http://router.test:46001");
+        assert_eq!(target.artifact_root, artifact_root);
+        let _ = std::fs::remove_dir_all(target.artifact_root);
+    }
+
+    #[derive(Deserialize)]
+    struct ReloadUrlCases {
+        version: u64,
+        accepted: Vec<AcceptedReloadUrlCase>,
+        rejected: Vec<RejectedReloadUrlCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct AcceptedReloadUrlCase {
+        input: String,
+        normalized: String,
+        display: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RejectedReloadUrlCase {
+        input: String,
+        reason: String,
+    }
+
+    #[test]
+    fn runtime_reload_url_parser_matches_the_shared_contract_fixture() {
+        let cases: ReloadUrlCases = serde_json::from_str(include_str!(
+            "../tests/fixtures/runtime-reload-url-cases.json"
+        ))
+        .expect("shared URL cases should parse");
+        assert_eq!(cases.version, 1);
+        for case in cases.accepted {
+            let parsed = RuntimeReloadUrl::parse(&case.input)
+                .unwrap_or_else(|error| panic!("{} should be accepted: {error}", case.input));
+            assert_eq!(parsed.normalized(), case.normalized);
+            assert_eq!(parsed.base_url(), case.display);
+        }
+        for case in cases.rejected {
+            let error = RuntimeReloadUrl::parse(&case.input).unwrap_err();
+            assert_eq!(error.reason, case.reason, "input must stay redacted");
+            if !case.input.is_empty() {
+                assert!(!error.to_string().contains(&case.input));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_runtime_reload_url_is_rejected_without_touching_the_listener_or_leaking_raw_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fake listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("fake listener should be nonblocking");
+        let address = listener.local_addr().expect("fake listener address");
+        let artifact_root = temp_runtime_artifact_dir("invalid-target-no-network");
+        std::fs::create_dir_all(&artifact_root).expect("artifact root should exist");
+        let sentinel = "runtime-live-secret-sentinel";
+        let options = SkiffTestOptions {
+            router_reload_url: Some(format!(
+                "http://127.0.0.1:{}/?token={sentinel}",
+                address.port()
+            )),
+            artifact_root: Some(artifact_root.clone()),
+            ..SkiffTestOptions::default()
+        };
+
+        let error = explicit_runtime_target_from_values(&options, None, None)
+            .expect_err("query-bearing target must fail before networking");
+        assert!(error.contains("reload_url_query"));
+        assert!(!error.contains(sentinel));
         assert_eq!(
-            test_artifact_root_from_explicit(&health, true, None)
-                .expect("live root may still come from health"),
-            PathBuf::from("/stable/artifacts")
+            listener
+                .accept()
+                .expect_err("invalid URL must make zero requests")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
         );
-        assert_eq!(
-            test_artifact_root_from_explicit(
-                &health,
-                false,
-                Some(PathBuf::from("/tmp/isolated-artifacts")),
-            )
-            .expect("explicit non-live root should be used"),
-            PathBuf::from("/tmp/isolated-artifacts")
-        );
+        let _ = std::fs::remove_dir_all(artifact_root);
     }
 
     #[test]

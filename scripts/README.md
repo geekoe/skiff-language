@@ -245,7 +245,13 @@ node scripts/package-live-test.mjs
 
 The HTTP stream transport smoke now lives as a normal Skiff live test fixture instead of a host-side JavaScript script. The fixture is under `../test-runner/tests/fixtures/http-stream-live/` and defines a raw streaming route plus `http_stream_live.live.test.skiff`.
 
-The local Skiff dev stack must already be running: control endpoint on `http://127.0.0.1:4001` and a connected runtime. Missing API key is reported as a skipped Skiff test. The config snapshot can use either `bailian.apiKey` or the old script-compatible `service.bailian.apiKey`; `baseUrl` supports the same two shapes and defaults to `https://dashscope.aliyuncs.com/compatible-mode/v1`.
+An explicitly selected Skiff stack must already be running with a connected runtime. The command
+must name that stack's reload endpoint and existing artifact root; the runner never defaults to
+the stable 4001 endpoint or discovers a writable root from router health. Missing API keys remain
+SKIP results at the library level, while canonical/manual gating should pass `--deny-skips` and
+`--require-tests`. The config snapshot can use either `bailian.apiKey` or the old script-compatible
+`service.bailian.apiKey`; `baseUrl` supports the same two shapes and defaults to
+`https://dashscope.aliyuncs.com/compatible-mode/v1`.
 
 ```bash
 cd skiff-language
@@ -253,7 +259,11 @@ node scripts/skiff.mjs test \
   test-runner/tests/fixtures/http-stream-live/internal/http_stream_live.live.test.skiff \
   --live \
   --allow-network \
-  --config /path/to/config.yml
+  --config /path/to/config.yml \
+  --router-reload-url 'http://127.0.0.1:<control-port>/__skiff/reload-artifacts' \
+  --artifact-root /path/to/that-instance/artifacts \
+  --deny-skips \
+  --require-tests
 ```
 
 ## WebSocket Fixture Browser/WebSocket Smoke

@@ -31,9 +31,17 @@ bootstrap service 的 runtime registration。health 200 本身不代表 runtime 
 ## Runner Contract
 
 Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
-`SKIFF_DEV_HOME`。非 live runtime path 在任何 health/reload 网络请求前验证前两个值同时
-存在；缺任一都 fail closed，不能 fallback 到 `127.0.0.1:4001` 或 health 返回的常驻 root。
-真正的 live fixture 仍使用显式 live selector，不属于 Cargo workspace 默认测试。
+`SKIFF_DEV_HOME`。live 与非 live runtime path 都在任何 health/reload 网络请求前验证 reload
+URL 和 artifact root 同时存在；CLI options 高于环境变量，缺任一都 fail closed。两种模式都
+不能 fallback 到 `127.0.0.1:4001`，也不能从 health 返回值推断可写 artifact root。reload
+target 只接受带显式端口的 IPv4/DNS `http://` URL，以及空 path、`/` 或精确
+`/__skiff/reload-artifacts`；HTTPS、默认端口、IPv6、userinfo、其它 path、query 和 fragment
+均在网络前拒绝且错误不回显原 URL。
+
+真正的 live fixture 仍使用显式 live selector，不属于 Cargo workspace 默认测试。canonical
+`runtime-live` 还同时启用 `--deny-skips` 和 `--require-tests`：任意 SKIP 或零 discovered result
+都使 summary 显示 `FAILED` 并返回非零。库层 live smoke 仍保留可选 SKIP 结果，严格性由显式
+CLI policy 控制。
 
 `skiff-test-runner` 的 runtime integration targets 是 feature-gated inner workers。默认 Cargo
 只运行一个 `harness = false` wrapper；wrapper 在 Unix 上 `exec` 为 Node host，Node host 一次

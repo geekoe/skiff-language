@@ -16,16 +16,62 @@ export function printVerifyPlan(plan, root) {
 }
 
 export async function runVerifyPlan(plan, root) {
+  await assertExecutionPreconditions(plan);
   for (const phase of plan.phases) {
-    if (phase.preconditionError !== undefined) {
-      throw new Error(`${phase.id} cannot run: ${phase.preconditionError}`);
-    }
     const cwd = relative(root, phase.cwd) || '.';
     console.log(`\n==> ${phase.id} (${cwd})`);
     console.log(`$ ${formatCommand(phase)}`);
     await runPhase(phase);
   }
   console.log('\nAll selected Skiff verification phases passed.');
+}
+
+async function assertExecutionPreconditions(plan) {
+  const failures = [];
+  for (const phase of plan.phases) {
+    if (phase.preconditionError !== undefined) {
+      failures.push({ id: phase.id, reason: phase.preconditionError });
+    }
+  }
+  for (const phase of plan.phases) {
+    if (phase.executionPreflight === undefined) {
+      continue;
+    }
+    try {
+      const result = await phase.executionPreflight();
+      for (const reason of normalizePreflightResult(result, phase.id)) {
+        failures.push({ id: phase.id, reason });
+      }
+    } catch (error) {
+      failures.push({
+        id: phase.id,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (failures.length === 0) {
+    return;
+  }
+  throw new Error([
+    'verify plan preflight failed:',
+    ...failures.map(({ id, reason }) => `- ${id}: ${reason}`),
+  ].join('\n'));
+}
+
+function normalizePreflightResult(result, phaseId) {
+  if (result === undefined) {
+    return [];
+  }
+  if (typeof result === 'string' && result.trim().length > 0) {
+    return [result];
+  }
+  if (
+    Array.isArray(result)
+    && result.every((reason) => typeof reason === 'string' && reason.trim().length > 0)
+  ) {
+    return result;
+  }
+  throw new Error(`${phaseId} executionPreflight returned an invalid result`);
 }
 
 function runPhase(phase) {
@@ -47,7 +93,7 @@ function runPhase(phase) {
 }
 
 function formatCommand(phase) {
-  return [phase.command, ...phase.args].map(quoteForDisplay).join(' ');
+  return [phase.command, ...(phase.displayArgs ?? phase.args)].map(quoteForDisplay).join(' ');
 }
 
 function quoteForDisplay(value) {

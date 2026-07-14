@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { createServer } from 'node:net';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { parseVerifyArgs } from '../lib/verify-cli.mjs';
+import { parseRuntimeReloadUrl } from '../lib/runtime-reload-url.mjs';
 import {
   CHECKER_CLASSIFICATIONS,
   CHECKER_REGISTRY,
@@ -19,9 +21,10 @@ import {
 } from '../lib/verify-discovery.mjs';
 import {
   assertPlanIntegrity,
+  assertNonEmptyLeaf,
   buildVerifyPlan,
 } from '../lib/verify-plan.mjs';
-import { runVerifyPlan } from '../lib/verify-runner.mjs';
+import { printVerifyPlan, runVerifyPlan } from '../lib/verify-runner.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const verifyPath = join(root, 'scripts', 'verify.mjs');
@@ -38,6 +41,31 @@ test('CLI defaults to verify and accepts a package-manager argument separator', 
     () => parseVerifyArgs(['--only', 'node', '--', '--only', 'rust']),
     /--only may be specified only once/,
   );
+});
+
+test('verify CLI rejects repeated runtime-live singleton inputs across split and inline forms', () => {
+  const parsed = parseVerifyArgs([
+    '--only=runtime-live',
+    '--runtime-live-config=config.json',
+    '--runtime-live-reload-url',
+    'http://router.test:4101',
+    '--runtime-live-artifact-root=artifacts',
+  ]);
+  assert.equal(parsed.runtimeLiveConfig, 'config.json');
+  assert.equal(parsed.runtimeLiveReloadUrl, 'http://router.test:4101');
+  assert.equal(parsed.runtimeLiveArtifactRoot, 'artifacts');
+  for (const args of [
+    ['--runtime-live-config', 'one.json', '--runtime-live-config=two.json'],
+    [
+      '--runtime-live-reload-url=http://router.test:4101',
+      '--runtime-live-reload-url',
+      'http://other.test:4101',
+    ],
+    ['--runtime-live-artifact-root', 'one', '--runtime-live-artifact-root=two'],
+    ['--list', '--dry-run'],
+  ]) {
+    assert.throws(() => parseVerifyArgs(args), /may be specified only once/);
+  }
 });
 
 test('package scripts only forward to canonical verify selectors', async () => {
@@ -176,18 +204,21 @@ test('verify list shows compiler boundaries once without known-red wording', asy
   assert.doesNotMatch(result.stdout, /known-red|13 violations/);
 });
 
-test('runtime-live lists a blocked phase when its required config is missing', async () => {
+test('runtime-live lists every missing explicit input in one blocked phase', async () => {
   const result = await runProcess(
     process.execPath,
     [verifyPath, '--only', 'runtime-live', '--list'],
     { cwd: root, env: withoutRuntimeLiveConfig() },
   );
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /live:runtime:config/);
+  assert.match(result.stdout, /live:runtime:inputs/);
   assert.match(
     result.stdout,
-    /\[blocked: set SKIFF_RUNTIME_LIVE_CONFIG or pass --runtime-live-config <path>/,
+    /\[blocked: runtime-live is missing required explicit input\(s\):/,
   );
+  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_CONFIG/);
+  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_RELOAD_URL/);
+  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
   assert.doesNotMatch(result.stdout, /\| node(?:\s|$)/);
   assert.doesNotMatch(result.stdout, /SKIP/);
 });
@@ -201,23 +232,94 @@ test('runtime-live fails closed without config and never reports success', async
   assert.notEqual(result.code, 0, result.stdout);
   assert.match(
     `${result.stderr}\n${result.stdout}`,
-    /live:runtime:config cannot run: set SKIFF_RUNTIME_LIVE_CONFIG/,
+    /live:runtime:inputs: runtime-live is missing required explicit input/,
   );
   assert.doesNotMatch(result.stdout, /All selected Skiff verification phases passed/);
   assert.doesNotMatch(result.stdout, /SKIP/);
 });
 
-test('runtime-live fails closed for a missing config path or missing live fixtures', async () => {
+test('runtime-live blocks for every nonempty subset of missing required inputs', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-missing-matrix-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
+    const values = {
+      runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveArtifactRoot: artifactRoot,
+    };
+    const keys = Object.keys(values);
+    for (let mask = 1; mask < (1 << keys.length); mask += 1) {
+      const inputs = { ...values };
+      for (let index = 0; index < keys.length; index += 1) {
+        if ((mask & (1 << index)) !== 0) {
+          delete inputs[keys[index]];
+        }
+      }
+      const plan = await buildVerifyPlan({
+        root,
+        selectors: ['runtime-live'],
+        env: {},
+        ...inputs,
+      });
+      assert.equal(plan.phases.length, 1);
+      assert.match(plan.phases[0].preconditionError, /missing required explicit input/);
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live blocker prevents an earlier selected Cargo phase from starting', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-no-command-'));
+  const bin = join(fixture, 'bin');
+  const cargo = join(bin, 'cargo');
+  const marker = join(fixture, 'cargo-ran');
+  try {
+    await mkdir(bin);
+    await writeFile(cargo, [
+      '#!/usr/bin/env node',
+      "require('node:fs').writeFileSync(process.env.SKIFF_VERIFY_MARKER, 'ran');",
+      '',
+    ].join('\n'));
+    await chmod(cargo, 0o755);
+    const result = await runProcess(
+      process.execPath,
+      [verifyPath, '--only', 'rust,runtime-live'],
+      {
+        cwd: root,
+        env: {
+          ...withoutRuntimeLiveConfig(),
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          SKIFF_VERIFY_MARKER: marker,
+        },
+      },
+    );
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /live:runtime:inputs/);
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live fails closed for invalid paths or missing live fixtures', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-plan-'));
   try {
     const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await mkdir(artifactRoot);
     await assert.rejects(
       buildVerifyPlan({
         root: fixture,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
+        runtimeLiveReloadUrl: 'http://router.test:4101',
+        runtimeLiveArtifactRoot: artifactRoot,
       }),
-      /runtime-live config path does not exist/,
+      /runtime-live config path must be an existing file/,
     );
 
     await writeFile(configPath, '{}\n');
@@ -226,6 +328,8 @@ test('runtime-live fails closed for a missing config path or missing live fixtur
         root: fixture,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
+        runtimeLiveReloadUrl: 'http://router.test:4101',
+        runtimeLiveArtifactRoot: artifactRoot,
       }),
       /runtime-live found no \*\.live\.test\.skiff fixtures/,
     );
@@ -238,15 +342,23 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-positive-'));
   try {
     const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
     await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
     await write(fixture, 'runtime/live-tests/example.live.test.skiff');
 
     const plan = await buildVerifyPlan({
       root: fixture,
       selectors: ['runtime-live'],
       runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101/',
+      runtimeLiveArtifactRoot: artifactRoot,
     });
-    assert.deepEqual(plan.phases, [
+    assert.equal(plan.phases.length, 1);
+    const [{ executionPreflight, ...phase }] = plan.phases;
+    assert.equal(typeof executionPreflight, 'function');
+    assert.equal(executionPreflight(), undefined);
+    assert.deepEqual([phase], [
       {
         id: 'live:runtime:runtime/live-tests/example.live.test.skiff',
         kind: 'live/manual',
@@ -261,10 +373,293 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
           '--allow-network',
           '--config',
           configPath,
+          '--router-reload-url',
+          'http://router.test:4101/__skiff/reload-artifacts',
+          '--artifact-root',
+          artifactRoot,
+          '--deny-skips',
+          '--require-tests',
         ],
         cwd: fixture,
+        displayArgs: [
+          'run',
+          '--manifest-path',
+          'test-runner/Cargo.toml',
+          '--',
+          join(fixture, 'runtime', 'live-tests', 'example.live.test.skiff'),
+          '--live',
+          '--allow-network',
+          '--config',
+          configPath,
+          '--router-reload-url',
+          'http://router.test:4101',
+          '--artifact-root',
+          artifactRoot,
+          '--deny-skips',
+          '--require-tests',
+        ],
       },
     ]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live execution preflight catches target TOCTOU before any command starts', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-preflight-toctou-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
+    await write(fixture, 'runtime/live-tests/first.live.test.skiff');
+    await write(fixture, 'runtime/live-tests/second.live.test.skiff');
+
+    const built = await buildVerifyPlan({
+      root: fixture,
+      selectors: ['runtime-live'],
+      runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveArtifactRoot: artifactRoot,
+    });
+    assert.equal(built.phases.length, 2);
+    assert.ok(built.phases.every((phase) => typeof phase.executionPreflight === 'function'));
+    assert.equal(new Set(built.phases.map((phase) => phase.executionPreflight)).size, 1);
+
+    const markers = [
+      join(fixture, 'earlier-command-ran'),
+      ...built.phases.map((_, index) => join(fixture, `runtime-command-${index}-ran`)),
+      join(fixture, 'later-command-ran'),
+    ];
+    const markerPhase = (id, marker, executionPreflight) => ({
+      id,
+      kind: 'test',
+      command: process.execPath,
+      args: [
+        '--eval',
+        'require("node:fs").writeFileSync(process.argv[1], "ran")',
+        marker,
+      ],
+      cwd: fixture,
+      ...(executionPreflight === undefined ? {} : { executionPreflight }),
+    });
+    const plan = {
+      selectors: ['test'],
+      phases: [
+        markerPhase('earlier-must-not-run', markers[0]),
+        ...built.phases.map((phase, index) => markerPhase(
+          phase.id,
+          markers[index + 1],
+          phase.executionPreflight,
+        )),
+        markerPhase('later-must-not-run', markers.at(-1)),
+      ],
+    };
+
+    await rm(configPath);
+    await rm(artifactRoot, { recursive: true });
+    await writeFile(artifactRoot, 'replacement file\n');
+
+    await assert.rejects(
+      runVerifyPlan(plan, fixture),
+      (error) => {
+        for (const phase of built.phases) {
+          assert.match(
+            error.message,
+            new RegExp(`${escapeRegExp(phase.id)}: runtime-live config path is no longer`),
+          );
+          assert.match(
+            error.message,
+            new RegExp(`${escapeRegExp(phase.id)}: runtime-live artifact root is no longer`),
+          );
+        }
+        return true;
+      },
+    );
+    for (const marker of markers) {
+      await assert.rejects(access(marker), { code: 'ENOENT' });
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('Node reload URL parser matches the shared Rust contract fixture and redacts rejects', async () => {
+  const cases = JSON.parse(await readFile(
+    join(root, 'test-runner', 'tests', 'fixtures', 'runtime-reload-url-cases.json'),
+    'utf8',
+  ));
+  assert.equal(cases.version, 1);
+  for (const entry of cases.accepted) {
+    assert.deepEqual(parseRuntimeReloadUrl(entry.input), {
+      baseUrl: entry.display,
+      display: entry.display,
+      normalized: entry.normalized,
+    });
+  }
+  for (const entry of cases.rejected) {
+    assert.throws(
+      () => parseRuntimeReloadUrl(entry.input),
+      (error) => {
+        assert.equal(error.code, entry.reason);
+        if (entry.input) {
+          assert.doesNotMatch(error.message, new RegExp(escapeRegExp(entry.input)));
+        }
+        return true;
+      },
+    );
+  }
+});
+
+test('runtime-live rejects unsafe reload URLs and wrong artifact-root types before execution', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-invalid-input-'));
+  let connections = 0;
+  const listener = createServer((socket) => {
+    connections += 1;
+    socket.destroy();
+  });
+  try {
+    await new Promise((resolvePromise, reject) => {
+      listener.once('error', reject);
+      listener.listen(0, '127.0.0.1', resolvePromise);
+    });
+    const address = listener.address();
+    assert.notEqual(address, null);
+    assert.equal(typeof address, 'object');
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactFile = join(fixture, 'not-a-directory');
+    await writeFile(configPath, '{}\n');
+    await writeFile(artifactFile, 'file\n');
+    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
+
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        selectors: ['runtime-live'],
+        runtimeLiveConfig: configPath,
+        runtimeLiveReloadUrl: 'http://router.test:4101',
+        runtimeLiveArtifactRoot: artifactFile,
+      }),
+      /artifact root must be an existing directory/,
+    );
+
+    const sentinel = 'runtime-live-url-secret-sentinel';
+    let error;
+    try {
+      await buildVerifyPlan({
+        root: fixture,
+        selectors: ['runtime-live'],
+        runtimeLiveConfig: configPath,
+        runtimeLiveReloadUrl: `http://127.0.0.1:${address.port}/?token=${sentinel}`,
+        runtimeLiveArtifactRoot: fixture,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(error?.message ?? '', /reload_url_query/);
+    assert.doesNotMatch(error?.message ?? '', new RegExp(sentinel));
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    assert.equal(connections, 0);
+  } finally {
+    await new Promise((resolvePromise) => listener.close(resolvePromise));
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('generic development target environment cannot unlock runtime-live', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-env-boundary-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    await writeFile(configPath, '{}\n');
+    const plan = await buildVerifyPlan({
+      root: fixture,
+      selectors: ['runtime-live'],
+      runtimeLiveConfig: configPath,
+      env: {
+        SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/__skiff/reload-artifacts',
+        SKIFF_TEST_ARTIFACT_ROOT: '/stable/artifacts',
+      },
+    });
+    assert.equal(plan.phases.length, 1);
+    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_RELOAD_URL/);
+    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('real runtime-live discovery renders every fixture once with strict explicit arguments', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-real-plan-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
+    const plan = await buildVerifyPlan({
+      root,
+      selectors: ['runtime-live'],
+      runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveArtifactRoot: artifactRoot,
+    });
+    assert.equal(plan.phases.length, 4);
+    assert.equal(new Set(plan.phases.map((phase) => phase.id)).size, 4);
+    for (const phase of plan.phases) {
+      assert.equal(typeof phase.executionPreflight, 'function');
+      assert.ok(phase.args.includes('--deny-skips'));
+      assert.ok(phase.args.includes('--require-tests'));
+      assert.equal(phase.args[phase.args.indexOf('--config') + 1], configPath);
+      assert.equal(
+        phase.args[phase.args.indexOf('--router-reload-url') + 1],
+        'http://router.test:4101/__skiff/reload-artifacts',
+      );
+      assert.equal(phase.args[phase.args.indexOf('--artifact-root') + 1], artifactRoot);
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('runtime-live CLI list uses redacted display arguments and invalid URL errors hide raw sentinels', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-list-display-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
+    const listed = await runProcess(process.execPath, [
+      verifyPath,
+      '--only',
+      'runtime-live',
+      '--runtime-live-config',
+      configPath,
+      '--runtime-live-reload-url',
+      'http://router.test:4101/__skiff/reload-artifacts',
+      '--runtime-live-artifact-root',
+      artifactRoot,
+      '--list',
+    ], { cwd: root });
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.equal((listed.stdout.match(/live:runtime:/g) ?? []).length, 4);
+    assert.match(listed.stdout, /--router-reload-url http:\/\/router\.test:4101/);
+    assert.doesNotMatch(listed.stdout, /router\.test:4101\/__skiff\/reload-artifacts/);
+
+    const sentinel = 'verify-runtime-url-sentinel';
+    const rejected = await runProcess(process.execPath, [
+      verifyPath,
+      '--only',
+      'runtime-live',
+      '--runtime-live-config',
+      configPath,
+      '--runtime-live-reload-url',
+      `http://router.test:4101/?token=${sentinel}`,
+      '--runtime-live-artifact-root',
+      artifactRoot,
+      '--list',
+    ], { cwd: root });
+    assert.notEqual(rejected.code, 0);
+    assert.match(rejected.stderr, /reload_url_query/);
+    assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, new RegExp(sentinel));
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -282,6 +677,16 @@ test('duplicate phase IDs are rejected', () => {
     () => assertPlanIntegrity([duplicate, { ...duplicate }]),
     /duplicate verify phase id: duplicate/,
   );
+});
+
+test('empty plans and empty selector leaves fail closed even beside nonempty work', () => {
+  assert.throws(() => assertPlanIntegrity([]), /at least one phase/);
+  assert.throws(() => assertNonEmptyLeaf('empty', []), /empty produced no phases/);
+  assert.throws(
+    () => assertNonEmptyLeaf('empty', undefined),
+    /empty produced no phases/,
+  );
+  assert.doesNotThrow(() => assertNonEmptyLeaf('nonempty', [{ id: 'phase' }]));
 });
 
 test('duplicate command executions are rejected even when phase IDs differ', () => {
@@ -319,15 +724,59 @@ test('blocked phases require a reason and cannot masquerade as executable phases
     }]),
     /invalid blocked verify phase/,
   );
+  assert.throws(
+    () => assertPlanIntegrity([{
+      id: 'blocked-with-preflight',
+      kind: 'test',
+      cwd: root,
+      preconditionError: 'missing config',
+      executionPreflight: () => undefined,
+    }]),
+    /invalid blocked verify phase/,
+  );
 });
 
-test('runner rejects a blocked phase without spawning later work', async () => {
+test('executable phases validate displayArgs and executionPreflight contracts', () => {
+  const phase = {
+    id: 'valid',
+    kind: 'test',
+    cwd: root,
+    command: 'node',
+    args: ['secret'],
+  };
+  assert.throws(
+    () => assertPlanIntegrity([{ ...phase, displayArgs: [] }]),
+    /invalid verify phase displayArgs/,
+  );
+  assert.throws(
+    () => assertPlanIntegrity([{ ...phase, executionPreflight: 'not-a-function' }]),
+    /invalid verify phase executionPreflight/,
+  );
+  assert.doesNotThrow(() => assertPlanIntegrity([{
+    ...phase,
+    displayArgs: ['<redacted>'],
+    executionPreflight: () => undefined,
+  }]));
+});
+
+test('runner aggregates static blockers before spawning any earlier or later work', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-blocked-runner-'));
   const marker = join(fixture, 'later-phase-ran');
   try {
     const plan = {
       selectors: ['test'],
       phases: [
+        {
+          id: 'earlier-must-not-run',
+          kind: 'test',
+          command: process.execPath,
+          args: [
+            '--eval',
+            'require("node:fs").writeFileSync(process.argv[1], "ran")',
+            marker,
+          ],
+          cwd: fixture,
+        },
         {
           id: 'blocked-phase',
           kind: 'test',
@@ -349,12 +798,98 @@ test('runner rejects a blocked phase without spawning later work', async () => {
     };
     await assert.rejects(
       runVerifyPlan(plan, fixture),
-      /blocked-phase cannot run: missing required config/,
+      /blocked-phase: missing required config/,
     );
     await assert.rejects(access(marker), { code: 'ENOENT' });
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
+});
+
+test('runner executes every read-only preflight, aggregates failures, and starts no command', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-verify-execution-preflight-'));
+  const marker = join(fixture, 'phase-ran');
+  const visited = [];
+  try {
+    const plan = {
+      selectors: ['test'],
+      phases: [
+        {
+          id: 'would-run-first',
+          kind: 'test',
+          command: process.execPath,
+          args: [
+            '--eval',
+            'require("node:fs").writeFileSync(process.argv[1], "ran")',
+            marker,
+          ],
+          cwd: fixture,
+          executionPreflight: () => {
+            visited.push('first');
+            return 'first external prerequisite disappeared';
+          },
+        },
+        {
+          id: 'also-preflighted',
+          kind: 'test',
+          command: process.execPath,
+          args: ['--eval', 'process.exit(0)'],
+          cwd: fixture,
+          executionPreflight: async () => {
+            visited.push('second');
+            throw new Error('second prerequisite is unreadable');
+          },
+        },
+        {
+          id: 'static-blocker',
+          kind: 'test',
+          cwd: fixture,
+          preconditionError: 'static input missing',
+        },
+      ],
+    };
+    await assert.rejects(
+      runVerifyPlan(plan, fixture),
+      (error) => {
+        assert.match(error.message, /would-run-first: first external prerequisite disappeared/);
+        assert.match(error.message, /also-preflighted: second prerequisite is unreadable/);
+        assert.match(error.message, /static-blocker: static input missing/);
+        return true;
+      },
+    );
+    assert.deepEqual(visited, ['first', 'second']);
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('plan and execution logs use displayArgs without leaking execution-only sentinels', async () => {
+  const sentinel = 'verify-display-secret-sentinel';
+  const script = 'if (process.argv[1] !== "verify-display-secret-sentinel") process.exit(9)';
+  const plan = {
+    selectors: ['test'],
+    phases: [{
+      id: 'redacted-display',
+      kind: 'test',
+      command: process.execPath,
+      args: ['--eval', script, sentinel],
+      displayArgs: ['--eval', '<redacted-script>', '<redacted-target>'],
+      cwd: root,
+    }],
+  };
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...values) => lines.push(values.join(' '));
+  try {
+    printVerifyPlan(plan, root);
+    await runVerifyPlan(plan, root);
+  } finally {
+    console.log = originalLog;
+  }
+  const output = lines.join('\n');
+  assert.doesNotMatch(output, new RegExp(sentinel));
+  assert.match(output, /<redacted-target>/);
 });
 
 test('runner is fail-fast after the first failed phase', async () => {
@@ -515,5 +1050,13 @@ function runProcess(command, args, { cwd, env = process.env }) {
 function withoutRuntimeLiveConfig() {
   const env = { ...process.env };
   delete env.SKIFF_RUNTIME_LIVE_CONFIG;
+  delete env.SKIFF_RUNTIME_LIVE_RELOAD_URL;
+  delete env.SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT;
+  delete env.SKIFF_DEV_RELOAD_URL;
+  delete env.SKIFF_TEST_ARTIFACT_ROOT;
   return env;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

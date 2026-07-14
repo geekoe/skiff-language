@@ -6,6 +6,8 @@ export function parseVerifyArgs(argv) {
     list: false,
     selectors: [],
     runtimeLiveConfig: undefined,
+    runtimeLiveReloadUrl: undefined,
+    runtimeLiveArtifactRoot: undefined,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -14,10 +16,12 @@ export function parseVerifyArgs(argv) {
       continue;
     }
     if (arg === '--help' || arg === '-h') {
+      rejectRepeatedFlag(options.help, '--help');
       options.help = true;
       continue;
     }
     if (arg === '--list' || arg === '--dry-run') {
+      rejectRepeatedFlag(options.list, '--list/--dry-run');
       options.list = true;
       continue;
     }
@@ -34,12 +38,60 @@ export function parseVerifyArgs(argv) {
       continue;
     }
     if (arg === '--runtime-live-config') {
-      options.runtimeLiveConfig = requiredValue(argv, index, '--runtime-live-config');
+      setSingletonOption(
+        options,
+        'runtimeLiveConfig',
+        requiredValue(argv, index, '--runtime-live-config'),
+        '--runtime-live-config',
+      );
       index += 1;
       continue;
     }
     if (arg.startsWith('--runtime-live-config=')) {
-      options.runtimeLiveConfig = requiredInlineValue(arg, '--runtime-live-config');
+      setSingletonOption(
+        options,
+        'runtimeLiveConfig',
+        requiredInlineValue(arg, '--runtime-live-config'),
+        '--runtime-live-config',
+      );
+      continue;
+    }
+    if (arg === '--runtime-live-reload-url') {
+      setSingletonOption(
+        options,
+        'runtimeLiveReloadUrl',
+        requiredValue(argv, index, '--runtime-live-reload-url'),
+        '--runtime-live-reload-url',
+      );
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--runtime-live-reload-url=')) {
+      setSingletonOption(
+        options,
+        'runtimeLiveReloadUrl',
+        requiredInlineValue(arg, '--runtime-live-reload-url'),
+        '--runtime-live-reload-url',
+      );
+      continue;
+    }
+    if (arg === '--runtime-live-artifact-root') {
+      setSingletonOption(
+        options,
+        'runtimeLiveArtifactRoot',
+        requiredValue(argv, index, '--runtime-live-artifact-root'),
+        '--runtime-live-artifact-root',
+      );
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--runtime-live-artifact-root=')) {
+      setSingletonOption(
+        options,
+        'runtimeLiveArtifactRoot',
+        requiredInlineValue(arg, '--runtime-live-artifact-root'),
+        '--runtime-live-artifact-root',
+      );
       continue;
     }
     throw new Error(`unknown argument ${arg}`);
@@ -63,13 +115,17 @@ selectors:
   rust                         cargo test --workspace --no-fail-fast
   router  telemetry  scripts  scripts-syntax  scripts-dev-sync  vscode  checks  type-check
   compiler-boundaries          focused compiler source-boundary check
-  runtime-live                 explicit live fixtures; requires a runtime config
+  runtime-live                 explicit live fixtures; requires config, reload URL, and artifact root
   db-encrypted-storage-live    explicit managed Mongo/runtime/keyring live check
 
 options:
   --only <a,b>                 select one or more groups; may be specified once
   --list, --dry-run            print the expanded plan without executing it
   --runtime-live-config <path> runtime-live config, relative to the repository root
+  --runtime-live-reload-url <url>
+                                explicit http://host:port router reload target
+  --runtime-live-artifact-root <dir>
+                                explicit existing runtime artifact directory
   -h, --help                   show this help
 
 check-loop-risk-health remains a manual command because it requires endpoint/runtime arguments.
@@ -95,6 +151,19 @@ function splitSelectors(value) {
 function rejectRepeatedOnly(options) {
   if (options.selectors.length > 0) {
     throw new Error('--only may be specified only once');
+  }
+}
+
+function setSingletonOption(options, key, value, option) {
+  if (options[key] !== undefined) {
+    throw new Error(`${option} may be specified only once`);
+  }
+  options[key] = value;
+}
+
+function rejectRepeatedFlag(alreadySet, option) {
+  if (alreadySet) {
+    throw new Error(`${option} may be specified only once`);
   }
 }
 

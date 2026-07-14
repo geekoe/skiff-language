@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import { checkerPhases } from './verify-checkers.mjs';
+import { parseRuntimeReloadUrl } from './runtime-reload-url.mjs';
 import {
   discoverJavaScriptFiles,
   discoverRuntimeLiveTests,
@@ -46,13 +47,21 @@ export async function buildVerifyPlan({
   root,
   selectors = ['verify'],
   runtimeLiveConfig,
+  runtimeLiveReloadUrl,
+  runtimeLiveArtifactRoot,
   env = process.env,
 } = {}) {
   if (!root) {
     throw new Error('verify plan requires the repository root');
   }
   const leaves = expandSelectors(selectors);
-  const builders = phaseBuilders({ root, runtimeLiveConfig, env });
+  const builders = phaseBuilders({
+    root,
+    runtimeLiveConfig,
+    runtimeLiveReloadUrl,
+    runtimeLiveArtifactRoot,
+    env,
+  });
   const phases = [];
   for (const leaf of leaves) {
     const builder = builders[leaf];
@@ -61,7 +70,9 @@ export async function buildVerifyPlan({
         `invalid selector ${leaf}; expected one of ${PUBLIC_SELECTORS.join(', ')}`,
       );
     }
-    phases.push(...(await builder()));
+    const leafPhases = await builder();
+    assertNonEmptyLeaf(leaf, leafPhases);
+    phases.push(...leafPhases);
   }
   assertPlanIntegrity(phases);
   return { selectors: [...selectors], phases };
@@ -77,6 +88,9 @@ export function expandSelectors(selectors) {
 }
 
 export function assertPlanIntegrity(phases) {
+  if (!Array.isArray(phases) || phases.length === 0) {
+    throw new Error('verify plan must contain at least one phase');
+  }
   const seenIds = new Set();
   const seenExecutions = new Map();
   for (const phase of phases) {
@@ -97,6 +111,8 @@ export function assertPlanIntegrity(phases) {
         !isNonEmptyString(phase.preconditionError)
         || phase.command !== undefined
         || phase.args !== undefined
+        || phase.displayArgs !== undefined
+        || phase.executionPreflight !== undefined
       ) {
         throw new Error(`invalid blocked verify phase: ${JSON.stringify(phase)}`);
       }
@@ -104,6 +120,22 @@ export function assertPlanIntegrity(phases) {
     }
     if (!isNonEmptyString(phase.command) || !Array.isArray(phase.args)) {
       throw new Error(`invalid executable verify phase: ${JSON.stringify(phase)}`);
+    }
+    if (!phase.args.every((arg) => typeof arg === 'string')) {
+      throw new Error(`invalid executable verify phase args: ${JSON.stringify(phase)}`);
+    }
+    if (phase.displayArgs !== undefined && (
+      !Array.isArray(phase.displayArgs)
+      || phase.displayArgs.length !== phase.args.length
+      || !phase.displayArgs.every((arg) => typeof arg === 'string')
+    )) {
+      throw new Error(`invalid verify phase displayArgs: ${JSON.stringify(phase)}`);
+    }
+    if (
+      phase.executionPreflight !== undefined
+      && typeof phase.executionPreflight !== 'function'
+    ) {
+      throw new Error(`invalid verify phase executionPreflight: ${phase.id}`);
     }
 
     const execution = JSON.stringify([resolve(phase.cwd), phase.command, phase.args]);
@@ -114,6 +146,12 @@ export function assertPlanIntegrity(phases) {
       );
     }
     seenExecutions.set(execution, phase.id);
+  }
+}
+
+export function assertNonEmptyLeaf(leaf, phases) {
+  if (!Array.isArray(phases) || phases.length === 0) {
+    throw new Error(`verify selector leaf ${leaf} produced no phases`);
   }
 }
 
@@ -135,7 +173,13 @@ function expandSelector(selector, leaves, seenLeaves, active) {
   }
 }
 
-function phaseBuilders({ root, runtimeLiveConfig, env }) {
+function phaseBuilders({
+  root,
+  runtimeLiveConfig,
+  runtimeLiveReloadUrl,
+  runtimeLiveArtifactRoot,
+  env,
+}) {
   return {
     rust: async () => [
       phase(root, 'rust:workspace', 'rust', 'cargo', [
@@ -182,7 +226,12 @@ function phaseBuilders({ root, runtimeLiveConfig, env }) {
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
     'db-encrypted-storage-live': async () =>
       checkerPhases(root, 'db-encrypted-storage-live'),
-    'runtime-live': async () => runtimeLivePhases(root, runtimeLiveConfig, env),
+    'runtime-live': async () => runtimeLivePhases(root, {
+      configuredConfigPath: runtimeLiveConfig,
+      configuredReloadUrl: runtimeLiveReloadUrl,
+      configuredArtifactRoot: runtimeLiveArtifactRoot,
+      env,
+    }),
   };
 }
 
@@ -201,22 +250,59 @@ async function scriptTestPhases(root) {
   );
 }
 
-async function runtimeLivePhases(root, configuredPath, env) {
-  const rawConfigPath = configuredPath || env.SKIFF_RUNTIME_LIVE_CONFIG;
+async function runtimeLivePhases(root, {
+  configuredConfigPath,
+  configuredReloadUrl,
+  configuredArtifactRoot,
+  env,
+}) {
+  const rawConfigPath = nonEmptyValue(
+    configuredConfigPath,
+    env.SKIFF_RUNTIME_LIVE_CONFIG,
+  );
+  const rawReloadUrl = nonEmptyValue(
+    configuredReloadUrl,
+    env.SKIFF_RUNTIME_LIVE_RELOAD_URL,
+  );
+  const rawArtifactRoot = nonEmptyValue(
+    configuredArtifactRoot,
+    env.SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT,
+  );
+  const missing = [];
   if (!rawConfigPath) {
+    missing.push(
+      'runtime config (SKIFF_RUNTIME_LIVE_CONFIG or --runtime-live-config <path>)',
+    );
+  }
+  if (!rawReloadUrl) {
+    missing.push(
+      'router reload URL (SKIFF_RUNTIME_LIVE_RELOAD_URL or --runtime-live-reload-url <url>)',
+    );
+  }
+  if (!rawArtifactRoot) {
+    missing.push(
+      'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
+    );
+  }
+  if (missing.length > 0) {
     return [
       blockedPhase(
         root,
-        'live:runtime:config',
+        'live:runtime:inputs',
         'live/manual',
-        'set SKIFF_RUNTIME_LIVE_CONFIG or pass --runtime-live-config <path> to run live runtime fixtures',
+        `runtime-live is missing required explicit input(s): ${missing.join('; ')}`,
       ),
     ];
   }
-  const configPath = isAbsolute(rawConfigPath) ? rawConfigPath : resolve(root, rawConfigPath);
-  if (!existsSync(configPath)) {
-    throw new Error(`runtime-live config path does not exist: ${configPath}`);
+  const configPath = resolveInputPath(root, rawConfigPath);
+  if (!isFile(configPath)) {
+    throw new Error(`runtime-live config path must be an existing file: ${configPath}`);
   }
+  const artifactRoot = resolveInputPath(root, rawArtifactRoot);
+  if (!isDirectory(artifactRoot)) {
+    throw new Error(`runtime-live artifact root must be an existing directory: ${artifactRoot}`);
+  }
+  const reloadTarget = parseRuntimeReloadUrl(rawReloadUrl);
 
   const files = await discoverRuntimeLiveTests(root);
   if (files.length === 0) {
@@ -224,8 +310,29 @@ async function runtimeLivePhases(root, configuredPath, env) {
   }
   const packageStore = join(root, 'runtime', 'live-tests', 'package-store');
   const packageArgs = existsSync(packageStore) ? ['--packages-dir', packageStore] : [];
-  return files.map((file) =>
-    phase(root, `live:runtime:${repoRelative(root, file)}`, 'live/manual', 'cargo', [
+  const executionPreflight = () => {
+    const failures = [];
+    if (!isFile(configPath)) {
+      failures.push(`runtime-live config path is no longer an existing file: ${configPath}`);
+    }
+    if (!isDirectory(artifactRoot)) {
+      failures.push(
+        `runtime-live artifact root is no longer an existing directory: ${artifactRoot}`,
+      );
+    }
+    try {
+      parseRuntimeReloadUrl(reloadTarget.normalized);
+    } catch (error) {
+      failures.push(
+        error instanceof Error
+          ? error.message
+          : 'runtime-live reload URL failed execution preflight validation',
+      );
+    }
+    return failures.length === 0 ? undefined : failures;
+  };
+  return files.map((file) => {
+    const args = [
       'run',
       '--manifest-path',
       'test-runner/Cargo.toml',
@@ -235,17 +342,33 @@ async function runtimeLivePhases(root, configuredPath, env) {
       '--allow-network',
       '--config',
       configPath,
+      '--router-reload-url',
+      reloadTarget.normalized,
+      '--artifact-root',
+      artifactRoot,
+      '--deny-skips',
+      '--require-tests',
       ...packageArgs,
-    ]),
-  );
+    ];
+    const displayArgs = [...args];
+    displayArgs[displayArgs.indexOf('--router-reload-url') + 1] = reloadTarget.display;
+    return phase(
+      root,
+      `live:runtime:${repoRelative(root, file)}`,
+      'live/manual',
+      'cargo',
+      args,
+      { displayArgs, executionPreflight },
+    );
+  });
 }
 
 function packagePhase(root, id, kind, directory, args) {
   return phase(join(root, directory), id, kind, 'pnpm', args);
 }
 
-function phase(cwd, id, kind, command, args) {
-  return { id, kind, command, args, cwd };
+function phase(cwd, id, kind, command, args, options = {}) {
+  return { id, kind, command, args, cwd, ...options };
 }
 
 function blockedPhase(cwd, id, kind, preconditionError) {
@@ -254,4 +377,31 @@ function blockedPhase(cwd, id, kind, preconditionError) {
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function nonEmptyValue(configured, environment) {
+  if (configured !== undefined) {
+    return typeof configured === 'string' && configured.length > 0 ? configured : undefined;
+  }
+  return typeof environment === 'string' && environment.length > 0 ? environment : undefined;
+}
+
+function resolveInputPath(root, path) {
+  return isAbsolute(path) ? path : resolve(root, path);
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }

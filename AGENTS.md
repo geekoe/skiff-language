@@ -101,6 +101,13 @@ node scripts/verify.mjs --only node --list
 rustdoc public API 检查都属于默认 `checks` gate；`--only compiler-boundaries` 只用于
 聚焦运行 source-boundary checker。
 
+`runtime-live` 必须同时显式提供 runtime config、router reload URL 和 artifact root；专用
+verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和
+`--runtime-live-artifact-root`，对应环境变量均以 `SKIFF_RUNTIME_LIVE_` 开头。它不会读取
+通用的 `SKIFF_DEV_RELOAD_URL`/`SKIFF_TEST_ARTIFACT_ROOT`，也不会猜测 stable 4001 或 health
+返回的 artifact root。canonical runtime live phase 固定启用 `--deny-skips --require-tests`，
+因此 SKIP 和零测试都不是成功。
+
 常用聚焦测试：
 
 ```bash
