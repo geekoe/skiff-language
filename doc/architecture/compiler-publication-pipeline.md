@@ -8,9 +8,8 @@
 API，字段名也不保证和当前 `compiler` 实现一致。某些类型（如
 `ConfigRequirementSet`、`ServiceActivationInput`、`PublishedArtifacts`）目前尚未
 在代码里成型；已存在的类型（如 `SourceCompileModel`、`LoweredPublication`、
-`CompiledPublication`）字段可能与此处不同。当前实现状态以
-`../implementation/compiler-architecture-audit-2026-06-03.md` 记录的 open items
-为准；本文描述的是该 audit 指向的终点。
+`CompiledPublication`）字段可能与此处不同。实现仍在向这些边界收敛；本文描述长期
+目标，不依赖已经归档或删除的迁移审计文档。
 
 ## Scope
 
@@ -44,6 +43,26 @@ PublicationInput
 
 `CompiledPublication` 的核心是 `SourceCompileModel + LoweredPublication` 的组合
 （代码里已接近这个形状），下游 projection 阶段消费的就是它。
+
+### Neutral compiler support crates
+
+`skiff-compiler-core` 是 compiler DAG 最底层的纯 cross-stage support。它可以依赖
+artifact model 和 syntax/value 类库，但不能依赖 artifact identity owner、IO/YAML、
+compiler facade 或任何 compiler stage。
+
+Package publication ABI 的 typed semantic assembly 归
+`skiff-compiler-publication-abi`：ABI surface/builder、public function/public instance
+operation ref、contract validation 和 implementation links 都在这里组装。这个 neutral
+crate 只依赖 artifact model 与 `skiff-artifact-identity`，source 和 projection 消费同一份
+实现，不在 core 或各 stage 复制 builder。
+
+跨 compiler/runtime/emission 共享的 File IR、service-unit、package build/ABI、publication
+ABI 和 operation ABI canonical bytes/hash/prefix 只归 `skiff-artifact-identity`。lowering、
+projection、publication ABI assembly 和 emission 只能通过薄适配委托给该 owner。
+
+`skiff-compiler-projection-input` 是 typed DTO handoff。DTO 可以提供 constructor、只读
+accessor 和 builder-style 字段替换；它不能解析 source、推导 type/ABI、执行 IO 或承担
+stage orchestration。
 
 每个阶段只能消费前一阶段的 typed output。任何阶段如果需要 AST、源码文本、
 配置原文、artifact JSON 或 path/string 协议中的事实，必须先把该事实提升到
@@ -518,9 +537,9 @@ model，里面没有 AST 实例、没有 `config.yml` 原文、没有 raw artifa
 纵深防御是加分项，不是这些不变量成立的前提：接口输入类型定对了，不变量就成立；
 crate 边界只是把绕过它的代价从"自觉"提高到"编不过"。
 
-不要用「禁止子串扫描某个文件里不得出现某个符号」这类测试来把关结构性不变量。它锁的
-是字面符号不是语义，换个字段名或写法就失效，且容易给人"已达标"的错觉。结构是否达标
-以本文契约和 `../implementation/compiler-architecture-audit-2026-06-03.md` 的 open
-items 为准。
+Cargo dependency graph、阶段入口类型和 public API graph 是结构性不变量的主要证明。
+源码扫描可以作为 regression safety net，阻止已迁出的高信号依赖或行为按原形长回；它
+锁的是字面模式，不能独立证明结构正确，也不能用封闭方法名白名单拒绝新的合法 DTO API。
+结构是否达标最终以本文契约和真实依赖/API/data-flow 为准。
 
 Implementation 文档可以追踪更细的迁移步骤，但不得削弱这些契约。

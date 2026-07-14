@@ -28,6 +28,7 @@ export const PUBLIC_SELECTORS = Object.freeze([
 
 const SELECTOR_EXPANSIONS = Object.freeze({
   verify: ['rust', 'node', 'checks'],
+  checks: ['compiler-boundaries', 'checks-default'],
   node: ['router', 'telemetry', 'scripts', 'vscode'],
   router: ['router-type-check', 'router-test'],
   telemetry: ['telemetry-type-check', 'telemetry-test'],
@@ -177,7 +178,7 @@ function phaseBuilders({ root, runtimeLiveConfig, env }) {
     'vscode-grammar': async () => [
       packagePhase(root, 'vscode:grammar', 'vscode', 'vscode', ['run', 'test:grammar']),
     ],
-    checks: async () => checkerPhases(root, 'checks'),
+    'checks-default': async () => checkerPhases(root, 'checks'),
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
     'db-encrypted-storage-live': async () =>
       checkerPhases(root, 'db-encrypted-storage-live'),

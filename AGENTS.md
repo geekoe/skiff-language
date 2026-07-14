@@ -97,8 +97,9 @@ node scripts/verify.mjs --only node --list
 ```
 
 默认入口不运行 live 检查；需要时显式使用 `--only runtime-live` 或
-`--only db-encrypted-storage-live`。`--only compiler-boundaries` 是当前 known-red 的手动架构检查，
-在边界违规清零前不属于默认 gate。
+`--only db-encrypted-storage-live`。compiler boundary 和受管 compiler crates 的实际
+rustdoc public API 检查都属于默认 `checks` gate；`--only compiler-boundaries` 只用于
+聚焦运行 source-boundary checker。
 
 常用聚焦测试：
 

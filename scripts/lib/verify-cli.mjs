@@ -62,7 +62,7 @@ selectors:
   node                         Node/TypeScript plan; no Rust workspace test phase
   rust                         cargo test --workspace --no-fail-fast
   router  telemetry  scripts  scripts-syntax  scripts-dev-sync  vscode  checks  type-check
-  compiler-boundaries          known-red/manual; currently reports 13 violations
+  compiler-boundaries          focused compiler source-boundary check
   runtime-live                 explicit live fixtures; requires a runtime config
   db-encrypted-storage-live    explicit managed Mongo/runtime/keyring live check
 
@@ -73,8 +73,8 @@ options:
   -h, --help                   show this help
 
 check-loop-risk-health remains a manual command because it requires endpoint/runtime arguments.
-The real crate public API gate remains manual because it requires nightly rustdoc; its self-test
-is part of the default checks selector.`);
+The checks selector includes compiler boundaries plus hermetic and actual configured public API
+checks; rustdoc falls back to the current toolchain when nightly is unavailable.`);
 }
 
 function splitSelectors(value) {

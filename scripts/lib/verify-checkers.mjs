@@ -8,8 +8,7 @@ export const CHECKER_CLASSIFICATIONS = Object.freeze({
 });
 
 export const CHECKER_REGISTRY = Object.freeze([
-  checker('scripts/check-compiler-boundaries.mjs', CHECKER_CLASSIFICATIONS.KNOWN_RED, {
-    reason: 'Reports 13 current compiler boundary violations; run explicitly during boundary work.',
+  checker('scripts/check-compiler-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:compiler-boundaries', 'compiler-boundaries')],
   }),
   checker('scripts/check-compiler-crate-dag.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
@@ -18,9 +17,11 @@ export const CHECKER_REGISTRY = Object.freeze([
       invocation('checks:compiler-crate-dag', 'checks'),
     ],
   }),
-  checker('scripts/check-crate-public-api.mjs', CHECKER_CLASSIFICATIONS.SELF_TEST, {
-    reason: 'The hermetic self-test is default; real crate checks require a usable nightly rustdoc toolchain.',
-    invocations: [invocation('checks:crate-public-api:self-test', 'checks', ['--self-test'])],
+  checker('scripts/check-crate-public-api.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
+    invocations: [
+      invocation('checks:crate-public-api:self-test', 'checks', ['--self-test']),
+      invocation('checks:crate-public-api:all-configured', 'checks', ['--all-configured']),
+    ],
   }),
   checker('scripts/check-db-encrypted-storage-live.mjs', CHECKER_CLASSIFICATIONS.LIVE_MANUAL, {
     reason: 'Starts an isolated managed Mongo/runtime/keyring live environment.',

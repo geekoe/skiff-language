@@ -120,7 +120,60 @@ test('default verify has one Rust workspace and one artifact identity check, wit
     plan.phases.filter((phase) => phase.id === 'checks:artifact-identity').length,
     1,
   );
+  assert.equal(
+    plan.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    1,
+  );
+  assert.equal(
+    plan.phases.filter((phase) => phase.id === 'checks:crate-public-api:self-test').length,
+    1,
+  );
+  assert.equal(
+    plan.phases.filter((phase) => phase.id === 'checks:crate-public-api:all-configured').length,
+    1,
+  );
   assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
+});
+
+test('compiler boundary selector is canonical and deduplicated across checks combinations', async () => {
+  const focused = await buildVerifyPlan({ root, selectors: ['compiler-boundaries'] });
+  assert.deepEqual(
+    focused.phases.map(({ id, args }) => ({ id, args })),
+    [
+      {
+        id: 'checks:compiler-boundaries',
+        args: ['scripts/check-compiler-boundaries.mjs'],
+      },
+    ],
+  );
+
+  const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
+  assert.equal(
+    checks.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    1,
+  );
+  const combined = await buildVerifyPlan({
+    root,
+    selectors: ['checks', 'compiler-boundaries'],
+  });
+  assert.equal(
+    combined.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
+    1,
+  );
+});
+
+test('verify list shows compiler boundaries once without known-red wording', async () => {
+  const result = await runProcess(
+    process.execPath,
+    [verifyPath, '--only', 'checks,compiler-boundaries', '--list'],
+    { cwd: root },
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(
+    (result.stdout.match(/scripts\/check-compiler-boundaries\.mjs/g) ?? []).length,
+    1,
+  );
+  assert.doesNotMatch(result.stdout, /known-red|13 violations/);
 });
 
 test('runtime-live lists a blocked phase when its required config is missing', async () => {
@@ -384,16 +437,22 @@ test('filesystem discovery finds new tests and excludes generated or local direc
   }
 });
 
-test('every checker is classified once and known-red/live checks are not default', async () => {
+test('every checker is classified once; compiler boundaries are default and live checks are not', async () => {
   await assertCheckerRegistryComplete(root);
   const compilerBoundaries = CHECKER_REGISTRY.find((entry) =>
     entry.path.endsWith('check-compiler-boundaries.mjs'),
   );
-  assert.equal(compilerBoundaries?.classification, CHECKER_CLASSIFICATIONS.KNOWN_RED);
+  assert.equal(compilerBoundaries?.classification, CHECKER_CLASSIFICATIONS.DEFAULT);
   const defaultPlan = await buildVerifyPlan({ root, selectors: ['checks'] });
   assert.equal(
-    defaultPlan.phases.some((phase) => phase.args.includes('scripts/check-compiler-boundaries.mjs')),
-    false,
+    defaultPlan.phases.filter((phase) =>
+      phase.args.includes('scripts/check-compiler-boundaries.mjs')).length,
+    1,
+  );
+  assert.equal(
+    defaultPlan.phases.filter((phase) =>
+      phase.args.includes('--all-configured')).length,
+    1,
   );
   assert.equal(defaultPlan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
