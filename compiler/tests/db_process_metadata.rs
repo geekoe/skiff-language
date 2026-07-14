@@ -564,6 +564,75 @@ packages:
 }
 
 #[test]
+fn package_db_consumer_receives_transitive_exported_alias_types() {
+    let project = ServiceProjectBuilder::new("package-db-transitive-exported-alias-types")
+        .write_root_file(
+            "service.yml",
+            r#"
+id: example.com/alias-consumer
+version: 1.0.0
+
+packages:
+  - id: example.com/alias-records
+    version: 1.0.0
+    alias: records
+"#,
+        )
+        .write_source(
+            "internal/consumer.skiff",
+            r#"
+            import records
+
+            function loadParent(id: string) -> records.model.Parent {
+              return db require records.model.Parent(id)
+            }
+            "#,
+        );
+    project.add_package_manifest_in_dir(
+        "example.com/alias-records",
+        r#"
+id: example.com/alias-records
+version: 1.0.0
+"#,
+    );
+    write_package_api_yml(
+        project.root(),
+        "example.com/alias-records",
+        r#"
+model:
+  Status: model.Status
+  CleanupStatus: model.CleanupStatus
+  CleanupReason: model.CleanupReason
+  Parent: model.Parent
+"#,
+    );
+    project.add_package_source(
+        "example.com/alias-records",
+        "model.skiff",
+        r#"
+        alias Status = "configuring" | "active" | "deleted"
+        alias CleanupStatus = "none" | "pending" | "acked"
+        alias CleanupReason = "parent_terminal" | "create_failed"
+
+        type Parent {
+          id: string,
+          status: Status,
+          cleanupStatus: CleanupStatus?,
+          cleanupReason: CleanupReason?,
+          cleanupHistory: Array<CleanupReason?>?,
+          cleanupByKey: Map<string, CleanupStatus?>?
+        }
+
+        db object Parent {
+          primary key(id)
+        }
+        "#,
+    );
+
+    build_temp_service_publication(project.root());
+}
+
+#[test]
 fn package_collection_name_mapping_is_validated_against_package_metadata() {
     for (name, packages_yaml, service_db, expected) in [
         (
