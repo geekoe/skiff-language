@@ -12,8 +12,8 @@ import { parseRuntimeReloadUrl } from '../lib/runtime-reload-url.mjs';
 import {
   CHECKER_CLASSIFICATIONS,
   CHECKER_REGISTRY,
-  assertCheckerRegistryComplete,
 } from '../lib/verify-checkers.mjs';
+import { assertVerifyCatalogComplete } from '../lib/verify-live-catalog.mjs';
 import {
   discoverJavaScriptFiles,
   discoverScriptTests,
@@ -314,10 +314,12 @@ test('runtime-live fails closed for invalid paths or missing live fixtures', asy
     await assert.rejects(
       buildVerifyPlan({
         root: fixture,
+        catalogRoot: root,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
         runtimeLiveReloadUrl: 'http://router.test:4101',
         runtimeLiveArtifactRoot: artifactRoot,
+        env: { PATH: fixture },
       }),
       /runtime-live config path must be an existing file/,
     );
@@ -326,10 +328,12 @@ test('runtime-live fails closed for invalid paths or missing live fixtures', asy
     await assert.rejects(
       buildVerifyPlan({
         root: fixture,
+        catalogRoot: root,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
         runtimeLiveReloadUrl: 'http://router.test:4101',
         runtimeLiveArtifactRoot: artifactRoot,
+        env: { PATH: fixture },
       }),
       /runtime-live found no \*\.live\.test\.skiff fixtures/,
     );
@@ -349,6 +353,7 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
 
     const plan = await buildVerifyPlan({
       root: fixture,
+      catalogRoot: root,
       selectors: ['runtime-live'],
       runtimeLiveConfig: configPath,
       runtimeLiveReloadUrl: 'http://router.test:4101/',
@@ -362,6 +367,8 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
       {
         id: 'live:runtime:runtime/live-tests/example.live.test.skiff',
         kind: 'live/manual',
+        tier: 'live/manual',
+        ownership: 'external',
         command: 'cargo',
         args: [
           'run',
@@ -417,6 +424,7 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
 
     const built = await buildVerifyPlan({
       root: fixture,
+      catalogRoot: root,
       selectors: ['runtime-live'],
       runtimeLiveConfig: configPath,
       runtimeLiveReloadUrl: 'http://router.test:4101',
@@ -535,6 +543,7 @@ test('runtime-live rejects unsafe reload URLs and wrong artifact-root types befo
     await assert.rejects(
       buildVerifyPlan({
         root: fixture,
+        catalogRoot: root,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
         runtimeLiveReloadUrl: 'http://router.test:4101',
@@ -548,6 +557,7 @@ test('runtime-live rejects unsafe reload URLs and wrong artifact-root types befo
     try {
       await buildVerifyPlan({
         root: fixture,
+        catalogRoot: root,
         selectors: ['runtime-live'],
         runtimeLiveConfig: configPath,
         runtimeLiveReloadUrl: `http://127.0.0.1:${address.port}/?token=${sentinel}`,
@@ -571,8 +581,10 @@ test('generic development target environment cannot unlock runtime-live', async 
   try {
     const configPath = join(fixture, 'runtime-live.json');
     await writeFile(configPath, '{}\n');
+    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
     const plan = await buildVerifyPlan({
       root: fixture,
+      catalogRoot: root,
       selectors: ['runtime-live'],
       runtimeLiveConfig: configPath,
       env: {
@@ -965,7 +977,11 @@ test('filesystem discovery finds new tests and excludes generated or local direc
       ],
     );
 
-    const plan = await buildVerifyPlan({ root: fixture, selectors: ['scripts'] });
+    const plan = await buildVerifyPlan({
+      root: fixture,
+      catalogRoot: root,
+      selectors: ['scripts'],
+    });
     assert.ok(plan.phases.some((phase) => phase.id.endsWith('new.test.mjs')));
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -973,7 +989,7 @@ test('filesystem discovery finds new tests and excludes generated or local direc
 });
 
 test('every checker is classified once; compiler boundaries are default and live checks are not', async () => {
-  await assertCheckerRegistryComplete(root);
+  await assertVerifyCatalogComplete(root);
   const compilerBoundaries = CHECKER_REGISTRY.find((entry) =>
     entry.path.endsWith('check-compiler-boundaries.mjs'),
   );

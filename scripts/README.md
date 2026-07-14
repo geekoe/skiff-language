@@ -223,6 +223,26 @@ Set `--service-db-mongo-url`, `SKIFF_SERVICE_DB_MONGO_URL`, or `SERVICE_DB_MONGO
 
 Set `--service-db-encryption-keyring-file` or `SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE` to an absolute path on the remote runtime host to include `serviceDb.encryption.keyringFile` in `${remoteSkiff}/config/runtime.yml`. Provision the keyring separately on that host before deployment. The deploy script never reads, validates, creates, copies, rsyncs, or backs up the keyring itself; it transfers only the generated runtime config containing the mount path. Its JSON summary reports only whether a keyring path was configured, never the path or key material. Omitting both settings omits the runtime encryption block.
 
+## Canonical Live Verification Registry
+
+`lib/verify-live-registry.mjs` is the single declaration for canonical live selectors. It currently
+registers `runtime-live` as an externally owned target and `db-encrypted-storage-live` as a managed,
+temporary Mongo/runtime/keyring environment. Both are `live/manual`; `pnpm test`, default
+`pnpm verify`, Cargo workspace tests, and CI do not execute them.
+
+Supporting modules have narrow, one-way responsibilities: `lib/verify-selector-graph.mjs` declares
+the ordinary selector namespace, `lib/verify-live-catalog.mjs` validates cross-catalog paths, IDs,
+and selector conflicts, and `lib/verify-live-plan.mjs` interprets the registry into prerequisites and
+phases. They must not duplicate selector or prerequisite declarations from the canonical registry.
+
+Use `node verify.mjs --only <selector> --list` to audit the generated or blocked plan without running
+the workload. Registry prerequisites are checked from PATH without executing tools, then checked
+again before the first phase: runtime needs only `cargo` and `node`; encrypted storage needs `node`,
+`cargo`, `pnpm`, `mongod`, and `mongosh`. The managed DB harness retains its isolated temporary root
+and `45000`–`45999` port range. Loop-risk health/stress remain direct manual commands until their
+strict CLI and canonical configuration contract are implemented; they are intentionally not live
+selectors yet.
+
 ## Package Remote CLI Live Test
 
 `package-live-test.mjs` checks the narrow package remote loop: create a temporary package, run `skiff package publish --wait --json`, resolve it, pull it back, and verify the pulled `package.yml` and `.skiff` source. It expects a running package remote and a CLI token from `skiff package auth authorize`. `skiff package publish --wait` currently completes the build through `/packages/builds/complete` as a local CLI/test shim, using a deterministic build identity derived from the source archive hash until a real cloud build service exists.

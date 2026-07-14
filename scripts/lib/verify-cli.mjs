@@ -1,4 +1,5 @@
 import { PUBLIC_SELECTORS } from './verify-plan.mjs';
+import { renderLiveSelectorHelp } from './verify-live-registry.mjs';
 
 export function parseVerifyArgs(argv) {
   const options = {
@@ -115,8 +116,7 @@ selectors:
   rust                         cargo test --workspace --no-fail-fast
   router  telemetry  scripts  scripts-syntax  scripts-dev-sync  vscode  checks  type-check
   compiler-boundaries          focused compiler source-boundary check
-  runtime-live                 explicit live fixtures; requires config, reload URL, and artifact root
-  db-encrypted-storage-live    explicit managed Mongo/runtime/keyring live check
+${renderLiveSelectorHelp()}
 
 options:
   --only <a,b>                 select one or more groups; may be specified once

@@ -1,0 +1,322 @@
+export const LIVE_OWNERSHIP = Object.freeze({
+  NONE: 'none',
+  EXTERNAL: 'external',
+  MANAGED: 'managed',
+});
+
+export const LIVE_TIERS = Object.freeze({
+  SELF_TEST: 'self-test',
+  LIVE_MANUAL: 'live/manual',
+});
+
+export const LIVE_PLAN_TYPES = Object.freeze({
+  RUNTIME_FIXTURES: 'runtime-fixtures',
+  FIXED_COMMAND: 'fixed-command',
+});
+
+export const LIVE_DISCOVERIES = Object.freeze({
+  RUNTIME_LIVE_TESTS: 'runtime-live-tests',
+});
+
+export const LIVE_INPUTS = deepFreeze({
+  runtimeConfig: {
+    option: 'runtimeLiveConfig',
+    environment: 'SKIFF_RUNTIME_LIVE_CONFIG',
+    description: 'runtime config (SKIFF_RUNTIME_LIVE_CONFIG or --runtime-live-config <path>)',
+  },
+  runtimeReloadUrl: {
+    option: 'runtimeLiveReloadUrl',
+    environment: 'SKIFF_RUNTIME_LIVE_RELOAD_URL',
+    description:
+      'router reload URL (SKIFF_RUNTIME_LIVE_RELOAD_URL or --runtime-live-reload-url <url>)',
+  },
+  runtimeArtifactRoot: {
+    option: 'runtimeLiveArtifactRoot',
+    environment: 'SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT',
+    description:
+      'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
+  },
+});
+
+export const LIVE_REGISTRY = deepFreeze([
+  {
+    key: 'runtime-live-fixtures',
+    source: {
+      type: 'discovery',
+      discovery: LIVE_DISCOVERIES.RUNTIME_LIVE_TESTS,
+    },
+    invocations: [
+      {
+        selector: 'runtime-live',
+        description:
+          'explicit live fixtures; requires config, reload URL, and artifact root',
+        plan: LIVE_PLAN_TYPES.RUNTIME_FIXTURES,
+        idPrefix: 'live:runtime:',
+        ownership: LIVE_OWNERSHIP.EXTERNAL,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [
+          'runtimeConfig',
+          'runtimeReloadUrl',
+          'runtimeArtifactRoot',
+        ],
+        requiredExecutables: ['cargo', 'node'],
+        canonicalPolicy: {
+          forbidSkips: true,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'db-encrypted-storage-live',
+    source: {
+      type: 'script',
+      path: 'scripts/check-db-encrypted-storage-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'db-encrypted-storage-live',
+        description: 'explicit managed Mongo/runtime/keyring live check',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:db-encrypted-storage',
+        args: [],
+        ownership: LIVE_OWNERSHIP.MANAGED,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: [],
+        requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh'],
+        canonicalPolicy: {
+          forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+]);
+
+assertLiveRegistryIntegrity(LIVE_REGISTRY);
+
+export const LIVE_SELECTORS = Object.freeze(
+  liveInvocationSelectors(LIVE_REGISTRY),
+);
+
+export function liveInvocationSelectors(
+  registry,
+  { tier = LIVE_TIERS.LIVE_MANUAL } = {},
+) {
+  assertLiveRegistryIntegrity(registry);
+  return liveInvocationRecords(registry)
+    .filter(({ invocation }) => invocation.tier === tier)
+    .map(({ invocation }) => invocation.selector);
+}
+
+export function renderLiveSelectorHelp(registry = LIVE_REGISTRY) {
+  assertLiveRegistryIntegrity(registry);
+  return liveInvocationRecords(registry)
+    .filter(({ invocation }) => invocation.tier === LIVE_TIERS.LIVE_MANUAL)
+    .map(({ invocation }) =>
+      `  ${invocation.selector.padEnd(29)} ${invocation.description}`)
+    .join('\n');
+}
+
+export function assertLiveRegistryIntegrity(registry) {
+  if (!Array.isArray(registry) || registry.length === 0) {
+    throw new Error('live registry must contain at least one entry');
+  }
+  const entryKeys = new Set();
+  const sourceOwners = new Set();
+  const selectors = new Set();
+  const identifiers = [];
+
+  for (const entry of registry) {
+    if (!isNonEmptyString(entry?.key)) {
+      throw new Error(`invalid live registry entry key: ${JSON.stringify(entry)}`);
+    }
+    if (entryKeys.has(entry.key)) {
+      throw new Error(`duplicate live registry entry key: ${entry.key}`);
+    }
+    entryKeys.add(entry.key);
+    const sourceOwner = validateEntrySource(entry);
+    if (sourceOwners.has(sourceOwner)) {
+      throw new Error(`duplicate live registry source owner: ${sourceOwner}`);
+    }
+    sourceOwners.add(sourceOwner);
+    if (!Array.isArray(entry.invocations) || entry.invocations.length === 0) {
+      throw new Error(`live registry entry ${entry.key} must declare at least one invocation`);
+    }
+
+    for (const invocation of entry.invocations) {
+      validateInvocation(entry, invocation);
+      if (selectors.has(invocation.selector)) {
+        throw new Error(`duplicate live registry selector: ${invocation.selector}`);
+      }
+      selectors.add(invocation.selector);
+      identifiers.push(liveIdentifierDefinition(entry, invocation));
+    }
+  }
+  assertIdentifierDefinitionsUnique(identifiers);
+}
+
+export function assertOwnershipTier(ownership, tier, source) {
+  if (!Object.values(LIVE_OWNERSHIP).includes(ownership)) {
+    throw new Error(`${source} has invalid ownership ${ownership}`);
+  }
+  if (!Object.values(LIVE_TIERS).includes(tier)) {
+    throw new Error(`${source} has invalid tier ${tier}`);
+  }
+  if (tier === LIVE_TIERS.SELF_TEST && ownership !== LIVE_OWNERSHIP.NONE) {
+    throw new Error(`${source} must use ownership none for tier self-test`);
+  }
+  if (
+    tier === LIVE_TIERS.LIVE_MANUAL
+    && ![LIVE_OWNERSHIP.EXTERNAL, LIVE_OWNERSHIP.MANAGED].includes(ownership)
+  ) {
+    throw new Error(`${source} must use external or managed ownership for tier live/manual`);
+  }
+}
+
+export function liveInvocationRecords(registry) {
+  return registry.flatMap((entry) =>
+    entry.invocations.map((invocation) => ({ entry, invocation })));
+}
+
+export function liveIdentifierDefinition(entry, invocation) {
+  return invocation.plan === LIVE_PLAN_TYPES.RUNTIME_FIXTURES
+    ? {
+      type: 'prefix',
+      value: invocation.idPrefix,
+      label: `${entry.key}:${invocation.idPrefix}`,
+    }
+    : {
+      type: 'id',
+      value: invocation.id,
+      label: `${entry.key}:${invocation.id}`,
+    };
+}
+
+export function assertIdentifierDefinitionsUnique(definitions) {
+  for (let leftIndex = 0; leftIndex < definitions.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < definitions.length; rightIndex += 1) {
+      const left = definitions[leftIndex];
+      const right = definitions[rightIndex];
+      if (identifierDefinitionsConflict(left, right)) {
+        throw new Error(
+          `registry phase id/idPrefix conflict: ${left.label} and ${right.label}`,
+        );
+      }
+    }
+  }
+}
+
+function validateEntrySource(entry) {
+  if (!entry.source || typeof entry.source !== 'object') {
+    throw new Error(`live registry entry ${entry.key} requires a source owner`);
+  }
+  if (entry.source.type === 'script') {
+    if (!isNonEmptyString(entry.source.path) || entry.source.discovery !== undefined) {
+      throw new Error(`live registry entry ${entry.key} has an invalid script source`);
+    }
+    return `script:${entry.source.path}`;
+  }
+  if (entry.source.type === 'discovery') {
+    if (
+      !Object.values(LIVE_DISCOVERIES).includes(entry.source.discovery)
+      || entry.source.path !== undefined
+    ) {
+      throw new Error(`live registry entry ${entry.key} has an invalid discovery source`);
+    }
+    return `discovery:${entry.source.discovery}`;
+  }
+  throw new Error(`live registry entry ${entry.key} has an invalid source type`);
+}
+
+function validateInvocation(entry, invocation) {
+  if (!isNonEmptyString(invocation?.selector)) {
+    throw new Error(`live registry entry ${entry.key} has an invocation without a selector`);
+  }
+  if (!isNonEmptyString(invocation.description)) {
+    throw new Error(`live invocation ${invocation.selector} requires a help description`);
+  }
+  if (!Object.values(LIVE_PLAN_TYPES).includes(invocation.plan)) {
+    throw new Error(`live invocation ${invocation.selector} has invalid plan ${invocation.plan}`);
+  }
+  assertOwnershipTier(invocation.ownership, invocation.tier, `invocation ${invocation.selector}`);
+  assertUniqueStringArray(
+    invocation.requiredExecutables,
+    `live invocation ${invocation.selector} requiredExecutables`,
+    { requireNonEmpty: true },
+  );
+  assertUniqueStringArray(
+    invocation.requiredInputs,
+    `live invocation ${invocation.selector} requiredInputs`,
+  );
+  for (const input of invocation.requiredInputs) {
+    if (LIVE_INPUTS[input] === undefined) {
+      throw new Error(`live invocation ${invocation.selector} has unknown required input ${input}`);
+    }
+  }
+  if (
+    !invocation.canonicalPolicy
+    || typeof invocation.canonicalPolicy.forbidSkips !== 'boolean'
+    || typeof invocation.canonicalPolicy.forbidUnchecked !== 'boolean'
+  ) {
+    throw new Error(`live invocation ${invocation.selector} requires a canonical policy`);
+  }
+
+  if (invocation.plan === LIVE_PLAN_TYPES.RUNTIME_FIXTURES) {
+    if (
+      entry.source.type !== 'discovery'
+      || !isNonEmptyString(invocation.idPrefix)
+      || invocation.id !== undefined
+      || invocation.args !== undefined
+    ) {
+      throw new Error(`runtime fixture invocation ${invocation.selector} has an invalid shape`);
+    }
+    return;
+  }
+  if (
+    entry.source.type !== 'script'
+    || !isNonEmptyString(invocation.id)
+    || invocation.idPrefix !== undefined
+    || !Array.isArray(invocation.args)
+    || !invocation.args.every((arg) => typeof arg === 'string')
+  ) {
+    throw new Error(`fixed command invocation ${invocation.selector} has an invalid shape`);
+  }
+}
+
+function assertUniqueStringArray(value, source, { requireNonEmpty = false } = {}) {
+  if (
+    !Array.isArray(value)
+    || (requireNonEmpty && value.length === 0)
+    || !value.every(isNonEmptyString)
+    || new Set(value).size !== value.length
+  ) {
+    throw new Error(`${source} must be a unique string array`);
+  }
+}
+
+function identifierDefinitionsConflict(left, right) {
+  if (left.type === 'id' && right.type === 'id') {
+    return left.value === right.value;
+  }
+  if (left.type === 'prefix' && right.type === 'prefix') {
+    return left.value.startsWith(right.value) || right.value.startsWith(left.value);
+  }
+  const prefix = left.type === 'prefix' ? left : right;
+  const fixed = left.type === 'id' ? left : right;
+  return fixed.value.startsWith(prefix.value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}

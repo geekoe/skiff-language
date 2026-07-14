@@ -101,6 +101,17 @@ node scripts/verify.mjs --only node --list
 rustdoc public API 检查都属于默认 `checks` gate；`--only compiler-boundaries` 只用于
 聚焦运行 source-boundary checker。
 
+这两个 live selector、ownership、tier、命令形态和前置工具统一声明在
+`scripts/lib/verify-live-registry.mjs`，不要再在 selector、help 或普通 checker registry 中复制。
+schema/data、跨 registry catalog 校验、live plan/precondition 与普通 selector graph 分别由
+`verify-live-registry.mjs`、`verify-live-catalog.mjs`、`verify-live-plan.mjs` 和
+`verify-selector-graph.mjs` 负责；后面三个模块只能消费 canonical registry/graph，不能复制声明。
+`runtime-live` 是 `external`，只要求 PATH 中存在 `cargo`/`node`；
+`db-encrypted-storage-live` 是 `managed`，要求 `node`、`cargo`、`pnpm`、`mongod` 和 `mongosh`，
+并继续只使用临时目录与 `45000`–`45999` 动态端口。两者 tier 均为 `live/manual`，默认 verify、
+`pnpm test`、Cargo workspace 和 CI 都不展开它们。可以安全运行 `--list` 审计 blocked/command，
+但不要把 loop-risk health/stress 提前注册为 selector；它们要等 direct CLI 安全基线完成后迁入。
+
 `runtime-live` 必须同时显式提供 runtime config、router reload URL 和 artifact root；专用
 verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和
 `--runtime-live-artifact-root`，对应环境变量均以 `SKIFF_RUNTIME_LIVE_` 开头。它不会读取

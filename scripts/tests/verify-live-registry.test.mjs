@@ -1,0 +1,653 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import {
+  access,
+  chmod,
+  mkdtemp,
+  mkdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { CHECKER_REGISTRY } from '../lib/verify-checkers.mjs';
+import {
+  assertPlanIntegrity,
+  buildVerifyPlan,
+  PUBLIC_SELECTORS,
+} from '../lib/verify-plan.mjs';
+import { runVerifyPlan } from '../lib/verify-runner.mjs';
+import {
+  assertVerifyCatalogComplete,
+} from '../lib/verify-live-catalog.mjs';
+import {
+  assertLiveRegistryIntegrity,
+  LIVE_OWNERSHIP,
+  LIVE_PLAN_TYPES,
+  LIVE_REGISTRY,
+  LIVE_SELECTORS,
+  LIVE_TIERS,
+  renderLiveSelectorHelp,
+} from '../lib/verify-live-registry.mjs';
+import { ORDINARY_SELECTOR_NAMES } from '../lib/verify-selector-graph.mjs';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const verifyPath = join(root, 'scripts', 'verify.mjs');
+
+test('live registry is the single declaration for current selectors, policies, and prerequisites', () => {
+  assert.doesNotThrow(() => assertLiveRegistryIntegrity(LIVE_REGISTRY));
+  assert.deepEqual(LIVE_SELECTORS, [
+    'runtime-live',
+    'db-encrypted-storage-live',
+  ]);
+  assert.deepEqual(
+    PUBLIC_SELECTORS.filter((selector) => LIVE_SELECTORS.includes(selector)),
+    LIVE_SELECTORS,
+  );
+
+  const runtime = invocation('runtime-live');
+  assert.equal(runtime.entry.source.type, 'discovery');
+  assert.equal(runtime.entry.source.discovery, 'runtime-live-tests');
+  assert.equal(runtime.value.plan, LIVE_PLAN_TYPES.RUNTIME_FIXTURES);
+  assert.equal(runtime.value.idPrefix, 'live:runtime:');
+  assert.equal(runtime.value.ownership, LIVE_OWNERSHIP.EXTERNAL);
+  assert.equal(runtime.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(runtime.value.requiredInputs, [
+    'runtimeConfig',
+    'runtimeReloadUrl',
+    'runtimeArtifactRoot',
+  ]);
+  assert.deepEqual(runtime.value.requiredExecutables, ['cargo', 'node']);
+  assert.deepEqual(runtime.value.canonicalPolicy, {
+    forbidSkips: true,
+    forbidUnchecked: true,
+  });
+
+  const database = invocation('db-encrypted-storage-live');
+  assert.equal(database.entry.source.type, 'script');
+  assert.equal(
+    database.entry.source.path,
+    'scripts/check-db-encrypted-storage-live.mjs',
+  );
+  assert.equal(database.value.plan, LIVE_PLAN_TYPES.FIXED_COMMAND);
+  assert.equal(database.value.id, 'live:db-encrypted-storage');
+  assert.equal(database.value.ownership, LIVE_OWNERSHIP.MANAGED);
+  assert.equal(database.value.tier, LIVE_TIERS.LIVE_MANUAL);
+  assert.deepEqual(database.value.requiredInputs, []);
+  assert.deepEqual(database.value.requiredExecutables, [
+    'node',
+    'cargo',
+    'pnpm',
+    'mongod',
+    'mongosh',
+  ]);
+  assert.deepEqual(database.value.canonicalPolicy, {
+    forbidSkips: false,
+    forbidUnchecked: true,
+  });
+});
+
+test('live selector help is rendered from registry invocation descriptions', async () => {
+  const rendered = renderLiveSelectorHelp();
+  for (const { selector, description } of LIVE_REGISTRY.flatMap((entry) => entry.invocations)) {
+    assert.match(rendered, new RegExp(`${escapeRegExp(selector)}.*${escapeRegExp(description)}`));
+  }
+  const result = await runProcess(process.execPath, [verifyPath, '--help'], {
+    cwd: root,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(escapeRegExp(rendered)));
+});
+
+test('live registry schema rejects incomplete entries, duplicate selectors, and invalid source shapes', () => {
+  const noInvocation = cloneRegistry();
+  noInvocation[0].invocations = [];
+  assert.throws(
+    () => assertLiveRegistryIntegrity(noInvocation),
+    /must declare at least one invocation/,
+  );
+
+  const duplicateSelector = cloneRegistry();
+  duplicateSelector[1].invocations[0].selector = 'runtime-live';
+  assert.throws(
+    () => assertLiveRegistryIntegrity(duplicateSelector),
+    /duplicate live registry selector/,
+  );
+
+  const missingSource = cloneRegistry();
+  delete missingSource[0].source;
+  assert.throws(
+    () => assertLiveRegistryIntegrity(missingSource),
+    /requires a source owner/,
+  );
+
+  const unsupportedDiscovery = cloneRegistry();
+  unsupportedDiscovery[0].source.discovery = 'unknown-discovery';
+  assert.throws(
+    () => assertLiveRegistryIntegrity(unsupportedDiscovery),
+    /invalid discovery source/,
+  );
+
+  const wrongPlanSource = cloneRegistry();
+  wrongPlanSource[0].invocations[0].plan = LIVE_PLAN_TYPES.FIXED_COMMAND;
+  assert.throws(
+    () => assertLiveRegistryIntegrity(wrongPlanSource),
+    /fixed command invocation .* invalid shape/,
+  );
+});
+
+test('live registry schema rejects invalid ownership-tier pairs and prerequisite declarations', () => {
+  for (const mutate of [
+    (registry) => {
+      registry[0].invocations[0].ownership = LIVE_OWNERSHIP.NONE;
+    },
+    (registry) => {
+      registry[1].invocations[0].tier = LIVE_TIERS.SELF_TEST;
+    },
+    (registry) => {
+      registry[1].invocations[0].ownership = 'unknown-owner';
+    },
+  ]) {
+    const registry = cloneRegistry();
+    mutate(registry);
+    assert.throws(() => assertLiveRegistryIntegrity(registry), /ownership/);
+  }
+
+  const duplicateExecutable = cloneRegistry();
+  duplicateExecutable[0].invocations[0].requiredExecutables = ['cargo', 'cargo'];
+  assert.throws(
+    () => assertLiveRegistryIntegrity(duplicateExecutable),
+    /requiredExecutables must be a unique string array/,
+  );
+
+  const unknownInput = cloneRegistry();
+  unknownInput[0].invocations[0].requiredInputs.push('unknownInput');
+  assert.throws(
+    () => assertLiveRegistryIntegrity(unknownInput),
+    /unknown required input/,
+  );
+
+  const missingPolicy = cloneRegistry();
+  delete missingPolicy[1].invocations[0].canonicalPolicy;
+  assert.throws(
+    () => assertLiveRegistryIntegrity(missingPolicy),
+    /requires a canonical policy/,
+  );
+});
+
+test('live registry and global catalog reject id-prefix and cross-catalog id conflicts', async () => {
+  const prefixConflict = cloneRegistry();
+  prefixConflict[1].invocations[0].id = 'live:runtime:fixed-conflict';
+  assert.throws(
+    () => assertLiveRegistryIntegrity(prefixConflict),
+    /phase id\/idPrefix conflict/,
+  );
+
+  const ordinaryIdConflict = cloneRegistry();
+  ordinaryIdConflict[1].invocations[0].id = 'checks:compiler-boundaries';
+  await assert.rejects(
+    assertVerifyCatalogComplete(root, { liveRegistry: ordinaryIdConflict }),
+    /phase id\/idPrefix conflict/,
+  );
+});
+
+test('live selectors cannot collide with public, composite, internal leaf, or builder selectors', async () => {
+  assert.ok(ORDINARY_SELECTOR_NAMES.includes('rust'));
+  assert.ok(ORDINARY_SELECTOR_NAMES.includes('checks'));
+  assert.ok(ORDINARY_SELECTOR_NAMES.includes('checks-default'));
+
+  for (const selector of ['rust', 'checks', 'checks-default']) {
+    const conflicting = cloneRegistry();
+    conflicting[0].invocations[0].selector = selector;
+    await assert.rejects(
+      assertVerifyCatalogComplete(root, { liveRegistry: conflicting }),
+      new RegExp(`live selector conflicts.*${escapeRegExp(selector)}`),
+    );
+    await assert.rejects(
+      buildVerifyPlan({
+        root,
+        selectors: ['verify'],
+        liveRegistry: conflicting,
+      }),
+      new RegExp(`live selector conflicts.*${escapeRegExp(selector)}`),
+    );
+  }
+});
+
+test('global catalog counts every discovered checker path exactly once across registries', async () => {
+  await assertVerifyCatalogComplete(root);
+  const paths = [
+    ...CHECKER_REGISTRY.map((entry) => entry.path),
+    ...LIVE_REGISTRY
+      .filter((entry) => entry.source.type === 'script')
+      .map((entry) => entry.source.path),
+  ];
+  const counts = new Map();
+  for (const path of paths) {
+    counts.set(path, (counts.get(path) ?? 0) + 1);
+  }
+  assert.ok([...counts.values()].every((count) => count === 1));
+  assert.equal(
+    CHECKER_REGISTRY.some((entry) =>
+      entry.path === 'scripts/check-db-encrypted-storage-live.mjs'),
+    false,
+  );
+  assert.equal(
+    LIVE_REGISTRY.some((entry) =>
+      entry.source.path === 'scripts/check-db-encrypted-storage-live.mjs'),
+    true,
+  );
+
+  const duplicatePath = cloneRegistry();
+  duplicatePath[1].source.path = CHECKER_REGISTRY[0].path;
+  await assert.rejects(
+    assertVerifyCatalogComplete(root, { liveRegistry: duplicatePath }),
+    /checker path count must be exactly one/,
+  );
+
+  const missingScript = cloneRegistry();
+  missingScript[1].source.path = 'scripts/check-missing-live-script.mjs';
+  await assert.rejects(
+    assertVerifyCatalogComplete(root, { liveRegistry: missingScript }),
+    /missing registered checker.*check-missing-live-script/,
+  );
+});
+
+test('registry-derived phase metadata is mandatory and matches ownership-tier rules', () => {
+  const base = {
+    id: 'live:test',
+    kind: LIVE_TIERS.LIVE_MANUAL,
+    tier: LIVE_TIERS.LIVE_MANUAL,
+    ownership: LIVE_OWNERSHIP.EXTERNAL,
+    command: 'node',
+    args: ['script.mjs'],
+    cwd: root,
+  };
+  assert.doesNotThrow(() => assertPlanIntegrity([base]));
+  assert.throws(
+    () => assertPlanIntegrity([{ ...base, tier: undefined }]),
+    /requires ownership and tier metadata/,
+  );
+  assert.throws(
+    () => assertPlanIntegrity([{ ...base, kind: 'other' }]),
+    /kind must match tier/,
+  );
+  assert.throws(
+    () => assertPlanIntegrity([{
+      ...base,
+      tier: LIVE_TIERS.SELF_TEST,
+      kind: LIVE_TIERS.SELF_TEST,
+    }]),
+    /ownership none for tier self-test/,
+  );
+});
+
+test('runtime invocation blocks each missing executable and never invents DB cleanup tools', async () => {
+  const fixture = await runtimeFixture('skiff-live-registry-runtime-path-');
+  const required = invocation('runtime-live').value.requiredExecutables;
+  try {
+    for (const missing of required) {
+      const bin = await fakeExecutablePath(
+        fixture.root,
+        required.filter((candidate) => candidate !== missing),
+        `runtime-missing-${missing}`,
+      );
+      const plan = await buildVerifyPlan({
+        root: fixture.root,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        ...fixture.inputs,
+        env: { PATH: bin },
+      });
+      assert.equal(plan.phases.length, 1);
+      assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
+      assert.equal(plan.phases[0].tier, LIVE_TIERS.LIVE_MANUAL);
+      assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
+    }
+
+    const bin = await fakeExecutablePath(fixture.root, required, 'runtime-complete');
+    const plan = await buildVerifyPlan({
+      root: fixture.root,
+      catalogRoot: root,
+      selectors: ['runtime-live'],
+      ...fixture.inputs,
+      env: { PATH: bin },
+    });
+    assert.equal(plan.phases.length, 1);
+    assert.equal(plan.phases[0].command, 'cargo');
+    assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.EXTERNAL);
+    assert.doesNotMatch(
+      JSON.stringify(invocation('runtime-live').value.requiredExecutables),
+      /mongosh|(?:^|\W)sh(?:\W|$)/,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('runtime structural and provided-input errors are never hidden by missing inputs or PATH', async () => {
+  const emptyRoot = await mkdtemp(join(tmpdir(), 'skiff-live-registry-empty-discovery-'));
+  const fixture = await runtimeFixture('skiff-live-registry-partial-invalid-');
+  try {
+    await assert.rejects(
+      buildVerifyPlan({
+        root: emptyRoot,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        env: { PATH: '' },
+      }),
+      /runtime-live found no \*\.live\.test\.skiff fixtures/,
+    );
+
+    const cases = [
+      {
+        input: {
+          runtimeLiveConfig: join(fixture.root, 'missing-runtime-config.json'),
+        },
+        expected: /runtime-live config path must be an existing file/,
+      },
+      {
+        input: {
+          runtimeLiveArtifactRoot: join(fixture.root, 'missing-artifact-root'),
+        },
+        expected: /runtime-live artifact root must be an existing directory/,
+      },
+      {
+        input: {
+          runtimeLiveReloadUrl: 'https://router.test:4101/secret?token=hidden',
+        },
+        expected: /reload_url_scheme/,
+      },
+    ];
+    for (const { input, expected } of cases) {
+      await assert.rejects(
+        buildVerifyPlan({
+          root: fixture.root,
+          catalogRoot: root,
+          selectors: ['runtime-live'],
+          env: { PATH: '' },
+          ...input,
+        }),
+        expected,
+      );
+    }
+  } finally {
+    await rm(emptyRoot, { recursive: true, force: true });
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('managed DB invocation blocks each exact executable and full PATH generates one command', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-db-path-'));
+  const required = invocation('db-encrypted-storage-live').value.requiredExecutables;
+  try {
+    for (const missing of required) {
+      const bin = await fakeExecutablePath(
+        fixture,
+        required.filter((candidate) => candidate !== missing),
+        `db-missing-${missing}`,
+      );
+      const plan = await buildVerifyPlan({
+        root,
+        selectors: ['db-encrypted-storage-live'],
+        env: { PATH: bin },
+      });
+      assert.equal(plan.phases.length, 1);
+      assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
+      assert.equal(plan.phases[0].tier, LIVE_TIERS.LIVE_MANUAL);
+      assert.equal(plan.phases[0].ownership, LIVE_OWNERSHIP.MANAGED);
+    }
+
+    const bin = await fakeExecutablePath(fixture, required, 'db-complete');
+    const plan = await buildVerifyPlan({
+      root,
+      selectors: ['db-encrypted-storage-live'],
+      env: { PATH: bin },
+    });
+    assert.deepEqual(
+      plan.phases.map(({ id, command, args, tier, ownership }) => ({
+        id,
+        command,
+        args,
+        tier,
+        ownership,
+      })),
+      [{
+        id: 'live:db-encrypted-storage',
+        command: 'node',
+        args: ['scripts/check-db-encrypted-storage-live.mjs'],
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        ownership: LIVE_OWNERSHIP.MANAGED,
+      }],
+    );
+    assert.equal(typeof plan.phases[0].executionPreflight, 'function');
+    assert.equal(plan.phases[0].executionPreflight(), undefined);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('DB list is blocked and execute starts no command when a declared tool is absent', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-db-cli-'));
+  const marker = join(fixture, 'fake-node-ran');
+  const required = invocation('db-encrypted-storage-live').value.requiredExecutables;
+  try {
+    const emptyBin = await fakeExecutablePath(fixture, [], 'db-cli-all-missing');
+    const allMissing = await runProcess(
+      process.execPath,
+      [verifyPath, '--only', 'db-encrypted-storage-live', '--list'],
+      { cwd: root, env: { ...process.env, PATH: emptyBin } },
+    );
+    assert.equal(allMissing.code, 0, allMissing.stderr);
+    for (const executable of required) {
+      assert.match(allMissing.stdout, new RegExp(`\\b${escapeRegExp(executable)}\\b`));
+    }
+
+    const bin = await fakeExecutablePath(
+      fixture,
+      required.filter((candidate) => candidate !== 'mongod'),
+      'db-cli',
+      { nodeMarker: marker },
+    );
+    const env = {
+      ...process.env,
+      PATH: bin,
+      SKIFF_FAKE_NODE_MARKER: marker,
+    };
+    const listed = await runProcess(
+      process.execPath,
+      [verifyPath, '--only', 'db-encrypted-storage-live', '--list'],
+      { cwd: root, env },
+    );
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.match(listed.stdout, /\[blocked: .*PATH: mongod/);
+
+    const executed = await runProcess(
+      process.execPath,
+      [verifyPath, '--only', 'db-encrypted-storage-live'],
+      { cwd: root, env },
+    );
+    assert.notEqual(executed.code, 0);
+    assert.match(executed.stderr, /live:db-encrypted-storage: .*PATH: mongod/);
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('actual runtime discovery and combined live plans produce unique registry phases', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-actual-'));
+  try {
+    const configPath = join(fixture, 'runtime-live.json');
+    const artifactRoot = join(fixture, 'artifacts');
+    await writeFile(configPath, '{}\n');
+    await mkdir(artifactRoot);
+    const executables = new Set([
+      ...invocation('runtime-live').value.requiredExecutables,
+      ...invocation('db-encrypted-storage-live').value.requiredExecutables,
+    ]);
+    const bin = await fakeExecutablePath(fixture, [...executables], 'combined');
+    const options = {
+      root,
+      selectors: ['runtime-live', 'db-encrypted-storage-live'],
+      runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveArtifactRoot: artifactRoot,
+      env: { PATH: bin },
+    };
+    const plan = await buildVerifyPlan(options);
+    assert.equal(plan.phases.length, 5);
+    assert.equal(new Set(plan.phases.map((phase) => phase.id)).size, 5);
+    assert.equal(
+      plan.phases.filter((phase) => phase.ownership === LIVE_OWNERSHIP.EXTERNAL).length,
+      4,
+    );
+    assert.equal(
+      plan.phases.filter((phase) => phase.ownership === LIVE_OWNERSHIP.MANAGED).length,
+      1,
+    );
+    assert.ok(plan.phases.every((phase) => phase.tier === LIVE_TIERS.LIVE_MANUAL));
+
+    const repeated = await buildVerifyPlan({
+      ...options,
+      selectors: ['runtime-live', 'runtime-live'],
+    });
+    assert.equal(repeated.phases.length, 4);
+    assert.equal(new Set(repeated.phases.map((phase) => phase.id)).size, 4);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('default verify never includes registry live/manual invocations', async () => {
+  const plan = await buildVerifyPlan({ root });
+  assert.equal(
+    plan.phases.some((phase) => phase.tier === LIVE_TIERS.LIVE_MANUAL),
+    false,
+  );
+  assert.equal(
+    plan.phases.some((phase) => LIVE_SELECTORS.includes(phase.id)),
+    false,
+  );
+});
+
+test('blocked live prerequisites stop marker commands before and after the phase', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-live-registry-blocked-plan-'));
+  const marker = join(fixture, 'command-ran');
+  try {
+    const bin = await fakeExecutablePath(fixture, ['node'], 'blocked-plan');
+    const blocked = await buildVerifyPlan({
+      root,
+      selectors: ['db-encrypted-storage-live'],
+      env: { PATH: bin },
+    });
+    const markerPhase = (id) => ({
+      id,
+      kind: 'test',
+      command: process.execPath,
+      args: [
+        '--eval',
+        'require("node:fs").writeFileSync(process.argv[1], "ran")',
+        marker,
+      ],
+      cwd: fixture,
+    });
+    await assert.rejects(
+      runVerifyPlan({
+        selectors: ['test'],
+        phases: [
+          markerPhase('earlier-must-not-run'),
+          ...blocked.phases,
+          markerPhase('later-must-not-run'),
+        ],
+      }, fixture),
+      /live:db-encrypted-storage/,
+    );
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+function invocation(selector) {
+  for (const entry of LIVE_REGISTRY) {
+    const value = entry.invocations.find((candidate) => candidate.selector === selector);
+    if (value !== undefined) {
+      return { entry, value };
+    }
+  }
+  throw new Error(`missing test invocation ${selector}`);
+}
+
+function cloneRegistry() {
+  return structuredClone(LIVE_REGISTRY);
+}
+
+async function runtimeFixture(prefix) {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), prefix));
+  const configPath = join(fixtureRoot, 'runtime-live.json');
+  const artifactRoot = join(fixtureRoot, 'artifacts');
+  const testFile = join(fixtureRoot, 'runtime', 'live-tests', 'example.live.test.skiff');
+  await mkdir(dirname(testFile), { recursive: true });
+  await mkdir(artifactRoot);
+  await writeFile(configPath, '{}\n');
+  await writeFile(testFile, 'test defaultRun false\n');
+  return {
+    root: fixtureRoot,
+    inputs: {
+      runtimeLiveConfig: configPath,
+      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveArtifactRoot: artifactRoot,
+    },
+  };
+}
+
+async function fakeExecutablePath(
+  fixture,
+  executables,
+  label,
+  { nodeMarker } = {},
+) {
+  const bin = join(fixture, `bin-${label}`);
+  await mkdir(bin, { recursive: true });
+  for (const executable of executables) {
+    const path = join(bin, executable);
+    const contents = executable === 'node' && nodeMarker !== undefined
+      ? [
+        '#!/bin/sh',
+        'printf ran > "$SKIFF_FAKE_NODE_MARKER"',
+        '',
+      ].join('\n')
+      : '#!/bin/sh\nexit 0\n';
+    await writeFile(path, contents);
+    await chmod(path, 0o755);
+  }
+  return bin;
+}
+
+function runProcess(command, args, { cwd, env = process.env }) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      resolvePromise({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

@@ -1,47 +1,33 @@
-import { existsSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { checkerPhases } from './verify-checkers.mjs';
-import { parseRuntimeReloadUrl } from './runtime-reload-url.mjs';
+import { assertVerifyCatalogComplete } from './verify-live-catalog.mjs';
+import {
+  LIVE_REGISTRY,
+  LIVE_SELECTORS,
+  liveInvocationSelectors,
+} from './verify-live-registry.mjs';
+import {
+  assertRegistryPhaseMetadata,
+  liveSelectorPhases,
+} from './verify-live-plan.mjs';
 import {
   discoverJavaScriptFiles,
-  discoverRuntimeLiveTests,
   discoverScriptTests,
   repoRelative,
 } from './verify-discovery.mjs';
+import {
+  ORDINARY_PUBLIC_SELECTORS,
+  VERIFY_SELECTOR_GRAPH,
+  assertOrdinaryPhaseBuilderCoverage,
+} from './verify-selector-graph.mjs';
 
 export const PUBLIC_SELECTORS = Object.freeze([
-  'verify',
-  'node',
-  'rust',
-  'router',
-  'telemetry',
-  'scripts',
-  'scripts-dev-sync',
-  'scripts-syntax',
-  'vscode',
-  'checks',
-  'type-check',
-  'compiler-boundaries',
-  'runtime-live',
-  'db-encrypted-storage-live',
+  ...ORDINARY_PUBLIC_SELECTORS,
+  ...LIVE_SELECTORS,
 ]);
 
-const SELECTOR_EXPANSIONS = Object.freeze({
-  verify: ['rust', 'node', 'checks'],
-  checks: ['compiler-boundaries', 'checks-default'],
-  node: ['router', 'telemetry', 'scripts', 'vscode'],
-  router: ['router-type-check', 'router-test'],
-  telemetry: ['telemetry-type-check', 'telemetry-test'],
-  scripts: ['scripts-syntax', 'scripts-tests', 'scripts-dev-sync'],
-  vscode: ['vscode-type-check', 'vscode-grammar'],
-  'type-check': [
-    'router-type-check',
-    'telemetry-type-check',
-    'scripts-syntax',
-    'vscode-type-check',
-  ],
-});
+const SELECTOR_EXPANSIONS = VERIFY_SELECTOR_GRAPH.expansions;
 
 export async function buildVerifyPlan({
   root,
@@ -50,10 +36,14 @@ export async function buildVerifyPlan({
   runtimeLiveReloadUrl,
   runtimeLiveArtifactRoot,
   env = process.env,
+  catalogRoot = root,
+  liveRegistry = LIVE_REGISTRY,
 } = {}) {
   if (!root) {
     throw new Error('verify plan requires the repository root');
   }
+  await assertVerifyCatalogComplete(catalogRoot, { liveRegistry });
+  const liveSelectors = liveInvocationSelectors(liveRegistry);
   const leaves = expandSelectors(selectors);
   const builders = phaseBuilders({
     root,
@@ -61,6 +51,8 @@ export async function buildVerifyPlan({
     runtimeLiveReloadUrl,
     runtimeLiveArtifactRoot,
     env,
+    liveRegistry,
+    liveSelectors,
   });
   const phases = [];
   for (const leaf of leaves) {
@@ -105,6 +97,7 @@ export function assertPlanIntegrity(phases) {
       throw new Error(`duplicate verify phase id: ${phase.id}`);
     }
     seenIds.add(phase.id);
+    assertRegistryPhaseMetadata(phase);
 
     if (phase.preconditionError !== undefined) {
       if (
@@ -179,8 +172,10 @@ function phaseBuilders({
   runtimeLiveReloadUrl,
   runtimeLiveArtifactRoot,
   env,
+  liveRegistry,
+  liveSelectors,
 }) {
-  return {
+  const builders = {
     rust: async () => [
       phase(root, 'rust:workspace', 'rust', 'cargo', [
         'test',
@@ -224,15 +219,21 @@ function phaseBuilders({
     ],
     'checks-default': async () => checkerPhases(root, 'checks'),
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
-    'db-encrypted-storage-live': async () =>
-      checkerPhases(root, 'db-encrypted-storage-live'),
-    'runtime-live': async () => runtimeLivePhases(root, {
-      configuredConfigPath: runtimeLiveConfig,
-      configuredReloadUrl: runtimeLiveReloadUrl,
-      configuredArtifactRoot: runtimeLiveArtifactRoot,
-      env,
-    }),
   };
+  assertOrdinaryPhaseBuilderCoverage(builders);
+  for (const selector of liveSelectors) {
+    if (Object.hasOwn(builders, selector)) {
+      throw new Error(`live selector conflicts with verify phase builder: ${selector}`);
+    }
+    builders[selector] = async () => liveSelectorPhases(root, selector, {
+      runtimeLiveConfig,
+      runtimeLiveReloadUrl,
+      runtimeLiveArtifactRoot,
+      env,
+      registry: liveRegistry,
+    });
+  }
+  return builders;
 }
 
 async function javascriptSyntaxPhases(root) {
@@ -250,119 +251,6 @@ async function scriptTestPhases(root) {
   );
 }
 
-async function runtimeLivePhases(root, {
-  configuredConfigPath,
-  configuredReloadUrl,
-  configuredArtifactRoot,
-  env,
-}) {
-  const rawConfigPath = nonEmptyValue(
-    configuredConfigPath,
-    env.SKIFF_RUNTIME_LIVE_CONFIG,
-  );
-  const rawReloadUrl = nonEmptyValue(
-    configuredReloadUrl,
-    env.SKIFF_RUNTIME_LIVE_RELOAD_URL,
-  );
-  const rawArtifactRoot = nonEmptyValue(
-    configuredArtifactRoot,
-    env.SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT,
-  );
-  const missing = [];
-  if (!rawConfigPath) {
-    missing.push(
-      'runtime config (SKIFF_RUNTIME_LIVE_CONFIG or --runtime-live-config <path>)',
-    );
-  }
-  if (!rawReloadUrl) {
-    missing.push(
-      'router reload URL (SKIFF_RUNTIME_LIVE_RELOAD_URL or --runtime-live-reload-url <url>)',
-    );
-  }
-  if (!rawArtifactRoot) {
-    missing.push(
-      'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
-    );
-  }
-  if (missing.length > 0) {
-    return [
-      blockedPhase(
-        root,
-        'live:runtime:inputs',
-        'live/manual',
-        `runtime-live is missing required explicit input(s): ${missing.join('; ')}`,
-      ),
-    ];
-  }
-  const configPath = resolveInputPath(root, rawConfigPath);
-  if (!isFile(configPath)) {
-    throw new Error(`runtime-live config path must be an existing file: ${configPath}`);
-  }
-  const artifactRoot = resolveInputPath(root, rawArtifactRoot);
-  if (!isDirectory(artifactRoot)) {
-    throw new Error(`runtime-live artifact root must be an existing directory: ${artifactRoot}`);
-  }
-  const reloadTarget = parseRuntimeReloadUrl(rawReloadUrl);
-
-  const files = await discoverRuntimeLiveTests(root);
-  if (files.length === 0) {
-    throw new Error('runtime-live found no *.live.test.skiff fixtures under runtime/live-tests');
-  }
-  const packageStore = join(root, 'runtime', 'live-tests', 'package-store');
-  const packageArgs = existsSync(packageStore) ? ['--packages-dir', packageStore] : [];
-  const executionPreflight = () => {
-    const failures = [];
-    if (!isFile(configPath)) {
-      failures.push(`runtime-live config path is no longer an existing file: ${configPath}`);
-    }
-    if (!isDirectory(artifactRoot)) {
-      failures.push(
-        `runtime-live artifact root is no longer an existing directory: ${artifactRoot}`,
-      );
-    }
-    try {
-      parseRuntimeReloadUrl(reloadTarget.normalized);
-    } catch (error) {
-      failures.push(
-        error instanceof Error
-          ? error.message
-          : 'runtime-live reload URL failed execution preflight validation',
-      );
-    }
-    return failures.length === 0 ? undefined : failures;
-  };
-  return files.map((file) => {
-    const args = [
-      'run',
-      '--manifest-path',
-      'test-runner/Cargo.toml',
-      '--',
-      file,
-      '--live',
-      '--allow-network',
-      '--config',
-      configPath,
-      '--router-reload-url',
-      reloadTarget.normalized,
-      '--artifact-root',
-      artifactRoot,
-      '--deny-skips',
-      '--require-tests',
-      ...packageArgs,
-    ];
-    const displayArgs = [...args];
-    displayArgs[displayArgs.indexOf('--router-reload-url') + 1] = reloadTarget.display;
-    return phase(
-      root,
-      `live:runtime:${repoRelative(root, file)}`,
-      'live/manual',
-      'cargo',
-      args,
-      { displayArgs, executionPreflight },
-    );
-  });
-}
-
 function packagePhase(root, id, kind, directory, args) {
   return phase(join(root, directory), id, kind, 'pnpm', args);
 }
@@ -371,37 +259,6 @@ function phase(cwd, id, kind, command, args, options = {}) {
   return { id, kind, command, args, cwd, ...options };
 }
 
-function blockedPhase(cwd, id, kind, preconditionError) {
-  return { id, kind, cwd, preconditionError };
-}
-
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
-}
-
-function nonEmptyValue(configured, environment) {
-  if (configured !== undefined) {
-    return typeof configured === 'string' && configured.length > 0 ? configured : undefined;
-  }
-  return typeof environment === 'string' && environment.length > 0 ? environment : undefined;
-}
-
-function resolveInputPath(root, path) {
-  return isAbsolute(path) ? path : resolve(root, path);
-}
-
-function isFile(path) {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isDirectory(path) {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }

@@ -1,5 +1,3 @@
-import { discoverCheckerScripts } from './verify-discovery.mjs';
-
 export const CHECKER_CLASSIFICATIONS = Object.freeze({
   DEFAULT: 'default verify',
   SELF_TEST: 'self-test',
@@ -21,12 +19,6 @@ export const CHECKER_REGISTRY = Object.freeze([
     invocations: [
       invocation('checks:crate-public-api:self-test', 'checks', ['--self-test']),
       invocation('checks:crate-public-api:all-configured', 'checks', ['--all-configured']),
-    ],
-  }),
-  checker('scripts/check-db-encrypted-storage-live.mjs', CHECKER_CLASSIFICATIONS.LIVE_MANUAL, {
-    reason: 'Starts an isolated managed Mongo/runtime/keyring live environment.',
-    invocations: [
-      invocation('live:db-encrypted-storage', 'db-encrypted-storage-live'),
     ],
   }),
   checker('scripts/check-local-instance.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
@@ -66,7 +58,6 @@ export const CHECKER_REGISTRY = Object.freeze([
 ]);
 
 export async function checkerPhases(root, selector) {
-  await assertCheckerRegistryComplete(root);
   return CHECKER_REGISTRY.flatMap((entry) =>
     entry.invocations
       .filter((candidate) => candidate.selector === selector)
@@ -78,24 +69,6 @@ export async function checkerPhases(root, selector) {
         cwd: root,
       })),
   );
-}
-
-export async function assertCheckerRegistryComplete(root) {
-  const discovered = await discoverCheckerScripts(root);
-  const registered = CHECKER_REGISTRY.map((entry) => entry.path).sort();
-  const duplicatePaths = registered.filter((path, index) => registered.indexOf(path) !== index);
-  if (duplicatePaths.length > 0) {
-    throw new Error(`duplicate checker registry path(s): ${[...new Set(duplicatePaths)].join(', ')}`);
-  }
-
-  const missing = discovered.filter((path) => !registered.includes(path));
-  const stale = registered.filter((path) => !discovered.includes(path));
-  if (missing.length > 0 || stale.length > 0) {
-    throw new Error([
-      missing.length > 0 ? `unclassified checker(s): ${missing.join(', ')}` : '',
-      stale.length > 0 ? `missing registered checker(s): ${stale.join(', ')}` : '',
-    ].filter(Boolean).join('; '));
-  }
 }
 
 function checker(path, classification, { reason = null, invocations = [] } = {}) {

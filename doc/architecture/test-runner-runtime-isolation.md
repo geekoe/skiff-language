@@ -43,6 +43,36 @@ target 只接受带显式端口的 IPv4/DNS `http://` URL，以及空 path、`/`
 都使 summary 显示 `FAILED` 并返回非零。库层 live smoke 仍保留可选 SKIP 结果，严格性由显式
 CLI policy 控制。
 
+## Live Verification Ownership
+
+Canonical live/manual 编排只从 `scripts/lib/verify-live-registry.mjs` 生成。registry 把 source
+entry、invocation 和 generated phase 分开：entry 只拥有 checker script 或 fixture discovery，
+invocation 声明 selector、tier、ownership、输入、可执行文件和 strict policy，phase 才包含本次
+发现得到的具体命令。普通 checker registry 与 live registry 的 checker path 按计数全局恰好
+登记一次；live phase 的 fixed id/idPrefix 也和普通 checker invocation 全局去重。
+
+模块边界保持单向：`verify-live-registry.mjs` 只拥有 canonical data/schema，
+`verify-selector-graph.mjs` 只拥有普通 public/composite/internal selector graph，
+`verify-live-catalog.mjs` 负责跨两类 registry 的 path/id/selector namespace 校验，
+`verify-live-plan.mjs` 解释 inputs、PATH prerequisite 并生成 phase。后两者不声明 selector 或
+prerequisite；普通 phase builder 还必须与 selector graph 的 leaf 集合精确对应，live selector
+因此不能覆盖 `rust`、`checks` 或 `checks-default` 这类已有名字。
+
+ownership 约束如下：
+
+- `none` 只允许 `self-test`，不得接触外部或受管实例；
+- `external` 只允许 `live/manual`，调用者显式提供并拥有 target；当前 `runtime-live` 属于此类；
+- `managed` 只允许 `live/manual`，checker 自己创建和清理隔离资源；当前 encrypted-storage DB
+  checker 属于此类，只使用临时目录和 `45000`–`45999` 端口。
+
+registry 的 PATH prerequisite 是精确声明：runtime fixture 只要求 `cargo`/`node`，不能因
+non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 要求
+`node`/`cargo`/`pnpm`/`mongod`/`mongosh`。plan/list 阶段只读检查文件类型和 executable bit，
+execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有 `live/manual` phase
+仍排除在默认 verify、Node、Cargo workspace 和 CI 之外。
+Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 reload URL 也会
+逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
+
 `skiff-test-runner` 的 runtime integration targets 是 feature-gated inner workers。默认 Cargo
 只运行一个 `harness = false` wrapper；wrapper 在 Unix 上 `exec` 为 Node host，Node host 一次
 启动临时 instance，再在隔离环境中用 `--no-fail-fast` 嵌套执行全部 worker。inner marker 和
