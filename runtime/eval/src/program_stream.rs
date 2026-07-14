@@ -5,7 +5,7 @@ use async_recursion::async_recursion;
 use serde_json::Value;
 use skiff_runtime_boundary::stream::stream_id;
 use skiff_runtime_boundary::type_descriptor::bare_type_name;
-use skiff_runtime_capability_context::StreamRuntimeError;
+use skiff_runtime_capability_context::{StreamRuntimeError, StreamRuntimeResult};
 use skiff_runtime_linked_program::{
     CallIr, ConstAddr, ExecutableAddr, LinkedCallTarget, LinkedExecutable, LinkedExprIr,
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef, ReceiverCallAbi,
@@ -378,10 +378,7 @@ impl Interpreter {
                     .drain_stream_producer_output(context, &stream_value, &cancel_signal)
                     .await;
                 self.stream_runtime.cancel(&stream_value);
-                match drain_result {
-                    Ok(()) => Err(error),
-                    Err(producer_error) => Err(producer_error),
-                }
+                Err(prepared_stream_error_after_drain(error, drain_result))
             }
         }
     }
@@ -398,7 +395,7 @@ impl Interpreter {
         context: ProgramExecutionContext<'_>,
         stream_value: &Value,
         cancel_signal: &StreamCancelSignal,
-    ) -> Result<()> {
+    ) -> StreamRuntimeResult<()> {
         let execution = context.execution();
         loop {
             match self
@@ -409,15 +406,9 @@ impl Interpreter {
                     [execution.cancellation_token()],
                 )
                 .await
-                .map_err(RuntimeError::from)
             {
                 Ok(StreamPoll::Item(_)) => continue,
                 Ok(StreamPoll::End) => return Ok(()),
-                Err(RuntimeError::Decode(message))
-                    if message == "Stream value has already been consumed" =>
-                {
-                    return Ok(())
-                }
                 Err(error) => return Err(error),
             }
         }
@@ -635,6 +626,33 @@ impl Interpreter {
             call,
             item_type,
         }))
+    }
+}
+
+fn prepared_stream_drain_reached_terminal(error: &StreamRuntimeError) -> bool {
+    matches!(
+        error,
+        StreamRuntimeError::Decode(message)
+            if message == "Stream value has already been consumed"
+                || message == "unknown Stream value"
+    )
+}
+
+fn prepared_stream_error_after_drain(
+    consumer_error: RuntimeError,
+    drain_result: StreamRuntimeResult<()>,
+) -> RuntimeError {
+    match drain_result {
+        Ok(()) => consumer_error,
+        // This path only receives streams created by a prepared producer. Once
+        // its consumer has resolved with an error, a missing registry entry means
+        // that consumer already observed the terminal event (including a
+        // producer error) and `StreamRuntime::next` removed the stream. Treat it
+        // as a completed internal drain so that terminal event's original error
+        // is not replaced by the follow-up lookup error. Public `next` calls keep
+        // their fail-closed unknown-id behavior.
+        Err(error) if prepared_stream_drain_reached_terminal(&error) => consumer_error,
+        Err(error) => RuntimeError::from(error),
     }
 }
 
@@ -1140,5 +1158,63 @@ mod tests {
             !debug.contains("caller_only"),
             "Stream<LocalType> item type must not resolve against the caller file"
         );
+    }
+}
+
+#[cfg(test)]
+mod prepared_stream_drain_tests {
+    use skiff_runtime_capability_context::StreamRuntimeError;
+
+    use super::prepared_stream_error_after_drain;
+    use crate::error::RuntimeError;
+
+    #[test]
+    fn consumed_catchable_producer_error_is_not_overwritten_by_terminal_unknown_stream() {
+        let error = prepared_stream_error_after_drain(
+            RuntimeError::DecodeTarget {
+                target: "std.json.decode".to_string(),
+                message: "producer failed before its first event".to_string(),
+            },
+            Err(StreamRuntimeError::decode("unknown Stream value")),
+        );
+
+        assert!(matches!(
+            error,
+            RuntimeError::DecodeTarget { target, message }
+                if target == "std.json.decode"
+                    && message == "producer failed before its first event"
+        ));
+    }
+
+    #[test]
+    fn consumer_error_is_preserved_after_normal_producer_end() {
+        let error = prepared_stream_error_after_drain(
+            RuntimeError::FileError {
+                message: "consumer failed".to_string(),
+            },
+            Ok(()),
+        );
+
+        assert!(matches!(
+            error,
+            RuntimeError::FileError { message } if message == "consumer failed"
+        ));
+    }
+
+    #[test]
+    fn genuine_drain_error_still_overrides_consumer_error() {
+        let error = prepared_stream_error_after_drain(
+            RuntimeError::FileError {
+                message: "consumer failed".to_string(),
+            },
+            Err(StreamRuntimeError::decode(
+                "unexpected stream registry failure",
+            )),
+        );
+
+        assert!(matches!(
+            error,
+            RuntimeError::Decode(message) if message == "unexpected stream registry failure"
+        ));
     }
 }
