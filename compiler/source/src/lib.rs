@@ -45,7 +45,7 @@ use std::collections::BTreeMap;
 use crate::shared::{
     ast::{SourceFile, TypeRef},
     publication_error::PublicationError,
-    type_syntax::generic_parts,
+    type_expr::TypeExpr,
 };
 pub use compiler_input_model::{
     PackageDependency, PublicationApiEntry, PublicationApiSpec, PublicationCompilePolicy,
@@ -441,20 +441,16 @@ fn package_service_visible_type_text(
     ty: &str,
     type_name_mappings: &BTreeMap<String, String>,
 ) -> String {
-    let ty = ty.trim();
-    if let Some(mapped) = type_name_mappings.get(ty) {
-        return mapped.clone();
-    }
-    if let Some(parts) = generic_parts(ty) {
-        let args = parts
-            .args
-            .iter()
-            .map(|arg| package_service_visible_type_text(arg, type_name_mappings))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return format!("{}<{args}>", parts.root);
-    }
-    ty.to_string()
+    // Rewrite each named node in the source type tree exactly once. Mapping
+    // results are leaves, so mutually-referential public names cannot recurse.
+    TypeExpr::parse_lossy(ty.trim())
+        .map_named_types(|name| {
+            type_name_mappings
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.to_string())
+        })
+        .to_type_string()
 }
 
 fn alias_public_path(alias: &str, public_path: &str) -> String {
@@ -491,4 +487,41 @@ fn dependency_package_config_facts<'facts>(
             },
         )
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_visible_type_text_maps_names_through_all_composite_shapes() {
+        let mappings = BTreeMap::from([
+            ("Status".to_string(), "agent.model.Status".to_string()),
+            (
+                "CleanupReason".to_string(),
+                "agent.model.CleanupReason".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            package_service_visible_type_text(
+                "Map<string, Array<CleanupReason?>?>? | fn(value: Status) -> CleanupReason?",
+                &mappings,
+            ),
+            "Map<string, Array<agent.model.CleanupReason?>?>? | fn(value: agent.model.Status) -> agent.model.CleanupReason?"
+        );
+    }
+
+    #[test]
+    fn package_visible_type_text_does_not_follow_cyclic_mapping_outputs() {
+        let mappings = BTreeMap::from([
+            ("Left".to_string(), "Right".to_string()),
+            ("Right".to_string(), "Left".to_string()),
+        ]);
+
+        assert_eq!(
+            package_service_visible_type_text("Array<Left?>", &mappings),
+            "Array<Right?>"
+        );
+    }
 }
