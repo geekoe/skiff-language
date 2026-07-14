@@ -838,7 +838,7 @@ function spawnClaimDescriptor(
     serviceVersion: item.serviceVersion,
     serviceProtocolIdentity: item.serviceProtocolIdentity,
     buildId: item.buildId,
-    ...(item.activationIdentity === undefined
+    ...(!isPackageTestBuildId(item.buildId) || item.activationIdentity === undefined
       ? {}
       : { activationIdentity: item.activationIdentity }),
     ...(item.payloadSchemaIdentity === undefined

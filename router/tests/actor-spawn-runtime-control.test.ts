@@ -37,6 +37,7 @@ const packageTestBuildId =
   'skiff-package-test-build-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444';
 const packageTestActivationA = 'skiff-package-test-run-v1:example.com~hello:test-a:run:1';
 const packageTestActivationB = 'skiff-package-test-run-v1:example.com~hello:test-b:run:1';
+const serviceActivationIdentity = 'skiff-runtime-activation-v1:opaque:runtime-a';
 const serviceProtocolIdentity =
   'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
 const serviceVersion = '0.1.0';
@@ -303,6 +304,18 @@ describe('actor/spawn runtime control protocol', () => {
     });
   });
 
+  it('omits service runtime activation identity from spawn claim descriptors', async () => {
+    const { ws } = await openRuntime([target], serviceActivationIdentity);
+
+    await submitFunctionSpawn(ws, 'spawn-service-activation-ws', [1]);
+    const claim = await claimFunctionSpawn(ws, 'rpc-spawn-claim-service-activation-ws');
+    expect(claim.header).toMatchObject({
+      type: 'spawn.claim.response',
+      claimed: true,
+    });
+    expect(claim.header).not.toHaveProperty('item.activationIdentity');
+  });
+
   it('isolates package-test dispatch spawn work by activation without service registration', async () => {
     const runtimeRouter = trackResource(createRuntimeRouter());
     const listen = await runtimeRouter.endpoint.listen({ port: 0 });
@@ -493,7 +506,8 @@ describe('actor/spawn runtime control protocol', () => {
 });
 
 async function openRuntime(
-  targets: string[] = [target]
+  targets: string[] = [target],
+  activationIdentity?: string
 ): Promise<{ registry: RuntimeRegistry; ws: WebSocket }> {
   const runtimeRouter = trackResource(createRuntimeRouter());
   const { endpoint, registry } = runtimeRouter;
@@ -504,6 +518,7 @@ async function openRuntime(
     serviceId,
     revisionId,
     buildId,
+    ...(activationIdentity === undefined ? {} : { activationIdentity }),
     serviceProtocolIdentity,
     targets,
   };
