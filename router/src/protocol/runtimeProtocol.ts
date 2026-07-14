@@ -414,6 +414,7 @@ const spawnClaimDescriptorProperties = {
   serviceVersion: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
   buildId: { type: 'string' },
+  activationIdentity: { type: 'string' },
   payloadSchemaIdentity: { type: 'string' },
   leaseExpiresAt: { type: 'string' }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
@@ -883,6 +884,7 @@ export const runtimeFrameHeaderSchemas = {
       supportedTargets: { type: 'array', items: { type: 'string' } },
       supportedSpawnCompatibilityKeys: { type: 'array', items: { type: 'string' } },
       buildId: { type: 'string' },
+      activationIdentity: { type: 'string' },
       maxExecutionMs: { type: 'number' },
       maxConcurrency: { type: 'number' }
     },
@@ -2219,12 +2221,11 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
-    optionalStringPattern(
+    validateSpawnActivationIdentityForBuild(
       envelope,
       'spawn.submit.request',
-      'activationIdentity',
-      ACTIVATION_IDENTITY_PATTERN,
-      'skiff-runtime-activation-v1:opaque:<opaque id>'
+      'buildId',
+      'activationIdentity'
     ) ??
     optionalString(envelope, 'spawn.submit.request', 'callerRequestId') ??
     optionalString(envelope, 'spawn.submit.request', 'traceId') ??
@@ -2267,6 +2268,12 @@ function validateSpawnClaimRequest(envelope: Record<string, unknown>): string | 
       'buildId',
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
+    ) ??
+    validateSpawnActivationIdentityForBuild(
+      envelope,
+      'spawn.claim.request',
+      'buildId',
+      'activationIdentity'
     ) ??
     optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxExecutionMs') ??
     optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxConcurrency')
@@ -2312,8 +2319,39 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
+    validateSpawnActivationIdentityForBuild(
+      envelope,
+      'spawn.claim.response',
+      'item.buildId',
+      'item.activationIdentity'
+    ) ??
     optionalString(envelope, 'spawn.claim.response', 'item.payloadSchemaIdentity') ??
     optionalString(envelope, 'spawn.claim.response', 'item.leaseExpiresAt')
+  );
+}
+
+function validateSpawnActivationIdentityForBuild(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  buildIdField: string,
+  activationIdentityField: string
+): string | null {
+  const buildId = getPathValue(envelope, buildIdField);
+  if (typeof buildId === 'string' && PACKAGE_TEST_BUILD_ID_PATTERN.test(buildId)) {
+    return requireStringPattern(
+      envelope,
+      envelopeType,
+      activationIdentityField,
+      PACKAGE_TEST_ACTIVATION_ID_PATTERN,
+      'skiff-package-test-run-v1:<test run id> for a package-test build'
+    );
+  }
+  return optionalStringPattern(
+    envelope,
+    envelopeType,
+    activationIdentityField,
+    ACTIVATION_IDENTITY_PATTERN,
+    'skiff-runtime-activation-v1:opaque:<opaque id>'
   );
 }
 

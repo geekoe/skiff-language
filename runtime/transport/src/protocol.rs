@@ -825,6 +825,8 @@ pub struct SpawnClaimRequestFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_execution_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<f64>,
@@ -844,6 +846,8 @@ pub struct SpawnClaimDescriptorFrameMetadata {
     pub service_version: String,
     pub service_protocol_identity: String,
     pub build_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_schema_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

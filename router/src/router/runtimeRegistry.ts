@@ -661,7 +661,10 @@ export class RuntimeRegistry {
           buildId: header.buildId ?? packageTestRuntimeControlBuildId(header.runtimeId),
           serviceProtocolIdentity: header.serviceProtocolIdentity,
           targets: new Set(header.supportedTargets),
-          inFlightCount: 0
+          inFlightCount: 0,
+          ...(header.activationIdentity === undefined
+            ? {}
+            : { activationIdentity: header.activationIdentity })
         };
       case 'spawn.renew.request':
       case 'spawn.complete.request':

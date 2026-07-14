@@ -70,6 +70,9 @@ const PROTOCOL_B: &str =
     "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const BUILD_A: &str = "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BUILD_B: &str = "skiff-service-build-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PACKAGE_TEST_BUILD: &str = "skiff-package-test-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const PACKAGE_TEST_ACTIVATION_A: &str = "skiff-package-test-run-v1:example.com~hello:test-a:run:1";
+const PACKAGE_TEST_ACTIVATION_B: &str = "skiff-package-test-run-v1:example.com~hello:test-b:run:1";
 #[allow(dead_code)]
 const BUILD_C: &str = "skiff-service-build-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
@@ -3087,6 +3090,7 @@ async fn spawn_worker_claim_executes_function_and_completes_item() {
     assert_eq!(claim_header.service_version, "v1");
     assert_eq!(claim_header.service_protocol_identity, PROTOCOL_A);
     assert_eq!(claim_header.build_id.as_deref(), Some(BUILD_A));
+    assert_eq!(claim_header.activation_identity, None);
     assert_eq!(
         claim_header.supported_targets,
         vec!["function:program.target".to_string()]
@@ -3191,6 +3195,92 @@ async fn spawn_worker_rejects_claimed_item_from_different_build_before_execution
     let outcome = claim_once
         .await
         .expect("spawn worker should finish failed wrong-build claim");
+    assert!(matches!(
+        outcome,
+        super::spawn_worker::ClaimOutcome::Claimed
+    ));
+}
+
+#[tokio::test]
+async fn package_test_spawn_worker_claims_with_activation_and_rejects_mismatched_descriptor() {
+    let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
+    let host = RuntimeHost::new(RuntimeConfig {
+        db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
+        router_url: "ws://127.0.0.1:4001/runtime".to_string(),
+        base_runtime_id: "runtime-base".to_string(),
+        runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
+        artifact_roots: Vec::new(),
+        http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        http_egress_proxy: None,
+        services: vec![runtime_program_service_config(
+            "runtime-base:program",
+            program,
+        )],
+    })
+    .expect("host should build");
+    let mut package_test_service = (*host.service_snapshot()[0]).clone();
+    package_test_service.build_id = PACKAGE_TEST_BUILD.to_string();
+    package_test_service.activation_identity = Some(PACKAGE_TEST_ACTIVATION_A.to_string());
+    let service = Arc::new(package_test_service);
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let mut spawned_request = request(PACKAGE_TEST_BUILD, "program.target");
+    set_spawn_request_string_arg(&mut spawned_request, "input", "Ada");
+
+    let claim_once = super::spawn_worker::claim_once_for_test(
+        host.clone(),
+        sender,
+        service,
+        "package-test-worker".to_string(),
+    );
+    tokio::pin!(claim_once);
+
+    let claim_request = tokio::select! {
+        result = &mut claim_once => panic!("spawn worker completed before claim response: {result:?}"),
+        message = receiver.recv() => message.expect("spawn.claim.request should be sent"),
+    };
+    let (claim_header, payload): (SpawnClaimRequestFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&router_binary(claim_request))
+            .expect("spawn.claim.request should decode");
+    assert!(payload.is_empty());
+    assert_eq!(claim_header.build_id.as_deref(), Some(PACKAGE_TEST_BUILD));
+    assert_eq!(
+        claim_header.activation_identity.as_deref(),
+        Some(PACKAGE_TEST_ACTIVATION_A)
+    );
+
+    let mut descriptor = spawn_claim_descriptor("function:program.target");
+    descriptor.build_id = PACKAGE_TEST_BUILD.to_string();
+    descriptor.activation_identity = Some(PACKAGE_TEST_ACTIVATION_B.to_string());
+    deliver_spawn_claim_response(
+        &host,
+        &claim_header.rpc_id,
+        descriptor,
+        spawned_request.payload_bytes,
+    );
+
+    let fail_request = tokio::select! {
+        result = &mut claim_once => panic!("spawn worker completed before fail response: {result:?}"),
+        message = receiver.recv() => message.expect("spawn.fail.request should be sent"),
+    };
+    let (fail_header, payload): (SpawnFailRequestFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&router_binary(fail_request))
+            .expect("spawn.fail.request should decode");
+    assert!(payload.is_empty());
+    let error_text = fail_header
+        .diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.get("error"))
+        .expect("spawn fail diagnostics should include activation mismatch")
+        .to_string();
+    assert!(
+        error_text.contains("activationIdentity"),
+        "unexpected diagnostics: {error_text}"
+    );
+
+    deliver_spawn_fail_response(&host, &fail_header.rpc_id);
+    let outcome = claim_once
+        .await
+        .expect("spawn worker should finish failed mismatched-activation claim");
     assert!(matches!(
         outcome,
         super::spawn_worker::ClaimOutcome::Claimed
@@ -3330,6 +3420,7 @@ fn spawn_claim_descriptor(target: &str) -> SpawnClaimDescriptorFrameMetadata {
         service_version: "v1".to_string(),
         service_protocol_identity: PROTOCOL_A.to_string(),
         build_id: BUILD_A.to_string(),
+        activation_identity: None,
         payload_schema_identity: Some(format!("skiff-spawn-payload-v1:{PROTOCOL_A}:{target}")),
         lease_expires_at: Some("2026-06-06T10:00:30.000Z".to_string()),
     }

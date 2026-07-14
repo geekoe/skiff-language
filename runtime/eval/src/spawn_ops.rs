@@ -24,6 +24,7 @@ const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
 const RUNTIME_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-runtime-activation-v1:opaque:";
+const PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-package-test-run-v1:";
 
 pub async fn submit_spawn_statement(
     context: &mut EvalContext<'_>,
@@ -55,8 +56,9 @@ pub async fn submit_spawn_statement(
                 spawn_id: None,
                 build_id: spawn_submit_build_id(spawn_context.request_build_id()),
                 activation_identity: spawn_submit_activation_identity(
+                    spawn_context.request_build_id(),
                     spawn_context.activation_identity(),
-                ),
+                )?,
                 caller_request_id: Some(spawn_context.request_id().to_string()),
                 trace_id: spawn_context.trace_id().map(str::to_string),
                 caller_target: Some(spawn_context.request_target().to_string()),
@@ -74,10 +76,81 @@ fn spawn_submit_build_id(request_build_id: &str) -> Option<String> {
     .then(|| request_build_id.to_string())
 }
 
-fn spawn_submit_activation_identity(activation_identity: Option<&str>) -> Option<String> {
-    activation_identity
+fn spawn_submit_activation_identity(
+    request_build_id: &str,
+    activation_identity: Option<&str>,
+) -> Result<Option<String>> {
+    if request_build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX) {
+        let activation_identity = activation_identity.ok_or_else(|| RuntimeError::Protocol {
+            target: "spawn.submit.request".to_string(),
+            message: format!(
+                "package-test build {request_build_id} requires a package-test activation identity"
+            ),
+        })?;
+        if !activation_identity.starts_with(PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX) {
+            return Err(RuntimeError::Protocol {
+                target: "spawn.submit.request".to_string(),
+                message: format!(
+                    "package-test build {request_build_id} requires activation identity prefix {PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX}"
+                ),
+            });
+        }
+        return Ok(Some(activation_identity.to_string()));
+    }
+
+    Ok(activation_identity
         .filter(|value| value.starts_with(RUNTIME_ACTIVATION_IDENTITY_PREFIX))
-        .map(str::to_string)
+        .map(str::to_string))
+}
+
+#[cfg(test)]
+mod spawn_activation_identity_tests {
+    use super::{spawn_submit_activation_identity, RuntimeError};
+
+    const PACKAGE_TEST_BUILD: &str =
+        "skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SERVICE_BUILD: &str =
+        "skiff-service-build-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn package_test_submit_keeps_package_test_activation() {
+        let activation = "skiff-package-test-run-v1:example.com~agent:test:run:1";
+        assert_eq!(
+            spawn_submit_activation_identity(PACKAGE_TEST_BUILD, Some(activation))
+                .expect("package-test activation should be accepted")
+                .as_deref(),
+            Some(activation)
+        );
+    }
+
+    #[test]
+    fn package_test_submit_rejects_missing_or_wrong_activation() {
+        for activation in [None, Some("skiff-runtime-activation-v1:opaque:runtime-a")] {
+            assert!(matches!(
+                spawn_submit_activation_identity(PACKAGE_TEST_BUILD, activation),
+                Err(RuntimeError::Protocol { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn service_submit_preserves_existing_activation_behavior() {
+        let runtime_activation = "skiff-runtime-activation-v1:opaque:runtime-a";
+        assert_eq!(
+            spawn_submit_activation_identity(SERVICE_BUILD, Some(runtime_activation))
+                .expect("service activation should be accepted")
+                .as_deref(),
+            Some(runtime_activation)
+        );
+        assert_eq!(
+            spawn_submit_activation_identity(
+                SERVICE_BUILD,
+                Some("skiff-package-test-run-v1:example:test:run")
+            )
+            .expect("non-runtime service activation should keep being omitted"),
+            None
+        );
+    }
 }
 
 struct SpawnEncodedCall {
@@ -1032,10 +1105,14 @@ mod tests {
     };
 
     #[test]
-    fn spawn_submit_activation_identity_omits_package_test_runs() {
+    fn spawn_submit_activation_identity_keeps_package_test_runs() {
+        let build_id = "skiff-package-test-build-v1:sha256:aaaaaaaa";
+        let activation = "skiff-package-test-run-v1:example:test:run";
         assert_eq!(
-            spawn_submit_activation_identity(Some("skiff-package-test-run-v1:example:test:run")),
-            None
+            spawn_submit_activation_identity(build_id, Some(activation))
+                .expect("package-test activation should be accepted")
+                .as_deref(),
+            Some(activation)
         );
     }
 
@@ -1043,7 +1120,12 @@ mod tests {
     fn spawn_submit_activation_identity_keeps_runtime_activations() {
         let activation = "skiff-runtime-activation-v1:opaque:local";
         assert_eq!(
-            spawn_submit_activation_identity(Some(activation)).as_deref(),
+            spawn_submit_activation_identity(
+                "skiff-service-build-v1:sha256:aaaaaaaa",
+                Some(activation),
+            )
+            .expect("runtime activation should be accepted")
+            .as_deref(),
             Some(activation)
         );
     }

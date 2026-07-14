@@ -1,5 +1,7 @@
 import type { QueueItem, QueueItemStatus, QueuePolicy } from '../queue/types.js';
 export const SPAWN_QUEUE_NAME = '__skiff.spawn' as const;
+export const PACKAGE_TEST_BUILD_ID_PREFIX = 'skiff-package-test-build-v1:sha256:' as const;
+export const PACKAGE_TEST_ACTIVATION_ID_PREFIX = 'skiff-package-test-run-v1:' as const;
 
 export type SpawnTargetKind = 'function';
 export type SpawnTerminalStatus = Extract<
@@ -90,6 +92,7 @@ export interface SpawnClaimRequest {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId?: string | undefined;
+  activationIdentity?: string | undefined;
   supportedTargets: readonly string[];
   supportedSpawnCompatibilityKeys: readonly string[];
   now?: Date | undefined;
@@ -159,4 +162,28 @@ export function spawnCompatibilityKey(input: {
   target: string;
 }): string {
   return `${input.serviceVersion}:${input.serviceProtocolIdentity}:${input.target}`;
+}
+
+export function isPackageTestBuildId(buildId: string | undefined): boolean {
+  return buildId?.startsWith(PACKAGE_TEST_BUILD_ID_PREFIX) === true;
+}
+
+export function isPackageTestActivationIdentity(
+  activationIdentity: string | undefined
+): activationIdentity is string {
+  return activationIdentity?.startsWith(PACKAGE_TEST_ACTIVATION_ID_PREFIX) === true;
+}
+
+export function spawnActivationIdentityMatchesClaim(input: {
+  buildId: string | undefined;
+  queuedActivationIdentity: string | undefined;
+  claimantActivationIdentity: string | undefined;
+}): boolean {
+  if (!isPackageTestBuildId(input.buildId)) {
+    return true;
+  }
+  return (
+    isPackageTestActivationIdentity(input.queuedActivationIdentity) &&
+    input.queuedActivationIdentity === input.claimantActivationIdentity
+  );
 }

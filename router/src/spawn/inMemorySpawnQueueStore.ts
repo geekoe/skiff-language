@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { QueueItem, QueuePolicy } from '../queue/types.js';
 import {
   SPAWN_QUEUE_NAME,
+  spawnActivationIdentityMatchesClaim,
   spawnPolicyKey,
   type ClaimedSpawn,
   type EnqueueSpawnInput,
@@ -271,6 +272,11 @@ export class InMemorySpawnQueueStore implements SpawnQueueStore {
       item.serviceVersion === request.serviceVersion &&
       item.serviceProtocolIdentity === request.serviceProtocolIdentity &&
       (request.buildId === undefined || item.buildId === request.buildId) &&
+      spawnActivationIdentityMatchesClaim({
+        buildId: item.buildId,
+        queuedActivationIdentity: item.activationIdentity,
+        claimantActivationIdentity: request.activationIdentity,
+      }) &&
       item.spawnCompatibilityKey !== undefined &&
       request.supportedSpawnCompatibilityKeys.includes(item.spawnCompatibilityKey) &&
       request.supportedTargets.includes(item.target) &&

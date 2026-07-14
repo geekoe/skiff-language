@@ -640,6 +640,7 @@ export interface SpawnClaimRequestFrameHeader
   supportedTargets: string[];
   supportedSpawnCompatibilityKeys: string[];
   buildId?: string;
+  activationIdentity?: string;
   maxExecutionMs?: number;
   maxConcurrency?: number;
 }
@@ -656,6 +657,7 @@ export interface SpawnClaimDescriptorFrameMetadata {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId: string;
+  activationIdentity?: string;
   payloadSchemaIdentity?: string;
   leaseExpiresAt?: string;
 }

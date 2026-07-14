@@ -929,6 +929,69 @@ describe('runtime binary frame foundations', () => {
     });
   });
 
+  it('requires package-test activation identity on spawn submit, claim, and descriptor frames', () => {
+    const packageTestBuildId =
+      'skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const activationIdentity = 'skiff-package-test-run-v1:example.com~hello:test-a:run:1';
+    const validSubmit = {
+      ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+      buildId: packageTestBuildId,
+      activationIdentity
+    };
+    const validClaim = {
+      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
+      buildId: packageTestBuildId,
+      activationIdentity
+    };
+    const validResponse = {
+      ...runtimeFrameHeaderFixtures['spawn.claim.response'],
+      item: {
+        ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
+        buildId: packageTestBuildId,
+        activationIdentity
+      }
+    };
+
+    for (const header of [validSubmit, validClaim]) {
+      expect(validateRuntimeToRouterFrameHeader(header)).toEqual({
+        ok: true,
+        envelope: header
+      });
+      const { activationIdentity: _activationIdentity, ...missingActivation } = header;
+      expect(validateRuntimeToRouterFrameHeader(missingActivation)).toEqual({
+        ok: false,
+        error: expect.stringContaining('package-test build')
+      });
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...header,
+          activationIdentity: 'skiff-runtime-activation-v1:opaque:wrong-kind'
+        })
+      ).toEqual({
+        ok: false,
+        error: expect.stringContaining('skiff-package-test-run-v1')
+      });
+    }
+
+    expect(validateRouterToRuntimeFrameHeader(validResponse)).toEqual({
+      ok: true,
+      envelope: validResponse
+    });
+    const { activationIdentity: _activationIdentity, ...itemWithoutActivation } =
+      validResponse.item;
+    expect(
+      validateRouterToRuntimeFrameHeader({ ...validResponse, item: itemWithoutActivation })
+    ).toEqual({
+      ok: false,
+      error: expect.stringContaining('package-test build')
+    });
+
+    for (const header of [validClaim, validResponse]) {
+      const decoded = decodeRuntimeFrame(encodeRuntimeFrame(header));
+      expect(decoded.header).toEqual(header);
+    }
+  });
+
   it('accepts request.start serviceId for runtime lazy artifact loading', () => {
     const header = {
       ...runtimeFrameHeaderFixtures['request.start'],
