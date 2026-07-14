@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawn as spawnBuildStackCapture } from 'node:child_process';
 import { chmod, copyFile, mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,7 +11,10 @@ import {
   writeJsonAtomic,
 } from './lib/source-key.mjs';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
-import { runAttachedCommand } from './lib/command-execution.mjs';
+import {
+  captureCheckedCommand,
+  runAttachedCommand,
+} from './lib/command-execution.mjs';
 
 const DEFAULT_TARGET = 'x86_64-unknown-linux-gnu';
 const DEFAULT_ZIG_DIR = path.join(os.homedir(), '.cache/skiff-tools/zig-aarch64-macos-0.15.2');
@@ -317,27 +319,26 @@ async function currentCommit() {
   return (await capture('git', ['rev-parse', 'HEAD'], skiffRoot)).trim();
 }
 
-function capture(command, commandArgs, cwd) {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: build-stack-capture-pending
-    const child = spawnBuildStackCapture(command, commandArgs, {
+async function capture(command, commandArgs, cwd) {
+  try {
+    const result = await captureCheckedCommand(command, commandArgs, {
       cwd,
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on('data', (chunk) => stdout.push(chunk));
-    child.stderr.on('data', (chunk) => stderr.push(chunk));
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve(Buffer.concat(stdout).toString('utf8'));
-        return;
-      }
-      reject(new Error(`${command} ${commandArgs.join(' ')} failed with ${signal || code}: ${Buffer.concat(stderr).toString('utf8')}`));
-    });
-  });
+    return result.stdout;
+  } catch (error) {
+    throw new Error([
+      `${command} failed with ${error?.signal ?? error?.code ?? 'UNKNOWN'}`,
+      streamDiagnostic('stderr', error?.stderr),
+      streamDiagnostic('stdout', error?.stdout),
+    ].filter(Boolean).join('\n'));
+  }
+}
+
+function streamDiagnostic(label, value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? `${label}:\n${value.trim()}`
+    : '';
 }
 
 async function isFile(file) {

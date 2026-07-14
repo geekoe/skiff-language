@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn as spawnCompilerDagCapture } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { captureCheckedCommand } from './lib/command-execution.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultCliPhase = 10;
@@ -384,39 +385,34 @@ function printUsage() {
   );
 }
 
-function readCargoMetadata() {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: compiler-dag-capture-pending
-    const child = spawnCompilerDagCapture('cargo', ['metadata', '--format-version', '1'], {
-      cwd: root,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code !== 0) {
-        reject(new Error([
-          `cargo metadata --format-version 1 failed with ${signal ?? code}`,
-          stderr.trim(),
-        ].filter(Boolean).join('\n')));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout));
-      } catch (error) {
-        reject(new Error(`failed to parse cargo metadata JSON: ${error.message}`));
-      }
-    });
-  });
+async function readCargoMetadata() {
+  let result;
+  try {
+    result = await captureCheckedCommand(
+      'cargo',
+      ['metadata', '--format-version', '1'],
+      {
+        cwd: root,
+      },
+    );
+  } catch (error) {
+    throw new Error([
+      `cargo metadata failed with ${error?.signal ?? error?.code ?? 'UNKNOWN'}`,
+      streamDiagnostic('stderr', error?.stderr),
+      streamDiagnostic('stdout', error?.stdout),
+    ].filter(Boolean).join('\n'));
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(`failed to parse cargo metadata JSON: ${error.message}`);
+  }
+}
+
+function streamDiagnostic(label, value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? `${label}:\n${value.trim()}`
+    : '';
 }
 
 function runSelfTests() {

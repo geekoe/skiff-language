@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-import {
-  spawn as spawnBrowserChild,
-  spawn as spawnCredentialCapture,
-} from 'node:child_process';
+import { spawn as spawnBrowserChild } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -11,7 +8,10 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
-import { runAttachedCommand } from './lib/command-execution.mjs';
+import {
+  captureAttachedCommand,
+  runAttachedCommand,
+} from './lib/command-execution.mjs';
 import { parseRuntimeReloadUrl } from './lib/runtime-reload-url.mjs';
 import {
   devSyncCheckFlags,
@@ -1655,7 +1655,7 @@ async function readMacOSKeychainServiceToken(service, account) {
   if (process.platform !== 'darwin') {
     return null;
   }
-  const result = await spawnCapture('security', [
+  const result = await captureAttachedCommand('security', [
     'find-generic-password',
     '-a',
     account,
@@ -1670,7 +1670,7 @@ async function writeMacOSKeychainServiceToken(service, account, token) {
   if (process.platform !== 'darwin') {
     return false;
   }
-  const result = await spawnCapture('security', [
+  const result = await captureAttachedCommand('security', [
     'add-generic-password',
     '-a',
     account,
@@ -1687,36 +1687,13 @@ async function deleteMacOSKeychainServiceToken(service, account) {
   if (process.platform !== 'darwin') {
     return;
   }
-  await spawnCapture('security', [
+  await captureAttachedCommand('security', [
     'delete-generic-password',
     '-a',
     account,
     '-s',
     service,
   ]);
-}
-
-function spawnCapture(command, args) {
-  return new Promise((resolvePromise) => {
-    // child-process-owner: credential-capture-pending
-    const child = spawnCredentialCapture(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', (error) => {
-      resolvePromise({ code: -1, stdout, stderr: formatError(error) });
-    });
-    child.on('exit', (code) => {
-      resolvePromise({ code: code ?? -1, stdout, stderr });
-    });
-  });
 }
 
 async function openBrowser(url) {
@@ -2008,9 +1985,14 @@ async function extractTgzArchive(bytes, outDir) {
 }
 
 async function runTar(args, label) {
-  const result = await spawnCapture('tar', args);
+  const result = await captureAttachedCommand('tar', args);
   if (result.code !== 0) {
-    throw new Error(`failed to ${label}: ${result.stderr.trim() || result.stdout.trim() || `tar exited ${result.code}`}`);
+    const detail = result.error?.message
+      || result.stderr.trim()
+      || result.stdout.trim();
+    throw new Error(
+      `failed to ${label}: ${detail || `tar exited ${result.signal ?? result.code}`}`,
+    );
   }
   return result;
 }

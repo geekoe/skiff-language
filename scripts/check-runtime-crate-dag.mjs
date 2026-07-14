@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn as spawnRuntimeDagCapture } from 'node:child_process';
 import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { captureAttachedCommand } from './lib/command-execution.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -470,26 +471,12 @@ async function cargoMetadata() {
   }
 }
 
-function run(command, args) {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: runtime-dag-capture-pending
-    const child = spawnRuntimeDagCapture(command, args, {
-      cwd: root,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (status) => {
-      resolve({ status, stdout, stderr });
-    });
-  });
+async function run(command, args) {
+  const result = await captureAttachedCommand(command, args, { cwd: root });
+  if (result.error !== null) {
+    throw new Error(result.error.message);
+  }
+  return { status: result.code, stdout: result.stdout, stderr: result.stderr };
 }
 
 function workspaceMemberPackages(metadata) {

@@ -18,15 +18,19 @@ import { scanCommandExecutionSource } from '../lib/command-execution-scanner.mjs
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-test('actual production ledger passes and has exactly twelve call-level pending migrations', async () => {
+test('actual production ledger passes with exactly ten explicit lifecycle owners', async () => {
   await assertCommandExecutionPolicy(root);
-  assert.equal(COMMAND_EXECUTION_LEDGER.length, 22);
+  assert.equal(COMMAND_EXECUTION_LEDGER.length, 10);
+  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 10);
   assert.equal(
-    COMMAND_EXECUTION_LEDGER.filter((entry) =>
-      entry.ownerClass === COMMAND_OWNER_CLASSES.MIGRATION_PENDING).length,
-    12,
+    COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'spawn').length,
+    8,
   );
-  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 22);
+  assert.equal(
+    COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'execFile').length,
+    2,
+  );
+  assert.equal(Object.values(COMMAND_OWNER_CLASSES).includes('migration-pending'), false);
 });
 
 test('a valid call-level ledger binds import, alias, marker, owner function, and call count', async () => {
@@ -92,6 +96,8 @@ test('stale and duplicate ledger entries plus illegal owner classes are rejected
 
   const illegal = validateCommandExecutionLedger([{ ...base, ownerClass: 'whole-file-exception' }]);
   assert.match(illegal.join('\n'), /invalid owner class/);
+  const pending = validateCommandExecutionLedger([{ ...base, ownerClass: 'migration-pending' }]);
+  assert.match(pending.join('\n'), /invalid owner class/);
 
   await withFixture('export {};\n', async (fixture) => {
     const stale = await commandExecutionPolicyViolations(fixture, { ledger: [base] });

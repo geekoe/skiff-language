@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import {
-  spawn as spawnInstanceCapture,
   spawn as spawnManagedChild,
 } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,7 +11,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { cargoBuildEnv } from './lib/cargo-target-dir.mjs';
-import { runAttachedCommand } from './lib/command-execution.mjs';
+import {
+  captureAttachedCommand,
+  runAttachedCommand,
+} from './lib/command-execution.mjs';
 import {
   devSyncCheckFlags,
   instanceDevSyncOptions,
@@ -1307,10 +1309,13 @@ async function discoverPortListeners(ports) {
   const errors = [];
   let available = true;
   for (const port of [...new Set(ports)].sort((left, right) => left - right)) {
-    const result = await capture('lsof', ['-nP', `-tiTCP:${port}`, '-sTCP:LISTEN']);
-    if (result.error !== undefined) {
+    const result = await captureAttachedCommand(
+      'lsof',
+      ['-nP', `-tiTCP:${port}`, '-sTCP:LISTEN'],
+    );
+    if (result.error !== null) {
       available = false;
-      errors.push(`lsof failed for port ${port}: ${result.error}`);
+      errors.push(`lsof failed for port ${port}: ${result.error.message}`);
       byPort.set(port, []);
       continue;
     }
@@ -1335,8 +1340,11 @@ async function discoverPortListeners(ports) {
 
 async function inspectProcess(pid) {
   const fallback = { pid, ppid: null, pgid: null, commandName: null, command: '', alive: isProcessAlive(pid) };
-  const result = await capture('ps', ['-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'comm=', '-o', 'command=', '-p', String(pid)]);
-  if (result.error !== undefined || result.code !== 0) {
+  const result = await captureAttachedCommand(
+    'ps',
+    ['-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'comm=', '-o', 'command=', '-p', String(pid)],
+  );
+  if (result.error !== null || result.code !== 0) {
     return fallback;
   }
   const line = result.stdout.split(/\r?\n/).find((item) => item.trim().length > 0);
@@ -1599,31 +1607,6 @@ function requireNext(args, index, optionName) {
     throw new Error(`${optionName} requires a value`);
   }
   return value;
-}
-
-function capture(command, args, options = {}) {
-  return new Promise((resolvePromise) => {
-    // child-process-owner: instance-status-capture-pending
-    const child = spawnInstanceCapture(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', (error) => {
-      resolvePromise({ code: null, stdout, stderr, error: error.message });
-    });
-    child.on('exit', (code, signal) => {
-      resolvePromise({ code: code ?? -1, signal, stdout, stderr });
-    });
-  });
 }
 
 function run(command, args, cwd, env = process.env) {

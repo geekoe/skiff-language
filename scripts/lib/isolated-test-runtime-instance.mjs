@@ -1,5 +1,4 @@
 import {
-  spawn as spawnIsolatedStatusCapture,
   spawn as spawnSupervisorChild,
 } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -7,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
+import { captureCheckedCommand } from './command-execution.mjs';
 
 const STABLE_MONGO_PORT = 27017;
 const START_TIMEOUT_MS = 120_000;
@@ -201,28 +201,22 @@ function childExit(child) {
   });
 }
 
-function runCommandCapture(command, args, options) {
-  return new Promise((resolvePromise, reject) => {
-    // child-process-owner: isolated-status-capture-pending
-    const child = spawnIsolatedStatusCapture(command, args, {
-      ...options,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise({ stdout, stderr });
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with ${signal ?? code}: ${stderr || stdout}`));
-      }
-    });
-  });
+async function runCommandCapture(command, args, options) {
+  try {
+    return await captureCheckedCommand(command, args, options);
+  } catch (error) {
+    throw new Error([
+      `${command} exited with ${error?.signal ?? error?.code ?? 'UNKNOWN'}`,
+      streamDiagnostic('stderr', error?.stderr),
+      streamDiagnostic('stdout', error?.stdout),
+    ].filter(Boolean).join('\n'));
+  }
+}
+
+function streamDiagnostic(label, value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? `${label}:\n${value.trim()}`
+    : '';
 }
 
 function errorMessage(error) {

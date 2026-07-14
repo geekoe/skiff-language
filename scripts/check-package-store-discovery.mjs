@@ -1,15 +1,11 @@
 #!/usr/bin/env node
 
-import {
-  spawn as spawnPackageStoreCommand,
-  spawn as spawnPackageStoreExpectedFailure,
-  spawn as spawnPackageStoreSkiff,
-} from 'node:child_process';
 import { createServer } from 'node:http';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureAttachedCommand } from './lib/command-execution.mjs';
 import { publicationStorageSegment } from './lib/publication-id.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -433,35 +429,20 @@ async function assertFileExists(path) {
   }
 }
 
-function runSkiff(args, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: package-store-skiff-pending
-    const child = spawnPackageStoreSkiff(process.execPath, [skiffCli, ...args], {
-      cwd: tempRoot,
-      env: { ...process.env, ...rustEnv, ...extraEnv },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0 && stdout.includes('test result: ok. 1 passed; 0 failed')) {
-        resolve();
-        return;
-      }
-      reject(new Error([
-        `skiff ${args.join(' ')} failed with ${signal ?? code}`,
-        stderr.trim(),
-        stdout.trim(),
-      ].filter(Boolean).join('\n')));
-    });
-  });
+async function runSkiff(args, extraEnv = {}) {
+  const { code, signal, stdout, stderr } = await runCommand(
+    process.execPath,
+    [skiffCli, ...args],
+    { extraEnv },
+  );
+  if (code === 0 && stdout.includes('test result: ok. 1 passed; 0 failed')) {
+    return;
+  }
+  throw new Error([
+    `skiff ${args.join(' ')} failed with ${signal ?? code}`,
+    stderr.trim(),
+    stdout.trim(),
+  ].filter(Boolean).join('\n'));
 }
 
 function runSkiffCommand(args, options = {}) {
@@ -504,57 +485,30 @@ function spawnSuccess(command, args) {
   });
 }
 
-function runCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: package-store-command-pending
-    const child = spawnPackageStoreCommand(command, args, {
-      cwd: options.cwd ?? tempRoot,
-      env: { ...process.env, ...rustEnv, ...(options.extraEnv ?? {}) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      resolve({ code, signal, stdout, stderr });
-    });
+async function runCommand(command, args, options = {}) {
+  const result = await captureAttachedCommand(command, args, {
+    cwd: options.cwd ?? tempRoot,
+    env: { ...process.env, ...rustEnv, ...(options.extraEnv ?? {}) },
   });
+  if (result.error !== null) {
+    throw new Error(result.error.message);
+  }
+  return result;
 }
 
-function runSkiffExpectFailure(args, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    // child-process-owner: package-store-expected-failure-pending
-    const child = spawnPackageStoreExpectedFailure(process.execPath, [skiffCli, ...args], {
-      cwd: tempRoot,
-      env: { ...process.env, ...rustEnv, ...extraEnv },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code) => {
-      const output = `${stderr}\n${stdout}`;
-      if (code !== 0 && output.includes('package dependency google.com/cloud version 1.0.0 has no matching package.yml')) {
-        resolve();
-        return;
-      }
-      reject(new Error([
-        `skiff ${args.join(' ')} unexpectedly ${code === 0 ? 'succeeded' : `failed with ${code}`}`,
-        stderr.trim(),
-        stdout.trim(),
-      ].filter(Boolean).join('\n')));
-    });
-  });
+async function runSkiffExpectFailure(args, extraEnv = {}) {
+  const { code, stdout, stderr } = await runCommand(
+    process.execPath,
+    [skiffCli, ...args],
+    { extraEnv },
+  );
+  const output = `${stderr}\n${stdout}`;
+  if (code !== 0 && output.includes('package dependency google.com/cloud version 1.0.0 has no matching package.yml')) {
+    return;
+  }
+  throw new Error([
+    `skiff ${args.join(' ')} unexpectedly ${code === 0 ? 'succeeded' : `failed with ${code}`}`,
+    stderr.trim(),
+    stdout.trim(),
+  ].filter(Boolean).join('\n'));
 }

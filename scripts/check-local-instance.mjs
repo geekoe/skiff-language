@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { spawn as spawnLocalCheckCapture } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,7 +12,10 @@ import {
   instanceSummary,
   readInstanceConfig,
 } from './lib/local-instance-config.mjs';
-import { runAttachedCommand } from './lib/command-execution.mjs';
+import {
+  captureCheckedCommand,
+  runAttachedCommand,
+} from './lib/command-execution.mjs';
 import {
   defaultDevHome,
   devRuntimePaths,
@@ -224,31 +226,24 @@ function run(command, args) {
   return runAttachedCommand(command, args, { cwd: skiffRoot, env: process.env });
 }
 
-function runCapture(command, args) {
-  return new Promise((resolvePromise, reject) => {
-    // child-process-owner: local-check-capture-pending
-    const child = spawnLocalCheckCapture(command, args, {
+async function runCapture(command, args) {
+  try {
+    const result = await captureCheckedCommand(command, args, {
       cwd: skiffRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise(stdout);
-        return;
-      }
-      reject(new Error(`${command} exited with ${signal ?? code}: ${stderr}`));
-    });
-  });
+    return result.stdout;
+  } catch (error) {
+    throw new Error([
+      `${command} exited with ${error?.signal ?? error?.code ?? 'UNKNOWN'}`,
+      streamDiagnostic('stderr', error?.stderr),
+      streamDiagnostic('stdout', error?.stdout),
+    ].filter(Boolean).join('\n'));
+  }
+}
+
+function streamDiagnostic(label, value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? `${label}:\n${value.trim()}`
+    : '';
 }

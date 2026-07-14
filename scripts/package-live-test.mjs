@@ -1,13 +1,19 @@
 #!/usr/bin/env node
-import { spawn as spawnPackageLiveCapture } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createPackageLiveCommand } from './lib/package-live-command.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = resolve(scriptDir, '..', '..');
 const skiffCli = join(scriptDir, 'skiff.mjs');
+const { runCli, runCliJson } = createPackageLiveCommand({
+  skiffCli,
+  cwd: workspaceRoot,
+  env: process.env,
+});
 const keepPackageLiveTemp =
   process.env.SKIFF_PACKAGE_LIVE_KEEP_TEMP === '1' ||
   process.env.SKIFF_PACKAGE_LIVE_KEEP_TEMP === 'true';
@@ -93,43 +99,6 @@ async function main() {
     }
   }
   console.log(JSON.stringify(output, null, 2));
-}
-
-function runCliJson(args) {
-  return runCli(args).then(({ stdout }) => {
-    try {
-      return JSON.parse(stdout);
-    } catch (error) {
-      throw new Error(`failed to parse JSON from skiff ${args.join(' ')}: ${error.message}\nstdout:\n${stdout}`);
-    }
-  });
-}
-
-function runCli(args) {
-  return new Promise((resolvePromise, reject) => {
-    // child-process-owner: package-live-capture-pending
-    const child = spawnPackageLiveCapture(process.execPath, [skiffCli, ...args], {
-      cwd: workspaceRoot,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise({ stdout: stdout.trim(), stderr: stderr.trim() });
-        return;
-      }
-      reject(new Error(`skiff ${args.join(' ')} exited with ${signal ?? code}${stderr ? `\nstderr:\n${stderr.trim()}` : ''}${stdout ? `\nstdout:\n${stdout.trim()}` : ''}`));
-    });
-  });
 }
 
 function assert(condition, message) {

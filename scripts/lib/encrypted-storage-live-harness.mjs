@@ -1,4 +1,3 @@
-import { spawn as spawnMongoshCapture } from 'node:child_process';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import {
   chmod,
@@ -15,8 +14,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { assertPortsClosed, leaseLocalPorts } from './local-port-lease.mjs';
 import { runAttachedCommand } from './command-execution.mjs';
+import { createMongoshCommand } from './mongosh-json-command.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
+const mongoshCommand = createMongoshCommand();
 export const repoRoot = resolve(scriptDir, '..', '..');
 
 const PORT_MIN = 45000;
@@ -316,23 +317,11 @@ export class EncryptedStorageLiveHarness {
   }
 
   async mongoJson(database, expression) {
-    const marker = '__SKIFF_ENCRYPTED_LIVE_EJSON__';
-    const code = `const value=(${expression}); print(${JSON.stringify(marker)}+EJSON.stringify(value,{relaxed:false}));`;
-    const result = await runCommandCapture(
-      'mongosh',
-      [
-        `mongodb://127.0.0.1:${this.ports.mongo}/${database}?directConnection=true`,
-        '--quiet',
-        '--eval',
-        code,
-      ],
-      { cwd: repoRoot },
-    );
-    const line = result.stdout.split(/\r?\n/).find((candidate) => candidate.startsWith(marker));
-    if (line === undefined) {
-      throw new Error(`mongosh result did not contain EJSON marker: ${result.stdout}${result.stderr}`);
-    }
-    return JSON.parse(line.slice(marker.length));
+    return mongoshCommand.json({
+      url: `mongodb://127.0.0.1:${this.ports.mongo}/${database}?directConnection=true`,
+      expression,
+      cwd: repoRoot,
+    });
   }
 
   async assertRuntimeKeyringEvent(keyring) {
@@ -472,8 +461,7 @@ export class EncryptedStorageLiveHarness {
 
   async initializeReplicaSet() {
     const initiate = `try { rs.status(); } catch (error) { rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:${this.ports.mongo}'}]}); }`;
-    await runCommandCapture(
-      'mongosh',
+    await mongoshCommand.run(
       [`mongodb://127.0.0.1:${this.ports.mongo}/admin?directConnection=true`, '--quiet', '--eval', initiate],
       { cwd: repoRoot },
     );
@@ -561,30 +549,6 @@ function instanceConfigText(paths, ports) {
 
 function runCommand(command, args, options) {
   return runAttachedCommand(command, args, options);
-}
-
-function runCommandCapture(command, args, options) {
-  return new Promise((resolvePromise, reject) => {
-    // child-process-owner: mongosh-capture-pending
-    const child = spawnMongoshCapture(command, args, {
-      ...options,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolvePromise({ stdout, stderr });
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} exited with ${signal ?? code}: ${stderr || stdout}`));
-      }
-    });
-  });
 }
 
 function range(start, end) {
