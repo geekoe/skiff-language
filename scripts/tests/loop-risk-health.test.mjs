@@ -5,7 +5,10 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { parseLoopRiskConfig } from '../lib/loop-risk-config.mjs';
+import { pollLoopRiskHealth } from '../lib/loop-risk-health.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkerPath = join(root, 'scripts', 'check-loop-risk-health.mjs');
@@ -105,6 +108,119 @@ test('health scrubs a known raw URL embedded by a third-party fetch error', asyn
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('health canonical config is strict, cannot be overridden, and redacts output', async () => {
+  const server = await startHealthServer(zeroHealth());
+  const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-loop-health-config-'));
+  const configPath = join(tempRoot, 'loop-risk.json');
+  const sentinel = 'canonical-health-secret';
+  const healthUrl = `${server.origin}/__router/health?detail=loop-risk`;
+  await writeFile(configPath, JSON.stringify({
+    healthUrl,
+    runtimeIds: ['runtime-test'],
+  }));
+  try {
+    const result = await runChecker(['--config', configPath]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /"checked": true/);
+    assert.match(result.stdout, new RegExp(`${escapeRegExp(server.origin)}/<redacted-path>`));
+    assert.deepEqual(server.requests, ['/__router/health?detail=loop-risk']);
+
+    const mixed = await runChecker([
+      '--config', configPath,
+      '--url', `${server.origin}/${sentinel}?detail=loop-risk`,
+    ]);
+    assert.notEqual(mixed.code, 0);
+    assert.match(mixed.stderr, /cannot be combined/);
+    assert.doesNotMatch(mixed.stderr, new RegExp(sentinel));
+    assert.equal(server.requests.length, 1);
+  } finally {
+    await server.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('health config schema rejects required-field, URL, type, duplicate, and unknown-key errors', () => {
+  const valid = {
+    healthUrl: 'http://router.test:4101/__router/health?detail=loop-risk',
+    runtimeIds: ['runtime-a'],
+  };
+  assert.deepEqual(parseLoopRiskConfig(valid), valid);
+  for (const [value, expected] of [
+    [{ runtimeIds: ['runtime-a'] }, /missing field.*healthUrl/],
+    [{ ...valid, runtimeIds: [] }, /runtimeIds must be a non-empty array/],
+    [{ ...valid, runtimeIds: ['runtime-a', 'runtime-a'] }, /unique/],
+    [{ ...valid, runtimeIds: [1] }, /runtimeIds must be/],
+    [{ ...valid, healthUrl: 'http://router.test:4101/other?detail=loop-risk' }, /must target/],
+    [{ ...valid, healthUrl: 'http://user:secret@router.test:4101/__router/health?detail=loop-risk' }, /must target/],
+    [{ ...valid, extra: true }, /unknown field.*extra/],
+  ]) {
+    assert.throws(() => parseLoopRiskConfig(value), expected);
+  }
+});
+
+test('shared health poller covers convergence, timeout, transport/schema errors, and runtime loss', async () => {
+  const zero = zeroHealth();
+  const nonzero = structuredClone(zero);
+  nonzero.loopRisk.router.dispatcher.pendingUnary = 1;
+  const missingRuntime = structuredClone(zero);
+  missingRuntime.loopRisk.runtimes = [];
+
+  const converged = await pollWithResponses([nonzero, zero]);
+  assert.equal(converged.ok, true);
+  assert.equal(converged.runtimes[0].runtimeId, 'runtime-test');
+
+  const timeout = await pollWithResponses([nonzero]);
+  assert.equal(timeout.ok, false);
+  assert.match(timeout.reasons.join('\n'), /pendingUnary/);
+
+  const httpError = await pollWithResponses([], { status: 503 });
+  assert.equal(httpError.ok, false);
+  assert.match(httpError.latestError, /returned 503/);
+
+  const missingSchema = await pollWithResponses([{}]);
+  assert.equal(missingSchema.ok, false);
+  assert.match(missingSchema.latestError, /did not include loopRisk/);
+
+  const disappeared = await pollWithResponses([missingRuntime]);
+  assert.equal(disappeared.ok, false);
+  assert.match(disappeared.reasons.join('\n'), /disappeared/);
+});
+
+test('importing loop-risk CLIs and health library performs no main execution', async () => {
+  for (const path of [
+    checkerPath,
+    join(root, 'scripts', 'lib', 'loop-risk-health.mjs'),
+  ]) {
+    const result = await runProcess(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `await import(${JSON.stringify(pathToFileURL(path).href)})`,
+    ], process.env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+  }
+});
+
+async function pollWithResponses(payloads, { status = 200 } = {}) {
+  let index = 0;
+  let now = 0;
+  return await pollLoopRiskHealth({
+    url: 'http://router.test:4101/__router/health?detail=loop-risk',
+    touchedRuntimeIds: ['runtime-test'],
+    timeoutMs: 3,
+    intervalMs: 1,
+  }, {
+    now: () => now++,
+    sleep: async () => {},
+    fetch: async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => payloads[Math.min(index++, payloads.length - 1)],
+    }),
+  });
+}
 
 function zeroHealth() {
   return {

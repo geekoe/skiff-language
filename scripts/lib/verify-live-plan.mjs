@@ -1,7 +1,13 @@
 import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
 import { discoverRuntimeLiveTests, repoRelative } from './verify-discovery.mjs';
+import {
+  LOOP_RISK_CONFIG_PROFILES,
+  assertReadableRuntimeLogs,
+  loadLoopRiskConfig,
+} from './loop-risk-config.mjs';
 import {
   LIVE_DISCOVERIES,
   LIVE_INPUTS,
@@ -21,6 +27,7 @@ export async function liveSelectorPhases(root, selector, {
   runtimeLiveConfig,
   runtimeLiveReloadUrl,
   runtimeLiveArtifactRoot,
+  loopRiskConfig,
   env = process.env,
   registry = LIVE_REGISTRY,
 } = {}) {
@@ -39,11 +46,17 @@ export async function liveSelectorPhases(root, selector, {
     runtimeLiveConfig,
     runtimeLiveReloadUrl,
     runtimeLiveArtifactRoot,
+    loopRiskConfig,
   }, env);
+  const loopRiskState = invocation.configProfile !== undefined
+    && inputState.values.loopRiskConfig !== undefined
+    ? await inspectLoopRiskConfigState(root, invocation, inputState.values.loopRiskConfig)
+    : undefined;
   const runtimeState = invocation.plan === LIVE_PLAN_TYPES.RUNTIME_FIXTURES
     ? await inspectRuntimeFixtureState(root, entry, inputState.values)
     : undefined;
   const missingExecutables = missingRequiredExecutables(invocation, env, root);
+  const missingModules = missingRequiredModules(invocation, root);
   const blockers = [];
   if (inputState.missing.length > 0) {
     blockers.push(
@@ -55,6 +68,11 @@ export async function liveSelectorPhases(root, selector, {
       `${selector} is missing required executable(s) on PATH: ${missingExecutables.join(', ')}`,
     );
   }
+  if (missingModules.length > 0) {
+    blockers.push(
+      `${selector} is missing required module(s): ${missingModules.join(', ')}`,
+    );
+  }
   if (blockers.length > 0) {
     return [blockedInvocationPhase(root, invocation, blockers.join('; '))];
   }
@@ -63,9 +81,21 @@ export async function liveSelectorPhases(root, selector, {
     return runtimeFixturePhases(root, invocation, runtimeState, env);
   }
   if (invocation.plan === LIVE_PLAN_TYPES.FIXED_COMMAND) {
-    return [fixedCommandPhase(root, entry, invocation, env)];
+    return [fixedCommandPhase(root, entry, invocation, inputState.values, loopRiskState, env)];
   }
   throw new Error(`unsupported live plan type ${invocation.plan}`);
+}
+
+async function inspectLoopRiskConfigState(root, invocation, configuredPath) {
+  const configPath = resolveInputPath(root, configuredPath);
+  const profile = invocation.configProfile === LOOP_RISK_CONFIG_PROFILES.STRESS
+    ? LOOP_RISK_CONFIG_PROFILES.STRESS
+    : LOOP_RISK_CONFIG_PROFILES.HEALTH;
+  const config = await loadLoopRiskConfig(configPath, {
+    profile,
+    checkLogFiles: profile === LOOP_RISK_CONFIG_PROFILES.STRESS,
+  });
+  return { config, configPath, profile };
 }
 
 export function assertRegistryPhaseMetadata(phase) {
@@ -202,18 +232,46 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
   });
 }
 
-function fixedCommandPhase(root, entry, invocation, env) {
+function fixedCommandPhase(root, entry, invocation, inputValues, loopRiskState, env) {
   const scriptPath = resolve(root, entry.source.path);
+  const resolvedInputValues = {
+    ...inputValues,
+    ...(loopRiskState === undefined
+      ? {}
+      : { loopRiskConfig: loopRiskState.configPath }),
+  };
+  const inputArgs = Object.entries(invocation.inputArgs ?? {})
+    .flatMap(([input, option]) => [option, resolvedInputValues[input]]);
   return executableInvocationPhase(root, invocation, {
     id: invocation.id,
     command: 'node',
-    args: [entry.source.path, ...invocation.args],
-    executionPreflight: () => {
+    args: [entry.source.path, ...invocation.args, ...inputArgs],
+    executionPreflight: async () => {
       const failures = [];
       if (!isFile(scriptPath)) {
         failures.push(`live registry script is no longer an existing file: ${entry.source.path}`);
       }
       failures.push(...executionExecutableFailures(invocation, env, root));
+      failures.push(...moduleRequirementFailures(invocation, root));
+      if (loopRiskState !== undefined) {
+        let currentConfig;
+        try {
+          currentConfig = await loadLoopRiskConfig(loopRiskState.configPath, {
+            profile: loopRiskState.profile,
+            checkLogFiles: false,
+          });
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
+        if (currentConfig?.stress !== undefined) {
+          try {
+            await assertReadableRuntimeLogs(currentConfig.stress.runtimeLogs);
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error));
+          }
+          failures.push(...runtimePidFailures(currentConfig.stress.runtimePids));
+        }
+      }
       return failures.length === 0 ? undefined : failures;
     },
   });
@@ -263,6 +321,12 @@ function missingRequiredExecutables(invocation, env, cwd) {
     resolveExecutable(executable, env, cwd) === undefined);
 }
 
+function missingRequiredModules(invocation, root) {
+  return invocation.requiredModules
+    .filter((requirement) => !canResolveModule(requirement, root))
+    .map((requirement) => `${requirement.specifier} from ${requirement.from}`);
+}
+
 function executionExecutableFailures(invocation, env, cwd) {
   const missing = missingRequiredExecutables(invocation, env, cwd);
   return missing.length === 0
@@ -270,6 +334,36 @@ function executionExecutableFailures(invocation, env, cwd) {
     : [
       `${invocation.selector} required executable(s) are no longer available on PATH: ${missing.join(', ')}`,
     ];
+}
+
+function moduleRequirementFailures(invocation, root) {
+  const missing = missingRequiredModules(invocation, root);
+  return missing.length === 0
+    ? []
+    : [
+      `${invocation.selector} required module(s) are no longer resolvable: ${missing.join(', ')}`,
+    ];
+}
+
+function canResolveModule(requirement, root) {
+  try {
+    createRequire(resolve(root, requirement.from)).resolve(requirement.specifier);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runtimePidFailures(runtimePids) {
+  const failures = [];
+  for (const pid of runtimePids) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      failures.push(`loop-risk runtime PID is not alive: ${pid}`);
+    }
+  }
+  return failures;
 }
 
 function resolveExecutable(executable, env, cwd) {

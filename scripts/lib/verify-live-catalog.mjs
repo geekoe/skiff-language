@@ -2,12 +2,16 @@ import { CHECKER_REGISTRY } from './verify-checkers.mjs';
 import { discoverCheckerScripts } from './verify-discovery.mjs';
 import {
   LIVE_REGISTRY,
+  LIVE_TIERS,
   assertIdentifierDefinitionsUnique,
   assertLiveRegistryIntegrity,
   liveIdentifierDefinition,
   liveInvocationRecords,
 } from './verify-live-registry.mjs';
-import { ORDINARY_SELECTOR_NAMES } from './verify-selector-graph.mjs';
+import {
+  ORDINARY_LEAF_SELECTORS,
+  ORDINARY_SELECTOR_NAMES,
+} from './verify-selector-graph.mjs';
 
 export async function assertVerifyCatalogComplete(root, {
   checkerRegistry = CHECKER_REGISTRY,
@@ -34,11 +38,21 @@ function assertSelectorNamespaceDisjoint(checkerRegistry, liveRegistry) {
     }
   }
   const conflicts = liveInvocationRecords(liveRegistry)
+    .filter(({ invocation }) => invocation.tier === LIVE_TIERS.LIVE_MANUAL)
     .map(({ invocation }) => invocation.selector)
     .filter((selector) => ordinarySelectors.has(selector));
   if (conflicts.length > 0) {
     throw new Error(
       `live selector conflicts with ordinary verify selector namespace: ${conflicts.join(', ')}`,
+    );
+  }
+  const invalidSelfTests = liveInvocationRecords(liveRegistry)
+    .filter(({ invocation }) => invocation.tier === LIVE_TIERS.SELF_TEST)
+    .map(({ invocation }) => invocation.selector)
+    .filter((selector) => !ORDINARY_LEAF_SELECTORS.includes(selector));
+  if (invalidSelfTests.length > 0) {
+    throw new Error(
+      `registry self-test must target ordinary leaf selector: ${invalidSelfTests.join(', ')}`,
     );
   }
 }

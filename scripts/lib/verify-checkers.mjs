@@ -24,9 +24,6 @@ export const CHECKER_REGISTRY = Object.freeze([
   checker('scripts/check-local-instance.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:local-instance', 'checks')],
   }),
-  checker('scripts/check-loop-risk-health.mjs', CHECKER_CLASSIFICATIONS.LIVE_MANUAL, {
-    reason: 'Requires a running router health endpoint and runtime identity.',
-  }),
   checker(
     'scripts/check-artifact-identity-single-source.mjs',
     CHECKER_CLASSIFICATIONS.DEFAULT,

@@ -225,10 +225,12 @@ Set `--service-db-encryption-keyring-file` or `SKIFF_SERVICE_DB_ENCRYPTION_KEYRI
 
 ## Canonical Live Verification Registry
 
-`lib/verify-live-registry.mjs` is the single declaration for canonical live selectors. It currently
-registers `runtime-live` as an externally owned target and `db-encrypted-storage-live` as a managed,
-temporary Mongo/runtime/keyring environment. Both are `live/manual`; `pnpm test`, default
-`pnpm verify`, Cargo workspace tests, and CI do not execute them.
+`lib/verify-live-registry.mjs` is the single declaration for canonical live selectors. It registers
+four `live/manual` selectors: externally owned `runtime-live`, `loop-risk-health-live`, and
+`loop-risk-stress-live`, plus the managed temporary Mongo/runtime/keyring selector
+`db-encrypted-storage-live`. `pnpm test`, default `pnpm verify`, Cargo workspace tests, and CI do not
+execute any of them. The loop-risk health evaluator also has one hermetic `self-test` invocation in
+`checks-default`; the default plan runs that invocation exactly once without contacting a target.
 
 Supporting modules have narrow, one-way responsibilities: `lib/verify-selector-graph.mjs` declares
 the ordinary selector namespace, `lib/verify-live-catalog.mjs` validates cross-catalog paths, IDs,
@@ -236,15 +238,44 @@ and selector conflicts, and `lib/verify-live-plan.mjs` interprets the registry i
 phases. They must not duplicate selector or prerequisite declarations from the canonical registry.
 
 Use `node verify.mjs --only <selector> --list` to audit the generated or blocked plan without running
-the workload. Registry prerequisites are checked from PATH without executing tools, then checked
-again before the first phase: runtime needs only `cargo` and `node`; encrypted storage needs `node`,
-`cargo`, `pnpm`, `mongod`, and `mongosh`. The managed DB harness retains its isolated temporary root
-and `45000`–`45999` port range. Loop-risk health/stress currently remain direct manual commands and
-are intentionally not live selectors. Their direct CLIs are strict and have no stable target or
-process-discovery defaults: health requires `--url`; stress requires explicit WebSocket/health
-targets, PID (or diagnostic `--runtime-pgrep`), and runtime log unless the corresponding check is
-explicitly skipped. Shared evaluator and canonical configuration work remain before registry
-integration.
+the workload. Registry prerequisites are checked without executing tools, then checked again before
+the first phase: runtime needs `cargo` and `node`; encrypted storage needs `node`, `cargo`, `pnpm`,
+`mongod`, and `mongosh`; loop-risk health needs `node`; loop-risk stress needs `node`, `ps`, and the
+`ws` module resolved from `router/package.json`. The managed DB harness retains its isolated
+temporary root and `45000`–`45999` port range.
+
+Both loop-risk selectors take one canonical JSON file via `--loop-risk-config <path>` or
+`SKIFF_LOOP_RISK_CONFIG`. Its exact shape is:
+
+```json
+{
+  "healthUrl": "http://host:port/__router/health?detail=loop-risk",
+  "runtimeIds": ["runtime-id"],
+  "stress": {
+    "wsUrl": "ws://host:port/service/path",
+    "runtimePids": [12345],
+    "runtimeLogs": ["/absolute/path/to/runtime.log"]
+  }
+}
+```
+
+`stress` is optional for the health selector and required for stress. List/plan construction rejects
+unknown fields, malformed targets, duplicate IDs/PIDs/paths, relative log paths, unreadable logs,
+missing prerequisites, and a missing config before any workload. Execution preflight re-reads the
+config and aggregates disappearing logs or dead PIDs before launching a command. Generated phases
+receive only the absolute `--config` path; canonical stress cannot accept target overrides,
+fine-grained environment defaults, or `--skip-*`, and health, CPU, and log gates must all report
+`checked: true`.
+
+```bash
+node verify.mjs --only loop-risk-health-live --loop-risk-config /path/to/loop-risk.json --list
+node verify.mjs --only loop-risk-stress-live --loop-risk-config /path/to/loop-risk.json --list
+```
+
+The direct CLIs remain available for focused diagnostics. They are strict and have no stable target
+or process-discovery defaults: health requires `--url` (or `--config`); stress requires an explicit
+WebSocket/health target, PID (or diagnostic `--runtime-pgrep`), and runtime log unless the relevant
+check is explicitly skipped.
 
 ## Package Remote CLI Live Test
 

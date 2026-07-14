@@ -60,18 +60,29 @@ prerequisite；普通 phase builder 还必须与 selector graph 的 leaf 集合�
 
 ownership 约束如下：
 
-- `none` 只允许 `self-test`，不得接触外部或受管实例；
-- `external` 只允许 `live/manual`，调用者显式提供并拥有 target；当前 `runtime-live` 属于此类；
+- `none` 只允许 `self-test`，不得接触外部或受管实例；loop-risk health evaluator 的 hermetic
+  self-test 属于 `checks-default`，默认计划恰好运行一次；
+- `external` 只允许 `live/manual`，调用者显式提供并拥有 target；`runtime-live`、
+  `loop-risk-health-live` 和 `loop-risk-stress-live` 属于此类；
 - `managed` 只允许 `live/manual`，checker 自己创建和清理隔离资源；当前 encrypted-storage DB
   checker 属于此类，只使用临时目录和 `45000`–`45999` 端口。
 
 registry 的 PATH prerequisite 是精确声明：runtime fixture 只要求 `cargo`/`node`，不能因
 non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 要求
-`node`/`cargo`/`pnpm`/`mongod`/`mongosh`。plan/list 阶段只读检查文件类型和 executable bit，
-execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有 `live/manual` phase
-仍排除在默认 verify、Node、Cargo workspace 和 CI 之外。
+`node`/`cargo`/`pnpm`/`mongod`/`mongosh`；loop-risk health 要求 `node`，stress 要求
+`node`/`ps` 和从 `router/package.json` 解析的 `ws` 模块。plan/list 阶段只读检查文件类型和
+executable bit，execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有
+`live/manual` phase 仍排除在默认 verify、Node、Cargo workspace 和 CI 之外。
 Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 reload URL 也会
 逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
+
+loop-risk 的两个 selector 只接受 `--loop-risk-config <path>` 或 `SKIFF_LOOP_RISK_CONFIG`。
+canonical JSON 顶层严格包含 `healthUrl`、`runtimeIds` 和可选 `stress`，其中 health URL 精确为
+`/__router/health?detail=loop-risk`；stress profile 还严格要求 WebSocket URL、唯一正整数 PID 和
+绝对 runtime log 路径。plan/list 会解析 config 并校验 log 可读性；execution preflight 会重读
+config、复核 log 与 PID 存活性，再启动任何 workload。phase 只传绝对 `--config` 路径，不能把
+细粒度 target/env 或 skip 选项混进 canonical 路径；stress 的 health、CPU、log 三个 gate 都
+必须实际检查并返回 `checked: true`。
 
 `skiff-test-runner` 的 runtime integration targets 是 feature-gated inner workers。默认 Cargo
 只运行一个 `harness = false` wrapper；wrapper 在 Unix 上 `exec` 为 Node host，Node host 一次

@@ -36,6 +36,12 @@ export const LIVE_INPUTS = deepFreeze({
     description:
       'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
   },
+  loopRiskConfig: {
+    option: 'loopRiskConfig',
+    environment: 'SKIFF_LOOP_RISK_CONFIG',
+    description:
+      'loop-risk config (SKIFF_LOOP_RISK_CONFIG or --loop-risk-config <path>)',
+  },
 });
 
 export const LIVE_REGISTRY = deepFreeze([
@@ -60,6 +66,7 @@ export const LIVE_REGISTRY = deepFreeze([
           'runtimeArtifactRoot',
         ],
         requiredExecutables: ['cargo', 'node'],
+        requiredModules: [],
         canonicalPolicy: {
           forbidSkips: true,
           forbidUnchecked: true,
@@ -84,8 +91,79 @@ export const LIVE_REGISTRY = deepFreeze([
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [],
         requiredExecutables: ['node', 'cargo', 'pnpm', 'mongod', 'mongosh'],
+        requiredModules: [],
         canonicalPolicy: {
           forbidSkips: false,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'loop-risk-health',
+    source: {
+      type: 'script',
+      path: 'scripts/check-loop-risk-health.mjs',
+    },
+    invocations: [
+      {
+        selector: 'checks-default',
+        description: 'hermetic loop-risk health evaluator self-test',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'checks:loop-risk-health:self-test',
+        args: ['--self-test'],
+        ownership: LIVE_OWNERSHIP.NONE,
+        tier: LIVE_TIERS.SELF_TEST,
+        requiredInputs: [],
+        requiredExecutables: ['node'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: true,
+          forbidUnchecked: true,
+        },
+      },
+      {
+        selector: 'loop-risk-health-live',
+        description: 'explicit external loop-risk health check from canonical config',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:loop-risk-health',
+        args: [],
+        inputArgs: { loopRiskConfig: '--config' },
+        configProfile: 'health',
+        ownership: LIVE_OWNERSHIP.EXTERNAL,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: ['loopRiskConfig'],
+        requiredExecutables: ['node'],
+        requiredModules: [],
+        canonicalPolicy: {
+          forbidSkips: true,
+          forbidUnchecked: true,
+        },
+      },
+    ],
+  },
+  {
+    key: 'loop-risk-stress',
+    source: {
+      type: 'script',
+      path: 'scripts/check-loop-risk-stress-live.mjs',
+    },
+    invocations: [
+      {
+        selector: 'loop-risk-stress-live',
+        description: 'explicit external loop-risk stress check from canonical config',
+        plan: LIVE_PLAN_TYPES.FIXED_COMMAND,
+        id: 'live:loop-risk-stress',
+        args: [],
+        inputArgs: { loopRiskConfig: '--config' },
+        configProfile: 'stress',
+        ownership: LIVE_OWNERSHIP.EXTERNAL,
+        tier: LIVE_TIERS.LIVE_MANUAL,
+        requiredInputs: ['loopRiskConfig'],
+        requiredExecutables: ['node', 'ps'],
+        requiredModules: [{ specifier: 'ws', from: 'router/package.json' }],
+        canonicalPolicy: {
+          forbidSkips: true,
           forbidUnchecked: true,
         },
       },
@@ -249,6 +327,7 @@ function validateInvocation(entry, invocation) {
     invocation.requiredInputs,
     `live invocation ${invocation.selector} requiredInputs`,
   );
+  assertRequiredModules(invocation.requiredModules, invocation.selector);
   for (const input of invocation.requiredInputs) {
     if (LIVE_INPUTS[input] === undefined) {
       throw new Error(`live invocation ${invocation.selector} has unknown required input ${input}`);
@@ -260,6 +339,32 @@ function validateInvocation(entry, invocation) {
     || typeof invocation.canonicalPolicy.forbidUnchecked !== 'boolean'
   ) {
     throw new Error(`live invocation ${invocation.selector} requires a canonical policy`);
+  }
+
+  if (invocation.inputArgs !== undefined) {
+    if (
+      !invocation.inputArgs
+      || typeof invocation.inputArgs !== 'object'
+      || Array.isArray(invocation.inputArgs)
+      || Object.keys(invocation.inputArgs).length === 0
+      || Object.entries(invocation.inputArgs).some(([input, option]) =>
+        !invocation.requiredInputs.includes(input)
+        || !isNonEmptyString(option)
+        || !option.startsWith('--'))
+      || new Set(Object.values(invocation.inputArgs)).size
+        !== Object.values(invocation.inputArgs).length
+    ) {
+      throw new Error(`live invocation ${invocation.selector} has invalid inputArgs`);
+    }
+  }
+  if (invocation.configProfile !== undefined) {
+    if (
+      !['health', 'stress'].includes(invocation.configProfile)
+      || !invocation.requiredInputs.includes('loopRiskConfig')
+      || invocation.inputArgs?.loopRiskConfig !== '--config'
+    ) {
+      throw new Error(`live invocation ${invocation.selector} has invalid configProfile`);
+    }
   }
 
   if (invocation.plan === LIVE_PLAN_TYPES.RUNTIME_FIXTURES) {
@@ -281,6 +386,29 @@ function validateInvocation(entry, invocation) {
     || !invocation.args.every((arg) => typeof arg === 'string')
   ) {
     throw new Error(`fixed command invocation ${invocation.selector} has an invalid shape`);
+  }
+}
+
+function assertRequiredModules(value, selector) {
+  if (!Array.isArray(value)) {
+    throw new Error(`live invocation ${selector} requiredModules must be an array`);
+  }
+  const identities = [];
+  for (const requirement of value) {
+    if (
+      !requirement
+      || typeof requirement !== 'object'
+      || Array.isArray(requirement)
+      || !isNonEmptyString(requirement.specifier)
+      || !isNonEmptyString(requirement.from)
+      || Object.keys(requirement).some((key) => !['specifier', 'from'].includes(key))
+    ) {
+      throw new Error(`live invocation ${selector} has invalid requiredModules`);
+    }
+    identities.push(`${requirement.specifier}\0${requirement.from}`);
+  }
+  if (new Set(identities).size !== identities.length) {
+    throw new Error(`live invocation ${selector} requiredModules must be unique`);
   }
 }
 

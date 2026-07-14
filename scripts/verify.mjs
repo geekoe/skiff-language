@@ -20,6 +20,7 @@ try {
       runtimeLiveConfig: options.runtimeLiveConfig,
       runtimeLiveReloadUrl: options.runtimeLiveReloadUrl,
       runtimeLiveArtifactRoot: options.runtimeLiveArtifactRoot,
+      loopRiskConfig: options.loopRiskConfig,
     });
     if (options.list) {
       printVerifyPlan(plan, root);

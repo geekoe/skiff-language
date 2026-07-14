@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   rm,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -42,6 +43,8 @@ test('live registry is the single declaration for current selectors, policies, a
   assert.deepEqual(LIVE_SELECTORS, [
     'runtime-live',
     'db-encrypted-storage-live',
+    'loop-risk-health-live',
+    'loop-risk-stress-live',
   ]);
   assert.deepEqual(
     PUBLIC_SELECTORS.filter((selector) => LIVE_SELECTORS.includes(selector)),
@@ -88,11 +91,35 @@ test('live registry is the single declaration for current selectors, policies, a
     forbidSkips: false,
     forbidUnchecked: true,
   });
+
+  const healthSelfTest = invocation('checks-default');
+  assert.equal(healthSelfTest.entry.source.path, 'scripts/check-loop-risk-health.mjs');
+  assert.equal(healthSelfTest.value.id, 'checks:loop-risk-health:self-test');
+  assert.equal(healthSelfTest.value.ownership, LIVE_OWNERSHIP.NONE);
+  assert.equal(healthSelfTest.value.tier, LIVE_TIERS.SELF_TEST);
+  assert.deepEqual(healthSelfTest.value.args, ['--self-test']);
+
+  const health = invocation('loop-risk-health-live');
+  assert.equal(health.entry.source.path, 'scripts/check-loop-risk-health.mjs');
+  assert.equal(health.value.configProfile, 'health');
+  assert.deepEqual(health.value.requiredInputs, ['loopRiskConfig']);
+  assert.deepEqual(health.value.requiredExecutables, ['node']);
+
+  const stress = invocation('loop-risk-stress-live');
+  assert.equal(stress.entry.source.path, 'scripts/check-loop-risk-stress-live.mjs');
+  assert.equal(stress.value.configProfile, 'stress');
+  assert.deepEqual(stress.value.requiredExecutables, ['node', 'ps']);
+  assert.deepEqual(stress.value.requiredModules, [
+    { specifier: 'ws', from: 'router/package.json' },
+  ]);
 });
 
 test('live selector help is rendered from registry invocation descriptions', async () => {
   const rendered = renderLiveSelectorHelp();
-  for (const { selector, description } of LIVE_REGISTRY.flatMap((entry) => entry.invocations)) {
+  for (const { selector, description, tier } of LIVE_REGISTRY.flatMap((entry) => entry.invocations)) {
+    if (tier !== LIVE_TIERS.LIVE_MANUAL) {
+      continue;
+    }
     assert.match(rendered, new RegExp(`${escapeRegExp(selector)}.*${escapeRegExp(description)}`));
   }
   const result = await runProcess(process.execPath, [verifyPath, '--help'], {
@@ -204,7 +231,7 @@ test('live selectors cannot collide with public, composite, internal leaf, or bu
     conflicting[0].invocations[0].selector = selector;
     await assert.rejects(
       assertVerifyCatalogComplete(root, { liveRegistry: conflicting }),
-      new RegExp(`live selector conflicts.*${escapeRegExp(selector)}`),
+      new RegExp(`(?:live selector conflicts|duplicate live registry selector).*${escapeRegExp(selector)}`),
     );
     await assert.rejects(
       buildVerifyPlan({
@@ -212,9 +239,39 @@ test('live selectors cannot collide with public, composite, internal leaf, or bu
         selectors: ['verify'],
         liveRegistry: conflicting,
       }),
-      new RegExp(`live selector conflicts.*${escapeRegExp(selector)}`),
+      new RegExp(`(?:live selector conflicts|duplicate live registry selector).*${escapeRegExp(selector)}`),
     );
   }
+});
+
+test('registry-derived self-test injection follows leaf selector drift and rejects composite drift', async () => {
+  const leafDrift = cloneRegistry();
+  registryInvocation(leafDrift, 'checks-default').selector = 'compiler-boundaries';
+  const movedPlan = await buildVerifyPlan({
+    root,
+    selectors: ['compiler-boundaries'],
+    liveRegistry: leafDrift,
+  });
+  assert.equal(
+    movedPlan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+    1,
+  );
+  const oldLeafPlan = await buildVerifyPlan({
+    root,
+    selectors: ['checks-default'],
+    liveRegistry: leafDrift,
+  });
+  assert.equal(
+    oldLeafPlan.phases.some((phase) => phase.id === 'checks:loop-risk-health:self-test'),
+    false,
+  );
+
+  const compositeDrift = cloneRegistry();
+  registryInvocation(compositeDrift, 'checks-default').selector = 'checks';
+  await assert.rejects(
+    buildVerifyPlan({ root, selectors: ['verify'], liveRegistry: compositeDrift }),
+    /registry self-test must target ordinary leaf selector: checks/,
+  );
 });
 
 test('global catalog counts every discovered checker path exactly once across registries', async () => {
@@ -239,6 +296,17 @@ test('global catalog counts every discovered checker path exactly once across re
     LIVE_REGISTRY.some((entry) =>
       entry.source.path === 'scripts/check-db-encrypted-storage-live.mjs'),
     true,
+  );
+  for (const path of [
+    'scripts/check-loop-risk-health.mjs',
+    'scripts/check-loop-risk-stress-live.mjs',
+  ]) {
+    assert.equal(CHECKER_REGISTRY.some((entry) => entry.path === path), false);
+    assert.equal(LIVE_REGISTRY.some((entry) => entry.source.path === path), true);
+  }
+  assert.equal(
+    paths.includes('scripts/stress-loop-risk-websocket-cancel.mjs'),
+    false,
   );
 
   const duplicatePath = cloneRegistry();
@@ -424,7 +492,7 @@ test('managed DB invocation blocks each exact executable and full PATH generates
       }],
     );
     assert.equal(typeof plan.phases[0].executionPreflight, 'function');
-    assert.equal(plan.phases[0].executionPreflight(), undefined);
+    assert.equal(await plan.phases[0].executionPreflight(), undefined);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -522,6 +590,138 @@ test('actual runtime discovery and combined live plans produce unique registry p
   }
 });
 
+test('loop-risk selectors consume one canonical config path without expanding target contents', async () => {
+  const fixture = await loopRiskConfigFixture();
+  try {
+    for (const selector of ['loop-risk-health-live', 'loop-risk-stress-live']) {
+      const missing = await buildVerifyPlan({
+        root,
+        selectors: [selector],
+        env: { ...process.env, SKIFF_LOOP_RISK_CONFIG: '' },
+      });
+      assert.equal(missing.phases.length, 1);
+      assert.match(missing.phases[0].preconditionError, /loop-risk config/);
+    }
+
+    const plans = await Promise.all([
+      buildVerifyPlan({ root, selectors: ['loop-risk-health-live'], loopRiskConfig: fixture.configPath }),
+      buildVerifyPlan({ root, selectors: ['loop-risk-stress-live'], loopRiskConfig: fixture.configPath }),
+      buildVerifyPlan({
+        root,
+        selectors: ['loop-risk-health-live'],
+        env: { ...process.env, SKIFF_LOOP_RISK_CONFIG: fixture.configPath },
+      }),
+    ]);
+    assert.deepEqual(plans[0].phases[0].args, [
+      'scripts/check-loop-risk-health.mjs',
+      '--config',
+      fixture.configPath,
+    ]);
+    assert.deepEqual(plans[1].phases[0].args, [
+      'scripts/check-loop-risk-stress-live.mjs',
+      '--config',
+      fixture.configPath,
+    ]);
+    assert.deepEqual(plans[2].phases[0].args, plans[0].phases[0].args);
+    assert.equal(await plans[1].phases[0].executionPreflight(), undefined);
+    for (const plan of plans) {
+      const rendered = JSON.stringify(plan.phases.map(({ executionPreflight, ...phase }) => phase));
+      assert.doesNotMatch(rendered, /registry-target-secret|service-token/);
+    }
+
+    const listed = await runProcess(process.execPath, [
+      verifyPath,
+      '--only',
+      'loop-risk-health-live,loop-risk-stress-live',
+      '--loop-risk-config',
+      fixture.configPath,
+      '--list',
+    ], { cwd: root });
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.doesNotMatch(listed.stdout, /registry-target-secret|service-token/);
+    assert.equal((listed.stdout.match(/--loop-risk-config/g) ?? []).length, 0);
+    assert.equal((listed.stdout.match(/--config/g) ?? []).length, 2);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('loop-risk registry derives exact executable and module prerequisites', async () => {
+  const fixture = await loopRiskConfigFixture();
+  try {
+    for (const [selector, required] of [
+      ['loop-risk-health-live', ['node']],
+      ['loop-risk-stress-live', ['node', 'ps']],
+    ]) {
+      for (const missing of required) {
+        const bin = await fakeExecutablePath(
+          fixture.root,
+          required.filter((candidate) => candidate !== missing),
+          `${selector}-${missing}`,
+        );
+        const plan = await buildVerifyPlan({
+          root,
+          selectors: [selector],
+          loopRiskConfig: fixture.configPath,
+          env: { PATH: bin },
+        });
+        assert.match(plan.phases[0].preconditionError, new RegExp(`PATH: ${missing}`));
+      }
+    }
+
+    const isolatedRoot = join(fixture.root, 'module-missing-root');
+    await mkdir(join(isolatedRoot, 'scripts'), { recursive: true });
+    await mkdir(join(isolatedRoot, 'router'), { recursive: true });
+    await writeFile(join(isolatedRoot, 'scripts', 'check-loop-risk-stress-live.mjs'), '');
+    await writeFile(join(isolatedRoot, 'router', 'package.json'), '{}\n');
+    const bin = await fakeExecutablePath(fixture.root, ['node', 'ps'], 'module-missing');
+    const moduleMissing = await buildVerifyPlan({
+      root: isolatedRoot,
+      catalogRoot: root,
+      selectors: ['loop-risk-stress-live'],
+      loopRiskConfig: fixture.configPath,
+      env: { PATH: bin },
+    });
+    assert.match(moduleMissing.phases[0].preconditionError, /ws from router\/package.json/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('loop-risk stress execution preflight aggregates dead PID and vanished log before any command', async () => {
+  const fixture = await loopRiskConfigFixture({ pid: 2_147_483_647 });
+  const marker = join(fixture.root, 'command-ran');
+  try {
+    const plan = await buildVerifyPlan({
+      root,
+      selectors: ['loop-risk-stress-live'],
+      loopRiskConfig: fixture.configPath,
+    });
+    await unlink(fixture.logPath);
+    const markerPhase = (id) => ({
+      id,
+      kind: 'test',
+      command: process.execPath,
+      args: ['--eval', 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker],
+      cwd: fixture.root,
+    });
+    await assert.rejects(
+      runVerifyPlan({
+        selectors: ['test'],
+        phases: [markerPhase('before'), ...plan.phases, markerPhase('after')],
+      }, fixture.root),
+      (error) => {
+        assert.match(error.message, /runtime log must be an existing readable file/);
+        assert.match(error.message, /runtime PID is not alive/);
+        return true;
+      },
+    );
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('default verify never includes registry live/manual invocations', async () => {
   const plan = await buildVerifyPlan({ root });
   assert.equal(
@@ -532,6 +732,31 @@ test('default verify never includes registry live/manual invocations', async () 
     plan.phases.some((phase) => LIVE_SELECTORS.includes(phase.id)),
     false,
   );
+  assert.equal(
+    plan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+    1,
+  );
+});
+
+test('checks plus health live keeps self-test and network invocation unique', async () => {
+  const fixture = await loopRiskConfigFixture();
+  try {
+    const plan = await buildVerifyPlan({
+      root,
+      selectors: ['checks', 'loop-risk-health-live', 'checks'],
+      loopRiskConfig: fixture.configPath,
+    });
+    assert.equal(
+      plan.phases.filter((phase) => phase.id === 'checks:loop-risk-health:self-test').length,
+      1,
+    );
+    assert.equal(
+      plan.phases.filter((phase) => phase.id === 'live:loop-risk-health').length,
+      1,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test('blocked live prerequisites stop marker commands before and after the phase', async () => {
@@ -582,6 +807,16 @@ function invocation(selector) {
   throw new Error(`missing test invocation ${selector}`);
 }
 
+function registryInvocation(registry, selector) {
+  for (const entry of registry) {
+    const value = entry.invocations.find((candidate) => candidate.selector === selector);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  throw new Error(`missing registry invocation ${selector}`);
+}
+
 function cloneRegistry() {
   return structuredClone(LIVE_REGISTRY);
 }
@@ -603,6 +838,24 @@ async function runtimeFixture(prefix) {
       runtimeLiveArtifactRoot: artifactRoot,
     },
   };
+}
+
+async function loopRiskConfigFixture({ pid = process.pid } = {}) {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'skiff-loop-risk-registry-'));
+  const configPath = join(fixtureRoot, 'loop-risk.json');
+  const logPath = join(fixtureRoot, 'runtime.log');
+  await writeFile(logPath, '');
+  await writeFile(configPath, JSON.stringify({
+    healthUrl:
+      'http://registry.test:4101/__router/health?detail=loop-risk',
+    runtimeIds: ['registry-runtime'],
+    stress: {
+      wsUrl: 'ws://registry.test:4101/registry-target-secret?token=service-token',
+      runtimePids: [pid],
+      runtimeLogs: [logPath],
+    },
+  }));
+  return { root: fixtureRoot, configPath, logPath };
 }
 
 async function fakeExecutablePath(

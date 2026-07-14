@@ -68,6 +68,23 @@ test('verify CLI rejects repeated runtime-live singleton inputs across split and
   }
 });
 
+test('verify CLI accepts one loop-risk config and rejects split/inline duplicates', () => {
+  assert.equal(
+    parseVerifyArgs(['--loop-risk-config=config.json']).loopRiskConfig,
+    'config.json',
+  );
+  for (const args of [
+    ['--loop-risk-config', 'one.json', '--loop-risk-config=two.json'],
+    ['--loop-risk-config=one.json', '--loop-risk-config', 'two.json'],
+    ['--loop-risk-config='],
+  ]) {
+    assert.throws(
+      () => parseVerifyArgs(args),
+      /--loop-risk-config (?:may be specified only once|requires a value)/,
+    );
+  }
+});
+
 test('package scripts only forward to canonical verify selectors', async () => {
   const rootPackage = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.equal(rootPackage.scripts.test, 'node scripts/verify.mjs --only node');

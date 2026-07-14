@@ -1,236 +1,95 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 
 import {
   collectLoopRiskUrlArgs,
   formatLoopRiskJson,
+  isMainModule,
   parseLoopRiskArgs,
   readPositiveIntegerArg,
 } from './lib/loop-risk-cli.mjs';
+import {
+  LOOP_RISK_CONFIG_PROFILES,
+  loadLoopRiskConfig,
+} from './lib/loop-risk-config.mjs';
+import {
+  evaluateLoopRiskHealth,
+  pollLoopRiskHealth,
+} from './lib/loop-risk-health.mjs';
 
 const argv = process.argv.slice(2);
 const knownRawUrls = collectLoopRiskUrlArgs(argv, ['url']);
 
-main().catch((error) => {
-  console.error(formatLoopRiskJson({
-    ok: false,
-    message: error instanceof Error ? error.message : String(error),
-  }, knownRawUrls));
-  process.exitCode = 1;
-});
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(formatLoopRiskJson({
+      ok: false,
+      message: error instanceof Error ? error.message : String(error),
+    }, knownRawUrls));
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const args = parseLoopRiskArgs(argv, {
     flags: ['help', 'self-test'],
-    singletonValues: ['url', 'timeout-ms', 'interval-ms'],
+    singletonValues: ['config', 'url', 'timeout-ms', 'interval-ms'],
     repeatableValues: ['runtime-id', 'runtime-ids'],
   });
-
   if (args.hasFlag('help')) {
     printUsage();
     return;
   }
-
   if (args.hasFlag('self-test')) {
     runSelfTest();
     return;
   }
 
-  const url = args.value('url');
-  if (!url) {
-    throw new Error('--url is required');
-  }
+  const target = await resolveTarget(args);
+  knownRawUrls.push(target.url);
   const timeoutMs = readPositiveIntegerArg(args, 'timeout-ms', 5000);
   const intervalMs = readPositiveIntegerArg(args, 'interval-ms', 250);
-  const touchedRuntimeIds = unique(args.list('runtime-id', 'runtime-ids'));
-  const deadline = Date.now() + timeoutMs;
-
-  let latest;
-  let latestEvaluation;
-  let latestError;
-  while (Date.now() <= deadline) {
-    try {
-      latest = await readLoopRiskHealth(url);
-      latestEvaluation = evaluateLoopRiskHealth(latest.loopRisk, {
-        touchedRuntimeIds
-      });
-      latestError = undefined;
-      if (latestEvaluation.ok) {
-        console.log(formatLoopRiskJson({
-          ok: true,
-          url,
-          observedAt: latest.loopRisk.observedAt,
-          touchedRuntimeIds,
-          router: latest.loopRisk.router,
-          runtimes: summarizeRuntimes(latest.loopRisk.runtimes, touchedRuntimeIds)
-        }, knownRawUrls));
-        return;
-      }
-    } catch (error) {
-      latestError = error instanceof Error ? error.message : String(error);
-    }
-    await sleep(intervalMs);
+  const result = await pollLoopRiskHealth({
+    url: target.url,
+    touchedRuntimeIds: target.runtimeIds,
+    timeoutMs,
+    intervalMs,
+  });
+  const output = {
+    ...result,
+    checked: result.ok,
+    url: target.url,
+    touchedRuntimeIds: target.runtimeIds,
+  };
+  const rendered = formatLoopRiskJson(output, knownRawUrls);
+  if (result.ok) {
+    console.log(rendered);
+    return;
   }
-
-  console.error(formatLoopRiskJson({
-    ok: false,
-    url,
-    touchedRuntimeIds,
-    message: `loop-risk counters did not satisfy zero-window within ${timeoutMs}ms`,
-    reasons: latestEvaluation?.reasons ?? [],
-    latestError,
-    latest: latest?.loopRisk ?? null
-  }, knownRawUrls));
+  console.error(rendered);
   process.exitCode = 1;
 }
 
-async function readLoopRiskHealth(endpoint) {
-  const response = await fetch(endpoint);
-  if (!response.ok) {
-    throw new Error(`health endpoint returned ${response.status}`);
-  }
-  const payload = await response.json();
-  if (!payload.loopRisk) {
-    throw new Error('health endpoint did not include loopRisk detail');
-  }
-  return payload;
-}
-
-function evaluateLoopRiskHealth(loopRisk, options) {
-  const reasons = [];
-  validateRouterCounters(loopRisk?.router, reasons);
-
-  const runtimes = Array.isArray(loopRisk?.runtimes) ? loopRisk.runtimes : [];
-  if (!Array.isArray(loopRisk?.runtimes)) {
-    reasons.push('loopRisk.runtimes is missing or is not an array');
-  }
-
-  if (options.touchedRuntimeIds.length > 0) {
-    validateTouchedRuntimeIds(runtimes, options.touchedRuntimeIds, reasons);
-  } else {
-    validateAllRuntimeSessions(runtimes, reasons);
-  }
-
-  return {
-    ok: reasons.length === 0,
-    reasons
-  };
-}
-
-function validateRouterCounters(router, reasons) {
-  expectCounter(router?.dispatcher?.pendingUnary, 'router.dispatcher.pendingUnary', reasons);
-  expectCounter(router?.dispatcher?.pendingStream, 'router.dispatcher.pendingStream', reasons);
-  expectCounter(router?.dispatcher?.pendingForward, 'router.dispatcher.pendingForward', reasons);
-  expectCounter(router?.httpStream?.backpressureWaiters, 'router.httpStream.backpressureWaiters', reasons);
-  expectCounter(router?.httpStream?.backpressureCancels, 'router.httpStream.backpressureCancels', reasons);
-  expectCounter(router?.websocketReceive?.inFlight, 'router.websocketReceive.inFlight', reasons);
-  expectCounter(router?.websocketReceive?.queued, 'router.websocketReceive.queued', reasons);
-  expectCounter(router?.websocketReceive?.abortOnClose, 'router.websocketReceive.abortOnClose', reasons);
-}
-
-function expectCounter(value, name, reasons) {
-  if (value !== 0) {
-    reasons.push(`${name} is ${formatCounterValue(value)}, expected 0`);
-  }
-}
-
-function validateTouchedRuntimeIds(runtimes, touchedRuntimeIds, reasons) {
-  for (const runtimeId of touchedRuntimeIds) {
-    const sessions = runtimes.filter((runtime) => runtime.runtimeId === runtimeId);
-    if (sessions.length === 0) {
-      reasons.push(`touched runtime ${runtimeId} disappeared from loopRisk.runtimes`);
-      continue;
+async function resolveTarget(args) {
+  const configPath = args.value('config');
+  const runtimeIds = unique(args.list('runtime-id', 'runtime-ids'));
+  if (configPath !== undefined) {
+    if (args.value('url') !== undefined || runtimeIds.length > 0) {
+      throw new Error('--config cannot be combined with --url or --runtime-id(s)');
     }
-
-    const connectedFreshZero = sessions.filter(
-      (runtime) => runtime.connected && runtime.fresh && runtimeCountersAreZero(runtime.counters)
-    );
-    if (connectedFreshZero.length === 0) {
-      reasons.push(`touched runtime ${runtimeId} has no connected fresh zero session`);
-    }
-
-    for (const [index, runtime] of sessions.entries()) {
-      const label = `touched runtime ${runtimeId} session ${index}`;
-      validateRuntimeSession(runtime, label, reasons, {
-        requireConnectedFreshZero: runtime.connected
-      });
-      if (!runtime.connected) {
-        reasons.push(`${label} is disconnected; touched runtimes must remain connected`);
-        if (!runtimeCountersAreZero(runtime.counters)) {
-          reasons.push(`${label} is disconnected with nonzero counters`);
-        }
-      }
-    }
-  }
-}
-
-function validateAllRuntimeSessions(runtimes, reasons) {
-  if (runtimes.length === 0) {
-    reasons.push('loopRisk.runtimes is empty');
-    return;
-  }
-  if (
-    !runtimes.some(
-      (runtime) => runtime.connected && runtime.fresh && runtimeCountersAreZero(runtime.counters)
-    )
-  ) {
-    reasons.push('loopRisk.runtimes has no connected fresh zero runtime session');
-  }
-  for (const [index, runtime] of runtimes.entries()) {
-    validateRuntimeSession(runtime, `runtime session ${index}`, reasons, {
-      requireConnectedFreshZero: runtime.connected
+    const config = await loadLoopRiskConfig(resolve(configPath), {
+      profile: LOOP_RISK_CONFIG_PROFILES.HEALTH,
+      checkLogFiles: false,
     });
-    if (!runtime.connected && !runtimeCountersAreZero(runtime.counters)) {
-      reasons.push(`runtime session ${index} is disconnected with nonzero counters`);
-    }
+    return { url: config.healthUrl, runtimeIds: config.runtimeIds };
   }
-}
-
-function validateRuntimeSession(runtime, label, reasons, options) {
-  if (!runtimeCountersAreZero(runtime.counters)) {
-    reasons.push(`${label} counters are nonzero: ${JSON.stringify(runtime.counters)}`);
+  const url = args.value('url');
+  if (!url) {
+    throw new Error('--url is required unless --config is provided');
   }
-  if (options.requireConnectedFreshZero && !runtime.fresh) {
-    reasons.push(`${label} is connected but not fresh`);
-  }
-}
-
-function runtimeCountersAreZero(counters) {
-  return (
-    counters?.outboundRequestsPending === 0 &&
-    counters?.outboundStreamLeasesActive === 0 &&
-    counters?.streamRuntimeStreamsActive === 0 &&
-    counters?.flagBackedCancelWaitersActive === 0 &&
-    counters?.spawnedTasksActive === 0
-  );
-}
-
-function summarizeRuntimes(runtimes, touchedRuntimeIds) {
-  const touched = new Set(touchedRuntimeIds);
-  const selected = touched.size === 0
-    ? runtimes
-    : runtimes.filter((runtime) => touched.has(runtime.runtimeId));
-  return selected.map((runtime) => ({
-    runtimeId: runtime.runtimeId,
-    connected: runtime.connected,
-    fresh: runtime.fresh,
-    counters: runtime.counters
-  }));
-}
-
-function formatCounterValue(value) {
-  return value === undefined ? 'missing' : String(value);
-}
-
-function unique(values) {
-  return Array.from(new Set(values));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+  return { url, runtimeIds };
 }
 
 function runSelfTest() {
@@ -239,84 +98,57 @@ function runSelfTest() {
     outboundStreamLeasesActive: 0,
     streamRuntimeStreamsActive: 0,
     flagBackedCancelWaitersActive: 0,
-    spawnedTasksActive: 0
-  };
-  const nonzeroCounters = {
-    ...zeroCounters,
-    outboundRequestsPending: 1
+    spawnedTasksActive: 0,
   };
   const zeroRouter = {
     dispatcher: { pendingUnary: 0, pendingStream: 0, pendingForward: 0 },
     httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
-    websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 0 }
+    websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 0 },
   };
-
+  const healthy = {
+    router: zeroRouter,
+    runtimes: [{ runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }],
+  };
   assert.equal(
-    evaluateLoopRiskHealth({
-      router: zeroRouter,
-      runtimes: [
-        { runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }
-      ]
-    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    true
+    evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-a'] }).ok,
+    true,
   );
   assert.equal(
     evaluateLoopRiskHealth({
+      ...healthy,
       router: {
         ...zeroRouter,
-        websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 1 }
+        websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 1 },
       },
-      runtimes: [
-        { runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }
-      ]
     }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    false
+    false,
   );
   assert.equal(
-    evaluateLoopRiskHealth({
-      router: zeroRouter,
-      runtimes: [
-        { runtimeId: 'runtime-a', connected: false, fresh: false, counters: nonzeroCounters }
-      ]
-    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    false
+    evaluateLoopRiskHealth(healthy, { touchedRuntimeIds: ['runtime-missing'] }).ok,
+    false,
   );
-  assert.equal(
-    evaluateLoopRiskHealth({
-      router: zeroRouter,
-      runtimes: [
-        { runtimeId: 'runtime-a', connected: false, fresh: false, counters: zeroCounters },
-        { runtimeId: 'runtime-a', connected: true, fresh: true, counters: zeroCounters }
-      ]
-    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    false
-  );
-  assert.equal(
-    evaluateLoopRiskHealth({
-      router: zeroRouter,
-      runtimes: [
-        { runtimeId: 'runtime-b', connected: true, fresh: true, counters: zeroCounters }
-      ]
-    }, { touchedRuntimeIds: ['runtime-a'] }).ok,
-    false
-  );
-
   console.log(JSON.stringify({ ok: true, selfTest: 'check-loop-risk-health' }));
+}
+
+function unique(values) {
+  return Array.from(new Set(values));
 }
 
 function printUsage() {
   console.log(`Usage:
-  node scripts/check-loop-risk-health.mjs [options]
+  node scripts/check-loop-risk-health.mjs --config <path>
+  node scripts/check-loop-risk-health.mjs --url <url> [options]
 
-Options:
-  --url <url>                 Required router loop-risk health URL.
-  --timeout-ms <ms>           Poll timeout. Default: 5000.
-  --interval-ms <ms>          Poll interval. Default: 250.
+Canonical:
+  --config <path>              Strict canonical loop-risk JSON config.
+
+Direct diagnostic:
+  --url <url>                 Explicit router loop-risk health URL.
   --runtime-id <id>           Touched runtime id. May be repeated or comma-separated.
   --runtime-ids <ids>         Comma-separated touched runtime ids.
-  --self-test                 Run local evaluator self-checks without network.
 
-Touched runtime ids must remain present with at least one connected fresh zero
-session. Any disconnected touched runtime session fails the check because this
-script has no pre-stress baseline mechanism.`);
+Polling:
+  --timeout-ms <ms>           Poll timeout. Default: 5000.
+  --interval-ms <ms>          Poll interval. Default: 250.
+  --self-test                 Run evaluator self-checks without file or network access.`);
 }

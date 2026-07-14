@@ -5,6 +5,7 @@ import { assertVerifyCatalogComplete } from './verify-live-catalog.mjs';
 import {
   LIVE_REGISTRY,
   LIVE_SELECTORS,
+  LIVE_TIERS,
   liveInvocationSelectors,
 } from './verify-live-registry.mjs';
 import {
@@ -17,6 +18,7 @@ import {
   repoRelative,
 } from './verify-discovery.mjs';
 import {
+  ORDINARY_LEAF_SELECTORS,
   ORDINARY_PUBLIC_SELECTORS,
   VERIFY_SELECTOR_GRAPH,
   assertOrdinaryPhaseBuilderCoverage,
@@ -35,6 +37,7 @@ export async function buildVerifyPlan({
   runtimeLiveConfig,
   runtimeLiveReloadUrl,
   runtimeLiveArtifactRoot,
+  loopRiskConfig,
   env = process.env,
   catalogRoot = root,
   liveRegistry = LIVE_REGISTRY,
@@ -50,6 +53,7 @@ export async function buildVerifyPlan({
     runtimeLiveConfig,
     runtimeLiveReloadUrl,
     runtimeLiveArtifactRoot,
+    loopRiskConfig,
     env,
     liveRegistry,
     liveSelectors,
@@ -171,10 +175,19 @@ function phaseBuilders({
   runtimeLiveConfig,
   runtimeLiveReloadUrl,
   runtimeLiveArtifactRoot,
+  loopRiskConfig,
   env,
   liveRegistry,
   liveSelectors,
 }) {
+  const registryOptions = {
+    runtimeLiveConfig,
+    runtimeLiveReloadUrl,
+    runtimeLiveArtifactRoot,
+    loopRiskConfig,
+    env,
+    registry: liveRegistry,
+  };
   const builders = {
     rust: async () => [
       phase(root, 'rust:workspace', 'rust', 'cargo', [
@@ -221,17 +234,26 @@ function phaseBuilders({
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
   };
   assertOrdinaryPhaseBuilderCoverage(builders);
+  const ordinaryLeaves = new Set(ORDINARY_LEAF_SELECTORS);
+  const selfTestSelectors = liveInvocationSelectors(liveRegistry, {
+    tier: LIVE_TIERS.SELF_TEST,
+  });
+  for (const selector of selfTestSelectors) {
+    if (!ordinaryLeaves.has(selector)) {
+      throw new Error(`registry self-test must target ordinary leaf selector: ${selector}`);
+    }
+    const ordinaryBuilder = builders[selector];
+    builders[selector] = async () => [
+      ...await ordinaryBuilder(),
+      ...await liveSelectorPhases(root, selector, registryOptions),
+    ];
+  }
   for (const selector of liveSelectors) {
     if (Object.hasOwn(builders, selector)) {
       throw new Error(`live selector conflicts with verify phase builder: ${selector}`);
     }
-    builders[selector] = async () => liveSelectorPhases(root, selector, {
-      runtimeLiveConfig,
-      runtimeLiveReloadUrl,
-      runtimeLiveArtifactRoot,
-      env,
-      registry: liveRegistry,
-    });
+    builders[selector] = async () =>
+      liveSelectorPhases(root, selector, registryOptions);
   }
   return builders;
 }

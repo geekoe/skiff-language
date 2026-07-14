@@ -10,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
@@ -17,7 +18,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const stressPath = join(root, 'scripts', 'stress-loop-risk-websocket-cancel.mjs');
+const stressPath = join(root, 'scripts', 'check-loop-risk-stress-live.mjs');
 const routerRequire = createRequire(join(root, 'router', 'package.json'));
 
 test('stress help needs no target and never opens the supplied target', async () => {
@@ -42,12 +43,13 @@ test('stress rejects missing health, log, and CPU targets before any I/O', async
     const cases = [
       {
         args: ['--ws-url', probe.wsUrl, '--runtime-pid', String(process.pid), '--runtime-log', logFile],
-        error: /--health-url is required/,
+        error: /--health-url and --runtime-id\(s\) are required/,
       },
       {
         args: [
           '--ws-url', probe.wsUrl,
           '--health-url', `${probe.httpUrl}/health`,
+          '--runtime-id', 'runtime-test',
           '--runtime-pid', String(process.pid),
         ],
         error: /--runtime-log or --log-file is required/,
@@ -56,6 +58,7 @@ test('stress rejects missing health, log, and CPU targets before any I/O', async
         args: [
           '--ws-url', probe.wsUrl,
           '--health-url', `${probe.httpUrl}/health`,
+          '--runtime-id', 'runtime-test',
           '--runtime-log', logFile,
         ],
         error: /--runtime-pid or --runtime-pgrep is required/,
@@ -162,6 +165,7 @@ test('explicit skip mode succeeds, preserves URL equals signs, and redacts outpu
 
 test('stress scrubs raw targets from fetch and WebSocket errors', async () => {
   const probe = await startProbeServer();
+  const websocket = await startWebSocketServer();
   const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-loop-stress-errors-'));
   const hook = join(tempRoot, 'fetch-hook.mjs');
   const healthSentinel = 'stress-health-error-secret';
@@ -174,8 +178,11 @@ test('stress scrubs raw targets from fetch and WebSocket errors', async () => {
   ].join('\n'));
   try {
     const fetchFailure = await runStress([
-      '--ws-url', probe.wsUrl,
+      '--ws-url', `ws://127.0.0.1:${websocket.port}/runtime`,
       '--health-url', healthUrl,
+      '--runtime-id', 'runtime-test',
+      '--messages', '1',
+      '--health-timeout-ms', '1',
       '--skip-cpu',
       '--skip-log-check',
     ], { NODE_OPTIONS: `--import=${hook}` });
@@ -192,6 +199,8 @@ test('stress scrubs raw targets from fetch and WebSocket errors', async () => {
       '--skip-cpu',
       '--skip-log-check',
       '--messages', '1',
+      '--open-timeout-ms', '1',
+      '--close-timeout-ms', '1',
     ]);
     assert.notEqual(wsFailure.code, 0);
     assert.match(wsFailure.stderr, /<invalid-url>\/<redacted-path>/);
@@ -200,6 +209,64 @@ test('stress scrubs raw targets from fetch and WebSocket errors', async () => {
     assert.equal(probe.connections, 0);
   } finally {
     await probe.close();
+    await websocket.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('canonical stress config runs all three checked gates and rejects every override', async () => {
+  const websocket = await startWebSocketServer();
+  const health = await startCanonicalHealthServer();
+  const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-loop-stress-canonical-'));
+  const logFile = join(tempRoot, 'runtime.log');
+  const configPath = join(tempRoot, 'loop-risk.json');
+  const sentinel = 'canonical-stress-secret';
+  const wsUrl = `ws://127.0.0.1:${websocket.port}/${sentinel}?token=a=b`;
+  await writeFile(logFile, '');
+  await writeFile(configPath, JSON.stringify({
+    healthUrl: health.url,
+    runtimeIds: ['runtime-test'],
+    stress: {
+      wsUrl,
+      runtimePids: [process.pid],
+      runtimeLogs: [logFile],
+    },
+  }));
+  try {
+    const result = await runStress([
+      '--config', configPath,
+      '--messages', '1',
+      '--concurrency', '1',
+      '--cpu-seconds', '1',
+      '--cpu-median-threshold', '10000',
+      '--cpu-post-grace-threshold', '10000',
+      '--cpu-grace-seconds', '0',
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal((result.stdout.match(/"checked": true/g) ?? []).length, 3);
+    assert.doesNotMatch(result.stdout, new RegExp(sentinel));
+    assert.doesNotMatch(result.stdout, /token|a=b/);
+    assert.deepEqual(websocket.requests.map((entry) => entry.url), [
+      `/${sentinel}?token=a=b`,
+    ]);
+    assert.deepEqual(health.requests, ['/__router/health?detail=loop-risk']);
+
+    for (const { args, env } of [
+      { args: ['--config', configPath, '--skip-health'] },
+      { args: ['--config', configPath, '--runtime-pid', String(process.pid)] },
+      { args: ['--config', configPath, '--ws-url', wsUrl] },
+      { args: ['--config', configPath], env: { SKIFF_LOOP_RISK_WS_URL: wsUrl } },
+    ]) {
+      const mixed = await runStress(args, env);
+      assert.notEqual(mixed.code, 0);
+      assert.match(mixed.stderr, /cannot be combined/);
+      assert.doesNotMatch(mixed.stderr, new RegExp(sentinel));
+    }
+    assert.equal(websocket.requests.length, 1);
+    assert.equal(health.requests.length, 1);
+  } finally {
+    await websocket.close();
+    await health.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -241,6 +308,43 @@ async function startWebSocketServer() {
   };
 }
 
+async function startCanonicalHealthServer() {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    requests.push(request.url);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      loopRisk: {
+        observedAt: '2026-07-14T00:00:00.000Z',
+        router: {
+          dispatcher: { pendingUnary: 0, pendingStream: 0, pendingForward: 0 },
+          httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
+          websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 0 },
+        },
+        runtimes: [{
+          runtimeId: 'runtime-test',
+          connected: true,
+          fresh: true,
+          counters: {
+            outboundRequestsPending: 0,
+            outboundStreamLeasesActive: 0,
+            streamRuntimeStreamsActive: 0,
+            flagBackedCancelWaitersActive: 0,
+            spawnedTasksActive: 0,
+          },
+        }],
+      },
+    }));
+  });
+  await listen(server);
+  const { port } = server.address();
+  return {
+    url: `http://127.0.0.1:${port}/__router/health?detail=loop-risk`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
 async function fakePgrepFixture() {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'skiff-loop-pgrep-'));
   const bin = join(fixtureRoot, 'bin');
@@ -271,7 +375,9 @@ async function readMarker(path) {
 
 function runStress(args, envOverrides = {}) {
   const env = { ...process.env, ...envOverrides };
-  delete env.SKIFF_LOOP_RISK_WS_URL;
+  if (!Object.hasOwn(envOverrides, 'SKIFF_LOOP_RISK_WS_URL')) {
+    delete env.SKIFF_LOOP_RISK_WS_URL;
+  }
   return runProcess(process.execPath, [stressPath, ...args], env);
 }
 

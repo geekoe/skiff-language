@@ -96,25 +96,31 @@ node scripts/verify.mjs --only rust --list
 node scripts/verify.mjs --only node --list
 ```
 
-默认入口不运行 live 检查；需要时显式使用 `--only runtime-live` 或
-`--only db-encrypted-storage-live`。compiler boundary 和受管 compiler crates 的实际
-rustdoc public API 检查都属于默认 `checks` gate；`--only compiler-boundaries` 只用于
-聚焦运行 source-boundary checker。
+默认入口不运行 live 检查；需要时显式选择 `runtime-live`、`db-encrypted-storage-live`、
+`loop-risk-health-live` 或 `loop-risk-stress-live`。compiler boundary 和受管 compiler crates
+的实际 rustdoc public API 检查都属于默认 `checks` gate；`--only compiler-boundaries` 只用于
+聚焦运行 source-boundary checker。loop-risk health evaluator 的 hermetic self-test 属于
+`checks-default`，在默认计划中恰好执行一次；它不访问 live target。
 
-这两个 live selector、ownership、tier、命令形态和前置工具统一声明在
+这四个 live selector、ownership、tier、命令形态和前置工具统一声明在
 `scripts/lib/verify-live-registry.mjs`，不要再在 selector、help 或普通 checker registry 中复制。
 schema/data、跨 registry catalog 校验、live plan/precondition 与普通 selector graph 分别由
 `verify-live-registry.mjs`、`verify-live-catalog.mjs`、`verify-live-plan.mjs` 和
 `verify-selector-graph.mjs` 负责；后面三个模块只能消费 canonical registry/graph，不能复制声明。
 `runtime-live` 是 `external`，只要求 PATH 中存在 `cargo`/`node`；
 `db-encrypted-storage-live` 是 `managed`，要求 `node`、`cargo`、`pnpm`、`mongod` 和 `mongosh`，
-并继续只使用临时目录与 `45000`–`45999` 动态端口。两者 tier 均为 `live/manual`，默认 verify、
-`pnpm test`、Cargo workspace 和 CI 都不展开它们。可以安全运行 `--list` 审计 blocked/command，
-但 loop-risk health/stress 的 direct CLI 已采用严格参数和脱敏输出，暂未注册为 selector；它们要等
-共享 evaluator 与 canonical config 完成后再迁入。`check-loop-risk-health.mjs` 必须显式传
-`--url`；stress 必须显式传 WebSocket target，并为启用的 health、CPU、log 检查分别显式传
-`--health-url`、PID（或诊断用 `--runtime-pgrep`）和 log file。只有显式 `--skip-*` 才能跳过，
-两个命令都不会猜 stable 4001 或默认 pgrep pattern。
+并继续只使用临时目录与 `45000`–`45999` 动态端口。两个 loop-risk selector 也是 `external`：
+health 要求 `node`，stress 要求 `node`、`ps` 和从 `router/package.json` 解析的 `ws` 模块。四者
+tier 均为 `live/manual`，默认 verify、`pnpm test`、Cargo workspace 和 CI 都不展开它们。
+
+loop-risk canonical selector 必须通过 `--loop-risk-config <path>` 或
+`SKIFF_LOOP_RISK_CONFIG` 传同一份 JSON config。顶层字段严格为 `healthUrl`、`runtimeIds` 和可选
+`stress`；health URL 必须精确指向 `/__router/health?detail=loop-risk`。stress selector 还要求
+`stress.wsUrl`、`stress.runtimePids` 和绝对路径 `stress.runtimeLogs`。plan/list 会校验 schema、
+前置工具/模块和 log 文件；执行任何 workload 前会再次聚合校验 log 与 PID 存活性。生成的 phase
+只收到绝对 `--config` 路径，不展开 target、PID 或 log 参数。canonical stress 的 health、CPU、
+log 三个 gate 必须全部返回 `checked: true`，不能传细粒度 target/env 或 `--skip-*` 绕过。
+direct CLI 只用于诊断，仍不猜 stable 4001 或默认 pgrep pattern。
 
 `runtime-live` 必须同时显式提供 runtime config、router reload URL 和 artifact root；专用
 verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和

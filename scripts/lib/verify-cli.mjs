@@ -9,6 +9,7 @@ export function parseVerifyArgs(argv) {
     runtimeLiveConfig: undefined,
     runtimeLiveReloadUrl: undefined,
     runtimeLiveArtifactRoot: undefined,
+    loopRiskConfig: undefined,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -95,6 +96,25 @@ export function parseVerifyArgs(argv) {
       );
       continue;
     }
+    if (arg === '--loop-risk-config') {
+      setSingletonOption(
+        options,
+        'loopRiskConfig',
+        requiredValue(argv, index, '--loop-risk-config'),
+        '--loop-risk-config',
+      );
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--loop-risk-config=')) {
+      setSingletonOption(
+        options,
+        'loopRiskConfig',
+        requiredInlineValue(arg, '--loop-risk-config'),
+        '--loop-risk-config',
+      );
+      continue;
+    }
     throw new Error(`unknown argument ${arg}`);
   }
 
@@ -126,9 +146,11 @@ options:
                                 explicit http://host:port router reload target
   --runtime-live-artifact-root <dir>
                                 explicit existing runtime artifact directory
+  --loop-risk-config <path>     canonical loop-risk target/runtime config
   -h, --help                   show this help
 
-check-loop-risk-health remains a manual command because it requires endpoint/runtime arguments.
+Loop-risk live selectors require one canonical --loop-risk-config path (or SKIFF_LOOP_RISK_CONFIG);
+the default plan runs only the hermetic health evaluator self-test, never a live loop-risk target.
 The checks selector includes compiler boundaries plus hermetic and actual configured public API
 checks; rustdoc falls back to the current toolchain when nightly is unavailable.`);
 }

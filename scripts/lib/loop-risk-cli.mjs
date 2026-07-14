@@ -1,4 +1,12 @@
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 const redactedPath = '<redacted-path>';
+
+export function isMainModule(moduleUrl, argv = process.argv) {
+  return typeof argv[1] === 'string'
+    && moduleUrl === pathToFileURL(resolve(argv[1])).href;
+}
 
 export function parseLoopRiskArgs(argv, spec) {
   const flags = new Set(spec.flags ?? []);

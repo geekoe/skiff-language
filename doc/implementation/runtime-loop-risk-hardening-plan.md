@@ -735,14 +735,18 @@ Integration / smoke：
   `node scripts/build-dev-runtime.mjs`
 - Restart stable runtime:
   `node scripts/skiff.mjs instance restart .skiff-instance/config.yml runtime`
-- Read loop-risk health:
+- Read raw loop-risk health when diagnosing the stable instance:
   `curl 'http://127.0.0.1:4001/__router/health?detail=loop-risk'`
 - Run Agine smoke:
   `npm run e2e:chat-smoke` in `/Users/geek/workspace/internals/agine`
-- After chat smoke, check loop-risk health from this repository:
-  `node scripts/check-loop-risk-health.mjs --url 'http://127.0.0.1:4001/__router/health?detail=loop-risk' --runtime-id <touched-runtime-id> --timeout-ms 5000`
-- Stable-instance WebSocket cancel stress entry:
-  `node scripts/stress-loop-risk-websocket-cancel.mjs --ws-url '<stable-websocket-url>' --health-url 'http://127.0.0.1:4001/__router/health?detail=loop-risk' --runtime-id <touched-runtime-id> --runtime-pid <runtime-pid> --runtime-log <runtime-log-file> --health-timeout-ms 5000`
+- Prepare one local canonical JSON config with `healthUrl`, touched `runtimeIds`, and stress
+  `wsUrl`/`runtimePids`/absolute `runtimeLogs`; do not commit target-specific values.
+- After chat smoke, run the registered health gate:
+  `node scripts/verify.mjs --only loop-risk-health-live --loop-risk-config /absolute/path/to/loop-risk.json`
+- Run the registered WebSocket cancel stress gate against the same selected instance:
+  `node scripts/verify.mjs --only loop-risk-stress-live --loop-risk-config /absolute/path/to/loop-risk.json`
+- For direct diagnostics only, the stress entry is `node scripts/check-loop-risk-stress-live.mjs`;
+  it has no stable target, PID, log, or process-discovery default.
 
 Stress acceptance：
 
