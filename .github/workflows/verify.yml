@@ -24,6 +24,8 @@ jobs:
         include:
           - scope: Rust
             command: cargo test --workspace --no-fail-fast
+          - scope: Rust Quality
+            command: node scripts/verify.mjs --only rust-quality
           - scope: Node
             command: pnpm test
           - scope: Checks
@@ -45,7 +47,7 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
           rustup default stable
 
       - name: Install package dependencies

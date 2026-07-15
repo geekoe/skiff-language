@@ -127,13 +127,14 @@ export function parseVerifyArgs(argv) {
 export function printVerifyUsage() {
   console.log(`usage: node scripts/verify.mjs [--only <selectors>] [--list]
 
-Default: complete non-live repository verification (rust + node + checks).
+Default: complete non-live repository verification (rust + rust-quality + node + checks).
 Execution is fail-fast; use --list to audit every selected phase before running.
 
 selectors:
   verify                       complete non-live repository verification
   node                         Node/TypeScript plan; no Rust workspace test phase
   rust                         cargo test --workspace --no-fail-fast
+  rust-quality                 workspace rustfmt + baseline-aware Clippy gate
   router  telemetry  scripts  scripts-syntax  scripts-dev-sync  vscode  checks  type-check
   compiler-boundaries          focused compiler source-boundary check
 ${renderLiveSelectorHelp()}

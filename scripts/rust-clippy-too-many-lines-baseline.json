@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "lint": "clippy::too_many_lines",
+  "identity": "repository-relative source path + Rust function item name from the primary span",
+  "entries": [
+    {
+      "path": "compiler/compiled/src/projection_input.rs",
+      "item": "fn export_bindings_projection"
+    },
+    {
+      "path": "compiler/core/src/package_interface_methods.rs",
+      "item": "fn package_interface_type_ref"
+    },
+    {
+      "path": "compiler/driver/main.rs",
+      "item": "fn parse_args"
+    },
+    {
+      "path": "compiler/driver/test_support/package_test_artifacts.rs",
+      "item": "fn write_package_test_artifact_root_with_runtime_path_registration"
+    },
+    {
+      "path": "compiler/driver/test_support/package_test_artifacts.rs",
+      "item": "fn writer_includes_multiple_owner_test_files_referenced_by_entrypoints"
+    },
+    {
+      "path": "compiler/driver/test_support/package_test_artifacts.rs",
+      "item": "fn writer_separates_production_and_package_test_metadata_and_ignores_non_owner_test_files"
+    },
+    {
+      "path": "compiler/driver/test_support/service_test_artifacts.rs",
+      "item": "fn write_test_service_artifact_root_with_runtime_path_registration"
+    },
+    {
+      "path": "compiler/driver/test_support/service_test_artifacts.rs",
+      "item": "fn writes_service_unit_hash_after_file_artifact_paths_are_attached"
+    },
+    {
+      "path": "compiler/emission/src/emission/package_test_artifacts.rs",
+      "item": "fn build_package_test_artifacts"
+    },
+    {
+      "path": "compiler/emission/src/emission/service_artifacts.rs",
+      "item": "fn build_published_artifact_units"
+    },
+    {
+      "path": "compiler/input/src/package_config/manifest_validation.rs",
+      "item": "fn validate_package_manifest"
+    },
+    {
+      "path": "compiler/input/src/service_config/validation.rs",
+      "item": "fn validate"
+    },
+    {
+      "path": "compiler/lowering/src/db_lowering.rs",
+      "item": "fn lower_db_declarations"
+    },
+    {
+      "path": "compiler/lowering/src/declaration_lowering.rs",
+      "item": "fn lower_type_declarations"
+    },
+    {
+      "path": "compiler/lowering/src/executable_declaration_lowering.rs",
+      "item": "fn lower_executables"
+    },
+    {
+      "path": "compiler/lowering/src/executable_declaration_lowering.rs",
+      "item": "fn lower_function_with_params"
+    },
+    {
+      "path": "compiler/lowering/src/function_lowering.rs",
+      "item": "fn lower_expr"
+    },
+    {
+      "path": "compiler/lowering/src/function_lowering.rs",
+      "item": "fn lower_interface_box"
+    },
+    {
+      "path": "compiler/lowering/src/function_lowering.rs",
+      "item": "fn lower_stmt"
+    },
+    {
+      "path": "compiler/lowering/src/lowered.rs",
+      "item": "fn derive_file_ir_link_targets"
+    },
+    {
+      "path": "compiler/lowering/src/source_file_lowering.rs",
+      "item": "fn lower_source_file_ir_unit"
+    },
+    {
+      "path": "compiler/lowering/src/type_lowering.rs",
+      "item": "fn lower_named_type"
+    },
+    {
+      "path": "compiler/lowering/src/type_lowering.rs",
+      "item": "fn lower_type_text"
+    },
+    {
+      "path": "compiler/projection/src/contract/boundary.rs",
+      "item": "fn display_type_ref"
+    },
+    {
+      "path": "compiler/projection/src/contract/boundary.rs",
+      "item": "fn validate_boundary_type_ref"
+    },
+    {
+      "path": "compiler/projection/src/package_exports.rs",
+      "item": "fn collect_package_type_ref_abi_violations"
+    },
+    {
+      "path": "compiler/projection/src/package_exports.rs",
+      "item": "fn package_exports_projection"
+    },
+    {
+      "path": "compiler/projection/src/package_unit_artifacts.rs",
+      "item": "fn package_public_instance_interfaces"
+    },
+    {
+      "path": "compiler/projection/src/package_unit_artifacts.rs",
+      "item": "fn package_public_instance_operations"
+    },
+    {
+      "path": "compiler/projection/src/package_unit_artifacts.rs",
+      "item": "fn package_unit_export_index"
+    },
+    {
+      "path": "compiler/projection/src/package_unit_artifacts.rs",
+      "item": "fn project_package_public_instances"
+    },
+    {
+      "path": "compiler/projection/src/recoverable_boundary.rs",
+      "item": "fn collect_type_plan_identities"
+    },
+    {
+      "path": "compiler/projection/src/recoverable_boundary.rs",
+      "item": "fn validate_type_ref_closure_inner"
+    },
+    {
+      "path": "compiler/projection/src/runtime_manifest.rs",
+      "item": "fn project_runtime_manifest_projection"
+    },
+    {
+      "path": "compiler/projection/src/runtime/entrypoints.rs",
+      "item": "fn build"
+    },
+    {
+      "path": "compiler/projection/src/runtime/entrypoints.rs",
+      "item": "fn build_entry_point_artifacts"
+    },
+    {
+      "path": "compiler/projection/src/runtime/entrypoints.rs",
+      "item": "fn build_http_route_artifacts"
+    },
+    {
+      "path": "compiler/projection/src/runtime/entrypoints.rs",
+      "item": "fn build_websocket_event_artifacts"
+    },
+    {
+      "path": "compiler/projection/src/runtime/entrypoints.rs",
+      "item": "fn websocket_context_type_ir_matches"
+    },
+    {
+      "path": "compiler/projection/src/runtime/operations.rs",
+      "item": "fn entry_operation_entry"
+    },
+    {
+      "path": "compiler/projection/src/runtime/schema.rs",
+      "item": "fn package_runtime_schema_for_type_ref_inner"
+    },
+    {
+      "path": "compiler/projection/src/service/artifact_projection.rs",
+      "item": "fn project_service_artifact_projection"
+    },
+    {
+      "path": "compiler/projection/src/service/service_unit.rs",
+      "item": "fn collect_package_used_symbols_from_expr"
+    },
+    {
+      "path": "compiler/projection/src/service/service_unit.rs",
+      "item": "fn ensure_service_operation_adapter"
+    },
+    {
+      "path": "compiler/projection/src/service/service_unit.rs",
+      "item": "fn public_instance_listed_interfaces"
+    },
+    {
+      "path": "compiler/projection/src/service/service_unit.rs",
+      "item": "fn service_unit_operations"
+    },
+    {
+      "path": "compiler/projection/src/service/signature_matching.rs",
+      "item": "fn signature_type_ref_matches_canonical"
+    },
+    {
+      "path": "compiler/projection/src/typed_artifacts/package_unit.rs",
+      "item": "fn package_export_index_from_file_units"
+    },
+    {
+      "path": "compiler/source/src/api.rs",
+      "item": "fn build"
+    },
+    {
+      "path": "compiler/source/src/compile_model.rs",
+      "item": "fn build"
+    },
+    {
+      "path": "compiler/source/src/compile_model.rs",
+      "item": "fn validate_no_plain_interface_value_types"
+    },
+    {
+      "path": "compiler/source/src/config_usage/ast.rs",
+      "item": "fn collect_config_uses_in_block"
+    },
+    {
+      "path": "compiler/source/src/config_usage/ast.rs",
+      "item": "fn collect_config_uses_in_expr"
+    },
+    {
+      "path": "compiler/source/src/dependency_operation_facts.rs",
+      "item": "fn package_dependency_public_instance_interfaces"
+    },
+    {
+      "path": "compiler/source/src/expression_model.rs",
+      "item": "fn collect_source_expression_spans"
+    },
+    {
+      "path": "compiler/source/src/expression_model.rs",
+      "item": "fn visit_expr"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn call_type"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn check_expr_with_field_diagnostics"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn check_source"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn check_stmt"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn runtime_receiver_builtin_calls_publish_static_return_type_facts"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model.rs",
+      "item": "fn validate_constructor"
+    },
+    {
+      "path": "compiler/source/src/expression_type_model/db_projection.rs",
+      "item": "fn expand_structural_type"
+    },
+    {
+      "path": "compiler/source/src/package_rules.rs",
+      "item": "fn validate_package_sources"
+    },
+    {
+      "path": "compiler/source/src/package_rules/type_block_validation.rs",
+      "item": "fn collect_package_block_std_type_violations"
+    },
+    {
+      "path": "compiler/source/src/package_rules/type_expr_validation.rs",
+      "item": "fn collect_package_expr_std_type_violations"
+    },
+    {
+      "path": "compiler/source/src/package_rules/type_validation.rs",
+      "item": "fn collect_package_std_type_dependency_violations"
+    },
+    {
+      "path": "compiler/source/src/reserved_names.rs",
+      "item": "fn validate_reserved_names"
+    },
+    {
+      "path": "compiler/source/src/semantic/interface.rs",
+      "item": "fn resolve_type_expr"
+    },
+    {
+      "path": "compiler/source/src/source_rules/std_type_import_validation/mod.rs",
+      "item": "fn collect_service_std_type_import_violations"
+    },
+    {
+      "path": "compiler/source/src/source_rules/stream_emit/mod.rs",
+      "item": "fn check_expr"
+    },
+    {
+      "path": "compiler/source/src/source_rules/stream_emit/statements.rs",
+      "item": "fn validate_emit_usage_in_stmt"
+    },
+    {
+      "path": "compiler/source/src/type_resolution_model.rs",
+      "item": "fn package_interface_conformance_matches_public_alias_signature_types"
+    },
+    {
+      "path": "compiler/tests/artifact_output.rs",
+      "item": "fn cli_lowers_remote_public_instance_direct_call_and_box_source"
+    },
+    {
+      "path": "compiler/tests/artifact_output.rs",
+      "item": "fn cli_rejects_remote_box_when_method_signature_contains_any_interface"
+    },
+    {
+      "path": "compiler/tests/artifact_output.rs",
+      "item": "fn cli_resolves_top_level_service_dependencies_into_service_unit_and_file_ir_calls"
+    },
+    {
+      "path": "compiler/tests/artifact_output.rs",
+      "item": "fn cli_writes_artifact_root_and_links_else_if_operation_body"
+    },
+    {
+      "path": "compiler/tests/config_shape.rs",
+      "item": "fn missing_required_dependency_config_stays_runtime_scoped"
+    },
+    {
+      "path": "compiler/tests/config_shape.rs",
+      "item": "fn package_config_projection_stays_package_scoped"
+    },
+    {
+      "path": "compiler/tests/db_process_metadata.rs",
+      "item": "fn publish_rejects_invalid_db_metadata"
+    },
+    {
+      "path": "compiler/tests/http_routes.rs",
+      "item": "fn http_guard_wraps_package_routes"
+    },
+    {
+      "path": "compiler/tests/http_routes.rs",
+      "item": "fn http_route_to_package_handler_projects_route_and_package_db_metadata"
+    },
+    {
+      "path": "compiler/tests/package_imports.rs",
+      "item": "fn transitive_package_version_conflicts_are_rejected_after_selection"
+    },
+    {
+      "path": "compiler/tests/package_std_schema.rs",
+      "item": "fn package_source_std_schema_types_pass_with_dependency_and_import"
+    },
+    {
+      "path": "compiler/tests/service_conformance.rs",
+      "item": "fn request_local_exception_types_fail_contract_boundary_validation"
+    },
+    {
+      "path": "compiler/tests/service_conformance.rs",
+      "item": "fn websocket_package_handlers_project_direct_package_targets_from_package_abi"
+    },
+    {
+      "path": "compiler/tests/std_package_imports.rs",
+      "item": "fn std_root_package_imports_and_user_package_ids_are_rejected"
+    },
+    {
+      "path": "runtime/driver/eval/tests/program_execution.rs",
+      "item": "fn runtime_program_emit_response_stream_uses_response_sink_not_inner_sink"
+    },
+    {
+      "path": "runtime/driver/eval/tests/program_execution.rs",
+      "item": "fn std_http_type_declarations"
+    },
+    {
+      "path": "runtime/driver/http_boundary.rs",
+      "item": "fn http_boundary_program"
+    },
+    {
+      "path": "runtime/driver/program/tests.rs",
+      "item": "fn artifact_to_linked_maps_canonical_db_query_and_change_ops"
+    },
+    {
+      "path": "runtime/driver/program/tests.rs",
+      "item": "fn file_ir_deserializes_explicit_object_db_ir"
+    },
+    {
+      "path": "runtime/driver/program/tests.rs",
+      "item": "fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files"
+    },
+    {
+      "path": "runtime/driver/program/tests.rs",
+      "item": "fn program_units_deserialize_compiler_shaped_ir_json"
+    },
+    {
+      "path": "runtime/driver/program/tests.rs",
+      "item": "fn program_units_serialize_loader_schema_fields_as_camel_case"
+    },
+    {
+      "path": "runtime/driver/value_codec/type_descriptor/tests.rs",
+      "item": "fn artifact_type_ref_in_program_resolves_package_symbol_inside_service_dependency_shapes"
+    },
+    {
+      "path": "runtime/host/src/error/tests.rs",
+      "item": "fn phase6_cross_crate_error_code_and_catch_golden_matrix"
+    },
+    {
+      "path": "runtime/host/src/host/request_entry.rs",
+      "item": "fn spawn_resolved_request_inner"
+    },
+    {
+      "path": "runtime/host/src/host/router_session.rs",
+      "item": "fn dispatch_router_binary_frame_inner"
+    },
+    {
+      "path": "runtime/host/src/host/router_session/tests.rs",
+      "item": "fn write_package_test_runtime_fixture"
+    },
+    {
+      "path": "runtime/host/src/host/spawn_worker.rs",
+      "item": "fn execute_claimed_function"
+    },
+    {
+      "path": "runtime/host/src/host/tests.rs",
+      "item": "fn attach_std_http_types"
+    },
+    {
+      "path": "runtime/host/src/host/tests.rs",
+      "item": "fn runtime_binary_operation_coerces_map_literal_return_to_union_record_payload"
+    },
+    {
+      "path": "runtime/host/src/loader/program_loader/tests.rs",
+      "item": "fn artifact_loader_accepts_canonical_service_package_and_preserves_package_constants"
+    },
+    {
+      "path": "runtime/host/src/loader/program_loader/tests.rs",
+      "item": "fn linker_rejects_external_service_symbol_with_display_path_as_symbol_name"
+    },
+    {
+      "path": "runtime/host/src/loader/program_loader/tests.rs",
+      "item": "fn linker_resolves_cross_file_call_using_structured_module_path_and_symbol"
+    },
+    {
+      "path": "runtime/host/src/loader/runtime_config.rs",
+      "item": "fn artifact_runtime_config_loads_local_dev_profile_config_file"
+    },
+    {
+      "path": "runtime/host/src/loader/runtime_config.rs",
+      "item": "fn load_services_from_rooted_artifact_pointers_with_caches"
+    },
+    {
+      "path": "runtime/service-db/src/lib.rs",
+      "item": "fn upsert_by_key"
+    },
+    {
+      "path": "runtime/service-db/src/tests.rs",
+      "item": "fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface"
+    },
+    {
+      "path": "syntax/src/ast_utils.rs",
+      "item": "fn collect_expr_type_ref_dotted_root_imports"
+    },
+    {
+      "path": "syntax/src/parser.rs",
+      "item": "fn parse_db_operation_expr"
+    },
+    {
+      "path": "syntax/src/parser.rs",
+      "item": "fn parse_postfix"
+    },
+    {
+      "path": "syntax/src/parser.rs",
+      "item": "fn parse_primary"
+    },
+    {
+      "path": "syntax/src/parser.rs",
+      "item": "fn parse_source_file"
+    },
+    {
+      "path": "syntax/src/parser.rs",
+      "item": "fn parse_statement"
+    },
+    {
+      "path": "test-runner/src/main.rs",
+      "item": "fn parse_args"
+    },
+    {
+      "path": "test-runner/src/package.rs",
+      "item": "fn package_test_artifact_input_includes_all_ready_owner_files"
+    },
+    {
+      "path": "test-runner/src/package.rs",
+      "item": "fn package_test_metadata_entrypoints_reuse_dependency_publications"
+    },
+    {
+      "path": "test-runner/src/package.rs",
+      "item": "fn package_test_metadata_only_entrypoints_keep_single_case_config"
+    },
+    {
+      "path": "test-runner/src/package.rs",
+      "item": "fn run_package_tests"
+    },
+    {
+      "path": "test-runner/src/service_publish.rs",
+      "item": "fn runtime_test_publication_keeps_referenced_package_http_route_operation"
+    },
+    {
+      "path": "test-runner/src/service.rs",
+      "item": "fn run_ready_service_test_batch"
+    },
+    {
+      "path": "test-runner/src/service.rs",
+      "item": "fn run_resolved_publication_tests"
+    }
+  ]
+}

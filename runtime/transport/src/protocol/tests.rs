@@ -220,10 +220,22 @@ fn runtime_health_frame_header_round_trips_empty_payload() {
     let frame = encode_binary_frame(&header, &[]).expect("runtime.health frame encodes");
     let decoded_json = decode_binary_frame(&frame).expect("runtime.health should decode as JSON");
     assert_eq!(decoded_json.header["type"], "runtime.health");
-    assert_eq!(decoded_json.header["counters"]["outboundRequestsPending"], 1);
-    assert_eq!(decoded_json.header["counters"]["outboundStreamLeasesActive"], 2);
-    assert_eq!(decoded_json.header["counters"]["streamRuntimeStreamsActive"], 3);
-    assert_eq!(decoded_json.header["counters"]["flagBackedCancelWaitersActive"], 4);
+    assert_eq!(
+        decoded_json.header["counters"]["outboundRequestsPending"],
+        1
+    );
+    assert_eq!(
+        decoded_json.header["counters"]["outboundStreamLeasesActive"],
+        2
+    );
+    assert_eq!(
+        decoded_json.header["counters"]["streamRuntimeStreamsActive"],
+        3
+    );
+    assert_eq!(
+        decoded_json.header["counters"]["flagBackedCancelWaitersActive"],
+        4
+    );
     assert_eq!(decoded_json.header["counters"]["spawnedTasksActive"], 5);
 
     let (decoded, payload): (RuntimeHealthFrameHeader, Vec<u8>) =

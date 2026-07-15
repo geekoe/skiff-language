@@ -167,7 +167,8 @@ async fn runtime_health_frame_reports_loop_risk_counters() {
     let host = test_host();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let stream_baseline = crate::capability_context::stream_runtime_streams_active();
-    let flag_waiter_baseline = skiff_runtime_capability_context::flag_backed_cancel_waiters_active();
+    let flag_waiter_baseline =
+        skiff_runtime_capability_context::flag_backed_cancel_waiters_active();
 
     let counters = host.runtime_health_counters().await;
     host.queue_runtime_health_with_counters(&sender, "runtime-health-zero", counters)
@@ -191,7 +192,10 @@ async fn runtime_health_frame_reports_loop_risk_counters() {
     assert_eq!(header.runtime_id, "runtime-health-zero");
     assert_eq!(header.counters.outbound_requests_pending, 0);
     assert_eq!(header.counters.outbound_stream_leases_active, 0);
-    assert_eq!(header.counters.stream_runtime_streams_active, stream_baseline);
+    assert_eq!(
+        header.counters.stream_runtime_streams_active,
+        stream_baseline
+    );
     assert_eq!(
         header.counters.flag_backed_cancel_waiters_active,
         flag_waiter_baseline
