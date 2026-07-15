@@ -12,15 +12,15 @@ use super::helpers::{with_http_proxy_env_for_test, HTTP_PROXY_ENV_NAMES};
 
 const TEST_ENV_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn snapshot_http_egress_env(
-    names: &[&'static str],
-) -> Vec<(&'static str, Option<OsString>)> {
+async fn snapshot_http_egress_env(names: &[&'static str]) -> Vec<(&'static str, Option<OsString>)> {
     tokio::time::timeout(
         TEST_ENV_LOCK_TIMEOUT,
-        with_http_egress_env_overrides_for_test(
-            std::iter::empty(),
-            async { names.iter().map(|name| (*name, std::env::var_os(name))).collect() },
-        ),
+        with_http_egress_env_overrides_for_test(std::iter::empty(), async {
+            names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect()
+        }),
     )
     .await
     .expect("HTTP egress test environment lock should remain available")
@@ -95,8 +95,8 @@ async fn proxy_environment_restores_all_variables_after_panic() {
         let expected_proxy = OsString::from(&panic_proxy_url);
         with_http_proxy_env_for_test(&panic_proxy_url, async move {
             for name in HTTP_PROXY_ENV_NAMES {
-                let expected = (!matches!(name, "NO_PROXY" | "no_proxy"))
-                    .then(|| expected_proxy.clone());
+                let expected =
+                    (!matches!(name, "NO_PROXY" | "no_proxy")).then(|| expected_proxy.clone());
                 assert_eq!(std::env::var_os(name), expected, "override for {name}");
             }
             panic!("panic inside proxy environment helper");
@@ -107,20 +107,26 @@ async fn proxy_environment_restores_all_variables_after_panic() {
     .expect_err("proxy environment helper future should panic");
     assert!(panic.is_panic(), "spawned helper task should report panic");
 
-    assert_eq!(snapshot_http_egress_env(&HTTP_PROXY_ENV_NAMES).await, before);
+    assert_eq!(
+        snapshot_http_egress_env(&HTTP_PROXY_ENV_NAMES).await,
+        before
+    );
 
     let expected_proxy = OsString::from(&proxy_url);
     tokio::time::timeout(
         TEST_ENV_LOCK_TIMEOUT,
         with_http_proxy_env_for_test(&proxy_url, async move {
             for name in HTTP_PROXY_ENV_NAMES {
-                let expected = (!matches!(name, "NO_PROXY" | "no_proxy"))
-                    .then(|| expected_proxy.clone());
+                let expected =
+                    (!matches!(name, "NO_PROXY" | "no_proxy")).then(|| expected_proxy.clone());
                 assert_eq!(std::env::var_os(name), expected, "override for {name}");
             }
         }),
     )
     .await
     .expect("proxy environment helper should remain usable after panic");
-    assert_eq!(snapshot_http_egress_env(&HTTP_PROXY_ENV_NAMES).await, before);
+    assert_eq!(
+        snapshot_http_egress_env(&HTTP_PROXY_ENV_NAMES).await,
+        before
+    );
 }
