@@ -31,14 +31,14 @@ const verifyPath = join(root, 'scripts', 'verify.mjs');
 
 test('CLI defaults to verify and accepts a package-manager argument separator', () => {
   assert.deepEqual(parseVerifyArgs([]).selectors, ['verify']);
-  const parsed = parseVerifyArgs(['--only', 'node', '--', '--list']);
-  assert.deepEqual(parsed.selectors, ['node']);
+  const parsed = parseVerifyArgs(['--only', 'tests', '--', '--list']);
+  assert.deepEqual(parsed.selectors, ['tests']);
   assert.equal(parsed.list, true);
   assert.deepEqual(parseVerifyArgs(['--only', 'scripts-syntax']).selectors, [
     'scripts-syntax',
   ]);
   assert.throws(
-    () => parseVerifyArgs(['--only', 'node', '--', '--only', 'rust']),
+    () => parseVerifyArgs(['--only', 'tests', '--', '--only', 'compiler']),
     /--only may be specified only once/,
   );
 });
@@ -87,7 +87,7 @@ test('verify CLI accepts one loop-risk config and rejects split/inline duplicate
 
 test('package scripts only forward to canonical verify selectors', async () => {
   const rootPackage = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  assert.equal(rootPackage.scripts.test, 'node scripts/verify.mjs --only node');
+  assert.equal(rootPackage.scripts.test, 'node scripts/verify.mjs --only tests');
   assert.equal(rootPackage.scripts.verify, 'node scripts/verify.mjs');
   assert.equal(rootPackage.scripts['type-check'], 'node scripts/verify.mjs --only type-check');
 
@@ -105,16 +105,17 @@ test('package scripts only forward to canonical verify selectors', async () => {
   );
 });
 
-test('node selector has no top-level Cargo phase and discovers every scripts test', async () => {
-  const plan = await buildVerifyPlan({ root, selectors: ['node'] });
+test('tooling selector has no Cargo phase and discovers every scripts test', async () => {
+  const plan = await buildVerifyPlan({ root, selectors: ['tooling'] });
   assert.equal(plan.phases.some((phase) => phase.command === 'cargo'), false);
 
   const scriptTestArgs = plan.phases
-    .filter((phase) => phase.id.startsWith('scripts:test:'))
+    .filter((phase) => phase.id.startsWith('implementation:tooling:scripts/tests/'))
     .map((phase) => phase.args.at(-1));
   assert.deepEqual(scriptTestArgs, await discoverScriptTests(root));
   assert.ok(scriptTestArgs.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
-  assert.ok(plan.phases.some((phase) => phase.id === 'scripts:dev-sync-fixture'));
+  assert.ok(plan.phases.some((phase) =>
+    phase.id === 'implementation:tooling:dev-sync-fixture'));
 });
 
 test('compiler boundary selector is canonical and deduplicated across checks combinations', async () => {
@@ -241,7 +242,7 @@ test('runtime-live blocker prevents an earlier selected Cargo phase from startin
     await chmod(cargo, 0o755);
     const result = await runProcess(
       process.execPath,
-      [verifyPath, '--only', 'rust,runtime-live'],
+      [verifyPath, '--only', 'compiler,runtime-live'],
       {
         cwd: root,
         env: {
@@ -929,10 +930,10 @@ test('missing phase executable keeps phase identity and stops later commands', a
   }
 });
 
-test('package arguments cannot extend pnpm test beyond the node selector', async () => {
+test('package arguments cannot extend pnpm test beyond the tests selector', async () => {
   const result = await runProcess(
     'pnpm',
-    ['test', '--', '--only', 'rust', '--list'],
+    ['test', '--', '--only', 'compiler', '--list'],
     { cwd: root },
   );
   assert.notEqual(result.code, 0, `pnpm test unexpectedly succeeded: ${result.stdout}`);
@@ -1001,10 +1002,11 @@ test('every checker is classified once; compiler boundaries are default and live
       phase.args.includes('scripts/check-command-execution-policy.mjs')).length,
     1,
   );
-  const nodePlan = await buildVerifyPlan({ root, selectors: ['node'] });
+  const toolingPlan = await buildVerifyPlan({ root, selectors: ['tooling'] });
   assert.equal(
-    nodePlan.phases.filter((phase) =>
-      phase.id === 'scripts:test:scripts/tests/command-execution-policy.test.mjs').length,
+    toolingPlan.phases.filter((phase) =>
+      phase.id === 'implementation:tooling:scripts/tests/command-execution-policy.test.mjs')
+      .length,
     1,
   );
   assert.equal(defaultPlan.phases.some((phase) => phase.id.startsWith('live:')), false);
@@ -1025,15 +1027,15 @@ test('direct CLI plans and filesystem discovery do not depend on the invocation 
       /scripts\/tests\/test-runner-runtime-isolation\.test\.mjs/,
     );
 
-    const rustResult = await runProcess(
+    const compilerResult = await runProcess(
       process.execPath,
-      [verifyPath, '--only', 'rust', '--list'],
+      [verifyPath, '--only', 'compiler', '--list'],
       { cwd },
     );
-    assert.equal(rustResult.code, 0, rustResult.stderr);
-    assert.match(rustResult.stdout, /rust:workspace/);
-    assert.match(rustResult.stdout, /cargo test --workspace --no-fail-fast/);
-    assert.match(rustResult.stdout, /cwd=\./);
+    assert.equal(compilerResult.code, 0, compilerResult.stderr);
+    assert.match(compilerResult.stdout, /implementation:compiler:rust/);
+    assert.match(compilerResult.stdout, /cargo test --no-fail-fast --package skiff-compiler-core/);
+    assert.match(compilerResult.stdout, /cwd=\./);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

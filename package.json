@@ -9,7 +9,7 @@
   "scripts": {
     "skiff": "node scripts/skiff.mjs",
     "type-check": "node scripts/verify.mjs --only type-check",
-    "test": "node scripts/verify.mjs --only node",
+    "test": "node scripts/verify.mjs --only tests",
     "verify": "node scripts/verify.mjs"
   }
 }

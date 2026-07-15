@@ -23,6 +23,10 @@ import {
   VERIFY_SELECTOR_GRAPH,
   assertOrdinaryPhaseBuilderCoverage,
 } from './verify-selector-graph.mjs';
+import {
+  RUST_IMPLEMENTATION_SUBJECTS,
+  rustSubjectTestArgs,
+} from './verify-rust-subjects.mjs';
 
 export const PUBLIC_SELECTORS = Object.freeze([
   ...ORDINARY_PUBLIC_SELECTORS,
@@ -189,13 +193,12 @@ function phaseBuilders({
     registry: liveRegistry,
   };
   const builders = {
-    rust: async () => [
-      phase(root, 'rust:workspace', 'rust', 'cargo', [
-        'test',
-        '--workspace',
-        '--no-fail-fast',
+    'skiff-tests': async () => [
+      phase(root, 'skiff-tests:canonical', 'skiff-tests', 'node', [
+        'scripts/run-skiff-tests.mjs',
       ]),
     ],
+    ...rustSubjectPhaseBuilders(root),
     'rust-quality': async () => [
       phase(root, 'rust-quality:format', 'rust-quality', 'cargo', [
         'fmt',
@@ -208,8 +211,14 @@ function phaseBuilders({
     'router-type-check': async () => [
       packagePhase(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
     ],
-    'router-test': async () => [
-      packagePhase(root, 'router:test', 'router', 'router', ['test']),
+    'router-tests': async () => [
+      packagePhase(
+        root,
+        'implementation:router',
+        'implementation:router',
+        'router',
+        ['test'],
+      ),
     ],
     'telemetry-type-check': async () => [
       packagePhase(
@@ -220,13 +229,19 @@ function phaseBuilders({
         ['run', 'type-check'],
       ),
     ],
-    'telemetry-test': async () => [
-      packagePhase(root, 'telemetry:test', 'telemetry', 'telemetry', ['test']),
+    'telemetry-tests': async () => [
+      packagePhase(
+        root,
+        'implementation:telemetry',
+        'implementation:telemetry',
+        'telemetry',
+        ['test'],
+      ),
     ],
     'scripts-syntax': async () => javascriptSyntaxPhases(root),
     'scripts-tests': async () => scriptTestPhases(root),
     'scripts-dev-sync': async () => [
-      phase(root, 'scripts:dev-sync-fixture', 'scripts', 'node', [
+      phase(root, 'implementation:tooling:dev-sync-fixture', 'implementation:tooling', 'node', [
         'scripts/skiff-dev-sync.mjs',
         '--check-sync',
         '--root',
@@ -237,7 +252,13 @@ function phaseBuilders({
       packagePhase(root, 'vscode:type-check', 'vscode', 'vscode', ['run', 'type-check']),
     ],
     'vscode-grammar': async () => [
-      packagePhase(root, 'vscode:grammar', 'vscode', 'vscode', ['run', 'test:grammar']),
+      packagePhase(
+        root,
+        'implementation:tooling:vscode-grammar',
+        'implementation:tooling',
+        'vscode',
+        ['run', 'test:grammar'],
+      ),
     ],
     'checks-default': async () => checkerPhases(root, 'checks'),
     'compiler-boundaries': async () => checkerPhases(root, 'compiler-boundaries'),
@@ -267,6 +288,23 @@ function phaseBuilders({
   return builders;
 }
 
+function rustSubjectPhaseBuilders(root) {
+  return Object.fromEntries(
+    RUST_IMPLEMENTATION_SUBJECTS.map((subject) => [
+      subject.leafSelector,
+      async () => [
+        phase(
+          root,
+          subject.phaseId,
+          `implementation:${subject.selector}`,
+          'cargo',
+          rustSubjectTestArgs(subject),
+        ),
+      ],
+    ]),
+  );
+}
+
 async function javascriptSyntaxPhases(root) {
   const files = await discoverJavaScriptFiles(root);
   return files.map((file) => {
@@ -278,7 +316,13 @@ async function javascriptSyntaxPhases(root) {
 async function scriptTestPhases(root) {
   const files = await discoverScriptTests(root);
   return files.map((path) =>
-    phase(root, `scripts:test:${path}`, 'scripts', 'node', ['--test', path]),
+    phase(
+      root,
+      `implementation:tooling:${path}`,
+      'implementation:tooling',
+      'node',
+      ['--test', path],
+    ),
   );
 }
 

@@ -127,15 +127,30 @@ export function parseVerifyArgs(argv) {
 export function printVerifyUsage() {
   console.log(`usage: node scripts/verify.mjs [--only <selectors>] [--list]
 
-Default: complete non-live repository verification (rust + rust-quality + node + checks).
+Default: complete non-live repository verification (tests + quality/check gates).
 Execution is fail-fast; use --list to audit every selected phase before running.
 
-selectors:
-  verify                       complete non-live repository verification
-  node                         Node/TypeScript plan; no Rust workspace test phase
-  rust                         cargo test --workspace --no-fail-fast
+test domains:
+  tests                        all non-live Skiff source and implementation tests
+  skiff-tests                  canonical Skiff source suite on a reusable real runtime
+  implementation-tests         all implementation subjects below
+
+implementation subjects:
+  foundation                   shared artifact-model, artifact-identity, and syntax crates
+  compiler                     compiler crate tests
+  runtime                      runtime crate tests
+  test-runner                  test-runner crate tests
+  router                       router tests
+  telemetry                    telemetry tests
+  tooling                      scripts and VS Code tooling tests
+
+quality and focused selectors:
+  verify                       tests plus every non-live quality/check gate
   rust-quality                 workspace rustfmt + baseline-aware Clippy gate
-  router  telemetry  scripts  scripts-syntax  scripts-dev-sync  vscode  checks  type-check
+  type-check                   Router, telemetry, scripts, and VS Code static checks
+  checks                       repository architecture and policy checks
+  scripts  vscode              focused tooling tests
+  scripts-syntax  scripts-dev-sync  focused tooling phases
   compiler-boundaries          focused compiler source-boundary check
 ${renderLiveSelectorHelp()}
 

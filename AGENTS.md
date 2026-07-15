@@ -75,28 +75,35 @@ cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 
 ## 测试入口
 
-仓库根有三个语义不同的权威入口：
+仓库测试按被测对象分成两个一等域，不按实现测试设施的宿主语言分组：
+
+1. `skiff-tests` 测试 `.skiff` 源码。唯一底层入口是 `node scripts/run-skiff-tests.mjs`；它通过
+   test-runner 编译测试，并在同一套件内复用一个真实 runtime 进程执行，不为每个 fixture
+   单独启动 runtime。
+2. `implementation-tests` 测试 Skiff 实现，按 `foundation`、`compiler`、`runtime`、
+   `test-runner`、`router`、`telemetry` 和 `tooling` 被测组件展开。
+
+仓库根的权威组合入口是：
 
 ```bash
-cargo test --workspace --no-fail-fast  # Rust 测试所有权入口
-pnpm test                              # Node/TypeScript 测试和 type-check 所有权入口
-pnpm verify                            # 完整非 live 组合验证：Rust test/quality + Node/TS + checker
+pnpm test    # 两个测试域的完整非 live 测试，不含静态质量 gate
+pnpm verify  # 完整非 live 验证：tests + rust-quality + type-check + checks
 ```
 
-这里的入口按测试所有权划分，不代表进程树只使用一种语言工具链。`pnpm test` 不调度 Rust
-workspace tests，但 Node-owned tests 和 fixture build 可能调用 Cargo；`cargo test --workspace
---no-fail-fast` 拥有完整 Rust tests，其中 test-runner runtime integration 会通过 Node host 启动
-隔离 runtime。`pnpm verify` 组合 Rust test、Rust quality、Node/TypeScript 和 checker，不另行维护
-底层测试清单。`rust-quality` 分别执行 workspace rustfmt check 和 baseline-aware workspace Clippy；
-Clippy 当前只对 `clippy::too_many_lines` 的 checked-in baseline 做双向门禁，其他 warning 仍为 advisory。
+组件 selector 可以独立运行，但完整测试使用 `tests`，不要用 `cargo test --workspace` 或旧的
+Rust/Node 分组替代。Rust workspace package 到被测组件的唯一归属声明在
+`scripts/lib/verify-rust-subjects.mjs`；新增 workspace crate 时必须把它归入恰好一个 subject。
+`rust-quality` 分别执行 workspace rustfmt check 和 baseline-aware workspace Clippy；Clippy 当前只对
+`clippy::too_many_lines` 的 checked-in baseline 做双向门禁，其他 warning 仍为 advisory。
 
 跨语言计划只在 `scripts/verify.mjs` 中维护。可以先审计展开后的命令而不执行：
 
 ```bash
 node scripts/verify.mjs --list
-node scripts/verify.mjs --only rust --list
+node scripts/verify.mjs --only tests --list
+node scripts/verify.mjs --only skiff-tests --list
+node scripts/verify.mjs --only implementation-tests --list
 node scripts/verify.mjs --only rust-quality --list
-node scripts/verify.mjs --only node --list
 ```
 
 默认入口不运行 live 检查；需要时显式选择 `runtime-live`、`db-encrypted-storage-live`、
@@ -135,10 +142,14 @@ verify 参数是 `--runtime-live-config`、`--runtime-live-reload-url` 和
 常用聚焦测试：
 
 ```bash
+node scripts/verify.mjs --only foundation
+node scripts/verify.mjs --only compiler
+node scripts/verify.mjs --only runtime
+node scripts/verify.mjs --only test-runner
 node scripts/verify.mjs --only router
 node scripts/verify.mjs --only telemetry
-node scripts/verify.mjs --only scripts
-node scripts/verify.mjs --only vscode
+node scripts/verify.mjs --only tooling
+node scripts/verify.mjs --only type-check
 node scripts/verify.mjs --only checks
 pnpm --filter @skiff/router type-check
 pnpm --filter @skiff/router test
