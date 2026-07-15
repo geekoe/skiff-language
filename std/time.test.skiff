@@ -3,7 +3,7 @@ import std
 test "sleep returns immediately for non positive durations" {
   const before = Date.now()
   std.time.sleep(Duration.milliseconds(0))
-  std.time.sleep(Duration.milliseconds(0 - 1))
+  std.time.sleep(Duration.milliseconds(std.number.assertSafeInteger(0 - 1)))
   assert !Date.now().isBefore(before)
 }
 

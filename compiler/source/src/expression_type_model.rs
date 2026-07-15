@@ -2091,13 +2091,26 @@ impl<'a> OwnerChecker<'a> {
         if let Some(return_type) = prelude_registry().native_return_type(&path) {
             let native_context = native_return_type_context(&path, &self.type_context);
             if let Some(params) = prelude_registry().native_params(&path) {
-                let expected = self.resolve_callable_param_types(
+                let mut expected = self.resolve_callable_param_types(
                     &path,
                     params.iter().map(String::as_str),
                     &native_context,
                     prelude_registry().native_type_params(&path).unwrap_or(&[]),
                     type_args,
                 );
+                if native_context.module_path != self.module_path {
+                    expected.params = expected
+                        .params
+                        .into_iter()
+                        .map(|(name, ty)| {
+                            (
+                                name,
+                                self.type_resolution
+                                    .externalize_local_type_refs(&ty, native_context.module_path),
+                            )
+                        })
+                        .collect();
+                }
                 if expected.complete {
                     self.validate_resolved_call_params(&path, expected.params, args, arg_types);
                 }
@@ -4216,6 +4229,62 @@ mod tests {
                 "{label} should publish a {expected} expression type fact"
             );
         }
+    }
+
+    #[test]
+    fn native_signature_local_types_are_externalized_from_the_declaring_module() {
+        let production = CompilerSourceFile::parse(
+            PathBuf::from("time.skiff"),
+            "std.time".to_string(),
+            false,
+            false,
+            r#"
+              type Duration = integer
+              native function sleep(duration: Duration) -> void
+            "#
+            .to_string(),
+            "time.skiff",
+        )
+        .expect("production source should parse");
+        let test_source = CompilerSourceFile::parse(
+            PathBuf::from("time.test.skiff"),
+            "std.time.__test".to_string(),
+            false,
+            true,
+            r#"
+              import std
+
+              test "duration native signature" {
+                const duration = Duration.milliseconds(1)
+                std.time.sleep(duration)
+              }
+            "#
+            .to_string(),
+            "time.test.skiff",
+        )
+        .expect("test source should parse");
+        let parsed_sources =
+            parse_publication_sources(&PathBuf::from("/test"), &[production, test_source])
+                .expect("production and test source facts should build");
+        let type_resolution = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::new(),
+            &[],
+            None,
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("type resolution should build");
+        let expression_sources = ExpressionSourceMap::build(&parsed_sources)
+            .expect("expression source facts should build");
+
+        ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &PublicationDbMetadataIndex::default(),
+            None,
+        )
+        .expect("native signature types should retain their declaring module identity");
     }
 
     fn expression_fact_source_text(

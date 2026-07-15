@@ -1,12 +1,12 @@
 # Skiff Testing Reference
 
-本文负责测试源码、测试发现、runner 模式、package 测试和 production artifact 边界。本文不负责
-具体 CLI flag、测试进程编排、live secret 管理或 runner 的实现细节。
+本文负责测试源码、测试发现、runtime 执行语义、package 测试和 production artifact 边界。本文
+不负责具体 CLI flag、测试进程编排、live secret 管理或 runner 的实现细节。
 
 ## 1. Testing Surface
 
 Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 live smoke 不是不同
-语法，而是 runner 模式和 effect policy 的差异。
+语法或执行宿主，只是测试范围、effect policy 和 runtime target ownership 的差异。
 
 规则：
 
@@ -27,7 +27,7 @@ Skiff 只保留一种测试用例语义：`test` block。unit、integration 和 
 - 默认值是 `true`。
 - 只影响目录输入的默认发现。
 - 显式指定该 test-only 文件时，runner 必须运行它。
-- 它不改变 runner mode、network permission、config 注入或 live key policy。
+- 它不改变 runtime target ownership、network permission、config 注入或 live key policy。
 - 它只接受 literal bool，不接受表达式、config 或运行时条件。
 
 ## 3. Package-Local Visibility
@@ -70,27 +70,29 @@ test-only source file 输入：
 - 跳过 `defaultRun false` 文件。
 - 跳过 generated / dependency 目录，例如 `target`、`node_modules` 和 dot directory。
 
-## 5. Runner Modes
+## 5. Runtime Execution And Effect Policy
 
-测试级别由 runner mode 和 effect policy 决定，不由语法、目录名或文件名决定。
+所有 Skiff 测试源码都由 `skiff-test-runner` 编译，并在真实 Skiff runtime 进程中执行。Skiff
+不提供 compiler VM / unit 执行模式；unit、integration 和 live smoke 只描述测试范围，不改变
+执行语义。测试级别由 effect policy 和 runtime target ownership 决定，不由语法、目录名或
+文件名决定。
 
-VM / unit mode：
+非 live 测试：
 
-- 使用 compiler test VM，不启动 router / runtime 进程。
-- 不访问真实网络或外部服务。
-- 外部 effect 必须由 test double 替换；缺失 double 必须失败。
-- 每个 test case 使用独立 VM / double registry。
-
-Runtime / integration mode：
-
-- 使用真实 Skiff runtime 语义执行测试。
-- runner 负责构造临时 service activation / request frame。
-- package 测试需要 runtime 时，runner 自动生成临时 test service / activation。
+- 普通 `skiff test <path>` 为整个命令创建一套隔离 router / runtime，并在其中运行全部 case。
+- 仓库 canonical Skiff 源码套件为整个 registry plan 创建一套隔离 router / runtime，并在所有
+  registry entry 之间复用该进程。
+- 不访问真实网络或外部服务；外部 effect 必须由 test double 替换，缺失 double 必须失败。
+- runner 负责构造临时 service activation / request frame；package 测试由 runner 自动生成
+  临时 test service / activation。
 - config 由 runner 注入 resolved config；package 不读取 ambient environment。
+- runtime 进程复用不扩大可变状态生命周期。每个 case 的 double registry、临时 artifact、
+  service activation 和测试状态仍按 runner isolation contract 清理。
 
 Live smoke：
 
-- 是 runtime / integration mode 的显式、昂贵用法。
+- 同样在真实 runtime 进程中执行，但 target 由调用者显式提供和拥有，并允许显式授权的外部
+  effect。
 - 应使用 `defaultRun false` 并通过文件路径运行。
 - 没有 live key 时应 skip，而不是失败。
 - 只验证真实外部服务的少量关键路径，不替代 unit / integration 覆盖。
@@ -137,8 +139,8 @@ AI 和 CI 不需要测试配置文件来决定默认测试。它们按改动范�
 - 改 runtime effect、config、HTTP 编码、router activation，运行相关 integration 测试。
 - live smoke 只在用户显式要求、nightly 或 release 验证流程中运行。
 
-Runner flag 只控制执行宿主和 effect policy，不改变测试源码语义，也不把 `defaultRun false`
-文件加入目录默认发现。
+Runner flag 只控制 runtime target ownership 和 effect policy，不改变测试源码语义，也不把
+`defaultRun false` 文件加入目录默认发现。非 live 与 live 都不切换到 compiler VM。
 
 ## 9. Production Artifact Boundary
 
