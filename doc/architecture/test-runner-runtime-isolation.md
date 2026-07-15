@@ -88,7 +88,7 @@ non-live cleanup 路径虚报 `mongosh` 或 `sh`；encrypted-storage DB checker 
 `node`/`cargo`/`pnpm`/`mongod`/`mongosh`；loop-risk health 要求 `node`，stress 要求
 `node`/`ps` 和从 `router/package.json` 解析的 `ws` 模块。plan/list 阶段只读检查文件类型和
 executable bit，execute 前再统一复核；任一 blocker 都在首个 command 启动前聚合。所有
-`live/manual` phase 仍排除在默认 verify、Node、Cargo workspace 和 CI 之外。
+`live/manual` phase 仍排除在默认 verify、所有普通 non-live selector 和 CI 之外。
 Runtime fixture discovery 始终执行；任何已经提供的 config、artifact root 或 reload URL 也会
 逐项校验，不能因另一个输入或 PATH 工具缺失而把空 discovery/非法配置降级成 blocked plan。
 
