@@ -22,14 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - scope: Rust
-            command: cargo test --workspace --no-fail-fast
-          - scope: Rust Quality
-            command: node scripts/verify.mjs --only rust-quality
-          - scope: Node
-            command: pnpm test
-          - scope: Checks
-            command: node scripts/verify.mjs --only checks
+          - scope: Skiff Source Tests
+            command: node scripts/verify.mjs --only skiff-tests
+          - scope: Implementation Tests
+            command: node scripts/verify.mjs --only implementation-tests
+          - scope: Quality and Checks
+            command: node scripts/verify.mjs --only rust-quality,type-check,checks
     steps:
       - name: Check out repository
         uses: actions/checkout@v6

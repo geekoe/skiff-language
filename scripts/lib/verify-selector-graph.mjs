@@ -1,27 +1,50 @@
+import {
+  RUST_IMPLEMENTATION_SUBJECTS,
+  RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
+} from './verify-rust-subjects.mjs';
+
+const rustSubjectExpansions = Object.fromEntries(
+  RUST_IMPLEMENTATION_SUBJECTS.map(({ selector, leafSelector }) => [
+    selector,
+    [leafSelector],
+  ]),
+);
+
 const selectorGraph = {
   publicSelectors: [
     'verify',
-    'node',
-    'rust',
-    'rust-quality',
+    'tests',
+    'skiff-tests',
+    'implementation-tests',
+    ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
     'router',
     'telemetry',
+    'tooling',
     'scripts',
+    'vscode',
+    'rust-quality',
     'scripts-dev-sync',
     'scripts-syntax',
-    'vscode',
     'checks',
     'type-check',
     'compiler-boundaries',
   ],
   expansions: {
-    verify: ['rust', 'rust-quality', 'node', 'checks'],
+    verify: ['tests', 'rust-quality', 'type-check', 'checks'],
+    tests: ['skiff-tests', 'implementation-tests'],
+    'implementation-tests': [
+      ...RUST_IMPLEMENTATION_SUBJECT_SELECTORS,
+      'router',
+      'telemetry',
+      'tooling',
+    ],
+    ...rustSubjectExpansions,
     checks: ['compiler-boundaries', 'checks-default'],
-    node: ['router', 'telemetry', 'scripts', 'vscode'],
-    router: ['router-type-check', 'router-test'],
-    telemetry: ['telemetry-type-check', 'telemetry-test'],
-    scripts: ['scripts-syntax', 'scripts-tests', 'scripts-dev-sync'],
-    vscode: ['vscode-type-check', 'vscode-grammar'],
+    router: ['router-tests'],
+    telemetry: ['telemetry-tests'],
+    tooling: ['scripts', 'vscode'],
+    scripts: ['scripts-tests', 'scripts-dev-sync'],
+    vscode: ['vscode-grammar'],
     'type-check': [
       'router-type-check',
       'telemetry-type-check',

@@ -12,22 +12,18 @@ import { VERIFY_SELECTOR_GRAPH } from '../lib/verify-selector-graph.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const verifyPath = join(root, 'scripts', 'verify.mjs');
 
-test('rust and rust-quality retain separate canonical ownership', async () => {
+test('tests and rust-quality retain separate canonical ownership', async () => {
   assert.deepEqual(VERIFY_SELECTOR_GRAPH.expansions.verify, [
-    'rust',
+    'tests',
     'rust-quality',
-    'node',
+    'type-check',
     'checks',
   ]);
-  const rust = await buildVerifyPlan({ root, selectors: ['rust'] });
-  assert.deepEqual(
-    rust.phases.map(({ id, command, args }) => ({ id, command, args })),
-    [{
-      id: 'rust:workspace',
-      command: 'cargo',
-      args: ['test', '--workspace', '--no-fail-fast'],
-    }],
-  );
+  const tests = await buildVerifyPlan({ root, selectors: ['tests'] });
+  assert.ok(tests.phases.some((phase) => phase.id === 'skiff-tests:canonical'));
+  assert.ok(tests.phases.some((phase) =>
+    phase.id === 'implementation:compiler:rust'));
+  assert.equal(tests.phases.some((phase) => phase.kind === 'rust-quality'), false);
 
   const quality = await buildVerifyPlan({ root, selectors: ['rust-quality'] });
   assert.deepEqual(
@@ -59,7 +55,11 @@ test('rust and rust-quality retain separate canonical ownership', async () => {
 test('default verify includes both Rust quality phases exactly once and no live work', async () => {
   const plan = await buildVerifyPlan({ root });
   for (const id of [
-    'rust:workspace',
+    'skiff-tests:canonical',
+    'implementation:foundation:rust',
+    'implementation:compiler:rust',
+    'implementation:runtime:rust',
+    'implementation:test-runner:rust',
     'rust-quality:format',
     'rust-quality:clippy-baseline',
     'checks:artifact-identity',
@@ -87,18 +87,17 @@ test('rust-quality CLI list exposes exactly the format and baseline-aware Clippy
   assert.match(result.stdout, /node scripts\/check-rust-clippy-baseline\.mjs/);
 });
 
-test('CI runs a distinct canonical Rust Quality scope and installs required Rust components', async () => {
+test('CI runs canonical test domains plus a distinct quality/check scope', async () => {
   const workflow = await readFile(join(root, '.github', 'workflows', 'verify.yml'), 'utf8');
   const commands = [...workflow.matchAll(/^            command: (.+)$/gm)]
     .map((match) => match[1]);
   assert.deepEqual(commands, [
-    'cargo test --workspace --no-fail-fast',
-    'node scripts/verify.mjs --only rust-quality',
-    'pnpm test',
-    'node scripts/verify.mjs --only checks',
+    'node scripts/verify.mjs --only skiff-tests',
+    'node scripts/verify.mjs --only implementation-tests',
+    'node scripts/verify.mjs --only rust-quality,type-check,checks',
   ]);
   assert.equal(
-    commands.filter((command) => command === 'node scripts/verify.mjs --only rust-quality').length,
+    commands.filter((command) => command.includes('rust-quality')).length,
     1,
   );
   assert.match(workflow, /--profile minimal --component rustfmt --component clippy/);
@@ -111,7 +110,8 @@ test('CI runs a distinct canonical Rust Quality scope and installs required Rust
   assert.match(workflow, /uses: actions\/checkout@v6\n\s+with:\n\s+persist-credentials: false/);
   assert.match(workflow, /uses: actions\/setup-node@v6/);
   assert.match(workflow, /package-manager-cache: false/);
-  assert.doesNotMatch(workflow, /pnpm verify/);
+  assert.doesNotMatch(workflow, /pnpm (?:test|verify)/);
+  assert.doesNotMatch(workflow, /cargo test --workspace/);
   assert.doesNotMatch(workflow, /--manifest-path|scripts\/tests/);
   assert.doesNotMatch(
     workflow,
