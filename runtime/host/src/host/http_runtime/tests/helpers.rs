@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     io::ErrorKind,
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
@@ -16,8 +17,21 @@ use crate::{
     capability_context::HttpRuntimeOptions,
     config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
     error::Result,
-    host::http_runtime::{egress::HTTP_EGRESS_OVERRIDE_TEST_LOCK, request::request_inner},
+    host::http_runtime::{
+        request::request_inner, test_env::with_http_egress_env_overrides_for_test,
+    },
 };
+
+pub(super) const HTTP_PROXY_ENV_NAMES: [&str; 8] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
 
 pub(super) async fn request_allowing_unsafe_targets(
     input: &Value,
@@ -70,47 +84,13 @@ pub(super) async fn with_http_proxy_env_for_test<R>(
     proxy_url: &str,
     f: impl std::future::Future<Output = R>,
 ) -> R {
-    let lock = HTTP_EGRESS_OVERRIDE_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
-    let _guard = lock.lock().await;
+    let proxy_url = OsString::from(proxy_url);
+    let overrides = HTTP_PROXY_ENV_NAMES.map(|name| {
+        let value = (!matches!(name, "NO_PROXY" | "no_proxy")).then(|| proxy_url.clone());
+        (name, value)
+    });
 
-    let env_names = [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ];
-    let previous = env_names
-        .iter()
-        .map(|name| (*name, std::env::var_os(name)))
-        .collect::<Vec<_>>();
-
-    for name in [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ] {
-        std::env::set_var(name, proxy_url);
-    }
-    std::env::remove_var("NO_PROXY");
-    std::env::remove_var("no_proxy");
-
-    let output = f.await;
-
-    for (name, value) in previous {
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
-    }
-
-    output
+    with_http_egress_env_overrides_for_test(overrides, f).await
 }
 
 pub(super) struct RequestCapture {

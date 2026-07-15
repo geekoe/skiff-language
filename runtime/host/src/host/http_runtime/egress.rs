@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 
 use reqwest::Url;
@@ -23,32 +25,18 @@ pub(super) struct GuardedHttpTarget {
 }
 
 #[cfg(test)]
-pub(super) static HTTP_EGRESS_OVERRIDE_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-    std::sync::OnceLock::new();
-
-#[cfg(test)]
 pub(crate) async fn with_http_admin_unsafe_override_for_test<R>(
     allow_unsafe_targets: bool,
     f: impl std::future::Future<Output = R>,
 ) -> R {
-    let lock = HTTP_EGRESS_OVERRIDE_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
-    let _guard = lock.lock().await;
-
-    let previous = std::env::var(HTTP_REQUEST_ADMIN_OVERRIDE_ENV).ok();
-    if allow_unsafe_targets {
-        std::env::set_var(HTTP_REQUEST_ADMIN_OVERRIDE_ENV, "true");
-    } else {
-        std::env::remove_var(HTTP_REQUEST_ADMIN_OVERRIDE_ENV);
-    }
-
-    let output = f.await;
-
-    match previous {
-        Some(value) => std::env::set_var(HTTP_REQUEST_ADMIN_OVERRIDE_ENV, value),
-        None => std::env::remove_var(HTTP_REQUEST_ADMIN_OVERRIDE_ENV),
-    }
-
-    output
+    super::test_env::with_http_egress_env_overrides_for_test(
+        [(
+            HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+            allow_unsafe_targets.then(|| OsString::from("true")),
+        )],
+        f,
+    )
+    .await
 }
 
 pub(super) async fn enforce_http_egress_guard(
