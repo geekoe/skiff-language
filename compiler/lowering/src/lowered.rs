@@ -21,7 +21,9 @@ use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
 use skiff_compiler_source::SourceCompileError as PublicationError;
 use skiff_compiler_source::SourceCompileModel;
-use skiff_compiler_source::{PublicationApiSeed, ServiceIngressHandler, ServiceIngressModel};
+use skiff_compiler_source::{
+    PublicationApiSeed, PublicationCompilePolicy, ServiceIngressHandler, ServiceIngressModel,
+};
 
 #[derive(Debug)]
 pub struct LoweredPublication {
@@ -132,7 +134,11 @@ impl LoweredPublication {
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
-        rewrite_publication_local_refs(&mut file_ir_units);
+        let current_package_id = match model.policy() {
+            PublicationCompilePolicy::Package { package_id } => Some(package_id),
+            PublicationCompilePolicy::Service { .. } => None,
+        };
+        rewrite_publication_local_refs(&mut file_ir_units, current_package_id);
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration

@@ -5,9 +5,11 @@ CLI 的内部编排契约，不改变 `test` 语法、测试发现或 effect pol
 
 ## Ownership Boundary
 
-普通 `skiff test` 和 Cargo workspace 中的 test-runner runtime integration harness 都不借用
-开发者常驻的 router、runtime、artifact root 或 build root。Node host orchestrator 为每次 CLI
-命令或每次 Cargo harness 拥有一套临时 instance：
+普通 `skiff test`、canonical Skiff 源码套件和实现测试中的 test-runner runtime integration
+harness 都不借用开发者常驻的 router、runtime、artifact root 或 build root。Node host
+orchestrator 按最外层测试 invocation 拥有临时 instance：普通 CLI 命令和 runtime integration
+harness 各自拥有一套；`node scripts/run-skiff-tests.mjs` 为整个 canonical registry plan 只创建
+一套，并在所有 entry 之间复用同一个 router / runtime 进程：
 
 - router HTTP/control 使用 `46000`–`46999` 内租约保护的动态端口；
 - artifact、build、runtime home、pid、log 和 config 都位于同一个临时 workspace；
@@ -15,13 +17,16 @@ CLI 的内部编排契约，不改变 `test` 语法、测试发现或 effect pol
   instance 启动；
 - router/runtime binary 和 router source 来自执行 CLI 的当前 Skiff checkout。
 
-仓库测试入口按测试所有权而不是子进程使用的实现语言划分。`pnpm test` 负责 Node/TypeScript
-测试和 type-check，不调度 Rust workspace tests；其中 Node-owned fixture 或 integration test
-仍可能调用 Cargo 构建 Rust 产物。`cargo test --workspace --no-fail-fast` 负责完整 Rust tests；
-test-runner runtime integration 由 Cargo harness 进入，但会通过 Node host 启动这里定义的隔离
-runtime。`pnpm verify` 只组合 Rust test、Rust quality、Node/TypeScript 和 checker 四类
-canonical scope，不复制其底层测试列表。Rust quality scope 独立拥有 workspace rustfmt 和
-baseline-aware Clippy gate，不改变 Cargo workspace tests 的所有权。
+仓库测试按被测对象分为两个一等 domain，而不是按实现语言或子进程工具链分类：
+
+- `skiff-tests` 只验证 checked-in Skiff 测试源码，通过 production `skiff-test-runner` 和本文
+  定义的真实隔离 runtime 执行 canonical registry；
+- `implementation-tests` 验证 compiler、runtime、router、telemetry、test-runner 和 tooling
+  实现本身。它可以由 Cargo、Node 或跨语言 harness 执行；test-runner runtime integration
+  虽由 Cargo harness 进入，仍通过 Node host 启动本文定义的隔离 runtime。
+
+工具链只是 domain 内部的执行细节，不能成为一等 taxonomy，也不能据此把 Skiff 源码测试
+遗漏在默认 non-live gate 之外。
 
 Router 不接受空 artifact root。CLI 必须在 supervisor 启动前，用当前 checkout 的
 `skiff-dev-sync` 向临时 artifact/build root 写入专用 bootstrap service，并显式
@@ -30,6 +35,16 @@ Router 不接受空 artifact root。CLI 必须在 supervisor 启动前，用当�
 bootstrap service 的 runtime registration。health 200 本身不代表 runtime 已能 dispatch。
 
 ## Runner Contract
+
+Canonical Skiff 源码 registry 由 `scripts/lib/skiff-source-test-registry.mjs` 唯一声明，
+`scripts/run-skiff-tests.mjs` 只调用一次 `runInIsolatedTestRuntime`，并在该 owner 的 `runTest`
+closure 内依次执行全部 entry。每个 entry 都调用 production `skiff-test-runner` path，固定启用
+`--deny-skips` 和 `--require-tests`，且不得传 `--live` 或 `--allow-network`。entry 不能自行创建
+runtime，也不能指向 stable developer instance 或固定 `4000` / `4001` 端口。
+
+复用边界只包含 router / runtime 进程和其隔离 workspace。每个 case 仍使用 fresh synthetic
+service identity，并由 test-runner 清理精确的临时 artifact、activation、double registry、
+config 和数据库状态；一个 registry entry 的可变测试状态不得泄漏到下一个 entry。
 
 Node host 向 Rust runner 显式注入 `SKIFF_DEV_RELOAD_URL`、`SKIFF_TEST_ARTIFACT_ROOT` 和
 `SKIFF_DEV_HOME`。live 与非 live runtime path 都在任何 health/reload 网络请求前验证 reload
@@ -99,8 +114,9 @@ closure 可用；它仍校验 publication 声明的 direct service IDs 确实存
 
 ## Lifecycle And Recovery
 
-父 Node host（CLI 或 Cargo harness）持有 supervisor，并对正常返回、测试失败、startup
-失败、`SIGINT` 和 `SIGTERM` 执行同一 cleanup：
+父 Node host（普通 CLI、canonical registry runner 或 Cargo harness）持有 supervisor，并对
+正常返回、测试失败、startup 失败、`SIGINT` 和 `SIGTERM` 执行同一 cleanup。canonical entry
+失败时停止后续 entry，但 runtime lifecycle 仍回到同一个 owner 完成 cleanup：
 
 Node host 启动的 bootstrap dev-sync 和 cargo test 命令各自拥有独立进程组。中断时必须先向整组
 发送终止信号并等待组内后代全部退出，超时则强制终止；命令仍存活时不能开始清理临时
