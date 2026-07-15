@@ -9,8 +9,6 @@ mod response;
 mod response_parts;
 mod sse;
 mod stream;
-#[cfg(test)]
-mod test_env;
 mod transport;
 
 pub const HTTP_REQUEST_TIMEOUT_REASON: &str = "request timeout";

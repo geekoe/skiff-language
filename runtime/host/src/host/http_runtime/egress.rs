@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 
 use reqwest::Url;
@@ -8,9 +6,6 @@ use crate::{
     capability_context::{HttpRuntimeOptions, TARGET_STD_HTTP_REQUEST},
     error::{Result, RuntimeError},
 };
-
-#[cfg(test)]
-use crate::capability_context::HTTP_REQUEST_ADMIN_OVERRIDE_ENV;
 
 const HTTP_REQUEST_OBVIOUS_LOCAL_HOSTS: &[&str] = &[
     "localhost",
@@ -22,21 +17,6 @@ const HTTP_REQUEST_OBVIOUS_LOCAL_HOSTS: &[&str] = &[
 #[derive(Debug)]
 pub(super) struct GuardedHttpTarget {
     pub(super) resolved_addrs: Option<Vec<SocketAddr>>,
-}
-
-#[cfg(test)]
-pub(crate) async fn with_http_admin_unsafe_override_for_test<R>(
-    allow_unsafe_targets: bool,
-    f: impl std::future::Future<Output = R>,
-) -> R {
-    super::test_env::with_http_egress_env_overrides_for_test(
-        [(
-            HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
-            allow_unsafe_targets.then(|| OsString::from("true")),
-        )],
-        f,
-    )
-    .await
 }
 
 pub(super) async fn enforce_http_egress_guard(

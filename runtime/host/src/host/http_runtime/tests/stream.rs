@@ -35,7 +35,7 @@ async fn stream_emits_response_then_body_chunks() {
             None,
             None,
             DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-            HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+            HttpRuntimeOptions::explicit(true),
         )
         .await
         .expect("stream should open"),
@@ -70,7 +70,7 @@ async fn stream_rejects_oversized_body_from_call_context_limit() {
         None,
         None,
         4,
-        HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+        HttpRuntimeOptions::explicit(true),
     )
     .await
     .expect("stream should open");
@@ -145,7 +145,7 @@ async fn dropping_stream_closes_connection_early() {
         None,
         None,
         DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-        HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+        HttpRuntimeOptions::explicit(true),
     )
     .await
     .expect("stream should open");

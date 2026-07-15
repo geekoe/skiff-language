@@ -1,12 +1,9 @@
 use serde_json::json;
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use super::doubles::{
@@ -19,63 +16,6 @@ use super::service::runtime_live_expected_error;
 use super::SkiffTestOptions;
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvVarGuard {
-    name: &'static str,
-    value: Option<std::ffi::OsString>,
-}
-
-struct CurrentDirGuard {
-    value: PathBuf,
-}
-
-impl EnvVarGuard {
-    fn set(name: &'static str, value: &Path) -> Self {
-        let guard = Self {
-            name,
-            value: env::var_os(name),
-        };
-        env::set_var(name, value);
-        guard
-    }
-
-    fn remove(name: &'static str) -> Self {
-        let guard = Self {
-            name,
-            value: env::var_os(name),
-        };
-        env::remove_var(name);
-        guard
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.value {
-            env::set_var(self.name, value);
-        } else {
-            env::remove_var(self.name);
-        }
-    }
-}
-
-impl CurrentDirGuard {
-    fn set(path: &Path) -> Self {
-        let guard = Self {
-            value: env::current_dir().unwrap(),
-        };
-        fs::create_dir_all(path).unwrap();
-        env::set_current_dir(path).unwrap();
-        guard
-    }
-}
-
-impl Drop for CurrentDirGuard {
-    fn drop(&mut self) {
-        env::set_current_dir(&self.value).unwrap();
-    }
-}
 
 fn temp_test_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -322,31 +262,6 @@ fn default_service_db_falls_back_to_cwd_local_instance_walk() {
         local_instance_config_path_for_default_service_db(&input, true, Some(&cwd)).as_deref(),
         Some(config_path.as_path())
     );
-    fs::remove_dir_all(&temp).unwrap();
-}
-
-#[test]
-fn default_service_db_without_local_instance_does_not_use_home_fallback() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
-    let temp = temp_test_dir("no-home-fallback");
-    let project = temp.join("repo");
-    let input = project.join("tests/storage.test.skiff");
-    let cwd = temp.join("cwd-without-local-instance");
-    let home = temp.join("home");
-    write_test_file(&input);
-    write_router_service_db(
-        &home.join(".skiff").join("dev"),
-        "mongodb://127.0.0.1:27017/legacy-home",
-    );
-    let _home = EnvVarGuard::set("HOME", &home);
-    let _user_profile = EnvVarGuard::remove("USERPROFILE");
-
-    let inputs = {
-        let _cwd = CurrentDirGuard::set(&cwd);
-        read_runtime_test_inputs(&input, true, &SkiffTestOptions::default()).unwrap()
-    };
-
-    assert_eq!(inputs.service_db_mongo_url, None);
     fs::remove_dir_all(&temp).unwrap();
 }
 

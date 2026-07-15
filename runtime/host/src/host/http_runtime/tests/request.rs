@@ -21,7 +21,6 @@ use crate::{
     config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
     error::RuntimeError,
     host::http_runtime::{
-        request,
         request::{request_inner, request_with_cancellation_and_options},
         HTTP_REQUEST_TIMEOUT_REASON,
     },
@@ -61,7 +60,7 @@ async fn request_supports_plain_sensitive_headers() {
         None,
         DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         None,
-        HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+        HttpRuntimeOptions::explicit(true),
     )
     .await
     .expect("request should succeed");
@@ -273,11 +272,12 @@ async fn request_canceled_before_call_returns_cancelled() {
     let input = request_input("GET", "https://example.com", empty_body(), None);
 
     let cancelled = Arc::new(AtomicBool::new(true));
-    let error = request(
+    let error = request_inner(
         &input,
         None,
         DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         Some(cancelled.as_ref()),
+        HttpRuntimeOptions::explicit(false),
     )
     .await
     .expect_err("cancelled request should fail");
@@ -295,7 +295,7 @@ async fn request_cancellation_token_before_call_returns_cancelled() {
         None,
         DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         CancellationSignals::from_tokens([token]),
-        HttpRuntimeOptions::from_env(),
+        HttpRuntimeOptions::explicit(false),
     )
     .await
     .expect_err("cancelled request should fail");

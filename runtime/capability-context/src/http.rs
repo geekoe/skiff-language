@@ -52,13 +52,6 @@ impl HttpRuntimeOptions {
         self.egress_proxy.as_deref()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn allowing_unsafe_targets_for_tests() -> Self {
-        Self {
-            allow_unsafe_targets: true,
-            egress_proxy: None,
-        }
-    }
 }
 
 pub type HttpCapabilityFuture<'a, T> =

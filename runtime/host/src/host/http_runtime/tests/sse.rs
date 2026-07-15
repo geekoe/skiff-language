@@ -48,7 +48,7 @@ async fn sse_decodes_multiline_data_comments_id_event_and_done() {
             None,
             None,
             DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-            HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+            HttpRuntimeOptions::explicit(true),
         )
         .await
         .expect("sse should open"),
@@ -94,7 +94,7 @@ async fn sse_non_2xx_emits_raw_body_chunks() {
             None,
             None,
             DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-            HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+            HttpRuntimeOptions::explicit(true),
         )
         .await
         .expect("sse should open"),
@@ -148,7 +148,7 @@ async fn sse_cancel_while_waiting_for_body_closes_connection_early() {
         None,
         Some(cancelled.as_ref()),
         DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-        HttpRuntimeOptions::allowing_unsafe_targets_for_tests(),
+        HttpRuntimeOptions::explicit(true),
     )
     .await
     .expect("sse should open");

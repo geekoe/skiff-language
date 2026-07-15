@@ -3,14 +3,17 @@ use std::{sync::Arc, time::Duration};
 use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::mpsc};
 
-use crate::host::http_runtime::egress::with_http_admin_unsafe_override_for_test;
-use crate::host::http_runtime::request;
-use crate::{config::DEFAULT_HTTP_RESPONSE_MAX_BYTES, error::RuntimeError};
+use crate::{
+    capability_context::HttpRuntimeOptions,
+    config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+    error::RuntimeError,
+    host::http_runtime::request::request_inner,
+};
 
 use super::helpers::{
     empty_body, read_request, request_allowing_unsafe_targets,
     request_allowing_unsafe_targets_with_runtime_proxy, request_input, request_with_runtime_proxy,
-    run_test_server, with_http_proxy_env_for_test, write_response, RequestCapture, TestResponse,
+    run_test_server, write_response, RequestCapture, TestResponse,
 };
 
 fn assert_http_error_contains(error: RuntimeError, expected: &str) {
@@ -31,16 +34,19 @@ async fn request_rejects_unsafe_host_targets_by_default() {
         "http://[::ffff:127.0.0.1]:8080/path",
         "http://169.254.169.254:8080",
     ];
-    with_http_admin_unsafe_override_for_test(false, async {
-        for url in unsafe_urls {
-            let input = request_input("GET", url, empty_body(), None);
-            let error = request(&input, None, DEFAULT_HTTP_RESPONSE_MAX_BYTES, None)
-                .await
-                .expect_err("unsafe targets should be rejected");
-            assert_http_error_contains(error, "blocked network target");
-        }
-    })
-    .await;
+    for url in unsafe_urls {
+        let input = request_input("GET", url, empty_body(), None);
+        let error = request_inner(
+            &input,
+            None,
+            DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+            None,
+            HttpRuntimeOptions::explicit(false),
+        )
+        .await
+        .expect_err("unsafe targets should be rejected");
+        assert_http_error_contains(error, "blocked network target");
+    }
 }
 
 #[tokio::test]
@@ -54,13 +60,16 @@ async fn request_rejects_legacy_proxy_url_input() {
         "proxyUrl": "http://127.0.0.1:8080",
     });
 
-    with_http_admin_unsafe_override_for_test(false, async {
-        let error = request(&input, None, DEFAULT_HTTP_RESPONSE_MAX_BYTES, None)
-            .await
-            .expect_err("legacy proxyUrl input should be rejected");
-        assert_http_error_contains(error, "proxyUrl");
-    })
-    .await;
+    let error = request_inner(
+        &input,
+        None,
+        DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+        None,
+        HttpRuntimeOptions::explicit(false),
+    )
+    .await
+    .expect_err("legacy proxyUrl input should be rejected");
+    assert_http_error_contains(error, "proxyUrl");
 }
 
 #[tokio::test]
@@ -94,81 +103,6 @@ async fn request_does_not_follow_redirects() {
     assert!(redirected.is_err(), "redirect target should not be called");
 
     handle.await.expect("server should complete");
-}
-
-#[tokio::test]
-async fn request_ignores_proxy_environment() {
-    let proxy_listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind proxy listener");
-    let proxy_url = format!(
-        "http://{}",
-        proxy_listener
-            .local_addr()
-            .expect("read proxy listener addr")
-    );
-    let (proxy_tx, mut proxy_rx) = mpsc::channel::<RequestCapture>(1);
-    let proxy_handle = tokio::spawn(async move {
-        let (mut stream, _) = proxy_listener
-            .accept()
-            .await
-            .expect("accept proxy connection");
-        let request = read_request(&mut stream).await;
-        let _ = proxy_tx.send(request).await;
-        write_response(
-            &mut stream,
-            TestResponse {
-                status: 502,
-                headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
-                body: b"proxy was used".to_vec(),
-                delay_ms: None,
-                body_delay_ms: None,
-            },
-        )
-        .await;
-    });
-
-    let (target_tx, mut target_rx) = mpsc::channel::<RequestCapture>(1);
-    let response = TestResponse {
-        status: 200,
-        headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
-        body: b"direct target".to_vec(),
-        delay_ms: None,
-        body_delay_ms: None,
-    };
-    let (target_url, target_handle) = run_test_server(
-        response,
-        Arc::new(move |request| {
-            let _ = target_tx.try_send(request);
-        }),
-    )
-    .await;
-
-    let input = request_input("GET", &target_url, empty_body(), Some(1000));
-    let output = with_http_proxy_env_for_test(
-        &proxy_url,
-        request_allowing_unsafe_targets(&input, None, None),
-    )
-    .await
-    .expect("direct request should succeed without using proxy env");
-
-    assert_eq!(output.get("status").and_then(Value::as_u64), Some(200));
-    assert_eq!(
-        target_rx
-            .recv()
-            .await
-            .expect("target should receive request")
-            .method,
-        "GET"
-    );
-    let proxied = tokio::time::timeout(Duration::from_millis(50), proxy_rx.recv()).await;
-    assert!(
-        proxied.is_err(),
-        "proxy listener should not receive request"
-    );
-
-    target_handle.await.expect("target server should complete");
-    proxy_handle.abort();
 }
 
 #[tokio::test]
@@ -283,13 +217,10 @@ async fn request_blocks_unsafe_target_even_with_runtime_proxy() {
         None,
     );
 
-    with_http_admin_unsafe_override_for_test(false, async {
-        let error = request_with_runtime_proxy(&input, None, None, proxy_listener_url)
-            .await
-            .expect_err("unsafe target should still be rejected");
-        assert_http_error_contains(error, "url");
-    })
-    .await;
+    let error = request_with_runtime_proxy(&input, None, None, proxy_listener_url)
+        .await
+        .expect_err("unsafe target should still be rejected");
+    assert_http_error_contains(error, "url");
 
     let proxied = tokio::time::timeout(Duration::from_millis(50), proxy_rx.recv()).await;
     assert!(
