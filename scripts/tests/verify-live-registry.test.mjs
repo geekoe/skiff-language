@@ -222,11 +222,11 @@ test('live registry and global catalog reject id-prefix and cross-catalog id con
 });
 
 test('live selectors cannot collide with public, composite, internal leaf, or builder selectors', async () => {
-  assert.ok(ORDINARY_SELECTOR_NAMES.includes('rust'));
+  assert.ok(ORDINARY_SELECTOR_NAMES.includes('compiler'));
   assert.ok(ORDINARY_SELECTOR_NAMES.includes('checks'));
-  assert.ok(ORDINARY_SELECTOR_NAMES.includes('checks-default'));
+  assert.ok(ORDINARY_SELECTOR_NAMES.includes('compiler-rust-tests'));
 
-  for (const selector of ['rust', 'checks', 'checks-default']) {
+  for (const selector of ['compiler', 'checks', 'compiler-rust-tests']) {
     const conflicting = cloneRegistry();
     conflicting[0].invocations[0].selector = selector;
     await assert.rejects(

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::file_ir::{LiteralIr, TypeRefIr};
+use crate::file_ir::TypeRefIr;
 use skiff_artifact_model::{builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType};
 use skiff_compiler_source::{type_text_with_args, ExpressionKey};
 use skiff_syntax::{
@@ -16,7 +16,8 @@ use super::db_lowering::{
 };
 use super::function_lowering::{expr_path, FunctionLowerer};
 use super::type_lowering::{
-    canonical_runtime_receiver_root, lower_type_ref, lower_type_text, type_ref_ir_type_text,
+    canonical_runtime_receiver_root, lower_type_ref, lower_type_text,
+    runtime_receiver_root_from_type_ref, type_ref_ir_type_text,
 };
 
 fn array_item_type_text(type_text: &str) -> Option<&str> {
@@ -90,20 +91,6 @@ fn map_entry_type_ir(ty: &TypeRefIr) -> Option<(TypeRefIr, TypeRefIr)> {
         return None;
     };
     (name == "Map" && args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
-}
-
-fn receiver_type_root_from_ir(ty: &TypeRefIr) -> Option<String> {
-    match ty {
-        TypeRefIr::Native { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { .. },
-        } => Some("string".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Number { .. },
-        } => Some("number".to_string()),
-        TypeRefIr::Nullable { inner } => receiver_type_root_from_ir(inner),
-        _ => None,
-    }
 }
 
 fn builtin_receiver_call_return_type_for_root(
@@ -188,7 +175,7 @@ impl<'a> FunctionLowerer<'a> {
             self.value_type_context(),
         )
         .ok()
-        .and_then(|ty| receiver_type_root_from_ir(&ty))
+        .and_then(|ty| runtime_receiver_root_from_type_ref(&ty))
         .unwrap_or_else(|| type_root_text(receiver_type).to_string());
         builtin_receiver_call_return_type_for_root(&root, receiver_type, method_name)
     }
@@ -437,6 +424,24 @@ mod tests {
                 "toMilliseconds"
             ),
             Some("integer".to_string())
+        );
+    }
+
+    #[test]
+    fn qualified_std_duration_package_symbol_is_a_builtin_receiver_root() {
+        let duration = TypeRefIr::PackageSymbol {
+            symbol: crate::file_ir::PackageSymbolRef {
+                package: crate::file_ir::PackageRefIr::PackageId {
+                    package_id: skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID.to_string(),
+                },
+                symbol_path: "std.time.Duration".to_string(),
+                abi_expectation: None,
+            },
+        };
+
+        assert_eq!(
+            runtime_receiver_root_from_type_ref(&duration),
+            Some("Duration".to_string())
         );
     }
 }

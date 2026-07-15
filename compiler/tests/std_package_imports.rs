@@ -14,7 +14,10 @@ use skiff_compiler::{
     },
     PublishedFileIrArtifact,
 };
-use skiff_compiler_core::artifact::{CallIr, CallTargetIr, ExprIr, TypeDescriptorIr, TypeRefIr};
+use skiff_compiler_core::{
+    artifact::{CallIr, CallTargetIr, ExprIr, PackageRefIr, TypeDescriptorIr, TypeRefIr},
+    id::SKIFF_STD_PUBLICATION_ID,
+};
 
 #[test]
 fn publishes_service_assembly_http_response_limit() {
@@ -527,7 +530,7 @@ fn std_log_import_lowers_runtime_target_and_effect_summary() {
 }
 
 #[test]
-fn std_normal_types_emit_package_symbols_not_native_refs() {
+fn std_normal_types_use_external_package_symbols_and_internal_direct_refs() {
     let temp = ServiceProjectBuilder::package_model(
         "std-normal-types-not-native",
         "import std",
@@ -552,6 +555,7 @@ fn std_normal_types_emit_package_symbols_not_native_refs() {
 
     let published = build_temp_service_publication(temp.root());
     let service_artifact = source_artifact(&published, "api/std_types.skiff");
+    // A service crosses the std package boundary, so its nominal std types stay symbolic.
     assert_std_normal_type_uses_package_symbol(service_artifact, "std.http.HttpRequest");
     assert_std_normal_type_uses_package_symbol(
         service_artifact,
@@ -567,11 +571,22 @@ fn std_normal_types_emit_package_symbols_not_native_refs() {
         assert_no_native_std_normal_type_refs(artifact);
     }
 
+    // Inside std's own publication, File IR uses direct addresses: LocalType for the
+    // declaring module and PublicationType for a sibling module.
     let http_artifact = package_source_artifact(&published, "http.skiff");
-    assert_std_normal_type_uses_package_symbol(http_artifact, "std.http.HttpClientRequest");
-    assert_std_normal_type_uses_package_symbol(http_artifact, "std.http.HttpClientResponse");
-    assert_std_normal_type_uses_package_symbol(http_artifact, "std.http.HttpResponseStreamEvent");
-    assert_std_normal_type_uses_package_symbol(http_artifact, "std.http.HttpSseEvent");
+    for symbol in [
+        "HttpClientRequest",
+        "HttpClientResponse",
+        "HttpResponseStreamEvent",
+        "HttpSseEvent",
+    ] {
+        assert_publication_local_type_uses_direct_ref(http_artifact, http_artifact, symbol);
+    }
+
+    let websocket_artifact = package_source_artifact(&published, "websocket.skiff");
+    for symbol in ["HttpHeader", "HttpQueryParam"] {
+        assert_publication_local_type_uses_direct_ref(websocket_artifact, http_artifact, symbol);
+    }
     assert_native_type_ref_present(http_artifact, "bytes");
     assert_native_type_ref_present(http_artifact, "Json");
 }
@@ -756,7 +771,7 @@ fn assert_json_has_no_native_std_normal_type_refs(value: &serde_json::Value) {
                 if let Some(name) = object.get("name").and_then(|value| value.as_str()) {
                     assert!(
                         !std_normal_type_symbol(name),
-                        "std normal type {name} must be emitted as packageSymbol, not builtin JSON: {value}"
+                        "std normal type {name} must retain nominal identity, not builtin JSON: {value}"
                     );
                 }
             }
@@ -790,7 +805,7 @@ fn assert_type_ref_has_no_native_std_normal_refs(ty: &TypeRefIr) {
         TypeRefIr::Native { name, args } => {
             assert!(
                 !std_normal_type_symbol(name),
-                "std normal type {name} must be emitted as packageSymbol, not Native"
+                "std normal type {name} must retain nominal identity, not Native"
             );
             for arg in args {
                 assert_type_ref_has_no_native_std_normal_refs(arg);
@@ -836,154 +851,150 @@ fn assert_std_normal_type_uses_package_symbol(
     expected_symbol_path: &str,
 ) {
     assert!(
-        file_ir_contains_package_type_symbol(artifact, expected_symbol_path),
+        file_ir_contains_std_package_type_symbol(artifact, expected_symbol_path),
         "{} should refer to std normal type {expected_symbol_path} through packageSymbol",
         artifact.source_path
     );
 }
 
-fn file_ir_contains_package_type_symbol(
+fn file_ir_contains_std_package_type_symbol(
     artifact: &PublishedFileIrArtifact,
     expected_symbol_path: &str,
 ) -> bool {
-    artifact.unit.type_table.iter().any(|ty| {
-        descriptor_contains_package_type_symbol(&ty.descriptor, expected_symbol_path)
-            || ty.implements.iter().any(|implemented| {
-                type_ref_contains_package_type_symbol(implemented, expected_symbol_path)
-            })
-    }) || artifact
+    file_ir_contains_type_ref(artifact, &|ty| {
+        matches!(
+            ty,
+            TypeRefIr::PackageSymbol { symbol }
+                if official_std_package_ref(&symbol.package)
+                    && symbol.symbol_path == expected_symbol_path
+        )
+    })
+}
+
+fn official_std_package_ref(package: &PackageRefIr) -> bool {
+    matches!(
+        package,
+        PackageRefIr::PackageId { package_id } if package_id == SKIFF_STD_PUBLICATION_ID
+    ) || matches!(
+        package,
+        PackageRefIr::Dependency { dependency_ref } if dependency_ref == "std"
+    )
+}
+
+fn assert_publication_local_type_uses_direct_ref(
+    consumer: &PublishedFileIrArtifact,
+    declaration_owner: &PublishedFileIrArtifact,
+    symbol: &str,
+) {
+    let type_index = declaration_owner
         .unit
-        .constants
-        .iter()
-        .any(|constant| type_ref_contains_package_type_symbol(&constant.ty, expected_symbol_path))
-        || artifact.unit.executables.iter().any(|executable| {
-            executable
-                .params
-                .iter()
-                .any(|param| type_ref_contains_package_type_symbol(&param.ty, expected_symbol_path))
-                || type_ref_contains_package_type_symbol(
-                    &executable.return_type,
-                    expected_symbol_path,
-                )
+        .declarations
+        .types
+        .get(symbol)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} should declare type {symbol}",
+                declaration_owner.source_path
+            )
         })
-}
+        .type_index;
+    let expected = if consumer.module_path == declaration_owner.module_path {
+        TypeRefIr::LocalType { type_index }
+    } else {
+        TypeRefIr::PublicationType {
+            module_path: declaration_owner.module_path.clone(),
+            type_index,
+        }
+    };
+    assert!(
+        file_ir_contains_type_ref(consumer, &|ty| ty == &expected),
+        "{} should refer to {}.{symbol} through direct publication ref {expected:?}",
+        consumer.source_path,
+        declaration_owner.module_path,
+    );
 
-fn descriptor_contains_package_type_symbol(
-    descriptor: &TypeDescriptorIr,
-    expected_symbol_path: &str,
-) -> bool {
-    match descriptor {
-        TypeDescriptorIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_contains_package_type_symbol(field, expected_symbol_path)),
-        TypeDescriptorIr::Alias { target } => {
-            type_ref_contains_package_type_symbol(target, expected_symbol_path)
-        }
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .any(|variant| type_ref_contains_package_type_symbol(variant, expected_symbol_path)),
-        TypeDescriptorIr::Native { .. } => false,
-    }
-}
-
-fn type_ref_contains_package_type_symbol(ty: &TypeRefIr, expected_symbol_path: &str) -> bool {
-    match ty {
-        TypeRefIr::PackageSymbol { symbol } => symbol.symbol_path == expected_symbol_path,
-        TypeRefIr::Native { args, .. } => args
-            .iter()
-            .any(|arg| type_ref_contains_package_type_symbol(arg, expected_symbol_path)),
-        TypeRefIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_contains_package_type_symbol(field, expected_symbol_path)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .any(|item| type_ref_contains_package_type_symbol(item, expected_symbol_path)),
-        TypeRefIr::Nullable { inner } => {
-            type_ref_contains_package_type_symbol(inner, expected_symbol_path)
-        }
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(|arg| type_ref_contains_package_type_symbol(arg, expected_symbol_path)),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_ref_contains_package_type_symbol(&param.ty, expected_symbol_path))
-                || type_ref_contains_package_type_symbol(return_type, expected_symbol_path)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => false,
-    }
+    let package_symbol_path = format!("{}.{symbol}", declaration_owner.module_path);
+    assert!(
+        !file_ir_contains_std_package_type_symbol(consumer, &package_symbol_path),
+        "{} current-publication ref {} must not remain a packageSymbol",
+        consumer.source_path,
+        package_symbol_path,
+    );
 }
 
 fn assert_native_type_ref_present(artifact: &PublishedFileIrArtifact, expected_name: &str) {
     assert!(
-        artifact.unit.type_table.iter().any(|ty| {
-            descriptor_contains_native_type_ref(&ty.descriptor, expected_name)
-                || ty.implements.iter().any(|implemented| {
-                    type_ref_contains_native_type_ref(implemented, expected_name)
-                })
-        }) || artifact.unit.executables.iter().any(|executable| {
-            executable
-                .params
-                .iter()
-                .any(|param| type_ref_contains_native_type_ref(&param.ty, expected_name))
-                || type_ref_contains_native_type_ref(&executable.return_type, expected_name)
+        file_ir_contains_type_ref(artifact, &|ty| {
+            matches!(ty, TypeRefIr::Native { name, .. } if name == expected_name)
         }),
         "{} should still use native type {expected_name}",
         artifact.source_path
     );
 }
 
-fn descriptor_contains_native_type_ref(descriptor: &TypeDescriptorIr, expected_name: &str) -> bool {
+fn file_ir_contains_type_ref(
+    artifact: &PublishedFileIrArtifact,
+    predicate: &impl Fn(&TypeRefIr) -> bool,
+) -> bool {
+    artifact.unit.type_table.iter().any(|ty| {
+        descriptor_contains_type_ref(&ty.descriptor, predicate)
+            || ty
+                .implements
+                .iter()
+                .any(|implemented| type_ref_contains(implemented, predicate))
+    }) || artifact
+        .unit
+        .constants
+        .iter()
+        .any(|constant| type_ref_contains(&constant.ty, predicate))
+        || artifact.unit.executables.iter().any(|executable| {
+            executable
+                .params
+                .iter()
+                .any(|param| type_ref_contains(&param.ty, predicate))
+                || type_ref_contains(&executable.return_type, predicate)
+        })
+}
+
+fn descriptor_contains_type_ref(
+    descriptor: &TypeDescriptorIr,
+    predicate: &impl Fn(&TypeRefIr) -> bool,
+) -> bool {
     match descriptor {
         TypeDescriptorIr::Record { fields } => fields
             .values()
-            .any(|field| type_ref_contains_native_type_ref(field, expected_name)),
-        TypeDescriptorIr::Alias { target } => {
-            type_ref_contains_native_type_ref(target, expected_name)
-        }
+            .any(|field| type_ref_contains(field, predicate)),
+        TypeDescriptorIr::Alias { target } => type_ref_contains(target, predicate),
         TypeDescriptorIr::Union { variants } => variants
             .iter()
-            .any(|variant| type_ref_contains_native_type_ref(variant, expected_name)),
-        TypeDescriptorIr::Native { symbol } => symbol == expected_name,
+            .any(|variant| type_ref_contains(variant, predicate)),
+        TypeDescriptorIr::Native { .. } => false,
     }
 }
 
-fn type_ref_contains_native_type_ref(ty: &TypeRefIr, expected_name: &str) -> bool {
+fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) -> bool {
+    if predicate(ty) {
+        return true;
+    }
     match ty {
-        TypeRefIr::Native { name, args } => {
-            name == expected_name
-                || args
-                    .iter()
-                    .any(|arg| type_ref_contains_native_type_ref(arg, expected_name))
-        }
+        TypeRefIr::Native { args, .. } => args.iter().any(|arg| type_ref_contains(arg, predicate)),
         TypeRefIr::Record { fields } => fields
             .values()
-            .any(|field| type_ref_contains_native_type_ref(field, expected_name)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .any(|item| type_ref_contains_native_type_ref(item, expected_name)),
-        TypeRefIr::Nullable { inner } => type_ref_contains_native_type_ref(inner, expected_name),
+            .any(|field| type_ref_contains(field, predicate)),
+        TypeRefIr::Union { items } => items.iter().any(|item| type_ref_contains(item, predicate)),
+        TypeRefIr::Nullable { inner } => type_ref_contains(inner, predicate),
         TypeRefIr::AnyInterface { interface } => interface
             .canonical_type_args
             .iter()
-            .any(|arg| type_ref_contains_native_type_ref(arg, expected_name)),
+            .any(|arg| type_ref_contains(arg, predicate)),
         TypeRefIr::Function {
             params,
             return_type,
         } => {
             params
                 .iter()
-                .any(|param| type_ref_contains_native_type_ref(&param.ty, expected_name))
-                || type_ref_contains_native_type_ref(return_type, expected_name)
+                .any(|param| type_ref_contains(&param.ty, predicate))
+                || type_ref_contains(return_type, predicate)
         }
         TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::LocalType { .. }

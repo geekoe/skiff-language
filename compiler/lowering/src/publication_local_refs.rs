@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use crate::file_ir::{
     BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr, DbOperationIr,
     DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
-    ExternalRefTable, FileIrUnit, InterfaceDeclIr, PatternIr, StmtIr, TypeDescriptorIr, TypeRefIr,
+    ExternalRefTable, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_model::{
     canonical_interface_method_abi_id, type_ref_abi_key, InterfaceInstantiationRef,
@@ -25,13 +26,17 @@ struct PublicationExecutableRefLocation {
 
 #[derive(Debug, Default)]
 struct PublicationLocalRefIndex {
+    current_package_id: Option<String>,
     types_by_module_symbol: BTreeMap<(String, String), PublicationTypeRefLocation>,
     executables_by_module_symbol: BTreeMap<(String, String), PublicationExecutableRefLocation>,
 }
 
 impl PublicationLocalRefIndex {
-    fn build(units: &[FileIrUnit]) -> Self {
-        let mut index = Self::default();
+    fn build(units: &[FileIrUnit], current_package_id: Option<&str>) -> Self {
+        let mut index = Self {
+            current_package_id: current_package_id.map(str::to_string),
+            ..Self::default()
+        };
         for unit in units {
             for (symbol, declaration) in &unit.declarations.types {
                 index.types_by_module_symbol.insert(
@@ -72,10 +77,29 @@ impl PublicationLocalRefIndex {
         self.executables_by_module_symbol
             .get(&(module_path.to_string(), symbol.to_string()))
     }
+
+    fn current_package_type_location(
+        &self,
+        package: &PackageRefIr,
+        symbol_path: &str,
+    ) -> Option<&PublicationTypeRefLocation> {
+        let PackageRefIr::PackageId { package_id } = package else {
+            return None;
+        };
+        if self.current_package_id.as_deref() != Some(package_id.as_str()) {
+            return None;
+        }
+        let symbol_path = symbol_path.strip_prefix("root.").unwrap_or(symbol_path);
+        let (module_path, symbol) = symbol_path.rsplit_once('.')?;
+        self.type_location(module_path, symbol)
+    }
 }
 
-pub(super) fn rewrite_publication_local_refs(units: &mut [FileIrUnit]) {
-    let index = PublicationLocalRefIndex::build(units);
+pub(super) fn rewrite_publication_local_refs(
+    units: &mut [FileIrUnit],
+    current_package_id: Option<&str>,
+) {
+    let index = PublicationLocalRefIndex::build(units, current_package_id);
     for unit in units {
         let module_path = unit.module_path.clone();
         rewrite_unit(&index, &module_path, unit);
@@ -488,17 +512,16 @@ fn rewrite_type_ref(
     match ty {
         TypeRefIr::ServiceSymbol { symbol } => {
             if let Some(location) = index.type_location(&symbol.module_path, &symbol.symbol) {
-                if location.module_path == module_path {
-                    *ty = TypeRefIr::LocalType {
-                        type_index: location.type_index,
-                    };
-                } else {
-                    *ty = TypeRefIr::PublicationType {
-                        module_path: location.module_path.clone(),
-                        type_index: location.type_index,
-                    };
-                }
-                true
+                rewrite_type_ref_to_publication_location(module_path, ty, location)
+            } else {
+                false
+            }
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            if let Some(location) =
+                index.current_package_type_location(&symbol.package, &symbol.symbol_path)
+            {
+                rewrite_type_ref_to_publication_location(module_path, ty, location)
             } else {
                 false
             }
@@ -541,9 +564,85 @@ fn rewrite_type_ref(
         }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
+    }
+}
+
+fn rewrite_type_ref_to_publication_location(
+    module_path: &str,
+    ty: &mut TypeRefIr,
+    location: &PublicationTypeRefLocation,
+) -> bool {
+    if location.module_path == module_path {
+        *ty = TypeRefIr::LocalType {
+            type_index: location.type_index,
+        };
+    } else {
+        *ty = TypeRefIr::PublicationType {
+            module_path: location.module_path.clone(),
+            type_index: location.type_index,
+        };
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::PackageSymbolRef;
+
+    fn current_package_duration_ref(package_id: &str) -> TypeRefIr {
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: "std.time.Duration".to_string(),
+                abi_expectation: None,
+            },
+        }
+    }
+
+    #[test]
+    fn current_package_symbol_type_refs_become_publication_local() {
+        let index = PublicationLocalRefIndex {
+            current_package_id: Some("skiff.run/std".to_string()),
+            types_by_module_symbol: BTreeMap::from([(
+                ("std.time".to_string(), "Duration".to_string()),
+                PublicationTypeRefLocation {
+                    module_path: "std.time".to_string(),
+                    type_index: 3,
+                },
+            )]),
+            executables_by_module_symbol: BTreeMap::new(),
+        };
+
+        let mut local = current_package_duration_ref("skiff.run/std");
+        assert!(rewrite_type_ref(&index, "std.time", &mut local));
+        assert_eq!(local, TypeRefIr::LocalType { type_index: 3 });
+
+        let mut cross_module = current_package_duration_ref("skiff.run/std");
+        assert!(rewrite_type_ref(
+            &index,
+            "std.time.__test",
+            &mut cross_module
+        ));
+        assert_eq!(
+            cross_module,
+            TypeRefIr::PublicationType {
+                module_path: "std.time".to_string(),
+                type_index: 3,
+            }
+        );
+
+        let mut dependency = current_package_duration_ref("example.com/time");
+        assert!(!rewrite_type_ref(
+            &index,
+            "std.time.__test",
+            &mut dependency
+        ));
+        assert!(matches!(dependency, TypeRefIr::PackageSymbol { .. }));
     }
 }

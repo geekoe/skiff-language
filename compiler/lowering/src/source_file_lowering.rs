@@ -640,6 +640,13 @@ mod tests {
     }
 
     fn lowered_units(sources: Vec<(&str, &str, &str)>) -> Vec<FileIrUnit> {
+        lowered_units_for_package("example.com/publication-local-refs", sources)
+    }
+
+    fn lowered_units_for_package(
+        package_id: &str,
+        sources: Vec<(&str, &str, &str)>,
+    ) -> Vec<FileIrUnit> {
         let root = PathBuf::from("/test");
         let production_sources = sources
             .into_iter()
@@ -669,9 +676,7 @@ mod tests {
             package_facts: None,
             service_dependencies: ResolvedServiceDependencies::default(),
             service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: "example.com/publication-local-refs",
-            },
+            policy: PublicationCompilePolicy::Package { package_id },
         })
         .expect("source model should build");
         crate::lower(&model)
@@ -884,6 +889,78 @@ mod tests {
         assert!(runner.link_targets.executables.is_empty());
         assert!(worker.link_targets.types.is_empty());
         assert!(worker.link_targets.executables.is_empty());
+    }
+
+    #[test]
+    fn lowers_current_package_symbol_types_to_direct_publication_addresses() {
+        let units = lowered_units_for_package(
+            skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID,
+            vec![
+                (
+                    "std/time.skiff",
+                    "std.time",
+                    r#"
+                      type Duration = integer
+
+                      function identity(duration: Duration) -> Duration {
+                        return duration
+                      }
+                    "#,
+                ),
+                (
+                    "std/consumer.skiff",
+                    "std.consumer",
+                    r#"
+                      function passthrough(duration: std.time.Duration) -> std.time.Duration {
+                        return duration
+                      }
+                    "#,
+                ),
+            ],
+        );
+        let time = units
+            .iter()
+            .find(|unit| unit.module_path == "std.time")
+            .expect("std.time unit should be emitted");
+        let consumer = units
+            .iter()
+            .find(|unit| unit.module_path == "std.consumer")
+            .expect("std.consumer unit should be emitted");
+        let duration_type_index = time
+            .declarations
+            .types
+            .get("Duration")
+            .expect("Duration declaration should exist")
+            .type_index;
+        let identity = time
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "std.time.identity")
+            .expect("identity executable should exist");
+        let passthrough = consumer
+            .executables
+            .iter()
+            .find(|executable| executable.symbol == "std.consumer.passthrough")
+            .expect("passthrough executable should exist");
+
+        assert_eq!(
+            identity.params[0].ty,
+            TypeRefIr::LocalType {
+                type_index: duration_type_index,
+            }
+        );
+        assert_eq!(
+            identity.return_type,
+            TypeRefIr::LocalType {
+                type_index: duration_type_index,
+            }
+        );
+        let expected_cross_module = TypeRefIr::PublicationType {
+            module_path: "std.time".to_string(),
+            type_index: duration_type_index,
+        };
+        assert_eq!(passthrough.params[0].ty, expected_cross_module);
+        assert_eq!(passthrough.return_type, expected_cross_module);
     }
 
     #[test]

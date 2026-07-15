@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
 use skiff_artifact_model::{builtin_receiver_op_by_name, BuiltinReceiverOp, ReceiverCallAbi};
-use skiff_compiler_core::{
-    id::SKIFF_STD_PUBLICATION_ID, package_export_resolver::PackageExportResolver,
-};
+use skiff_compiler_core::package_export_resolver::PackageExportResolver;
 use skiff_compiler_source::{
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
@@ -38,10 +36,10 @@ use super::{
     },
     dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     type_lowering::{
-        is_official_std_module_path, is_unknown_type_ref, lower_named_type, lower_type_ref,
-        lower_type_text, package_scoped_root_path, prelude_field_type_text,
-        runtime_receiver_root_from_type_ref, service_symbol_ref, type_ref_ir_type_text,
-        union_type_ir, TypeLoweringContext,
+        is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
+        lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
+        prelude_field_type_text, runtime_receiver_root_from_type_ref, service_symbol_ref,
+        type_ref_ir_type_text, union_type_ir, TypeLoweringContext,
     },
 };
 
@@ -1585,7 +1583,7 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(field_ty) = self.package_db_metadata_field_type(symbol, field) {
             return Some(field_ty);
         }
-        if !is_std_package_ref(&symbol.package) {
+        if !is_official_std_package_ref(&symbol.package) {
             return None;
         }
         let registry = prelude_registry();
@@ -2222,14 +2220,7 @@ fn is_actor_ref_package_symbol(symbol: &PackageSymbolRef) -> bool {
     ) {
         return false;
     }
-    is_std_package_ref(&symbol.package)
-}
-
-fn is_std_package_ref(package: &PackageRefIr) -> bool {
-    match package {
-        PackageRefIr::PackageId { package_id } => package_id == SKIFF_STD_PUBLICATION_ID,
-        PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
-    }
+    is_official_std_package_ref(&symbol.package)
 }
 
 pub(super) fn is_builtin_call_root(root: &str) -> bool {
