@@ -72,7 +72,7 @@ invocation 声明 selector、tier、ownership、输入、可执行文件和 stri
 `verify-live-catalog.mjs` 负责跨两类 registry 的 path/id/selector namespace 校验，
 `verify-live-plan.mjs` 解释 inputs、PATH prerequisite 并生成 phase。后两者不声明 selector 或
 prerequisite；普通 phase builder 还必须与 selector graph 的 leaf 集合精确对应，live selector
-因此不能覆盖 `rust`、`checks` 或 `checks-default` 这类已有名字。
+因此不能覆盖 `compiler`、`checks` 或 `checks-default` 这类已有名字。
 
 ownership 约束如下：
 
