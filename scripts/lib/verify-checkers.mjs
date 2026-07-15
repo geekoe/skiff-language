@@ -1,11 +1,15 @@
 export const CHECKER_CLASSIFICATIONS = Object.freeze({
   DEFAULT: 'default verify',
+  RUST_QUALITY: 'rust-quality',
   SELF_TEST: 'self-test',
   LIVE_MANUAL: 'live/manual',
   KNOWN_RED: 'known-red legacy',
 });
 
 export const CHECKER_REGISTRY = Object.freeze([
+  checker('scripts/check-rust-clippy-baseline.mjs', CHECKER_CLASSIFICATIONS.RUST_QUALITY, {
+    invocations: [invocation('rust-quality:clippy-baseline', 'rust-quality')],
+  }),
   checker('scripts/check-command-execution-policy.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:command-execution-policy', 'checks')],
   }),

@@ -196,6 +196,15 @@ function phaseBuilders({
         '--no-fail-fast',
       ]),
     ],
+    'rust-quality': async () => [
+      phase(root, 'rust-quality:format', 'rust-quality', 'cargo', [
+        'fmt',
+        '--all',
+        '--',
+        '--check',
+      ]),
+      ...await checkerPhases(root, 'rust-quality'),
+    ],
     'router-type-check': async () => [
       packagePhase(root, 'router:type-check', 'router', 'router', ['run', 'type-check']),
     ],

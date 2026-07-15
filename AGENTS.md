@@ -80,19 +80,22 @@ cargo test --manifest-path runtime/Cargo.toml --no-fail-fast
 ```bash
 cargo test --workspace --no-fail-fast  # Rust 测试所有权入口
 pnpm test                              # Node/TypeScript 测试和 type-check 所有权入口
-pnpm verify                            # 完整非 live 组合验证：Rust + Node/TS + checker
+pnpm verify                            # 完整非 live 组合验证：Rust test/quality + Node/TS + checker
 ```
 
 这里的入口按测试所有权划分，不代表进程树只使用一种语言工具链。`pnpm test` 不调度 Rust
 workspace tests，但 Node-owned tests 和 fixture build 可能调用 Cargo；`cargo test --workspace
 --no-fail-fast` 拥有完整 Rust tests，其中 test-runner runtime integration 会通过 Node host 启动
-隔离 runtime。`pnpm verify` 组合前两类测试和 checker，不另行维护底层测试清单。
+隔离 runtime。`pnpm verify` 组合 Rust test、Rust quality、Node/TypeScript 和 checker，不另行维护
+底层测试清单。`rust-quality` 分别执行 workspace rustfmt check 和 baseline-aware workspace Clippy；
+Clippy 当前只对 `clippy::too_many_lines` 的 checked-in baseline 做双向门禁，其他 warning 仍为 advisory。
 
 跨语言计划只在 `scripts/verify.mjs` 中维护。可以先审计展开后的命令而不执行：
 
 ```bash
 node scripts/verify.mjs --list
 node scripts/verify.mjs --only rust --list
+node scripts/verify.mjs --only rust-quality --list
 node scripts/verify.mjs --only node --list
 ```
 

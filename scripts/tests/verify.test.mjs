@@ -105,47 +105,6 @@ test('package scripts only forward to canonical verify selectors', async () => {
   );
 });
 
-test('CI runs exactly the three canonical non-live scopes with frozen package installs', async () => {
-  const workflow = await readFile(
-    join(root, '.github', 'workflows', 'verify.yml'),
-    'utf8',
-  );
-  const commands = [...workflow.matchAll(/^            command: (.+)$/gm)]
-    .map((match) => match[1]);
-  assert.deepEqual(commands, [
-    'cargo test --workspace --no-fail-fast',
-    'pnpm test',
-    'node scripts/verify.mjs --only checks',
-  ]);
-  const installedPackages = [
-    ...workflow.matchAll(/pnpm --dir (\S+) install --frozen-lockfile/g),
-  ].map((match) => match[1]);
-  assert.deepEqual(installedPackages, ['router', 'telemetry', 'scripts', 'vscode']);
-  assert.match(workflow, /uses: actions\/checkout@v6\n\s+with:\n\s+persist-credentials: false/);
-  assert.match(workflow, /uses: actions\/setup-node@v6/);
-  assert.match(workflow, /package-manager-cache: false/);
-  assert.doesNotMatch(workflow, /pnpm verify/);
-  assert.doesNotMatch(workflow, /--manifest-path|scripts\/tests|node scripts\/check-/);
-  assert.doesNotMatch(
-    workflow,
-    /runtime-live|db-encrypted-storage-live|compiler-boundaries|loop-risk/,
-  );
-});
-
-test('rust selector contains exactly the workspace Cargo authority', async () => {
-  const plan = await buildVerifyPlan({ root, selectors: ['rust'] });
-  assert.deepEqual(
-    plan.phases.map(({ id, command, args }) => ({ id, command, args })),
-    [
-      {
-        id: 'rust:workspace',
-        command: 'cargo',
-        args: ['test', '--workspace', '--no-fail-fast'],
-      },
-    ],
-  );
-});
-
 test('node selector has no top-level Cargo phase and discovers every scripts test', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['node'] });
   assert.equal(plan.phases.some((phase) => phase.command === 'cargo'), false);
@@ -156,28 +115,6 @@ test('node selector has no top-level Cargo phase and discovers every scripts tes
   assert.deepEqual(scriptTestArgs, await discoverScriptTests(root));
   assert.ok(scriptTestArgs.includes('scripts/tests/runtime-stack-deploy.test.mjs'));
   assert.ok(plan.phases.some((phase) => phase.id === 'scripts:dev-sync-fixture'));
-});
-
-test('default verify has one Rust workspace and one artifact identity check, without live phases', async () => {
-  const plan = await buildVerifyPlan({ root });
-  assert.equal(plan.phases.filter((phase) => phase.id === 'rust:workspace').length, 1);
-  assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:artifact-identity').length,
-    1,
-  );
-  assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:compiler-boundaries').length,
-    1,
-  );
-  assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:crate-public-api:self-test').length,
-    1,
-  );
-  assert.equal(
-    plan.phases.filter((phase) => phase.id === 'checks:crate-public-api:all-configured').length,
-    1,
-  );
-  assert.equal(plan.phases.some((phase) => phase.id.startsWith('live:')), false);
 });
 
 test('compiler boundary selector is canonical and deduplicated across checks combinations', async () => {

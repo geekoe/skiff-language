@@ -566,25 +566,22 @@ async fn wait_for_external_cancel(
 }
 
 async fn wait_for_stream_cancel(state: &StreamState) {
-    loop {
-        if state.cancelled.load(Ordering::SeqCst) {
-            return;
+    if state.cancelled.load(Ordering::SeqCst) {
+        return;
+    }
+    let cancel_notified = state.cancel_notify.notified();
+    tokio::pin!(cancel_notified);
+    cancel_notified.as_mut().enable();
+    if state.cancelled.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Some(cancellation) = &state.cancellation {
+        tokio::select! {
+            _ = &mut cancel_notified => {},
+            _ = cancellation.wait_cancelled() => {},
         }
-        let cancel_notified = state.cancel_notify.notified();
-        tokio::pin!(cancel_notified);
-        cancel_notified.as_mut().enable();
-        if state.cancelled.load(Ordering::SeqCst) {
-            return;
-        }
-        if let Some(cancellation) = &state.cancellation {
-            tokio::select! {
-                _ = &mut cancel_notified => return,
-                _ = cancellation.wait_cancelled() => return,
-            }
-        } else {
-            cancel_notified.await;
-            return;
-        }
+    } else {
+        cancel_notified.await;
     }
 }
 

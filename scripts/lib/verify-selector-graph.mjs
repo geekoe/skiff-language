@@ -3,6 +3,7 @@ const selectorGraph = {
     'verify',
     'node',
     'rust',
+    'rust-quality',
     'router',
     'telemetry',
     'scripts',
@@ -14,7 +15,7 @@ const selectorGraph = {
     'compiler-boundaries',
   ],
   expansions: {
-    verify: ['rust', 'node', 'checks'],
+    verify: ['rust', 'rust-quality', 'node', 'checks'],
     checks: ['compiler-boundaries', 'checks-default'],
     node: ['router', 'telemetry', 'scripts', 'vscode'],
     router: ['router-type-check', 'router-test'],
