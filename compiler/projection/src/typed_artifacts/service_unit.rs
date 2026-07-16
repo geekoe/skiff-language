@@ -11,14 +11,14 @@ pub use skiff_artifact_model::{
     CanonicalPublicCallableSignature, ExecutableIr, ExecutableSignatureIr, FileIrRef, FileIrUnit,
     FunctionTypeParamIr, GatewayConfig, GatewayRoute, GatewayWebSocket, InterfaceInstantiationRef,
     OperationAbiRef, OperationConstReceiverRef, OperationIngressKind, OperationMode,
-    OperationParam, OperationRouteBinding, OperationTargetRef, ParamIr, PublicationAbiUnit,
-    PublicationOperationKind, PublicationPublicInstanceExport, RecoverableArtifactMetadata,
-    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceMeta, ServiceOperation,
-    ServiceSymbolRef, ServiceUnit, TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
+    OperationParam, OperationRouteBinding, OperationTargetRef, PackageAbiExpectation,
+    PackageDependencyConstraint, ParamIr, PublicationAbiUnit, PublicationOperationKind,
+    PublicationPublicInstanceExport, RecoverableArtifactMetadata, ServiceConfigMetadata,
+    ServiceDependencyConstraint, ServiceMeta, ServiceOperation, ServiceSymbolRef, ServiceUnit,
+    TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
 };
 
 use super::identity::{assign_publication_abi_identity, file_ir_identity};
-use super::package_unit::{PackageAbiExpectation, PackageDependencyConstraint};
 use super::publication_abi::{publication_public_instance_export, push_publication_operation_abi};
 
 #[derive(Debug, Clone, PartialEq)]

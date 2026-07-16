@@ -831,6 +831,7 @@ mod tests {
     use super::{package_unit_pointer, service_id_artifact_path};
     use crate::emission::artifact::PublishedJsonArtifact;
     use serde_json::json;
+    use skiff_artifact_identity::PACKAGE_LOCAL_ABI_IDENTITY_PREFIX;
 
     #[test]
     fn service_id_artifact_path_projects_url_like_id_to_single_segment() {
@@ -848,7 +849,7 @@ mod tests {
                 "packageId": "example.com/package-a",
                 "version": "1.0.0",
                 "buildIdentity": "skiff-package-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "abiIdentity": "skiff-package-abi-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "abiIdentity": format!("{PACKAGE_LOCAL_ABI_IDENTITY_PREFIX}:{}", "b".repeat(64))
             }),
             identity: "skiff-package-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),

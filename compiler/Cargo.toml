@@ -47,6 +47,10 @@ name = "package_imports"
 path = "tests/package_imports.rs"
 
 [[test]]
+name = "package_unit_single_path"
+path = "tests/package_unit_single_path.rs"
+
+[[test]]
 name = "package_std_schema"
 path = "tests/package_std_schema.rs"
 
