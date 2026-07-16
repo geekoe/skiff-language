@@ -2133,11 +2133,20 @@ dependencies = [
  "serde_json",
  "sha2",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "thiserror",
 ]
 
 [[package]]
 name = "skiff-artifact-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "skiff-canonical-json"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -2188,6 +2197,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2432,6 +2442,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-runtime-linked-program",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",

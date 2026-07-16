@@ -8,7 +8,11 @@ import { captureCheckedCommand } from './lib/command-execution.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultCliPhase = 10;
 const facadePackage = 'skiff-compiler';
-const artifactPackages = ['skiff-artifact-model', 'skiff-artifact-identity'];
+const foundationPackages = [
+  'skiff-canonical-json',
+  'skiff-artifact-model',
+  'skiff-artifact-identity',
+];
 const compilerSubCrates = [
   'skiff-syntax',
   'skiff-compiler-core',
@@ -23,17 +27,21 @@ const compilerSubCrates = [
   'skiff-compiler-emission',
 ];
 const targetPackageNames = [
-  ...artifactPackages,
+  ...foundationPackages,
   ...compilerSubCrates,
   facadePackage,
 ];
 
 // skiff-artifact-identity owns shared identity bytes; publication-abi owns neutral ABI assembly.
 const finalProductionEdges = new Map([
+  ['skiff-canonical-json', []],
   ['skiff-artifact-model', []],
-  ['skiff-artifact-identity', ['skiff-artifact-model']],
+  ['skiff-artifact-identity', ['skiff-artifact-model', 'skiff-canonical-json']],
   ['skiff-syntax', []],
-  ['skiff-compiler-core', ['skiff-syntax', 'skiff-artifact-model']],
+  [
+    'skiff-compiler-core',
+    ['skiff-syntax', 'skiff-artifact-model', 'skiff-canonical-json'],
+  ],
   [
     'skiff-compiler-publication-abi',
     ['skiff-artifact-model', 'skiff-artifact-identity'],
@@ -249,7 +257,7 @@ function isAllowedProductionEdge(packageName, dependencyName, phase) {
 }
 
 function facadeMigrationShellDependencies() {
-  return new Set([...compilerSubCrates, ...artifactPackages]);
+  return new Set([...compilerSubCrates, ...foundationPackages]);
 }
 
 function resolvedDependencyKinds(resolvedDependency) {
@@ -564,6 +572,68 @@ function runSelfTests() {
         assertIncludes(
           result.failures.join('\n'),
           'skiff-compiler-core has disallowed normal dependency on skiff-artifact-identity',
+        );
+      },
+    },
+    {
+      name: 'canonical JSON remains a leaf consumable by identity and core',
+      run: () => {
+        const allowedMetadata = fixtureMetadata({
+          packages: [
+            'skiff-canonical-json',
+            'skiff-artifact-identity',
+            'skiff-artifact-model',
+            'skiff-compiler-core',
+            'skiff-syntax',
+          ],
+          edges: [
+            {
+              package: 'skiff-artifact-identity',
+              dependency: 'skiff-canonical-json',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-artifact-identity',
+              dependency: 'skiff-artifact-model',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-core',
+              dependency: 'skiff-canonical-json',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-core',
+              dependency: 'skiff-artifact-model',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-core',
+              dependency: 'skiff-syntax',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        assertPass(
+          checkCompilerCrateDag(allowedMetadata),
+          'identity and compiler core should consume canonical JSON',
+        );
+
+        const reverseMetadata = fixtureMetadata({
+          packages: ['skiff-canonical-json', 'skiff-artifact-model'],
+          edges: [
+            {
+              package: 'skiff-canonical-json',
+              dependency: 'skiff-artifact-model',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const reverseResult = checkCompilerCrateDag(reverseMetadata);
+        assertFail(reverseResult, 'canonical JSON must remain a leaf');
+        assertIncludes(
+          reverseResult.failures.join('\n'),
+          'skiff-canonical-json has disallowed normal dependency on skiff-artifact-model',
         );
       },
     },
