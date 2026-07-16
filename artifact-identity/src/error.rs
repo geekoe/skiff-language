@@ -12,6 +12,8 @@ pub enum ArtifactIdentityError {
     SerializePackageBuildIdentity(serde_json::Error),
     #[error("failed to serialize package ABI identity payload: {0}")]
     SerializePackageAbiIdentity(serde_json::Error),
+    #[error("failed to serialize package implementation links identity payload: {0}")]
+    SerializePackageImplementationLinksIdentity(serde_json::Error),
     #[error(
         "package unit declared buildIdentity {declared} but content build identity is {computed}"
     )]

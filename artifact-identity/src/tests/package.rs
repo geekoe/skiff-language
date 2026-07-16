@@ -27,6 +27,37 @@ fn package_local_abi_is_distinct_from_the_nested_publication_identity() {
 }
 
 #[test]
+fn package_implementation_links_identity_preserves_v1_wire_golden() {
+    let unit = package_fixture("hello");
+
+    assert_eq!(
+        package_implementation_links_identity(&unit.implementation_links)
+            .expect("implementation links identity"),
+        // Captured from the pre-migration compiler emission algorithm.
+        "skiff-package-implementation-links-v1:sha256:5d197d3c024e0f36dabc99424100e492affca57fe6ced9d905b02a95efd85674"
+    );
+}
+
+#[test]
+fn package_implementation_links_identity_changes_with_link_targets() {
+    let unit = package_fixture("hello");
+    let original = package_implementation_links_identity(&unit.implementation_links)
+        .expect("original implementation links identity");
+    let mut changed = unit.implementation_links;
+    changed
+        .functions
+        .get_mut("run")
+        .expect("fixture function link")
+        .symbol = "renamed".to_string();
+
+    assert_ne!(
+        package_implementation_links_identity(&changed)
+            .expect("changed implementation links identity"),
+        original
+    );
+}
+
+#[test]
 fn package_identity_validation_rejects_nested_and_outer_tampering() {
     let assigned = package_fixture("hello");
     validate_package_unit_identities(&assigned).expect("assigned package must validate");

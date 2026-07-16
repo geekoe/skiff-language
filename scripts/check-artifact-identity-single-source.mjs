@@ -65,6 +65,16 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+package_local_abi_identity\s*\(/,
   },
   {
+    name: 'package_implementation_links_identity',
+    relPath: 'artifact-identity/src/package.rs',
+    regexp: /\bpub\s+fn\s+package_implementation_links_identity\s*\(/,
+  },
+  {
+    name: 'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX\b/,
+  },
+  {
     name: 'PublicationAbiIdentityProjection',
     relPath: 'artifact-identity/src/publication.rs',
     regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
@@ -308,6 +318,11 @@ const adapterRequirements = [
     regexp: /\bskiff_artifact_identity::validate_package_unit_identities\b/,
   },
   {
+    relPath: 'compiler/emission/src/emission/package_test_artifacts/package_units.rs',
+    helper: 'package implementation links identity',
+    regexp: /\bskiff_artifact_identity::package_implementation_links_identity\b/,
+  },
+  {
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
     helper: 'publication ABI identity',
     regexp: /\bskiff_artifact_identity::publication_abi_identity\b/,
@@ -404,6 +419,9 @@ async function runCheck() {
       `${violation.relPath}:${violation.line} ${violation.name} is owned by ${violation.owner}`,
     );
   }
+  for (const violation of collectCompilerPackageImplementationLinksIdentityViolations(files)) {
+    failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
+  }
 
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -472,6 +490,37 @@ function collectOwnedDefinitionViolations(files) {
     }
   }
 
+  return violations;
+}
+
+function collectCompilerPackageImplementationLinksIdentityViolations(files) {
+  const restrictions = [
+    {
+      regexp: /skiff-package-implementation-links-v1:sha256/g,
+      message: 'package implementation links identity prefix is owned by artifact-identity',
+    },
+    {
+      regexp: /\bfn\s+(?:package_)?implementation_links_identity\s*\(/g,
+      message: 'package implementation links identity helper is owned by artifact-identity',
+    },
+  ];
+  const violations = [];
+  for (const file of files) {
+    if (!file.relPath.startsWith('compiler/') || !isProductionRustFile(file.relPath)) {
+      continue;
+    }
+    const text = stripInlineTestModules(file.text);
+    for (const restriction of restrictions) {
+      restriction.regexp.lastIndex = 0;
+      for (const match of text.matchAll(restriction.regexp)) {
+        violations.push({
+          relPath: file.relPath,
+          line: lineNumberAt(text, match.index ?? 0),
+          message: restriction.message,
+        });
+      }
+    }
+  }
   return violations;
 }
 
@@ -619,6 +668,39 @@ function runSelfTest() {
       ],
       expectedViolations: 0,
     },
+    {
+      name: 'rejects compiler package implementation links identity prefix',
+      files: [
+        {
+          relPath: 'compiler/emission/src/package_test.rs',
+          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\n',
+        },
+      ],
+      expectedViolations: 0,
+      expectedPackageImplementationLinksViolations: 1,
+    },
+    {
+      name: 'rejects compiler package implementation links identity helper',
+      files: [
+        {
+          relPath: 'compiler/emission/src/package_test.rs',
+          text: 'fn implementation_links_identity() {}\n',
+        },
+      ],
+      expectedViolations: 0,
+      expectedPackageImplementationLinksViolations: 1,
+    },
+    {
+      name: 'leaves runtime package implementation links migration to T07',
+      files: [
+        {
+          relPath: 'runtime/package-test/src/lib.rs',
+          text: 'const PREFIX: &str = "skiff-package-implementation-links-v1:sha256";\nfn package_implementation_links_identity() {}\n',
+        },
+      ],
+      expectedViolations: 0,
+      expectedPackageImplementationLinksViolations: 0,
+    },
   ];
 
   const failures = [];
@@ -627,6 +709,18 @@ function runSelfTest() {
     if (violations.length !== testCase.expectedViolations) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
+      );
+    }
+    const packageImplementationLinksViolations =
+      collectCompilerPackageImplementationLinksIdentityViolations(testCase.files);
+    const expectedPackageImplementationLinksViolations =
+      testCase.expectedPackageImplementationLinksViolations ?? 0;
+    if (
+      packageImplementationLinksViolations.length
+      !== expectedPackageImplementationLinksViolations
+    ) {
+      failures.push(
+        `${testCase.name}: expected ${expectedPackageImplementationLinksViolations} package implementation links violation(s), got ${packageImplementationLinksViolations.length}`,
       );
     }
   }

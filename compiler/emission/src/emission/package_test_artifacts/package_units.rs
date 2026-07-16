@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_identity::package_implementation_links_identity;
 use skiff_compiler_core::artifact::{
-    PackageDependencyPublicLinkScope, PackageImplementationLinks, PackageTestPackageUnitRef,
-    PackageUnit,
+    PackageDependencyPublicLinkScope, PackageTestPackageUnitRef, PackageUnit,
 };
 use skiff_compiler_core::json_utils::value_sha256;
 
@@ -53,7 +53,9 @@ pub(super) fn materialize_projected_package_unit_for_test(
         build_identity: unit.build_identity.clone(),
         unit_path: unit_path.clone(),
         public_abi_identity: unit.abi_identity.clone(),
-        implementation_links_identity: implementation_links_identity(&unit.implementation_links),
+        implementation_links_identity: package_implementation_links_identity(
+            &unit.implementation_links,
+        )?,
     };
     Ok(PublishedPackageTestPackageUnitArtifact {
         files,
@@ -76,11 +78,13 @@ pub(super) fn normalize_dependency_slot_records(
 ) -> Result<Vec<DependencySlotRecord>, PackageTestArtifactBuildError> {
     let mut records = dependency_units
         .into_iter()
-        .map(|unit| DependencySlotRecord {
-            public_scope: dependency_public_link_scope(&unit.unit),
-            unit,
+        .map(|unit| {
+            Ok(DependencySlotRecord {
+                public_scope: dependency_public_link_scope(&unit.unit)?,
+                unit,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, PackageTestArtifactBuildError>>()?;
     records.sort_by(|left, right| {
         dependency_slot_sort_key(&left.unit.reference)
             .cmp(&dependency_slot_sort_key(&right.unit.reference))
@@ -152,8 +156,10 @@ fn dependency_slot_sort_key(reference: &PackageTestPackageUnitRef) -> (String, S
     )
 }
 
-fn dependency_public_link_scope(unit: &PackageUnit) -> PackageDependencyPublicLinkScope {
-    PackageDependencyPublicLinkScope {
+fn dependency_public_link_scope(
+    unit: &PackageUnit,
+) -> Result<PackageDependencyPublicLinkScope, PackageTestArtifactBuildError> {
+    Ok(PackageDependencyPublicLinkScope {
         package_id: unit.package_id.clone(),
         version: unit.version.clone(),
         build_identity: unit.build_identity.clone(),
@@ -161,9 +167,11 @@ fn dependency_public_link_scope(unit: &PackageUnit) -> PackageDependencyPublicLi
         public_export_digest: value_sha256(
             &serde_json::to_value(&unit.publication_abi).expect("publication ABI must serialize"),
         ),
-        implementation_links_digest: implementation_links_identity(&unit.implementation_links),
+        implementation_links_digest: package_implementation_links_identity(
+            &unit.implementation_links,
+        )?,
         allow_private: false,
-    }
+    })
 }
 
 pub(super) fn validate_unique_dependency_aliases(
@@ -181,11 +189,4 @@ pub(super) fn validate_unique_dependency_aliases(
         }
     }
     Ok(())
-}
-
-fn implementation_links_identity(links: &PackageImplementationLinks) -> String {
-    format!(
-        "skiff-package-implementation-links-v1:sha256:{}",
-        value_sha256(&serde_json::to_value(links).expect("implementation links must serialize"))
-    )
 }

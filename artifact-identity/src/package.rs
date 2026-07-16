@@ -3,7 +3,9 @@ mod projection;
 pub use projection::{PackageBuildIdentityProjection, PackageLocalAbiIdentityProjection};
 
 use serde_json::{Map, Value};
-use skiff_artifact_model::{PackageOperationTarget, PackageUnit, PublicationAbiUnit};
+use skiff_artifact_model::{
+    PackageImplementationLinks, PackageOperationTarget, PackageUnit, PublicationAbiUnit,
+};
 
 use crate::framing::{canonical_ir_bytes, identity, sha256_hex};
 use crate::publication::assign_publication_abi_identity;
@@ -11,7 +13,8 @@ use crate::publication_validation::{
     validate_publication_abi_identity, validate_publication_operation_ref,
 };
 use crate::{
-    ArtifactIdentityError, Result, PACKAGE_BUILD_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
+    ArtifactIdentityError, Result, PACKAGE_BUILD_IDENTITY_PREFIX,
+    PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
 };
 
 /// Returns the explicit semantic projection used by the package local ABI identity.
@@ -58,6 +61,22 @@ pub fn package_local_abi_identity(unit: &PackageUnit) -> Result<String> {
     Ok(identity(
         PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
         &package_local_abi_hash(unit)?,
+    ))
+}
+
+/// Returns the content identity used by package-test link-policy references.
+///
+/// This intentionally preserves the v1 wire: canonical JSON of the complete
+/// `PackageImplementationLinks` DTO, hashed directly without the package ABI
+/// projection's storage-field exclusions.
+pub fn package_implementation_links_identity(links: &PackageImplementationLinks) -> Result<String> {
+    let bytes = canonical_ir_bytes(
+        links,
+        ArtifactIdentityError::SerializePackageImplementationLinksIdentity,
+    )?;
+    Ok(identity(
+        PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
+        &sha256_hex(&bytes),
     ))
 }
 
