@@ -254,14 +254,6 @@ const ownedDefinitionRegexp = new RegExp(
   'g',
 );
 
-const compilerGenericIdentityFramingHelperRegexp =
-  /\b(?:pub(?:\s*\([^)]*\))?\s+)?fn\s+([A-Za-z_]\w*)\s*\((?=[^)]*\bprefix\s*:)(?=[^)]*\b(?:hash|digest)\s*:)[^)]*\)/gs;
-const compilerGenericIdentityFramingFormatRegexps = [
-  /\bformat!\s*\(\s*"\{prefix\}:\{(?:hash|digest)\}"\s*\)/g,
-  /\bformat!\s*\(\s*"\{\}:\{\}"\s*,\s*prefix\s*,\s*(?:hash|digest)\s*\)/g,
-  /\bformat!\s*\(\s*"\{prefix\}:\{\}"\s*,\s*(?:hash|digest)\s*\)/g,
-];
-
 const facadeModules = [
   'constants',
   'error',
@@ -343,12 +335,12 @@ const adapterRequirements = [
   },
   {
     relPath: 'compiler/emission/src/emission/identity.rs',
-    helper: 'artifact identity emission API',
+    helper: 'artifact emission identity re-export',
     regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,
   },
   {
     relPath: 'compiler/emission/src/emission/identity.rs',
-    helper: 'canonical framed identity',
+    helper: 'artifact emission framed_identity',
     regexp:
       /\bpub\s+use\s+skiff_artifact_identity\s*::\s*\{[\s\S]*?\bframed_identity\b/,
   },
@@ -361,6 +353,37 @@ const adapterRequirements = [
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
     helper: 'public_instance_method_operation_abi_id',
     regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
+  },
+];
+
+const artifactEmissionIdentityAdapterPath = 'compiler/emission/src/emission/identity.rs';
+const artifactEmissionIdentityAdapterRegexp =
+  /^\s*pub\s+use\s+skiff_artifact_identity\s*::\s*\{\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*,?\s*\}\s*;\s*$/;
+const artifactEmissionFramingRequirements = [
+  {
+    relPath: 'compiler/emission/src/emission/package_artifacts.rs',
+    helper: 'package emission adapter import',
+    regexp: /\bidentity\s*::\s*\{[^}]*\bframed_identity\b/,
+  },
+  {
+    relPath: 'compiler/emission/src/emission/package_artifacts.rs',
+    helper: 'package assembly identity',
+    regexp: /\bframed_identity\s*\(\s*PACKAGE_ASSEMBLY_IDENTITY_PREFIX\s*,/,
+  },
+  {
+    relPath: 'compiler/emission/src/emission/service_artifacts.rs',
+    helper: 'service emission adapter import',
+    regexp: /\buse\s+crate::emission::identity::framed_identity\s*;/,
+  },
+  {
+    relPath: 'compiler/emission/src/emission/service_artifacts.rs',
+    helper: 'service assembly identity',
+    regexp: /\bframed_identity\s*\(\s*SERVICE_ASSEMBLY_IDENTITY_PREFIX\s*,/,
+  },
+  {
+    relPath: 'compiler/emission/src/emission/service_artifacts.rs',
+    helper: 'service bundle identity',
+    regexp: /\bframed_identity\s*\(\s*BUNDLE_IDENTITY_PREFIX\s*,/,
   },
 ];
 
@@ -410,14 +433,23 @@ async function runCheck() {
     }
   }
   failures.push(...collectAdapterRequirementFailures(adapterRequirements, adapterTextByPath));
-  const emissionIdentityAdapterText = stripInlineTestModules(
-    adapterTextByPath.get('compiler/emission/src/emission/identity.rs') ?? '',
-  );
-  if (/\b(?:struct|enum|fn)\s+\w+/.test(emissionIdentityAdapterText)) {
-    failures.push(
-      'compiler/emission/src/emission/identity.rs must contain re-exports only',
-    );
+  failures.push(...collectArtifactEmissionIdentityAdapterFailures(files));
+
+  const artifactEmissionFramingTextByPath = new Map();
+  for (const { relPath } of artifactEmissionFramingRequirements) {
+    if (!artifactEmissionFramingTextByPath.has(relPath)) {
+      artifactEmissionFramingTextByPath.set(
+        relPath,
+        await readFile(join(root, relPath), 'utf8'),
+      );
+    }
   }
+  failures.push(
+    ...collectArtifactEmissionFramingRequirementFailures(
+      artifactEmissionFramingRequirements,
+      artifactEmissionFramingTextByPath,
+    ),
+  );
 
   const canonicalDelegationTextByPath = new Map();
   for (const { relPath } of canonicalDelegationRequirements) {
@@ -435,11 +467,6 @@ async function runCheck() {
   for (const violation of collectOwnedDefinitionViolations(files)) {
     failures.push(
       `${violation.relPath}:${violation.line} ${violation.name} is owned by ${violation.owner}`,
-    );
-  }
-  for (const violation of collectCompilerIdentityFramingViolations(files)) {
-    failures.push(
-      `${violation.relPath}:${violation.line} ${violation.message}; use artifact-identity framed_identity`,
     );
   }
 
@@ -487,6 +514,38 @@ function collectAdapterRequirementFailures(requirements, textByPath) {
   return failures;
 }
 
+function collectArtifactEmissionIdentityAdapterFailures(files) {
+  const adapter = files.find(({ relPath }) => relPath === artifactEmissionIdentityAdapterPath);
+  if (adapter === undefined) {
+    return [`${artifactEmissionIdentityAdapterPath} is missing`];
+  }
+  const productionText = stripRustComments(stripInlineTestModules(adapter.text));
+  if (
+    artifactEmissionIdentityAdapterRegexp.test(productionText)
+    && /\bframed_identity\b/.test(productionText)
+  ) {
+    return [];
+  }
+  return [
+    `${artifactEmissionIdentityAdapterPath} must be a single pub use skiff_artifact_identity::{...} adapter containing framed_identity`,
+  ];
+}
+
+function collectArtifactEmissionFramingRequirementFailures(requirements, textByPath) {
+  const failures = [];
+  for (const requirement of requirements) {
+    const text = textByPath.get(requirement.relPath);
+    const productionText =
+      text === undefined ? '' : stripRustComments(stripInlineTestModules(text));
+    if (!requirement.regexp.test(productionText)) {
+      failures.push(
+        `${requirement.relPath} must frame ${requirement.helper} through the artifact emission framed_identity adapter`,
+      );
+    }
+  }
+  return failures;
+}
+
 function collectOwnedDefinitionViolations(files) {
   const violations = [];
 
@@ -507,35 +566,6 @@ function collectOwnedDefinitionViolations(files) {
         name,
         owner,
       });
-    }
-  }
-
-  return violations;
-}
-
-function collectCompilerIdentityFramingViolations(files) {
-  const violations = [];
-
-  for (const file of files) {
-    if (!isProductionRustFile(file.relPath) || !file.relPath.startsWith('compiler/')) {
-      continue;
-    }
-    const text = stripInlineTestModules(file.text);
-    for (const match of text.matchAll(compilerGenericIdentityFramingHelperRegexp)) {
-      violations.push({
-        relPath: file.relPath,
-        line: lineNumberAt(text, match.index ?? 0),
-        message: `defines local generic identity framing helper ${match[1]}`,
-      });
-    }
-    for (const regexp of compilerGenericIdentityFramingFormatRegexps) {
-      for (const match of text.matchAll(regexp)) {
-        violations.push({
-          relPath: file.relPath,
-          line: lineNumberAt(text, match.index ?? 0),
-          message: 'constructs identity framing locally',
-        });
-      }
     }
   }
 
@@ -661,7 +691,7 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects canonical identity framing outside its owner',
+      name: 'rejects artifact emission framed_identity outside its owner',
       files: [
         {
           relPath: 'compiler/emission/src/emission/identity.rs',
@@ -712,54 +742,75 @@ function runSelfTest() {
     }
   }
 
-  const framingCases = [
+  const artifactEmissionAdapterCases = [
     {
-      name: 'rejects compiler generic framing helper even when it delegates',
+      name: 'allows the pure artifact emission re-export adapter',
       files: [
         {
           relPath: 'compiler/emission/src/emission/identity.rs',
-          text: `pub fn identity(prefix: &str, hash: &str) -> String {
-  skiff_artifact_identity::framed_identity(prefix, hash)
-}
-`,
+          text: 'pub use skiff_artifact_identity::{file_ir_identity, framed_identity};\n',
         },
       ],
-      expectedViolations: 1,
+      expectedFailures: 0,
     },
     {
-      name: 'rejects compiler local identity framing format',
+      name: 'rejects a local function and format algorithm in the artifact emission adapter',
       files: [
         {
-          relPath: 'compiler/emission/src/emission/service_artifacts.rs',
-          text: `fn build() {
-  let prefix = "skiff-service-assembly-v1:sha256";
-  let hash = "abc";
-  let _ = format!("{prefix}:{hash}");
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
+pub fn identity(prefix: &str, hash: &str) -> String {
+  format!("{prefix}:{hash}")
 }
 `,
         },
       ],
-      expectedViolations: 1,
+      expectedFailures: 1,
     },
     {
-      name: 'allows compiler use of canonical framing API',
+      name: 'rejects a local const in the artifact emission adapter',
       files: [
         {
-          relPath: 'compiler/emission/src/emission/service_artifacts.rs',
-          text: `fn build() {
-  let _ = skiff_artifact_identity::framed_identity("prefix", "hash");
-}
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
+pub const SEPARATOR: &str = ":";
 `,
         },
       ],
-      expectedViolations: 0,
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects any other production item in the artifact emission adapter',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
+pub struct LocalIdentity;
+`,
+        },
+      ],
+      expectedFailures: 1,
+    },
+    {
+      name: 'does not inspect unrelated compiler helpers',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: 'pub use skiff_artifact_identity::{file_ir_identity, framed_identity};\n',
+        },
+        {
+          relPath: 'compiler/source/src/cache.rs',
+          text: 'fn cache_path(prefix: &str, hash: &str) -> String { format!("{prefix}/{hash}") }\n',
+        },
+      ],
+      expectedFailures: 0,
     },
   ];
-  for (const testCase of framingCases) {
-    const violations = collectCompilerIdentityFramingViolations(testCase.files);
-    if (violations.length !== testCase.expectedViolations) {
+  for (const testCase of artifactEmissionAdapterCases) {
+    const adapterFailures = collectArtifactEmissionIdentityAdapterFailures(testCase.files);
+    if (adapterFailures.length !== testCase.expectedFailures) {
       failures.push(
-        `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
+        `${testCase.name}: expected ${testCase.expectedFailures} failure(s), got ${adapterFailures.length}`,
       );
     }
   }
@@ -839,6 +890,12 @@ function stripInlineTestModules(text) {
     searchIndex = removal.start + replacement.length;
   }
   return output;
+}
+
+function stripRustComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
 }
 
 function cfgTestItemRange(text, attrIndex) {
