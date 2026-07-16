@@ -1594,12 +1594,13 @@ mod tests {
     };
 
     use super::*;
-    use skiff_artifact_identity::interface_instantiation_ref;
     use skiff_compiler_core::artifact::{
         DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, InterfaceDeclIr,
         InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
     };
-    use skiff_compiler_emission::identity::PACKAGE_BUILD_IDENTITY_PREFIX;
+    use skiff_compiler_emission::identity::{
+        interface_instantiation_ref, PACKAGE_BUILD_IDENTITY_PREFIX,
+    };
     use skiff_compiler_lowering::file_ir::{
         ExecutableBody, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, SlotLayout, TypeRefIr,
     };

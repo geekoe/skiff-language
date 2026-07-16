@@ -54,6 +54,8 @@ const finalProductionEdges = new Map([
       'skiff-compiler-core',
       'skiff-compiler-input-model',
       'skiff-artifact-model',
+      // Trust boundary: validate external dependency artifacts before accepting them as input.
+      'skiff-artifact-identity',
     ],
   ],
   [
@@ -86,6 +88,8 @@ const finalProductionEdges = new Map([
       'skiff-compiler-lowering',
       'skiff-compiler-projection-input',
       'skiff-artifact-model',
+      // Projection handoff: derive canonical semantic keys from compiled facts.
+      'skiff-artifact-identity',
     ],
   ],
   [
@@ -572,6 +576,64 @@ function runSelfTests() {
         assertIncludes(
           result.failures.join('\n'),
           'skiff-compiler-core has disallowed normal dependency on skiff-artifact-identity',
+        );
+      },
+    },
+    {
+      name: 'identity owner is limited to the input trust boundary and compiled handoff',
+      run: () => {
+        const allowedMetadata = fixtureMetadata({
+          packages: [
+            'skiff-compiler-input',
+            'skiff-compiler-compiled',
+            'skiff-artifact-identity',
+          ],
+          edges: [
+            {
+              package: 'skiff-compiler-input',
+              dependency: 'skiff-artifact-identity',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-compiled',
+              dependency: 'skiff-artifact-identity',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        assertPass(
+          checkCompilerCrateDag(allowedMetadata),
+          'input and compiled should call the canonical identity owner at their semantic boundaries',
+        );
+
+        const dtoMetadata = fixtureMetadata({
+          packages: [
+            'skiff-compiler-input-model',
+            'skiff-compiler-projection-input',
+            'skiff-artifact-identity',
+          ],
+          edges: [
+            {
+              package: 'skiff-compiler-input-model',
+              dependency: 'skiff-artifact-identity',
+              dependency_kind: 'normal',
+            },
+            {
+              package: 'skiff-compiler-projection-input',
+              dependency: 'skiff-artifact-identity',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const dtoResult = checkCompilerCrateDag(dtoMetadata);
+        assertFail(dtoResult, 'DTO crates must not acquire the identity owner');
+        assertIncludes(
+          dtoResult.failures.join('\n'),
+          'skiff-compiler-input-model has disallowed normal dependency on skiff-artifact-identity',
+        );
+        assertIncludes(
+          dtoResult.failures.join('\n'),
+          'skiff-compiler-projection-input has disallowed normal dependency on skiff-artifact-identity',
         );
       },
     },

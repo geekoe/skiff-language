@@ -1,7 +1,8 @@
 pub use skiff_artifact_identity::{
-    assign_file_ir_identity, assign_package_unit_identities, derive_package_test_entrypoint_id,
-    file_ir_identity, package_abi_identity, package_build_identity, package_test_build_hash,
-    package_test_build_identity, package_test_entrypoint_local_id,
+    assign_file_ir_identity, assign_package_unit_identities, canonical_interface_method_abi_id,
+    canonical_interface_method_abi_id_from_parts, derive_package_test_entrypoint_id,
+    file_ir_identity, interface_instantiation_ref, package_abi_identity, package_build_identity,
+    package_test_build_hash, package_test_build_identity, package_test_entrypoint_local_id,
     public_function_operation_abi_id, public_instance_method_operation_abi_id,
     publication_abi_identity, runtime_program_dynamic_build_id,
     runtime_program_dynamic_build_id_from_artifact_root,
