@@ -9,6 +9,7 @@ pub use abi_identity::{
 pub mod builtin_receiver_ops;
 pub mod config;
 pub mod cross_package_identity;
+pub mod effects;
 pub mod executable;
 pub mod file_ir;
 pub mod metadata;
@@ -35,8 +36,11 @@ pub use builtin_receiver_ops::{
     RECEIVER_BUILTIN_CAPABILITY_VERSION, SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
 pub use config::{
-    ConfigShape, ConfigShapeEntry, ConfigShapeValueType, ConfigShapeValueTypeParseError,
-    CONFIG_SHAPE_SCHEMA_VERSION,
+    ConfigMetadataFacts, ConfigShape, ConfigShapeEntry, ConfigShapeValueType,
+    ConfigShapeValueTypeParseError, CONFIG_SHAPE_SCHEMA_VERSION,
+};
+pub use effects::{
+    CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
 };
 pub use executable::*;
 pub use file_ir::*;
@@ -52,10 +56,10 @@ pub use package_test::{
     PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError,
 };
 pub use package_unit::{
-    ConfigAndEffectMetadata, ConstExport, EffectMetadata, ExecutableExport,
-    InterfaceMethodSignature, PackageAbiExpectation, PackageDependencyConstraint,
-    PackageExportIndex, PackageImplementationLinks, PackageOperationTarget, PackageUnit,
-    PackageUsedSymbol, PackageUsedSymbolKind, TypeExport,
+    ConfigAndEffectMetadata, ConstExport, ExecutableExport, InterfaceMethodSignature,
+    PackageAbiExpectation, PackageDependencyConstraint, PackageExportIndex,
+    PackageImplementationLinks, PackageOperationTarget, PackageUnit, PackageUsedSymbol,
+    PackageUsedSymbolKind, TypeExport,
 };
 pub use publication_abi::{
     canonical_interface_method_abi_id, interface_instantiation_ref,

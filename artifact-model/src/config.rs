@@ -1,8 +1,43 @@
-use std::{fmt, str::FromStr};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+use crate::metadata::MetadataValue;
+
 pub const CONFIG_SHAPE_SCHEMA_VERSION: &str = "skiff-config-shape-v1";
+
+/// Typed owner for package configuration projection facts. The contained
+/// metadata remains open because each named config projection has its own
+/// schema, while callable effects are intentionally excluded from this owner.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ConfigMetadataFacts(BTreeMap<String, MetadataValue>);
+
+impl ConfigMetadataFacts {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<BTreeMap<String, MetadataValue>> for ConfigMetadataFacts {
+    fn from(facts: BTreeMap<String, MetadataValue>) -> Self {
+        Self(facts)
+    }
+}
+
+impl std::ops::Deref for ConfigMetadataFacts {
+    type Target = BTreeMap<String, MetadataValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ConfigMetadataFacts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -14,9 +14,8 @@ use crate::{
     },
     shared::publication_error::PublicationError,
     source_compile::{
-        CompileParsedPublicationSourcesInput, PublicationTypeSymbolIndex,
-        SourceConfigAndEffectMetadata, SourceConfigAndEffectMetadataBatchInput,
-        SourceConfigAndEffectMetadataInput, SourceEffectMetadata, SourceSymbolKey,
+        CompileParsedPublicationSourcesInput, PublicationTypeSymbolIndex, SourceConfigMetadata,
+        SourceConfigMetadataBatchInput, SourceConfigMetadataInput, SourceSymbolKey,
     },
 };
 use skiff_compiler_compiled::{
@@ -26,6 +25,7 @@ use skiff_compiler_compiled::{
 use skiff_compiler_core::artifact::{
     ConfigAndEffectMetadata, PackageDependencyConstraint, PackageUnit,
 };
+use skiff_compiler_projection::package_unit_artifacts::config_metadata_from_config_projection;
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
     ConfigRequirementProjection, ConfigRequirementProvenanceProjection,
@@ -486,8 +486,8 @@ pub fn compile_parsed_only_package_ast_file_ir_artifacts_with_compiled_dependenc
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
     let entrypoint_config_and_effect_metadata =
-        crate::source_compile::source_config_and_effect_metadata_batches_from_parsed_sources(
-            SourceConfigAndEffectMetadataBatchInput {
+        crate::source_compile::source_config_metadata_batches_from_parsed_sources(
+            SourceConfigMetadataBatchInput {
                 diagnostic_root: package_root,
                 parsed_sources: &parsed_sources,
                 production_sources: &production_sources,
@@ -501,7 +501,7 @@ pub fn compile_parsed_only_package_ast_file_ir_artifacts_with_compiled_dependenc
             },
         )?
         .iter()
-        .map(config_and_effect_metadata_from_source_metadata)
+        .map(config_only_transport_metadata_from_source)
         .collect::<Result<Vec<_>, _>>()?;
     let compiled = crate::pipeline::compile_parsed_publication_sources(
         CompileParsedPublicationSourcesInput {
@@ -606,21 +606,20 @@ pub fn compile_package_ast_config_and_effect_metadata_with_compiled_dependency_p
     );
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
-    let source_metadata =
-        crate::source_compile::source_config_and_effect_metadata_from_parsed_sources(
-            SourceConfigAndEffectMetadataInput {
-                diagnostic_root: package_root,
-                parsed_sources: &parsed_sources,
-                production_sources: &production_sources,
-                package_dependencies: &manifest.dependencies,
-                dependency_package_config_facts: Some(&dependency_config_facts),
-                policy: PublicationCompilePolicy::Package {
-                    package_id: &manifest.id,
-                },
-                publication_api: None,
+    let source_metadata = crate::source_compile::source_config_metadata_from_parsed_sources(
+        SourceConfigMetadataInput {
+            diagnostic_root: package_root,
+            parsed_sources: &parsed_sources,
+            production_sources: &production_sources,
+            package_dependencies: &manifest.dependencies,
+            dependency_package_config_facts: Some(&dependency_config_facts),
+            policy: PublicationCompilePolicy::Package {
+                package_id: &manifest.id,
             },
-        )?;
-    config_and_effect_metadata_from_source_metadata(&source_metadata)
+            publication_api: None,
+        },
+    )?;
+    config_only_transport_metadata_from_source(&source_metadata)
 }
 
 pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_dependency_publications_for_test(
@@ -650,8 +649,8 @@ pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_depend
     );
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
-    crate::source_compile::source_config_and_effect_metadata_batches_from_parsed_sources(
-        SourceConfigAndEffectMetadataBatchInput {
+    crate::source_compile::source_config_metadata_batches_from_parsed_sources(
+        SourceConfigMetadataBatchInput {
             diagnostic_root: package_root,
             parsed_sources: &parsed_sources,
             production_sources: &production_sources,
@@ -665,7 +664,7 @@ pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_depend
         },
     )?
     .iter()
-    .map(config_and_effect_metadata_from_source_metadata)
+    .map(config_only_transport_metadata_from_source)
     .collect()
 }
 
@@ -741,10 +740,10 @@ fn test_package_compiled_artifacts(
     let config_projection = skiff_compiler_projection::project_config_projection(
         projection_view.source().config_requirements(),
     )?;
-    let config_and_effect_metadata =
-        skiff_compiler_projection::package_unit_artifacts::config_and_effect_metadata_from_config_projection(
-            &config_projection,
-        );
+    let config_and_effect_metadata = ConfigAndEffectMetadata {
+        config: config_metadata_from_config_projection(&config_projection),
+        effects: Default::default(),
+    };
     Ok(TestPackageCompiledArtifacts {
         file_ir_artifacts:
             crate::emission::file_ir_artifacts::published_file_ir_artifacts_from_projection_input(
@@ -755,13 +754,9 @@ fn test_package_compiled_artifacts(
     })
 }
 
-fn config_and_effect_metadata_from_source_metadata(
-    metadata: &SourceConfigAndEffectMetadata,
+fn config_only_transport_metadata_from_source(
+    config: &SourceConfigMetadata,
 ) -> Result<ConfigAndEffectMetadata, PublicationError> {
-    match metadata.effects() {
-        SourceEffectMetadata::Empty => {}
-    }
-    let config = metadata.config();
     let requirements = ConfigRequirementsSeed::new(
         config_requirement_set_projection(config.legacy_config_projection_requirements()),
         config_requirement_set_projection(config.own_config_requirements()),
@@ -769,11 +764,10 @@ fn config_and_effect_metadata_from_source_metadata(
         config_requirement_set_projection(config.effective_config_requirements()),
     );
     let config_projection = skiff_compiler_projection::project_config_projection(&requirements)?;
-    Ok(
-        skiff_compiler_projection::package_unit_artifacts::config_and_effect_metadata_from_config_projection(
-            &config_projection,
-        ),
-    )
+    Ok(ConfigAndEffectMetadata {
+        config: config_metadata_from_config_projection(&config_projection),
+        effects: Default::default(),
+    })
 }
 
 fn dependency_package_config_facts_from_source_package_facts<'facts>(
@@ -947,6 +941,7 @@ fn package_unit_from_compiled_package_for_test(
             exports: &package_projection.exports,
             abi_identity_projection: &package_projection.abi_identity_projection,
             config_projection: &package_projection.config_projection,
+            callable_effects: package_projection.input.source().callable_effects(),
             resources: &[],
             file_ir_units: package_projection
                 .input

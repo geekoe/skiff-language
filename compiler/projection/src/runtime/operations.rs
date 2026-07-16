@@ -16,12 +16,13 @@ use crate::{
 use serde::Serialize;
 use skiff_artifact_model::{ExecutableKind, FileIrUnit, FunctionTypeParamIr, TypeRefIr};
 use skiff_compiler_core::source_role::PublicationSourceRole as CompilerSourceRole;
-use skiff_compiler_projection_input::{EntryParamSpec, ProjectionSourceMetadata};
+use skiff_compiler_projection_input::{
+    EntryParamSpec, ProjectionCallableEffectFacts, ProjectionSourceMetadata,
+};
 
-use super::effect_summary_for_signature;
 use super::entrypoints::entry_operation_abi_id;
-use super::operation_effects::effect_summary;
-use super::operation_effects::EffectSummary;
+use super::operation_effect_projection_for_signature;
+use super::operation_effects::{operation_effect_projection, OperationEffectProjection};
 use super::service_operations::{
     contract_public_function_operation_abi_id, public_instance_receiver_executable_signature,
     public_instance_source_interface_signature, runtime_operation_abi_id,
@@ -48,7 +49,7 @@ pub struct OperationEntryIr {
     pub parameters: Vec<OperationParamIr>,
     pub return_type: RuntimeTypeDescriptorIr,
     pub response: JsonSchema,
-    pub summary: EffectSummary,
+    pub summary: OperationEffectProjection,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +101,7 @@ pub fn service_operation_entries(
     interface_modules: &BTreeMap<String, InterfaceModule>,
     file_ir_units: &[FileIrUnit],
     public_instances: &[PublicInstanceExport],
+    callable_effects: &ProjectionCallableEffectFacts,
 ) -> Result<Vec<OperationEntryIr>, ProjectionError> {
     let mut entries = operations
         .iter()
@@ -138,6 +140,12 @@ pub fn service_operation_entries(
                 })?;
             let may_suspend =
                 resolved.executable_may_suspend(file_ir_unit, executable_index, &executable_symbol);
+            let effect_summary = callable_effect_summary(
+                callable_effects,
+                file_ir_unit,
+                resolved.effect_source_symbol(),
+                &artifact_operation.operation,
+            )?;
             let uses_adapter = resolved.uses_non_receiver_adapter();
             Ok::<OperationEntryIr, ProjectionError>(OperationEntryIr {
                 operation: artifact_operation.operation.clone(),
@@ -165,7 +173,7 @@ pub fn service_operation_entries(
                 parameters,
                 return_type,
                 response,
-                summary: effect_summary(),
+                summary: operation_effect_projection(effect_summary),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -175,6 +183,7 @@ pub fn service_operation_entries(
             contract_projection,
             projection_index,
             file_ir_units,
+            callable_effects,
         )?);
     }
     Ok(entries)
@@ -258,6 +267,15 @@ impl<'a> ResolvedProjectedOperation<'a> {
             Self::PublicInstance {
                 executable_symbol, ..
             } => executable_symbol.clone(),
+        }
+    }
+
+    fn effect_source_symbol(&self) -> &str {
+        match self {
+            Self::Contract { implementation, .. } => implementation.executable_symbol.as_str(),
+            Self::PublicInstance {
+                executable_symbol, ..
+            } => executable_symbol.as_str(),
         }
     }
 
@@ -676,6 +694,7 @@ fn entry_operation_entry(
     contract_projection: &ContractProjection,
     projection_index: &ContractProjectionIndex<'_>,
     file_ir_units: &[FileIrUnit],
+    callable_effects: &ProjectionCallableEffectFacts,
 ) -> Result<OperationEntryIr, ProjectionError> {
     let file_ir_unit = file_ir_units
         .iter()
@@ -703,6 +722,13 @@ fn entry_operation_entry(
             ),
         }
     })?;
+    let effect_source_symbol = operation.callable.display_symbol();
+    let effect_summary = callable_effect_summary(
+        callable_effects,
+        file_ir_unit,
+        &effect_source_symbol,
+        &operation.operation,
+    )?;
     let executable = usize::try_from(executable_index)
         .ok()
         .and_then(|index| file_ir_unit.executables.get(index))
@@ -790,8 +816,38 @@ fn entry_operation_entry(
             &operation.implementation_module,
             &return_type,
         ),
-        summary: effect_summary_for_signature(&operation.return_type.ir),
+        summary: operation_effect_projection_for_signature(
+            effect_summary,
+            &operation.return_type.ir,
+        ),
     })
+}
+
+fn callable_effect_summary(
+    callable_effects: &ProjectionCallableEffectFacts,
+    file_ir_unit: &FileIrUnit,
+    source_symbol: &str,
+    operation: &str,
+) -> Result<skiff_artifact_model::CallableEffectSummary, ProjectionError> {
+    let declaration = file_ir_unit
+        .declarations
+        .executables
+        .get(source_symbol)
+        .ok_or_else(|| ProjectionError::ContractValidation {
+            message: format!(
+                "operation {operation} effect source {}.{} is missing from File IR declarations",
+                file_ir_unit.module_path, source_symbol
+            ),
+        })?;
+    callable_effects
+        .operation(&file_ir_unit.module_path, declaration.executable_index)
+        .cloned()
+        .ok_or_else(|| ProjectionError::ContractValidation {
+            message: format!(
+                "operation {operation} effect source {}#{} has no callable effect fact",
+                file_ir_unit.module_path, declaration.executable_index
+            ),
+        })
 }
 
 fn source_operation_params(

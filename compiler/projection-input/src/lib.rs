@@ -11,6 +11,10 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
+mod callable_effects;
+
+pub use callable_effects::{ProjectionCallableEffectFacts, ProjectionExecutableKey};
+
 #[derive(Debug, Clone)]
 pub struct ProjectionInput {
     file_ir_units: Vec<FileIrUnit>,
@@ -387,6 +391,7 @@ pub struct ProjectionSourceFacts {
     abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     service_ingress: Option<ServiceIngressProjection>,
     service_dependencies: ServiceDependencyProjectionFacts,
+    callable_effects: ProjectionCallableEffectFacts,
 }
 
 #[derive(Debug, Clone)]
@@ -397,6 +402,7 @@ pub struct ProjectionSourceFactsParts {
     pub abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
     pub service_ingress: Option<ServiceIngressProjection>,
     pub service_dependencies: ServiceDependencyProjectionFacts,
+    pub callable_effects: ProjectionCallableEffectFacts,
 }
 
 impl ProjectionSourceFacts {
@@ -408,6 +414,7 @@ impl ProjectionSourceFacts {
             abi_ids: parts.abi_ids,
             service_ingress: parts.service_ingress,
             service_dependencies: parts.service_dependencies,
+            callable_effects: parts.callable_effects,
         }
     }
 
@@ -433,6 +440,10 @@ impl ProjectionSourceFacts {
 
     pub fn abi_ids(&self) -> &BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds> {
         &self.abi_ids
+    }
+
+    pub fn callable_effects(&self) -> &ProjectionCallableEffectFacts {
+        &self.callable_effects
     }
 }
 

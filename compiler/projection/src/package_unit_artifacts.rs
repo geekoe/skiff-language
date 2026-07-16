@@ -22,15 +22,17 @@ use crate::typed_artifacts::{
 };
 use crate::ConfigProjection;
 use skiff_artifact_model::{
-    interface_instantiation_ref, type_ref_abi_key, ConstIr, ExecutableIr, FileIrRef, FileIrUnit,
-    InterfaceInstantiationRef, LocalReceiverExecutableRef, MetadataValue, PackageRefIr,
-    PackageSymbolRef, PublicationResourceRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_UNIT_SCHEMA_VERSION,
+    interface_instantiation_ref, type_ref_abi_key, CallableEffectFacts, ConstIr, ExecutableIr,
+    FileIrRef, FileIrUnit, InterfaceInstantiationRef, LocalReceiverExecutableRef, MetadataValue,
+    PackageRefIr, PackageSymbolRef, PublicationResourceRef, ServiceSymbolRef, TypeDescriptorIr,
+    TypeRefIr, PACKAGE_UNIT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_core::naming::impl_method_declaration_name;
 use skiff_compiler_core::package_interface_methods::instantiate_interface_method_signatures;
-use skiff_compiler_projection_input::PublicationResourceProjectionInput;
+use skiff_compiler_projection_input::{
+    ProjectionCallableEffectFacts, PublicationResourceProjectionInput,
+};
 use skiff_compiler_publication_abi::{
     package_public_instance_method_operation, public_signature_from_interface_method_signature,
     public_signature_from_receiver_executable_signature,
@@ -61,6 +63,7 @@ pub struct PackageIrProjectionSource<'a> {
     pub exports: &'a PackageExports,
     pub abi_identity_projection: &'a skiff_artifact_model::AbiIdentityFacts,
     pub config_projection: &'a ConfigProjection,
+    pub callable_effects: &'a ProjectionCallableEffectFacts,
     pub resources: &'a [PublicationResourceProjectionInput],
     pub file_ir_units: Vec<PackageFileIrProjection>,
 }
@@ -95,13 +98,19 @@ pub fn project_package_ir_artifacts(
         &package.file_ir_units,
         package.package_id,
     );
-    let config_and_effect_metadata =
-        config_and_effect_metadata_from_config_projection(package.config_projection);
     let publication_abi = package_publication_abi(package.package_id, package.version, &exports)
         .map_err(|error| ProjectionError::ContractValidation {
             message: error.to_string(),
         })?;
     let implementation_links = package_implementation_links(&exports, &publication_abi);
+    let config_and_effect_metadata = ConfigAndEffectMetadata {
+        config: config_metadata_from_config_projection(package.config_projection),
+        effects: package_callable_effect_facts(
+            package.callable_effects,
+            &publication_abi,
+            &implementation_links,
+        )?,
+    };
     let mut unit = PackageUnit {
         schema_version: PACKAGE_UNIT_SCHEMA_VERSION.to_string(),
         package_id: package.package_id.to_string(),
@@ -169,9 +178,9 @@ pub fn resource_refs_for_projected(
         .collect()
 }
 
-pub fn config_and_effect_metadata_from_config_projection(
+pub fn config_metadata_from_config_projection(
     config_projection: &ConfigProjection,
-) -> ConfigAndEffectMetadata {
+) -> skiff_artifact_model::ConfigMetadataFacts {
     // The assembly serializes these typed values verbatim, so projecting them
     // straight into MetadataValue is byte-equivalent to re-reading the
     // serialized assembly (which is what this used to do).
@@ -192,10 +201,59 @@ pub fn config_and_effect_metadata_from_config_projection(
         "requirements".to_string(),
         MetadataValue::from_serializable(&config_projection.requirements),
     );
-    ConfigAndEffectMetadata {
-        config,
-        effects: StdBTreeMap::new(),
+    config.into()
+}
+
+fn package_callable_effect_facts(
+    source_effects: &ProjectionCallableEffectFacts,
+    publication_abi: &skiff_artifact_model::PublicationAbiUnit,
+    implementation_links: &skiff_artifact_model::PackageImplementationLinks,
+) -> Result<CallableEffectFacts, ProjectionError> {
+    let mut effects = StdBTreeMap::new();
+    for operation in &publication_abi.operation_exports {
+        let target = implementation_links
+            .operation_targets
+            .get(&operation.operation_abi_id)
+            .ok_or_else(|| ProjectionError::ContractValidation {
+                message: format!(
+                    "public operation {} has no typed implementation target for effect mapping",
+                    operation.operation_abi_id
+                ),
+            })?;
+        let (module_path, executable_index) = match target {
+            skiff_artifact_model::PackageOperationTarget::LocalExecutable { target, .. } => (
+                target.file_ref.module_path.as_str(),
+                target.executable_index,
+            ),
+            skiff_artifact_model::PackageOperationTarget::LocalConstReceiverExecutable {
+                target,
+                ..
+            } => (
+                target.executable_target.file_ref.module_path.as_str(),
+                target.executable_target.executable_index,
+            ),
+        };
+        let summary = source_effects
+            .operation(module_path, executable_index)
+            .ok_or_else(|| ProjectionError::ContractValidation {
+                message: format!(
+                    "public operation {} implementation {}#{} has no callable effect fact",
+                    operation.operation_abi_id, module_path, executable_index
+                ),
+            })?;
+        if effects
+            .insert(operation.operation_abi_id.clone(), summary.clone())
+            .is_some()
+        {
+            return Err(ProjectionError::ContractValidation {
+                message: format!(
+                    "duplicate callable effect operation ABI id {}",
+                    operation.operation_abi_id
+                ),
+            });
+        }
     }
+    Ok(CallableEffectFacts::from_operations(effects))
 }
 
 fn package_unit_export_index(
