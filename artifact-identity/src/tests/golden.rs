@@ -166,7 +166,7 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
                 "skiff-operation-abi-v1:sha256:9892d2509d863917a3e61934a7b3b86600e2bc0283a1055c6c11c1cae9bf1561".to_string(),
                 "skiff-operation-abi-v1:sha256:53c0d16e4d2cf8a8060438bd1c194e3e9da67b08612ec48ba138dcff0fb79c91".to_string(),
                 "skiff-publication-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
-                "skiff-package-build-v1:sha256:bec1c849738f962038d05479a80da88c4085c63dcd17173cc2975b1a8d2856d2".to_string(),
+                "skiff-package-build-v1:sha256:f72f6bdcf590d74dd320ea59a68e0394b99dec8263d233fa97a19493eec25a46".to_string(),
                 "skiff-package-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
                 "skiff-service-unit-v1:sha256:495cc9eb389e15e6ef30baf26c15606229973de823135aaaf9d06c814367268d".to_string(),
             ],
@@ -206,7 +206,7 @@ fn module_split_file_runtime_and_package_test_outputs_match_exact_golden() {
             [
                 "skiff-file-ir-v3:sha256:fe27d55db78af32190393edf73afe4f23ed771ebd9a21754e20ec95af51de523".to_string(),
                 "skiff-service-build-v1:sha256:7ca79fb0d44e42415cd821fdd1f603187a1e77a30c81901b2758278561da350d".to_string(),
-                "skiff-package-test-build-v1:sha256:dd5ac05cec9d68e3919a302dfc6485896db8b7a7b3bc3899456a316edbdb2a02".to_string(),
+                "skiff-package-test-build-v1:sha256:dfa756f6d34cd8a0e39c1840cc13d4df28717b9bb7b782bb48e8328c43f1010f".to_string(),
             ],
         );
 }

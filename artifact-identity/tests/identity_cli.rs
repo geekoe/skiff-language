@@ -14,7 +14,8 @@ use skiff_artifact_identity::{
     runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
 };
 use skiff_artifact_model::{
-    EffectMetadata, MetadataValue, PackageDependencyConstraint, PackageUnit, ServiceUnit,
+    CallableEffectSummary, CallableMayEffects, PackageDependencyConstraint, PackageUnit,
+    ServiceUnit,
 };
 
 #[test]
@@ -254,14 +255,24 @@ fn package_unit_with_build_seed(seed: &str) -> PackageUnit {
         "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
-    let mut effect = EffectMetadata::default();
-    effect
-        .metadata
-        .insert("seed".to_string(), MetadataValue::String(seed.to_string()));
     package
         .config_and_effect_metadata
         .effects
-        .insert("__testBuildSeed".to_string(), effect);
+        .operations
+        .insert(
+            "__testBuildSeed".to_string(),
+            CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    writes_caller_reachable: seed == "new",
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                },
+            },
+        );
     assign_package_unit_identities(&mut package).expect("package identities");
     package
 }

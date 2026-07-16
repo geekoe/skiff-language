@@ -2,18 +2,18 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    CanonicalPublicCallableSignature, ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr,
-    DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
-    InterfaceInstantiationRef, MetadataValue, OperationAbiRef, OperationCallableKind,
-    OperationTargetRef, PackageDependencyConstraint, PackageDependencyPublicLinkScope,
-    PackageProductionLinkScope, PackageTestAssembly, PackageTestAssemblyKind,
-    PackageTestEntrypoint, PackageTestEntrypointKind, PackageTestExecutableRef,
-    PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
-    PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit, PublicationAbiUnit,
-    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
-    PublicationResourceRef, PublicationSchemaType, PublicationSchemaTypeNameability,
-    ServiceOperation, ServiceUnit, SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
-    SourceMapSource, TypeRefIr,
+    CallableEffectSummary, CallableMayEffects, CanonicalPublicCallableSignature,
+    ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
+    DbObjectKindIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    MetadataValue, OperationAbiRef, OperationCallableKind, OperationTargetRef,
+    PackageDependencyConstraint, PackageDependencyPublicLinkScope, PackageProductionLinkScope,
+    PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
+    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
+    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit,
+    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
+    PublicationPublicInstanceExport, PublicationResourceRef, PublicationSchemaType,
+    PublicationSchemaTypeNameability, ServiceOperation, ServiceUnit, SourceCallMethodIndexEntry,
+    SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
 };
 
 use super::*;
@@ -129,15 +129,20 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
 
 fn package_fixture(body_seed: &str) -> PackageUnit {
     let mut unit = PackageUnit::empty("example.com/pkg", "1.0.0", "", "");
-    unit.config_and_effect_metadata
-        .effects
-        .entry("bodySeed".to_string())
-        .or_default()
-        .metadata
-        .insert(
-            "value".to_string(),
-            MetadataValue::String(body_seed.to_string()),
-        );
+    unit.config_and_effect_metadata.effects.operations.insert(
+        "bodySeed".to_string(),
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: body_seed == "changed",
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+        },
+    );
     unit.implementation_links.functions.insert(
             "run".to_string(),
             skiff_artifact_model::ExecutableExport {

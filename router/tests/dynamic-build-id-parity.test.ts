@@ -23,7 +23,7 @@ const fixturePath = new URL(
   import.meta.url
 );
 const EXPECTED_DYNAMIC_BUILD_ID =
-  'skiff-service-build-v1:sha256:c82c57f07cb332497b6823eea3e70511498ab436420c150a73d4b24c3972ee91';
+  'skiff-service-build-v1:sha256:53551698b2ea17df098e1a334bd75d0993c977c1c5502056d34dfb074f9fb92d';
 
 async function dynamicBuildIdFixture(): Promise<DynamicBuildIdFixture> {
   return JSON.parse(await readFile(fixturePath, 'utf8')) as DynamicBuildIdFixture;

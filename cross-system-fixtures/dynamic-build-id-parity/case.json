@@ -679,7 +679,7 @@
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-alpha",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:992dd841ba86b1b29bd907f37832fad7364a44646be8b59a59cfe6ed9bcb18be",
+      "buildIdentity": "skiff-package-build-v1:sha256:488d0cdad53ec8d5e5b73136b7d6744c6994f7664a7cf9bbb22339984ca3bb19",
       "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
@@ -774,6 +774,9 @@
             "fields": {},
             "schemaVersion": "skiff-config-shape-v1"
           }
+        },
+        "effects": {
+          "operations": {}
         }
       }
     },
@@ -781,7 +784,7 @@
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-beta",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:73b784f2edf7221d47ea5b7a8eaa607e26868500c63cab193da8535b32a56fa9",
+      "buildIdentity": "skiff-package-build-v1:sha256:bdd021516e5dc6a10b0658dcb1117d6bf22d803957282f569c807e4fe93d7a92",
       "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
@@ -854,13 +857,17 @@
           }
         }
       ],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/pkg-leaf/1.0.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-leaf",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:d284ae579dc6c9d9afa7c99a5b8f3a03ea5401131fb5027a82a8ee11898f1aa3",
+      "buildIdentity": "skiff-package-build-v1:sha256:f4cfd52b57c2e458530acc3281bfb1a712b01837690bd721ef7e86d51950aa29",
       "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
@@ -869,13 +876,17 @@
         "abiIdentity": "skiff-publication-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e"
       },
       "files": [],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/pkg-shared/1.0.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-shared",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:abc9a76d44c6c626e0c494f076d0a04bd88a901bdb11d3c11a1e30ea5966cc9a",
+      "buildIdentity": "skiff-package-build-v1:sha256:64bff3bbdee8d486ddb176d64af98a9dcbca04a20f168638ba3e4e427d64c487",
       "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
@@ -894,13 +905,17 @@
           }
         }
       ],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/skiff~run~~std/0.1.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "skiff.run/std",
       "version": "0.1.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:458d04cb913f352956f4b417a41bf0d2782a6f430c4f6070a046ae4749aef6c2",
+      "buildIdentity": "skiff-package-build-v1:sha256:4a6178de0542cc0a427dd97abfbbc838e41c3e420fc82da761884224ef075f20",
       "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
@@ -950,7 +965,11 @@
           }
         }
       },
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/services/example~com~~dynamic-golden/2026.06.04.json": {
       "schemaVersion": "skiff-service-unit-v1",
@@ -1578,7 +1597,7 @@
     }
   },
   "description": "Runtime program dynamicBuildId parity across compiler publish, runtime, and router; covers std normal record, std normal union, and native type refs.",
-  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:c82c57f07cb332497b6823eea3e70511498ab436420c150a73d4b24c3972ee91",
+  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:53551698b2ea17df098e1a334bd75d0993c977c1c5502056d34dfb074f9fb92d",
   "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:7118adcde6527723d1b75401529538dcda3c333922b56abbac1bca62c7ae9388",
   "pointerBuildId": "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "schemaVersion": 1,
