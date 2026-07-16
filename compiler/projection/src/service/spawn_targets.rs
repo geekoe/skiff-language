@@ -1,10 +1,7 @@
 use skiff_artifact_model::{ExecutableIr, FileIrUnit, SpawnTargetIr};
 pub use skiff_compiler_core::spawn_targets::PackageSpawnTargetSource;
 
-use crate::contract::{
-    BoundaryKind, BoundaryPackageTypeSource, BoundaryTypeRefClosureValidator,
-    ContractProjectionIndex,
-};
+use crate::contract::{BoundaryKind, BoundaryTypeRefClosureValidator, ContractProjectionIndex};
 use crate::error::ProjectionError;
 
 pub fn service_spawn_targets_with_packages(
@@ -13,14 +10,11 @@ pub fn service_spawn_targets_with_packages(
     package_sources: &[PackageSpawnTargetSource],
     service_protocol_identity: &str,
 ) -> Result<Vec<SpawnTargetIr>, ProjectionError> {
-    let targets = skiff_compiler_core::spawn_targets::service_spawn_targets_with_packages(
+    let targets = collect_service_spawn_targets_with_packages(
         service_file_ir_units,
         package_sources,
         service_protocol_identity,
-    )
-    .map_err(|error| ProjectionError::ContractValidation {
-        message: error.message,
-    })?;
+    )?;
     validate_spawn_target_param_boundaries(
         &targets,
         service_file_ir_units,
@@ -30,24 +24,29 @@ pub fn service_spawn_targets_with_packages(
     Ok(targets)
 }
 
+pub(crate) fn collect_service_spawn_targets_with_packages(
+    service_file_ir_units: &[FileIrUnit],
+    package_sources: &[PackageSpawnTargetSource],
+    service_protocol_identity: &str,
+) -> Result<Vec<SpawnTargetIr>, ProjectionError> {
+    skiff_compiler_core::spawn_targets::service_spawn_targets_with_packages(
+        service_file_ir_units,
+        package_sources,
+        service_protocol_identity,
+    )
+    .map_err(|error| ProjectionError::ContractValidation {
+        message: error.message,
+    })
+}
+
 fn validate_spawn_target_param_boundaries(
     targets: &[SpawnTargetIr],
     service_file_ir_units: &[FileIrUnit],
     contract_projection_index: &ContractProjectionIndex<'_>,
     package_sources: &[PackageSpawnTargetSource],
 ) -> Result<(), ProjectionError> {
-    let validator = BoundaryTypeRefClosureValidator::new(
-        contract_projection_index,
-        package_sources
-            .iter()
-            .map(|package| BoundaryPackageTypeSource {
-                package_id: package.package_id.clone(),
-                dependency_refs: package.dependency_refs.clone(),
-                unit: package.unit.clone(),
-                file_ir_units: package.file_ir_units.clone(),
-            })
-            .collect(),
-    );
+    let validator =
+        BoundaryTypeRefClosureValidator::new(contract_projection_index, package_sources);
     let mut violations = Vec::new();
 
     for target in targets {
@@ -82,7 +81,7 @@ fn collect_spawn_target_param_violations(
     target: &SpawnTargetIr,
     service_file_ir_units: &[FileIrUnit],
     package_sources: &[PackageSpawnTargetSource],
-    validator: &BoundaryTypeRefClosureValidator<'_>,
+    validator: &BoundaryTypeRefClosureValidator<'_, '_>,
     violations: &mut Vec<String>,
 ) {
     let Some((module_path, executable)) =

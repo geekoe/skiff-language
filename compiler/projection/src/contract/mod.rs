@@ -12,12 +12,12 @@ mod type_key;
 
 #[allow(unused_imports)]
 pub use abi_projection::{abi_type_id_for_named_key, project_abi_identity, AbiIdentityProjection};
-pub use boundary::{validate_contract_projection_boundary, BoundaryKind, ContractBoundaryError};
 #[allow(unused_imports)]
 pub(crate) use boundary::{
-    validate_static_type_ref_boundary_policy, BoundaryPackageTypeSource,
-    BoundaryTypeRefClosureValidator,
+    static_type_ref_boundary_policy, validate_static_type_ref_boundary_policy,
+    BoundaryTypePolicyDecision, BoundaryTypeRefClosureValidator,
 };
+pub use boundary::{validate_contract_projection_boundary, BoundaryKind, ContractBoundaryError};
 #[allow(unused_imports)]
 pub use conformance::{
     validate_contract_projection_conformance, ContractConformanceError,
