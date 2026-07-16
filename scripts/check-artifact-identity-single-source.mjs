@@ -298,14 +298,14 @@ const adapterRequirements = [
     regexp: /\bskiff_artifact_identity::service_unit_identity\b/,
   },
   {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'package build identity',
-    regexp: /\bskiff_artifact_identity::package_build_identity\b/,
+    relPath: 'compiler/projection/src/package_unit_artifacts/mod.rs',
+    helper: 'package identity assignment',
+    regexp: /\bskiff_artifact_identity::assign_package_unit_identities\b/,
   },
   {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'package ABI identity',
-    regexp: /\bskiff_artifact_identity::package_abi_identity\b/,
+    relPath: 'compiler/emission/src/emission/package_unit_artifacts.rs',
+    helper: 'projected package identity validation',
+    regexp: /\bskiff_artifact_identity::validate_package_unit_identities\b/,
   },
   {
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',

@@ -440,13 +440,12 @@ mod tests {
         config::{ConfigActivation, ConfigRequirementsProjection, ConfigShape, ConfigUseEntry},
         context::empty_dependency_config,
         package_unit_artifacts::PackageFileIrProjection,
-        typed_artifacts::PackageUnit,
         ConfigProjection,
     };
     use skiff_artifact_model::{
         DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FileIrRef, FileIrUnit,
-        InterfaceInstantiationRef, ServiceSymbolRef, TypeDeclIr, TypeDescriptorIr, TypeExport,
-        TypeRefIr,
+        InterfaceInstantiationRef, PackageUnit, ServiceSymbolRef, TypeDeclIr, TypeDescriptorIr,
+        TypeExport, TypeRefIr,
     };
 
     const AGENT_PACKAGE_ID: &str = "example.com/agent";

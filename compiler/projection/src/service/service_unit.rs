@@ -9,15 +9,16 @@ use crate::{
     context::ProjectedPackageDependency,
     contract::{ContractProjection, ContractProjectionIndex},
     error::ProjectionError,
+    package_references::file_ir_units_reference_package,
+    package_unit_artifacts::{package_dependency_constraint, std_package_dependency_constraint},
     runtime::{
         service_operation_adapter_symbol, EntryOperationCallable, EntryOperationSpec, GatewayEntry,
         OperationEntryIr, TimeoutEntry,
     },
     typed_artifacts::{
         public_instance_method_operation_abi_id, GatewayConfig, GatewayRoute, GatewayWebSocket,
-        InterfaceMethodSignature, OperationConstReceiverRef, OperationMode, OperationTargetRef,
-        PackageAbiExpectation, PackageDependencyConstraint, PackageUsedSymbol,
-        PackageUsedSymbolKind, PublicInstanceExport, PublicInstanceOperation,
+        OperationConstReceiverRef, OperationMode, OperationTargetRef, PackageAbiExpectation,
+        PackageDependencyConstraint, PublicInstanceExport, PublicInstanceOperation,
         ServiceConfigMetadata, ServiceOperation,
     },
 };
@@ -30,11 +31,12 @@ use skiff_artifact_model::{
     DbChangeOpIr, DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr,
     ExecutableBody, ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr,
     ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
-    InterfaceInstantiationRef, InterfaceMethodTablePlanIr, LocalReceiverExecutableRef,
-    MetadataValue, OperationAbiRef, OperationCallableKind, PackageRefIr, PackageSymbolRef,
-    PackageUnit, ParamIr, PatternIr, PublicationOperationKind, ReceiverCallAbi,
-    ServiceOperationTarget, ServiceReceiverOperationTarget, ServiceSymbolRef, SlotIr, SlotKind,
-    SlotLayout, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    InterfaceInstantiationRef, InterfaceMethodSignature, InterfaceMethodTablePlanIr,
+    LocalReceiverExecutableRef, MetadataValue, OperationAbiRef, OperationCallableKind,
+    PackageRefIr, PackageSymbolRef, PackageUnit, PackageUsedSymbol, PackageUsedSymbolKind, ParamIr,
+    PatternIr, PublicationOperationKind, ReceiverCallAbi, ServiceOperationTarget,
+    ServiceReceiverOperationTarget, ServiceSymbolRef, SlotIr, SlotKind, SlotLayout, StmtIr,
+    StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_core::naming::impl_method_declaration_name;
 use skiff_compiler_core::package_interface_methods::instantiate_interface_method_signatures;
@@ -63,138 +65,16 @@ pub fn service_package_dependency_constraints(
             Some(dependency)
         })
         .collect::<Vec<_>>();
-    if file_ir_units_reference_std_package(service_file_units)
-        && !constraints
-            .iter()
-            .any(|dependency| dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
+    if file_ir_units_reference_package(
+        service_file_units,
+        skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID,
+    ) && !constraints
+        .iter()
+        .any(|dependency| dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
     {
         constraints.push(std_package_dependency_constraint());
     }
     constraints
-}
-
-fn package_dependency_constraint(
-    dependency: &ProjectedPackageDependency,
-) -> PackageDependencyConstraint {
-    PackageDependencyConstraint {
-        id: dependency.id.clone(),
-        version: dependency.version.clone(),
-        alias: dependency.effective_alias().to_string(),
-        config: dependency.config.clone(),
-    }
-}
-
-fn std_package_dependency_constraint() -> PackageDependencyConstraint {
-    PackageDependencyConstraint {
-        id: skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID.to_string(),
-        version: "1.0.0".to_string(),
-        alias: "std".to_string(),
-        config: crate::context::empty_dependency_config(),
-    }
-}
-
-fn file_ir_units_reference_std_package<'a>(
-    file_ir_units: impl IntoIterator<Item = &'a FileIrUnit>,
-) -> bool {
-    file_ir_units.into_iter().any(|file| {
-        file_unit_references_package(file, skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
-    })
-}
-
-fn file_unit_references_package(file: &FileIrUnit, package_id: &str) -> bool {
-    file.external_refs
-        .package_symbols
-        .iter()
-        .any(|symbol| package_symbol_references_package(symbol, package_id))
-        || file.type_table.iter().any(|ty| {
-            type_descriptor_references_package(&ty.descriptor, package_id)
-                || ty
-                    .implements
-                    .iter()
-                    .any(|implemented| type_ref_references_package(implemented, package_id))
-        })
-        || file.executables.iter().any(|executable| {
-            executable
-                .params
-                .iter()
-                .any(|param| type_ref_references_package(&param.ty, package_id))
-                || type_ref_references_package(&executable.return_type, package_id)
-                || executable
-                    .self_type
-                    .as_ref()
-                    .is_some_and(|ty| type_ref_references_package(ty, package_id))
-        })
-}
-
-fn type_descriptor_references_package(descriptor: &TypeDescriptorIr, package_id: &str) -> bool {
-    match descriptor {
-        TypeDescriptorIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_references_package(field, package_id)),
-        TypeDescriptorIr::Alias { target } => type_ref_references_package(target, package_id),
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .any(|variant| type_ref_references_package(variant, package_id)),
-        TypeDescriptorIr::Native { .. } => false,
-    }
-}
-
-fn type_ref_references_package(ty: &TypeRefIr, package_id: &str) -> bool {
-    match ty {
-        TypeRefIr::PackageSymbol { symbol } => {
-            package_symbol_references_package(symbol, package_id)
-        }
-        TypeRefIr::Native { args, .. } => args
-            .iter()
-            .any(|arg| type_ref_references_package(arg, package_id)),
-        TypeRefIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_references_package(field, package_id)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .any(|item| type_ref_references_package(item, package_id)),
-        TypeRefIr::Nullable { inner } => type_ref_references_package(inner, package_id),
-        TypeRefIr::AnyInterface { interface } => {
-            interface_instantiation_references_package(interface, package_id)
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_ref_references_package(&param.ty, package_id))
-                || type_ref_references_package(return_type, package_id)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => false,
-    }
-}
-
-fn interface_instantiation_references_package(
-    interface: &InterfaceInstantiationRef,
-    package_id: &str,
-) -> bool {
-    serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-        .ok()
-        .is_some_and(|ty| type_ref_references_package(&ty, package_id))
-        || interface
-            .canonical_type_args
-            .iter()
-            .any(|arg| type_ref_references_package(arg, package_id))
-}
-
-fn package_symbol_references_package(symbol: &PackageSymbolRef, package_id: &str) -> bool {
-    match &symbol.package {
-        PackageRefIr::PackageId {
-            package_id: candidate,
-        } => candidate == package_id,
-        PackageRefIr::Dependency { .. } => false,
-    }
 }
 
 pub fn service_config_metadata(
