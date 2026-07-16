@@ -14,7 +14,8 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-pub(crate) fn identity(prefix: &str, hash: &str) -> String {
+/// Frames an identity from its canonical prefix and an already-derived hash.
+pub fn framed_identity(prefix: &str, hash: &str) -> String {
     format!("{prefix}:{hash}")
 }
 

@@ -5,7 +5,7 @@ pub use projection::{PackageBuildIdentityProjection, PackageLocalAbiIdentityProj
 use serde_json::{Map, Value};
 use skiff_artifact_model::{PackageOperationTarget, PackageUnit, PublicationAbiUnit};
 
-use crate::framing::{canonical_ir_bytes, identity, sha256_hex};
+use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
 use crate::publication::assign_publication_abi_identity;
 use crate::publication_validation::{
     validate_publication_abi_identity, validate_publication_operation_ref,
@@ -43,7 +43,7 @@ pub fn package_build_hash(unit: &PackageUnit) -> Result<String> {
 }
 
 pub fn package_build_identity(unit: &PackageUnit) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         PACKAGE_BUILD_IDENTITY_PREFIX,
         &package_build_hash(unit)?,
     ))
@@ -55,7 +55,7 @@ pub fn package_local_abi_hash(unit: &PackageUnit) -> Result<String> {
 }
 
 pub fn package_local_abi_identity(unit: &PackageUnit) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
         &package_local_abi_hash(unit)?,
     ))
@@ -168,7 +168,7 @@ fn validate_package_publication_coordinate(
 
 fn package_local_abi_identity_from_validated(unit: &PackageUnit) -> Result<String> {
     let projection = PackageLocalAbiIdentityProjection::from_unit(unit);
-    Ok(identity(
+    Ok(framed_identity(
         PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
         &package_local_abi_hash_from_projection(&projection)?,
     ))
@@ -188,7 +188,7 @@ fn package_build_identity_from_validated(
     local_abi_identity: String,
 ) -> Result<String> {
     let projection = PackageBuildIdentityProjection::from_unit(unit, local_abi_identity)?;
-    Ok(identity(
+    Ok(framed_identity(
         PACKAGE_BUILD_IDENTITY_PREFIX,
         &package_build_hash_from_projection(&projection)?,
     ))

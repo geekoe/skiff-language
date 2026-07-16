@@ -14,7 +14,7 @@ use crate::{
             PublishedPackageArtifacts,
         },
         file_ir_artifacts::published_file_ir_artifacts_from_projection_input,
-        identity::{identity, PACKAGE_ASSEMBLY_IDENTITY_PREFIX},
+        identity::{framed_identity, PACKAGE_ASSEMBLY_IDENTITY_PREFIX},
     },
     error::{EmissionError, Result},
     projection::{
@@ -158,7 +158,7 @@ pub fn emit_package(
         &bundle.source_map,
     );
     let hash = value_sha256(&artifact_model_value(&assembly_hash_model));
-    let assembly_identity = identity(PACKAGE_ASSEMBLY_IDENTITY_PREFIX, &hash);
+    let assembly_identity = framed_identity(PACKAGE_ASSEMBLY_IDENTITY_PREFIX, &hash);
     let assembly_path = package_artifact_assembly_path(context.package_id, &hash);
     let index_path = package_version_index_path(context.package_id, context.version);
     let assembly_unit = ArtifactUnit {

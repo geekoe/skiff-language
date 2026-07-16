@@ -12,8 +12,8 @@ use skiff_compiler_core::artifact::{
     SourceCallOperationIndexEntry,
 };
 use skiff_compiler_emission::identity::{
-    runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes_from_json,
-    SERVICE_BUILD_IDENTITY_PREFIX,
+    framed_identity, runtime_program_dynamic_build_id,
+    runtime_program_service_unit_identity_bytes_from_json, SERVICE_BUILD_IDENTITY_PREFIX,
 };
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ use crate::{
         SERVICE_UNIT_SCHEMA_VERSION,
     },
     emission::{
-        file_ir_artifacts::published_file_ir_artifact_from_unit, identity::identity,
+        file_ir_artifacts::published_file_ir_artifact_from_unit,
         service_artifacts::SERVICE_ASSEMBLY_IDENTITY_PREFIX,
     },
     test_support::package_units::{file_ref_for_published, package_unit_path},
@@ -717,7 +717,7 @@ fn service_assembly_artifact(
         "sourceMap": source_map,
     });
     let hash = value_sha256(&hash_input);
-    let assembly_identity = identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &hash);
+    let assembly_identity = framed_identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &hash);
     let path = format!("assemblies/services/{service_path}/{hash}.json");
     let mut value = hash_input;
     value["service"]["assemblyIdentity"] = Value::String(assembly_identity.clone());
@@ -1594,12 +1594,13 @@ mod tests {
     };
 
     use super::*;
-    use skiff_artifact_identity::interface_instantiation_ref;
     use skiff_compiler_core::artifact::{
         DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, InterfaceDeclIr,
         InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
     };
-    use skiff_compiler_emission::identity::PACKAGE_BUILD_IDENTITY_PREFIX;
+    use skiff_compiler_emission::identity::{
+        interface_instantiation_ref, PACKAGE_BUILD_IDENTITY_PREFIX,
+    };
     use skiff_compiler_lowering::file_ir::{
         ExecutableBody, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, SlotLayout, TypeRefIr,
     };
@@ -1712,7 +1713,7 @@ mod tests {
         let content_hash = value_sha256(&assembly_value);
         assert_eq!(
             assembly_identity,
-            identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &content_hash)
+            framed_identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &content_hash)
         );
     }
 
@@ -2086,7 +2087,7 @@ mod tests {
         });
         let package_units = vec![PublishedJsonArtifact {
             value: json!({ "packageId": "example.com/pkg" }),
-            identity: identity(
+            identity: framed_identity(
                 PACKAGE_BUILD_IDENTITY_PREFIX,
                 "4b24b73ab87ead763385ad32675bc66b5f113ec8730b16489428ed0a21b8d1ea",
             ),

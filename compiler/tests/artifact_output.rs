@@ -10,8 +10,12 @@ use common::{
     TestDir,
 };
 use skiff_compiler_emission::identity::{
-    runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes_from_json,
-    FILE_IR_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
+    canonical_interface_method_abi_id, canonical_interface_method_abi_id_from_parts,
+    public_function_operation_abi_id as canonical_public_function_operation_abi_id,
+    public_instance_method_operation_abi_id as canonical_public_instance_method_operation_abi_id,
+    publication_abi_identity, runtime_program_dynamic_build_id,
+    runtime_program_service_unit_identity_bytes_from_json, FILE_IR_IDENTITY_PREFIX,
+    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
 };
 
 #[test]
@@ -1562,7 +1566,7 @@ fn public_function_operation_abi_id(
     public_signature: serde_json::Value,
 ) -> String {
     let public_signature = serde_json::from_value(public_signature).unwrap();
-    skiff_artifact_identity::public_function_operation_abi_id(
+    canonical_public_function_operation_abi_id(
         public_path,
         &public_signature,
         &[],
@@ -1580,7 +1584,7 @@ fn public_instance_method_operation_abi_id(
 ) -> String {
     let interface = serde_json::from_value(interface).unwrap();
     let public_signature = serde_json::from_value(public_signature).unwrap();
-    skiff_artifact_identity::public_instance_method_operation_abi_id(
+    canonical_public_instance_method_operation_abi_id(
         public_path,
         public_instance_key,
         &interface,
@@ -1594,7 +1598,7 @@ fn public_instance_method_operation_abi_id(
 
 fn with_declared_publication_abi_identity(value: serde_json::Value) -> serde_json::Value {
     let mut publication_abi = serde_json::from_value(value).unwrap();
-    let abi_identity = skiff_artifact_identity::publication_abi_identity(&publication_abi).unwrap();
+    let abi_identity = publication_abi_identity(&publication_abi).unwrap();
     publication_abi.abi_identity = abi_identity;
     serde_json::to_value(publication_abi).unwrap()
 }
@@ -1695,7 +1699,7 @@ fn caller_llm_client_method_abi_id() -> String {
 
 fn caller_method_abi_id(interface_symbol: &str, method: &str) -> String {
     let interface = serde_json::from_value(caller_interface_ref(interface_symbol)).unwrap();
-    skiff_artifact_identity::canonical_interface_method_abi_id(&interface, method)
+    canonical_interface_method_abi_id(&interface, method)
 }
 
 /// Direct (`publicationType`) form of the LlmClient `send` method ABI id, as it
@@ -1708,7 +1712,7 @@ fn caller_llm_client_direct_method_abi_id(type_index: u64) -> String {
         "typeIndex": type_index
     }))
     .unwrap();
-    skiff_artifact_identity::canonical_interface_method_abi_id_from_parts(
+    canonical_interface_method_abi_id_from_parts(
         &interface_abi_id,
         &[] as &[serde_json::Value],
         "send",

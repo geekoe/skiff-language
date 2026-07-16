@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{ConfigAndEffectMetadata, PackageTestAssembly, PackageTestEntrypoint};
 
-use crate::framing::{canonical_ir_bytes, identity, sha256_hex};
+use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
 use crate::{
     ArtifactIdentityError, Result, PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
     PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
@@ -16,7 +16,7 @@ pub fn package_test_build_hash(assembly: &PackageTestAssembly) -> Result<String>
 }
 
 pub fn package_test_build_identity(assembly: &PackageTestAssembly) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
         &package_test_build_hash(assembly)?,
     ))
@@ -81,7 +81,10 @@ pub fn package_test_entrypoint_local_id(
         },
         ArtifactIdentityError::SerializePackageTestBuildIdentity,
     )?);
-    Ok(identity(PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX, &hash))
+    Ok(framed_identity(
+        PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
+        &hash,
+    ))
 }
 
 pub fn derive_package_test_entrypoint_id(
@@ -96,7 +99,7 @@ pub fn derive_package_test_entrypoint_id(
         },
         ArtifactIdentityError::SerializePackageTestBuildIdentity,
     )?);
-    Ok(identity(PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, &hash))
+    Ok(framed_identity(PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, &hash))
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

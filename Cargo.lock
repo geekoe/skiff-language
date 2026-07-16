@@ -2162,7 +2162,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "skiff-artifact-identity",
  "skiff-compiler-compiled",
  "skiff-compiler-core",
  "skiff-compiler-emission",

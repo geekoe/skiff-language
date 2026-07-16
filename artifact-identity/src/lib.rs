@@ -26,6 +26,7 @@ pub use file_ir::{
     assign_file_ir_identity, canonical_file_ir_identity_bytes, canonical_file_ir_identity_value,
     file_ir_hash, file_ir_identity, file_ir_with_identity, validate_file_ir_identity,
 };
+pub use framing::framed_identity;
 pub use legacy_service::{
     service_unit_hash, service_unit_identity, service_unit_identity_bytes,
     service_unit_identity_value,
