@@ -3,19 +3,13 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     CallIr, CallTargetIr, ExecutableDeclarationIr, ExecutableIr, ExecutableKind, FileIrRef,
     FileIrUnit, MetadataValue, OperationAbiRef, OperationCallableKind, OperationTargetRef,
-    PackageOperationTarget, PackageRefIr, PackageUnit, SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
+    PackageOperationTarget, PackageRefIr, SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
 };
+
+pub use crate::type_closure::PackageTypeSource as PackageSpawnTargetSource;
 
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
-
-#[derive(Clone, Debug)]
-pub struct PackageSpawnTargetSource {
-    pub package_id: String,
-    pub dependency_refs: Vec<String>,
-    pub unit: PackageUnit,
-    pub file_ir_units: Vec<FileIrUnit>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnTargetProjectionError {

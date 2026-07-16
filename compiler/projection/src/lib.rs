@@ -18,6 +18,7 @@ pub mod service_config;
 pub mod source_map;
 mod source_symbol;
 pub mod std_type_refs;
+mod type_closure_diagnostics;
 pub mod typed_artifacts;
 
 use crate::{
