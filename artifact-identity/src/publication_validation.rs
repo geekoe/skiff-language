@@ -51,6 +51,24 @@ pub fn validate_publication_abi_identity(unit: &PublicationAbiUnit) -> Result<()
     Ok(())
 }
 
+/// Validates a consumer-held operation reference against the already typed
+/// publication surface without reimplementing operation-ref equality rules.
+pub(crate) fn validate_publication_operation_ref(
+    unit: &PublicationAbiUnit,
+    operation: &OperationAbiRef,
+    label: &str,
+) -> Result<()> {
+    let exports = operation_index(&unit.operation_exports, "operationExports")?;
+    validate_operation_ref_shape(operation, label)?;
+    let Some(expected) = exports.get(operation.operation_abi_id.as_str()) else {
+        return invalid(format!(
+            "{label} targets dangling operationAbiId {}",
+            operation.operation_abi_id
+        ));
+    };
+    ensure_same_operation_ref(expected, operation, label)
+}
+
 fn operation_index<'a>(
     operations: &'a [OperationAbiRef],
     label: &str,

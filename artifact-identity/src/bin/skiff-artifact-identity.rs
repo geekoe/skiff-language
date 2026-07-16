@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_identity::{
-    package_abi_identity, package_build_identity,
+    package_build_identity, package_local_abi_identity,
     runtime_program_dynamic_build_id_from_artifact_refs,
     runtime_program_dynamic_build_id_from_artifact_root, ArtifactIdentityError,
     PackageUnitArtifactRef,
@@ -97,7 +97,7 @@ fn package_unit_identities() -> Result<(), CliError> {
         .map_err(|error| CliError::SchemaInvalid(format!("packageUnit is invalid: {error}")))?;
     let response = PackageUnitIdentitiesResponse {
         build_identity: package_build_identity(&package_unit).map_err(CliError::Identity)?,
-        abi_identity: package_abi_identity(&package_unit).map_err(CliError::Identity)?,
+        abi_identity: package_local_abi_identity(&package_unit).map_err(CliError::Identity)?,
     };
 
     serde_json::to_writer(io::stdout(), &response)

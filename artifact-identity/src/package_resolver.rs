@@ -684,7 +684,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{package_abi_identity, package_build_identity, publication_abi_identity};
+    use crate::{package_build_identity, package_local_abi_identity, publication_abi_identity};
 
     #[test]
     fn resolver_returns_runtime_preorder_package_build_identities() {
@@ -953,7 +953,7 @@ mod tests {
         unit.dependencies = dependencies.into_iter().collect();
         unit.publication_abi.abi_identity =
             publication_abi_identity(&unit.publication_abi).expect("publication ABI identity");
-        unit.abi_identity = package_abi_identity(&unit).expect("package ABI identity");
+        unit.abi_identity = package_local_abi_identity(&unit).expect("package local ABI identity");
         unit.build_identity = package_build_identity(&unit).expect("package build identity");
         unit
     }

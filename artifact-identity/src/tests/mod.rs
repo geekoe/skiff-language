@@ -6,14 +6,15 @@ use skiff_artifact_model::{
     ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
     DbObjectKindIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
     MetadataValue, OperationAbiRef, OperationCallableKind, OperationTargetRef,
-    PackageDependencyConstraint, PackageDependencyPublicLinkScope, PackageProductionLinkScope,
-    PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
-    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
-    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit,
-    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
-    PublicationPublicInstanceExport, PublicationResourceRef, PublicationSchemaType,
-    PublicationSchemaTypeNameability, ServiceOperation, ServiceUnit, SourceCallMethodIndexEntry,
-    SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
+    PackageDependencyConstraint, PackageDependencyPublicLinkScope, PackageOperationTarget,
+    PackageProductionLinkScope, PackageTestAssembly, PackageTestAssemblyKind,
+    PackageTestEntrypoint, PackageTestEntrypointKind, PackageTestExecutableRef,
+    PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
+    PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit, PublicationAbiUnit,
+    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
+    PublicationResourceRef, PublicationSchemaType, PublicationSchemaTypeNameability,
+    ServiceOperation, ServiceUnit, SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
+    SourceMapSource, TypeRefIr,
 };
 
 use super::*;
@@ -23,6 +24,7 @@ mod golden;
 mod legacy_service;
 mod operation;
 mod package;
+mod package_mutation_matrix;
 mod package_test;
 mod publication_validation;
 mod runtime_program;
@@ -63,18 +65,18 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
         production_package_unit: PackageTestPackageUnitRef {
             package_id: "example.com/pkg".to_string(),
             version: "1.0.0".to_string(),
-            build_identity: "skiff-package-build-v1:sha256:prod".to_string(),
+            build_identity: "skiff-package-build-v2:sha256:prod".to_string(),
             unit_path: "units/packages/example.com/pkg/prod.json".to_string(),
-            public_abi_identity: "skiff-package-abi-v1:sha256:prodabi".to_string(),
+            public_abi_identity: "skiff-package-local-abi-v2:sha256:prodabi".to_string(),
             implementation_links_identity: "sha256:prodlinks".to_string(),
         },
         test_files: vec![owner_test_file.clone()],
         dependency_package_units: vec![PackageTestPackageUnitRef {
             package_id: "example.com/dep".to_string(),
             version: "1.0.0".to_string(),
-            build_identity: "skiff-package-build-v1:sha256:dep".to_string(),
+            build_identity: "skiff-package-build-v2:sha256:dep".to_string(),
             unit_path: "units/packages/example.com/dep/dep.json".to_string(),
-            public_abi_identity: "skiff-package-abi-v1:sha256:depabi".to_string(),
+            public_abi_identity: "skiff-package-local-abi-v2:sha256:depabi".to_string(),
             implementation_links_identity: "sha256:deplinks".to_string(),
         }],
         test_entrypoints: vec![PackageTestEntrypoint {
@@ -102,7 +104,7 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
             current_package_production: PackageProductionLinkScope {
                 package_id: "example.com/pkg".to_string(),
                 version: "1.0.0".to_string(),
-                build_identity: "skiff-package-build-v1:sha256:prod".to_string(),
+                build_identity: "skiff-package-build-v2:sha256:prod".to_string(),
                 files_digest: "sha256:prodfiles".to_string(),
                 implementation_links_digest: "sha256:prodlinks".to_string(),
                 allow_private: true,
@@ -117,8 +119,8 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
             dependency_public_scopes: vec![PackageDependencyPublicLinkScope {
                 package_id: "example.com/dep".to_string(),
                 version: "1.0.0".to_string(),
-                build_identity: "skiff-package-build-v1:sha256:dep".to_string(),
-                public_abi_identity: "skiff-package-abi-v1:sha256:depabi".to_string(),
+                build_identity: "skiff-package-build-v2:sha256:dep".to_string(),
+                public_abi_identity: "skiff-package-local-abi-v2:sha256:depabi".to_string(),
                 public_export_digest: "sha256:depexports".to_string(),
                 implementation_links_digest: "sha256:deplinks".to_string(),
                 allow_private: false,
@@ -131,8 +133,10 @@ fn package_test_assembly_fixture() -> PackageTestAssembly {
 
 fn package_fixture(body_seed: &str) -> PackageUnit {
     let mut unit = PackageUnit::empty("example.com/pkg", "1.0.0", "", "");
+    unit.publication_abi = publication_abi_fixture();
+    let operation = unit.publication_abi.operation_exports[0].clone();
     unit.config_and_effect_metadata.effects.operations.insert(
-        "bodySeed".to_string(),
+        operation.operation_abi_id.clone(),
         CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
                 writes_caller_reachable: body_seed == "changed",
@@ -145,28 +149,40 @@ fn package_fixture(body_seed: &str) -> PackageUnit {
             },
         },
     );
+    let file = FileIrRef {
+        file_ir_identity: "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        module_path: "pkg.main".to_string(),
+        artifact_path: Some("units/files/pkg.json".into()),
+        source_ast_hash: Some("source".into()),
+    };
+    unit.files.push(file.clone());
     unit.implementation_links.functions.insert(
-            "run".to_string(),
-            skiff_artifact_model::ExecutableExport {
-                file: FileIrRef {
-                    file_ir_identity: "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                    module_path: "pkg.main".to_string(),
-                    artifact_path: Some("units/files/pkg.json".into()),
-                    source_ast_hash: Some("source".into()),
-                },
-                executable_index: 0,
-                symbol: "run".to_string(),
-                signature: skiff_artifact_model::ExecutableSignatureIr {
-                    params: Vec::new(),
-                    return_type: TypeRefIr::native("string"),
-                    self_type: None,
-                    may_suspend: false,
-                },
+        "run".to_string(),
+        skiff_artifact_model::ExecutableExport {
+            file: file.clone(),
+            executable_index: 0,
+            symbol: "run".to_string(),
+            signature: skiff_artifact_model::ExecutableSignatureIr {
+                params: Vec::new(),
+                return_type: TypeRefIr::native("string"),
+                self_type: None,
+                may_suspend: false,
             },
-        );
-    unit.publication_abi = publication_abi_fixture();
-    unit.publication_abi.abi_identity =
-        publication_abi_identity(&unit.publication_abi).expect("publication abi identity");
+        },
+    );
+    unit.implementation_links.operation_targets.insert(
+        operation.operation_abi_id.clone(),
+        PackageOperationTarget::LocalExecutable {
+            operation,
+            target: OperationTargetRef {
+                file_ref: file,
+                executable_index: 0,
+                callable_abi_id: "callable:run".to_string(),
+                callable_kind: OperationCallableKind::PublicFunction,
+            },
+        },
+    );
+    assign_package_unit_identities(&mut unit).expect("package fixture identities");
     unit
 }
 

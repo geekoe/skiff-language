@@ -45,9 +45,14 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+service_unit_identity_bytes\s*\(/,
   },
   {
-    name: 'PackageBuildIdentityPayload',
-    relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bstruct\s+PackageBuildIdentityPayload\b/,
+    name: 'PackageLocalAbiIdentityProjection',
+    relPath: 'artifact-identity/src/package/projection.rs',
+    regexp: /\bpub\s+struct\s+PackageLocalAbiIdentityProjection\b/,
+  },
+  {
+    name: 'PackageBuildIdentityProjection',
+    relPath: 'artifact-identity/src/package/projection.rs',
+    regexp: /\bpub\s+struct\s+PackageBuildIdentityProjection\b/,
   },
   {
     name: 'package_build_identity',
@@ -55,9 +60,9 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+package_build_identity\s*\(/,
   },
   {
-    name: 'package_abi_identity',
+    name: 'package_local_abi_identity',
     relPath: 'artifact-identity/src/package.rs',
-    regexp: /\bpub\s+fn\s+package_abi_identity\s*\(/,
+    regexp: /\bpub\s+fn\s+package_local_abi_identity\s*\(/,
   },
   {
     name: 'PublicationAbiIdentityProjection',
@@ -199,7 +204,9 @@ const ownerRequirements = [
 const exclusiveDefinitionNames = new Set([
   'FileIrIdentityPayload',
   'ServiceUnitStorageIdentityPayload',
-  'PackageBuildIdentityPayload',
+  'PackageLocalAbiIdentityProjection',
+  'PackageBuildIdentityProjection',
+  'package_local_abi_identity',
   'PublicationAbiIdentityProjection',
   'OperationAbiIdentityInput',
   'PackageTestBuildIdentityPayload',
@@ -553,11 +560,11 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects projection package identity payload duplicate',
+      name: 'rejects package build identity projection duplicate',
       files: [
         {
           relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-          text: 'struct PackageBuildIdentityPayload;\n',
+          text: 'struct PackageBuildIdentityProjection;\n',
         },
       ],
       expectedViolations: 1,

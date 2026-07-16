@@ -18,6 +18,17 @@ pub enum ArtifactIdentityError {
     PackageBuildIdentityMismatch { declared: String, computed: String },
     #[error("package unit declared abiIdentity {declared} but content ABI identity is {computed}")]
     PackageAbiIdentityMismatch { declared: String, computed: String },
+    #[error(
+        "package unit coordinate {package_id}@{package_version} does not match nested publicationAbi coordinate {publication_id}@{publication_version}"
+    )]
+    PackagePublicationCoordinateMismatch {
+        package_id: String,
+        package_version: String,
+        publication_id: String,
+        publication_version: String,
+    },
+    #[error("package identity input is invalid: {message}")]
+    InvalidPackageIdentityInput { message: String },
     #[error("failed to serialize service unit for runtime program identity: {0}")]
     SerializeServiceUnit(serde_json::Error),
     #[error("failed to serialize service unit storage identity payload: {0}")]

@@ -9,7 +9,7 @@ use std::{
 
 use serde_json::{json, Value};
 use skiff_artifact_identity::{
-    assign_package_unit_identities, package_abi_identity, package_build_identity,
+    assign_package_unit_identities, package_build_identity, package_local_abi_identity,
     publication_abi_identity, runtime_program_dynamic_build_id_from_artifact_refs,
     runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
 };
@@ -193,7 +193,8 @@ fn runtime_program_build_id_cli_reports_schema_invalid_json() {
 fn package_unit_identities_cli_returns_build_and_abi_identities() {
     let package_unit = valid_package_unit();
     let expected_build = package_build_identity(&package_unit).expect("package build identity");
-    let expected_abi = package_abi_identity(&package_unit).expect("package ABI identity");
+    let expected_abi =
+        package_local_abi_identity(&package_unit).expect("package local ABI identity");
 
     let output = run_cli_command(
         "package-unit-identities",
@@ -240,8 +241,8 @@ fn valid_package_unit() -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
     package.publication_abi.abi_identity =
         publication_abi_identity(&package.publication_abi).expect("publication ABI identity");
@@ -252,8 +253,8 @@ fn package_unit_with_build_seed(seed: &str) -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
     package
         .config_and_effect_metadata

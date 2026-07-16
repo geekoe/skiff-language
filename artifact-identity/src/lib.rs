@@ -15,10 +15,11 @@ mod semantic;
 pub use constants::{
     BUNDLE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
     PACKAGE_ABI_IDENTITY_PREFIX, PACKAGE_ASSEMBLY_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_PREFIX,
-    PACKAGE_TEST_BUILD_IDENTITY_PREFIX, PACKAGE_TEST_ENTRYPOINT_ID_PREFIX,
-    PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX, PUBLICATION_ABI_IDENTITY_PREFIX,
-    RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER, SERVICE_ASSEMBLY_IDENTITY_PREFIX,
-    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
+    PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
+    PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
+    PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
+    PUBLICATION_ABI_IDENTITY_PREFIX, RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER,
+    SERVICE_ASSEMBLY_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
 };
 pub use error::{ArtifactIdentityError, Result};
 pub use file_ir::{
@@ -35,7 +36,10 @@ pub use operation::{
 };
 pub use package::{
     assign_package_unit_identities, package_abi_hash, package_abi_identity, package_build_hash,
-    package_build_identity, validate_package_unit_identities,
+    package_build_identity, package_build_identity_projection, package_local_abi_hash,
+    package_local_abi_identity, package_local_abi_identity_projection,
+    validate_package_unit_identities, PackageBuildIdentityProjection,
+    PackageLocalAbiIdentityProjection,
 };
 pub use package_resolver::{
     ordered_package_build_identities_from_artifact_refs,
