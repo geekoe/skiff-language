@@ -118,10 +118,12 @@ reason code 进入 build identity，诊断 detail 不进入。
 ```text
 T01 identity module + canonical JSON foundation ──► T02 nominal/callable identity owner
                                                      │
+                                                     └──► T02A identity dependency DAG contract
+                                                            │
 T03 typed effect leaf ──────────────────────────────► T05 package identity API/preimage
 T02 ───────────────────────────────────────────────► T05
 
-T02 + T03 + T04 + T05 ────────────────────────────► T06 PackageUnit single path + identity adoption
+T02A + T03 + T04 + T05 ───────────────────────────► T06 PackageUnit single path + identity adoption
 
 T06 ───────────────────────────────────────────────► T07 cross-layer reference validation
 
@@ -134,9 +136,11 @@ T08 ─────────────────────────�
 1. T01、T03、T04 从文档 checkpoint 并行。
 2. T02 从合入 T01 的 checkpoint 开始。
 3. T05 从包含 T02/T03 的 checkpoint 开始，只冻结 identity API/preimage。
-4. T06 从包含 T02/T03/T04/T05 的 checkpoint 开始，独占 compiler adoption。
-5. T07 合入 T06 后执行。
-6. T08 只做集成、fixture 与 gate；A01 只读验收。
+4. T02A 从包含 T02 的 checkpoint 开始，修正 canonical identity owner 已落地但 crate-DAG contract
+   未同步的问题；它不改变 identity 算法。
+5. T06 从包含 T02A/T03/T04/T05 的 checkpoint 开始，独占 compiler adoption。
+6. T07 合入 T06 后执行。
+7. T08 只做集成、fixture 与 gate；A01 只读验收。
 
 ## 7. 任务索引
 
@@ -144,10 +148,11 @@ T08 ─────────────────────────�
 | --- | --- | --- | --- |
 | T01 | [Identity module 与 canonical JSON foundation](tasks/P1-T01-identity-foundation.md) | 无 | foundation / artifact-identity |
 | T02 | [Nominal/callable identity 单一 owner](tasks/P1-T02-semantic-identity.md) | T01 | artifact-model / artifact-identity / ABI builder |
+| T02A | [Canonical identity dependency DAG contract](tasks/P1-T02A-identity-dag-contract.md) | T02 | compiler crate DAG / identity adapters |
 | T03 | [Typed effect semantic leaf](tasks/P1-T03-typed-effect-leaf.md) | 无 | artifact-model / source / compiled |
 | T04 | [Nominal type closure kernel](tasks/P1-T04-type-closure-kernel.md) | 无 | compiler-core / boundary consumers |
 | T05 | [Package identity projection](tasks/P1-T05-package-identity.md) | T01, T02, T03 | artifact-identity |
-| T06 | [PackageUnit 单一 projection path](tasks/P1-T06-package-unit-single-path.md) | T02, T03, T04, T05 | compiler projection/emission |
+| T06 | [PackageUnit 单一 projection path](tasks/P1-T06-package-unit-single-path.md) | T02A, T03, T04, T05 | compiler projection/emission |
 | T07 | [跨层 artifact reference validation](tasks/P1-T07-cross-layer-validation.md) | T02, T03, T05, T06 | compiler/runtime/router/CLI |
 | T08 | [阶段集成与 gate](tasks/P1-T08-phase-integration.md) | T03–T07 | integration branch |
 | A01 | [独立阶段验收](tasks/P1-A01-stage-acceptance.md) | T08 | read-only acceptance |
@@ -163,8 +168,10 @@ T08 ─────────────────────────�
 - T04 独占 compiler-core closure API 与 boundary/recoverable walker 迁移；不得改 artifact DTO。
 - T02/T05 从新 checkpoint 顺序消费 T01；T05 独占 package identity API/preimage/prefix，不改 compiler
   projection/emission adoption callsite。
-- T06 在 T05 后独占 PackageUnit builder去重与production/package-test projection收敛；消费T03已经迁移的
-  effect shape，并采用T05 identity API，不得重新定义effect wire或identity算法。
+- T02A 只校正 compiler crate DAG 与 identity adapter dependency contract：允许 input/compiled 在各自边界直接
+  调 canonical owner，同时删除 facade test 对 foundation crate 的旁路依赖；不得搬回或复制 identity 算法。
+- T06 在 T02A 与 T05 后独占 PackageUnit builder去重与production/package-test projection收敛；消费T03
+  已经迁移的effect shape，并采用T05 identity API，不得重新定义effect wire或identity算法。
 - T07 才能改 runtime/router/scripts 的 identity/ref consumers。
 - T08 不能新增语义；语义缺口必须退回相应任务。
 

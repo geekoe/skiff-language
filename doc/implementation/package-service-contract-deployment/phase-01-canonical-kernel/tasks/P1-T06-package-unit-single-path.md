@@ -7,8 +7,8 @@ projection，而不是维护一套看似相同的builder。
 
 ## 依赖与 worktree
 
-- 依赖P1-T02、P1-T03、P1-T04、P1-T05。
-- 从包含四项前置提交的phase checkpoint建task worktree；必须在T05之后执行。
+- 依赖P1-T02A、P1-T03、P1-T04、P1-T05。
+- 从包含四项前置提交的phase checkpoint建task worktree；必须在T02A与T05之后执行。
 - 建议branch：`codex/package-service-p1-t06-package-unit-single-path`。
 
 ## 完成态
