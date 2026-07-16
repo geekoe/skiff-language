@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     SourceMapSource, SourceMapSpan, TypeDeclIr,
 };
 
-use crate::framing::{identity, sha256_hex};
+use crate::framing::{framed_identity, sha256_hex};
 use crate::{ArtifactIdentityError, Result, FILE_IR_IDENTITY_PREFIX};
 use skiff_canonical_json::canonical_json_value;
 
@@ -14,7 +14,10 @@ pub fn file_ir_hash(unit: &FileIrUnit) -> Result<String> {
 }
 
 pub fn file_ir_identity(unit: &FileIrUnit) -> Result<String> {
-    Ok(identity(FILE_IR_IDENTITY_PREFIX, &file_ir_hash(unit)?))
+    Ok(framed_identity(
+        FILE_IR_IDENTITY_PREFIX,
+        &file_ir_hash(unit)?,
+    ))
 }
 
 pub fn canonical_file_ir_identity_value(unit: &FileIrUnit) -> Result<Value> {

@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::ServiceUnit;
 
-use crate::framing::{identity, sha256_hex};
+use crate::framing::{framed_identity, sha256_hex};
 use crate::{ArtifactIdentityError, Result, SERVICE_UNIT_IDENTITY_PREFIX};
 use skiff_canonical_json::canonical_json_value;
 
@@ -11,7 +11,7 @@ pub fn service_unit_hash(unit: &ServiceUnit) -> Result<String> {
 }
 
 pub fn service_unit_identity(unit: &ServiceUnit) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         SERVICE_UNIT_IDENTITY_PREFIX,
         &service_unit_hash(unit)?,
     ))

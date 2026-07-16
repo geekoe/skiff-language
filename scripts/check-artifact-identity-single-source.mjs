@@ -15,6 +15,16 @@ const skippedRustScanDirectories = new Set([
 const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
 const ownerRequirements = [
   {
+    name: 'framed_identity',
+    relPath: 'artifact-identity/src/framing.rs',
+    regexp: /\bpub\s+fn\s+framed_identity\s*\(/,
+  },
+  {
+    name: 'framed_identity facade re-export',
+    relPath: artifactIdentityFacadePath,
+    regexp: /\bpub\s+use\s+framing::framed_identity\s*;/,
+  },
+  {
     name: 'FileIrIdentityPayload',
     relPath: 'artifact-identity/src/file_ir.rs',
     regexp: /\bstruct\s+FileIrIdentityPayload\b/,
@@ -202,6 +212,7 @@ const ownerRequirements = [
 ];
 
 const exclusiveDefinitionNames = new Set([
+  'framed_identity',
   'FileIrIdentityPayload',
   'ServiceUnitStorageIdentityPayload',
   'PackageLocalAbiIdentityProjection',
@@ -242,6 +253,14 @@ const ownedDefinitionRegexp = new RegExp(
   `\\b(?:struct|fn)\\s+(${[...definitionOwnerByName.keys()].join('|')})\\b`,
   'g',
 );
+
+const compilerGenericIdentityFramingHelperRegexp =
+  /\b(?:pub(?:\s*\([^)]*\))?\s+)?fn\s+([A-Za-z_]\w*)\s*\((?=[^)]*\bprefix\s*:)(?=[^)]*\b(?:hash|digest)\s*:)[^)]*\)/gs;
+const compilerGenericIdentityFramingFormatRegexps = [
+  /\bformat!\s*\(\s*"\{prefix\}:\{(?:hash|digest)\}"\s*\)/g,
+  /\bformat!\s*\(\s*"\{\}:\{\}"\s*,\s*prefix\s*,\s*(?:hash|digest)\s*\)/g,
+  /\bformat!\s*\(\s*"\{prefix\}:\{\}"\s*,\s*(?:hash|digest)\s*\)/g,
+];
 
 const facadeModules = [
   'constants',
@@ -328,6 +347,12 @@ const adapterRequirements = [
     regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,
   },
   {
+    relPath: 'compiler/emission/src/emission/identity.rs',
+    helper: 'canonical framed identity',
+    regexp:
+      /\bpub\s+use\s+skiff_artifact_identity\s*::\s*\{[\s\S]*?\bframed_identity\b/,
+  },
+  {
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
     helper: 'public_function_operation_abi_id',
     regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
@@ -385,6 +410,14 @@ async function runCheck() {
     }
   }
   failures.push(...collectAdapterRequirementFailures(adapterRequirements, adapterTextByPath));
+  const emissionIdentityAdapterText = stripInlineTestModules(
+    adapterTextByPath.get('compiler/emission/src/emission/identity.rs') ?? '',
+  );
+  if (/\b(?:struct|enum|fn)\s+\w+/.test(emissionIdentityAdapterText)) {
+    failures.push(
+      'compiler/emission/src/emission/identity.rs must contain re-exports only',
+    );
+  }
 
   const canonicalDelegationTextByPath = new Map();
   for (const { relPath } of canonicalDelegationRequirements) {
@@ -402,6 +435,11 @@ async function runCheck() {
   for (const violation of collectOwnedDefinitionViolations(files)) {
     failures.push(
       `${violation.relPath}:${violation.line} ${violation.name} is owned by ${violation.owner}`,
+    );
+  }
+  for (const violation of collectCompilerIdentityFramingViolations(files)) {
+    failures.push(
+      `${violation.relPath}:${violation.line} ${violation.message}; use artifact-identity framed_identity`,
     );
   }
 
@@ -475,6 +513,35 @@ function collectOwnedDefinitionViolations(files) {
   return violations;
 }
 
+function collectCompilerIdentityFramingViolations(files) {
+  const violations = [];
+
+  for (const file of files) {
+    if (!isProductionRustFile(file.relPath) || !file.relPath.startsWith('compiler/')) {
+      continue;
+    }
+    const text = stripInlineTestModules(file.text);
+    for (const match of text.matchAll(compilerGenericIdentityFramingHelperRegexp)) {
+      violations.push({
+        relPath: file.relPath,
+        line: lineNumberAt(text, match.index ?? 0),
+        message: `defines local generic identity framing helper ${match[1]}`,
+      });
+    }
+    for (const regexp of compilerGenericIdentityFramingFormatRegexps) {
+      for (const match of text.matchAll(regexp)) {
+        violations.push({
+          relPath: file.relPath,
+          line: lineNumberAt(text, match.index ?? 0),
+          message: 'constructs identity framing locally',
+        });
+      }
+    }
+  }
+
+  return violations;
+}
+
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
   await collectRustFiles(repoRoot, files);
@@ -528,6 +595,10 @@ function runSelfTest() {
     {
       name: 'allows definitions in their declared owner modules',
       files: [
+        {
+          relPath: 'artifact-identity/src/framing.rs',
+          text: 'pub fn framed_identity() {}\n',
+        },
         {
           relPath: 'artifact-identity/src/operation.rs',
           text: 'pub struct OperationAbiIdentityInput;\npub fn operation_abi_identity() {}\n',
@@ -590,6 +661,16 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
+      name: 'rejects canonical identity framing outside its owner',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: 'pub fn framed_identity() {}\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
       name: 'rejects a canonical JSON definition outside the leaf owner',
       files: [
         {
@@ -624,6 +705,58 @@ function runSelfTest() {
   const failures = [];
   for (const testCase of cases) {
     const violations = collectOwnedDefinitionViolations(testCase.files);
+    if (violations.length !== testCase.expectedViolations) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
+      );
+    }
+  }
+
+  const framingCases = [
+    {
+      name: 'rejects compiler generic framing helper even when it delegates',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/identity.rs',
+          text: `pub fn identity(prefix: &str, hash: &str) -> String {
+  skiff_artifact_identity::framed_identity(prefix, hash)
+}
+`,
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects compiler local identity framing format',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/service_artifacts.rs',
+          text: `fn build() {
+  let prefix = "skiff-service-assembly-v1:sha256";
+  let hash = "abc";
+  let _ = format!("{prefix}:{hash}");
+}
+`,
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'allows compiler use of canonical framing API',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/service_artifacts.rs',
+          text: `fn build() {
+  let _ = skiff_artifact_identity::framed_identity("prefix", "hash");
+}
+`,
+        },
+      ],
+      expectedViolations: 0,
+    },
+  ];
+  for (const testCase of framingCases) {
+    const violations = collectCompilerIdentityFramingViolations(testCase.files);
     if (violations.length !== testCase.expectedViolations) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,

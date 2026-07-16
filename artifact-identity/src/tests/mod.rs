@@ -20,6 +20,7 @@ use skiff_artifact_model::{
 use super::*;
 
 mod file_ir;
+mod framing;
 mod golden;
 mod legacy_service;
 mod operation;

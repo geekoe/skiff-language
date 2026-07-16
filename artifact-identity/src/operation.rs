@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     PublicationOperationKind, PublicationSchemaType,
 };
 
-use crate::framing::{canonical_ir_bytes, identity, sha256_hex};
+use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
 use crate::{ArtifactIdentityError, Result, OPERATION_ABI_IDENTITY_PREFIX};
 
 pub fn operation_abi_hash(input: &OperationAbiIdentityInput<'_>) -> Result<String> {
@@ -17,7 +17,7 @@ pub fn operation_abi_hash(input: &OperationAbiIdentityInput<'_>) -> Result<Strin
 }
 
 pub fn operation_abi_identity(input: &OperationAbiIdentityInput<'_>) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         OPERATION_ABI_IDENTITY_PREFIX,
         &operation_abi_hash(input)?,
     ))

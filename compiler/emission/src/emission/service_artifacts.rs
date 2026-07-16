@@ -4,7 +4,7 @@ use crate::emission::artifact::{
     CONTRACT_SCHEMA_ARTIFACT_VERSION, FILE_IR_SCHEMA_VERSION, PACKAGE_UNIT_SCHEMA_VERSION,
     SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
-use crate::emission::identity::identity;
+use crate::emission::identity::framed_identity;
 use crate::emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts};
 use crate::error::{EmissionError, Result};
 use crate::projection::context::{PackageApiSourceProjection, ProjectedServiceDependencyLockEntry};
@@ -489,7 +489,7 @@ fn build_published_artifact_units<'a>(
     );
     let service_assembly_hash = value_sha256(&artifact_model_value(&service_assembly_hash_model));
     let service_assembly_identity =
-        identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &service_assembly_hash);
+        framed_identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &service_assembly_hash);
     let service_id_path = service_id_artifact_path(context.service_id);
     let service_assembly_path =
         format!("assemblies/services/{service_id_path}/{service_assembly_hash}.json");
@@ -520,7 +520,7 @@ fn build_published_artifact_units<'a>(
         package_unit_pointers.clone(),
     );
     let bundle_hash = value_sha256(&artifact_model_value(&bundle_hash_model));
-    let bundle_identity = identity(BUNDLE_IDENTITY_PREFIX, &bundle_hash);
+    let bundle_identity = framed_identity(BUNDLE_IDENTITY_PREFIX, &bundle_hash);
     let bundle_path = format!("bundles/{bundle_hash}.json");
     let service_bundle = ArtifactUnit {
         model: service_bundle_artifact_model(

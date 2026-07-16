@@ -8,7 +8,7 @@ use skiff_artifact_model::{
     PublicationSchemaType,
 };
 
-use crate::framing::{canonical_ir_bytes, identity, sha256_hex};
+use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
 use crate::{ArtifactIdentityError, Result, PUBLICATION_ABI_IDENTITY_PREFIX};
 use skiff_canonical_json::canonical_json_value;
 
@@ -17,7 +17,7 @@ pub fn publication_abi_hash(unit: &PublicationAbiUnit) -> Result<String> {
 }
 
 pub fn publication_abi_identity(unit: &PublicationAbiUnit) -> Result<String> {
-    Ok(identity(
+    Ok(framed_identity(
         PUBLICATION_ABI_IDENTITY_PREFIX,
         &publication_abi_hash(unit)?,
     ))
