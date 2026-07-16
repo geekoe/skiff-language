@@ -361,6 +361,7 @@ mod tests {
     };
 
     use serde_json::Value;
+    use skiff_compiler_core::artifact::CallableEffectSummary;
 
     use super::*;
     use crate::test_support::{
@@ -1337,7 +1338,7 @@ mod tests {
             api: vec![TestPackageApiEntry::source(
                 "publicAnswer",
                 "api",
-                "publicAnswer",
+                "internalAnswer",
             )],
             dependencies: Vec::new(),
             path: PathBuf::from("/tmp/skiff-package-publication-api-seed"),
@@ -1347,7 +1348,7 @@ mod tests {
             "api.skiff",
             "api",
             r#"
-                function publicAnswer() -> number {
+                function internalAnswer() -> number {
                     return 42
                 }
             "#,
@@ -1375,6 +1376,34 @@ mod tests {
                 .any(|operation| operation.public_path == "publicAnswer"),
             "production publication compile must preserve manifest API seed: {:?}",
             package_unit.publication_abi.operation_exports
+        );
+        for operation in &package_unit.publication_abi.operation_exports {
+            assert_eq!(
+                package_unit
+                    .config_and_effect_metadata
+                    .effects
+                    .operations
+                    .get(&operation.operation_abi_id),
+                Some(&CallableEffectSummary::analysis_pending()),
+                "every public operation must carry an explicit typed effect fact"
+            );
+        }
+        assert_eq!(
+            package_unit
+                .config_and_effect_metadata
+                .effects
+                .operations
+                .len(),
+            package_unit.publication_abi.operation_exports.len(),
+            "effect map keys are stable operation ABI ids, not display paths"
+        );
+        assert!(
+            !package_unit
+                .config_and_effect_metadata
+                .effects
+                .operations
+                .contains_key("publicAnswer"),
+            "the public display path must not be used as an effect-map key"
         );
     }
 

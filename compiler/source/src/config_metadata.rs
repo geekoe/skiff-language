@@ -9,12 +9,6 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct SourceConfigAndEffectMetadata {
-    config: SourceConfigMetadata,
-    effects: SourceEffectMetadata,
-}
-
-#[derive(Debug)]
 pub struct SourceConfigMetadata {
     legacy_config_projection_requirements: ConfigRequirementSet,
     own_config_requirements: ConfigRequirementSet,
@@ -22,12 +16,7 @@ pub struct SourceConfigMetadata {
     effective_config_requirements: ConfigRequirementSet,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceEffectMetadata {
-    Empty,
-}
-
-pub struct SourceConfigAndEffectMetadataInput<'a, 'source> {
+pub struct SourceConfigMetadataInput<'a, 'source> {
     pub diagnostic_root: &'a Path,
     pub parsed_sources: &'a [ParsedCompilerSource],
     pub production_sources: &'source [CompilerSourceFile],
@@ -37,7 +26,7 @@ pub struct SourceConfigAndEffectMetadataInput<'a, 'source> {
     pub publication_api: Option<&'a PublicationApiSpec>,
 }
 
-pub struct SourceConfigAndEffectMetadataBatchInput<'a, 'source> {
+pub struct SourceConfigMetadataBatchInput<'a, 'source> {
     pub diagnostic_root: &'a Path,
     pub parsed_sources: &'a [ParsedCompilerSource],
     pub production_sources: &'source [CompilerSourceFile],
@@ -48,9 +37,9 @@ pub struct SourceConfigAndEffectMetadataBatchInput<'a, 'source> {
     pub entrypoint_function_names: &'a [String],
 }
 
-pub fn source_config_and_effect_metadata_from_parsed_sources(
-    input: SourceConfigAndEffectMetadataInput<'_, '_>,
-) -> Result<SourceConfigAndEffectMetadata, PublicationError> {
+pub fn source_config_metadata_from_parsed_sources(
+    input: SourceConfigMetadataInput<'_, '_>,
+) -> Result<SourceConfigMetadata, PublicationError> {
     validate_source_config_metadata_input(
         input.diagnostic_root,
         input.parsed_sources,
@@ -70,16 +59,16 @@ pub fn source_config_and_effect_metadata_from_parsed_sources(
         input.diagnostic_root,
         input.parsed_sources,
     )?;
-    source_config_and_effect_metadata_from_config_usage_seed(
+    source_config_metadata_from_config_usage_seed(
         &config_usage_seed,
         &linked_facts.dependency_config_requirements,
         input.policy,
     )
 }
 
-pub fn source_config_and_effect_metadata_batches_from_parsed_sources(
-    input: SourceConfigAndEffectMetadataBatchInput<'_, '_>,
-) -> Result<Vec<SourceConfigAndEffectMetadata>, PublicationError> {
+pub fn source_config_metadata_batches_from_parsed_sources(
+    input: SourceConfigMetadataBatchInput<'_, '_>,
+) -> Result<Vec<SourceConfigMetadata>, PublicationError> {
     validate_source_config_metadata_input(
         input.diagnostic_root,
         input.parsed_sources,
@@ -102,7 +91,7 @@ pub fn source_config_and_effect_metadata_batches_from_parsed_sources(
     )?
     .iter()
     .map(|config_usage_seed| {
-        source_config_and_effect_metadata_from_config_usage_seed(
+        source_config_metadata_from_config_usage_seed(
             config_usage_seed,
             &linked_facts.dependency_config_requirements,
             input.policy,
@@ -133,11 +122,11 @@ fn validate_source_config_metadata_input(
     Ok(())
 }
 
-fn source_config_and_effect_metadata_from_config_usage_seed(
+fn source_config_metadata_from_config_usage_seed(
     config_usage_seed: &crate::config_usage::ConfigUsageSeed,
     dependency_config_requirements: &ConfigRequirementSet,
     policy: PublicationCompilePolicy<'_>,
-) -> Result<SourceConfigAndEffectMetadata, PublicationError> {
+) -> Result<SourceConfigMetadata, PublicationError> {
     let scope = ConfigRequirementScope::from_publication_policy(policy);
     let own_config_requirements =
         ConfigRequirementSet::from_usage_seed(config_usage_seed, scope.clone());
@@ -146,25 +135,12 @@ fn source_config_and_effect_metadata_from_config_usage_seed(
     let legacy_config_projection_requirements =
         effective_config_requirements.matching_scope(&scope);
 
-    Ok(SourceConfigAndEffectMetadata {
-        config: SourceConfigMetadata {
-            legacy_config_projection_requirements,
-            own_config_requirements,
-            dependency_config_requirements: dependency_config_requirements.clone(),
-            effective_config_requirements,
-        },
-        effects: SourceEffectMetadata::Empty,
+    Ok(SourceConfigMetadata {
+        legacy_config_projection_requirements,
+        own_config_requirements,
+        dependency_config_requirements: dependency_config_requirements.clone(),
+        effective_config_requirements,
     })
-}
-
-impl SourceConfigAndEffectMetadata {
-    pub fn config(&self) -> &SourceConfigMetadata {
-        &self.config
-    }
-
-    pub fn effects(&self) -> SourceEffectMetadata {
-        self.effects
-    }
 }
 
 impl SourceConfigMetadata {

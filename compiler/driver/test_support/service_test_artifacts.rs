@@ -1167,8 +1167,8 @@ fn package_config_and_effect_metadata(paths: &[String]) -> ConfigAndEffectMetada
         metadata_value_from_json(config_activation_value(paths)),
     );
     ConfigAndEffectMetadata {
-        config,
-        effects: BTreeMap::new(),
+        config: config.into(),
+        effects: Default::default(),
     }
 }
 

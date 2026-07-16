@@ -114,6 +114,7 @@ pub fn project_service_artifact_projection(
         &interface_modules,
         &service_file_ir_unit_values,
         input.public_instances,
+        service_input.source().callable_effects(),
     )?;
     let package_unit_dependencies = service_package_dependency_constraints(
         package_dependencies,

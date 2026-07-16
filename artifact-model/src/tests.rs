@@ -997,7 +997,7 @@ fn package_unit_rejects_unknown_fields_and_keeps_dependency_config_open() {
                 }
             }
         ],
-        "configAndEffectMetadata": {},
+        "configAndEffectMetadata": { "effects": { "operations": {} } },
         "runtimeOnly": true
     });
 
@@ -1034,7 +1034,7 @@ fn package_unit_empty_uses_canonical_defaults() {
                 "abiIdentity": "abi:1"
             },
             "files": [],
-            "configAndEffectMetadata": {}
+            "configAndEffectMetadata": { "effects": { "operations": {} } }
         })
     );
 }
@@ -1096,7 +1096,7 @@ fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
         "abiIdentity": "abi:1",
         "publicationAbi": publication_abi_json("example.com/mongo", "1.0.0", "abi:1"),
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     });
     let package: PackageUnit = serde_json::from_value(old_package).unwrap();
     assert!(package.resources.is_empty());
@@ -1193,7 +1193,7 @@ fn package_unit_rejects_legacy_top_level_exports() {
         "abiIdentity": "abi:1",
         "files": [],
         "exports": {},
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     }));
 }
 
@@ -1206,7 +1206,7 @@ fn package_unit_requires_publication_abi() {
         "buildIdentity": "build:1",
         "abiIdentity": "abi:1",
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     }))
     .expect_err("PackageUnit without publicationAbi must fail closed")
     .to_string();
@@ -1311,7 +1311,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                     "symbol": "__skiff_package_test_0"
                 },
                 "defaultRun": true,
-                "configAndEffectMetadata": {},
+                "configAndEffectMetadata": { "effects": { "operations": {} } },
                 "runtimeExpectedError": {
                     "code": "ProviderUnavailableError",
                     "messageContains": "offline"
@@ -1350,7 +1350,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                 }
             ]
         },
-        "configAndEffectMetadata": {},
+        "configAndEffectMetadata": { "effects": { "operations": {} } },
         "sourceMap": {
             "sources": []
         }
@@ -1400,7 +1400,7 @@ fn package_unit_rejects_legacy_binding_requirements_field() {
         "abiIdentity": "abi:1",
         "publicationAbi": publication_abi_json("example.com/agent", "1.0.0", "abi:1"),
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     });
     let decoded_without_binding_requirements: PackageUnit =
         serde_json::from_value(without_binding_requirements).unwrap();

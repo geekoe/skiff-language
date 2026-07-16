@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    callable_effects::SourceCallableEffectFacts,
     parsed_sources::ParsedCompilerSource,
     semantic::PublicationSemanticContext,
     shared::{
@@ -128,6 +129,7 @@ pub struct SourceCompileModel {
     expression_types: ExpressionTypeModel,
     publication_api: PublicationApiModel,
     export_bindings: ExportBindingModel,
+    callable_effects: SourceCallableEffectFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
     // input in runtime_manifest.rs.  P2 will introduce AbiTypeId consuming declaration_anchors.
     #[allow(dead_code)]
@@ -169,6 +171,7 @@ enum SourceCompilePolicy {
 
 impl SourceCompileModel {
     pub fn build(input: SourceCompileModelInput<'_>) -> Result<Self, PublicationError> {
+        let callable_effects = SourceCallableEffectFacts::analysis_pending(&input.parsed_sources);
         let policy = SourceCompilePolicy::from_borrowed(input.policy);
         let plan = PublicationCompilePlan::from_policy(policy.as_borrowed());
         let indexes = SourceIndexes::build(
@@ -274,6 +277,7 @@ impl SourceCompileModel {
             expression_types,
             publication_api,
             export_bindings,
+            callable_effects,
             source_identity: input.source_identity,
             declaration_anchors: input.declaration_anchors,
             own_config_requirements,
@@ -338,6 +342,10 @@ impl SourceCompileModel {
 
     pub fn export_bindings(&self) -> &ExportBindingModel {
         &self.export_bindings
+    }
+
+    pub fn callable_effects(&self) -> &SourceCallableEffectFacts {
+        &self.callable_effects
     }
 
     #[cfg(any(test, feature = "test-support"))]

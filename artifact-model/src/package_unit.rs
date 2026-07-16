@@ -5,8 +5,9 @@ use serde_json::Value;
 
 use crate::{
     abi_identity::AbiIdentityFacts,
+    config::ConfigMetadataFacts,
+    effects::CallableEffectFacts,
     executable::ExecutableSignatureIr,
-    metadata::MetadataValue,
     publication_abi::{OperationAbiRef, PublicationAbiUnit},
     recoverable::RecoverableArtifactMetadata,
     refs::FileIrRef,
@@ -242,20 +243,14 @@ pub enum PackageUsedSymbolKind {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Legacy wire grouping retained only as a transport envelope. Configuration
+/// requirements and callable effects have independent typed owners.
 pub struct ConfigAndEffectMetadata {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub config: BTreeMap<String, MetadataValue>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub effects: BTreeMap<String, EffectMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EffectMetadata {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub metadata: BTreeMap<String, MetadataValue>,
+    #[serde(default, skip_serializing_if = "ConfigMetadataFacts::is_empty")]
+    pub config: ConfigMetadataFacts,
+    /// This required typed leaf makes "no operations" distinct from omitted
+    /// effect analysis. The outer struct is only a transport envelope.
+    pub effects: CallableEffectFacts,
 }
 
 fn dependency_config_is_empty(value: &Value) -> bool {
