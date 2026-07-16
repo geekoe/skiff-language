@@ -121,7 +121,7 @@ pub fn project_service<'a>(
         input,
         &contract_projection_bundle.contract_projection,
         context.service_version(),
-        &public_instances,
+        &public_instances.exports,
         &projection_context,
         &package_gateway_projection,
     )?;
@@ -137,7 +137,9 @@ pub fn project_service<'a>(
             service_version: context.service_version(),
             contract_projection: &contract_projection_bundle.contract_projection,
             runtime_manifest_projection: &runtime_manifest_projection,
-            public_instances: &public_instances,
+            public_instances: &public_instances.exports,
+            public_instance_operation_public_signatures: &public_instances
+                .operation_public_signatures,
             package_publications: context.package_publications(),
             package_artifacts: context.package_artifacts(),
         },

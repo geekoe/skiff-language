@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{canonical_interface_method_abi_id, PublicationAbiUnit};
+use skiff_artifact_identity::canonical_interface_method_abi_id;
+#[cfg(test)]
+use skiff_artifact_identity::type_ref_abi_key;
+use skiff_artifact_model::PublicationAbiUnit;
 
 use super::{
     file_linker::{RuntimeFileLinker, TypeRefLinkScope},
@@ -1188,15 +1191,13 @@ mod tests {
     }
 
     fn package_interface_ref(package: PackageRefIr) -> LinkedInterfaceInstantiationRef {
-        let interface_abi_id = skiff_artifact_model::type_ref_abi_key(
-            &skiff_artifact_model::TypeRefIr::PackageSymbol {
-                symbol: PackageSymbolRef {
-                    package,
-                    symbol_path: INTERFACE_SYMBOL.to_string(),
-                    abi_expectation: None,
-                },
+        let interface_abi_id = type_ref_abi_key(&skiff_artifact_model::TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package,
+                symbol_path: INTERFACE_SYMBOL.to_string(),
+                abi_expectation: None,
             },
-        );
+        });
         LinkedInterfaceInstantiationRef {
             interface_abi_id,
             canonical_type_args: Vec::new(),

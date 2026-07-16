@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::{
+    canonical_interface_instantiation_key, interface_instantiation_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
-    interface_instantiation_ref, type_ref_abi_key, CanonicalPublicCallableSignature, ExecutableIr,
-    ExecutableSignatureIr, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
-    PackageRefIr, PackageSymbolRef, ParamIr, PublicationAbiUnit, ServiceSymbolRef,
-    SourceCallOperationIndexEntry, TypeDeclIr, TypeRefIr,
+    CanonicalPublicCallableSignature, ExecutableIr, ExecutableSignatureIr, FileIrUnit,
+    FunctionTypeParamIr, InterfaceInstantiationRef, PackageRefIr, PackageSymbolRef, ParamIr,
+    PublicationAbiUnit, ServiceSymbolRef, SourceCallOperationIndexEntry, TypeDeclIr, TypeRefIr,
 };
 use skiff_compiler_publication_abi::{
     package_public_instance_method_operation, public_signature_from_interface_method_signature,
@@ -400,8 +402,7 @@ fn package_dependency_public_instance_interfaces(
             &interface.source_symbol,
             public_instance_key,
         )?;
-        let interface_key =
-            serde_json::to_string(&instantiation).expect("interface ref must serialize");
+        let interface_key = canonical_interface_instantiation_key(&instantiation);
         if !seen.insert(interface_key) {
             return Err(PublicationError::ContractValidation {
                 message: format!(

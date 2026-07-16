@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref, FileIrUnit,
-    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, PackageRefIr, PackageSymbolRef,
-    ServiceSymbolRef, TypeRefIr,
+    FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, PackageRefIr,
+    PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
 
 use crate::{

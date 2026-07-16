@@ -24,7 +24,9 @@ mod legacy_service;
 mod operation;
 mod package;
 mod package_test;
+mod publication_validation;
 mod runtime_program;
+mod semantic;
 
 fn resource_ref(path: &str, sha256: &str) -> PublicationResourceRef {
     PublicationResourceRef {
@@ -164,8 +166,19 @@ fn package_fixture(body_seed: &str) -> PackageUnit {
 }
 
 fn publication_abi_fixture() -> PublicationAbiUnit {
+    let public_signature = CanonicalPublicCallableSignature {
+        params: Vec::new(),
+        return_type: TypeRefIr::native("string"),
+        may_suspend: false,
+    };
     let operation = OperationAbiRef {
-        operation_abi_id: "operation:run:string".to_string(),
+        operation_abi_id: public_function_operation_abi_id(
+            "run",
+            &public_signature,
+            &[],
+            &BTreeMap::new(),
+        )
+        .expect("operation ABI identity"),
         kind: PublicationOperationKind::PublicFunction,
         public_path: "run".to_string(),
         public_instance_key: None,
@@ -177,11 +190,7 @@ fn publication_abi_fixture() -> PublicationAbiUnit {
     unit.operation_exports.push(operation.clone());
     unit.operation_abi.push(PublicationOperationAbi {
         operation: operation.clone(),
-        public_signature: CanonicalPublicCallableSignature {
-            params: Vec::new(),
-            return_type: TypeRefIr::native("string"),
-            may_suspend: false,
-        },
+        public_signature,
         schema_closure: Vec::new(),
         stream_effect_throw_config: BTreeMap::new(),
     });

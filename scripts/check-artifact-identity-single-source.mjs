@@ -100,6 +100,76 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+public_instance_method_operation_abi_id\s*\(/,
   },
   {
+    name: 'abi_type_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_type_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'abi_alias_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_alias_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'abi_interface_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_interface_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'abi_callable_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_callable_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'abi_const_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_const_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'abi_instance_id_from_source_anchor',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+abi_instance_id_from_source_anchor\s*\(/,
+  },
+  {
+    name: 'type_ref_abi_key',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+type_ref_abi_key\s*\(/,
+  },
+  {
+    name: 'interface_instantiation_ref',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+interface_instantiation_ref\s*\(/,
+  },
+  {
+    name: 'interface_instantiation_ref_for_type_ref',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+interface_instantiation_ref_for_type_ref\s*\(/,
+  },
+  {
+    name: 'canonical_interface_method_abi_id',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+canonical_interface_method_abi_id\s*\(/,
+  },
+  {
+    name: 'canonical_interface_method_abi_id_from_parts',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+canonical_interface_method_abi_id_from_parts\s*</,
+  },
+  {
+    name: 'canonical_interface_instantiation_key',
+    relPath: 'artifact-identity/src/semantic.rs',
+    regexp: /\bpub\s+fn\s+canonical_interface_instantiation_key\s*\(/,
+  },
+  {
+    name: 'validate_publication_abi_surface',
+    relPath: 'artifact-identity/src/publication_validation.rs',
+    regexp: /\bpub\s+fn\s+validate_publication_abi_surface\s*\(/,
+  },
+  {
+    name: 'validate_publication_abi_identity',
+    relPath: 'artifact-identity/src/publication_validation.rs',
+    regexp: /\bpub\s+fn\s+validate_publication_abi_identity\s*\(/,
+  },
+  {
     name: 'PackageTestBuildIdentityPayload',
     relPath: 'artifact-identity/src/package_test.rs',
     regexp: /\bstruct\s+PackageTestBuildIdentityPayload\b/,
@@ -138,6 +208,20 @@ const exclusiveDefinitionNames = new Set([
   'service_unit_identity_bytes',
   'publication_abi_identity_bytes',
   'operation_abi_identity',
+  'abi_type_id_from_source_anchor',
+  'abi_alias_id_from_source_anchor',
+  'abi_interface_id_from_source_anchor',
+  'abi_callable_id_from_source_anchor',
+  'abi_const_id_from_source_anchor',
+  'abi_instance_id_from_source_anchor',
+  'type_ref_abi_key',
+  'interface_instantiation_ref',
+  'interface_instantiation_ref_for_type_ref',
+  'canonical_interface_method_abi_id',
+  'canonical_interface_method_abi_id_from_parts',
+  'canonical_interface_instantiation_key',
+  'validate_publication_abi_surface',
+  'validate_publication_abi_identity',
   'canonical_json_value',
   'canonical_json_number',
   'canonical_json_bytes',
@@ -162,7 +246,9 @@ const facadeModules = [
   'package',
   'package_test',
   'publication',
+  'publication_validation',
   'runtime_program',
+  'semantic',
 ];
 
 const canonicalDelegationRequirements = [
@@ -233,16 +319,6 @@ const adapterRequirements = [
     relPath: 'compiler/emission/src/emission/identity.rs',
     helper: 'artifact identity emission API',
     regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,
-  },
-  {
-    relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-    helper: 'public_function_operation_abi_id',
-    regexp: /\bskiff_compiler_emission::identity::public_function_operation_abi_id\b/,
-  },
-  {
-    relPath: 'compiler/driver/shared/operation_abi_identity.rs',
-    helper: 'public_instance_method_operation_abi_id',
-    regexp: /\bskiff_compiler_emission::identity::public_instance_method_operation_abi_id\b/,
   },
   {
     relPath: 'compiler/projection/src/typed_artifacts/identity.rs',

@@ -2,18 +2,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{validate_static_type_ref_boundary_policy, BoundaryKind};
 use crate::error::ProjectionError;
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr,
-    InterfaceInstantiationRef, InterfaceOperationIr, PackageRefIr, PackageSymbolRef, PackageUnit,
-    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
-    RecoverableBoundaryPlan, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
-    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
-    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
-    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
-    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterPlan,
-    RecoverableNativeAdapterPlanRef, RecoverableStorageLane, RecoverableStorageLanePlan,
-    RecoverableStorageLaneRef, RecoverableTrustBoundary, RecoverableTypeIdentityFact,
-    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
+    DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr, InterfaceInstantiationRef,
+    InterfaceOperationIr, PackageRefIr, PackageSymbolRef, PackageUnit, RecoverableArtifactMetadata,
+    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
+    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
+    RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
+    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableStorageLane,
+    RecoverableStorageLanePlan, RecoverableStorageLaneRef, RecoverableTrustBoundary,
+    RecoverableTypeIdentityFact, RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
     RecoverableUnionBranchIdentityRef, SpawnTargetIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 

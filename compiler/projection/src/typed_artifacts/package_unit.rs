@@ -6,7 +6,6 @@ use skiff_compiler_publication_abi as publication_abi;
 pub use skiff_artifact_model::package_unit::InterfaceMethodSignature;
 #[allow(unused_imports)]
 pub use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref_for_type_ref,
     CanonicalPublicCallableSignature, ConfigAndEffectMetadata, ConstExport, EffectMetadata,
     ExecutableExport, ExecutableIr, ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit,
     InterfaceInstantiationRef, OperationAbiRef, OperationCallableKind, PackageAbiExpectation,

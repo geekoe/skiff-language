@@ -41,7 +41,9 @@ use crate::{
     contract::{project_abi_identity, ContractProjection, ContractProjectionIndex},
     RuntimeManifestProjection,
 };
-use skiff_artifact_model::{validate_recoverable_artifact_metadata, ServiceTimeoutConfig};
+use skiff_artifact_model::{
+    validate_recoverable_artifact_metadata, CanonicalPublicCallableSignature, ServiceTimeoutConfig,
+};
 use skiff_compiler_projection_input::{PackageProjectionInput, ProjectionView};
 
 pub struct ServiceArtifactProjectionInput<'a> {
@@ -51,6 +53,8 @@ pub struct ServiceArtifactProjectionInput<'a> {
     pub contract_projection: &'a ContractProjection,
     pub runtime_manifest_projection: &'a RuntimeManifestProjection,
     pub public_instances: &'a [PublicInstanceExport],
+    pub public_instance_operation_public_signatures:
+        &'a StdBTreeMap<String, CanonicalPublicCallableSignature>,
     pub package_publications: &'a [PackageProjectionInput],
     pub package_artifacts: &'a [ProjectedPackageIrArtifacts],
 }
@@ -106,7 +110,7 @@ pub fn project_service_artifact_projection(
     })?;
     let service_file_ir_unit_values = prepared_file_ir.file_ir_units;
     let service_source_map = prepared_file_ir.source_map;
-    let operation_entries = service_operation_entries(
+    let operation_projection = service_operation_entries(
         contract_projection,
         &contract_projection_index,
         &runtime_manifest_projection.service_operations,
@@ -114,7 +118,9 @@ pub fn project_service_artifact_projection(
         &interface_modules,
         &service_file_ir_unit_values,
         input.public_instances,
+        input.public_instance_operation_public_signatures,
     )?;
+    let operation_entries = operation_projection.entries;
     let package_unit_dependencies = service_package_dependency_constraints(
         package_dependencies,
         input.package_publications,
@@ -215,6 +221,7 @@ pub fn project_service_artifact_projection(
         service_dependencies.constraints().to_vec(),
         package_abi_expectations,
         service_operations,
+        operation_projection.public_signatures,
         input.public_instances.to_vec(),
         service_unit_gateway(&gateway),
         service_config_metadata(input.package_publications, package_dependencies),

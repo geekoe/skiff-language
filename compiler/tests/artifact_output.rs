@@ -665,7 +665,7 @@ impl CallerService {
             "buildId": callee.build_id,
             "serviceProtocolIdentity": callee.service_protocol_identity,
             "operations": ["UserApi.get"],
-            "targets": [CALLEE_OPERATION_ABI_ID],
+            "targets": [callee_operation_abi_id()],
         }])
     );
     let service_unit_path = assembly["serviceUnit"]["unitPath"].as_str().unwrap();
@@ -713,7 +713,7 @@ impl CallerService {
             && expr["call"]["target"]["kind"] == "serviceDependencySymbol"
             && expr["call"]["target"]["symbol"]["dependencyRef"] == "account"
             && expr["call"]["target"]["symbol"]["operation"]["operationAbiId"]
-                == CALLEE_OPERATION_ABI_ID));
+                == callee_operation_abi_id()));
 }
 
 #[test]
@@ -884,7 +884,7 @@ impl CallerService {
             "buildId": callee.build_id,
             "serviceProtocolIdentity": callee.service_protocol_identity,
             "operations": ["managedLlm.send"],
-            "targets": [CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID],
+            "targets": [callee_public_instance_operation_abi_id()],
             "remoteBoxProvenance": [{
                 "interface": caller_llm_client_interface_ref(),
                 "interfaceDisplay": caller_llm_client_interface_ref()["interfaceAbiId"].as_str().unwrap(),
@@ -914,7 +914,7 @@ impl CallerService {
             && expr["call"]["target"]["kind"] == "serviceDependencySymbol"
             && expr["call"]["target"]["symbol"]["dependencyRef"] == "remoteLlm"
             && expr["call"]["target"]["symbol"]["operation"]["operationAbiId"]
-                == CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID));
+                == callee_public_instance_operation_abi_id()));
     // The `publication-local direct refs` lowering pass rewrites cross-module
     // interface identities inside the File IR body into direct
     // `publicationType` address form. `api.caller.LlmClient` is reached from
@@ -1428,7 +1428,7 @@ impl CallerService {
     assert_failure(&output);
     let stderr = stderr(&output);
     assert!(
-        stderr.contains("method `send` is ambiguous"),
+        stderr.contains("sourceCallMethodIndex duplicates methodName send"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -1557,12 +1557,67 @@ struct CalleeServiceArtifact {
     service_protocol_identity: String,
 }
 
-const CALLEE_OPERATION_ABI_ID: &str = "operation:skiff.run/account:UserApi.get";
-const CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID: &str = "operation:skiff.run/account:managedLlm.send";
+fn public_function_operation_abi_id(
+    public_path: &str,
+    public_signature: serde_json::Value,
+) -> String {
+    let public_signature = serde_json::from_value(public_signature).unwrap();
+    skiff_artifact_identity::public_function_operation_abi_id(
+        public_path,
+        &public_signature,
+        &[],
+        &Default::default(),
+    )
+    .unwrap()
+}
+
+fn public_instance_method_operation_abi_id(
+    public_path: &str,
+    public_instance_key: &str,
+    interface: serde_json::Value,
+    method_abi_id: &str,
+    public_signature: serde_json::Value,
+) -> String {
+    let interface = serde_json::from_value(interface).unwrap();
+    let public_signature = serde_json::from_value(public_signature).unwrap();
+    skiff_artifact_identity::public_instance_method_operation_abi_id(
+        public_path,
+        public_instance_key,
+        &interface,
+        method_abi_id,
+        &public_signature,
+        &[],
+        &Default::default(),
+    )
+    .unwrap()
+}
+
+fn with_declared_publication_abi_identity(value: serde_json::Value) -> serde_json::Value {
+    let mut publication_abi = serde_json::from_value(value).unwrap();
+    let abi_identity = skiff_artifact_identity::publication_abi_identity(&publication_abi).unwrap();
+    publication_abi.abi_identity = abi_identity;
+    serde_json::to_value(publication_abi).unwrap()
+}
+
+fn callee_operation_abi_id() -> String {
+    public_function_operation_abi_id("UserApi.get", callee_public_signature())
+}
+
+fn callee_public_instance_operation_abi_id() -> String {
+    let interface = caller_llm_client_interface_ref();
+    let method_abi_id = caller_llm_client_method_abi_id();
+    public_instance_method_operation_abi_id(
+        "managedLlm.send",
+        "managedLlm",
+        interface,
+        &method_abi_id,
+        callee_public_instance_signature(),
+    )
+}
 
 fn callee_operation_ref_with_kind(kind: &str) -> serde_json::Value {
     serde_json::json!({
-        "operationAbiId": CALLEE_OPERATION_ABI_ID,
+        "operationAbiId": callee_operation_abi_id(),
         "kind": kind,
         "publicPath": "UserApi.get",
         "displayName": "UserApi.get"
@@ -1590,7 +1645,7 @@ fn callee_publication_abi() -> serde_json::Value {
 
 fn callee_publication_abi_with_operation_kind(kind: &str) -> serde_json::Value {
     let operation_ref = callee_operation_ref_with_kind(kind);
-    serde_json::json!({
+    let publication_abi = serde_json::json!({
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/account",
         "version": "0.1.0",
@@ -1604,7 +1659,12 @@ fn callee_publication_abi_with_operation_kind(kind: &str) -> serde_json::Value {
             "sourceCallPath": "UserApi.get",
             "operation": operation_ref
         }]
-    })
+    });
+    if kind == "publicFunction" {
+        with_declared_publication_abi_identity(publication_abi)
+    } else {
+        publication_abi
+    }
 }
 
 fn write_callee_service_artifact_root(root: &Path) -> CalleeServiceArtifact {
@@ -1634,12 +1694,8 @@ fn caller_llm_client_method_abi_id() -> String {
 }
 
 fn caller_method_abi_id(interface_symbol: &str, method: &str) -> String {
-    format!(
-        "method:{}:{method}",
-        caller_interface_ref(interface_symbol)["interfaceAbiId"]
-            .as_str()
-            .unwrap()
-    )
+    let interface = serde_json::from_value(caller_interface_ref(interface_symbol)).unwrap();
+    skiff_artifact_identity::canonical_interface_method_abi_id(&interface, method)
 }
 
 /// Direct (`publicationType`) form of the LlmClient `send` method ABI id, as it
@@ -1652,7 +1708,11 @@ fn caller_llm_client_direct_method_abi_id(type_index: u64) -> String {
         "typeIndex": type_index
     }))
     .unwrap();
-    format!("method:{interface_abi_id}:send")
+    skiff_artifact_identity::canonical_interface_method_abi_id_from_parts(
+        &interface_abi_id,
+        &[] as &[serde_json::Value],
+        "send",
+    )
 }
 
 fn read_service_file_ir(
@@ -1680,7 +1740,7 @@ fn callee_public_instance_operation_ref() -> serde_json::Value {
     let interface = caller_llm_client_interface_ref();
     let method_abi_id = caller_llm_client_method_abi_id();
     serde_json::json!({
-        "operationAbiId": CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID,
+        "operationAbiId": callee_public_instance_operation_abi_id(),
         "kind": "publicInstanceMethod",
         "publicPath": "managedLlm.send",
         "publicInstanceKey": "managedLlm",
@@ -1704,7 +1764,7 @@ fn callee_public_instance_signature() -> serde_json::Value {
 fn callee_public_instance_publication_abi() -> serde_json::Value {
     let operation_ref = callee_public_instance_operation_ref();
     let interface = caller_llm_client_interface_ref();
-    serde_json::json!({
+    with_declared_publication_abi_identity(serde_json::json!({
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/account",
         "version": "0.1.0",
@@ -1727,7 +1787,7 @@ fn callee_public_instance_publication_abi() -> serde_json::Value {
             }],
             "methodOperations": [operation_ref]
         }]
-    })
+    }))
 }
 
 fn write_callee_public_instance_service_artifact_root(root: &Path) -> CalleeServiceArtifact {
@@ -1744,7 +1804,7 @@ fn callee_multi_interface_public_instance_publication_abi() -> serde_json::Value
         caller_llm_client_interface_ref(),
         caller_interface_ref("StreamingClient")
     ]);
-    publication_abi
+    with_declared_publication_abi_identity(publication_abi)
 }
 
 fn write_callee_multi_interface_public_instance_service_artifact_root(
@@ -1760,8 +1820,15 @@ fn write_callee_multi_interface_public_instance_service_artifact_root(
 fn unsafe_public_instance_operation_ref() -> serde_json::Value {
     let interface = caller_interface_ref("UnsafeClient");
     let method_abi_id = caller_method_abi_id("UnsafeClient", "send");
+    let operation_abi_id = public_instance_method_operation_abi_id(
+        "managedLlm.send",
+        "managedLlm",
+        interface.clone(),
+        &method_abi_id,
+        unsafe_public_instance_signature(),
+    );
     serde_json::json!({
-        "operationAbiId": CALLEE_PUBLIC_INSTANCE_OPERATION_ABI_ID,
+        "operationAbiId": operation_abi_id,
         "kind": "publicInstanceMethod",
         "publicPath": "managedLlm.send",
         "publicInstanceKey": "managedLlm",
@@ -1789,7 +1856,7 @@ fn unsafe_public_instance_signature() -> serde_json::Value {
 fn unsafe_public_instance_publication_abi() -> serde_json::Value {
     let operation_ref = unsafe_public_instance_operation_ref();
     let interface = caller_interface_ref("UnsafeClient");
-    serde_json::json!({
+    with_declared_publication_abi_identity(serde_json::json!({
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/account",
         "version": "0.1.0",
@@ -1812,7 +1879,7 @@ fn unsafe_public_instance_publication_abi() -> serde_json::Value {
             }],
             "methodOperations": [operation_ref]
         }]
-    })
+    }))
 }
 
 fn write_callee_unsafe_public_instance_service_artifact_root(root: &Path) -> CalleeServiceArtifact {
@@ -1825,16 +1892,22 @@ fn write_callee_unsafe_public_instance_service_artifact_root(root: &Path) -> Cal
 
 fn duplicate_public_instance_operation_ref() -> serde_json::Value {
     let mut duplicate = callee_public_instance_operation_ref();
-    duplicate["operationAbiId"] = serde_json::Value::String(
-        "operation:skiff.run/account:managedLlm.sendDuplicate".to_string(),
-    );
+    duplicate["publicPath"] = serde_json::Value::String("managedLlm.sendDuplicate".to_string());
+    duplicate["operationAbiId"] =
+        serde_json::Value::String(public_instance_method_operation_abi_id(
+            "managedLlm.sendDuplicate",
+            "managedLlm",
+            caller_llm_client_interface_ref(),
+            &caller_llm_client_method_abi_id(),
+            callee_public_instance_signature(),
+        ));
     duplicate
 }
 
 fn duplicate_public_instance_publication_abi() -> serde_json::Value {
     let first = callee_public_instance_operation_ref();
     let duplicate = duplicate_public_instance_operation_ref();
-    serde_json::json!({
+    with_declared_publication_abi_identity(serde_json::json!({
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/account",
         "version": "0.1.0",
@@ -1856,14 +1929,14 @@ fn duplicate_public_instance_publication_abi() -> serde_json::Value {
             "interfaces": [caller_llm_client_interface_ref()],
             "sourceCallMethodIndex": [{
                 "methodName": "send",
-                "operation": first
+                "operation": first.clone()
             }, {
                 "methodName": "send",
                 "operation": duplicate.clone()
             }],
-            "methodOperations": [duplicate]
+            "methodOperations": [first, duplicate]
         }]
-    })
+    }))
 }
 
 fn write_callee_duplicate_public_instance_service_artifact_root(

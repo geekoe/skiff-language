@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::package_unit::InterfaceMethodSignature;
 use skiff_artifact_model::{
-    type_ref_abi_key, ExecutableIr, ExecutableSignatureIr, FileIrUnit, FunctionTypeParamIr,
+    ExecutableIr, ExecutableSignatureIr, FileIrUnit, FunctionTypeParamIr,
     InterfaceInstantiationRef, ParamIr, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
 };
 

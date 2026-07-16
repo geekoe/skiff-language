@@ -6,7 +6,7 @@ use std::{
 use crate::file_ir::{
     FunctionTypeParamIr, LiteralIr, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
-use skiff_artifact_model::interface_instantiation_ref;
+use skiff_artifact_identity::interface_instantiation_ref;
 use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID, package_export_resolver::PackageExportResolver,
 };

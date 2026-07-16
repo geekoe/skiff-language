@@ -1030,13 +1030,12 @@ mod tests {
     use serde_json::json;
     use skiff_artifact_identity::{
         assign_file_ir_identity, assign_package_unit_identities, derive_package_test_entrypoint_id,
-        package_test_build_identity, package_test_entrypoint_local_id,
+        interface_instantiation_ref, package_test_build_identity, package_test_entrypoint_local_id,
         PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
     };
     use skiff_artifact_model::{
-        interface_instantiation_ref, CallIr as ArtifactCallIr, ConfigAndEffectMetadata,
-        DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
-        ExecutableBody as ArtifactExecutableBody,
+        CallIr as ArtifactCallIr, ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr,
+        DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
         ExecutableDeclarationIr as ArtifactExecutableDeclarationIr, ExecutableExport,
         ExecutableIr as ArtifactExecutableIr, ExecutableKind as ArtifactExecutableKind,
         ExecutableSignatureIr, ExprIr as ArtifactExprIr,

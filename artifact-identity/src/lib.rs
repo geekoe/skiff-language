@@ -8,7 +8,9 @@ mod package;
 pub mod package_resolver;
 mod package_test;
 mod publication;
+mod publication_validation;
 mod runtime_program;
+mod semantic;
 
 pub use constants::{
     BUNDLE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
@@ -50,11 +52,22 @@ pub use publication::{
     assign_publication_abi_identity, publication_abi_hash, publication_abi_identity,
     publication_abi_identity_bytes,
 };
+pub use publication_validation::{
+    validate_publication_abi_identity, validate_publication_abi_surface,
+};
 pub use runtime_program::{
     runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes,
     runtime_program_service_unit_identity_bytes_from_json,
     runtime_program_service_unit_identity_value,
     runtime_program_service_unit_identity_value_from_json,
+};
+pub use semantic::{
+    abi_alias_id_from_source_anchor, abi_callable_id_from_source_anchor,
+    abi_const_id_from_source_anchor, abi_instance_id_from_source_anchor,
+    abi_interface_id_from_source_anchor, abi_symbol_id_fact, abi_type_id_from_source_anchor,
+    abi_type_id_key, canonical_interface_instantiation_key, canonical_interface_method_abi_id,
+    canonical_interface_method_abi_id_from_parts, interface_instantiation_ref,
+    interface_instantiation_ref_for_type_ref, type_ref_abi_key,
 };
 pub use skiff_canonical_json::{canonical_json_number, canonical_json_value};
 
