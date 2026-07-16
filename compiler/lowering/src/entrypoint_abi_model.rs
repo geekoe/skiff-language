@@ -197,7 +197,7 @@ fn any_interface_source_text(
 mod tests {
     use super::*;
     use crate::file_ir::{ServiceSymbolRef, TypeRefIr};
-    use skiff_artifact_model::interface_instantiation_ref;
+    use skiff_artifact_identity::interface_instantiation_ref;
 
     #[test]
     fn any_interface_source_text_renders_structured_interface_identity_as_type_syntax() {

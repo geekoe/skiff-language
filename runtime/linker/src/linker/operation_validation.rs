@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, CanonicalPublicCallableSignature, OperationAbiRef, OperationCallableKind,
+    CanonicalPublicCallableSignature, OperationAbiRef, OperationCallableKind,
     OperationConstReceiverRef, OperationTargetRef, PackageOperationTarget, PublicationAbiUnit,
     PublicationOperationAbi, PublicationOperationKind, ReceiverCallAbi, ServiceOperation,
     ServiceSymbolRef as ArtifactServiceSymbolRef, TypeRefIr as ArtifactTypeRefIr,

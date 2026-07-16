@@ -14,9 +14,10 @@ use crate::{
         public_function_operation_abi_id, PublicInstanceExport, PublicInstanceOperation,
     },
 };
+use skiff_artifact_identity::interface_instantiation_ref;
 use skiff_artifact_model::{
-    interface_instantiation_ref, CanonicalPublicCallableSignature, FunctionTypeParamIr, LiteralIr,
-    PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
+    CanonicalPublicCallableSignature, FunctionTypeParamIr, LiteralIr, PackageRefIr,
+    PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_core::prelude_registry::PRELUDE_REGISTRY_ID;
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref;
@@ -200,7 +201,14 @@ pub fn contract_public_function_operation_abi_id(
     public_path: &str,
     operation: &crate::contract::ContractInterfaceOperationProjection,
 ) -> String {
-    let public_signature = CanonicalPublicCallableSignature {
+    let public_signature = contract_public_function_signature(operation);
+    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
+}
+
+pub fn contract_public_function_signature(
+    operation: &crate::contract::ContractInterfaceOperationProjection,
+) -> CanonicalPublicCallableSignature {
+    CanonicalPublicCallableSignature {
         params: operation
             .params
             .iter()
@@ -216,8 +224,7 @@ pub fn contract_public_function_operation_abi_id(
                 .as_str(),
             RUNTIME_OPERATION_MODE_SERVER_STREAM
         ),
-    };
-    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
+    }
 }
 
 fn contract_type_key_to_type_ref(ty: &ContractTypeKey) -> TypeRefIr {

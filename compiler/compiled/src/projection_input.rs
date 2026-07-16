@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
-    LiteralIr, ServiceSymbolRef, TypeRefIr,
+    ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,

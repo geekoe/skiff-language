@@ -346,10 +346,8 @@ mod recoverable_spawn_payload_tests {
         sync::Arc,
     };
 
-    use skiff_artifact_model::{
-        abi_identity::derive::{abi_type_id_from_source_anchor, AbiSourceAnchorInput},
-        AbiDeclarationKind,
-    };
+    use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
+    use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
     use skiff_runtime_boundary::{
         error::RecoverableBoundaryErrorCode,
         payload::{PayloadBoundary, PayloadBoundaryKind},
@@ -694,7 +692,7 @@ mod recoverable_spawn_payload_tests {
     }
 
     fn provider_stable_restore_key() -> String {
-        let input = AbiSourceAnchorInput {
+        let input = AbiSourceDeclarationAnchor {
             publication_id: SERVICE_ID.to_string(),
             abi_epoch: 0,
             module_path: vec!["pkg".to_string()],
@@ -702,7 +700,7 @@ mod recoverable_spawn_payload_tests {
             kind: AbiDeclarationKind::Type,
         };
         let type_id = abi_type_id_from_source_anchor(&input, &[]);
-        format!("abi-type:{}", hex::encode(type_id.key_bytes()))
+        format!("abi-type:{}", abi_type_id_key(&type_id))
     }
 
     fn string_type() -> LinkedTypeRef {

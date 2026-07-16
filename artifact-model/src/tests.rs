@@ -45,36 +45,11 @@ fn number_type() -> TypeRefIr {
     TypeRefIr::native("number")
 }
 
-#[test]
-fn generic_interface_instantiation_uses_declaration_identity_and_canonical_args() {
-    let interface_string = TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: vec![string_type()],
-    };
-    let interface_number = TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: vec![number_type()],
-    };
-    let declaration_identity = crate::type_ref_abi_key(&TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: Vec::new(),
-    });
-
-    let string_ref = crate::interface_instantiation_ref_for_type_ref(&interface_string);
-    let number_ref = crate::interface_instantiation_ref_for_type_ref(&interface_number);
-
-    assert_eq!(string_ref.interface_abi_id, declaration_identity);
-    assert_eq!(number_ref.interface_abi_id, string_ref.interface_abi_id);
-    assert_eq!(string_ref.canonical_type_args, vec![string_type()]);
-    assert_eq!(number_ref.canonical_type_args, vec![number_type()]);
-    assert_ne!(string_ref, number_ref);
-    assert_ne!(
-        crate::canonical_interface_method_abi_id(&string_ref, "get"),
-        crate::canonical_interface_method_abi_id(&number_ref, "get")
-    );
-    let value = serde_json::to_value(&string_ref).expect("interface ref serializes");
-    assert_eq!(value["interfaceAbiId"], declaration_identity);
-    assert_eq!(value["canonicalTypeArgs"], json!([string_type()]));
+fn reader_interface_ref() -> InterfaceInstantiationRef {
+    InterfaceInstantiationRef {
+        interface_abi_id: "interface:pkg.Reader".to_string(),
+        canonical_type_args: vec![string_type()],
+    }
 }
 
 fn operation_ref(
@@ -1970,10 +1945,7 @@ fn function_type_ref_round_trips_params_and_return_type() {
 
 #[test]
 fn any_interface_type_ref_round_trips_and_rejects_unknown_fields() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
+    let interface = reader_interface_ref();
     let value = json!({
         "kind": "anyInterface",
         "interface": interface,
@@ -1998,11 +1970,8 @@ fn any_interface_type_ref_round_trips_and_rejects_unknown_fields() {
 
 #[test]
 fn interface_box_and_method_call_targets_round_trip() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
-    let method_abi_id = crate::canonical_interface_method_abi_id(&interface, "read");
+    let interface = reader_interface_ref();
+    let method_abi_id = "method:interface:pkg.Reader:read".to_string();
     let method_table = InterfaceMethodTablePlanIr {
         interface: interface.clone(),
         concrete_type: TypeRefIr::ServiceSymbol {
@@ -2056,11 +2025,8 @@ fn interface_box_and_method_call_targets_round_trip() {
 
 #[test]
 fn remote_interface_box_source_carries_operation_table_and_callee_identity() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
-    let method_abi_id = crate::canonical_interface_method_abi_id(&interface, "read");
+    let interface = reader_interface_ref();
+    let method_abi_id = "method:interface:pkg.Reader:read".to_string();
     let operation_abi_id = "operation:reader:read".to_string();
     let source = BoxSourceIr::Remote {
         dependency_ref: "readerService".to_string(),
@@ -2114,10 +2080,7 @@ fn remote_interface_box_source_carries_operation_table_and_callee_identity() {
         "dependencyRef": "readerService",
         "publicInstanceKey": "readers/default",
         "operations": {
-            "interface": crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-                name: "pkg.Reader".to_string(),
-                args: vec![string_type()],
-            }),
+            "interface": reader_interface_ref(),
             "slots": []
         },
         "calleeProtocolIdentity": "protocol:reader",

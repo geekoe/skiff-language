@@ -15,7 +15,7 @@ use crate::file_ir::{
     ExecutableLinkTargetIr, ExprIr, FileIrUnit, FunctionTypeParamIr, MetadataValue,
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
-use skiff_artifact_model::type_ref_abi_key;
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;

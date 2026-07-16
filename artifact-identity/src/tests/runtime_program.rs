@@ -123,6 +123,9 @@ fn runtime_program_service_dependency_identity_uses_publication_abi_projection()
     let mut publication_abi = publication_abi_fixture();
     publication_abi.abi_identity =
         publication_abi_identity(&publication_abi).expect("publication ABI identity");
+    let operation_abi_id = publication_abi.operation_exports[0]
+        .operation_abi_id
+        .clone();
     let publication_abi_value =
         serde_json::to_value(&publication_abi).expect("publication ABI JSON");
     let service = json!({
@@ -150,7 +153,7 @@ fn runtime_program_service_dependency_identity_uses_publication_abi_projection()
     let dependency_publication_abi = &identity["serviceDependencies"][0]["publicationAbi"];
     assert_eq!(
         dependency_publication_abi["operationExports"][0]["operationAbiId"],
-        "operation:run:string"
+        operation_abi_id
     );
     assert!(dependency_publication_abi
         .pointer("/operationExports/0/displayName")
@@ -180,6 +183,9 @@ fn runtime_program_top_level_publication_abi_identity_uses_publication_abi_proje
     let mut publication_abi = publication_abi_fixture();
     publication_abi.abi_identity =
         publication_abi_identity(&publication_abi).expect("publication ABI identity");
+    let operation_abi_id = publication_abi.operation_exports[0]
+        .operation_abi_id
+        .clone();
     let mut publication_abi_value =
         serde_json::to_value(&publication_abi).expect("publication ABI JSON");
     publication_abi_value["operationAbi"][0]["publicSignature"]["params"] = json!([]);
@@ -200,7 +206,7 @@ fn runtime_program_top_level_publication_abi_identity_uses_publication_abi_proje
     let service_publication_abi = &identity["publicationAbi"];
     assert_eq!(
         service_publication_abi["operationExports"][0]["operationAbiId"],
-        "operation:run:string"
+        operation_abi_id
     );
     assert!(service_publication_abi
         .pointer("/operationExports/0/displayName")

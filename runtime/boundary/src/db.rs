@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
-use skiff_artifact_model::{type_ref_abi_key, LiteralIr, TypeRefIr};
+use skiff_artifact_identity::type_ref_abi_key;
+use skiff_artifact_model::{LiteralIr, TypeRefIr};
 use skiff_runtime_model::{
     recoverable::{RuntimeRecoverableExpectedTypePlan, RuntimeRecoverableStorageLane},
     type_plan::{

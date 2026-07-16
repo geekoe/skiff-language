@@ -14,18 +14,21 @@ use crate::{
     },
 };
 use serde::Serialize;
-use skiff_artifact_model::{ExecutableKind, FileIrUnit, FunctionTypeParamIr, TypeRefIr};
+use skiff_artifact_model::{
+    CanonicalPublicCallableSignature, ExecutableKind, FileIrUnit, FunctionTypeParamIr, TypeRefIr,
+};
 use skiff_compiler_core::source_role::PublicationSourceRole as CompilerSourceRole;
 use skiff_compiler_projection_input::{
     EntryParamSpec, ProjectionCallableEffectFacts, ProjectionSourceMetadata,
 };
 
-use super::entrypoints::entry_operation_abi_id;
+use super::entrypoints::{entry_operation_abi_id, entry_operation_public_signature};
 use super::operation_effect_projection_for_signature;
 use super::operation_effects::{operation_effect_projection, OperationEffectProjection};
 use super::service_operations::{
-    contract_public_function_operation_abi_id, public_instance_receiver_executable_signature,
-    public_instance_source_interface_signature, runtime_operation_abi_id,
+    contract_public_function_operation_abi_id, contract_public_function_signature,
+    public_instance_receiver_executable_signature, public_instance_source_interface_signature,
+    runtime_operation_abi_id,
 };
 use super::{response_type_ir, EntryOperationCallable, EntryOperationSpec};
 
@@ -50,6 +53,12 @@ pub struct OperationEntryIr {
     pub return_type: RuntimeTypeDescriptorIr,
     pub response: JsonSchema,
     pub summary: OperationEffectProjection,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceOperationEntries {
+    pub entries: Vec<OperationEntryIr>,
+    pub public_signatures: BTreeMap<String, CanonicalPublicCallableSignature>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,8 +111,12 @@ pub fn service_operation_entries(
     file_ir_units: &[FileIrUnit],
     public_instances: &[PublicInstanceExport],
     callable_effects: &ProjectionCallableEffectFacts,
-) -> Result<Vec<OperationEntryIr>, ProjectionError> {
-    let mut entries = operations
+    public_instance_operation_public_signatures: &BTreeMap<
+        String,
+        CanonicalPublicCallableSignature,
+    >,
+) -> Result<ServiceOperationEntries, ProjectionError> {
+    let projected_entries = operations
         .iter()
         .map(|artifact_operation| {
             let resolved = resolve_projected_operation(
@@ -147,9 +160,14 @@ pub fn service_operation_entries(
                 &artifact_operation.operation,
             )?;
             let uses_adapter = resolved.uses_non_receiver_adapter();
-            Ok::<OperationEntryIr, ProjectionError>(OperationEntryIr {
+            let operation_abi_id = resolved.operation_abi_id(&artifact_operation.operation);
+            let public_signature = resolved.public_signature(
+                &operation_abi_id,
+                public_instance_operation_public_signatures,
+            )?;
+            let entry = OperationEntryIr {
                 operation: artifact_operation.operation.clone(),
-                operation_abi_id: resolved.operation_abi_id(&artifact_operation.operation),
+                operation_abi_id,
                 entrypoint: artifact_operation.target.clone(),
                 mode: mode.to_string(),
                 may_suspend,
@@ -174,19 +192,58 @@ pub fn service_operation_entries(
                 return_type,
                 response,
                 summary: operation_effect_projection(effect_summary),
-            })
+            };
+            Ok::<_, ProjectionError>((entry, public_signature))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = Vec::with_capacity(projected_entries.len() + entry_operations.len());
+    let mut public_signatures = BTreeMap::new();
+    for (entry, public_signature) in projected_entries {
+        insert_operation_public_signature(
+            &mut public_signatures,
+            &entry.operation_abi_id,
+            public_signature,
+        )?;
+        entries.push(entry);
+    }
     for entry_operation in entry_operations {
-        entries.push(entry_operation_entry(
+        let entry = entry_operation_entry(
             entry_operation,
             contract_projection,
             projection_index,
             file_ir_units,
             callable_effects,
-        )?);
+        )?;
+        insert_operation_public_signature(
+            &mut public_signatures,
+            &entry.operation_abi_id,
+            entry_operation_public_signature(&entry_operation.params, &entry_operation.return_type),
+        )?;
+        entries.push(entry);
     }
-    Ok(entries)
+    Ok(ServiceOperationEntries {
+        entries,
+        public_signatures,
+    })
+}
+
+fn insert_operation_public_signature(
+    public_signatures: &mut BTreeMap<String, CanonicalPublicCallableSignature>,
+    operation_abi_id: &str,
+    public_signature: CanonicalPublicCallableSignature,
+) -> Result<(), ProjectionError> {
+    if let Some(existing) =
+        public_signatures.insert(operation_abi_id.to_string(), public_signature.clone())
+    {
+        if existing != public_signature {
+            return Err(ProjectionError::ContractValidation {
+                message: format!(
+                    "operation ABI id `{operation_abi_id}` has conflicting public signatures"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 enum ResolvedProjectedOperation<'a> {
@@ -447,6 +504,32 @@ impl<'a> ResolvedProjectedOperation<'a> {
                 operation,
                 ..
             } => runtime_operation_abi_id(instance, operation),
+        }
+    }
+
+    fn public_signature(
+        &self,
+        operation_abi_id: &str,
+        public_instance_operation_public_signatures: &BTreeMap<
+            String,
+            CanonicalPublicCallableSignature,
+        >,
+    ) -> Result<CanonicalPublicCallableSignature, ProjectionError> {
+        match self {
+            Self::Contract { operation, .. } => {
+                Ok(contract_public_function_signature(operation))
+            }
+            Self::PublicInstance { operation, .. } => {
+                public_instance_operation_public_signatures
+                    .get(operation_abi_id)
+                    .cloned()
+                    .ok_or_else(|| ProjectionError::ContractValidation {
+                        message: format!(
+                            "public instance operation `{}` ABI id `{operation_abi_id}` is missing its canonical public signature",
+                            operation.operation.public_path
+                        ),
+                    })
+            }
         }
     }
 }

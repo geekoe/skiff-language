@@ -21,11 +21,14 @@ use crate::typed_artifacts::{
     TypeExport,
 };
 use crate::ConfigProjection;
+use skiff_artifact_identity::{
+    canonical_interface_instantiation_key, interface_instantiation_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
-    interface_instantiation_ref, type_ref_abi_key, CallableEffectFacts, ConstIr, ExecutableIr,
-    FileIrRef, FileIrUnit, InterfaceInstantiationRef, LocalReceiverExecutableRef, MetadataValue,
-    PackageRefIr, PackageSymbolRef, PublicationResourceRef, ServiceSymbolRef, TypeDescriptorIr,
-    TypeRefIr, PACKAGE_UNIT_SCHEMA_VERSION,
+    CallableEffectFacts, ConstIr, ExecutableIr, FileIrRef, FileIrUnit, InterfaceInstantiationRef,
+    LocalReceiverExecutableRef, MetadataValue, PackageRefIr, PackageSymbolRef,
+    PublicationResourceRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_UNIT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_core::naming::impl_method_declaration_name;
@@ -678,8 +681,7 @@ fn package_public_instance_interfaces(
             })
             .collect();
         let interface_ref = interface_instantiation_ref(interface_ty.clone(), canonical_type_args);
-        let interface_key =
-            serde_json::to_string(&interface_ref).expect("interface ref must serialize");
+        let interface_key = canonical_interface_instantiation_key(&interface_ref);
         if !seen.insert(interface_key) {
             return Err(package_public_instance_error(
                 package,

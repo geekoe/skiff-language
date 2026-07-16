@@ -48,6 +48,10 @@ pub enum ArtifactIdentityError {
     },
     #[error("failed to serialize publicationAbi identity payload: {0}")]
     SerializePublicationAbiIdentity(serde_json::Error),
+    #[error("publicationAbi surface is invalid: {message}")]
+    InvalidPublicationAbiSurface { message: String },
+    #[error("publicationAbi declared abiIdentity {declared} but content identity is {computed}")]
+    PublicationAbiIdentityMismatch { declared: String, computed: String },
     #[error("failed to serialize package test build identity payload: {0}")]
     SerializePackageTestBuildIdentity(serde_json::Error),
     #[error(

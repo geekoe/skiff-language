@@ -62,12 +62,11 @@ pub use package_unit::{
     PackageUsedSymbolKind, TypeExport,
 };
 pub use publication_abi::{
-    canonical_interface_method_abi_id, interface_instantiation_ref,
-    interface_instantiation_ref_for_type_ref, type_ref_abi_key, CanonicalPublicCallableSignature,
-    InterfaceInstantiationRef, OperationAbiRef, PublicationAbiUnit, PublicationApiBinding,
-    PublicationApiSymbolKind, PublicationConformanceFact, PublicationOperationAbi,
-    PublicationOperationKind, PublicationPublicInstanceExport, PublicationSchemaType,
-    PublicationSchemaTypeNameability, SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
+    CanonicalPublicCallableSignature, InterfaceInstantiationRef, OperationAbiRef,
+    PublicationAbiUnit, PublicationApiBinding, PublicationApiSymbolKind,
+    PublicationConformanceFact, PublicationOperationAbi, PublicationOperationKind,
+    PublicationPublicInstanceExport, PublicationSchemaType, PublicationSchemaTypeNameability,
+    SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
 };
 pub use recoverable::{
     recoverable_expected_type_plans_compatible, validate_recoverable_artifact_metadata,

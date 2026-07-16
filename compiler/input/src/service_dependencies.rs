@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use skiff_artifact_identity::validate_publication_abi_identity;
 use skiff_artifact_model::{
     PublicationAbiUnit, ServiceDependencyConstraint, ServiceUnit, SERVICE_UNIT_SCHEMA_VERSION,
 };
@@ -354,13 +355,6 @@ fn service_dependency_publication_abi(
         serde_json::from_value(value.clone()).map_err(|error| InputAssemblyError::Validation {
             message: format!("{service_unit_path} publicationAbi is invalid: {error}"),
         })?;
-    if publication_abi.abi_identity.is_empty() {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} publicationAbi.abiIdentity must be a non-empty string"
-            ),
-        });
-    }
     Ok(publication_abi)
 }
 
@@ -385,70 +379,11 @@ fn validate_service_dependency_publication_abi(
             ),
         });
     }
-    let mut operation_exports = BTreeSet::new();
-    for operation in &publication_abi.operation_exports {
-        if operation.operation_abi_id.is_empty() {
-            return Err(InputAssemblyError::Validation {
-                message: format!(
-                    "{service_unit_path} publicationAbi.operationExports contains empty operationAbiId"
-                ),
-            });
+    validate_publication_abi_identity(publication_abi).map_err(|error| {
+        InputAssemblyError::Validation {
+            message: format!("{service_unit_path} publicationAbi validation failed: {error}"),
         }
-        if !operation_exports.insert(operation.operation_abi_id.as_str()) {
-            return Err(InputAssemblyError::Validation {
-                message: format!(
-                    "{service_unit_path} publicationAbi.operationExports duplicates operationAbiId {}",
-                    operation.operation_abi_id
-                ),
-            });
-        }
-    }
-    let mut operation_abi = BTreeSet::new();
-    for operation in &publication_abi.operation_abi {
-        let operation_abi_id = operation.operation.operation_abi_id.as_str();
-        if operation_abi_id.is_empty() {
-            return Err(InputAssemblyError::Validation {
-                message: format!(
-                    "{service_unit_path} publicationAbi.operationAbi contains empty operationAbiId"
-                ),
-            });
-        }
-        if !operation_exports.contains(operation_abi_id) {
-            return Err(InputAssemblyError::Validation {
-                message: format!(
-                    "{service_unit_path} publicationAbi.operationAbi references non-exported operationAbiId {operation_abi_id}"
-                ),
-            });
-        }
-        if !operation_abi.insert(operation_abi_id) {
-            return Err(InputAssemblyError::Validation {
-                message: format!(
-                    "{service_unit_path} publicationAbi.operationAbi duplicates operationAbiId {operation_abi_id}"
-                ),
-            });
-        }
-    }
-    for public_instance in &publication_abi.public_instances {
-        for operation in &public_instance.method_operations {
-            if operation.operation_abi_id.is_empty() {
-                return Err(InputAssemblyError::Validation {
-                    message: format!(
-                        "{service_unit_path} publicationAbi.publicInstances {} contains empty method operationAbiId",
-                        public_instance.public_instance_key
-                    ),
-                });
-            }
-            if !operation_exports.contains(operation.operation_abi_id.as_str()) {
-                return Err(InputAssemblyError::Validation {
-                    message: format!(
-                        "{service_unit_path} publicationAbi.publicInstances {} method operationAbiId {} is not exported",
-                        public_instance.public_instance_key, operation.operation_abi_id
-                    ),
-                });
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 fn service_dependency_lock_entry(
@@ -533,7 +468,19 @@ fn identity_hash(identity: &str, label: &str) -> Result<String, InputAssemblyErr
 
 #[cfg(test)]
 mod tests {
-    use super::service_dependency_publication_abi;
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_identity::{
+        assign_publication_abi_identity, public_function_operation_abi_id,
+    };
+    use skiff_artifact_model::{
+        CanonicalPublicCallableSignature, OperationAbiRef, PublicationAbiUnit,
+        PublicationOperationAbi, PublicationOperationKind, SourceCallOperationIndexEntry,
+        TypeRefIr,
+    };
+
+    use super::{service_dependency_publication_abi, validate_service_dependency_publication_abi};
+    use crate::ServiceDependency;
 
     #[test]
     fn service_dependency_missing_publication_abi_fails_closed() {
@@ -553,5 +500,56 @@ mod tests {
             error.contains("missing publicationAbi"),
             "unexpected missing publicationAbi error: {error}"
         );
+    }
+
+    #[test]
+    fn service_dependency_recomputes_declared_publication_identity() {
+        let signature = CanonicalPublicCallableSignature {
+            params: Vec::new(),
+            return_type: TypeRefIr::native("string"),
+            may_suspend: false,
+        };
+        let operation_id =
+            public_function_operation_abi_id("run", &signature, &[], &BTreeMap::new())
+                .expect("operation identity");
+        let operation = OperationAbiRef {
+            operation_abi_id: operation_id,
+            kind: PublicationOperationKind::PublicFunction,
+            public_path: "run".to_string(),
+            public_instance_key: None,
+            interface: None,
+            method_abi_id: None,
+            display_name: "run".to_string(),
+        };
+        let mut publication = PublicationAbiUnit::empty("example.com/callee", "1.0.0", "");
+        publication.operation_exports.push(operation.clone());
+        publication.operation_abi.push(PublicationOperationAbi {
+            operation: operation.clone(),
+            public_signature: signature,
+            schema_closure: Vec::new(),
+            stream_effect_throw_config: BTreeMap::new(),
+        });
+        publication
+            .source_call_operation_index
+            .push(SourceCallOperationIndexEntry {
+                source_call_path: "run".to_string(),
+                operation,
+            });
+        assign_publication_abi_identity(&mut publication).expect("valid publication identity");
+        publication.abi_identity = "skiff-publication-abi-v1:sha256:tampered".to_string();
+
+        let dependency = ServiceDependency {
+            id: "example.com/callee".to_string(),
+            version: "1.0.0".to_string(),
+            alias: "callee".to_string(),
+        };
+        let error = validate_service_dependency_publication_abi(
+            &publication,
+            "callee.service.json",
+            &dependency,
+        )
+        .expect_err("consumer must reject a tampered declared identity")
+        .to_string();
+        assert!(error.contains("declared abiIdentity"), "{error}");
     }
 }

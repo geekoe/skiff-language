@@ -2,23 +2,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::BoundaryKind;
 use crate::error::ProjectionError;
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr,
-    InterfaceInstantiationRef, InterfaceOperationIr, PackageRefIr, PackageSymbolRef,
-    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
-    RecoverableBoundaryPlan, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
-    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
-    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
-    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
-    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterPlan,
-    RecoverableNativeAdapterPlanRef, RecoverableStorageLane, RecoverableStorageLanePlan,
-    RecoverableStorageLaneRef, RecoverableTrustBoundary, RecoverableTypeIdentityFact,
-    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
+    DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr, InterfaceInstantiationRef,
+    InterfaceOperationIr, PackageRefIr, PackageSymbolRef, RecoverableArtifactMetadata,
+    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
+    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
+    RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
+    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableStorageLane,
+    RecoverableStorageLanePlan, RecoverableStorageLaneRef, RecoverableTrustBoundary,
+    RecoverableTypeIdentityFact, RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
     RecoverableUnionBranchIdentityRef, SpawnTargetIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_compiler_core::type_closure::{
-    type_decl_for_symbol_in_unit, ArtifactNominalTypeSource, PackageTypeSource,
-};
+pub use skiff_compiler_core::type_closure::PackageTypeSource;
+use skiff_compiler_core::type_closure::{type_decl_for_symbol_in_unit, ArtifactNominalTypeSource};
 
 mod type_closure;
 

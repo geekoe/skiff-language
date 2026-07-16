@@ -2375,7 +2375,15 @@ pub fn entry_operation_abi_id(
     params: &[EntryParamSpec],
     return_type: &EntryTypeSpec,
 ) -> String {
-    let public_signature = CanonicalPublicCallableSignature {
+    let public_signature = entry_operation_public_signature(params, return_type);
+    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
+}
+
+pub fn entry_operation_public_signature(
+    params: &[EntryParamSpec],
+    return_type: &EntryTypeSpec,
+) -> CanonicalPublicCallableSignature {
+    CanonicalPublicCallableSignature {
         params: params
             .iter()
             .map(|param| FunctionTypeParamIr {
@@ -2385,8 +2393,7 @@ pub fn entry_operation_abi_id(
             .collect(),
         return_type: return_type.ir.clone(),
         may_suspend: operation_response_mode(return_type) == "serverStream",
-    };
-    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
+    }
 }
 
 fn validate_http_handle(

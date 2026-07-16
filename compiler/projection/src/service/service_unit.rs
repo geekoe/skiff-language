@@ -8,7 +8,6 @@ use super::signature_matching::{
 use crate::{
     context::ProjectedPackageDependency,
     contract::{ContractProjection, ContractProjectionIndex},
-    contract_schema::descriptor::RuntimeTypeDescriptorIr,
     error::ProjectionError,
     runtime::{
         service_operation_adapter_symbol, EntryOperationCallable, EntryOperationSpec, GatewayEntry,
@@ -16,19 +15,21 @@ use crate::{
     },
     typed_artifacts::{
         public_instance_method_operation_abi_id, GatewayConfig, GatewayRoute, GatewayWebSocket,
-        InterfaceMethodSignature, OperationConstReceiverRef, OperationMode, OperationParam,
-        OperationTargetRef, PackageAbiExpectation, PackageDependencyConstraint, PackageUsedSymbol,
+        InterfaceMethodSignature, OperationConstReceiverRef, OperationMode, OperationTargetRef,
+        PackageAbiExpectation, PackageDependencyConstraint, PackageUsedSymbol,
         PackageUsedSymbolKind, PublicInstanceExport, PublicInstanceOperation,
         ServiceConfigMetadata, ServiceOperation,
     },
 };
+use skiff_artifact_identity::{
+    canonical_interface_instantiation_key, canonical_interface_method_abi_id,
+    interface_instantiation_ref, interface_instantiation_ref_for_type_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref,
-    interface_instantiation_ref_for_type_ref, type_ref_abi_key, BlockIr, BoxSourceIr, CallIr,
-    CallTargetIr, CanonicalPublicCallableSignature, DbBodyIr, DbChangeOpIr, DbOperationIr,
-    DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, ExecutableBody,
-    ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, ExprIr,
-    ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
+    BlockIr, BoxSourceIr, CallIr, CallTargetIr, CanonicalPublicCallableSignature, DbBodyIr,
+    DbChangeOpIr, DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr,
+    ExecutableBody, ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr,
+    ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
     InterfaceInstantiationRef, InterfaceMethodTablePlanIr, LocalReceiverExecutableRef,
     MetadataValue, OperationAbiRef, OperationCallableKind, PackageRefIr, PackageSymbolRef,
     PackageUnit, ParamIr, PatternIr, PublicationOperationKind, ReceiverCallAbi,
@@ -42,10 +43,6 @@ use skiff_compiler_projection_input::{
     ExportPublicInstanceInterfaceProjection, ExportPublicInstanceProjection,
     PackageProjectionInput, ProjectionView,
 };
-
-fn type_ref_from_runtime_descriptor(descriptor: &RuntimeTypeDescriptorIr) -> TypeRefIr {
-    descriptor.to_type_ref_for_service_unit()
-}
 
 pub fn service_package_dependency_constraints(
     declared_dependencies: &[ProjectedPackageDependency],
@@ -1319,16 +1316,23 @@ fn record_package_used_operation(
     Ok(())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ServicePublicInstances {
+    pub exports: Vec<PublicInstanceExport>,
+    pub operation_public_signatures: StdBTreeMap<String, CanonicalPublicCallableSignature>,
+}
+
 pub fn service_unit_public_instances(
     input: ProjectionView<'_>,
     contract: &ContractProjection,
     index: &ContractProjectionIndex<'_>,
     package_dependencies: &[ProjectedPackageDependency],
-) -> Result<Vec<PublicInstanceExport>, ProjectionError> {
+) -> Result<ServicePublicInstances, ProjectionError> {
     let signature_context =
         SignatureTypeRefContext::from_package_dependencies(package_dependencies);
     let mut names_by_source = StdBTreeMap::<String, String>::new();
     let mut instances = Vec::new();
+    let mut operation_public_signatures = StdBTreeMap::new();
 
     for public_instance in input.source().export_bindings().public_instances().values() {
         let public_instance_key = public_instance.public_path.as_str();
@@ -1390,7 +1394,7 @@ pub fn service_unit_public_instances(
             });
         }
 
-        let operations = public_instance_operations(
+        let projected_operations = public_instance_operations(
             index,
             &signature_context,
             public_instance_key,
@@ -1398,6 +1402,22 @@ pub fn service_unit_public_instances(
             &receiver_const,
             &implemented_interfaces,
         )?;
+        let mut operations = Vec::with_capacity(projected_operations.len());
+        for projected in projected_operations {
+            let operation_abi_id = projected.operation.operation.operation_abi_id.clone();
+            if let Some(existing) = operation_public_signatures
+                .insert(operation_abi_id.clone(), projected.public_signature.clone())
+            {
+                if existing != projected.public_signature {
+                    return Err(ProjectionError::ContractValidation {
+                        message: format!(
+                            "public instance operation ABI id `{operation_abi_id}` has conflicting public signatures"
+                        ),
+                    });
+                }
+            }
+            operations.push(projected.operation);
+        }
         instances.push(PublicInstanceExport {
             name: public_instance_key.to_string(),
             module_path: unit.module_path.clone(),
@@ -1410,7 +1430,10 @@ pub fn service_unit_public_instances(
         });
     }
 
-    Ok(instances)
+    Ok(ServicePublicInstances {
+        exports: instances,
+        operation_public_signatures,
+    })
 }
 
 fn public_instance_receiver_type_ref(
@@ -1558,8 +1581,7 @@ fn public_instance_listed_interfaces(
                 &interface_display,
                 listed_interface,
             )?;
-            let interface_key =
-                serde_json::to_string(&instantiation).expect("interface ref must serialize");
+            let interface_key = canonical_interface_instantiation_key(&instantiation);
             if !seen.insert(interface_key) {
                 return Err(ProjectionError::ContractValidation {
                     message: format!(
@@ -1613,8 +1635,7 @@ fn public_instance_listed_interfaces(
             });
         };
         let instantiation = interface_instantiation_ref_for_type_ref(&package_interface_identity);
-        let interface_key =
-            serde_json::to_string(&instantiation).expect("interface ref must serialize");
+        let interface_key = canonical_interface_instantiation_key(&instantiation);
         if !seen.insert(interface_key) {
             return Err(ProjectionError::ContractValidation {
                 message: format!(
@@ -1914,6 +1935,12 @@ fn receiver_type_ref(receiver: &ServiceSymbolRef) -> TypeRefIr {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ProjectedPublicInstanceOperation {
+    operation: PublicInstanceOperation,
+    public_signature: CanonicalPublicCallableSignature,
+}
+
 fn public_instance_operations(
     index: &ContractProjectionIndex<'_>,
     signature_context: &SignatureTypeRefContext,
@@ -1921,7 +1948,7 @@ fn public_instance_operations(
     receiver: &ServiceSymbolRef,
     receiver_const: &OperationConstReceiverRef,
     implemented_interfaces: &[PublicImplementedInterface],
-) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
+) -> Result<Vec<ProjectedPublicInstanceOperation>, ProjectionError> {
     let mut operations = Vec::new();
     let mut operation_keys = StdBTreeMap::<String, PublicInstanceOperationKey>::new();
 
@@ -1942,18 +1969,19 @@ fn public_instance_operations(
         };
 
         for operation in projected {
-            let key = PublicInstanceOperationKey::from(&operation);
-            if let Some(existing) = operation_keys.get(&operation.operation.display_name) {
+            let key = PublicInstanceOperationKey::from(&operation.operation);
+            if let Some(existing) = operation_keys.get(&operation.operation.operation.display_name)
+            {
                 if existing != &key {
                     return Err(ProjectionError::ContractValidation {
                         message: format!(
                             "public instance `{public_instance_name}` derives conflicting operation `{}` from multiple interfaces",
-                            operation.operation.display_name
+                            operation.operation.operation.display_name
                         ),
                     });
                 }
             } else {
-                operation_keys.insert(operation.operation.display_name.clone(), key);
+                operation_keys.insert(operation.operation.operation.display_name.clone(), key);
                 operations.push(operation);
             }
         }
@@ -1970,7 +1998,7 @@ fn public_instance_interface_operations(
     receiver_const: &OperationConstReceiverRef,
     interface: &InterfaceInstantiationRef,
     methods: &[InterfaceMethodSignature],
-) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
+) -> Result<Vec<ProjectedPublicInstanceOperation>, ProjectionError> {
     let receiver_unit =
         index
             .unit_by_module_path(&receiver.module_path)
@@ -2020,19 +2048,22 @@ fn public_instance_interface_operations(
                 &method.name,
                 &public_signature,
             );
-            Ok(PublicInstanceOperation {
-                operation: operation_ref.clone(),
-                receiver_executable: local_receiver_executable_ref(
-                    receiver_const,
-                    receiver_unit,
-                    &target_symbol,
-                    executable_index,
-                    operation_ref
-                        .method_abi_id
-                        .as_deref()
-                        .unwrap_or(operation_ref.operation_abi_id.as_str()),
-                    OperationCallableKind::ImplMethod,
-                ),
+            Ok(ProjectedPublicInstanceOperation {
+                operation: PublicInstanceOperation {
+                    operation: operation_ref.clone(),
+                    receiver_executable: local_receiver_executable_ref(
+                        receiver_const,
+                        receiver_unit,
+                        &target_symbol,
+                        executable_index,
+                        operation_ref
+                            .method_abi_id
+                            .as_deref()
+                            .unwrap_or(operation_ref.operation_abi_id.as_str()),
+                        OperationCallableKind::ImplMethod,
+                    ),
+                },
+                public_signature,
             })
         })
         .collect()
@@ -2629,17 +2660,6 @@ fn operation_target_ref(
         callable_abi_id: format!("callable:{}.{}", unit.module_path, symbol),
         callable_kind,
     }
-}
-
-fn operation_params_from_entry(entry: &OperationEntryIr) -> Vec<OperationParam> {
-    entry
-        .parameters
-        .iter()
-        .map(|param| OperationParam {
-            name: param.name.clone(),
-            ty: type_ref_from_runtime_descriptor(&param.ty),
-        })
-        .collect()
 }
 
 fn executable_index_by_identity_and_symbol(

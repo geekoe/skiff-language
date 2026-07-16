@@ -8,9 +8,10 @@ use crate::publication_visible_types::{
     projection_visible_interface_instantiation_ref, publication_type_names_from_file_units,
 };
 use crate::typed_artifacts::ServiceDependencyConstraint;
+use skiff_artifact_identity::canonical_interface_method_abi_id;
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, BoxSourceIr, ExecutableBody, ExprIr, FileIrUnit,
-    InterfaceInstantiationRef, OperationAbiRef, PublicationOperationAbi,
+    BoxSourceIr, ExecutableBody, ExprIr, FileIrUnit, InterfaceInstantiationRef, OperationAbiRef,
+    PublicationOperationAbi,
 };
 
 pub struct RemoteBoxProvenanceInput<'a> {

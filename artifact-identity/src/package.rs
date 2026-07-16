@@ -47,6 +47,7 @@ pub fn package_abi_identity(unit: &PackageUnit) -> Result<String> {
 }
 
 pub fn validate_package_unit_identities(unit: &PackageUnit) -> Result<()> {
+    crate::validate_publication_abi_identity(&unit.publication_abi)?;
     let computed_build = package_build_identity(unit)?;
     if unit.build_identity != computed_build {
         return Err(ArtifactIdentityError::PackageBuildIdentityMismatch {

@@ -24,8 +24,10 @@ pub fn publication_abi_identity(unit: &PublicationAbiUnit) -> Result<String> {
 }
 
 pub fn assign_publication_abi_identity(unit: &mut PublicationAbiUnit) -> Result<String> {
+    crate::validate_publication_abi_surface(unit)?;
     let abi_identity = publication_abi_identity(unit)?;
     unit.abi_identity = abi_identity.clone();
+    crate::validate_publication_abi_identity(unit)?;
     Ok(abi_identity)
 }
 

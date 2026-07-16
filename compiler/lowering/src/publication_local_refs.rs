@@ -6,9 +6,8 @@ use crate::file_ir::{
     ExternalRefTable, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
     TypeDescriptorIr, TypeRefIr,
 };
-use skiff_artifact_model::{
-    canonical_interface_method_abi_id, type_ref_abi_key, InterfaceInstantiationRef,
-};
+use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
+use skiff_artifact_model::InterfaceInstantiationRef;
 
 use super::external_refs::external_refs_for_file_ir_unit;
 

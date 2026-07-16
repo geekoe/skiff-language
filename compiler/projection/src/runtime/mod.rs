@@ -26,7 +26,7 @@ pub use operation_effects::operation_effect_projection_for_signature;
 pub use operation_validation::validate_runtime_operation_modes;
 pub use operations::{
     interface_modules, service_operation_adapter_symbol, service_operation_entries,
-    OperationEntryIr,
+    OperationEntryIr, ServiceOperationEntries,
 };
 pub use schema::{package_runtime_schema_for_type_ref, package_runtime_schema_for_type_spec};
 pub use service_operations::{

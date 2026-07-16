@@ -12,7 +12,7 @@ use skiff_artifact_model::{
     SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
 };
 use skiff_compiler_projection::recoverable_boundary::{
-    recoverable_metadata_for_service_artifacts, RecoverableInputs, RecoverablePackageTypeSource,
+    recoverable_metadata_for_service_artifacts, PackageTypeSource, RecoverableInputs,
 };
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
@@ -502,7 +502,7 @@ fn package_test_recoverable_metadata(
         .map(|file| file.as_ref().clone())
         .collect::<Vec<_>>();
     let mut package_sources = Vec::with_capacity(dependency_units.len() + 1);
-    package_sources.push(RecoverablePackageTypeSource {
+    package_sources.push(PackageTypeSource {
         package_id: production_unit.package_id.clone(),
         dependency_refs: Vec::new(),
         unit: production_unit.clone(),
@@ -515,7 +515,7 @@ fn package_test_recoverable_metadata(
         dependency_units
             .iter()
             .zip(dependency_files)
-            .map(|(unit, files)| RecoverablePackageTypeSource {
+            .map(|(unit, files)| PackageTypeSource {
                 package_id: unit.package_id.clone(),
                 dependency_refs: production_unit
                     .dependencies
@@ -1030,13 +1030,12 @@ mod tests {
     use serde_json::json;
     use skiff_artifact_identity::{
         assign_file_ir_identity, assign_package_unit_identities, derive_package_test_entrypoint_id,
-        package_test_build_identity, package_test_entrypoint_local_id,
+        interface_instantiation_ref, package_test_build_identity, package_test_entrypoint_local_id,
         PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
     };
     use skiff_artifact_model::{
-        interface_instantiation_ref, CallIr as ArtifactCallIr, ConfigAndEffectMetadata,
-        DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
-        ExecutableBody as ArtifactExecutableBody,
+        CallIr as ArtifactCallIr, ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr,
+        DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
         ExecutableDeclarationIr as ArtifactExecutableDeclarationIr, ExecutableExport,
         ExecutableIr as ArtifactExecutableIr, ExecutableKind as ArtifactExecutableKind,
         ExecutableSignatureIr, ExprIr as ArtifactExprIr,

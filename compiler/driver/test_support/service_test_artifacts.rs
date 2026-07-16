@@ -1594,9 +1594,10 @@ mod tests {
     };
 
     use super::*;
+    use skiff_artifact_identity::interface_instantiation_ref;
     use skiff_compiler_core::artifact::{
-        interface_instantiation_ref, DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr,
-        DbObjectKindIr, InterfaceDeclIr, InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
+        DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, InterfaceDeclIr,
+        InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
     };
     use skiff_compiler_emission::identity::PACKAGE_BUILD_IDENTITY_PREFIX;
     use skiff_compiler_lowering::file_ir::{

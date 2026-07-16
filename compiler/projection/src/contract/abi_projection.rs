@@ -49,9 +49,8 @@
 
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{
-    AbiIdentityFacts, AbiSymbolId, AbiSymbolIdFact, AbiTypeId, TypeNameability,
-};
+use skiff_artifact_identity::{abi_symbol_id_fact, abi_type_id_key};
+use skiff_artifact_model::{AbiIdentityFacts, AbiSymbolId, AbiTypeId, TypeNameability};
 
 use skiff_compiler_projection_input::{ProjectionSourceDeclarationKind, ProjectionSourceSymbolKey};
 
@@ -88,48 +87,15 @@ impl AbiIdentityProjection {
             public_symbols: self
                 .public_symbols
                 .iter()
-                .map(|(public_path, symbol)| (public_path.clone(), abi_symbol_id_to_fact(symbol)))
+                .map(|(public_path, symbol)| (public_path.clone(), abi_symbol_id_fact(symbol)))
                 .collect(),
             type_nameability: self
                 .type_nameability
                 .iter()
-                .map(|(type_id, nameability)| (abi_id_key_hex(type_id.key_bytes()), *nameability))
+                .map(|(type_id, nameability)| (abi_type_id_key(type_id), *nameability))
                 .collect(),
         }
     }
-}
-
-fn abi_symbol_id_to_fact(symbol: &AbiSymbolId) -> AbiSymbolIdFact {
-    match symbol {
-        AbiSymbolId::Type(id) => AbiSymbolIdFact::Type {
-            abi_type_id: abi_id_key_hex(id.key_bytes()),
-        },
-        AbiSymbolId::Alias(id) => AbiSymbolIdFact::Alias {
-            abi_alias_id: abi_id_key_hex(id.key_bytes()),
-        },
-        AbiSymbolId::Interface(id) => AbiSymbolIdFact::Interface {
-            abi_interface_id: abi_id_key_hex(id.key_bytes()),
-        },
-        AbiSymbolId::Callable(id) => AbiSymbolIdFact::Callable {
-            abi_callable_id: abi_id_key_hex(id.key_bytes()),
-        },
-        AbiSymbolId::Const(id) => AbiSymbolIdFact::Const {
-            abi_const_id: abi_id_key_hex(id.key_bytes()),
-        },
-        AbiSymbolId::Instance(id) => AbiSymbolIdFact::Instance {
-            abi_instance_id: abi_id_key_hex(id.key_bytes()),
-        },
-    }
-}
-
-fn abi_id_key_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 /// 从 `ContractProjection` 和 `ContractProjectionIndex` 产出 `AbiIdentityProjection`。
