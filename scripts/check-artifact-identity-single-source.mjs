@@ -5,66 +5,186 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const canonicalRelPath = 'artifact-identity/src/lib.rs';
-const duplicateDefinitionRegexp =
-  /\bstruct\s+(?:FileIrIdentityPayload|SourceMapIdentityPayload|ServiceUnitStorageIdentityPayload|PackageBuildIdentityPayload|PublicationAbiIdentityProjection|OperationAbiIdentityInput)\b|\bfn\s+(?:canonical_file_ir_identity_bytes|service_unit_identity_bytes|publication_abi_identity_bytes|operation_abi_identity)\s*\(/g;
-
-const canonicalRequirements = [
+const skippedRustScanDirectories = new Set([
+  '.git',
+  '.skiff-instance',
+  'build',
+  'node_modules',
+  'target',
+]);
+const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
+const ownerRequirements = [
   {
     name: 'FileIrIdentityPayload',
+    relPath: 'artifact-identity/src/file_ir.rs',
     regexp: /\bstruct\s+FileIrIdentityPayload\b/,
   },
   {
     name: 'file_ir_identity',
+    relPath: 'artifact-identity/src/file_ir.rs',
     regexp: /\bpub\s+fn\s+file_ir_identity\s*\(/,
   },
   {
+    name: 'canonical_file_ir_identity_bytes',
+    relPath: 'artifact-identity/src/file_ir.rs',
+    regexp: /\bpub\s+fn\s+canonical_file_ir_identity_bytes\s*\(/,
+  },
+  {
     name: 'ServiceUnitStorageIdentityPayload',
+    relPath: 'artifact-identity/src/legacy_service.rs',
     regexp: /\bstruct\s+ServiceUnitStorageIdentityPayload\b/,
   },
   {
     name: 'service_unit_identity',
+    relPath: 'artifact-identity/src/legacy_service.rs',
     regexp: /\bpub\s+fn\s+service_unit_identity\s*\(/,
   },
   {
+    name: 'service_unit_identity_bytes',
+    relPath: 'artifact-identity/src/legacy_service.rs',
+    regexp: /\bpub\s+fn\s+service_unit_identity_bytes\s*\(/,
+  },
+  {
     name: 'PackageBuildIdentityPayload',
+    relPath: 'artifact-identity/src/package.rs',
     regexp: /\bstruct\s+PackageBuildIdentityPayload\b/,
   },
   {
     name: 'package_build_identity',
+    relPath: 'artifact-identity/src/package.rs',
     regexp: /\bpub\s+fn\s+package_build_identity\s*\(/,
   },
   {
     name: 'package_abi_identity',
+    relPath: 'artifact-identity/src/package.rs',
     regexp: /\bpub\s+fn\s+package_abi_identity\s*\(/,
   },
   {
     name: 'PublicationAbiIdentityProjection',
+    relPath: 'artifact-identity/src/publication.rs',
     regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
   },
   {
     name: 'publication_abi_identity',
+    relPath: 'artifact-identity/src/publication.rs',
     regexp: /\bpub\s+fn\s+publication_abi_identity\s*\(/,
   },
   {
+    name: 'publication_abi_identity_bytes',
+    relPath: 'artifact-identity/src/publication.rs',
+    regexp: /\bpub\s+fn\s+publication_abi_identity_bytes\s*\(/,
+  },
+  {
     name: 'OperationAbiIdentityInput',
+    relPath: 'artifact-identity/src/operation.rs',
     regexp: /\bpub\s+struct\s+OperationAbiIdentityInput\b/,
   },
   {
     name: 'operation_abi_hash',
+    relPath: 'artifact-identity/src/operation.rs',
     regexp: /\bpub\s+fn\s+operation_abi_hash\s*\(/,
   },
   {
     name: 'operation_abi_identity',
+    relPath: 'artifact-identity/src/operation.rs',
     regexp: /\bpub\s+fn\s+operation_abi_identity\s*\(/,
   },
   {
     name: 'public_function_operation_abi_id',
+    relPath: 'artifact-identity/src/operation.rs',
     regexp: /\bpub\s+fn\s+public_function_operation_abi_id\s*\(/,
   },
   {
     name: 'public_instance_method_operation_abi_id',
+    relPath: 'artifact-identity/src/operation.rs',
     regexp: /\bpub\s+fn\s+public_instance_method_operation_abi_id\s*\(/,
+  },
+  {
+    name: 'PackageTestBuildIdentityPayload',
+    relPath: 'artifact-identity/src/package_test.rs',
+    regexp: /\bstruct\s+PackageTestBuildIdentityPayload\b/,
+  },
+  {
+    name: 'RuntimeProgramServiceUnitIdentityPayload',
+    relPath: 'artifact-identity/src/runtime_program.rs',
+    regexp: /\bstruct\s+RuntimeProgramServiceUnitIdentityPayload\b/,
+  },
+  {
+    name: 'canonical_json_value',
+    relPath: 'canonical-json/src/lib.rs',
+    regexp: /\bpub\s+fn\s+canonical_json_value\s*\(/,
+  },
+  {
+    name: 'canonical_json_number',
+    relPath: 'canonical-json/src/lib.rs',
+    regexp: /\bpub\s+fn\s+canonical_json_number\s*\(/,
+  },
+  {
+    name: 'canonical_json_bytes',
+    relPath: 'canonical-json/src/lib.rs',
+    regexp: /\bpub\s+fn\s+canonical_json_bytes\s*</,
+  },
+];
+
+const exclusiveDefinitionNames = new Set([
+  'FileIrIdentityPayload',
+  'ServiceUnitStorageIdentityPayload',
+  'PackageBuildIdentityPayload',
+  'PublicationAbiIdentityProjection',
+  'OperationAbiIdentityInput',
+  'PackageTestBuildIdentityPayload',
+  'RuntimeProgramServiceUnitIdentityPayload',
+  'canonical_file_ir_identity_bytes',
+  'service_unit_identity_bytes',
+  'publication_abi_identity_bytes',
+  'operation_abi_identity',
+  'canonical_json_value',
+  'canonical_json_number',
+  'canonical_json_bytes',
+]);
+const definitionOwnerByName = new Map(
+  ownerRequirements
+    .filter(({ name }) => exclusiveDefinitionNames.has(name))
+    .map(({ name, relPath }) => [name, relPath]),
+);
+const ownedDefinitionRegexp = new RegExp(
+  `\\b(?:struct|fn)\\s+(${[...definitionOwnerByName.keys()].join('|')})\\b`,
+  'g',
+);
+
+const facadeModules = [
+  'constants',
+  'error',
+  'file_ir',
+  'framing',
+  'legacy_service',
+  'operation',
+  'package',
+  'package_test',
+  'publication',
+  'runtime_program',
+];
+
+const canonicalDelegationRequirements = [
+  {
+    relPath: 'artifact-identity/src/framing.rs',
+    helper: 'artifact identity canonical bytes',
+    regexp: /\bskiff_canonical_json::canonical_json_bytes\b/,
+  },
+  {
+    relPath: 'compiler/core/src/json_utils.rs',
+    helper: 'compiler canonical JSON API',
+    regexp: /\bpub\s+use\s+skiff_canonical_json\s*::/,
+  },
+  {
+    relPath: 'runtime/linker/src/json_utils.rs',
+    helper: 'runtime linker canonical JSON API',
+    regexp: /\buse\s+skiff_canonical_json::canonical_json_value\b/,
+  },
+  {
+    relPath: 'runtime/linked-type-plan/src/type_plan.rs',
+    helper: 'sort-only linked type key helper',
+    regexp: /\bfn\s+sort_json_value\s*\(/,
   },
 ];
 
@@ -149,12 +269,30 @@ if (options.help) {
 async function runCheck() {
   const failures = [];
   const files = await collectCandidateRustFiles(root);
-  const canonicalText = stripInlineTestModules(await readFile(join(root, canonicalRelPath), 'utf8'));
-
-  for (const requirement of canonicalRequirements) {
-    if (!requirement.regexp.test(canonicalText)) {
-      failures.push(`${canonicalRelPath} is missing canonical ${requirement.name}`);
+  const ownerTextByPath = new Map();
+  for (const requirement of ownerRequirements) {
+    if (!ownerTextByPath.has(requirement.relPath)) {
+      ownerTextByPath.set(
+        requirement.relPath,
+        stripInlineTestModules(await readFile(join(root, requirement.relPath), 'utf8')),
+      );
     }
+    if (!requirement.regexp.test(ownerTextByPath.get(requirement.relPath))) {
+      failures.push(`${requirement.relPath} is missing owned ${requirement.name}`);
+    }
+  }
+
+  const facadeText = stripInlineTestModules(
+    await readFile(join(root, artifactIdentityFacadePath), 'utf8'),
+  );
+  for (const moduleName of facadeModules) {
+    const moduleDeclaration = new RegExp(`\\bmod\\s+${moduleName}\\s*;`);
+    if (!moduleDeclaration.test(facadeText)) {
+      failures.push(`${artifactIdentityFacadePath} is missing ${moduleName} module declaration`);
+    }
+  }
+  if (/\b(?:struct|enum|fn)\s+\w+/.test(facadeText)) {
+    failures.push(`${artifactIdentityFacadePath} must contain declarations and re-exports only`);
   }
 
   const adapterTextByPath = new Map();
@@ -165,9 +303,22 @@ async function runCheck() {
   }
   failures.push(...collectAdapterRequirementFailures(adapterRequirements, adapterTextByPath));
 
-  for (const violation of collectDuplicateDefinitionViolations(files)) {
+  const canonicalDelegationTextByPath = new Map();
+  for (const { relPath } of canonicalDelegationRequirements) {
+    if (!canonicalDelegationTextByPath.has(relPath)) {
+      canonicalDelegationTextByPath.set(relPath, await readFile(join(root, relPath), 'utf8'));
+    }
+  }
+  failures.push(
+    ...collectDelegationRequirementFailures(
+      canonicalDelegationRequirements,
+      canonicalDelegationTextByPath,
+    ),
+  );
+
+  for (const violation of collectOwnedDefinitionViolations(files)) {
     failures.push(
-      `${violation.relPath}:${violation.line} duplicate artifact identity projection ${violation.matched}`,
+      `${violation.relPath}:${violation.line} ${violation.name} is owned by ${violation.owner}`,
     );
   }
 
@@ -180,6 +331,21 @@ async function runCheck() {
   }
 
   console.log('Artifact identity single-source check passed.');
+}
+
+function collectDelegationRequirementFailures(requirements, textByPath) {
+  const failures = [];
+  for (const requirement of requirements) {
+    const text = textByPath.get(requirement.relPath);
+    if (text === undefined) {
+      failures.push(`${requirement.relPath} is missing required ${requirement.helper}`);
+      continue;
+    }
+    if (!requirement.regexp.test(stripInlineTestModules(text))) {
+      failures.push(`${requirement.relPath} is missing required ${requirement.helper} delegation`);
+    }
+  }
+  return failures;
 }
 
 function collectAdapterRequirementFailures(requirements, textByPath) {
@@ -200,19 +366,25 @@ function collectAdapterRequirementFailures(requirements, textByPath) {
   return failures;
 }
 
-function collectDuplicateDefinitionViolations(files) {
+function collectOwnedDefinitionViolations(files) {
   const violations = [];
 
   for (const file of files) {
-    if (file.relPath === canonicalRelPath || !isProductionRustFile(file.relPath)) {
+    if (!isProductionRustFile(file.relPath)) {
       continue;
     }
     const text = stripInlineTestModules(file.text);
-    for (const match of text.matchAll(duplicateDefinitionRegexp)) {
+    for (const match of text.matchAll(ownedDefinitionRegexp)) {
+      const name = match[1];
+      const owner = definitionOwnerByName.get(name);
+      if (owner === file.relPath) {
+        continue;
+      }
       violations.push({
         relPath: file.relPath,
         line: lineNumberAt(text, match.index ?? 0),
-        matched: match[0],
+        name,
+        owner,
       });
     }
   }
@@ -222,8 +394,7 @@ function collectDuplicateDefinitionViolations(files) {
 
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
-  await collectRustFiles(join(repoRoot, 'artifact-identity/src'), files);
-  await collectRustFiles(join(repoRoot, 'compiler'), files);
+  await collectRustFiles(repoRoot, files);
   return files;
 }
 
@@ -241,6 +412,9 @@ async function collectRustFiles(directory, files) {
   for (const entry of entries) {
     const absPath = join(directory, entry.name);
     if (entry.isDirectory()) {
+      if (shouldSkipRustScanDirectory(entry.name)) {
+        continue;
+      }
       await collectRustFiles(absPath, files);
       continue;
     }
@@ -255,27 +429,29 @@ async function collectRustFiles(directory, files) {
   }
 }
 
+function shouldSkipRustScanDirectory(name) {
+  return skippedRustScanDirectories.has(name);
+}
+
 function isProductionRustFile(relPath) {
   if (relPath.endsWith('/tests.rs') || relPath.split('/').includes('tests')) {
     return false;
   }
-  if (relPath.startsWith('artifact-identity/src/')) {
-    return true;
-  }
-  if (relPath.startsWith('compiler/tests/')) {
-    return false;
-  }
-  return relPath.startsWith('compiler/driver/') || /^compiler\/[^/]+\/src\//.test(relPath);
+  return relPath.endsWith('.rs');
 }
 
 function runSelfTest() {
   const cases = [
     {
-      name: 'allows canonical artifact identity definitions',
+      name: 'allows definitions in their declared owner modules',
       files: [
         {
-          relPath: canonicalRelPath,
+          relPath: 'artifact-identity/src/operation.rs',
           text: 'pub struct OperationAbiIdentityInput;\npub fn operation_abi_identity() {}\n',
+        },
+        {
+          relPath: 'canonical-json/src/lib.rs',
+          text: 'pub fn canonical_json_value() {}\n',
         },
       ],
       expectedViolations: 0,
@@ -321,11 +497,21 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects artifact-identity non-canonical duplicate function',
+      name: 'rejects an identity definition in the wrong artifact-identity module',
       files: [
         {
           relPath: 'artifact-identity/src/other.rs',
           text: 'fn operation_abi_identity() {}\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects a canonical JSON definition outside the leaf owner',
+      files: [
+        {
+          relPath: 'runtime/linker/src/json_utils.rs',
+          text: 'fn canonical_json_value() {}\n',
         },
       ],
       expectedViolations: 1,
@@ -354,7 +540,7 @@ function runSelfTest() {
 
   const failures = [];
   for (const testCase of cases) {
-    const violations = collectDuplicateDefinitionViolations(testCase.files);
+    const violations = collectOwnedDefinitionViolations(testCase.files);
     if (violations.length !== testCase.expectedViolations) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedViolations} violation(s), got ${violations.length}`,
@@ -516,8 +702,8 @@ function parseArgs(argv) {
 function printUsage() {
   console.log(`Usage: node scripts/check-artifact-identity-single-source.mjs [--self-test]
 
-Checks that artifact-identity/src/lib.rs is the only production owner of
-File IR, service, package, publication, and operation identity byte projections.`);
+Checks that canonical JSON and artifact identity definitions live in their declared
+crate/module owners while compiler and runtime consumers use the public owner APIs.`);
 }
 
 function normalizePath(path) {
