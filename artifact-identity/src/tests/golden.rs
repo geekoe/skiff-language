@@ -157,7 +157,7 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
         instance_id,
         publication_abi_identity(&package.publication_abi).expect("publication identity golden"),
         package_build_identity(&package).expect("package build identity golden"),
-        package_abi_identity(&package).expect("package ABI identity golden"),
+        package_local_abi_identity(&package).expect("package local ABI identity golden"),
         service_unit_identity(&service).expect("service unit identity golden"),
     ];
     assert_eq!(
@@ -166,8 +166,8 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
                 "skiff-operation-abi-v1:sha256:9892d2509d863917a3e61934a7b3b86600e2bc0283a1055c6c11c1cae9bf1561".to_string(),
                 "skiff-operation-abi-v1:sha256:53c0d16e4d2cf8a8060438bd1c194e3e9da67b08612ec48ba138dcff0fb79c91".to_string(),
                 "skiff-publication-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
-                "skiff-package-build-v1:sha256:f72f6bdcf590d74dd320ea59a68e0394b99dec8263d233fa97a19493eec25a46".to_string(),
-                "skiff-package-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
+                "skiff-package-build-v2:sha256:3b856ba45dcbcea7a02bca4f2a13fdd0b59a35da92cb688c030717e77bdf74a0".to_string(),
+                "skiff-package-local-abi-v2:sha256:79b65afcf856048977eb82178be147f1a24269274a838827af0cca4859ae64b5".to_string(),
                 "skiff-service-unit-v1:sha256:495cc9eb389e15e6ef30baf26c15606229973de823135aaaf9d06c814367268d".to_string(),
             ],
         );
@@ -194,8 +194,8 @@ fn module_split_file_runtime_and_package_test_outputs_match_exact_golden() {
         runtime_program_dynamic_build_id(
             &runtime_bytes,
             [
-                "skiff-package-build-v1:sha256:aaaaaaaa",
-                "skiff-package-build-v1:sha256:bbbbbbbb",
+                "skiff-package-build-v2:sha256:aaaaaaaa",
+                "skiff-package-build-v2:sha256:bbbbbbbb",
             ],
         ),
         package_test_build_identity(&package_test_assembly_fixture())
@@ -205,8 +205,8 @@ fn module_split_file_runtime_and_package_test_outputs_match_exact_golden() {
             actual,
             [
                 "skiff-file-ir-v3:sha256:fe27d55db78af32190393edf73afe4f23ed771ebd9a21754e20ec95af51de523".to_string(),
-                "skiff-service-build-v1:sha256:7ca79fb0d44e42415cd821fdd1f603187a1e77a30c81901b2758278561da350d".to_string(),
-                "skiff-package-test-build-v1:sha256:dfa756f6d34cd8a0e39c1840cc13d4df28717b9bb7b782bb48e8328c43f1010f".to_string(),
+                "skiff-service-build-v1:sha256:83bf8245066adbd9286bb319289a5c8f22e28864f0bf1b0f34895416eff2ba03".to_string(),
+                "skiff-package-test-build-v1:sha256:0e8639d1c63f29ce417a292f66879dd2878e31b61611347e411444ca665c36cb".to_string(),
             ],
         );
 }

@@ -2,8 +2,13 @@ pub const RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER: &str = "skiff-runtime-program-lin
 pub const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1";
 pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v3:sha256";
 pub const SERVICE_UNIT_IDENTITY_PREFIX: &str = "skiff-service-unit-v1:sha256";
-pub const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v1:sha256";
-pub const PACKAGE_ABI_IDENTITY_PREFIX: &str = "skiff-package-abi-v1:sha256";
+pub const PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-build-identity-v2";
+pub const PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-local-abi-identity-v2";
+pub const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v2:sha256";
+pub const PACKAGE_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v2:sha256";
+/// Temporary call-site migration alias. T06/T07 must adopt
+/// `PACKAGE_LOCAL_ABI_IDENTITY_PREFIX` and remove this old conceptual name.
+pub const PACKAGE_ABI_IDENTITY_PREFIX: &str = PACKAGE_LOCAL_ABI_IDENTITY_PREFIX;
 pub const OPERATION_ABI_IDENTITY_PREFIX: &str = "skiff-operation-abi-v1:sha256";
 pub const PUBLICATION_ABI_IDENTITY_PREFIX: &str = "skiff-publication-abi-v1:sha256";
 pub const PACKAGE_ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-package-assembly-v1:sha256";
