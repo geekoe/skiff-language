@@ -18,8 +18,8 @@ API callable生成显式boundary availability。任务消费typed effects，不�
 2. PackageLocalAbi与PackageBuild identity只调用T01 canonical API；PackageArtifact不嵌入PublicationAbiUnit。
 3. 所有package API callable都有Local ABI及BoundaryCallableProjection；Unknown、caller mutation/alias/
    escape、same-heap、unknown target、unsupported value/callback/native plan形成稳定Unavailable reasons。
-4. Available保存BoundaryOperationDescriptor和BoundaryImplementationRequirements；implementation facts不
-   污染contract/protocol identity。
+4. Available保存contract-agnostic BoundaryOperationContract和BoundaryImplementationRequirements；不得
+   填入或伪造ContractOperationId/stable key。implementation facts不污染contract/protocol identity。
 5. PackageRequirement、ContractRequirement、ServiceRequirement、ServiceCallRef、config/resource/capability、
    effect/provenance完整进入artifact与build identity projection。
 6. production与package-test共享同一个PackageArtifact projection/materializer API；T06只负责runtime adapter

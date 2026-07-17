@@ -85,17 +85,24 @@ materialization。
 ```text
 BoundaryCallableProjection
   = Available {
-      descriptor: BoundaryOperationDescriptor
+      operationContract: BoundaryOperationContract
       implementationRequirements: BoundaryImplementationRequirements
     }
   | Unavailable([BoundaryUnavailableReason...])
 ```
 
+Package callable在compile时尚未绑定任何ServiceContract operation，因此PackageArtifact中的Available
+projection只保存contract-agnostic的`BoundaryOperationContract` body，不能携带或伪造
+`ContractOperationId`、contract stable key或完整`BoundaryOperationDescriptor`。同一个package callable可以
+被多个ServiceDeployment显式映射到不同contract operations；deployment只在映射后比较双方的operation
+contract body。
+
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
 
-`BoundaryOperationDescriptor`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
-公开effect保证。具体config/state/native capability requirement和完整may-effect属于
+`BoundaryOperationContract`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
+公开effect保证。`BoundaryOperationDescriptor`由ServiceContract在该body外增加真实
+`ContractOperationId`与stable key。具体config/state/native capability requirement和完整may-effect属于
 `BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
 
 同一个PackageArtifact可以同时：
