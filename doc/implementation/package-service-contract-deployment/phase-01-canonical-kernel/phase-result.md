@@ -1,6 +1,6 @@
 # Phase 01 验证结果
 
-状态：P1-A01 首次 FAIL；P1-R01 已修复并自验，等待独立复验后重跑 P1-A01
+状态：P1-A01 首次 FAIL；P1-R01 独立复验 PASS，等待 P1-A01 重验
 
 ## 1. 候选状态
 
@@ -18,7 +18,10 @@
 - P1-R01 修复 commit `ac5e02d` 删除三个定义与 crate-root re-export，把两处 runtime 测试辅助调用迁移到
   canonical `package_local_abi_identity`，并增加精确扫描所有 Rust production/test 文件的结构门禁与负例
   self-test。未修改 identity preimage、wire、prefix 内容或 production load path。
-- 当前修复候选 `R` 是 `ac5e02d` 加本文档记录；等待 P1-R01 独立只读复验，PASS 后重新执行 P1-A01。
+- 修复候选 `R` 是 `ac5e02d` 加验证记录。未参与实现的独立 Agent 已在 `9798cdc` 上复验 PASS：三个
+  旧符号 Rust 零命中、checker 负例有效、两处 runtime test helper 只调用 canonical API，且 identity
+  算法/wire/production path 未变化。R01 已以 merge commit `c3e35c2` 合入 phase branch。
+- 当前重验候选 `A` 是 `c3e35c2` 加本文档状态记录；本文只更新验收状态，不改变任何代码证据。
 - T08 开始及结果记录前，仓库只剩 `main` 与 phase integration 两个本地分支/worktree；T01–T07
   task worktree 和临时分支均已清理。T08 不 merge `main`，不 push。
 
@@ -130,6 +133,6 @@ self-test corpus；新增 dev-sync source/sink scanner 已拆到独立模块，�
 | production remote relay selection/fallback | 本阶段不改执行语义 | Phase 06 变为不可达，Phase 07 物理删除 |
 | 旧 registry、CLI、watch、test-runner 入口 | 只能作为受结构 gate 约束的 consumer，不 dual-read/dual-write | Phase 07 |
 
-没有把首次 P1-A01 的阻断项降级成 follow-up。下一步先按 P1-R01 任务文档做独立只读复验；复验 PASS 后
-合回 Phase 01 integration branch 并重新执行 P1-A01。任一复验 FAIL 都必须回到对应任务修复并使受影响
-证据失效，不能直接合并 `main`。
+没有把首次 P1-A01 的阻断项降级成 follow-up。P1-R01 已独立复验 PASS 并合回 Phase 01 integration
+branch；下一步对当前候选重新执行 P1-A01。若重验 FAIL，仍须回到对应任务修复并使受影响证据失效，
+不能直接合并 `main`。
