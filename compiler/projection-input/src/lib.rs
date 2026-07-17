@@ -12,8 +12,13 @@ use skiff_artifact_model::{
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
 mod callable_effects;
+mod package_callable_signatures;
 
 pub use callable_effects::{ProjectionCallableEffectFacts, ProjectionExecutableKey};
+pub use package_callable_signatures::{
+    DuplicateProjectionPackageCallableSignature, ProjectionPackageCallableKey,
+    ProjectionPackageCallableSignatureFacts,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProjectionInput {

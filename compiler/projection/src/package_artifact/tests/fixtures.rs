@@ -1,0 +1,322 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use skiff_artifact_model::{
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    CanonicalPublicCallableSignature, ContractOperationId, ContractRequirement, ExecutableExport,
+    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, LocalReceiverExecutableRef,
+    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableParameter,
+    PackageCallableSignature, PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRequirement, PackageResourceRequirement, PackageRuntimeCapabilityRequirement,
+    PackageRuntimeRequirements, PackageTypeRef, PublicInstanceExport, PublicInstanceOperation,
+    ReceiverCallAbi, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr,
+    ValueProvenance,
+};
+use skiff_compiler_projection_input::{
+    ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
+};
+
+use crate::{
+    package_artifact::{project_package_artifact, PackageArtifactProjectionInput},
+    package_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
+    package_unit_artifacts::PackageFileIrProjection,
+};
+
+#[derive(Clone, Copy)]
+pub(super) enum SignatureSet {
+    Complete,
+    Missing,
+    Extra,
+}
+
+pub(super) fn project_fixture(
+    signature_set: SignatureSet,
+    runtime_capability: &str,
+) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+    let file_ref = file_ref();
+    let export_index = PackageExportIndex {
+        functions: BTreeMap::from([
+            (
+                "mutate".to_string(),
+                executable_export(&file_ref, 1, "mutate"),
+            ),
+            ("run".to_string(), executable_export(&file_ref, 0, "run")),
+        ]),
+        impl_methods: BTreeMap::from([("Worker.handle".to_string(), receiver_export(&file_ref))]),
+        public_instances: vec![public_instance(&file_ref)],
+        ..PackageExportIndex::default()
+    };
+    let api_exports = PackageExports {
+        entries: Vec::new(),
+        symbols: BTreeMap::from([
+            (
+                "mutate".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "mutate".to_string(),
+                },
+            ),
+            (
+                "run".to_string(),
+                PackageExportSymbol {
+                    module: "api".to_string(),
+                    symbol: "run".to_string(),
+                },
+            ),
+        ]),
+        public_instances: vec![PackageExportPublicInstance {
+            public_path: "worker".to_string(),
+            module: "api".to_string(),
+            const_symbol: "worker".to_string(),
+            interfaces: Vec::new(),
+        }],
+    };
+    let mut signature_entries = vec![
+        (
+            callable_key("run", 0),
+            signature(TypeRefIr::native("string")),
+        ),
+        (
+            callable_key("mutate", 1),
+            signature(TypeRefIr::native("string")),
+        ),
+        (
+            callable_key("worker.handle", 2),
+            signature(TypeRefIr::native("string")),
+        ),
+    ];
+    match signature_set {
+        SignatureSet::Complete => {}
+        SignatureSet::Missing => {
+            signature_entries.retain(|(key, _)| key.public_path() != "mutate");
+        }
+        SignatureSet::Extra => signature_entries.push((
+            callable_key("internal", 9),
+            signature(TypeRefIr::native("string")),
+        )),
+    }
+    let signatures =
+        ProjectionPackageCallableSignatureFacts::try_from_entries(signature_entries).unwrap();
+    let mut mutate = safe_facts();
+    mutate.effects = CallableEffectSummary::Analyzed {
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            ..no_effects()
+        },
+    };
+    let semantic_facts = BTreeMap::from([
+        (ProjectionExecutableKey::new("api", 0), safe_facts()),
+        (ProjectionExecutableKey::new("api", 1), mutate),
+        (ProjectionExecutableKey::new("api", 2), safe_facts()),
+    ]);
+    let mut file = skiff_artifact_model::FileIrUnit::empty("api", "source-hash");
+    file.file_ir_identity = file_ref.file_ir_identity.clone();
+    let protocol_identity = ServiceProtocolIdentity::new("protocol:greeter:v1");
+    let operation_id = ContractOperationId::new("operation:greet");
+    let contract_requirement = ContractRequirement {
+        alias: "greeter_contract".to_string(),
+        service_id: "greeter".to_string(),
+        contract_version: "1.0.0".to_string(),
+        expected_protocol_identity: protocol_identity.clone(),
+    };
+    Ok(project_package_artifact(PackageArtifactProjectionInput {
+        package_id: "example.pkg",
+        package_version: "1.0.0",
+        api_exports: &api_exports,
+        export_index,
+        file_ir_units: vec![PackageFileIrProjection::from_unit(file)],
+        resources: Vec::new(),
+        package_requirements: vec![PackageRequirement {
+            alias: "dependency".to_string(),
+            package_id: "example.dependency".to_string(),
+            exact_version: "2.0.0".to_string(),
+            expected_local_abi: PackageLocalAbiIdentity::new("local-abi:dependency:v2"),
+        }],
+        contract_requirements: vec![contract_requirement.clone()],
+        service_requirements: vec![ServiceRequirement {
+            contract_requirement,
+            service_binding_slot: 3,
+            used_operations: BTreeSet::from([operation_id.clone()]),
+        }],
+        runtime_requirements: runtime_requirements(runtime_capability),
+        callable_semantic_facts: semantic_facts,
+        callable_signatures: signatures,
+        service_call_refs: vec![ServiceCallRef {
+            service_requirement_slot: 3,
+            contract_operation_id: operation_id,
+            expected_protocol_identity: protocol_identity,
+        }],
+    })?
+    .artifact)
+}
+
+fn public_instance(file: &FileIrRef) -> PublicInstanceExport {
+    let interface_type = TypeRefIr::native("WorkerInterface");
+    let interface =
+        skiff_artifact_identity::interface_instantiation_ref_for_type_ref(&interface_type);
+    let public_signature = CanonicalPublicCallableSignature {
+        params: vec![FunctionTypeParamIr {
+            name: "value".to_string(),
+            ty: TypeRefIr::native("string"),
+        }],
+        return_type: TypeRefIr::native("string"),
+        may_suspend: false,
+    };
+    let operation = skiff_compiler_publication_abi::package_public_instance_method_operation(
+        "worker",
+        &interface,
+        "handle",
+        &public_signature,
+    );
+    PublicInstanceExport {
+        name: "worker".to_string(),
+        module_path: "api".to_string(),
+        declared_receiver_type: TypeRefIr::native("Worker"),
+        implemented_interfaces: vec![interface_type],
+        operations: vec![PublicInstanceOperation {
+            receiver_executable: LocalReceiverExecutableRef {
+                receiver: OperationConstReceiverRef {
+                    file_ref: file.clone(),
+                    const_index: 0,
+                    const_abi_id: "const:worker".to_string(),
+                    const_type_abi_id: "type:Worker".to_string(),
+                },
+                executable_target: OperationTargetRef {
+                    file_ref: file.clone(),
+                    executable_index: 2,
+                    callable_abi_id: "legacy:Worker.handle".to_string(),
+                    callable_kind: OperationCallableKind::ImplMethod,
+                },
+                method_abi_id: operation.method_abi_id.clone().unwrap(),
+                receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+            },
+            operation,
+        }],
+    }
+}
+
+fn receiver_export(file: &FileIrRef) -> ExecutableExport {
+    let self_ty = TypeRefIr::native("Worker");
+    ExecutableExport {
+        file: file.clone(),
+        executable_index: 2,
+        symbol: "Worker.handle".to_string(),
+        signature: ExecutableSignatureIr {
+            params: vec![
+                skiff_artifact_model::ParamIr {
+                    name: "self".to_string(),
+                    slot: 0,
+                    ty: self_ty.clone(),
+                },
+                skiff_artifact_model::ParamIr {
+                    name: "value".to_string(),
+                    slot: 1,
+                    ty: TypeRefIr::native("string"),
+                },
+            ],
+            return_type: TypeRefIr::native("string"),
+            self_type: Some(self_ty),
+            may_suspend: false,
+        },
+    }
+}
+
+fn executable_export(file: &FileIrRef, index: u32, symbol: &str) -> ExecutableExport {
+    ExecutableExport {
+        file: file.clone(),
+        executable_index: index,
+        symbol: symbol.to_string(),
+        signature: ExecutableSignatureIr {
+            params: vec![skiff_artifact_model::ParamIr {
+                name: "value".to_string(),
+                slot: 0,
+                ty: TypeRefIr::native("string"),
+            }],
+            return_type: TypeRefIr::native("string"),
+            self_type: None,
+            may_suspend: false,
+        },
+    }
+}
+
+pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
+    PackageCallableSignature {
+        parameters: vec![PackageCallableParameter {
+            name: "value".to_string(),
+            ty: PackageTypeRef::Local { local_type: ty },
+        }],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::native("string"),
+        },
+        throw_types: Vec::new(),
+        may_suspend: false,
+    }
+}
+
+pub(super) fn safe_facts() -> CallableSemanticFacts {
+    CallableSemanticFacts {
+        effects: CallableEffectSummary::Analyzed {
+            effects: no_effects(),
+        },
+        provenance: CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        },
+        resolved_call_targets: BTreeMap::new(),
+    }
+}
+
+fn no_effects() -> CallableMayEffects {
+    CallableMayEffects {
+        writes_caller_reachable: false,
+        returns_caller_alias: false,
+        throws_caller_alias: false,
+        escapes_caller_value: false,
+        requires_same_heap_identity: false,
+        invokes_unknown_target: false,
+        may_suspend: false,
+    }
+}
+
+pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequirements {
+    PackageRuntimeRequirements {
+        config: vec![skiff_artifact_model::PackageConfigRequirement {
+            path: "app.token".to_string(),
+            value_type: "string".to_string(),
+            required: true,
+        }],
+        resources: vec![PackageResourceRequirement {
+            key: "database".to_string(),
+            capability: "mongodb".to_string(),
+        }],
+        runtime_capabilities: vec![PackageRuntimeCapabilityRequirement {
+            capability: capability.to_string(),
+            required_version: "1".to_string(),
+        }],
+    }
+}
+
+fn callable_key(path: &str, executable_index: u32) -> ProjectionPackageCallableKey {
+    ProjectionPackageCallableKey::new(path, "api", executable_index)
+}
+
+pub(super) fn callable_id(
+    artifact: &skiff_artifact_model::PackageArtifact,
+    path: &str,
+) -> skiff_artifact_model::PackageCallableId {
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+        &artifact.package_local_abi.public_symbols[path]
+    else {
+        panic!("{path} must be a callable");
+    };
+    callable_id.clone()
+}
+
+fn file_ref() -> FileIrRef {
+    FileIrRef {
+        file_ir_identity: "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        module_path: "api".to_string(),
+        artifact_path: None,
+        source_ast_hash: Some("source-hash".to_string()),
+    }
+}

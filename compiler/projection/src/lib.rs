@@ -4,6 +4,7 @@ pub mod context;
 pub mod contract;
 pub mod contract_schema;
 pub mod error;
+pub mod package_artifact;
 pub mod package_exports;
 mod package_references;
 pub mod package_unit_artifacts;

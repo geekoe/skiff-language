@@ -23,7 +23,7 @@ use crate::{
 
 use super::{file_ir_refs_for_projected, PackageIrProjectionSource};
 
-pub(super) fn package_unit_export_index(
+pub fn project_package_export_index(
     package: &PackageIrProjectionSource<'_>,
     dependencies: &[ProjectedPackageDependency],
 ) -> Result<PackageExportIndex, ProjectionError> {

@@ -1,8 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use serde::Serialize;
 use skiff_artifact_identity::validate_package_unit_identities;
-use skiff_artifact_model::{FileIrRef, PackageUnit, PACKAGE_UNIT_SCHEMA_VERSION};
+use skiff_artifact_model::{PackageUnit, PACKAGE_UNIT_SCHEMA_VERSION};
 use skiff_compiler_core::id::PublicationId;
 use skiff_compiler_core::json_utils::value_sha256;
 
@@ -10,10 +8,7 @@ use crate::emission::artifact::{
     PublishedFileIrArtifact, PublishedJsonArtifact, PublishedResourceArtifact,
 };
 use crate::emission::artifact_assembly::{PackageVersionIndexModel, PublishedPackageArtifacts};
-use crate::emission::resources::{
-    normalized_resource_artifacts, publish_resource_artifacts,
-    validated_resource_artifacts_by_content,
-};
+use crate::emission::resources::{normalized_resource_artifacts, publish_resource_artifacts};
 use crate::error::EmissionError;
 use crate::error::Result;
 use crate::projection::package_unit_artifacts::ProjectedPackageIrArtifacts;
@@ -58,8 +53,12 @@ pub fn materialize_package_unit_artifact(
 ) -> Result<MaterializedPackageUnitArtifact> {
     let mut unit = projected.clone();
     let resource_blobs = normalized_resource_artifacts(resource_blobs)?;
-    attach_published_file_paths_to_package_unit(&mut unit.files, files)?;
-    attach_resource_paths_to_package_unit(&mut unit.resources, &resource_blobs)?;
+    super::package_assets::attach_published_file_paths("package unit", &mut unit.files, files)?;
+    super::package_assets::attach_resource_paths(
+        "package unit",
+        &mut unit.resources,
+        &resource_blobs,
+    )?;
     validate_package_unit_identities(&unit)?;
     let artifact = package_unit_artifact(&unit)?;
     Ok(MaterializedPackageUnitArtifact {
@@ -67,129 +66,6 @@ pub fn materialize_package_unit_artifact(
         artifact,
         resource_blobs,
     })
-}
-
-fn attach_published_file_paths_to_package_unit(
-    refs: &mut [FileIrRef],
-    artifacts: &[PublishedFileIrArtifact],
-) -> Result<()> {
-    let mut expected = BTreeMap::new();
-    for file_ref in refs.iter() {
-        if expected
-            .insert(
-                file_ref.file_ir_identity.as_str(),
-                file_ref.module_path.as_str(),
-            )
-            .is_some()
-        {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "package unit contains duplicate File IR ref {}",
-                    file_ref.file_ir_identity
-                ),
-            });
-        }
-    }
-    let mut by_identity = BTreeMap::new();
-    for artifact in artifacts {
-        if artifact.identity != artifact.unit.file_ir_identity {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published File IR {} identity does not match typed unit identity {}",
-                    artifact.identity, artifact.unit.file_ir_identity
-                ),
-            });
-        }
-        if artifact.module_path != artifact.unit.module_path {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published File IR {} module {} does not match typed unit module {}",
-                    artifact.identity, artifact.module_path, artifact.unit.module_path
-                ),
-            });
-        }
-        if artifact.path.trim().is_empty() {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published File IR {} has an empty artifact path",
-                    artifact.identity
-                ),
-            });
-        }
-        let Some(expected_module) = expected.get(artifact.identity.as_str()) else {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published File IR {} module {} is not referenced by the package unit",
-                    artifact.identity, artifact.module_path
-                ),
-            });
-        };
-        if *expected_module != artifact.module_path {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "package unit File IR {} module {} does not match published module {}",
-                    artifact.identity, expected_module, artifact.module_path
-                ),
-            });
-        }
-        if by_identity
-            .insert(artifact.identity.as_str(), artifact)
-            .is_some()
-        {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published File IR identity {} is duplicated",
-                    artifact.identity
-                ),
-            });
-        }
-    }
-    for file_ref in refs {
-        let Some(artifact) = by_identity.get(file_ref.file_ir_identity.as_str()) else {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "package unit File IR ref {} did not emit an artifact path",
-                    file_ref.file_ir_identity
-                ),
-            });
-        };
-        file_ref.artifact_path = Some(artifact.path.clone());
-        file_ref.source_ast_hash = Some(artifact.unit.source_ast_hash.clone());
-    }
-    Ok(())
-}
-
-fn attach_resource_paths_to_package_unit(
-    refs: &mut [skiff_artifact_model::PublicationResourceRef],
-    artifacts: &[PublishedResourceArtifact],
-) -> Result<()> {
-    let by_hash_and_len = validated_resource_artifacts_by_content(artifacts)?;
-    let mut used = BTreeSet::new();
-    for resource_ref in refs {
-        let key = (resource_ref.sha256.as_str(), resource_ref.byte_len);
-        let Some(artifact) = by_hash_and_len.get(&key) else {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "package resource {} has no emitted blob sha256 {} size {}",
-                    resource_ref.path, resource_ref.sha256, resource_ref.byte_len
-                ),
-            });
-        };
-        resource_ref.artifact_path = Some(artifact.artifact_path.clone());
-        used.insert(key);
-    }
-    for artifact in artifacts {
-        let key = (artifact.sha256.as_str(), artifact.byte_len);
-        if !used.contains(&key) {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "published resource blob {} is not referenced by package unit",
-                    artifact.artifact_path
-                ),
-            });
-        }
-    }
-    Ok(())
 }
 
 fn package_unit_artifact(unit: &PackageUnit) -> Result<PublishedJsonArtifact> {
