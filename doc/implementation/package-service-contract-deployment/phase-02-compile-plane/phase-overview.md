@@ -1,6 +1,6 @@
 # Phase 02：Compile Plane
 
-状态：next；本阶段细化后执行
+状态：review candidate；详见 `phase-plan.md`
 
 ## 输入
 
