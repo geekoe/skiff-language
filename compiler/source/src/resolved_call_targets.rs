@@ -7,6 +7,8 @@ use skiff_artifact_model::{
 
 use crate::{semantic::impl_method_declaration_name, ExpressionKey, SourceSymbolKey};
 
+mod builder;
+
 /// Shared typed call-target carrier consumed by source effect analysis and
 /// lowering. It records semantic destination kind before either consumer runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +102,20 @@ impl ResolvedCallTargetFacts {
 
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
+    }
+
+    pub(crate) fn build(
+        parsed_sources: &[crate::parsed_sources::ParsedCompilerSource],
+        expression_types: &crate::ExpressionTypeModel,
+        type_resolution: &crate::TypeResolutionModel,
+        dependencies: &crate::SourceDependencyAnalysisInput,
+    ) -> Self {
+        builder::build_resolved_call_targets(
+            parsed_sources,
+            expression_types,
+            type_resolution,
+            dependencies,
+        )
     }
 }
 

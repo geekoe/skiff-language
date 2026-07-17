@@ -7,6 +7,7 @@ mod compile_model;
 mod config_metadata;
 pub(crate) mod config_requirements;
 pub(crate) mod config_usage;
+mod dependency_analysis;
 mod dependency_operation_facts;
 pub mod entity;
 pub(crate) mod expression_model;
@@ -56,7 +57,7 @@ pub use compiler_input_model::{
 
 pub use api::{PublicationApi, SourceSymbolKey};
 pub use api_seed::PublicationApiSeed;
-pub use callable_effects::SourceCallableEffectFacts;
+pub use callable_effects::{SourceCallableEffectFacts, SourceCallableProvenanceFacts};
 pub use compile_model::{
     ExportBindingModel, ExportCallableBinding, ExportPublicInstanceBinding,
     ExportPublicInstanceInterfaceBinding, ExportSchemaBinding, ExportSymbolBinding,
@@ -72,6 +73,10 @@ pub use config_requirements::{
     ConfigRequirementScope, ConfigRequirementSet, DependencyPackageConfigFacts,
 };
 pub use config_usage::ConfigSourceSpan;
+pub use dependency_analysis::{
+    ContractDependencyAnalysisFacts, PackageDependencyAnalysisFacts,
+    PackageDependencyCallableAnalysis, SourceDependencyAnalysisInput,
+};
 pub use dependency_operation_facts::DependencyPackageOperationFacts;
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
@@ -122,13 +127,32 @@ pub enum PublicationKind {
 pub fn build_from_parsed_sources(
     input: CompileParsedPublicationSourcesInput<'_, '_>,
 ) -> Result<SourceCompileModel, PublicationError> {
+    build_from_parsed_sources_with_dependency_analysis(
+        input,
+        &SourceDependencyAnalysisInput::default(),
+    )
+}
+
+/// T05 facade entrypoint for verified PackageArtifact/ServiceContract facts.
+/// Existing legacy callers deliberately receive an empty canonical dependency
+/// input and therefore resolve dependency calls to Unknown rather than deriving
+/// new identities from legacy publication ABI.
+pub fn build_from_parsed_sources_with_dependency_analysis(
+    input: CompileParsedPublicationSourcesInput<'_, '_>,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<SourceCompileModel, PublicationError> {
     let linked = linked_publication::LinkedPublication::from_parsed_sources(input);
-    build_from_linked(linked)
+    build_from_linked(linked, dependency_analysis)
 }
 
 fn build_from_linked(
     linked: linked_publication::LinkedPublication<'_, '_>,
+    dependency_analysis: &SourceDependencyAnalysisInput,
 ) -> Result<SourceCompileModel, PublicationError> {
+    let mut package_aliases = linked.package_aliases.clone();
+    for alias in dependency_analysis.package_aliases() {
+        package_aliases.entry(alias.to_string()).or_default();
+    }
     let root_ref_policy = match linked.policy {
         PublicationCompilePolicy::Package { .. } => {
             root_refs::RootRefValidationPolicy::parsed_publication_sources()
@@ -167,10 +191,11 @@ fn build_from_linked(
         entity_publication_kind(publication_kind),
         declaration_anchors.anchors(),
     );
-    let service_alias_set = linked.service_dependencies.aliases();
+    let mut service_alias_set = linked.service_dependencies.aliases();
+    service_alias_set.extend(dependency_analysis.contract_aliases().map(str::to_string));
     let name_resolution = NameResolutionModel::build_with(
         &parsed_sources,
-        linked.package_aliases,
+        &package_aliases,
         &service_alias_set,
         Some(entity_model.top_level()),
     );
@@ -194,6 +219,7 @@ fn build_from_linked(
         dependency_package_config_facts: dependency_package_config_facts.as_deref(),
         policy: linked.policy,
         publication_api: linked.publication_api,
+        dependency_analysis,
     })?;
     let config_usage_seed = config_usage::collect_config_usage_seed_from_parsed_sources(
         linked.diagnostic_root,
@@ -202,7 +228,7 @@ fn build_from_linked(
     SourceCompileModel::build(SourceCompileModelInput {
         parsed_sources,
         diagnostic_root: linked.diagnostic_root,
-        package_aliases: linked.package_aliases,
+        package_aliases: &package_aliases,
         package_dependencies: linked.package_dependencies,
         package_db_metadata_index,
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
@@ -217,6 +243,7 @@ fn build_from_linked(
         declaration_anchors,
         config_usage_seed,
         dependency_config_requirements: linked_facts.dependency_config_requirements,
+        dependency_analysis,
     })
 }
 

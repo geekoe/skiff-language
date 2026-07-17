@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    package_rules::validate_package_sources,
+    package_rules::validate_package_sources_with_dependency_analysis,
     parsed_sources::ParsedCompilerSource,
     shared::{id::STD_SOURCE_ALIAS, publication_error::PublicationError},
     source_graph::CompilerSourceFile,
@@ -27,16 +27,18 @@ pub struct SourceCompileLinkedFactsInput<'a, 'source> {
     pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
     pub policy: PublicationCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
+    pub dependency_analysis: &'a crate::SourceDependencyAnalysisInput,
 }
 
 impl SourceCompileLinkedFacts {
     pub fn build(input: SourceCompileLinkedFactsInput<'_, '_>) -> Result<Self, PublicationError> {
         if let PublicationCompilePolicy::Package { package_id } = input.policy {
-            validate_package_sources(
+            validate_package_sources_with_dependency_analysis(
                 package_id,
                 input.package_dependencies,
                 input.diagnostic_root,
                 input.parsed_sources,
+                input.dependency_analysis,
             )?;
         }
         let publication_api_seed = match input.publication_api {
