@@ -93,6 +93,56 @@ const ownerRequirements = [
     regexp: /\bpub\s+const\s+PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX\b/,
   },
   {
+    name: 'ServiceProtocolIdentityProjection',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+struct\s+ServiceProtocolIdentityProjection\b/,
+  },
+  {
+    name: 'contract_type_id',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+contract_type_id\s*\(/,
+  },
+  {
+    name: 'contract_operation_id',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+contract_operation_id\s*\(/,
+  },
+  {
+    name: 'service_protocol_identity',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+service_protocol_identity\s*\(/,
+  },
+  {
+    name: 'PackageArtifactLocalAbiIdentityProjection',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+struct\s+PackageArtifactLocalAbiIdentityProjection\b/,
+  },
+  {
+    name: 'PackageArtifactBuildIdentityProjection',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+struct\s+PackageArtifactBuildIdentityProjection\b/,
+  },
+  {
+    name: 'package_artifact_local_abi_identity',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+package_artifact_local_abi_identity\s*\(/,
+  },
+  {
+    name: 'package_artifact_build_identity',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+package_artifact_build_identity\s*\(/,
+  },
+  {
+    name: 'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX\b/,
+  },
+  {
     name: 'PublicationAbiIdentityProjection',
     relPath: 'artifact-identity/src/publication.rs',
     regexp: /\bstruct\s+PublicationAbiIdentityProjection\b/,
@@ -288,6 +338,16 @@ const exclusiveDefinitionNames = new Set([
   'package_local_abi_identity',
   'package_implementation_links_identity',
   'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
+  'ServiceProtocolIdentityProjection',
+  'contract_type_id',
+  'contract_operation_id',
+  'service_protocol_identity',
+  'PackageArtifactLocalAbiIdentityProjection',
+  'PackageArtifactBuildIdentityProjection',
+  'package_artifact_local_abi_identity',
+  'package_artifact_build_identity',
+  'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+  'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
   'PublicationAbiIdentityProjection',
   'OperationAbiIdentityInput',
   'PackageTestBuildIdentityPayload',
@@ -339,12 +399,14 @@ const facadeModules = [
   'artifact_path',
   'artifact_reference',
   'constants',
+  'contract',
   'error',
   'file_ir',
   'framing',
   'legacy_service',
   'operation',
   'package',
+  'package_artifact',
   'package_test',
   'publication',
   'publication_validation',
@@ -486,6 +548,10 @@ const artifactEmissionFramingRequirements = [
     regexp: /\bframed_identity\s*\(\s*BUNDLE_IDENTITY_PREFIX\s*,/,
   },
 ];
+const canonicalCompileModelPaths = Object.freeze([
+  ['artifact-model/src/package_artifact.rs', 'PackageArtifact'],
+  ['artifact-model/src/service_contract.rs', 'ServiceContract'],
+]);
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -570,6 +636,7 @@ async function runCheck() {
     );
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
+  failures.push(...collectCanonicalCompileModelFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
     ...files,
     ...scriptFiles,
@@ -685,6 +752,30 @@ function collectOwnedDefinitionViolations(files) {
   }
 
   return violations;
+}
+
+function collectCanonicalCompileModelFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  for (const [relPath, typeName] of canonicalCompileModelPaths) {
+    const file = byPath.get(relPath);
+    if (file === undefined) {
+      failures.push(`${relPath} is missing canonical ${typeName}`);
+      continue;
+    }
+    const text = stripRustComments(stripInlineTestModules(file.text));
+    if (!new RegExp(`\\bpub\\s+struct\\s+${typeName}\\b`).test(text)) {
+      failures.push(`${relPath} is missing canonical ${typeName} definition`);
+    }
+    if (/\bservice_unit\s*::/.test(text)) {
+      failures.push(`${relPath} must not depend on the ServiceUnit module`);
+    }
+    const legacyField = /\bpub\s+\w+\s*:\s*(?:(?:Box|Option|Vec)\s*<\s*)*(PublicationAbiUnit|PackageUnit|ServiceUnit)\b/.exec(text);
+    if (legacyField !== null) {
+      failures.push(`${relPath} canonical ${typeName} embeds legacy ${legacyField[1]}`);
+    }
+  }
+  return failures;
 }
 
 function collectPackageImplementationLinksIdentityViolations(files) {
@@ -927,6 +1018,16 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
+      name: 'rejects service protocol identity projection duplicate',
+      files: [
+        {
+          relPath: 'compiler/contract/src/identity.rs',
+          text: 'struct ServiceProtocolIdentityProjection;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
       name: 'rejects publication ABI byte projection duplicate',
       files: [
         {
@@ -1050,6 +1151,59 @@ function runSelfTest() {
     ) {
       failures.push(
         `${testCase.name}: expected ${expectedPackageImplementationLinksViolations} package implementation links violation(s), got ${packageImplementationLinksViolations.length}`,
+      );
+    }
+  }
+
+  const canonicalModelCases = [
+    {
+      name: 'allows independent canonical compile models',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'pub struct PackageArtifact { pub package_id: String }\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract { pub service_id: String }\n',
+        },
+      ],
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects legacy aggregate embedding in canonical models',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'pub struct PackageArtifact { pub legacy: PublicationAbiUnit }\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract { pub legacy: Option<ServiceUnit> }\n',
+        },
+      ],
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects ServiceUnit module dependency from canonical model',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'use crate::service_unit::OperationTargetRef; pub struct PackageArtifact {}\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract {}\n',
+        },
+      ],
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalModelCases) {
+    const modelFailures = collectCanonicalCompileModelFailures(testCase.files);
+    if (modelFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} canonical model failure(s), got ${modelFailures.length}`,
       );
     }
   }

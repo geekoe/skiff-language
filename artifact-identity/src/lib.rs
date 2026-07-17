@@ -2,12 +2,14 @@ mod artifact_coordinates;
 mod artifact_path;
 mod artifact_reference;
 mod constants;
+mod contract;
 mod error;
 mod file_ir;
 mod framing;
 mod legacy_service;
 mod operation;
 mod package;
+mod package_artifact;
 pub mod package_resolver;
 mod package_test;
 mod publication;
@@ -27,14 +29,24 @@ pub use artifact_reference::{
     ServiceAssemblyArtifactRef, ServiceUnitArtifactRef,
 };
 pub use constants::{
-    BUNDLE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
+    BUNDLE_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_PREFIX,
+    CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, CONTRACT_TYPE_IDENTITY_PREFIX,
+    CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
+    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
     PACKAGE_ASSEMBLY_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_PREFIX,
     PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
     PACKAGE_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
     PACKAGE_TEST_BUILD_IDENTITY_PREFIX, PACKAGE_TEST_ENTRYPOINT_ID_PREFIX,
     PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX, PUBLICATION_ABI_IDENTITY_PREFIX,
     RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER, SERVICE_ASSEMBLY_IDENTITY_PREFIX,
-    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
+    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER, SERVICE_UNIT_IDENTITY_PREFIX,
+};
+pub use contract::{
+    assign_service_contract_identities, contract_operation_id, contract_type_id,
+    service_protocol_identity, service_protocol_identity_projection,
+    validate_service_contract_identities, ServiceProtocolIdentityProjection,
 };
 pub use error::{ArtifactIdentityError, Result};
 pub use file_ir::{
@@ -56,6 +68,12 @@ pub use package::{
     package_local_abi_hash, package_local_abi_identity, package_local_abi_identity_projection,
     validate_package_unit_identities, PackageBuildIdentityProjection,
     PackageLocalAbiIdentityProjection,
+};
+pub use package_artifact::{
+    assign_package_artifact_identities, package_artifact_build_identity,
+    package_artifact_build_identity_projection, package_artifact_local_abi_identity,
+    package_artifact_local_abi_identity_projection, validate_package_artifact_identities,
+    PackageArtifactBuildIdentityProjection, PackageArtifactLocalAbiIdentityProjection,
 };
 pub use package_resolver::{
     ordered_package_build_identities_from_artifact_refs,

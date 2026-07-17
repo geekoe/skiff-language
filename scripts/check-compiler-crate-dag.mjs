@@ -16,6 +16,7 @@ const foundationPackages = [
 const compilerSubCrates = [
   'skiff-syntax',
   'skiff-compiler-core',
+  'skiff-compiler-contract',
   'skiff-compiler-publication-abi',
   'skiff-compiler-input-model',
   'skiff-compiler-input',
@@ -41,6 +42,10 @@ const finalProductionEdges = new Map([
   [
     'skiff-compiler-core',
     ['skiff-syntax', 'skiff-artifact-model', 'skiff-canonical-json'],
+  ],
+  [
+    'skiff-compiler-contract',
+    ['skiff-artifact-model', 'skiff-artifact-identity'],
   ],
   [
     'skiff-compiler-publication-abi',

@@ -1,4 +1,4 @@
-mod implementation_links;
+pub(crate) mod implementation_links;
 mod recoverable;
 
 use serde::Serialize;
@@ -97,13 +97,13 @@ impl PackageBuildIdentityProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct FileIrOwnerIdentityProjection {
-    file_ir_identity: String,
-    module_path: String,
+pub(crate) struct FileIrOwnerIdentityProjection {
+    pub(crate) file_ir_identity: String,
+    pub(crate) module_path: String,
 }
 
 impl FileIrOwnerIdentityProjection {
-    pub(super) fn from_ref(file: &FileIrRef) -> Self {
+    pub(crate) fn from_ref(file: &FileIrRef) -> Self {
         Self {
             file_ir_identity: file.file_ir_identity.clone(),
             module_path: file.module_path.clone(),
@@ -155,7 +155,7 @@ impl PackageDependencyIdentityProjection {
     }
 }
 
-pub(super) fn canonical_sort<T: Serialize>(values: Vec<T>) -> Result<Vec<T>> {
+pub(crate) fn canonical_sort<T: Serialize>(values: Vec<T>) -> Result<Vec<T>> {
     let mut keyed = Vec::with_capacity(values.len());
     for value in values {
         let key = canonical_ir_bytes(&value, ArtifactIdentityError::SerializePackageBuildIdentity)?;

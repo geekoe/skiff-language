@@ -28,8 +28,8 @@ use super::{
     publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementScope,
     ConfigRequirementSet, DependencyPackageOperationFacts, ExpressionSourceMap,
     ExpressionTypeModel, NameResolutionModel, PublicationApiSeed, PublicationCompilePlan,
-    PublicationKind, PublicationTypeSymbolIndex, ServiceIngressModel, TypeResolutionContext,
-    TypeResolutionModel, TypeResolutionPackageFacts,
+    PublicationKind, PublicationTypeSymbolIndex, ResolvedCallTargetFacts, ServiceIngressModel,
+    TypeResolutionContext, TypeResolutionModel, TypeResolutionPackageFacts,
 };
 use crate::shared::publication_error::PublicationError;
 
@@ -130,6 +130,7 @@ pub struct SourceCompileModel {
     publication_api: PublicationApiModel,
     export_bindings: ExportBindingModel,
     callable_effects: SourceCallableEffectFacts,
+    resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
     // input in runtime_manifest.rs.  P2 will introduce AbiTypeId consuming declaration_anchors.
     #[allow(dead_code)]
@@ -172,6 +173,7 @@ enum SourceCompilePolicy {
 impl SourceCompileModel {
     pub fn build(input: SourceCompileModelInput<'_>) -> Result<Self, PublicationError> {
         let callable_effects = SourceCallableEffectFacts::analysis_pending(&input.parsed_sources);
+        let resolved_call_targets = ResolvedCallTargetFacts::empty();
         let policy = SourceCompilePolicy::from_borrowed(input.policy);
         let plan = PublicationCompilePlan::from_policy(policy.as_borrowed());
         let indexes = SourceIndexes::build(
@@ -278,6 +280,7 @@ impl SourceCompileModel {
             publication_api,
             export_bindings,
             callable_effects,
+            resolved_call_targets,
             source_identity: input.source_identity,
             declaration_anchors: input.declaration_anchors,
             own_config_requirements,
@@ -346,6 +349,10 @@ impl SourceCompileModel {
 
     pub fn callable_effects(&self) -> &SourceCallableEffectFacts {
         &self.callable_effects
+    }
+
+    pub fn resolved_call_targets(&self) -> &ResolvedCallTargetFacts {
+        &self.resolved_call_targets
     }
 
     #[cfg(any(test, feature = "test-support"))]
