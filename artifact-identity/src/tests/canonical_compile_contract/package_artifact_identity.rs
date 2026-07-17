@@ -11,11 +11,78 @@ fn package_artifact_assign_validate_and_golden_identities() {
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(
         artifact.package_build_id.as_str(),
-        "skiff-package-build-v3:sha256:9bc7a20aa970cd492d1721f691d3012fe42335df6f02d2c2ad8aa45a3274764f"
+        "skiff-package-build-v4:sha256:ca0e0f50b0e4cb0e13554c8837fc1381ad5ad71eef3f2858f1b069ffb9cf1dc3"
     );
     assert_eq!(
         artifact.package_local_abi.local_abi_identity.as_str(),
         "skiff-package-local-abi-v3:sha256:8cf4c0e293f59b22fd3d4d249d0b1f1c76e2dd33deca32f5defb7918bac7611c"
+    );
+}
+
+#[test]
+fn available_operation_contract_and_implementation_requirements_are_build_only() {
+    let base = package_artifact_fixture();
+    let baseline_local = package_artifact_local_abi_identity(&base).unwrap();
+    let baseline_build = package_artifact_build_identity(&base).unwrap();
+
+    let projection = package_artifact_build_identity_projection(&base).unwrap();
+    let wire = serde_json::to_value(projection).unwrap();
+    let available = wire["boundaryProjections"]
+        .as_object()
+        .and_then(|projections| projections.values().next())
+        .expect("available boundary projection");
+    assert!(available.get("operationContract").is_some());
+    assert!(available.get("implementationRequirements").is_some());
+    for forbidden in ["descriptor", "operationId", "stableKey"] {
+        assert!(
+            available.get(forbidden).is_none(),
+            "package build projection must exclude {forbidden}"
+        );
+    }
+
+    let mut changed_contract = base.clone();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = changed_contract
+        .boundary_projections
+        .values_mut()
+        .next()
+        .unwrap()
+    else {
+        panic!("fixture available")
+    };
+    operation_contract.effect_guarantee.detached_return = false;
+    assert_eq!(
+        package_artifact_local_abi_identity(&changed_contract).unwrap(),
+        baseline_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&changed_contract).unwrap(),
+        baseline_build
+    );
+
+    let mut changed_requirements = base.clone();
+    let BoundaryCallableProjection::Available {
+        implementation_requirements,
+        ..
+    } = changed_requirements
+        .boundary_projections
+        .values_mut()
+        .next()
+        .unwrap()
+    else {
+        panic!("fixture available")
+    };
+    implementation_requirements
+        .runtime_capabilities
+        .push("stream".to_string());
+    assert_eq!(
+        package_artifact_local_abi_identity(&changed_requirements).unwrap(),
+        baseline_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&changed_requirements).unwrap(),
+        baseline_build
     );
 }
 
@@ -102,13 +169,14 @@ fn build_identity_includes_every_canonical_package_artifact_fact() {
             };
         },
         |artifact| {
-            let BoundaryCallableProjection::Available { descriptor, .. } =
-                artifact.boundary_projections.values_mut().next().unwrap()
+            let BoundaryCallableProjection::Available {
+                operation_contract, ..
+            } = artifact.boundary_projections.values_mut().next().unwrap()
             else {
                 panic!("fixture available")
             };
             let BoundaryValuePlan::Linkable { lifetime, .. } =
-                &mut descriptor.contract.return_value.value_plan
+                &mut operation_contract.return_value.value_plan
             else {
                 panic!("fixture linkable")
             };
@@ -173,6 +241,13 @@ fn storage_provenance_declared_ids_and_map_order_are_excluded() {
 
 #[test]
 fn declared_package_identities_fail_closed() {
+    let mut artifact = package_artifact_fixture();
+    artifact.schema_version = "skiff-package-artifact-v1".to_string();
+    assert!(matches!(
+        validate_package_artifact_identities(&artifact),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
+
     let mut artifact = package_artifact_fixture();
     artifact.package_local_abi.local_abi_identity = PackageLocalAbiIdentity::new("tampered");
     assert!(matches!(

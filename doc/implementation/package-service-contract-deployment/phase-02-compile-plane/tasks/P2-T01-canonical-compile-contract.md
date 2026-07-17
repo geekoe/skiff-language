@@ -35,6 +35,9 @@
     target、contract operation target、unknown target 均为显式 tagged facts；contract target只携带 T01 的
     contract/operation identity，不携带provider/build/deployment。这里只定义 carrier，不实现 effect 或
     service-call lowering算法。
+11. `BoundaryCallableProjection::Available`只保存contract-agnostic `BoundaryOperationContract`与implementation
+    requirements；`BoundaryOperationDescriptor`及其真实operation identity只属于ServiceContract。package
+    wire不得出现由PackageCallableId/public path伪造的ContractOperationId/stable key。
 
 ## 写入范围
 

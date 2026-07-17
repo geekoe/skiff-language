@@ -46,6 +46,9 @@ DAG、写入 ownership 和验收证据，不改变四对象模型。
 - provider/build/deployment/route、`BoundaryImplementationRequirements` 和诊断文本不进入 protocol identity。
 - `BoundaryOperationDescriptor` 的 error/stream/cancel/callback/value-plan/effect guarantee 字段全部显式；当前
   语言暂不支持的 lane 使用 tagged unavailable/unsupported 状态，不能通过字段缺失表达。
+- PackageArtifact 的 Available projection只保存contract-agnostic `BoundaryOperationContract`；真实
+  `BoundaryOperationDescriptor`、`ContractOperationId`和contract stable key只由ServiceContract拥有。禁止用
+  PackageCallableId或public path伪造contract identity。
 - `PackageArtifact` identity 继续复用 Phase 01 canonical framing，但以新显式 projection 重建并更新 marker/
   prefix/golden；不把旧 PackageUnit serde shape 当 preimage。
 
