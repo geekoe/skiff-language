@@ -1,4 +1,5 @@
 pub mod callable_return_types;
+mod contract_dependency_operation_index;
 mod db_lowering;
 mod declaration_lowering;
 pub mod dependency_operation_indexes;
@@ -10,6 +11,8 @@ pub mod file_ir;
 mod function_lowering;
 pub mod lowered;
 mod publication_local_refs;
+mod service_call_error;
+mod service_call_lowering;
 pub mod source_file_lowering;
 pub mod source_metadata;
 mod source_unit_lowering;
@@ -18,6 +21,9 @@ mod suspend_analysis;
 mod type_inference;
 mod type_lowering;
 
+pub use contract_dependency_operation_index::{
+    ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
+};
 use dependency_operation_indexes::LoweringDependencyOperationIndexes;
 pub use entrypoint_abi::{
     package_entrypoint_function_signature, package_public_schema_abi_types_for_module,
@@ -31,6 +37,8 @@ pub use lowered::{
     LoweredPublication, SyntheticEntrypointExecutableKind, SyntheticEntrypointIndex,
     SyntheticEntrypointModule, SyntheticOperationIndex,
 };
+pub use service_call_error::ServiceCallLoweringError;
+pub use service_call_lowering::{lower_service_calls, LoweredServiceCallSite, LoweredServiceCalls};
 pub use source_metadata::CompiledPublicationSource;
 pub use storage_projection::{
     service_spawn_targets_with_packages, CompiledPublicationStorageProjection,

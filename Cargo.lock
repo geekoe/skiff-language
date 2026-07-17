@@ -2266,6 +2266,7 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-source",
  "skiff-syntax",
+ "thiserror",
 ]
 
 [[package]]

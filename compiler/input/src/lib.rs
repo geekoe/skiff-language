@@ -1,6 +1,7 @@
 pub mod api_spec;
 pub mod api_yml;
 pub mod compile_policy;
+pub mod contract_dependencies;
 pub mod dependencies;
 pub mod error;
 pub mod export_config;
@@ -27,6 +28,10 @@ pub use api_spec::{
     PublicationApiSpec, PublicationApiSpecEntry, SourceSymbolSelector,
 };
 pub use compile_policy::PublicationCompilePolicy;
+pub use contract_dependencies::{
+    read_contract_dependency, read_contract_dependency_json, ContractDependencyError,
+    ContractDependencyIndex, ResolvedContractDependency,
+};
 pub use dependencies::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
     dependency_config_is_empty, empty_dependency_config, is_complex_package_dependency_id,
