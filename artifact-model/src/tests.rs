@@ -1239,7 +1239,7 @@ fn package_test_assembly_rejects_unknown_entrypoint_fields() {
 
 fn package_test_assembly_json() -> serde_json::Value {
     let owner_file = json!({
-        "fileIrIdentity": "skiff-file-ir-v3:sha256:testfile",
+        "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
         "fileIrPath": "units/files/test.json",
         "sourcePath": "tests/pkg.test.skiff",
         "modulePath": "pkg.test"
@@ -1280,7 +1280,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                 "modulePath": "pkg.test",
                 "ownerTestFile": owner_file,
                 "executableRef": {
-                    "fileIrIdentity": "skiff-file-ir-v3:sha256:testfile",
+                    "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
                     "executableIndex": 0,
                     "executableLocalId": "test-entrypoint-0",
                     "symbol": "__skiff_package_test_0"
@@ -1304,7 +1304,7 @@ fn package_test_assembly_json() -> serde_json::Value {
             },
             "testFileScopes": [
                 {
-                    "ownerTestFileIdentity": "skiff-file-ir-v3:sha256:testfile",
+                    "ownerTestFileIdentity": "skiff-file-ir-v4:sha256:testfile",
                     "sourcePath": "tests/pkg.test.skiff",
                     "modulePath": "pkg.test",
                     "allowedLocalLinkDigest": "sha256:testlinks",
