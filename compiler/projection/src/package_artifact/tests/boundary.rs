@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryErrorContract, BoundaryUnavailableReason,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CallableTargetFact, ContractTypeId, ContractTypeRef, PackageCallableSignature,
+    CallableTargetFact, ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableSignature,
     PackageRuntimeRequirements, PackageTypeRef, TypeRefIr, ValueEscapeLane, ValueProvenance,
 };
 
@@ -11,7 +11,7 @@ use super::fixtures::{runtime_requirements, safe_facts, signature};
 use crate::package_artifact::project_boundary_callable;
 
 #[test]
-fn safe_detached_callable_is_available_with_explicit_descriptor_and_requirements() {
+fn safe_detached_callable_is_available_with_contract_agnostic_body_and_requirements() {
     let parameter_type = ContractTypeId::new("contract-type:request");
     let error_type = ContractTypeId::new("contract-type:error");
     let mut signature = signature(TypeRefIr::native("string"));
@@ -23,8 +23,6 @@ fn safe_detached_callable_is_available_with_explicit_descriptor_and_requirements
     }];
     let runtime = runtime_requirements("async");
     let projection = project_boundary_callable(
-        &"callable:run".into(),
-        "run",
         "api",
         &signature,
         &safe_facts(),
@@ -34,26 +32,33 @@ fn safe_detached_callable_is_available_with_explicit_descriptor_and_requirements
     .unwrap();
 
     let BoundaryCallableProjection::Available {
-        descriptor,
+        operation_contract,
         implementation_requirements,
     } = projection
     else {
         panic!("safe detached callable must be Available");
     };
-    assert_eq!(descriptor.stable_key, "run");
-    assert_eq!(descriptor.contract.parameters.len(), 1);
+    assert_eq!(operation_contract.parameters.len(), 1);
     assert_eq!(
-        descriptor.contract.parameters[0].ty,
+        operation_contract.parameters[0].ty,
         ContractTypeRef::contract(parameter_type)
     );
     assert!(matches!(
-        &descriptor.contract.errors,
+        &operation_contract.errors,
         BoundaryErrorContract::Typed {
             payload_type: ContractTypeRef::Contract { contract_type_id },
             ..
         } if contract_type_id == &error_type
     ));
-    assert!(descriptor.contract.effect_guarantee.detached_parameters);
+    assert!(operation_contract.effect_guarantee.detached_parameters);
+    let wire = serde_json::to_value(BoundaryCallableProjection::Available {
+        operation_contract: operation_contract.clone(),
+        implementation_requirements: implementation_requirements.clone(),
+    })
+    .unwrap();
+    for forbidden in ["descriptor", "operationId", "stableKey"] {
+        assert!(wire.get(forbidden).is_none(), "forbidden {forbidden}");
+    }
     assert_eq!(implementation_requirements.config[0].path, "app.token");
     assert_eq!(implementation_requirements.state[0].key, "database");
     assert_eq!(
@@ -147,6 +152,49 @@ fn every_frozen_unavailable_reason_is_projected_fail_closed() {
         safe_facts(),
         &[BoundaryUnavailableReason::UnsupportedStream],
     );
+    for literal in [
+        LiteralIr::Bool { value: true },
+        LiteralIr::Number {
+            value: serde_json::Number::from(7),
+        },
+        LiteralIr::String {
+            value: "exact".to_string(),
+        },
+    ] {
+        assert_reasons(
+            signature(TypeRefIr::Literal { value: literal }),
+            safe_facts(),
+            &[BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
+    }
+}
+
+#[test]
+fn null_literal_keeps_its_exact_canonical_boundary_semantics() {
+    let projection = project_boundary_callable(
+        "api",
+        &signature(TypeRefIr::Literal {
+            value: LiteralIr::Null,
+        }),
+        &safe_facts(),
+        &PackageRuntimeRequirements {
+            config: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        },
+        &[],
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("null literal is exactly representable");
+    };
+    assert_eq!(
+        operation_contract.parameters[0].ty,
+        ContractTypeRef::builtin("null")
+    );
 }
 
 fn assert_reasons(
@@ -155,8 +203,6 @@ fn assert_reasons(
     expected: &[BoundaryUnavailableReason],
 ) {
     let projection = project_boundary_callable(
-        &"callable:test".into(),
-        "test",
         "api",
         &signature,
         &facts,

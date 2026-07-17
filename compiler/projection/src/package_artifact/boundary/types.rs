@@ -142,8 +142,11 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy {
             }
             TypeRefIr::Record { .. }
             | TypeRefIr::Union { .. }
-            | TypeRefIr::Nullable { .. }
-            | TypeRefIr::Literal { .. } => Ok(TypeClosureControl::Continue),
+            | TypeRefIr::Nullable { .. } => Ok(TypeClosureControl::Continue),
+            TypeRefIr::Literal { value } => {
+                project_literal(value)?;
+                Ok(TypeClosureControl::Continue)
+            }
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
                 Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
             }
@@ -195,12 +198,7 @@ fn project_local_type(
         TypeRefIr::Nullable { inner } => Ok(ContractTypeRef::Nullable {
             inner: Box::new(project_local_type(owner_module, inner, file_ir_units)?),
         }),
-        TypeRefIr::Literal { value } => Ok(ContractTypeRef::builtin(match value {
-            LiteralIr::Null => "null",
-            LiteralIr::Bool { .. } => "bool",
-            LiteralIr::Number { .. } => "number",
-            LiteralIr::String { .. } => "string",
-        })),
+        TypeRefIr::Literal { value } => project_literal(value),
         TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
             Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
         }
@@ -241,6 +239,15 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
         ("Stream", _) => Err(BoundaryUnavailableReason::UnsupportedStream),
         ("Array" | "Map", _) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         _ => Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
+    }
+}
+
+fn project_literal(value: &LiteralIr) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
+    match value {
+        LiteralIr::Null => Ok(ContractTypeRef::builtin("null")),
+        LiteralIr::Bool { .. } | LiteralIr::Number { .. } | LiteralIr::String { .. } => {
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        }
     }
 }
 

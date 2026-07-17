@@ -1,6 +1,7 @@
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryUnavailableReason, PackageLocalAbiSymbol,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::fixtures::{callable_id, project_fixture, SignatureSet};
@@ -9,6 +10,12 @@ use super::fixtures::{callable_id, project_fixture, SignatureSet};
 fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
+    assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v2");
+    assert!(artifact
+        .package_build_id
+        .as_str()
+        .starts_with("skiff-package-build-v4:sha256:"));
 
     let callable_paths = artifact
         .package_local_abi
@@ -75,7 +82,7 @@ fn canonical_signature_set_rejects_missing_and_extra_api_entries() {
 }
 
 #[test]
-fn implementation_requirements_change_build_not_local_abi_or_descriptor() {
+fn implementation_requirements_change_build_not_local_abi_or_operation_contract() {
     let first = project_fixture(SignatureSet::Complete, "async").unwrap();
     let second = project_fixture(SignatureSet::Complete, "async-v2").unwrap();
     assert_eq!(
@@ -87,18 +94,18 @@ fn implementation_requirements_change_build_not_local_abi_or_descriptor() {
     let first_id = callable_id(&first, "run");
     let second_id = callable_id(&second, "run");
     let BoundaryCallableProjection::Available {
-        descriptor: first_descriptor,
+        operation_contract: first_contract,
         ..
     } = &first.boundary_projections[&first_id]
     else {
         panic!("run must be available");
     };
     let BoundaryCallableProjection::Available {
-        descriptor: second_descriptor,
+        operation_contract: second_contract,
         ..
     } = &second.boundary_projections[&second_id]
     else {
         panic!("run must be available");
     };
-    assert_eq!(first_descriptor, second_descriptor);
+    assert_eq!(first_contract, second_contract);
 }

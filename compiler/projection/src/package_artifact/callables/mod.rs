@@ -72,8 +72,6 @@ pub(super) fn project_package_callable_surface(
             })?;
         let facts = normalization::normalize_semantic_facts(facts);
         let projection = project_boundary_callable(
-            &seed.callable_id,
-            &seed.public_path,
             &seed.owner_module,
             &seed.signature,
             &facts,

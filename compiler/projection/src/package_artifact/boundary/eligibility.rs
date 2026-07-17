@@ -1,8 +1,9 @@
 use skiff_artifact_model::{
     BoundaryUnavailableReason, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, ValueEscapeLane,
-    ValueProvenance,
+    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, ValueProvenance,
 };
+
+use super::ordering::escape_lane_rank;
 
 pub(super) fn semantic_unavailable_reasons(
     facts: &CallableSemanticFacts,
@@ -127,17 +128,5 @@ fn reason_sort_key(reason: &BoundaryUnavailableReason) -> (u8, u8) {
         BoundaryUnavailableReason::NativeAdapterUnavailable => (9, 0),
         BoundaryUnavailableReason::UnsupportedBoundaryType => (10, 0),
         BoundaryUnavailableReason::UnsupportedStream => (11, 0),
-    }
-}
-
-fn escape_lane_rank(lane: ValueEscapeLane) -> u8 {
-    match lane {
-        ValueEscapeLane::Capture => 0,
-        ValueEscapeLane::Callback => 1,
-        ValueEscapeLane::Stream => 2,
-        ValueEscapeLane::Spawn => 3,
-        ValueEscapeLane::Database => 4,
-        ValueEscapeLane::Native => 5,
-        ValueEscapeLane::External => 6,
     }
 }
