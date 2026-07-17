@@ -29,6 +29,33 @@ fn definition_compiles_without_any_provider_code_or_artifact() {
 }
 
 #[test]
+fn compiled_service_contract_requires_real_operation_descriptors() {
+    let contract = compile_service_contract_definition(definition_fixture()).unwrap();
+    let wire = serde_json::to_value(&contract).unwrap();
+    let descriptor = wire["operations"]
+        .as_object()
+        .and_then(|operations| operations.values().next())
+        .expect("compiled contract operation descriptor");
+    assert_eq!(descriptor["stableKey"], json!("echo"));
+    assert!(descriptor.get("operationId").is_some());
+    assert!(descriptor.get("contract").is_some());
+
+    for required in ["operationId", "stableKey", "contract"] {
+        let mut invalid = wire.clone();
+        let descriptor = invalid["operations"]
+            .as_object_mut()
+            .and_then(|operations| operations.values_mut().next())
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("compiled contract operation descriptor");
+        descriptor.remove(required);
+        assert!(
+            serde_json::from_value::<skiff_artifact_model::ServiceContract>(invalid).is_err(),
+            "ServiceContract descriptor must require {required}"
+        );
+    }
+}
+
+#[test]
 fn definition_wire_rejects_provider_deployment_and_unknown_fields() {
     let value = serde_json::to_value(definition_fixture()).unwrap();
     for forbidden in [

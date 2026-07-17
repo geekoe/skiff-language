@@ -8,6 +8,7 @@ pub use dependencies::{
     package_dependency_constraint, package_unit_dependency_constraints,
     std_package_dependency_constraint,
 };
+pub use exports::project_package_export_index;
 pub use metadata::config_metadata_from_config_projection;
 pub use model::{
     PackageFileIrProjection, PackageIrProjectionSource, ProjectedPackageIrArtifacts,
@@ -32,7 +33,7 @@ pub fn project_package_ir_artifacts(
     let file_refs = file_ir_refs_for_projected(&package.file_ir_units);
     let resources = projected_publication_resources(package.resources);
     let resource_refs = resource_refs_for_projected(&resources);
-    let exports = exports::package_unit_export_index(&package, dependencies)?;
+    let exports = project_package_export_index(&package, dependencies)?;
     let dependency_constraints = package_unit_dependency_constraints(
         dependencies,
         &package.file_ir_units,

@@ -123,8 +123,9 @@ pub struct BoundaryEffectGuarantee {
     pub no_same_heap_identity: bool,
 }
 
-/// Semantic descriptor body reusable by typed definitions. The definition
-/// compiler adds the operation stable key and derived identity around it.
+/// Contract-agnostic boundary operation body shared by package callable
+/// projections and typed service-contract definitions. It deliberately has no
+/// operation identity or stable key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoundaryOperationContract {
@@ -141,6 +142,8 @@ pub struct BoundaryOperationContract {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoundaryOperationDescriptor {
+    /// Real service-contract operation identity derived from its service
+    /// coordinate, contract version, and stable key.
     pub operation_id: ContractOperationId,
     pub stable_key: String,
     pub contract: BoundaryOperationContract,
