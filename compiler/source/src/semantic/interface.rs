@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref, FunctionTypeParamIr,
-    InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
+    FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref;
 

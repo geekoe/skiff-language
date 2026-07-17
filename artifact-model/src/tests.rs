@@ -45,36 +45,11 @@ fn number_type() -> TypeRefIr {
     TypeRefIr::native("number")
 }
 
-#[test]
-fn generic_interface_instantiation_uses_declaration_identity_and_canonical_args() {
-    let interface_string = TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: vec![string_type()],
-    };
-    let interface_number = TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: vec![number_type()],
-    };
-    let declaration_identity = crate::type_ref_abi_key(&TypeRefIr::Native {
-        name: "pkg.Boxed".to_owned(),
-        args: Vec::new(),
-    });
-
-    let string_ref = crate::interface_instantiation_ref_for_type_ref(&interface_string);
-    let number_ref = crate::interface_instantiation_ref_for_type_ref(&interface_number);
-
-    assert_eq!(string_ref.interface_abi_id, declaration_identity);
-    assert_eq!(number_ref.interface_abi_id, string_ref.interface_abi_id);
-    assert_eq!(string_ref.canonical_type_args, vec![string_type()]);
-    assert_eq!(number_ref.canonical_type_args, vec![number_type()]);
-    assert_ne!(string_ref, number_ref);
-    assert_ne!(
-        crate::canonical_interface_method_abi_id(&string_ref, "get"),
-        crate::canonical_interface_method_abi_id(&number_ref, "get")
-    );
-    let value = serde_json::to_value(&string_ref).expect("interface ref serializes");
-    assert_eq!(value["interfaceAbiId"], declaration_identity);
-    assert_eq!(value["canonicalTypeArgs"], json!([string_type()]));
+fn reader_interface_ref() -> InterfaceInstantiationRef {
+    InterfaceInstantiationRef {
+        interface_abi_id: "interface:pkg.Reader".to_string(),
+        canonical_type_args: vec![string_type()],
+    }
 }
 
 fn operation_ref(
@@ -997,7 +972,7 @@ fn package_unit_rejects_unknown_fields_and_keeps_dependency_config_open() {
                 }
             }
         ],
-        "configAndEffectMetadata": {},
+        "configAndEffectMetadata": { "effects": { "operations": {} } },
         "runtimeOnly": true
     });
 
@@ -1034,7 +1009,7 @@ fn package_unit_empty_uses_canonical_defaults() {
                 "abiIdentity": "abi:1"
             },
             "files": [],
-            "configAndEffectMetadata": {}
+            "configAndEffectMetadata": { "effects": { "operations": {} } }
         })
     );
 }
@@ -1096,7 +1071,7 @@ fn old_service_and_package_units_default_recoverable_metadata_to_empty() {
         "abiIdentity": "abi:1",
         "publicationAbi": publication_abi_json("example.com/mongo", "1.0.0", "abi:1"),
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     });
     let package: PackageUnit = serde_json::from_value(old_package).unwrap();
     assert!(package.resources.is_empty());
@@ -1193,7 +1168,7 @@ fn package_unit_rejects_legacy_top_level_exports() {
         "abiIdentity": "abi:1",
         "files": [],
         "exports": {},
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     }));
 }
 
@@ -1206,7 +1181,7 @@ fn package_unit_requires_publication_abi() {
         "buildIdentity": "build:1",
         "abiIdentity": "abi:1",
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     }))
     .expect_err("PackageUnit without publicationAbi must fail closed")
     .to_string();
@@ -1311,7 +1286,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                     "symbol": "__skiff_package_test_0"
                 },
                 "defaultRun": true,
-                "configAndEffectMetadata": {},
+                "configAndEffectMetadata": { "effects": { "operations": {} } },
                 "runtimeExpectedError": {
                     "code": "ProviderUnavailableError",
                     "messageContains": "offline"
@@ -1350,7 +1325,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                 }
             ]
         },
-        "configAndEffectMetadata": {},
+        "configAndEffectMetadata": { "effects": { "operations": {} } },
         "sourceMap": {
             "sources": []
         }
@@ -1400,7 +1375,7 @@ fn package_unit_rejects_legacy_binding_requirements_field() {
         "abiIdentity": "abi:1",
         "publicationAbi": publication_abi_json("example.com/agent", "1.0.0", "abi:1"),
         "files": [],
-        "configAndEffectMetadata": {}
+        "configAndEffectMetadata": { "effects": { "operations": {} } }
     });
     let decoded_without_binding_requirements: PackageUnit =
         serde_json::from_value(without_binding_requirements).unwrap();
@@ -1970,10 +1945,7 @@ fn function_type_ref_round_trips_params_and_return_type() {
 
 #[test]
 fn any_interface_type_ref_round_trips_and_rejects_unknown_fields() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
+    let interface = reader_interface_ref();
     let value = json!({
         "kind": "anyInterface",
         "interface": interface,
@@ -1998,11 +1970,8 @@ fn any_interface_type_ref_round_trips_and_rejects_unknown_fields() {
 
 #[test]
 fn interface_box_and_method_call_targets_round_trip() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
-    let method_abi_id = crate::canonical_interface_method_abi_id(&interface, "read");
+    let interface = reader_interface_ref();
+    let method_abi_id = "method:interface:pkg.Reader:read".to_string();
     let method_table = InterfaceMethodTablePlanIr {
         interface: interface.clone(),
         concrete_type: TypeRefIr::ServiceSymbol {
@@ -2056,11 +2025,8 @@ fn interface_box_and_method_call_targets_round_trip() {
 
 #[test]
 fn remote_interface_box_source_carries_operation_table_and_callee_identity() {
-    let interface = crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-        name: "pkg.Reader".to_string(),
-        args: vec![string_type()],
-    });
-    let method_abi_id = crate::canonical_interface_method_abi_id(&interface, "read");
+    let interface = reader_interface_ref();
+    let method_abi_id = "method:interface:pkg.Reader:read".to_string();
     let operation_abi_id = "operation:reader:read".to_string();
     let source = BoxSourceIr::Remote {
         dependency_ref: "readerService".to_string(),
@@ -2114,10 +2080,7 @@ fn remote_interface_box_source_carries_operation_table_and_callee_identity() {
         "dependencyRef": "readerService",
         "publicInstanceKey": "readers/default",
         "operations": {
-            "interface": crate::interface_instantiation_ref_for_type_ref(&TypeRefIr::Native {
-                name: "pkg.Reader".to_string(),
-                args: vec![string_type()],
-            }),
+            "interface": reader_interface_ref(),
             "slots": []
         },
         "calleeProtocolIdentity": "protocol:reader",

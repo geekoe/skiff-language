@@ -4,8 +4,8 @@ use anyhow::Context;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
-    ordered_package_units_from_artifact_refs, ordered_package_units_from_artifact_root,
-    PackageUnitArtifactRef,
+    package_unit_content_hash, validate_package_unit_artifact_path,
+    validate_service_artifact_closure, ValidatedArtifactContent, ValidatedServiceArtifactClosure,
 };
 use skiff_artifact_model::{
     FileIrRef, FileIrUnit, PackageUnit, PublicationResourceRef, ServiceUnit,
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     paths::{resolve_index_artifact_path, ArtifactRootRelativePath},
-    types::{ArtifactIndexPointer, PackageUnitArtifactPointer},
+    types::ArtifactIndexPointer,
     utils::read_json_file,
 };
 
@@ -46,42 +46,63 @@ impl<'a> ArtifactGraphLoader<'a> {
         &self,
         pointer: &ArtifactIndexPointer,
     ) -> anyhow::Result<ArtifactGraph> {
-        let service_unit_path = self
-            .resolve_service_unit_pointer(pointer)
-            .with_context(|| {
-                format!(
-                    "failed to resolve service unit for service {} build {}",
-                    pointer.service_id, pointer.build_id
-                )
-            })?;
-        let service = Arc::new(self.load_service_unit_at_artifact_path(&service_unit_path)?);
-        self.load_service_artifact_graph_for_pointer(service, pointer)
+        let validated = validate_service_artifact_closure(
+            self.artifact_root,
+            &pointer.service_id,
+            pointer.service_version.as_deref(),
+            &pointer.service_assembly.assembly_identity,
+            &pointer.service_assembly.assembly_path,
+            &pointer.service_unit,
+            &pointer.package_units,
+        )
+        .with_context(|| {
+            format!(
+                "failed to validate artifact closure for service {} build {}",
+                pointer.service_id, pointer.build_id
+            )
+        })?;
+        self.load_validated_pointer_artifact_graph(&validated)
     }
 
-    pub fn load_service_artifact_graph(
+    pub fn load_validated_pointer_artifact_graph(
+        &self,
+        validated: &ValidatedServiceArtifactClosure,
+    ) -> anyhow::Result<ArtifactGraph> {
+        let service = Arc::new(self.deserialize_validated_service_unit(&validated.service_unit)?);
+        let packages = validated
+            .package_units
+            .iter()
+            .map(|content| self.deserialize_validated_package_unit(content))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.load_service_artifact_graph_with_packages(service, packages)
+    }
+
+    fn load_service_artifact_graph_with_packages(
         &self,
         service: Arc<ServiceUnit>,
+        package_units: Vec<Arc<PackageUnit>>,
     ) -> anyhow::Result<ArtifactGraph> {
         let service_files = self.load_file_refs(&service.files, "service unit files")?;
         let service_resources =
             self.load_resource_refs(&service.resources, "service unit resources")?;
-        let package_units = self.resolve_service_packages(&service)?;
         self.build_artifact_graph(service, service_files, service_resources, package_units)
     }
 
-    fn load_service_artifact_graph_for_pointer(
+    fn deserialize_validated_service_unit(
         &self,
-        service: Arc<ServiceUnit>,
-        pointer: &ArtifactIndexPointer,
-    ) -> anyhow::Result<ArtifactGraph> {
-        let service_files = self.load_file_refs(&service.files, "service unit files")?;
-        let service_resources =
-            self.load_resource_refs(&service.resources, "service unit resources")?;
-        let package_units = match &pointer.package_units {
-            Some(package_units) => self.resolve_pinned_service_packages(&service, package_units)?,
-            None => self.resolve_service_packages(&service)?,
-        };
-        self.build_artifact_graph(service, service_files, service_resources, package_units)
+        content: &ValidatedArtifactContent,
+    ) -> anyhow::Result<ServiceUnit> {
+        let path = ArtifactRootRelativePath::parse(&content.path, "validated service unit")?;
+        deserialize_service_unit(content.value.clone(), &path)
+    }
+
+    fn deserialize_validated_package_unit(
+        &self,
+        content: &ValidatedArtifactContent,
+    ) -> anyhow::Result<Arc<PackageUnit>> {
+        let path = ArtifactRootRelativePath::parse(&content.path, "validated package unit")?;
+        let unit = deserialize_package_unit(content.value.clone(), &path)?;
+        Ok(self.cache.insert_package(unit))
     }
 
     fn build_artifact_graph(
@@ -171,7 +192,16 @@ impl<'a> ArtifactGraphLoader<'a> {
         relative_path: &ArtifactRootRelativePath,
     ) -> anyhow::Result<Arc<PackageUnit>> {
         let value = self.read_artifact_json(relative_path, "package unit")?;
+        let unit_hash = package_unit_content_hash(&value)
+            .context("failed to hash raw package unit artifact")?;
         let unit = deserialize_package_unit(value, relative_path)?;
+        validate_package_unit_artifact_path(relative_path.as_str(), &unit.package_id, &unit_hash)
+            .with_context(|| {
+            format!(
+                "package unit {}@{} artifact path validation failed",
+                unit.package_id, unit.version
+            )
+        })?;
         Ok(self.cache.insert_package(unit))
     }
 
@@ -236,10 +266,10 @@ impl<'a> ArtifactGraphLoader<'a> {
 
     fn file_ir_path(&self, file_ref: &FileIrRef) -> anyhow::Result<ArtifactRootRelativePath> {
         if let Some(path) = &file_ref.artifact_path {
-            return ArtifactRootRelativePath::parse(
+            return Ok(ArtifactRootRelativePath::parse(
                 path,
                 &format!("File IR unit {} artifactPath", file_ref.file_ir_identity),
-            );
+            )?);
         }
         anyhow::bail!(
             "File IR unit {} requires artifactPath when loading from artifact root",
@@ -265,40 +295,10 @@ impl<'a> ArtifactGraphLoader<'a> {
                 path
             );
         }
-        ArtifactRootRelativePath::parse(
+        Ok(ArtifactRootRelativePath::parse(
             path,
             &format!("{label} resource {} artifactPath", resource_ref.path),
-        )
-    }
-
-    fn resolve_service_packages(
-        &self,
-        service: &ServiceUnit,
-    ) -> anyhow::Result<Vec<Arc<PackageUnit>>> {
-        let packages = ordered_package_units_from_artifact_root(self.artifact_root, service)
-            .context("failed to resolve service package dependencies")?;
-        Ok(packages
-            .into_iter()
-            .map(|package| self.cache.insert_package(package))
-            .collect())
-    }
-
-    fn resolve_pinned_service_packages(
-        &self,
-        service: &ServiceUnit,
-        package_refs: &[PackageUnitArtifactPointer],
-    ) -> anyhow::Result<Vec<Arc<PackageUnit>>> {
-        let package_refs = package_refs
-            .iter()
-            .map(package_unit_artifact_ref)
-            .collect::<Vec<_>>();
-        let packages =
-            ordered_package_units_from_artifact_refs(self.artifact_root, service, &package_refs)
-                .context("failed to resolve pinned service package dependencies")?;
-        Ok(packages
-            .into_iter()
-            .map(|package| self.cache.insert_package(package))
-            .collect())
+        )?)
     }
 
     pub(super) fn read_artifact_json(
@@ -320,6 +320,10 @@ impl<'a> ArtifactGraphLoader<'a> {
             .map_err(|error| anyhow::anyhow!("failed to read {label} {}: {error}", path.display()))
     }
 }
+
+#[cfg(test)]
+#[path = "loader/tests.rs"]
+mod tests;
 
 fn validate_loaded_resource(
     resource_ref: &PublicationResourceRef,
@@ -354,15 +358,4 @@ fn validate_loaded_resource(
         );
     }
     Ok(())
-}
-
-fn package_unit_artifact_ref(pointer: &PackageUnitArtifactPointer) -> PackageUnitArtifactRef {
-    PackageUnitArtifactRef {
-        package_id: pointer.package_id.clone(),
-        version: pointer.version.clone(),
-        build_identity: pointer.build_identity.clone(),
-        abi_identity: pointer.abi_identity.clone(),
-        unit_hash: pointer.unit_hash.clone(),
-        unit_path: pointer.unit_path.clone(),
-    }
 }

@@ -889,15 +889,11 @@ pub fn linked_interface_instantiation_runtime_id(
     if interface.canonical_type_args.is_empty() {
         return interface.interface_abi_id.clone();
     }
-    canonical_json_string(
-        serde_json::to_value(interface).unwrap_or_else(|_| serde_json::Value::Null),
-    )
+    sorted_json_string(serde_json::to_value(interface).unwrap_or_else(|_| serde_json::Value::Null))
 }
 
 pub fn linked_type_ref_runtime_key(type_ref: &LinkedTypeRef) -> String {
-    canonical_json_string(
-        serde_json::to_value(type_ref).unwrap_or_else(|_| serde_json::Value::Null),
-    )
+    sorted_json_string(serde_json::to_value(type_ref).unwrap_or_else(|_| serde_json::Value::Null))
 }
 
 /// Stable recoverable interface projection identity for an expected `any I`.
@@ -913,7 +909,7 @@ pub fn recoverable_interface_projection_identity(
     }
     format!(
         "interface:{}",
-        canonical_json_string(
+        sorted_json_string(
             serde_json::to_value(interface).unwrap_or_else(|_| serde_json::Value::Null),
         )
     )
@@ -1192,20 +1188,20 @@ fn recoverable_expected_builtin_node(
     })
 }
 
-fn canonical_json_string(value: serde_json::Value) -> String {
-    let canonical = canonical_json_value(value);
-    serde_json::to_string(&canonical).unwrap_or_else(|_| "null".to_string())
+fn sorted_json_string(value: serde_json::Value) -> String {
+    let sorted = sort_json_value(value);
+    serde_json::to_string(&sorted).unwrap_or_else(|_| "null".to_string())
 }
 
-fn canonical_json_value(value: serde_json::Value) -> serde_json::Value {
+fn sort_json_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.into_iter().map(canonical_json_value).collect())
+            serde_json::Value::Array(items.into_iter().map(sort_json_value).collect())
         }
         serde_json::Value::Object(object) => {
             let mut sorted = std::collections::BTreeMap::new();
             for (key, value) in object {
-                sorted.insert(key, canonical_json_value(value));
+                sorted.insert(key, sort_json_value(value));
             }
             let mut object = serde_json::Map::new();
             for (key, value) in sorted {
@@ -2081,5 +2077,15 @@ mod recoverable_expected_plan_tests {
         assert_ne!(projection, "interface:pkg.Provider");
         assert!(projection.starts_with("interface:{"));
         assert!(projection.contains("canonicalTypeArgs"));
+    }
+
+    #[test]
+    fn linked_type_key_sorting_does_not_normalize_numbers() {
+        let value = serde_json::json!({
+            "z": 2,
+            "a": serde_json::Number::from_f64(1.0).expect("number"),
+        });
+
+        assert_eq!(sorted_json_string(value), r#"{"a":1.0,"z":2}"#);
     }
 }

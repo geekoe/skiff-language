@@ -60,6 +60,7 @@ function nodeScript(input: {
 }): string {
   return `
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const chunks = [];
 process.stdin.on('data', (chunk) => chunks.push(chunk));
 process.stdin.on('end', () => {
@@ -81,8 +82,22 @@ process.stdin.on('end', () => {
   process.stdout.write(JSON.stringify({
     results: payload.services.map((service) => ({
       key: service.key,
-      dynamicBuildId: ${JSON.stringify(input.dynamicBuildId ??
-        'skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')},
+      dynamicBuildId: ${input.dynamicBuildId === undefined
+        ? "'skiff-service-build-v1:sha256:' + crypto.createHash('sha256').update(JSON.stringify({ serviceAssembly: service.serviceAssembly, serviceUnit: service.serviceUnit, packageUnits: service.packageUnits })).digest('hex')"
+        : JSON.stringify(input.dynamicBuildId)},
+      assemblyIdentity: service.serviceAssembly.assemblyIdentity,
+      serviceAssembly: {
+        path: service.serviceAssembly.assemblyPath,
+        value: JSON.parse(fs.readFileSync(require('node:path').join(service.artifactRoot, service.serviceAssembly.assemblyPath), 'utf8')),
+      },
+      serviceUnit: {
+        path: service.serviceUnit.unitPath,
+        value: JSON.parse(fs.readFileSync(require('node:path').join(service.artifactRoot, service.serviceUnit.unitPath), 'utf8')),
+      },
+      packageUnits: service.packageUnits.map((unit) => ({
+        path: unit.unitPath,
+        value: JSON.parse(fs.readFileSync(require('node:path').join(service.artifactRoot, unit.unitPath), 'utf8')),
+      })),
     })),
   }));
   `}

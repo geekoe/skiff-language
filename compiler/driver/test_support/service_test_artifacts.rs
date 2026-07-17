@@ -6,15 +6,18 @@ use std::{
 
 use serde_json::{json, Map as JsonMap, Value};
 use skiff_compiler_core::artifact::{
-    CanonicalPublicCallableSignature, DbMetadataIndexIr, DbMetadataIr, FunctionTypeParamIr,
-    OperationAbiRef, OperationCallableKind, OperationIngressKind, OperationRouteBinding,
-    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind, ServiceOperationTarget,
+    AbiIdentityFacts, CallableEffectSummary, CanonicalPublicCallableSignature, DbMetadataIndexIr,
+    DbMetadataIr, FunctionTypeParamIr, OperationAbiRef, OperationCallableKind,
+    OperationIngressKind, OperationRouteBinding, PackageUnit, PublicationAbiUnit,
+    PublicationOperationAbi, PublicationOperationKind, ServiceOperationTarget,
     SourceCallOperationIndexEntry,
 };
 use skiff_compiler_emission::identity::{
-    runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes_from_json,
-    SERVICE_BUILD_IDENTITY_PREFIX,
+    package_unit_artifact_ref, runtime_program_dynamic_build_id,
+    runtime_program_service_unit_identity_bytes_from_json, service_assembly_hash,
+    service_assembly_identity, service_build_identity_hash, SERVICE_BUILD_IDENTITY_PREFIX,
 };
+use skiff_compiler_emission::package_unit_artifacts::materialize_package_unit_artifact;
 use thiserror::Error;
 
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
@@ -26,26 +29,33 @@ use crate::{
         PACKAGE_UNIT_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
         SERVICE_UNIT_SCHEMA_VERSION,
     },
-    emission::{
-        file_ir_artifacts::published_file_ir_artifact_from_unit, identity::identity,
-        service_artifacts::SERVICE_ASSEMBLY_IDENTITY_PREFIX,
-    },
-    test_support::package_units::{file_ref_for_published, package_unit_path},
+    emission::file_ir_artifacts::published_file_ir_artifact_from_unit,
+    test_support::package_units::file_ref_for_published,
 };
 use skiff_compiler_lowering::file_ir::{
-    assign_file_ir_identity, ExecutableBody, ExecutableIr, ExecutableSignatureIr, FileIrRef,
-    FileIrUnit, MetadataValue, PackageRefIr, PackageSymbolRef, TypeRefIr,
+    assign_file_ir_identity, ExecutableBody, ExecutableIr, FileIrRef, FileIrUnit, PackageRefIr,
+    PackageSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection::recoverable_boundary::{
     recoverable_metadata_for_service_artifacts, RecoverableInputs,
 };
 use skiff_compiler_projection::typed_artifacts::{
-    assign_package_unit_identities, assign_publication_abi_identity,
-    public_function_operation_abi_id, service_unit_hash, service_unit_identity,
-    ConfigAndEffectMetadata, ExecutableExport, GatewayConfig, OperationTargetRef,
-    PackageDependencyConstraint, PackageExportIndex, PackageImplementationLinks, PackageUnit,
-    RecoverableArtifactMetadata, ServiceConfigMetadata, ServiceMeta, ServiceOperation, ServiceUnit,
-    TypeExport,
+    assign_publication_abi_identity, public_function_operation_abi_id, service_unit_hash,
+    service_unit_identity, GatewayConfig, OperationTargetRef, PackageDependencyConstraint,
+    ServiceConfigMetadata, ServiceMeta, ServiceOperation, ServiceUnit,
+};
+use skiff_compiler_projection::{
+    package_exports::{PackageExportSymbol, PackageExports},
+    package_unit_artifacts::{
+        project_package_ir_artifacts, PackageFileIrProjection, PackageIrProjectionSource,
+    },
+    project_config_projection,
+};
+use skiff_compiler_projection_input::{
+    ConfigRequirementAccessProjection, ConfigRequirementProjection,
+    ConfigRequirementProvenanceProjection, ConfigRequirementScopeProjection,
+    ConfigRequirementSetProjection, ConfigRequirementsSeed, ProjectionCallableEffectFacts,
+    ProjectionExecutableKey,
 };
 
 const TEST_REVISION_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -231,7 +241,7 @@ pub fn write_test_service_artifact_root_with_runtime_path_registration(
         &service_unit_artifact,
         &config_activation,
         &db,
-    );
+    )?;
     let pointer_build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{}", assembly.hash);
     let runtime_config = config_wrapped_for_router(
         &input.test_config,
@@ -332,12 +342,13 @@ fn package_artifacts(
     let mut indexes = Vec::new();
     let mut package_files = Vec::new();
     for (package_id, package_files_for_id) in package_groups {
-        let mut exports = PackageExportIndex::default();
+        let mut export_symbols = BTreeMap::new();
+        let mut callable_effects = BTreeMap::new();
         for file in &package_files_for_id {
             let unit = file_ir_from_published(file)?;
-            let file_ref = file_ref_for_published(file);
-            for (executable_index, executable) in unit.executables.iter().enumerate() {
-                let Some(symbol_path) = package_symbol_for_file_executable(&unit, executable)
+            for executable_index in 0..unit.executables.len() {
+                let Some((source_symbol, symbol_path)) =
+                    package_symbols_for_file_executable(&unit, executable_index)
                 else {
                     continue;
                 };
@@ -345,45 +356,56 @@ fn package_artifacts(
                     .entry(package_id.clone())
                     .or_default()
                     .push(symbol_path.clone());
-                insert_package_function_export(
-                    &mut exports,
+                insert_package_export_symbols(
+                    &mut export_symbols,
                     &package_id,
                     &symbol_path,
-                    file_ref.clone(),
-                    executable_index,
-                    executable,
+                    &unit.module_path,
+                    &source_symbol,
+                );
+                callable_effects.insert(
+                    ProjectionExecutableKey::new(unit.module_path.clone(), executable_index as u32),
+                    CallableEffectSummary::analysis_pending(),
                 );
             }
-            for (type_index, ty) in unit.type_table.iter().enumerate() {
-                let Some(symbol_path) = package_symbol_for_file_type(&unit, &ty.name) else {
+            for type_index in 0..unit.type_table.len() {
+                let Some(source_symbol) = package_source_symbol_for_file_type(&unit, type_index)
+                else {
+                    continue;
+                };
+                let Some(symbol_path) = package_symbol_for_file_type(&unit, &source_symbol) else {
                     continue;
                 };
                 package_symbols_by_id
                     .entry(package_id.clone())
                     .or_default()
                     .push(symbol_path.clone());
-                insert_package_type_export(
-                    &mut exports,
+                insert_package_export_symbols(
+                    &mut export_symbols,
                     &package_id,
                     &symbol_path,
-                    file_ref.clone(),
-                    type_index,
-                    ty,
+                    &unit.module_path,
+                    &source_symbol,
                 );
             }
         }
 
-        let config_and_effect_metadata = package_config_and_effect_metadata(&config_leaf_paths(
-            input
-                .test_config
-                .as_object()
-                .expect("test_config object was validated"),
-        ));
+        let exports = PackageExports {
+            entries: Vec::new(),
+            symbols: export_symbols,
+            public_instances: Vec::new(),
+        };
         let (package_unit, unit) = service_test_package_unit_artifact(
             &package_id,
             &package_files_for_id,
-            exports,
-            config_and_effect_metadata,
+            &exports,
+            &ProjectionCallableEffectFacts::new(callable_effects),
+            &config_leaf_paths(
+                input
+                    .test_config
+                    .as_object()
+                    .expect("test_config object was validated"),
+            ),
         )?;
         let package_path = PublicationId::parse(&package_id)
             .map_err(|error| TestArtifactError::InvalidInput {
@@ -411,46 +433,66 @@ fn package_artifacts(
 fn service_test_package_unit_artifact(
     package_id: &str,
     package_files: &[&PublishedFileIrArtifact],
-    exports: PackageExportIndex,
-    config_and_effect_metadata: ConfigAndEffectMetadata,
+    exports: &PackageExports,
+    callable_effects: &ProjectionCallableEffectFacts,
+    config_paths: &[String],
 ) -> Result<(PackageUnit, PublishedJsonArtifact), TestArtifactError> {
-    let mut package_unit = PackageUnit {
-        schema_version: PACKAGE_UNIT_SCHEMA_VERSION.to_string(),
-        package_id: package_id.to_string(),
-        version: "test".to_string(),
-        build_identity: String::new(),
-        abi_identity: String::new(),
-        abi_identity_projection: Default::default(),
-        publication_abi: PublicationAbiUnit::empty(
-            package_id.to_string(),
-            "test".to_string(),
-            String::new(),
-        ),
-        files: package_files
+    let requirement_set = ConfigRequirementSetProjection::new(
+        config_paths
             .iter()
-            .map(|file| file_ref_for_published(file))
+            .map(|path| ConfigRequirementProjection {
+                scope: ConfigRequirementScopeProjection::Package {
+                    package_id: package_id.to_string(),
+                },
+                path: path.clone(),
+                access: ConfigRequirementAccessProjection::Has,
+                provenances: vec![ConfigRequirementProvenanceProjection {
+                    source_path: "<test-config>".to_string(),
+                    source_span: None,
+                    declaring_publication: None,
+                    dependency_path: Vec::new(),
+                }],
+            })
             .collect(),
-        resources: Vec::new(),
-        implementation_links: PackageImplementationLinks::from_exports(&exports),
-        dependencies: Vec::new(),
-        recoverable_metadata: RecoverableArtifactMetadata::default(),
-        config_and_effect_metadata,
-    };
-    assign_package_unit_identities(&mut package_unit);
-    let value = serde_json::to_value(&package_unit).expect("PackageUnit must serialize");
-    let hash = value_sha256(&value);
-    let package_path = PublicationId::parse(package_id)
+    );
+    let config_projection = project_config_projection(&ConfigRequirementsSeed::new(
+        requirement_set.clone(),
+        requirement_set.clone(),
+        ConfigRequirementSetProjection::default(),
+        requirement_set,
+    ))
+    .map_err(|error| TestArtifactError::InvalidInput {
+        message: format!("failed to project package {package_id} config: {error}"),
+    })?;
+    let abi_identity_projection = AbiIdentityFacts::default();
+    let projected = project_package_ir_artifacts(
+        PackageIrProjectionSource {
+            package_id,
+            version: "test",
+            exports,
+            abi_identity_projection: &abi_identity_projection,
+            config_projection: &config_projection,
+            callable_effects,
+            resources: &[],
+            file_ir_units: package_files
+                .iter()
+                .map(|file| PackageFileIrProjection::from_unit(file.unit.clone()))
+                .collect(),
+        },
+        &[],
+    )
+    .map_err(|error| TestArtifactError::InvalidInput {
+        message: format!("failed to project test package {package_id}: {error}"),
+    })?;
+    let published_files = package_files
+        .iter()
+        .map(|file| (*file).clone())
+        .collect::<Vec<_>>();
+    let materialized = materialize_package_unit_artifact(&projected.unit, &published_files, &[])
         .map_err(|error| TestArtifactError::InvalidInput {
-            message: format!("package id {package_id} is invalid: {error}"),
-        })?
-        .artifact_path();
-    let unit = PublishedJsonArtifact {
-        value,
-        identity: package_unit.build_identity.clone(),
-        hash: hash.clone(),
-        path: package_unit_path(&package_path, &hash),
-    };
-    Ok((package_unit, unit))
+            message: format!("failed to materialize test package {package_id}: {error}"),
+        })?;
+    Ok((materialized.unit, materialized.artifact))
 }
 
 fn file_ir_from_published(
@@ -665,7 +707,7 @@ fn service_assembly_artifact(
     service_unit: &PublishedJsonArtifact,
     config_activation: &Value,
     db_metadata: &[DbMetadataIr],
-) -> PublishedJsonArtifact {
+) -> Result<PublishedJsonArtifact, TestArtifactError> {
     let service_path = PublicationId::parse(&input.service_id)
         .expect("service id was already validated")
         .artifact_path();
@@ -716,18 +758,25 @@ fn service_assembly_artifact(
         "serviceUnit": service_unit_pointer.clone(),
         "sourceMap": source_map,
     });
-    let hash = value_sha256(&hash_input);
-    let assembly_identity = identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &hash);
+    let hash =
+        service_assembly_hash(&hash_input).map_err(|error| TestArtifactError::InvalidInput {
+            message: format!("failed to hash service assembly: {error}"),
+        })?;
+    let assembly_identity = service_assembly_identity(&hash_input).map_err(|error| {
+        TestArtifactError::InvalidInput {
+            message: format!("failed to identify service assembly: {error}"),
+        }
+    })?;
     let path = format!("assemblies/services/{service_path}/{hash}.json");
     let mut value = hash_input;
     value["service"]["assemblyIdentity"] = Value::String(assembly_identity.clone());
     value["serviceUnit"] = service_unit_pointer;
-    PublishedJsonArtifact {
+    Ok(PublishedJsonArtifact {
         value,
         identity: assembly_identity,
         hash,
         path,
-    }
+    })
 }
 
 fn assembly_operation(
@@ -939,6 +988,22 @@ fn write_artifact_tree(
     }
     write_json(root, &service_unit.path, &service_unit.value)?;
     write_json(root, &assembly.path, &assembly.value)?;
+    let service_unit_ref = assembly
+        .value
+        .get("serviceUnit")
+        .cloned()
+        .expect("test assembly should contain serviceUnit pointer");
+    let package_unit_refs = package_artifacts
+        .units
+        .iter()
+        .map(|unit| {
+            package_unit_artifact_ref(unit.path.clone(), &unit.value).map_err(|error| {
+                TestArtifactError::InvalidInput {
+                    message: format!("failed to build package unit pointer: {error}"),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let pointer_path = format!("dev/services/{}.json", service_id.artifact_path());
     let pointer = json!({
         "mode": "dev",
@@ -959,11 +1024,8 @@ fn write_artifact_tree(
             "assemblyIdentity": assembly.identity,
             "assemblyPath": assembly.path,
         },
-        "serviceUnit": {
-            "unitIdentity": service_unit.identity,
-            "unitHash": service_unit.hash,
-            "unitPath": service_unit.path,
-        },
+        "serviceUnit": service_unit_ref.clone(),
+        "packageUnits": package_unit_refs.clone(),
     });
     write_json(root, &pointer_path, &pointer)?;
     let service_path = service_id.artifact_path();
@@ -989,11 +1051,8 @@ fn write_artifact_tree(
             "assemblyIdentity": assembly.identity,
             "assemblyPath": assembly.path,
         },
-        "serviceUnit": {
-            "unitIdentity": service_unit.identity,
-            "unitHash": service_unit.hash,
-            "unitPath": service_unit.path,
-        },
+        "serviceUnit": service_unit_ref,
+        "packageUnits": package_unit_refs,
     });
     write_json(root, &build_path, &build_record)?;
     if config.as_object().is_some_and(|object| !object.is_empty()) {
@@ -1007,28 +1066,9 @@ fn write_artifact_tree(
 }
 
 fn service_build_hash(build_id: &str) -> Result<&str, TestArtifactError> {
-    let Some((prefix, hash)) = build_id.rsplit_once(":sha256:") else {
-        return Err(TestArtifactError::InvalidInput {
-            message: "service buildId must include :sha256:".to_string(),
-        });
-    };
-    if prefix != SERVICE_BUILD_IDENTITY_PREFIX {
-        return Err(TestArtifactError::InvalidInput {
-            message: format!(
-                "service buildId prefix must be {SERVICE_BUILD_IDENTITY_PREFIX}, got {prefix}"
-            ),
-        });
-    }
-    if hash.len() != 64
-        || !hash
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-    {
-        return Err(TestArtifactError::InvalidInput {
-            message: "service buildId sha256 hash must be 64 lowercase hex characters".to_string(),
-        });
-    }
-    Ok(hash)
+    service_build_identity_hash(build_id).map_err(|error| TestArtifactError::InvalidInput {
+        message: error.to_string(),
+    })
 }
 
 fn write_json(root: &Path, relative_path: &str, value: &Value) -> Result<(), TestArtifactError> {
@@ -1155,41 +1195,6 @@ fn config_activation_value(paths: &[String]) -> Value {
     })
 }
 
-fn package_config_and_effect_metadata(paths: &[String]) -> ConfigAndEffectMetadata {
-    let mut config = BTreeMap::new();
-    config.insert(
-        "shape".to_string(),
-        metadata_value_from_json(empty_config_shape_value()),
-    );
-    config.insert("uses".to_string(), metadata_value_from_json(Value::Null));
-    config.insert(
-        "activation".to_string(),
-        metadata_value_from_json(config_activation_value(paths)),
-    );
-    ConfigAndEffectMetadata {
-        config,
-        effects: BTreeMap::new(),
-    }
-}
-
-fn metadata_value_from_json(value: Value) -> MetadataValue {
-    match value {
-        Value::Null => MetadataValue::Null,
-        Value::Bool(value) => MetadataValue::Bool(value),
-        Value::Number(value) => MetadataValue::Number(value),
-        Value::String(value) => MetadataValue::String(value),
-        Value::Array(items) => {
-            MetadataValue::Array(items.into_iter().map(metadata_value_from_json).collect())
-        }
-        Value::Object(object) => MetadataValue::Object(
-            object
-                .into_iter()
-                .map(|(key, value)| (key, metadata_value_from_json(value)))
-                .collect(),
-        ),
-    }
-}
-
 fn runtime_program_db_metadata(
     input_artifacts: &[TestRuntimeArtifact],
     artifacts: &[PublishedFileIrArtifact],
@@ -1233,51 +1238,19 @@ fn runtime_program_db_metadata(
         .collect()
 }
 
-fn insert_package_function_export(
-    exports: &mut PackageExportIndex,
+fn insert_package_export_symbols(
+    exports: &mut BTreeMap<String, PackageExportSymbol>,
     package_id: &str,
     symbol_path: &str,
-    file: FileIrRef,
-    executable_index: usize,
-    executable: &ExecutableIr,
+    module_path: &str,
+    source_symbol: &str,
 ) {
     for symbol in package_export_symbol_aliases(package_id, symbol_path) {
         exports
-            .functions
-            .entry(symbol.clone())
-            .or_insert_with(|| ExecutableExport {
-                symbol,
-                file: file.clone(),
-                executable_index: executable_index as u32,
-                signature: ExecutableSignatureIr {
-                    params: executable.params.clone(),
-                    return_type: executable.return_type.clone(),
-                    self_type: executable.self_type.clone(),
-                    may_suspend: executable.may_suspend,
-                },
-            });
-    }
-}
-
-fn insert_package_type_export(
-    exports: &mut PackageExportIndex,
-    package_id: &str,
-    symbol_path: &str,
-    file: FileIrRef,
-    type_index: usize,
-    ty: &skiff_compiler_lowering::file_ir::TypeDeclIr,
-) {
-    for symbol in package_export_symbol_aliases(package_id, symbol_path) {
-        exports
-            .types
-            .entry(symbol.clone())
-            .or_insert_with(|| TypeExport {
-                symbol,
-                file: file.clone(),
-                type_index: type_index as u32,
-                descriptor: Some(ty.descriptor.clone()),
-                type_params: ty.type_params.clone(),
-                interface_methods: Vec::new(),
+            .entry(symbol)
+            .or_insert_with(|| PackageExportSymbol {
+                module: module_path.to_string(),
+                symbol: source_symbol.to_string(),
             });
     }
 }
@@ -1290,29 +1263,30 @@ fn package_export_symbol_aliases(package_id: &str, symbol_path: &str) -> Vec<Str
     aliases
 }
 
-fn package_symbol_for_file_executable(
+fn package_symbols_for_file_executable(
     file: &FileIrUnit,
-    executable: &ExecutableIr,
-) -> Option<String> {
+    executable_index: usize,
+) -> Option<(String, String)> {
     let local_symbol = file
         .link_targets
         .executables
         .iter()
         .find_map(|(symbol, target)| {
-            (file
-                .executables
-                .get(target.executable_index as usize)
-                .is_some_and(|candidate| candidate.symbol == executable.symbol))
-            .then(|| symbol.as_str())
-        })
-        .unwrap_or(executable.symbol.as_str());
+            (target.executable_index as usize == executable_index).then(|| symbol.clone())
+        })?;
     let root = package_root_for_module(&file.module_path)?;
     let symbol_path = file
         .module_path
         .strip_prefix(&format!("{root}."))
         .map(|module_tail| format!("{module_tail}.{local_symbol}"))
-        .unwrap_or_else(|| local_symbol.to_string());
-    Some(symbol_path)
+        .unwrap_or_else(|| local_symbol.clone());
+    Some((local_symbol, symbol_path))
+}
+
+fn package_source_symbol_for_file_type(file: &FileIrUnit, type_index: usize) -> Option<String> {
+    file.link_targets.types.iter().find_map(|(symbol, target)| {
+        (target.type_index as usize == type_index).then(|| symbol.clone())
+    })
 }
 
 fn package_symbol_for_file_type(file: &FileIrUnit, local_symbol: &str) -> Option<String> {
@@ -1595,10 +1569,13 @@ mod tests {
 
     use super::*;
     use skiff_compiler_core::artifact::{
-        interface_instantiation_ref, DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr,
-        DbObjectKindIr, InterfaceDeclIr, InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
+        DbDeclarationIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, InterfaceDeclIr,
+        InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
     };
-    use skiff_compiler_emission::identity::PACKAGE_BUILD_IDENTITY_PREFIX;
+    use skiff_compiler_emission::identity::{
+        framed_identity, interface_instantiation_ref, PACKAGE_BUILD_IDENTITY_PREFIX,
+        SERVICE_ASSEMBLY_IDENTITY_PREFIX,
+    };
     use skiff_compiler_lowering::file_ir::{
         ExecutableBody, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, SlotLayout, TypeRefIr,
     };
@@ -1711,7 +1688,7 @@ mod tests {
         let content_hash = value_sha256(&assembly_value);
         assert_eq!(
             assembly_identity,
-            identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &content_hash)
+            framed_identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &content_hash)
         );
     }
 
@@ -2085,7 +2062,7 @@ mod tests {
         });
         let package_units = vec![PublishedJsonArtifact {
             value: json!({ "packageId": "example.com/pkg" }),
-            identity: identity(
+            identity: framed_identity(
                 PACKAGE_BUILD_IDENTITY_PREFIX,
                 "4b24b73ab87ead763385ad32675bc66b5f113ec8730b16489428ed0a21b8d1ea",
             ),

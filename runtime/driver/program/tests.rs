@@ -18,8 +18,11 @@ use crate::program::linked::{
     LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, TypeDeclarationIr,
 };
+use skiff_artifact_identity::{
+    canonical_interface_method_abi_id, canonical_interface_method_abi_id_from_parts,
+    interface_instantiation_ref_for_type_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref_for_type_ref, type_ref_abi_key,
     BuiltinReceiverMethod, BuiltinReceiverOp, BuiltinReceiverRoot,
     CanonicalPublicCallableSignature, InterfaceMethodSignature, LocalReceiverExecutableRef,
     OperationAbiRef, OperationCallableKind,
@@ -617,7 +620,7 @@ fn program_units_deserialize_compiler_shaped_ir_json() {
         ],
         "configAndEffectMetadata": {
             "config": {},
-            "effects": {}
+            "effects": { "operations": {} }
         }
     }))
     .expect("compiler-shaped package unit should deserialize");
@@ -5382,13 +5385,11 @@ fn any_interface_artifact_ref() -> skiff_artifact_model::InterfaceInstantiationR
 }
 
 fn any_interface_method_abi_id_for(interface: &LinkedInterfaceInstantiationRef) -> String {
-    if interface.canonical_type_args.is_empty() {
-        format!("method:{}:execute", interface.interface_abi_id)
-    } else {
-        let type_args = serde_json::to_string(&interface.canonical_type_args)
-            .expect("test interface args must serialize");
-        format!("method:{}:{type_args}:execute", interface.interface_abi_id)
-    }
+    canonical_interface_method_abi_id_from_parts(
+        &interface.interface_abi_id,
+        &interface.canonical_type_args,
+        "execute",
+    )
 }
 
 fn runtime_program(

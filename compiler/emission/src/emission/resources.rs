@@ -9,7 +9,7 @@ use crate::{
     projection::package_unit_artifacts::ProjectedPublicationResource,
 };
 
-pub(crate) fn publish_resource_artifacts(
+pub fn publish_resource_artifacts(
     resources: &[ProjectedPublicationResource],
 ) -> Result<Vec<PublishedResourceArtifact>> {
     let mut by_artifact_path = BTreeMap::<String, PublishedResourceArtifact>::new();
@@ -68,10 +68,7 @@ pub(crate) fn attach_resource_artifact_paths(
     refs: &mut [PublicationResourceRef],
     artifacts: &[PublishedResourceArtifact],
 ) -> Result<()> {
-    let by_hash_and_len = artifacts
-        .iter()
-        .map(|artifact| ((artifact.sha256.as_str(), artifact.byte_len), artifact))
-        .collect::<BTreeMap<_, _>>();
+    let by_hash_and_len = validated_resource_artifacts_by_content(artifacts)?;
     for resource_ref in refs {
         let Some(artifact) =
             by_hash_and_len.get(&(resource_ref.sha256.as_str(), resource_ref.byte_len))
@@ -88,6 +85,68 @@ pub(crate) fn attach_resource_artifact_paths(
     Ok(())
 }
 
-fn resource_artifact_path(sha256: &str) -> String {
+pub(crate) fn validated_resource_artifacts_by_content(
+    artifacts: &[PublishedResourceArtifact],
+) -> Result<BTreeMap<(&str, u64), &PublishedResourceArtifact>> {
+    let mut by_hash_and_len: BTreeMap<(&str, u64), &PublishedResourceArtifact> = BTreeMap::new();
+    for artifact in artifacts {
+        let actual_byte_len = artifact.bytes.len() as u64;
+        if actual_byte_len != artifact.byte_len {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "resource artifact {} declares size {}, got {} bytes",
+                    artifact.artifact_path, artifact.byte_len, actual_byte_len
+                ),
+            });
+        }
+        let actual_sha256 = sha256_hex(&artifact.bytes);
+        if actual_sha256 != artifact.sha256 {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "resource artifact {} declares sha256 {}, got {}",
+                    artifact.artifact_path, artifact.sha256, actual_sha256
+                ),
+            });
+        }
+        let expected_path = resource_artifact_path(&artifact.sha256);
+        if artifact.artifact_path != expected_path {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "resource artifact {} must use canonical path {}",
+                    artifact.artifact_path, expected_path
+                ),
+            });
+        }
+        let key = (artifact.sha256.as_str(), artifact.byte_len);
+        match by_hash_and_len.get(&key) {
+            Some(existing)
+                if existing.artifact_path == artifact.artifact_path
+                    && existing.bytes == artifact.bytes => {}
+            Some(_) => {
+                return Err(EmissionError::ContractValidation {
+                    message: format!(
+                        "resource artifacts for sha256 {} size {} conflict",
+                        artifact.sha256, artifact.byte_len
+                    ),
+                });
+            }
+            None => {
+                by_hash_and_len.insert(key, artifact);
+            }
+        }
+    }
+    Ok(by_hash_and_len)
+}
+
+pub(crate) fn normalized_resource_artifacts(
+    artifacts: &[PublishedResourceArtifact],
+) -> Result<Vec<PublishedResourceArtifact>> {
+    Ok(validated_resource_artifacts_by_content(artifacts)?
+        .into_values()
+        .cloned()
+        .collect())
+}
+
+pub(crate) fn resource_artifact_path(sha256: &str) -> String {
     format!("resources/sha256/{sha256}")
 }

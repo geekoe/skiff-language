@@ -22,7 +22,8 @@ use std::{
 use serde_json::Value;
 use skiff_artifact_identity::{
     assign_package_unit_identities, assign_publication_abi_identity, file_ir_identity,
-    runtime_program_dynamic_build_id_from_artifact_root, service_unit_identity,
+    operation_abi_identity, runtime_program_dynamic_build_id_from_artifact_root,
+    service_unit_identity, OperationAbiIdentityInput,
 };
 use skiff_artifact_model::{FileIrUnit, PackageUnit, ServiceUnit};
 
@@ -124,7 +125,8 @@ fn regenerate_dynamic_build_id_fixture() {
         );
     }
 
-    // 4. Service unit: package ABI expectations + publication ABI identity.
+    // 4. Service unit: package ABI expectations + canonical operation refs +
+    //    publication ABI identity.
     let service_unit_path = case["serviceUnitPath"]
         .as_str()
         .expect("serviceUnitPath")
@@ -150,6 +152,7 @@ fn regenerate_dynamic_build_id_fixture() {
             expectation["abiIdentity"] = Value::String(abi.clone());
         }
     }
+    canonicalize_service_operation_ids(&mut case["artifactRoot"][&service_unit_path]);
     let mut service: ServiceUnit =
         serde_json::from_value(case["artifactRoot"][&service_unit_path].clone())
             .expect("parse service unit");
@@ -183,4 +186,65 @@ fn regenerate_dynamic_build_id_fixture() {
     let mut text = serde_json::to_string_pretty(&case).expect("serialize case");
     text.push('\n');
     fs::write(&case_path, text).expect("write case.json");
+}
+
+fn canonicalize_service_operation_ids(service_value: &mut Value) {
+    let service: ServiceUnit =
+        serde_json::from_value(service_value.clone()).expect("parse service operation descriptors");
+    let replacements = service
+        .publication_abi
+        .operation_abi
+        .iter()
+        .map(|descriptor| {
+            let canonical = operation_abi_identity(&OperationAbiIdentityInput {
+                kind: descriptor.operation.kind,
+                public_path: &descriptor.operation.public_path,
+                public_instance_key: descriptor.operation.public_instance_key.as_deref(),
+                interface: descriptor.operation.interface.as_ref(),
+                method_abi_id: descriptor.operation.method_abi_id.as_deref(),
+                public_signature: &descriptor.public_signature,
+                schema_closure: &descriptor.schema_closure,
+                stream_effect_throw_config: &descriptor.stream_effect_throw_config,
+            })
+            .expect("canonical operation identity");
+            (descriptor.operation.operation_abi_id.clone(), canonical)
+        })
+        .collect::<BTreeMap<_, _>>();
+    replace_identity_strings(service_value, &replacements);
+}
+
+fn replace_identity_strings(value: &mut Value, replacements: &BTreeMap<String, String>) {
+    match value {
+        Value::String(text) => {
+            if let Some(replacement) = replacements.get(text) {
+                *text = replacement.clone();
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                replace_identity_strings(item, replacements);
+            }
+        }
+        Value::Object(object) => {
+            let renamed_keys = object
+                .keys()
+                .filter_map(|key| {
+                    replacements
+                        .get(key)
+                        .map(|replacement| (key.clone(), replacement.clone()))
+                })
+                .collect::<Vec<_>>();
+            for (old_key, new_key) in renamed_keys {
+                let item = object.remove(&old_key).expect("operation identity map key");
+                assert!(
+                    object.insert(new_key, item).is_none(),
+                    "canonical operation ids must remain unique"
+                );
+            }
+            for item in object.values_mut() {
+                replace_identity_strings(item, replacements);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }

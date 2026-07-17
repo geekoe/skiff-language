@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use skiff_artifact_model::{
-    abi_identity::derive::{abi_type_id_from_source_anchor, AbiSourceAnchorInput},
-    AbiDeclarationKind,
-};
+use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
+use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
 use skiff_runtime_boundary::{
     error::{
         RecoverableBoundaryError, RecoverableBoundaryErrorCode, Result as BoundaryResult,
@@ -693,7 +691,7 @@ fn concrete_type_identity_for_addr(
         LocalConcreteOwner::Service => program.service_id.to_string(),
         LocalConcreteOwner::Package { package_id } => package_id.clone(),
     };
-    let input = AbiSourceAnchorInput {
+    let input = AbiSourceDeclarationAnchor {
         publication_id,
         abi_epoch: 0,
         module_path: module_path_segments(&file.module_path),
@@ -703,7 +701,7 @@ fn concrete_type_identity_for_addr(
     let type_id = abi_type_id_from_source_anchor(&input, &[]);
     Ok(format!(
         "{ABI_TYPE_RESTORE_KEY_PREFIX}{}",
-        hex::encode(type_id.key_bytes())
+        abi_type_id_key(&type_id)
     ))
 }
 

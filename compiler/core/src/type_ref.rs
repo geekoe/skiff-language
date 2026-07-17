@@ -4,43 +4,8 @@ use skiff_artifact_model::{FunctionTypeParamIr, TypeRefIr};
 
 pub fn walk_type_ref(ty: &TypeRefIr, visit: &mut impl FnMut(&TypeRefIr)) {
     visit(ty);
-    match ty {
-        TypeRefIr::Native { args, .. } => {
-            for arg in args {
-                walk_type_ref(arg, visit);
-            }
-        }
-        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {}
-        TypeRefIr::ServiceSymbol { .. } => {}
-        TypeRefIr::PackageSymbol { .. } => {}
-        TypeRefIr::DbObjectSymbol { .. } => {}
-        TypeRefIr::Record { fields } => {
-            for field_ty in fields.values() {
-                walk_type_ref(field_ty, visit);
-            }
-        }
-        TypeRefIr::Union { items } => {
-            for item in items {
-                walk_type_ref(item, visit);
-            }
-        }
-        TypeRefIr::Nullable { inner } => walk_type_ref(inner, visit),
-        TypeRefIr::Literal { .. } => {}
-        TypeRefIr::TypeParam { .. } => {}
-        TypeRefIr::AnyInterface { interface } => {
-            for arg in &interface.canonical_type_args {
-                walk_type_ref(arg, visit);
-            }
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            for param in params {
-                walk_type_ref(&param.ty, visit);
-            }
-            walk_type_ref(return_type, visit);
-        }
+    for child in type_ref_children(ty) {
+        walk_type_ref(child.ty, visit);
     }
 }
 
@@ -48,33 +13,9 @@ pub fn any_type_ref(ty: &TypeRefIr, predicate: &mut impl FnMut(&TypeRefIr) -> bo
     if predicate(ty) {
         return true;
     }
-    match ty {
-        TypeRefIr::Native { args, .. } => args.iter().any(|arg| any_type_ref(arg, predicate)),
-        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => false,
-        TypeRefIr::ServiceSymbol { .. } => false,
-        TypeRefIr::PackageSymbol { .. } => false,
-        TypeRefIr::DbObjectSymbol { .. } => false,
-        TypeRefIr::Record { fields } => fields
-            .values()
-            .any(|field_ty| any_type_ref(field_ty, predicate)),
-        TypeRefIr::Union { items } => items.iter().any(|item| any_type_ref(item, predicate)),
-        TypeRefIr::Nullable { inner } => any_type_ref(inner, predicate),
-        TypeRefIr::Literal { .. } => false,
-        TypeRefIr::TypeParam { .. } => false,
-        TypeRefIr::AnyInterface { interface } => interface
-            .canonical_type_args
-            .iter()
-            .any(|arg| any_type_ref(arg, predicate)),
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| any_type_ref(&param.ty, predicate))
-                || any_type_ref(return_type, predicate)
-        }
-    }
+    type_ref_children(ty)
+        .into_iter()
+        .any(|child| any_type_ref(child.ty, predicate))
 }
 
 pub fn map_type_ref(ty: TypeRefIr, map: &mut impl FnMut(TypeRefIr) -> TypeRefIr) -> TypeRefIr {
@@ -200,6 +141,81 @@ pub enum TypeRefVisitPathSegment {
     FunctionReturn,
 }
 
+#[derive(Clone, Debug)]
+pub struct TypeRefChild<'a> {
+    pub ty: &'a TypeRefIr,
+    pub segment: TypeRefVisitPathSegment,
+}
+
+pub fn type_ref_children(ty: &TypeRefIr) -> Vec<TypeRefChild<'_>> {
+    match ty {
+        TypeRefIr::Native { name, args } => args
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::NativeArg {
+                    name: name.clone(),
+                    index,
+                },
+            })
+            .collect(),
+        TypeRefIr::Record { fields } => fields
+            .iter()
+            .map(|(name, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::RecordField { name: name.clone() },
+            })
+            .collect(),
+        TypeRefIr::Union { items } => items
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::UnionItem { index },
+            })
+            .collect(),
+        TypeRefIr::Nullable { inner } => vec![TypeRefChild {
+            ty: inner,
+            segment: TypeRefVisitPathSegment::NullableInner,
+        }],
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| TypeRefChild {
+                ty,
+                segment: TypeRefVisitPathSegment::AnyInterfaceTypeArg { index },
+            })
+            .collect(),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| TypeRefChild {
+                ty: &param.ty,
+                segment: TypeRefVisitPathSegment::FunctionParam {
+                    name: param.name.clone(),
+                    index,
+                },
+            })
+            .chain(std::iter::once(TypeRefChild {
+                ty: return_type,
+                segment: TypeRefVisitPathSegment::FunctionReturn,
+            }))
+            .collect(),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => Vec::new(),
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypeRefVisitPath {
     segments: Vec<TypeRefVisitPathSegment>,
@@ -240,77 +256,8 @@ fn walk_type_ref_with_path_at(
         ty,
         path: path.clone(),
     });
-    match ty {
-        TypeRefIr::Native { name, args } => {
-            for (index, arg) in args.iter().enumerate() {
-                walk_type_ref_with_path_at(
-                    arg,
-                    path.child(TypeRefVisitPathSegment::NativeArg {
-                        name: name.clone(),
-                        index,
-                    }),
-                    visit,
-                );
-            }
-        }
-        TypeRefIr::LocalType { .. } | TypeRefIr::PublicationType { .. } => {}
-        TypeRefIr::ServiceSymbol { .. } => {}
-        TypeRefIr::PackageSymbol { .. } => {}
-        TypeRefIr::DbObjectSymbol { .. } => {}
-        TypeRefIr::Record { fields } => {
-            for (name, field_ty) in fields {
-                walk_type_ref_with_path_at(
-                    field_ty,
-                    path.child(TypeRefVisitPathSegment::RecordField { name: name.clone() }),
-                    visit,
-                );
-            }
-        }
-        TypeRefIr::Union { items } => {
-            for (index, item) in items.iter().enumerate() {
-                walk_type_ref_with_path_at(
-                    item,
-                    path.child(TypeRefVisitPathSegment::UnionItem { index }),
-                    visit,
-                );
-            }
-        }
-        TypeRefIr::Nullable { inner } => walk_type_ref_with_path_at(
-            inner,
-            path.child(TypeRefVisitPathSegment::NullableInner),
-            visit,
-        ),
-        TypeRefIr::Literal { .. } => {}
-        TypeRefIr::TypeParam { .. } => {}
-        TypeRefIr::AnyInterface { interface } => {
-            for (index, arg) in interface.canonical_type_args.iter().enumerate() {
-                walk_type_ref_with_path_at(
-                    arg,
-                    path.child(TypeRefVisitPathSegment::AnyInterfaceTypeArg { index }),
-                    visit,
-                );
-            }
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            for (index, param) in params.iter().enumerate() {
-                walk_type_ref_with_path_at(
-                    &param.ty,
-                    path.child(TypeRefVisitPathSegment::FunctionParam {
-                        name: param.name.clone(),
-                        index,
-                    }),
-                    visit,
-                );
-            }
-            walk_type_ref_with_path_at(
-                return_type,
-                path.child(TypeRefVisitPathSegment::FunctionReturn),
-                visit,
-            );
-        }
+    for child in type_ref_children(ty) {
+        walk_type_ref_with_path_at(child.ty, path.child(child.segment), visit);
     }
 }
 

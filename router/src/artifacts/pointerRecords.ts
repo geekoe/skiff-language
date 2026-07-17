@@ -14,6 +14,7 @@ import type {
   ArtifactPointer,
   ArtifactPointerInput,
   PackageUnitArtifactPointer,
+  ServiceUnitArtifactPointer,
   ServiceVersionBuildBinding,
 } from "./types.js";
 
@@ -62,18 +63,27 @@ export function readDevReloadPointer(
       `${pointerPath} buildId must match serviceAssembly.assemblyIdentity`,
     );
   }
+  const fingerprint = readOptionalString(value.fingerprint);
+  const serviceVersion = value.serviceVersion === undefined
+    ? undefined
+    : readRequiredString(
+      value.serviceVersion,
+      `${pointerPath} serviceVersion`,
+    );
+  const generation =
+    readOptionalString(value.generation) ??
+    readOptionalString(value.revision) ??
+    readOptionalString(value.version);
   return definedPointer({
     buildId,
     indexPath: pointerPath,
     contractIdentity: protocolIdentity,
-    fingerprint: readOptionalString(value.fingerprint),
-    generation:
-      readOptionalString(value.generation) ??
-      readOptionalString(value.revision) ??
-      readOptionalString(value.version),
+    ...(fingerprint !== undefined ? { fingerprint } : {}),
+    ...(generation !== undefined ? { generation } : {}),
+    ...(serviceVersion !== undefined ? { serviceVersion } : {}),
     serviceAssembly: serviceAssembly.path,
     serviceAssemblyIdentity: serviceAssembly.assemblyIdentity,
-    serviceUnit: readServiceUnitPath(value, pointerPath),
+    serviceUnit: readServiceUnitPointer(value, pointerPath),
     serviceId: readRequiredString(value.serviceId, `${pointerPath} serviceId`),
     packageUnits: readPackageUnitPointers(value.packageUnits, pointerPath),
   });
@@ -147,19 +157,20 @@ export function readBuildRecordPointer(
     value.serviceAssembly,
     buildPath,
   );
+  const generation =
+    readOptionalString(value.generation) ??
+    readOptionalString(value.revision) ??
+    readOptionalString(value.version);
   return definedPointer({
     buildId,
-    contractIdentity,
+    ...(contractIdentity !== undefined ? { contractIdentity } : {}),
     fingerprint: readOptionalString(value.fingerprint) ?? buildId,
-    generation:
-      readOptionalString(value.generation) ??
-      readOptionalString(value.revision) ??
-      readOptionalString(value.version),
+    ...(generation !== undefined ? { generation } : {}),
     indexPath: buildPath,
     serviceVersion: serviceVersion.version,
     serviceAssembly: serviceAssembly.path,
     serviceAssemblyIdentity: serviceAssembly.assemblyIdentity,
-    serviceUnit: readServiceUnitPath(value, buildPath),
+    serviceUnit: readServiceUnitPointer(value, buildPath),
     serviceId,
     packageUnits: readPackageUnitPointers(value.packageUnits, buildPath),
   });
@@ -168,9 +179,9 @@ export function readBuildRecordPointer(
 function readPackageUnitPointers(
   value: unknown,
   pointerPath: string,
-): PackageUnitArtifactPointer[] | undefined {
+): PackageUnitArtifactPointer[] {
   if (value === undefined) {
-    return undefined;
+    throw new Error(`${pointerPath} packageUnits is required`);
   }
   if (!Array.isArray(value)) {
     throw new Error(`${pointerPath} packageUnits must be an array`);
@@ -181,6 +192,19 @@ function readPackageUnitPointers(
     if (!object) {
       throw new Error(`${label} must be an object`);
     }
+    const allowed = new Set([
+      "schemaVersion",
+      "packageId",
+      "version",
+      "buildIdentity",
+      "abiIdentity",
+      "unitHash",
+      "unitPath",
+    ]);
+    const unsupported = Object.keys(object).filter((key) => !allowed.has(key));
+    if (unsupported.length > 0) {
+      throw new Error(`${label} does not support ${unsupported.join(", ")}`);
+    }
     const schemaVersion = readRequiredString(
       object.schemaVersion,
       `${label}.schemaVersion`,
@@ -190,7 +214,6 @@ function readPackageUnitPointers(
         `${label}.schemaVersion must be skiff-package-unit-v1`,
       );
     }
-    const unitHash = readOptionalString(object.unitHash);
     return {
       schemaVersion,
       packageId: readRequiredString(object.packageId, `${label}.packageId`),
@@ -203,7 +226,7 @@ function readPackageUnitPointers(
         object.abiIdentity,
         `${label}.abiIdentity`,
       ),
-      ...(unitHash !== undefined ? { unitHash } : {}),
+      unitHash: readRequiredString(object.unitHash, `${label}.unitHash`),
       unitPath: readRequiredString(object.unitPath, `${label}.unitPath`),
     };
   });
@@ -252,18 +275,20 @@ function rejectUnsupportedPointerAliases(
 function readServiceAssemblyPointer(
   value: unknown,
   indexPath: string,
-): { path?: string; assemblyIdentity?: string } {
+): { path: string; assemblyIdentity: string } {
   if (value === undefined) {
-    return {};
+    throw new Error(`${indexPath} serviceAssembly is required`);
   }
   const object = readOptionalRecord(value);
   if (!object) {
     throw new Error(`${indexPath} serviceAssembly must be an object`);
   }
-  for (const key of ["path", "artifactPath", "identity", "artifactIdentity"]) {
-    if (key in object) {
-      throw new Error(`${indexPath} serviceAssembly.${key} is not supported`);
-    }
+  const allowed = new Set(["assemblyIdentity", "assemblyPath"]);
+  const unsupported = Object.keys(object).filter((key) => !allowed.has(key));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `${indexPath} serviceAssembly does not support ${unsupported.join(", ")}`,
+    );
   }
   const path = readOptionalString(object.assemblyPath);
   if (path === undefined) {
@@ -280,62 +305,81 @@ function readServiceAssemblyPointer(
   }
   return {
     path,
-    ...(assemblyIdentity !== undefined ? { assemblyIdentity } : {}),
+    assemblyIdentity,
   };
 }
 
-function readServiceUnitPath(
+function readServiceUnitPointer(
   value: Record<string, unknown>,
   indexPath: string,
-): string | undefined {
-  const directPath = readOptionalString(value.serviceUnitPath);
-  if (directPath !== undefined) {
-    return directPath;
-  }
-  const serviceUnit = value.serviceUnit;
-  const stringPath = readOptionalString(serviceUnit);
-  if (stringPath !== undefined) {
-    return stringPath;
-  }
-  const object = readOptionalRecord(serviceUnit);
-  if (!object) {
-    return undefined;
-  }
-  const path =
-    readOptionalString(object.unitPath) ??
-    readOptionalString(object.artifactPath) ??
-    readOptionalString(object.path) ??
-    readOptionalString(object.serviceUnitPath);
-  if (path === undefined) {
+): ServiceUnitArtifactPointer {
+  if ("serviceUnitPath" in value) {
     throw new Error(
-      `${indexPath} serviceUnit requires unitPath/artifactPath/path`,
+      `${indexPath} serviceUnitPath is not supported; use serviceUnit.unitPath`,
     );
   }
-  return path;
+  const object = readOptionalRecord(value.serviceUnit);
+  if (!object) {
+    throw new Error(`${indexPath} serviceUnit must be an object`);
+  }
+  const allowed = new Set([
+    "schemaVersion",
+    "unitIdentity",
+    "unitHash",
+    "unitPath",
+  ]);
+  const unsupported = Object.keys(object).filter((key) => !allowed.has(key));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `${indexPath} serviceUnit does not support ${unsupported.join(", ")}`,
+    );
+  }
+  const schemaVersion = readRequiredString(
+    object.schemaVersion,
+    `${indexPath} serviceUnit.schemaVersion`,
+  );
+  if (schemaVersion !== "skiff-service-unit-v1") {
+    throw new Error(
+      `${indexPath} serviceUnit.schemaVersion must be skiff-service-unit-v1`,
+    );
+  }
+  return {
+    schemaVersion,
+    unitIdentity: readRequiredString(
+      object.unitIdentity,
+      `${indexPath} serviceUnit.unitIdentity`,
+    ),
+    unitHash: readRequiredString(
+      object.unitHash,
+      `${indexPath} serviceUnit.unitHash`,
+    ),
+    unitPath: readRequiredString(
+      object.unitPath,
+      `${indexPath} serviceUnit.unitPath`,
+    ),
+  };
 }
 
 function definedPointer(pointer: ArtifactPointerInput): ArtifactPointer {
   const result: ArtifactPointer = {
+    buildId: pointer.buildId,
     indexPath: pointer.indexPath,
+    serviceAssembly: pointer.serviceAssembly,
+    serviceAssemblyIdentity: pointer.serviceAssemblyIdentity,
+    serviceUnit: pointer.serviceUnit,
+    serviceId: pointer.serviceId,
+    packageUnits: pointer.packageUnits,
   };
   for (const key of [
-    "buildId",
     "contractIdentity",
     "fingerprint",
     "generation",
     "serviceVersion",
-    "serviceAssembly",
-    "serviceAssemblyIdentity",
-    "serviceUnit",
-    "serviceId",
   ] as const) {
     const value = pointer[key];
     if (value !== undefined) {
       result[key] = value;
     }
-  }
-  if (pointer.packageUnits !== undefined) {
-    result.packageUnits = pointer.packageUnits;
   }
   return result;
 }

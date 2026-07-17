@@ -17,13 +17,6 @@ pub(crate) fn object_string(object: &Map<String, Value>, key: &str) -> Option<St
     object.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-pub(crate) fn map_string(object: Option<&Map<String, Value>>, key: &str) -> Option<String> {
-    object
-        .and_then(|object| object.get(key))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
 pub(crate) fn is_sha256_hash(value: &str) -> bool {
     value.len() == 64
         && value

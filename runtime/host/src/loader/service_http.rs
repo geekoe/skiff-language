@@ -1,17 +1,4 @@
-use serde_json::{json, Value};
-
-pub(super) fn service_http_hash_input(service: &Value) -> anyhow::Result<Option<Value>> {
-    let Some(http) = service.get("http") else {
-        return Ok(None);
-    };
-    let max_bytes = validate_service_http(http)?;
-    parse_positive_usize(max_bytes)?;
-    Ok(Some(json!({
-        "response": {
-            "maxBytes": max_bytes.clone(),
-        },
-    })))
-}
+use serde_json::Value;
 
 pub(super) fn parse_service_http_response_max_bytes(
     assembly: &Value,

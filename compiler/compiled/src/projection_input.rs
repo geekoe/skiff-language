@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
-    LiteralIr, ServiceSymbolRef, TypeRefIr,
+    ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
@@ -16,17 +17,18 @@ use skiff_compiler_projection_input::{
     PackageDependencyProjectionInfo, PackageEntrypointFunctionProjection,
     PackageEntrypointProjectionFacts, PackageProjectionInput, PackageProjectionInputParts,
     PackagePublicationProjectionInfo, PackagePublicationProjectionProvenance,
-    ProjectionAbiDeclarationIds, ProjectionDeclarationKey, ProjectionEntrypointAbiIndex,
-    ProjectionInput, ProjectionLoweringFacts, ProjectionSourceDeclarationKind,
-    ProjectionSourceFacts, ProjectionSourceFactsParts, ProjectionSourceMetadata,
-    ProjectionSourceSymbolKey, ProjectionSyntheticEntrypointExecutable,
-    ProjectionSyntheticEntrypointExecutableKind, ProjectionSyntheticEntrypointIndex,
-    ProjectionSyntheticEntrypointModule, PublicCallableKindProjection, PublicCallableProjection,
-    PublicInstanceInterfaceProjection, PublicInstanceProjection, PublicModuleExportProjection,
-    PublicSymbolKindProjection, PublicSymbolProjection, PublicTypeKindProjection,
-    PublicTypeProjection, PublicationApiProjectionSeed, ServiceDependencyProjectionFacts,
-    ServiceHttpIngressProjection, ServiceHttpRouteIngressProjection,
-    ServiceIngressHandlerProjection, ServiceIngressProjection, ServiceWebSocketIngressProjection,
+    ProjectionAbiDeclarationIds, ProjectionCallableEffectFacts, ProjectionDeclarationKey,
+    ProjectionEntrypointAbiIndex, ProjectionExecutableKey, ProjectionInput,
+    ProjectionLoweringFacts, ProjectionSourceDeclarationKind, ProjectionSourceFacts,
+    ProjectionSourceFactsParts, ProjectionSourceMetadata, ProjectionSourceSymbolKey,
+    ProjectionSyntheticEntrypointExecutable, ProjectionSyntheticEntrypointExecutableKind,
+    ProjectionSyntheticEntrypointIndex, ProjectionSyntheticEntrypointModule,
+    PublicCallableKindProjection, PublicCallableProjection, PublicInstanceInterfaceProjection,
+    PublicInstanceProjection, PublicModuleExportProjection, PublicSymbolKindProjection,
+    PublicSymbolProjection, PublicTypeKindProjection, PublicTypeProjection,
+    PublicationApiProjectionSeed, ServiceDependencyProjectionFacts, ServiceHttpIngressProjection,
+    ServiceHttpRouteIngressProjection, ServiceIngressHandlerProjection, ServiceIngressProjection,
+    ServiceWebSocketIngressProjection,
 };
 use skiff_compiler_source::{
     api::{PublicCallableKind, PublicSymbolKind, PublicTypeKind},
@@ -69,6 +71,7 @@ fn build_projection_input_with_package_id(
         abi_ids: abi_declaration_ids(model, compiled.file_ir_units()),
         service_ingress: model.service_ingress().map(service_ingress_projection),
         service_dependencies: service_dependency_projection_facts(model),
+        callable_effects: callable_effect_facts(model, compiled.file_ir_units()),
     });
     let lowering = ProjectionLoweringFacts::new(
         entrypoint_abi_index_from_file_ir_units(compiled.file_ir_units()),
@@ -80,6 +83,50 @@ fn build_projection_input_with_package_id(
         package_entrypoint_projection_facts(compiled, package_id),
     );
     ProjectionInput::new(file_ir_units, source_metadata, source, lowering)
+}
+
+fn callable_effect_facts(
+    model: &SourceCompileModel,
+    file_ir_units: &[FileIrUnit],
+) -> ProjectionCallableEffectFacts {
+    let units_by_module = file_ir_units
+        .iter()
+        .map(|unit| (unit.module_path.as_str(), unit))
+        .collect::<BTreeMap<_, _>>();
+    let operations = model
+        .callable_effects()
+        .operations()
+        .iter()
+        .map(|(source_key, summary)| {
+            let unit = units_by_module
+                .get(source_key.module_path())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "callable effect source module {} is missing from File IR",
+                        source_key.module_path()
+                    )
+                });
+            let declaration = unit
+                .declarations
+                .executables
+                .get(source_key.symbol())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "callable effect source {}.{} is missing from File IR declarations",
+                        source_key.module_path(),
+                        source_key.symbol()
+                    )
+                });
+            (
+                ProjectionExecutableKey::new(
+                    source_key.module_path(),
+                    declaration.executable_index,
+                ),
+                summary.clone(),
+            )
+        })
+        .collect();
+    ProjectionCallableEffectFacts::new(operations)
 }
 
 pub fn build_package_projection_input(package: &PackagePublication) -> PackageProjectionInput {
@@ -770,6 +817,7 @@ fn synthetic_entrypoint_index_projection(
                                         ),
                                         entry_function_signature_projection(
                                             executable.signature().clone(),
+                                            executable.may_suspend(),
                                         ),
                                     ),
                                 )
@@ -841,6 +889,7 @@ fn entry_function_signature_from_executable(
             }
         },
         local_type_names,
+        may_suspend: executable.may_suspend,
     }
 }
 
@@ -1100,12 +1149,22 @@ fn package_entrypoint_projection_facts(
                 symbol_path,
             )
             .ok()??;
+            let may_suspend = compiled
+                .file_ir_units()
+                .iter()
+                .find(|unit| unit.module_path == result.0)
+                .and_then(|unit| {
+                    let declaration = unit.declarations.executables.get(&result.1)?;
+                    unit.executables
+                        .get(declaration.executable_index as usize)
+                        .map(|executable| executable.may_suspend)
+                })?;
             Some((
                 symbol_path.clone(),
                 PackageEntrypointFunctionProjection {
                     source_module: result.0,
                     source_symbol: result.1,
-                    signature: entry_function_signature_projection(result.2),
+                    signature: entry_function_signature_projection(result.2, may_suspend),
                 },
             ))
         })
@@ -1185,6 +1244,7 @@ fn package_public_path(package_id: &str, export_path: &str) -> String {
 
 fn entry_function_signature_projection(
     signature: skiff_compiler_lowering::EntryFunctionSignature,
+    may_suspend: bool,
 ) -> EntryFunctionSignature {
     EntryFunctionSignature {
         name: signature.name,
@@ -1198,6 +1258,7 @@ fn entry_function_signature_projection(
             .collect(),
         return_type: entry_type_spec_projection(signature.return_type),
         local_type_names: signature.local_type_names,
+        may_suspend,
     }
 }
 

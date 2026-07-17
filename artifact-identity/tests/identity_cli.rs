@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -9,29 +8,26 @@ use std::{
 
 use serde_json::{json, Value};
 use skiff_artifact_identity::{
-    assign_package_unit_identities, package_abi_identity, package_build_identity,
-    publication_abi_identity, runtime_program_dynamic_build_id_from_artifact_refs,
-    runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
+    assign_package_unit_identities, package_build_identity, package_local_abi_identity,
+    package_unit_content_hash, publication_abi_identity, service_assembly_identity,
+    service_unit_hash, service_unit_identity,
 };
 use skiff_artifact_model::{
-    EffectMetadata, MetadataValue, PackageDependencyConstraint, PackageUnit, ServiceUnit,
+    CallableEffectSummary, CallableMayEffects, PackageDependencyConstraint, PackageUnit,
+    ServiceUnit,
 };
 
 #[test]
 fn runtime_program_build_id_cli_returns_dynamic_build_id() {
     let root = TempArtifactRoot::new("cli-success");
     let service = valid_service();
-    let expected = runtime_program_dynamic_build_id_from_artifact_root(root.path(), &service)
-        .expect("expected dynamic build id");
+    let mut request = write_service_closure(root.path(), service, Vec::new());
+    request["serviceVersion"] = json!("1.0.0");
 
     let output = run_cli_command(
         "runtime-program-build-id",
         json!({
-            "artifactRoot": root.path(),
-            "services": [{
-                "key": "svc",
-                "serviceUnit": service,
-            }],
+            "services": [request],
         }),
     );
 
@@ -42,7 +38,61 @@ fn runtime_program_build_id_cli_returns_dynamic_build_id() {
     );
     let stdout: Value = serde_json::from_slice(&output.stdout).expect("stdout JSON");
     assert_eq!(stdout["results"][0]["key"], "svc");
-    assert_eq!(stdout["results"][0]["dynamicBuildId"], expected);
+    assert!(stdout["results"][0]["dynamicBuildId"]
+        .as_str()
+        .expect("dynamic build id")
+        .starts_with("skiff-service-build-v1:sha256:"));
+    assert_eq!(
+        stdout["results"][0]["serviceUnit"]["value"]["service"]["id"],
+        "example.com/svc"
+    );
+    assert_eq!(
+        stdout["results"][0]["serviceAssembly"]["value"]["kind"],
+        "service"
+    );
+}
+
+#[test]
+fn runtime_program_build_id_cli_rejects_selected_service_version_mismatch() {
+    let root = TempArtifactRoot::new("cli-version-mismatch");
+    let mut request = write_service_closure(root.path(), valid_service(), Vec::new());
+    request["serviceVersion"] = json!("2.0.0");
+
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [request] }));
+
+    assert!(!output.status.success());
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
+    assert!(stderr["error"]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("selected service version 2.0.0"));
+}
+
+#[test]
+fn runtime_program_build_id_cli_keeps_optional_service_version_wire_strict() {
+    let root = TempArtifactRoot::new("cli-version-wire");
+    let request = write_service_closure(root.path(), valid_service(), Vec::new());
+
+    for (label, invalid_version) in [
+        ("null", Value::Null),
+        ("empty", json!("")),
+        ("number", json!(1)),
+    ] {
+        let mut invalid = request.clone();
+        invalid["serviceVersion"] = invalid_version;
+        let output = run_cli_command("runtime-program-build-id", json!({ "services": [invalid] }));
+        assert!(!output.status.success(), "{label} must be rejected");
+        let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+        assert_eq!(stderr["error"]["code"], "schema_invalid", "{label}");
+    }
+
+    let mut unknown = request;
+    unknown["service_version"] = json!("1.0.0");
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [unknown] }));
+    assert!(!output.status.success(), "unknown alias must be rejected");
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
 }
 
 #[test]
@@ -57,56 +107,13 @@ fn runtime_program_build_id_cli_uses_pinned_package_units() {
             alias: "pkg".to_string(),
             config: Value::Object(Default::default()),
         });
-    let old_package = package_unit_with_build_seed("old");
-    let new_package = package_unit_with_build_seed("new");
-    write_json_artifact(root.path(), "units/packages/pkg-old.json", &old_package);
-    write_json_artifact(root.path(), "units/packages/pkg-new.json", &new_package);
-    write_json_artifact(
-        root.path(),
-        "indexes/packages/example~com~~pkg/versions/1.0.0.json",
-        &json!({
-            "schemaVersion": "skiff-package-unit-index-v1",
-            "packageId": "example.com/pkg",
-            "version": "1.0.0",
-            "packageUnit": {
-                "unitPath": "units/packages/pkg-new.json"
-            }
-        }),
-    );
-    let package_ref = PackageUnitArtifactRef {
-        package_id: old_package.package_id.clone(),
-        version: old_package.version.clone(),
-        build_identity: old_package.build_identity.clone(),
-        abi_identity: old_package.abi_identity.clone(),
-        unit_hash: None,
-        unit_path: PathBuf::from("units/packages/pkg-old.json"),
-    };
-    let expected = runtime_program_dynamic_build_id_from_artifact_refs(
-        root.path(),
-        &service,
-        std::slice::from_ref(&package_ref),
-    )
-    .expect("pinned dynamic build id");
-    let mutable_index_build_id =
-        runtime_program_dynamic_build_id_from_artifact_root(root.path(), &service)
-            .expect("mutable index dynamic build id");
-    assert_ne!(expected, mutable_index_build_id);
+    let package = package_unit_with_build_seed("old");
+    let request = write_service_closure(root.path(), service, vec![package]);
 
     let output = run_cli_command(
         "runtime-program-build-id",
         json!({
-            "artifactRoot": root.path(),
-            "services": [{
-                "key": "svc",
-                "serviceUnit": service,
-                "packageUnits": [{
-                    "packageId": package_ref.package_id,
-                    "version": package_ref.version,
-                    "buildIdentity": package_ref.build_identity,
-                    "abiIdentity": package_ref.abi_identity,
-                    "unitPath": package_ref.unit_path
-                }],
-            }],
+            "services": [request],
         }),
     );
 
@@ -116,42 +123,42 @@ fn runtime_program_build_id_cli_uses_pinned_package_units() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout: Value = serde_json::from_slice(&output.stdout).expect("stdout JSON");
-    assert_eq!(stdout["results"][0]["dynamicBuildId"], expected);
+    assert_eq!(
+        stdout["results"][0]["packageUnits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
-fn runtime_program_build_id_cli_matches_cross_system_fixture() {
-    let fixture = dynamic_build_id_fixture();
-    let root = TempArtifactRoot::new("cli-cross-system-fixture");
-    write_fixture_artifact_root(root.path(), &fixture);
-    let service_unit = fixture
-        .artifact_root
-        .get(&fixture.service_unit_path)
-        .expect("fixture service unit should exist")
-        .clone();
+fn runtime_program_build_id_cli_rejects_tampered_pointer_hash() {
+    let root = TempArtifactRoot::new("cli-tamper");
+    let mut request = write_service_closure(root.path(), valid_service(), Vec::new());
+    request["serviceUnit"]["unitHash"] = Value::String("0".repeat(64));
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [request] }));
+    assert!(!output.status.success());
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
+}
 
-    let output = run_cli_command(
-        "runtime-program-build-id",
-        json!({
-            "artifactRoot": root.path(),
-            "services": [{
-                "key": "fixture",
-                "serviceUnit": service_unit,
-            }],
-        }),
-    );
+#[test]
+fn runtime_program_build_id_cli_rejects_assembly_service_unit_protocol_mismatch() {
+    let root = TempArtifactRoot::new("cli-protocol-mismatch");
+    let mut service = valid_service();
+    service.protocol_identity = "other-protocol".to_string();
+    let request = write_service_closure(root.path(), service, Vec::new());
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout: Value = serde_json::from_slice(&output.stdout).expect("stdout JSON");
-    assert_eq!(stdout["results"][0]["key"], "fixture");
-    assert_eq!(
-        stdout["results"][0]["dynamicBuildId"],
-        fixture.expected_dynamic_build_id
-    );
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [request] }));
+
+    assert!(!output.status.success());
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
+    assert!(stderr["error"]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("protocolIdentity"));
 }
 
 #[test]
@@ -160,18 +167,9 @@ fn runtime_program_build_id_cli_reports_schema_invalid_json() {
     let output = run_cli_command(
         "runtime-program-build-id",
         json!({
-            "artifactRoot": root.path(),
             "services": [{
                 "key": "svc",
-                "serviceUnit": {
-                    "schemaVersion": "skiff-service-unit-v1",
-                    "service": { "id": "example.com/svc" },
-                    "version": "1.0.0",
-                    "protocolIdentity": "protocol",
-                    "files": [],
-                    "gateway": {},
-                    "config": {},
-                },
+                "artifactRoot": root.path(),
             }],
         }),
     );
@@ -183,7 +181,7 @@ fn runtime_program_build_id_cli_reports_schema_invalid_json() {
         stderr["error"]["message"]
             .as_str()
             .expect("message")
-            .contains("publicationAbi"),
+            .contains("missing field"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -192,7 +190,8 @@ fn runtime_program_build_id_cli_reports_schema_invalid_json() {
 fn package_unit_identities_cli_returns_build_and_abi_identities() {
     let package_unit = valid_package_unit();
     let expected_build = package_build_identity(&package_unit).expect("package build identity");
-    let expected_abi = package_abi_identity(&package_unit).expect("package ABI identity");
+    let expected_abi =
+        package_local_abi_identity(&package_unit).expect("package local ABI identity");
 
     let output = run_cli_command(
         "package-unit-identities",
@@ -239,8 +238,8 @@ fn valid_package_unit() -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
     package.publication_abi.abi_identity =
         publication_abi_identity(&package.publication_abi).expect("publication ABI identity");
@@ -251,17 +250,27 @@ fn package_unit_with_build_seed(seed: &str) -> PackageUnit {
     let mut package = PackageUnit::empty(
         "example.com/pkg",
         "1.0.0",
-        "skiff-package-build-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        "skiff-package-abi-v1:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-build-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "skiff-package-local-abi-v2:sha256:0000000000000000000000000000000000000000000000000000000000000000",
     );
-    let mut effect = EffectMetadata::default();
-    effect
-        .metadata
-        .insert("seed".to_string(), MetadataValue::String(seed.to_string()));
     package
         .config_and_effect_metadata
         .effects
-        .insert("__testBuildSeed".to_string(), effect);
+        .operations
+        .insert(
+            "__testBuildSeed".to_string(),
+            CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    writes_caller_reachable: seed == "new",
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                },
+            },
+        );
     assign_package_unit_identities(&mut package).expect("package identities");
     package
 }
@@ -277,34 +286,60 @@ fn write_json_artifact(root: &Path, relative_path: &str, value: &impl serde::Ser
     .expect("artifact should be written");
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DynamicBuildIdFixture {
-    service_unit_path: String,
-    expected_dynamic_build_id: String,
-    artifact_root: BTreeMap<String, Value>,
-}
-
-fn dynamic_build_id_fixture() -> DynamicBuildIdFixture {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("artifact-identity crate should live under the skiff repository root")
-        .join("cross-system-fixtures/dynamic-build-id-parity/case.json");
-    let text = fs::read_to_string(&path).expect("dynamic build id fixture should be readable");
-    serde_json::from_str(&text).expect("dynamic build id fixture should parse")
-}
-
-fn write_fixture_artifact_root(root: &Path, fixture: &DynamicBuildIdFixture) {
-    for (relative_path, value) in &fixture.artifact_root {
-        let path = root.join(relative_path);
-        fs::create_dir_all(path.parent().expect("fixture path should have parent"))
-            .expect("fixture directory should be created");
-        fs::write(
-            &path,
-            serde_json::to_vec_pretty(value).expect("fixture JSON should serialize"),
-        )
-        .expect("fixture artifact should be written");
+fn write_service_closure(root: &Path, service: ServiceUnit, packages: Vec<PackageUnit>) -> Value {
+    let service_hash = service_unit_hash(&service).expect("service hash");
+    let service_identity = service_unit_identity(&service).expect("service identity");
+    let service_path = format!("units/services/example~com~~svc/{service_hash}.json");
+    write_json_artifact(root, &service_path, &service);
+    let service_ref = json!({
+        "schemaVersion": "skiff-service-unit-v1",
+        "unitIdentity": service_identity,
+        "unitHash": service_hash,
+        "unitPath": service_path,
+    });
+    let mut package_refs = Vec::new();
+    for package in packages {
+        let value = serde_json::to_value(&package).expect("package value");
+        let hash = package_unit_content_hash(&value).expect("package content hash");
+        let path = format!("units/packages/example~com~~pkg/{hash}.json");
+        write_json_artifact(root, &path, &package);
+        package_refs.push(json!({
+            "schemaVersion": "skiff-package-unit-v1",
+            "packageId": package.package_id,
+            "version": package.version,
+            "buildIdentity": package.build_identity,
+            "abiIdentity": package.abi_identity,
+            "unitHash": hash,
+            "unitPath": path,
+        }));
     }
+    let mut assembly = json!({
+        "schemaVersion": "skiff-assembly-v1",
+        "kind": "service",
+        "service": {
+            "id": "example.com/svc",
+            "revisionId": "revision",
+            "protocolIdentity": "protocol",
+            "api": { "bindings": {} },
+        },
+        "files": [], "packageConfigs": {}, "preludeIdentity": "prelude", "prelude": {},
+        "configShape": {}, "configUses": [], "configActivation": {}, "configRequirements": {},
+        "db": [], "operations": [], "gateway": {}, "timeout": null, "dependencyLock": [],
+        "serviceUnit": service_ref, "sourceMap": {},
+    });
+    let assembly_identity = service_assembly_identity(&assembly).expect("assembly identity");
+    assembly["service"]["assemblyIdentity"] = Value::String(assembly_identity.clone());
+    let assembly_hash = assembly_identity.rsplit(':').next().expect("assembly hash");
+    let assembly_path = format!("assemblies/services/example~com~~svc/{assembly_hash}.json");
+    write_json_artifact(root, &assembly_path, &assembly);
+    json!({
+        "key": "svc",
+        "artifactRoot": root,
+        "serviceId": "example.com/svc",
+        "serviceAssembly": { "assemblyIdentity": assembly_identity, "assemblyPath": assembly_path },
+        "serviceUnit": assembly["serviceUnit"].clone(),
+        "packageUnits": package_refs,
+    })
 }
 
 struct TempArtifactRoot {

@@ -5,11 +5,9 @@ use crate::error::ProjectionError;
 use crate::package_unit_artifacts::{
     projected_publication_resources, resource_refs_for_projected, ProjectedPackageIrArtifacts,
 };
-use crate::recoverable_boundary::{
-    recoverable_metadata_for_service_artifacts,
-    validate_recoverable_metadata_type_policy_with_packages, RecoverableInputs,
-    RecoverablePackageTypeSource,
-};
+#[cfg(test)]
+use crate::recoverable_boundary::validate_recoverable_metadata_type_policy_with_packages;
+use crate::recoverable_boundary::{recoverable_metadata_for_service_artifacts, RecoverableInputs};
 use crate::runtime::{
     compile_error_to_publication_error, gateway_entry, interface_modules,
     service_operation_entries, timeout_entry, TimeoutEntry,
@@ -30,9 +28,7 @@ use crate::service::service_unit::{
     service_config_metadata, service_package_abi_expectations, service_package_configs,
     service_package_dependency_constraints, service_unit_gateway, service_unit_operations,
 };
-use crate::service::spawn_targets::{
-    service_spawn_targets_with_packages, PackageSpawnTargetSource,
-};
+use crate::service::spawn_targets::collect_service_spawn_targets_with_packages;
 use crate::service::storage_metadata::{
     service_db_metadata_with_packages, validate_package_collection_name_mappings,
 };
@@ -41,7 +37,10 @@ use crate::{
     contract::{project_abi_identity, ContractProjection, ContractProjectionIndex},
     RuntimeManifestProjection,
 };
-use skiff_artifact_model::{validate_recoverable_artifact_metadata, ServiceTimeoutConfig};
+#[cfg(test)]
+use skiff_artifact_model::validate_recoverable_artifact_metadata;
+use skiff_artifact_model::{CanonicalPublicCallableSignature, ServiceTimeoutConfig};
+use skiff_compiler_core::type_closure::PackageTypeSource;
 use skiff_compiler_projection_input::{PackageProjectionInput, ProjectionView};
 
 pub struct ServiceArtifactProjectionInput<'a> {
@@ -51,6 +50,8 @@ pub struct ServiceArtifactProjectionInput<'a> {
     pub contract_projection: &'a ContractProjection,
     pub runtime_manifest_projection: &'a RuntimeManifestProjection,
     pub public_instances: &'a [PublicInstanceExport],
+    pub public_instance_operation_public_signatures:
+        &'a StdBTreeMap<String, CanonicalPublicCallableSignature>,
     pub package_publications: &'a [PackageProjectionInput],
     pub package_artifacts: &'a [ProjectedPackageIrArtifacts],
 }
@@ -106,7 +107,7 @@ pub fn project_service_artifact_projection(
     })?;
     let service_file_ir_unit_values = prepared_file_ir.file_ir_units;
     let service_source_map = prepared_file_ir.source_map;
-    let operation_entries = service_operation_entries(
+    let operation_projection = service_operation_entries(
         contract_projection,
         &contract_projection_index,
         &runtime_manifest_projection.service_operations,
@@ -114,7 +115,10 @@ pub fn project_service_artifact_projection(
         &interface_modules,
         &service_file_ir_unit_values,
         input.public_instances,
+        service_input.source().callable_effects(),
+        input.public_instance_operation_public_signatures,
     )?;
+    let operation_entries = operation_projection.entries;
     let package_unit_dependencies = service_package_dependency_constraints(
         package_dependencies,
         input.package_publications,
@@ -130,31 +134,13 @@ pub fn project_service_artifact_projection(
         package_artifacts,
         package_dependencies,
     );
-    let recoverable_file_ir_units =
-        recoverable_file_ir_units(&service_file_ir_unit_values, package_artifacts);
-    let recoverable_package_sources =
-        recoverable_package_type_sources(package_artifacts, package_dependencies);
+    let package_type_sources = package_type_sources(package_artifacts, package_dependencies);
     let actor_metadata = service_input.lowering().service_actor_metadata().to_vec();
-    let package_spawn_sources = package_artifacts
-        .iter()
-        .map(|package| PackageSpawnTargetSource {
-            package_id: package.unit.package_id.clone(),
-            dependency_refs: package_dependency_refs(
-                package_dependencies,
-                &package.unit.package_id,
-            ),
-            unit: package.unit.clone(),
-            file_ir_units: package
-                .file_ir_units
-                .iter()
-                .map(|artifact| artifact.unit.clone())
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    let spawn_targets = service_spawn_targets_with_packages(
+    // Recoverable metadata owns spawn payload closure validation below. Using the
+    // collection-only path here prevents traversing the same type closure twice.
+    let spawn_targets = collect_service_spawn_targets_with_packages(
         service_input.file_ir_units(),
-        &contract_projection_index,
-        &package_spawn_sources,
+        &package_type_sources,
         &runtime_manifest_projection
             .manifest
             .service
@@ -165,18 +151,13 @@ pub fn project_service_artifact_projection(
     })?;
     let recoverable_metadata = recoverable_metadata_for_service_artifacts(
         &runtime_manifest_projection.manifest.service.id,
-        &recoverable_file_ir_units,
+        &service_file_ir_unit_values,
         &db_metadata,
         &spawn_targets,
         RecoverableInputs {
-            package_sources: &recoverable_package_sources,
+            package_sources: &package_type_sources,
             ..RecoverableInputs::default()
         },
-    )?;
-    validate_service_recoverable_metadata(
-        &recoverable_metadata,
-        &recoverable_file_ir_units,
-        &recoverable_package_sources,
     )?;
     let service_operations = service_unit_operations(
         &operation_entries,
@@ -215,6 +196,7 @@ pub fn project_service_artifact_projection(
         service_dependencies.constraints().to_vec(),
         package_abi_expectations,
         service_operations,
+        operation_projection.public_signatures,
         input.public_instances.to_vec(),
         service_unit_gateway(&gateway),
         service_config_metadata(input.package_publications, package_dependencies),
@@ -253,29 +235,13 @@ fn service_timeout_config(timeout: Option<&TimeoutEntry>) -> ServiceTimeoutConfi
     })
 }
 
-fn recoverable_file_ir_units(
-    service_file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    package_artifacts: &[ProjectedPackageIrArtifacts],
-) -> Vec<skiff_artifact_model::FileIrUnit> {
-    service_file_ir_units
-        .iter()
-        .cloned()
-        .chain(package_artifacts.iter().flat_map(|package| {
-            package
-                .file_ir_units
-                .iter()
-                .map(|artifact| artifact.unit.clone())
-        }))
-        .collect()
-}
-
-fn recoverable_package_type_sources(
+fn package_type_sources(
     package_artifacts: &[ProjectedPackageIrArtifacts],
     package_dependencies: &[ProjectedPackageDependency],
-) -> Vec<RecoverablePackageTypeSource> {
+) -> Vec<PackageTypeSource> {
     package_artifacts
         .iter()
-        .map(|package| RecoverablePackageTypeSource {
+        .map(|package| PackageTypeSource {
             package_id: package.unit.package_id.clone(),
             dependency_refs: package_dependency_refs(
                 package_dependencies,
@@ -291,10 +257,11 @@ fn recoverable_package_type_sources(
         .collect()
 }
 
+#[cfg(test)]
 fn validate_service_recoverable_metadata(
     metadata: &skiff_artifact_model::RecoverableArtifactMetadata,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    package_sources: &[RecoverablePackageTypeSource],
+    package_sources: &[PackageTypeSource],
 ) -> Result<(), ProjectionError> {
     validate_recoverable_artifact_metadata(metadata).map_err(|error| {
         ProjectionError::ContractValidation {
@@ -505,19 +472,22 @@ mod tests {
     }
 
     #[test]
-    fn service_recoverable_metadata_uses_package_file_ir_for_package_db_closure() {
+    fn service_recoverable_metadata_uses_shared_package_type_source_for_package_db_closure() {
         let package = package_with_invalid_local_db_field();
         let db_metadata =
             service_db_metadata_with_packages(&[], std::slice::from_ref(&package), &[]);
         let service_units = vec![FileIrUnit::empty("service.app", "hash")];
-        let recoverable_units = recoverable_file_ir_units(&service_units, &[package]);
+        let package_sources = package_type_sources(std::slice::from_ref(&package), &[]);
 
         let error = recoverable_metadata_for_service_artifacts(
             "svc",
-            &recoverable_units,
+            &service_units,
             &db_metadata,
             &[],
-            RecoverableInputs::default(),
+            RecoverableInputs {
+                package_sources: &package_sources,
+                ..RecoverableInputs::default()
+            },
         )
         .expect_err("package DB local nominal closure should be validated with package file IR");
 
@@ -590,9 +560,7 @@ mod tests {
     fn service_recoverable_metadata_rejects_service_db_package_symbol_closure() {
         let package = package_with_invalid_local_db_field();
         let service_units = vec![FileIrUnit::empty("service.app", "hash")];
-        let recoverable_units =
-            recoverable_file_ir_units(&service_units, std::slice::from_ref(&package));
-        let package_sources = recoverable_package_type_sources(std::slice::from_ref(&package), &[]);
+        let package_sources = package_type_sources(std::slice::from_ref(&package), &[]);
         let db_metadata = vec![DbMetadataIr {
             module_path: "service.app".to_string(),
             source_role: "service".to_string(),
@@ -616,7 +584,7 @@ mod tests {
 
         let error = recoverable_metadata_for_service_artifacts(
             "svc",
-            &recoverable_units,
+            &service_units,
             &db_metadata,
             &[],
             RecoverableInputs {

@@ -1,33 +1,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contract::{validate_static_type_ref_boundary_policy, BoundaryKind};
+use crate::contract::BoundaryKind;
 use crate::error::ProjectionError;
+use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    type_ref_abi_key, DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr,
-    InterfaceInstantiationRef, InterfaceOperationIr, PackageRefIr, PackageSymbolRef, PackageUnit,
-    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
-    RecoverableBoundaryPlan, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
-    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
-    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
-    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
-    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterPlan,
-    RecoverableNativeAdapterPlanRef, RecoverableStorageLane, RecoverableStorageLanePlan,
-    RecoverableStorageLaneRef, RecoverableTrustBoundary, RecoverableTypeIdentityFact,
-    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
+    DbMetadataIr, FieldPathIr, FileIrUnit, InterfaceDeclIr, InterfaceInstantiationRef,
+    InterfaceOperationIr, PackageRefIr, PackageSymbolRef, RecoverableArtifactMetadata,
+    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
+    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
+    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
+    RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
+    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableStorageLane,
+    RecoverableStorageLanePlan, RecoverableStorageLaneRef, RecoverableTrustBoundary,
+    RecoverableTypeIdentityFact, RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
     RecoverableUnionBranchIdentityRef, SpawnTargetIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
+pub use skiff_compiler_core::type_closure::PackageTypeSource;
+use skiff_compiler_core::type_closure::{type_decl_for_symbol_in_unit, ArtifactNominalTypeSource};
 
-#[derive(Clone, Debug)]
-pub struct RecoverablePackageTypeSource {
-    pub package_id: String,
-    pub dependency_refs: Vec<String>,
-    pub unit: PackageUnit,
-    pub file_ir_units: Vec<FileIrUnit>,
-}
+mod type_closure;
+
+use type_closure::{recoverable_closure_contains_any_interface, validate_recoverable_type_closure};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RecoverableInputs<'a> {
-    pub package_sources: &'a [RecoverablePackageTypeSource],
+    pub package_sources: &'a [PackageTypeSource],
     pub custom_restore_plans: &'a [RecoverableCustomRestorePlan],
     pub native_adapter_plans: &'a [RecoverableNativeAdapterPlan],
 }
@@ -74,7 +72,7 @@ pub fn validate_recoverable_metadata_type_policy(
 pub fn validate_recoverable_metadata_type_policy_with_packages(
     metadata: &RecoverableArtifactMetadata,
     file_ir_units: &[FileIrUnit],
-    package_sources: &[RecoverablePackageTypeSource],
+    package_sources: &[PackageTypeSource],
 ) -> Result<(), ProjectionError> {
     let native_adapter_plans = metadata
         .native_adapter_plans
@@ -141,7 +139,7 @@ pub fn recoverable_boundary_plan_for_type(
 struct RecoverableMetadataBuilder {
     origin_service: Option<String>,
     file_ir_units: Vec<FileIrUnit>,
-    package_sources: Vec<RecoverablePackageTypeSource>,
+    package_sources: Vec<PackageTypeSource>,
     package_db_modules: BTreeMap<String, String>,
     ambiguous_package_db_modules: BTreeSet<String>,
     metadata: RecoverableArtifactMetadata,
@@ -574,343 +572,7 @@ impl RecoverableMetadataBuilder {
         boundary_kind: BoundaryKind,
         context: &str,
     ) -> Result<(), ProjectionError> {
-        self.validate_type_ref_closure_inner(
-            module_path,
-            ty,
-            boundary_kind,
-            context,
-            &mut Vec::new(),
-            &mut BTreeSet::new(),
-        )
-    }
-
-    fn validate_type_ref_closure_inner(
-        &self,
-        module_path: &str,
-        ty: &TypeRefIr,
-        boundary_kind: BoundaryKind,
-        context: &str,
-        trace: &mut Vec<String>,
-        seen: &mut BTreeSet<String>,
-    ) -> Result<(), ProjectionError> {
-        validate_static_type_ref_boundary_policy(ty, boundary_kind)
-            .map_err(|message| recoverable_closure_error(context, trace, message))?;
-
-        match ty {
-            TypeRefIr::LocalType { .. }
-            | TypeRefIr::PublicationType { .. }
-            | TypeRefIr::ServiceSymbol { .. }
-            | TypeRefIr::DbObjectSymbol { .. }
-            | TypeRefIr::PackageSymbol { .. } => {
-                let Some((resolved_module, decl)) =
-                    self.type_decl_for_type_ref_with_module(module_path, ty)
-                else {
-                    return Err(recoverable_closure_error(
-                        context,
-                        trace,
-                        format!(
-                            "{} cannot be resolved for recoverable closure validation",
-                            recoverable_nominal_type_label(ty)
-                        ),
-                    ));
-                };
-                let resolved = (resolved_module.to_string(), decl.clone());
-                let identity_ref = self.nominal_type_identity_ref(module_path, ty, Some(&resolved));
-                if let Some((plan_key, plan)) = self.custom_restore_plan_for_identity(&identity_ref)
-                {
-                    self.validate_expected_type_plan_closure(
-                        &self.metadata,
-                        &plan.durable_state_type_plan,
-                        boundary_kind,
-                        &format!("{context}: custom restore plan {plan_key} durable state type"),
-                    )?;
-                    return Ok(());
-                }
-                let key = format!("{resolved_module}.{}", decl.name);
-                if !seen.insert(key.clone()) {
-                    return Ok(());
-                }
-                trace.push(format!("type {key}"));
-                self.validate_type_descriptor_closure_inner(
-                    resolved_module,
-                    &decl.descriptor,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-                seen.remove(&key);
-            }
-            TypeRefIr::Record { fields } => {
-                for (name, field_ty) in fields {
-                    trace.push(format!("field {name}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        field_ty,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-            TypeRefIr::Union { items } => {
-                for (index, item) in items.iter().enumerate() {
-                    trace.push(format!("variant {index}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        item,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-            TypeRefIr::Nullable { inner } => {
-                trace.push("nullable inner".to_string());
-                self.validate_type_ref_closure_inner(
-                    module_path,
-                    inner,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-            }
-            TypeRefIr::Native { name, args } => {
-                self.validate_native_type_ref_closure_inner(
-                    module_path,
-                    name,
-                    args,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-            }
-            TypeRefIr::AnyInterface { interface } => {
-                for (index, arg) in interface.canonical_type_args.iter().enumerate() {
-                    trace.push(format!("interface type argument {index}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        arg,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-            TypeRefIr::Function {
-                params,
-                return_type,
-            } => {
-                for param in params {
-                    trace.push(format!("param {}", param.name));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        &param.ty,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-                trace.push("return type".to_string());
-                self.validate_type_ref_closure_inner(
-                    module_path,
-                    return_type,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-            }
-            TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
-        }
-        Ok(())
-    }
-
-    fn validate_type_descriptor_closure_inner(
-        &self,
-        module_path: &str,
-        descriptor: &TypeDescriptorIr,
-        boundary_kind: BoundaryKind,
-        context: &str,
-        trace: &mut Vec<String>,
-        seen: &mut BTreeSet<String>,
-    ) -> Result<(), ProjectionError> {
-        match descriptor {
-            TypeDescriptorIr::Alias { target } => {
-                trace.push("alias target".to_string());
-                self.validate_type_ref_closure_inner(
-                    module_path,
-                    target,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-            }
-            TypeDescriptorIr::Record { fields } => {
-                for (name, field_ty) in fields {
-                    trace.push(format!("field {name}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        field_ty,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-            TypeDescriptorIr::Union { variants } => {
-                for (index, variant) in variants.iter().enumerate() {
-                    trace.push(format!("variant {index}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        variant,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-            TypeDescriptorIr::Native { symbol } => {
-                if let Some((plan_key, plan)) = self.native_adapter_plan_for_symbol(symbol) {
-                    self.validate_expected_type_plan_closure(
-                        &self.metadata,
-                        &plan.durable_state_type_plan,
-                        boundary_kind,
-                        &format!("{context}: native adapter plan {plan_key} durable state type"),
-                    )?;
-                } else {
-                    return Err(recoverable_closure_error(
-                        context,
-                        trace,
-                        format!(
-                            "native descriptor `{symbol}` requires RecoverableNativeAdapterPlan"
-                        ),
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_native_type_ref_closure_inner(
-        &self,
-        module_path: &str,
-        name: &str,
-        args: &[TypeRefIr],
-        boundary_kind: BoundaryKind,
-        context: &str,
-        trace: &mut Vec<String>,
-        seen: &mut BTreeSet<String>,
-    ) -> Result<(), ProjectionError> {
-        match name {
-            "string" | "integer" | "number" | "bool" | "boolean" | "null" | "void" | "Date"
-            | "Duration" | "Bytes" | "Json" | "JsonObject" => {
-                if args.is_empty() {
-                    return Ok(());
-                }
-                return Err(recoverable_closure_error(
-                    context,
-                    trace,
-                    format!("plain native type `{name}` cannot have type arguments"),
-                ));
-            }
-            "Array" => {
-                let [item] = args else {
-                    return Err(recoverable_closure_error(
-                        context,
-                        trace,
-                        "Array<T> must have exactly one type argument".to_string(),
-                    ));
-                };
-                trace.push("array item".to_string());
-                self.validate_type_ref_closure_inner(
-                    module_path,
-                    item,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-            }
-            "Map" => {
-                let [key, value] = args else {
-                    return Err(recoverable_closure_error(
-                        context,
-                        trace,
-                        "Map<K,V> must have exactly two type arguments".to_string(),
-                    ));
-                };
-                trace.push("map key".to_string());
-                self.validate_recoverable_map_key_type(module_path, key, context, trace)?;
-                trace.pop();
-                trace.push("map value".to_string());
-                self.validate_type_ref_closure_inner(
-                    module_path,
-                    value,
-                    boundary_kind,
-                    context,
-                    trace,
-                    seen,
-                )?;
-                trace.pop();
-            }
-            _ => {
-                let ty = TypeRefIr::Native {
-                    name: name.to_string(),
-                    args: args.to_vec(),
-                };
-                if let Some((plan_key, plan)) = self.native_adapter_plan_for_type_ref(&ty) {
-                    self.validate_expected_type_plan_closure(
-                        &self.metadata,
-                        &plan.durable_state_type_plan,
-                        boundary_kind,
-                        &format!("{context}: native adapter plan {plan_key} durable state type"),
-                    )?;
-                } else {
-                    return Err(recoverable_closure_error(
-                        context,
-                        trace,
-                        format!(
-                            "native type `{}` requires RecoverableNativeAdapterPlan",
-                            display_native_type_ref(name, args)
-                        ),
-                    ));
-                }
-                for (index, arg) in args.iter().enumerate() {
-                    trace.push(format!("type argument {index}"));
-                    self.validate_type_ref_closure_inner(
-                        module_path,
-                        arg,
-                        boundary_kind,
-                        context,
-                        trace,
-                        seen,
-                    )?;
-                    trace.pop();
-                }
-            }
-        }
-        Ok(())
+        validate_recoverable_type_closure(self, module_path, ty, boundary_kind, context)
     }
 
     fn validate_recoverable_map_key_type(
@@ -1000,67 +662,7 @@ impl RecoverableMetadataBuilder {
     }
 
     fn contains_any_interface_closure(&self, module_path: &str, ty: &TypeRefIr) -> bool {
-        self.contains_any_interface_closure_inner(module_path, ty, &mut BTreeSet::new())
-    }
-
-    fn contains_any_interface_closure_inner(
-        &self,
-        module_path: &str,
-        ty: &TypeRefIr,
-        seen: &mut BTreeSet<String>,
-    ) -> bool {
-        match ty {
-            TypeRefIr::AnyInterface { .. } => true,
-            TypeRefIr::LocalType { .. }
-            | TypeRefIr::PublicationType { .. }
-            | TypeRefIr::ServiceSymbol { .. }
-            | TypeRefIr::DbObjectSymbol { .. }
-            | TypeRefIr::PackageSymbol { .. } => {
-                let Some((resolved_module, decl)) =
-                    self.type_decl_for_type_ref_with_module(module_path, ty)
-                else {
-                    return true;
-                };
-                let resolved = (resolved_module.to_string(), decl.clone());
-                let identity_ref = self.nominal_type_identity_ref(module_path, ty, Some(&resolved));
-                if let Some((_, plan)) = self.custom_restore_plan_for_identity(&identity_ref) {
-                    return self
-                        .expected_type_plan_contains_any_interface(&plan.durable_state_type_plan);
-                }
-                let key = format!("{resolved_module}.{}", decl.name);
-                if !seen.insert(key.clone()) {
-                    return false;
-                }
-                let result = self.type_descriptor_contains_any_interface(
-                    resolved_module,
-                    &decl.descriptor,
-                    seen,
-                );
-                seen.remove(&key);
-                result
-            }
-            TypeRefIr::Native { args, .. } => args
-                .iter()
-                .any(|arg| self.contains_any_interface_closure_inner(module_path, arg, seen)),
-            TypeRefIr::Record { fields } => fields.values().any(|field_ty| {
-                self.contains_any_interface_closure_inner(module_path, field_ty, seen)
-            }),
-            TypeRefIr::Union { items } => items
-                .iter()
-                .any(|item| self.contains_any_interface_closure_inner(module_path, item, seen)),
-            TypeRefIr::Nullable { inner } => {
-                self.contains_any_interface_closure_inner(module_path, inner, seen)
-            }
-            TypeRefIr::Function {
-                params,
-                return_type,
-            } => {
-                params.iter().any(|param| {
-                    self.contains_any_interface_closure_inner(module_path, &param.ty, seen)
-                }) || self.contains_any_interface_closure_inner(module_path, return_type, seen)
-            }
-            TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => false,
-        }
+        recoverable_closure_contains_any_interface(self, module_path, ty)
     }
 
     fn expected_type_plan_contains_any_interface(
@@ -1074,26 +676,6 @@ impl RecoverableMetadataBuilder {
                 }
                 RecoverableExpectedTypeRoot::TypeIdentityRef { .. } => false,
             }
-    }
-
-    fn type_descriptor_contains_any_interface(
-        &self,
-        module_path: &str,
-        descriptor: &TypeDescriptorIr,
-        seen: &mut BTreeSet<String>,
-    ) -> bool {
-        match descriptor {
-            TypeDescriptorIr::Alias { target } => {
-                self.contains_any_interface_closure_inner(module_path, target, seen)
-            }
-            TypeDescriptorIr::Record { fields } => fields.values().any(|field_ty| {
-                self.contains_any_interface_closure_inner(module_path, field_ty, seen)
-            }),
-            TypeDescriptorIr::Union { variants } => variants.iter().any(|variant| {
-                self.contains_any_interface_closure_inner(module_path, variant, seen)
-            }),
-            TypeDescriptorIr::Native { .. } => false,
-        }
     }
 
     fn nominal_type_identity_ref(
@@ -1448,70 +1030,15 @@ impl RecoverableMetadataBuilder {
         module_path: &str,
         ty: &TypeRefIr,
     ) -> Option<(&str, &TypeDeclIr)> {
-        match ty {
-            TypeRefIr::LocalType { type_index } => self
-                .file_ir_unit_by_module_path(module_path)
-                .and_then(|unit| {
-                    unit.type_table
-                        .get(*type_index as usize)
-                        .map(|decl| (unit.module_path.as_str(), decl))
-                }),
-            TypeRefIr::PublicationType {
-                module_path,
-                type_index,
-            } => self
-                .file_ir_unit_by_module_path(module_path)
-                .and_then(|unit| {
-                    unit.type_table
-                        .get(*type_index as usize)
-                        .map(|decl| (unit.module_path.as_str(), decl))
-                }),
-            TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => self
-                .file_ir_unit_by_module_path(&symbol.module_path)
-                .and_then(|unit| {
-                    unit.declarations
-                        .types
-                        .get(&symbol.symbol)
-                        .and_then(|decl| unit.type_table.get(decl.type_index as usize))
-                        .map(|decl| (unit.module_path.as_str(), decl))
-                }),
-            TypeRefIr::PackageSymbol { symbol } => self
-                .type_decl_for_package_symbol_source(symbol)
-                .or_else(|| self.type_decl_for_package_db_symbol_from_file_ir(module_path, symbol)),
-            TypeRefIr::Native { .. }
-            | TypeRefIr::Record { .. }
-            | TypeRefIr::Union { .. }
-            | TypeRefIr::Nullable { .. }
-            | TypeRefIr::Literal { .. }
-            | TypeRefIr::TypeParam { .. }
-            | TypeRefIr::AnyInterface { .. }
-            | TypeRefIr::Function { .. } => None,
-        }
-    }
-
-    fn type_decl_for_package_symbol_source(
-        &self,
-        symbol: &PackageSymbolRef,
-    ) -> Option<(&str, &TypeDeclIr)> {
-        let package = self.package_source_for_ref(&symbol.package)?;
-        let export = package
-            .unit
-            .implementation_links
-            .types
-            .get(&symbol.symbol_path)?;
-        let unit = package
-            .file_ir_units
-            .iter()
-            .find(|unit| unit.file_ir_identity == export.file.file_ir_identity)
-            .or_else(|| {
-                package
-                    .file_ir_units
-                    .iter()
-                    .find(|unit| unit.module_path == export.file.module_path)
-            })?;
-        unit.type_table
-            .get(export.type_index as usize)
-            .map(|decl| (unit.module_path.as_str(), decl))
+        let source = ArtifactNominalTypeSource::new(&self.file_ir_units, &self.package_sources);
+        source
+            .resolve_type_ref_parts(module_path, ty)
+            .or_else(|| match ty {
+                TypeRefIr::PackageSymbol { symbol } => {
+                    self.type_decl_for_package_db_symbol_from_file_ir(module_path, symbol)
+                }
+                _ => None,
+            })
     }
 
     fn type_decl_for_package_db_symbol_from_file_ir(
@@ -1571,21 +1098,11 @@ impl RecoverableMetadataBuilder {
     }
 
     fn file_ir_unit_by_module_path(&self, module_path: &str) -> Option<&FileIrUnit> {
-        self.file_ir_units
-            .iter()
-            .find(|unit| unit.module_path == module_path)
-            .or_else(|| {
-                self.package_sources
-                    .iter()
-                    .flat_map(|package| package.file_ir_units.iter())
-                    .find(|unit| unit.module_path == module_path)
-            })
+        ArtifactNominalTypeSource::new(&self.file_ir_units, &self.package_sources)
+            .unit_by_module_path(module_path)
     }
 
-    fn package_source_containing_module(
-        &self,
-        module_path: &str,
-    ) -> Option<&RecoverablePackageTypeSource> {
+    fn package_source_containing_module(&self, module_path: &str) -> Option<&PackageTypeSource> {
         self.package_sources.iter().find(|package| {
             package
                 .file_ir_units
@@ -1594,27 +1111,19 @@ impl RecoverableMetadataBuilder {
         })
     }
 
-    fn package_source_for_ref(
-        &self,
-        package_ref: &PackageRefIr,
-    ) -> Option<&RecoverablePackageTypeSource> {
-        let package_key = match package_ref {
-            PackageRefIr::PackageId { package_id } => package_id.as_str(),
-            PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
-        };
-        self.package_sources.iter().find(|source| {
-            source.package_id == package_key
-                || source.unit.package_id == package_key
-                || source
-                    .dependency_refs
-                    .iter()
-                    .any(|dependency_ref| dependency_ref == package_key)
-        })
+    fn package_source_for_ref(&self, package_ref: &PackageRefIr) -> Option<&PackageTypeSource> {
+        ArtifactNominalTypeSource::new(&self.file_ir_units, &self.package_sources)
+            .package_source_for_ref(package_ref)
     }
 
     fn module_path_for_spawn_target(&self, target: &SpawnTargetIr) -> Option<&str> {
         self.file_ir_units
             .iter()
+            .chain(
+                self.package_sources
+                    .iter()
+                    .flat_map(|package| package.file_ir_units.iter()),
+            )
             .find(|unit| {
                 unit.file_ir_identity == target.executable_target.file_ref.file_ir_identity
                     || unit.module_path == target.executable_target.file_ref.module_path
@@ -1631,9 +1140,7 @@ impl RecoverableMetadataBuilder {
             match interface_ty {
                 TypeRefIr::ServiceSymbol { symbol } => {
                     return self
-                        .file_ir_units
-                        .iter()
-                        .find(|unit| unit.module_path == symbol.module_path)
+                        .file_ir_unit_by_module_path(&symbol.module_path)
                         .and_then(|unit| {
                             unit.declarations
                                 .interfaces
@@ -1843,17 +1350,6 @@ fn recoverable_nominal_type_label(ty: &TypeRefIr) -> String {
         }
         _ => format!("type {}", type_ref_abi_key(ty)),
     }
-}
-
-fn type_decl_for_symbol_in_unit<'a>(
-    unit: &'a FileIrUnit,
-    symbol_name: &str,
-) -> Option<&'a TypeDeclIr> {
-    unit.declarations
-        .types
-        .get(symbol_name)
-        .and_then(|declaration| unit.type_table.get(declaration.type_index as usize))
-        .or_else(|| unit.type_table.iter().find(|decl| decl.name == symbol_name))
 }
 
 fn recoverable_native_type_identity_candidates(ty: &TypeRefIr) -> Vec<String> {
@@ -2069,7 +1565,7 @@ mod tests {
         }
     }
 
-    fn package_source_with_exported_invalid_type() -> (RecoverablePackageTypeSource, TypeRefIr) {
+    fn package_source_with_exported_invalid_type() -> (PackageTypeSource, TypeRefIr) {
         let mut file = FileIrUnit::empty("pkg.data", "hash");
         file.file_ir_identity = "file:pkg.data".to_string();
         file.type_table.push(TypeDeclIr {
@@ -2113,7 +1609,7 @@ mod tests {
             },
         };
         (
-            RecoverablePackageTypeSource {
+            PackageTypeSource {
                 package_id: "pkg.example".to_string(),
                 dependency_refs: Vec::new(),
                 unit,
@@ -2123,7 +1619,7 @@ mod tests {
         )
     }
 
-    fn package_source_with_exported_string_alias() -> (RecoverablePackageTypeSource, TypeRefIr) {
+    fn package_source_with_exported_string_alias() -> (PackageTypeSource, TypeRefIr) {
         package_source_with_exported_descriptor(
             "PkgKey",
             TypeDescriptorIr::Alias {
@@ -2132,8 +1628,7 @@ mod tests {
         )
     }
 
-    fn package_source_with_exported_native_descriptor() -> (RecoverablePackageTypeSource, TypeRefIr)
-    {
+    fn package_source_with_exported_native_descriptor() -> (PackageTypeSource, TypeRefIr) {
         package_source_with_exported_descriptor(
             "PkgNative",
             TypeDescriptorIr::Native {
@@ -2145,7 +1640,7 @@ mod tests {
     fn package_source_with_exported_descriptor(
         name: &str,
         descriptor: TypeDescriptorIr,
-    ) -> (RecoverablePackageTypeSource, TypeRefIr) {
+    ) -> (PackageTypeSource, TypeRefIr) {
         let mut file = FileIrUnit::empty("pkg.data", "hash");
         file.file_ir_identity = "file:pkg.data".to_string();
         file.type_table.push(TypeDeclIr {
@@ -2187,7 +1682,7 @@ mod tests {
             },
         };
         (
-            RecoverablePackageTypeSource {
+            PackageTypeSource {
                 package_id: "pkg.example".to_string(),
                 dependency_refs: Vec::new(),
                 unit,
@@ -2199,7 +1694,7 @@ mod tests {
 
     fn package_source_with_exported_interface(
         return_type: TypeRefIr,
-    ) -> (RecoverablePackageTypeSource, TypeRefIr) {
+    ) -> (PackageTypeSource, TypeRefIr) {
         let mut file = FileIrUnit::empty("pkg.iface", "hash");
         file.file_ir_identity = "file:pkg.iface".to_string();
         file.type_table.push(TypeDeclIr {
@@ -2261,7 +1756,7 @@ mod tests {
             },
         };
         (
-            RecoverablePackageTypeSource {
+            PackageTypeSource {
                 package_id: "pkg.example".to_string(),
                 dependency_refs: Vec::new(),
                 unit,
@@ -3083,7 +2578,7 @@ mod tests {
                 interface_methods: Vec::new(),
             },
         );
-        let package_source = RecoverablePackageTypeSource {
+        let package_source = PackageTypeSource {
             package_id: "pkg.example".to_string(),
             dependency_refs: vec!["pkg_dep".to_string()],
             unit,

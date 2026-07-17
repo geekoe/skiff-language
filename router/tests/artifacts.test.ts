@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -13,7 +10,6 @@ import {
   loadManifest as loadRuntimeManifest,
   packageHttpHandlerTarget,
 } from "../src/manifest/loadManifest.js";
-import { serviceAssemblyHashInput as routerServiceAssemblyHashInput } from "../src/artifacts/identity.js";
 import { loadRouterArtifactRoot } from "../src/artifacts/loadArtifactRoot.js";
 import { serviceIdPathSegments } from "../src/artifacts/pathProjection.js";
 import { readActiveArtifactPointers } from "../src/artifacts/pointers.js";
@@ -22,6 +18,11 @@ import {
   writeCompilerGeneratedWebSocketFixtureArtifactRoot,
   writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoot,
 } from "./helpers/compilerArtifacts.js";
+import {
+  ensureArtifactIdentityCli,
+  runIdentityCli,
+} from "./helpers/artifactIdentityCli.js";
+import { writeMockIdentityCli } from "./helpers/mockIdentityCli.js";
 
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
@@ -40,26 +41,21 @@ const CONTRACT_FILE_IR_IDENTITY = fixtureIdentity(
 const CONTRACT_FILE_IR_UNIT = fileIrUnitTypes(CONTRACT_FILE_IR_IDENTITY);
 const CONTRACT_FILE_IR_HASH = artifactHash(CONTRACT_FILE_IR_UNIT);
 const CONTRACT_FILE_IR_PATH = `units/files/${CONTRACT_FILE_IR_HASH}.json`;
-const DEFAULTED_RUNTIME_PROGRAM_BUILD_ID =
-  "skiff-service-build-v1:sha256:bb6caac1100689bcc8c5e4e68c72cb85c46e7be0b5b0558e4b47f7e6b855e8b0";
-const ASSEMBLY_HASH = artifactHash(
-  serviceAssemblyHashInput(
-    serviceAssembly(SERVICE_ID, { assemblyIdentity: "" }),
-  ),
-);
+const ASSEMBLY_HASH =
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_ASSEMBLY_HASH =
   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const ASSEMBLY_IDENTITY = `skiff-service-assembly-v1:sha256:${ASSEMBLY_HASH}`;
 const OTHER_ASSEMBLY_IDENTITY = `skiff-service-assembly-v1:sha256:${OTHER_ASSEMBLY_HASH}`;
-let artifactIdentityCliPromise: Promise<string> | undefined;
+let mockIdentityCliDir: string | undefined;
+let serviceAssemblyFixtureOrdinal = 0;
 
 beforeAll(async () => {
-  if (
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI === undefined ||
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI.trim().length === 0
-  ) {
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI = await ensureArtifactIdentityCli();
-  }
+  await ensureArtifactIdentityCli();
+  mockIdentityCliDir = await mkdtemp(join(tmpdir(), "skiff-router-identity-mock-"));
+  process.env.SKIFF_ARTIFACT_IDENTITY_CLI = await writeMockIdentityCli({
+    dir: mockIdentityCliDir,
+  });
 }, 60_000);
 
 afterEach(async () => {
@@ -71,7 +67,10 @@ afterEach(async () => {
   }
 });
 
-afterAll(() => {
+afterAll(async () => {
+  if (mockIdentityCliDir !== undefined) {
+    await rm(mockIdentityCliDir, { recursive: true, force: true });
+  }
   if (originalIdentityCliEnv === undefined) {
     delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
     return;
@@ -88,88 +87,6 @@ async function createArtifactRoot(): Promise<string> {
 function loadManifest(value: unknown) {
   addDefaultOperationAbiIds(value);
   return loadRuntimeManifest(value);
-}
-
-async function ensureArtifactIdentityCli(): Promise<string> {
-  artifactIdentityCliPromise ??= buildArtifactIdentityCli();
-  return await artifactIdentityCliPromise;
-}
-
-async function buildArtifactIdentityCli(): Promise<string> {
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-  const binary = process.platform === "win32"
-    ? "skiff-artifact-identity.exe"
-    : "skiff-artifact-identity";
-  const cliPath = join(repoRoot, "build", "cargo-target", "debug", binary);
-  await runCommand(
-    "cargo",
-    [
-      "build",
-      "--manifest-path",
-      "artifact-identity/Cargo.toml",
-      "--bin",
-      "skiff-artifact-identity",
-    ],
-    repoRoot,
-  );
-  await access(cliPath, fsConstants.X_OK);
-  return cliPath;
-}
-
-function runCommand(
-  command: string,
-  args: string[],
-  cwd: string,
-): Promise<void> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: "inherit",
-    });
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`${command} ${args.join(" ")} failed with ${signal ?? code}`));
-    });
-  });
-}
-
-function runIdentityCli(
-  cliPath: string,
-  args: string[],
-  input: unknown,
-): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(cliPath, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolvePromise(stdout);
-        return;
-      }
-      reject(
-        new Error(
-          `${cliPath} ${args.join(" ")} failed with ${signal ?? code}: ${stderr}`,
-        ),
-      );
-    });
-    child.stdin.end(JSON.stringify(input));
-  });
 }
 
 function addDefaultOperationAbiIds(value: unknown): void {
@@ -786,7 +703,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /schema_invalid: serviceUnit is invalid: unknown field `routeTarget`/,
+      /service unit\.operations\[0\]\.routeTarget is no longer supported/,
     );
   });
 
@@ -819,7 +736,7 @@ describe("router artifact root", () => {
     );
   });
 
-  it("loads Service Unit package dependencies through Package Unit indexes without service assembly packages", async () => {
+  it("loads a pinned Package Unit closure without service assembly packages", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -857,6 +774,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
     await writeContractFile(root);
 
@@ -866,7 +784,7 @@ describe("router artifact root", () => {
     expect(loaded.control.fingerprint).toBe(writtenAssembly.identity);
   });
 
-  it("resolves Service Unit package dependencies through exact Package Unit indexes", async () => {
+  it("keeps a pinned Package Unit closure independent from mutable indexes", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -920,6 +838,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit,
+      packageUnits: [packageUnitPointer(firstPackageUnit)],
     });
     await writeContractFile(root);
 
@@ -952,7 +871,7 @@ describe("router artifact root", () => {
     expect(secondBinding?.buildId).toMatch(
       /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/,
     );
-    expect(secondBinding?.buildId).not.toBe(firstBinding?.buildId);
+    expect(secondBinding?.buildId).toBe(firstBinding?.buildId);
     expect(secondLoaded.manifest.rawHttpEntries[0]?.buildId).toBe(
       secondBinding?.buildId,
     );
@@ -1058,6 +977,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: firstServiceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
 
     const firstLoaded = await loadRouterArtifactRoot(root);
@@ -1097,6 +1017,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: secondServiceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
 
     const secondLoaded = await loadRouterArtifactRoot(root);
@@ -1198,6 +1119,10 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: firstServiceUnit,
+      packageUnits: [
+        packageUnitPointer(llmPackageUnit),
+        packageUnitPointer(dbPackageUnit),
+      ],
     });
 
     const firstLoaded = await loadRouterArtifactRoot(root);
@@ -1217,6 +1142,10 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: secondServiceUnit,
+      packageUnits: [
+        packageUnitPointer(llmPackageUnit),
+        packageUnitPointer(dbPackageUnit),
+      ],
     });
 
     const secondLoaded = await loadRouterArtifactRoot(root);
@@ -1293,6 +1222,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: firstServiceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
 
     const firstLoaded = await loadRouterArtifactRoot(root);
@@ -1329,6 +1259,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit: secondServiceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
 
     const secondLoaded = await loadRouterArtifactRoot(root);
@@ -1345,7 +1276,7 @@ describe("router artifact root", () => {
     expect(secondBuildId).not.toBe(firstBuildId);
   });
 
-  it("does not resolve caret package dependency versions as ranges", async () => {
+  it("rejects package dependencies omitted from the pinned closure", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -1386,7 +1317,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /path_escape: package version \^1 is not a safe artifact path segment/,
+      /validated package closure must contain exactly one skiff\.run\/llm@\^1/,
     );
   });
 
@@ -1418,125 +1349,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /schema_invalid: serviceUnit is invalid: unknown field `(packageId|versionConstraint|dependencyRef)`/,
-    );
-  });
-
-  it("rejects legacy Service Unit package symbol usage", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    const serviceUnit = await writeServiceUnit(
-      root,
-      SERVICE_ID,
-      serviceTestVersion(SERVICE_ID),
-      {
-        assembly,
-      },
-    );
-    const unitPath = join(root, serviceUnit.unitPath);
-    const unit = JSON.parse(await readFile(unitPath, "utf8"));
-    unit.packageSymbolUsage = [
-      {
-        id: "skiff.run/llm",
-        version: "1.0.0",
-        usedSymbols: [
-          {
-            kind: "function",
-            symbolPath: "chat",
-          },
-        ],
-      },
-    ];
-    await writeFile(unitPath, JSON.stringify(unit, null, 2));
-    const writtenAssembly = await writeServiceAssembly(root, assembly);
-    await writeIndexPointer(root, {
-      ...serviceAssemblyIndex(writtenAssembly),
-      serviceUnit,
-    });
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /schema_invalid: serviceUnit is invalid: unknown field `packageSymbolUsage`/,
-    );
-  });
-
-  it("rejects legacy ABI identity gates in Service Unit package ABI expectations", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    const serviceUnit = await writeServiceUnit(
-      root,
-      SERVICE_ID,
-      serviceTestVersion(SERVICE_ID),
-      {
-        assembly,
-        packageAbiExpectations: [
-          {
-            id: "skiff.run/llm",
-            version: "1.0.0",
-            requiredAbiIdentity:
-              "skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            usedSymbols: [
-              {
-                kind: "function",
-                symbolPath: "chat",
-              },
-            ],
-          },
-        ],
-      },
-    );
-    const writtenAssembly = await writeServiceAssembly(root, assembly);
-    await writeIndexPointer(root, {
-      ...serviceAssemblyIndex(writtenAssembly),
-      serviceUnit,
-    });
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /schema_invalid: serviceUnit is invalid: unknown field `requiredAbiIdentity`/,
-    );
-  });
-
-  it("rejects legacy symbol keys in Service Unit package ABI expectations", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    const serviceUnit = await writeServiceUnit(
-      root,
-      SERVICE_ID,
-      serviceTestVersion(SERVICE_ID),
-      {
-        assembly,
-        packageAbiExpectations: [
-          {
-            id: "skiff.run/llm",
-            version: "1.0.0",
-            abiIdentity:
-              "skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            usedSymbols: [
-              {
-                kind: "function",
-                symbol: "chat",
-              },
-            ],
-          },
-        ],
-      },
-    );
-    const writtenAssembly = await writeServiceAssembly(root, assembly);
-    await writeIndexPointer(root, {
-      ...serviceAssemblyIndex(writtenAssembly),
-      serviceUnit,
-    });
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /schema_invalid: serviceUnit is invalid: unknown field `symbol`/,
+      /serviceUnit\.packageDependencies\[0\]\.packageId is no longer supported/,
     );
   });
 
@@ -1565,7 +1378,7 @@ describe("router artifact root", () => {
     expect(loaded.manifest.service.id).toBe(SERVICE_ID);
   });
 
-  it("rejects Service Unit package dependencies when the Package Unit index is missing", async () => {
+  it("does not fall back to Package Unit indexes for an unpinned dependency", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -1593,11 +1406,11 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /artifact_not_found: artifact .*indexes\/packages\/skiff~run~~llm\/versions\/1\.0\.0\.json was not found/,
+      /validated package closure must contain exactly one skiff\.run\/llm@1\.0\.0/,
     );
   });
 
-  it("rejects Package Unit indexes whose package id disagrees with the Service Unit dependency", async () => {
+  it("rejects pinned Package Units whose coordinates disagree with the dependency", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -1634,11 +1447,12 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /packageId example\.com\/other does not match dependency skiff\.run\/llm/,
+      /validated package closure must contain exactly one skiff\.run\/llm@1\.0\.0/,
     );
   });
 
@@ -1687,7 +1501,49 @@ describe("router artifact root", () => {
     expect(loaded.manifest.rawHttpEntries[0]?.buildId).toBe(binding?.buildId);
   });
 
-  it("hashes defaulted ServiceUnit fields with the runtime canonical build vector", async () => {
+  it("rejects release artifacts whose ServiceUnit version mismatches the selected version", async () => {
+    const root = await createArtifactRoot();
+    const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
+    const serviceIdSegments = serviceIdPathSegments(generated.serviceId);
+    const mismatchedVersion = "2.0.0";
+    await rm(
+      join(
+        root,
+        "versions",
+        "services",
+        ...serviceIdSegments,
+        `${generated.serviceVersion}.json`,
+      ),
+    );
+    await writeVersionPointer(root, {
+      buildId: generated.buildId,
+      serviceId: generated.serviceId,
+      version: mismatchedVersion,
+    });
+    const buildPath = join(
+      root,
+      "builds",
+      "services",
+      ...serviceIdSegments,
+      `${identityHash(generated.buildId)}.json`,
+    );
+    const buildRecord = JSON.parse(
+      await readFile(buildPath, "utf8"),
+    ) as Record<string, unknown>;
+    buildRecord.serviceVersion = mismatchedVersion;
+    await writeFile(buildPath, JSON.stringify(buildRecord, null, 2));
+
+    await expect(
+      loadRouterArtifactRoot(root, {
+        releaseMode: true,
+        identityCliPath: await ensureArtifactIdentityCli(),
+      }),
+    ).rejects.toThrow(
+      /version 1\.0\.0 does not match selected service version 2\.0\.0/,
+    );
+  }, 120_000);
+
+  it("rejects incomplete ServiceUnit pointers instead of defaulting fields", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await mkdir(join(root, "files"), { recursive: true });
@@ -1762,13 +1618,9 @@ describe("router artifact root", () => {
       serviceUnitPath,
     });
 
-    const loaded = await loadRouterArtifactRoot(root, { releaseMode: true });
-
-    const binding = loaded.versionByService
-      ?.get(SERVICE_ID)
-      ?.get(serviceVersion);
-    expect(binding?.buildId).toBe(DEFAULTED_RUNTIME_PROGRAM_BUILD_ID);
-    expect(loaded.manifest.operations[0]?.target).toBe("svc.main.Api.hello");
+    await expect(
+      loadRouterArtifactRoot(root, { releaseMode: true }),
+    ).rejects.toThrow(/serviceUnit\.schemaVersion must be a non-empty string/);
   });
 
   it("rejects service version pointers whose buildId only has a sha256 suffix", async () => {
@@ -2066,6 +1918,32 @@ describe("router artifact root", () => {
         "utf8",
       ),
     ).toContain(`"serviceId": "${serviceId}"`);
+  });
+
+  it("passes an explicit dev serviceVersion through the single CLI batch", async () => {
+    const root = await createArtifactRoot();
+    const assembly = await writeServiceAssembly(
+      root,
+      serviceAssembly(SERVICE_ID),
+    );
+    const serviceVersion = serviceTestVersion(SERVICE_ID);
+    await writeDevReloadPointer(root, assembly, { serviceVersion });
+    const capturePath = join(root, "identity-cli-input.json");
+    const identityCliPath = await writeMockIdentityCli({
+      dir: join(root, "bin"),
+      capturePath,
+    });
+
+    await loadRouterArtifactRoot(root, {
+      devReload: true,
+      identityCliPath,
+    });
+
+    const captured = JSON.parse(
+      await readFile(capturePath, "utf8"),
+    ) as { services: Array<{ serviceVersion?: string }> };
+    expect(captured.services).toHaveLength(1);
+    expect(captured.services[0]?.serviceVersion).toBe(serviceVersion);
   });
 
   it("rejects dev reload pointers missing buildId", async () => {
@@ -2430,7 +2308,12 @@ describe("router artifact root", () => {
         entries: [{ path: "dashscopeModel", type: "string", required: true }],
       };
       assembly.configUses = ["dashscopeModel"];
-      const writtenAssembly = await writeServiceAssembly(root, assembly);
+      const writtenAssembly = await writeServiceAssembly(
+        root,
+        assembly,
+        SERVICE_ID,
+        ASSEMBLY_IDENTITY,
+      );
       await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
       const loaded = await loadRouterArtifactRoot(root);
       return loaded.control.serviceConfig![0]!;
@@ -2551,6 +2434,7 @@ describe("router artifact root", () => {
     await writeIndexPointer(root, {
       ...serviceAssemblyIndex(writtenAssembly),
       serviceUnit,
+      packageUnits: [packageUnitPointer(packageUnit)],
     });
 
     const loaded = await loadRouterArtifactRoot(root, {
@@ -2895,7 +2779,7 @@ describe("router artifact root", () => {
     );
   });
 
-  it("accepts compiler service assembly identities that include full prelude metadata", async () => {
+  it("loads compiler service assemblies that include full prelude metadata", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
     await writeContractFile(root);
@@ -2942,224 +2826,14 @@ describe("router artifact root", () => {
       ["service:", "  dashscopeModel: qwen-plus"].join("\n"),
     );
 
-    const hash = artifactHash(compilerServiceAssemblyHashInput(assembly));
-    const identity = `skiff-service-assembly-v1:sha256:${hash}`;
-    assembly.service.assemblyIdentity = identity;
-    const assemblyPath = await writeServiceAssemblyValue(
-      root,
-      SERVICE_ID,
-      hash,
-      assembly,
-    );
-    await writeIndexPointer(
-      root,
-      serviceAssemblyIndex({
-        identity,
-        path: assemblyPath,
-      }),
-    );
-
-    await expect(loadRouterArtifactRoot(root)).resolves.toMatchObject({
-      control: {
-        fingerprint: identity,
-      },
-    });
-  });
-
-  it("includes service api metadata in service assembly identities", async () => {
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    assembly.service.api = {
-      entries: [
-        {
-          module: "api.http",
-          path: "",
-        },
-      ],
-      interfaces: {
-        WebSocketFixtureHttpApi: {
-          modulePath: "api.http",
-          name: "WebSocketFixtureHttpApi",
-        },
-      },
-    };
-
-    const withApi = artifactHash(routerServiceAssemblyHashInput(assembly));
-    delete assembly.service.api;
-    const withoutApi = artifactHash(routerServiceAssemblyHashInput(assembly));
-
-    expect(withApi).not.toBe(withoutApi);
-  });
-
-  it("ignores legacy service interfaces in service assembly identities", async () => {
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    const withoutApi = routerServiceAssemblyHashInput(assembly);
-    assembly.service.interfaces = {
-      entries: [
-        {
-          module: "legacy.http",
-          path: "",
-        },
-      ],
-    };
-
-    const input = routerServiceAssemblyHashInput(assembly);
-
-    expect(input).toEqual(withoutApi);
-    expect(input.service).not.toHaveProperty("api");
-    expect(input.service).not.toHaveProperty("interfaces");
-  });
-
-  it("keeps service api identity input independent from legacy interfaces", async () => {
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    assembly.service.api = {
-      entries: [
-        {
-          module: "api.http",
-          path: "",
-        },
-      ],
-    };
-    const withApi = routerServiceAssemblyHashInput(assembly);
-    assembly.service.interfaces = {
-      entries: [
-        {
-          module: "legacy.http",
-          path: "",
-        },
-      ],
-    };
-
-    const input = routerServiceAssemblyHashInput(assembly);
-
-    expect(input).toEqual(withApi);
-    expect(input.service).toMatchObject({ api: assembly.service.api });
-    expect(input.service).not.toHaveProperty("interfaces");
-  });
-
-  it("rejects service assemblies whose config shape is tampered without changing identity", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await writeContractFile(root);
-
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    assembly.preludeIdentity =
-      "skiff-prelude-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333";
-    assembly.configShape = {
-      schemaVersion: "skiff-config-shape-v1",
-      entries: [
-        {
-          path: "dashscopeModel",
-          type: "string",
-          required: false,
-        },
-      ],
-    };
-    assembly.configUses = ["dashscopeModel"];
     const writtenAssembly = await writeServiceAssembly(root, assembly);
     await writeIndexPointer(root, serviceAssemblyIndex(writtenAssembly));
 
-    assembly.configShape = {
-      schemaVersion: "skiff-config-shape-v1",
-      entries: [
-        {
-          path: "dashscopeModel",
-          type: "number",
-          required: false,
-        },
-      ],
-    };
-    await writeFile(
-      join(root, writtenAssembly.path),
-      JSON.stringify(assembly, null, 2),
-    );
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly content sha256 .* does not match assemblyIdentity hash/,
-    );
-  });
-
-  it("rejects service assembly identities that omitted missing sourceMap from the hash input", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID, {
-      assemblyIdentity: "",
-    }) as any;
-    const legacyHash = artifactHash(
-      serviceAssemblyHashInputWithoutSourceMap(assembly),
-    );
-    const legacyIdentity = `skiff-service-assembly-v1:sha256:${legacyHash}`;
-    assembly.service.assemblyIdentity = legacyIdentity;
-    const path = await writeServiceAssemblyValue(
-      root,
-      SERVICE_ID,
-      legacyHash,
-      assembly,
-    );
-    await writeIndexPointer(
-      root,
-      serviceAssemblyIndex({ identity: legacyIdentity, path }),
-    );
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly content sha256 .* does not match assemblyIdentity hash/,
-    );
-  });
-
-  it("rejects service assembly identities that omitted db metadata from the hash input", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID, {
-      assemblyIdentity: "",
-    }) as any;
-    assembly.db = [
-      {
-        modulePath: "internal.example",
-        sourceRole: "service",
-        kind: "object",
-        type: { kind: "localType", typeIndex: 0 },
-        typeName: "Thread",
-        collectionName: "thread",
-        key: {
-          name: "id",
-          type: { kind: "builtin", name: "string" },
-        },
-        fields: [
-          {
-            name: "ownerUserId",
-            type: { kind: "builtin", name: "string" },
-          },
-          {
-            name: "title",
-            type: { kind: "builtin", name: "string" },
-          },
-        ],
-        retention: null,
-        indexes: [],
+    await expect(loadRouterArtifactRoot(root)).resolves.toMatchObject({
+      control: {
+        fingerprint: writtenAssembly.identity,
       },
-    ];
-    const legacyHash = artifactHash(
-      serviceAssemblyHashInputWithoutDb(assembly),
-    );
-    const legacyIdentity = `skiff-service-assembly-v1:sha256:${legacyHash}`;
-    assembly.service.assemblyIdentity = legacyIdentity;
-    const path = await writeServiceAssemblyValue(
-      root,
-      SERVICE_ID,
-      legacyHash,
-      assembly,
-    );
-    await writeIndexPointer(
-      root,
-      serviceAssemblyIndex({ identity: legacyIdentity, path }),
-    );
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly content sha256 .* does not match assemblyIdentity hash/,
-    );
+    });
   });
 
   it("rejects service assembly pointers whose contract identity differs from the assembly protocol identity", async () => {
@@ -3270,69 +2944,6 @@ describe("router artifact root", () => {
     );
   });
 
-  it("rejects service assembly identities without sha256 format", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    const badIdentity = "skiff-service-assembly-v1:not-sha";
-    await writeIndexPointer(root, {
-      ...serviceAssemblyIndex(),
-      serviceAssembly: {
-        assemblyIdentity: badIdentity,
-        assemblyPath: serviceAssemblyArtifactPath(SERVICE_ID, ASSEMBLY_HASH),
-      },
-    });
-    await writeServiceAssemblyValue(
-      root,
-      SERVICE_ID,
-      ASSEMBLY_HASH,
-      serviceAssembly(SERVICE_ID, { assemblyIdentity: badIdentity }),
-    );
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /must include :sha256:/,
-    );
-  });
-
-  it("rejects service assembly paths whose hash disagrees with assembly identity", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await writeIndexPointer(root, {
-      ...serviceAssemblyIndex(),
-      serviceAssembly: {
-        assemblyIdentity: ASSEMBLY_IDENTITY,
-        assemblyPath: serviceAssemblyArtifactPath(
-          SERVICE_ID,
-          OTHER_ASSEMBLY_HASH,
-        ),
-      },
-    });
-    await writeServiceAssemblyValue(
-      root,
-      SERVICE_ID,
-      OTHER_ASSEMBLY_HASH,
-      serviceAssembly(SERVICE_ID),
-    );
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /identity hash .* does not match assemblyIdentity hash/,
-    );
-  });
-
-  it("rejects service assemblies whose content disagrees with assembly identity", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "assemblies", "services"), { recursive: true });
-    await mkdir(join(root, "files"), { recursive: true });
-    const assembly = serviceAssembly(SERVICE_ID) as any;
-    assembly.operations[0].entrypoint = `service.${SERVICE_ID}.Tampered.connect`;
-    await writeIndexPointer(root, serviceAssemblyIndex());
-    await writeServiceAssemblyValue(root, SERVICE_ID, ASSEMBLY_HASH, assembly);
-    await writeContractFile(root);
-
-    await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly content sha256/,
-    );
-  });
-
   it("rejects non-canonical serviceAssembly revision ids", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
@@ -3383,7 +2994,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.service\.http does not support serviceAssembly\.service\.http\.request/,
+      /serviceAssembly\.service\.http does not support .*serviceAssembly\.service\.http\.request/,
     );
   });
 
@@ -3403,7 +3014,7 @@ describe("router artifact root", () => {
     await writeContractFile(root);
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.service\.http\.response does not support serviceAssembly\.service\.http\.response\.foo/,
+      /serviceAssembly\.service\.http\.response does not support .*serviceAssembly\.service\.http\.response\.foo/,
     );
   });
 
@@ -3805,7 +3416,7 @@ describe("router artifact root", () => {
       });
 
       await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-        new RegExp(`serviceAssembly\\.${aliasKey} is not supported`),
+        new RegExp(`serviceAssembly does not support ${aliasKey}`),
       );
     },
   );
@@ -3875,7 +3486,7 @@ describe("router artifact root", () => {
     });
 
     await expect(loadRouterArtifactRoot(root)).rejects.toThrow(
-      /serviceAssembly\.artifactIdentity is not supported/,
+      /serviceAssembly does not support artifactIdentity/,
     );
   });
 });
@@ -3924,9 +3535,14 @@ async function writeServiceAssembly(
   root: string,
   assembly: Record<string, any>,
   serviceId = SERVICE_ID,
+  explicitIdentity?: string,
 ): Promise<WrittenAssembly> {
-  const hash = artifactHash(serviceAssemblyHashInput(assembly));
-  const identity = `skiff-service-assembly-v1:sha256:${hash}`;
+  const identity =
+    explicitIdentity ??
+    `skiff-service-assembly-v1:sha256:${createHash("sha256")
+      .update(`router-service-assembly-fixture:${serviceAssemblyFixtureOrdinal++}`)
+      .digest("hex")}`;
+  const hash = identityHash(identity);
   assembly.service.assemblyIdentity = identity;
   const path = serviceIdArtifactFilePath(
     ["assemblies", "services"],
@@ -3943,17 +3559,7 @@ async function writeCompilerServiceAssembly(
   assembly: Record<string, any>,
   serviceId = SERVICE_ID,
 ): Promise<WrittenAssembly> {
-  const hash = artifactHash(compilerServiceAssemblyHashInput(assembly));
-  const identity = `skiff-service-assembly-v1:sha256:${hash}`;
-  assembly.service.assemblyIdentity = identity;
-  const path = serviceIdArtifactFilePath(
-    ["assemblies", "services"],
-    serviceId,
-    hash,
-  );
-  await mkdir(dirname(join(root, path)), { recursive: true });
-  await writeFile(join(root, path), JSON.stringify(assembly, null, 2));
-  return { identity, path };
+  return await writeServiceAssembly(root, assembly, serviceId);
 }
 
 async function writeIndexPointer(
@@ -3977,6 +3583,7 @@ async function writeIndexPointer(
     buildId,
     serviceVersion: version,
     serviceUnit,
+    packageUnits: pointer.packageUnits ?? [],
   };
   const schemaVersion = readPointerString(pointer, "schemaVersion");
   if (schemaVersion === "skiff-artifact-index-v1") {
@@ -4021,6 +3628,7 @@ async function writeDevReloadPointer(
     profile?: string;
     serviceId?: string;
     serviceAssemblyRef?: string;
+    serviceVersion?: string;
   } = {},
 ) {
   const serviceId = options.serviceId ?? SERVICE_ID;
@@ -4041,6 +3649,9 @@ async function writeDevReloadPointer(
       {
         mode: "dev",
         serviceId,
+        ...(options.serviceVersion !== undefined
+          ? { serviceVersion: options.serviceVersion }
+          : {}),
         profile: options.profile ?? "dev",
         contractHash: options.contractHash ?? identityHash(protocolIdentity),
         protocolIdentity,
@@ -4049,6 +3660,7 @@ async function writeDevReloadPointer(
           assemblyPath: assembly.path,
         },
         serviceUnit,
+        packageUnits: [],
         ...(options.omitBuildId === true
           ? {}
           : {
@@ -4137,6 +3749,7 @@ async function writeBuildRecord(
           assemblyPath: input.assembly.path,
         },
         serviceUnit,
+        packageUnits: [],
         createdAt: "2026-05-05T00:00:00.000Z",
       },
       null,
@@ -4471,6 +4084,14 @@ async function writePackageUnit(
     configAndEffectMetadata?: unknown;
   } = {},
 ): Promise<WrittenPackageUnit> {
+  const configAndEffectMetadata = isRecord(options.configAndEffectMetadata)
+    ? {
+        ...options.configAndEffectMetadata,
+        effects: isRecord(options.configAndEffectMetadata.effects)
+          ? options.configAndEffectMetadata.effects
+          : { operations: {} },
+      }
+    : { effects: { operations: {} } };
   const value: Record<string, any> = {
     schemaVersion: "skiff-package-unit-v1",
     packageId: id,
@@ -4486,7 +4107,7 @@ async function writePackageUnit(
       implMethods: {},
     },
     dependencies: options.dependencies ?? [],
-    configAndEffectMetadata: options.configAndEffectMetadata ?? {},
+    configAndEffectMetadata,
   };
   const identities = await computePackageUnitIdentities(value);
   value.buildIdentity = identities.buildIdentity;
@@ -4521,8 +4142,7 @@ function packageUnitPointer(unit: WrittenPackageUnit): Record<string, unknown> {
 async function computePackageUnitIdentities(
   packageUnit: Record<string, unknown>,
 ): Promise<{ buildIdentity: string; abiIdentity: string }> {
-  const cliPath =
-    process.env.SKIFF_ARTIFACT_IDENTITY_CLI?.trim() || await ensureArtifactIdentityCli();
+  const cliPath = await ensureArtifactIdentityCli();
   const stdout = await runIdentityCli(cliPath, ["package-unit-identities"], {
     packageUnit,
   });
@@ -4541,11 +4161,13 @@ async function computePackageUnitIdentities(
 }
 
 function packagePublicationAbi(id: string, version: string, seed: string) {
+  void seed;
   return {
     schemaVersion: "skiff-publication-abi-unit-v1",
     publicationId: id,
     version,
-    abiIdentity: fixtureIdentity("skiff-publication-abi-v1", seed),
+    abiIdentity:
+      "skiff-publication-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
   };
 }
 
@@ -4823,85 +4445,6 @@ function operationAbiIdForServiceOperation(operation: string): string {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null;
-}
-
-function serviceAssemblyHashInput(assembly: Record<string, any>) {
-  const service = assembly.service ?? {};
-  const serviceInput: Record<string, any> = {
-    id: service.id ?? null,
-    revisionId: service.revisionId ?? null,
-    protocolIdentity: service.protocolIdentity ?? null,
-  };
-  if (Object.prototype.hasOwnProperty.call(service, "access")) {
-    serviceInput.access = service.access ?? null;
-  }
-  if (Object.prototype.hasOwnProperty.call(service, "api")) {
-    serviceInput.api = service.api ?? null;
-  }
-  return {
-    schemaVersion: assembly.schemaVersion ?? null,
-    kind: assembly.kind ?? null,
-    service: serviceInput,
-    files: assembly.files ?? null,
-    preludeIdentity: assembly.preludeIdentity ?? null,
-    prelude: assembly.prelude ?? null,
-    packageConfigs: assembly.packageConfigs ?? null,
-    configShape: assembly.configShape ?? null,
-    configUses: assembly.configUses ?? null,
-    configActivation: assembly.configActivation ?? null,
-    configRequirements: assembly.configRequirements ?? null,
-    db: assembly.db ?? null,
-    operations: assembly.operations ?? null,
-    gateway: assembly.gateway ?? null,
-    timeout: assembly.timeout ?? null,
-    dependencyLock: assembly.dependencyLock ?? null,
-    serviceUnit: assembly.serviceUnit ?? null,
-    sourceMap: assembly.sourceMap ?? null,
-  };
-}
-
-function serviceAssemblyHashInputWithoutSourceMap(
-  assembly: Record<string, any>,
-) {
-  const input = serviceAssemblyHashInput(assembly);
-  delete input.sourceMap;
-  return input;
-}
-
-function serviceAssemblyHashInputWithoutDb(assembly: Record<string, any>) {
-  const input = serviceAssemblyHashInput(assembly);
-  delete input.db;
-  return input;
-}
-
-function compilerServiceAssemblyHashInput(assembly: Record<string, any>) {
-  const service = assembly.service ?? {};
-  const input = serviceAssemblyHashInput(assembly);
-  input.service = {
-    id: service.id ?? null,
-    revisionId: service.revisionId ?? null,
-    protocolIdentity: service.protocolIdentity ?? null,
-    ...(Object.prototype.hasOwnProperty.call(service, "access")
-      ? { access: service.access ?? null }
-      : {}),
-    ...(Object.prototype.hasOwnProperty.call(service, "api")
-      ? { api: service.api ?? null }
-      : {}),
-    ...serviceHttpHashInput(service),
-  };
-  return input;
-}
-
-function serviceHttpHashInput(service: Record<string, any>) {
-  return service.http?.response && "maxBytes" in service.http.response
-    ? {
-        http: {
-          response: {
-            maxBytes: service.http.response.maxBytes,
-          },
-        },
-      }
-    : {};
 }
 
 function identityHash(identity: string): string {

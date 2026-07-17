@@ -2,6 +2,7 @@ pub mod alias_resolution;
 pub mod api;
 pub(crate) mod api_seed;
 mod api_yml;
+pub mod callable_effects;
 mod compile_model;
 mod config_metadata;
 pub(crate) mod config_requirements;
@@ -54,6 +55,7 @@ pub use compiler_input_model::{
 
 pub use api::{PublicationApi, SourceSymbolKey};
 pub use api_seed::PublicationApiSeed;
+pub use callable_effects::SourceCallableEffectFacts;
 pub use compile_model::{
     ExportBindingModel, ExportCallableBinding, ExportPublicInstanceBinding,
     ExportPublicInstanceInterfaceBinding, ExportSchemaBinding, ExportSymbolBinding,
@@ -61,10 +63,8 @@ pub use compile_model::{
     SourceCompileModel, SourceCompileModelInput, SourceIndexes,
 };
 pub use config_metadata::{
-    source_config_and_effect_metadata_batches_from_parsed_sources,
-    source_config_and_effect_metadata_from_parsed_sources, SourceConfigAndEffectMetadata,
-    SourceConfigAndEffectMetadataBatchInput, SourceConfigAndEffectMetadataInput,
-    SourceConfigMetadata, SourceEffectMetadata,
+    source_config_metadata_batches_from_parsed_sources, source_config_metadata_from_parsed_sources,
+    SourceConfigMetadata, SourceConfigMetadataBatchInput, SourceConfigMetadataInput,
 };
 pub use config_requirements::{
     ConfigRequirement, ConfigRequirementAccess, ConfigRequirementDependencyStep,

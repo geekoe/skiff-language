@@ -1,5 +1,11 @@
 use std::path::PathBuf;
 
+pub use skiff_artifact_identity::{
+    PackageUnitArtifactRef as PackageUnitArtifactPointer,
+    ServiceAssemblyArtifactRef as ServiceAssemblyPointer,
+    ServiceUnitArtifactRef as ServiceUnitArtifactPointer,
+};
+
 #[derive(Debug)]
 pub struct ArtifactIndexPointer {
     pub service_id: String,
@@ -7,9 +13,9 @@ pub struct ArtifactIndexPointer {
     pub build_id: String,
     pub contract_identity: Option<String>,
     pub implementation_identity: Option<String>,
-    pub service_unit_path: Option<PathBuf>,
+    pub service_unit: ServiceUnitArtifactPointer,
     pub service_assembly: ServiceAssemblyPointer,
-    pub package_units: Option<Vec<PackageUnitArtifactPointer>>,
+    pub package_units: Vec<PackageUnitArtifactPointer>,
 }
 
 #[derive(Debug)]
@@ -33,20 +39,4 @@ impl RootedArtifactPointerFile {
             entry: pointer.entry,
         }
     }
-}
-
-#[derive(Debug)]
-pub struct ServiceAssemblyPointer {
-    pub path: PathBuf,
-    pub assembly_identity: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct PackageUnitArtifactPointer {
-    pub package_id: String,
-    pub version: String,
-    pub build_identity: String,
-    pub abi_identity: String,
-    pub unit_hash: Option<String>,
-    pub unit_path: PathBuf,
 }

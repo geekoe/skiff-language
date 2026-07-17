@@ -13,6 +13,7 @@ import {
 } from "./activationLookup.js";
 import { readActiveArtifactPointers } from "./pointers.js";
 import { readRouterArtifactValue } from "./serviceAssembly.js";
+import { validateArtifactClosuresWithIdentityCli } from "./identityCli.js";
 import type {
   ActiveArtifactPointers,
   LoadedServiceAssemblyArtifact,
@@ -75,8 +76,45 @@ export async function loadRouterArtifactRoot(
     );
   }
 
+  const validationKeys = pointers.map((_, index) => `service-${index}`);
+  const validatedByKey = await validateArtifactClosuresWithIdentityCli(
+    pointers.map((pointer, index) => {
+      if (
+        pointer.serviceId === undefined ||
+        pointer.serviceAssembly === undefined ||
+        pointer.serviceAssemblyIdentity === undefined ||
+        pointer.serviceUnit === undefined ||
+        pointer.packageUnits === undefined
+      ) {
+        throw new Error(
+          `${pointer.indexPath} must declare complete serviceAssembly, serviceUnit, and packageUnits pointers`,
+        );
+      }
+      return {
+        key: validationKeys[index]!,
+        artifactRoot: pointer.sourceRoot,
+        serviceId: pointer.serviceId,
+        ...(pointer.serviceVersion !== undefined
+          ? { serviceVersion: pointer.serviceVersion }
+          : {}),
+        serviceAssembly: {
+          assemblyIdentity: pointer.serviceAssemblyIdentity,
+          assemblyPath: pointer.serviceAssembly,
+        },
+        serviceUnit: pointer.serviceUnit,
+        packageUnits: pointer.packageUnits,
+      };
+    }),
+    options,
+  );
   const artifacts = await Promise.all(
-    pointers.map(async (pointer) => readRouterArtifactValue(pointer, options)),
+    pointers.map((pointer, index) => {
+      const validated = validatedByKey.get(validationKeys[index]!);
+      if (validated === undefined) {
+        throw new Error(`artifact identity CLI omitted ${pointer.indexPath}`);
+      }
+      return readRouterArtifactValue(pointer, options, validated);
+    }),
   );
   const versionByService = buildVersionLookup(
     resolveVersionBindings(activePointers, artifacts),

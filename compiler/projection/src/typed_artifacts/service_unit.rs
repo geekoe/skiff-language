@@ -8,22 +8,18 @@ use crate::publication_visible_types::{
 pub use skiff_artifact_model::service_unit::{PublicInstanceExport, PublicInstanceOperation};
 #[allow(unused_imports)]
 pub use skiff_artifact_model::{
-    interface_instantiation_ref_for_type_ref, type_ref_abi_key, CanonicalPublicCallableSignature,
-    ExecutableIr, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, GatewayConfig,
-    GatewayRoute, GatewayWebSocket, InterfaceInstantiationRef, OperationAbiRef,
-    OperationConstReceiverRef, OperationIngressKind, OperationMode, OperationParam,
-    OperationRouteBinding, OperationTargetRef, ParamIr, PublicationAbiUnit,
-    PublicationOperationKind, PublicationPublicInstanceExport, RecoverableArtifactMetadata,
-    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceMeta, ServiceOperation,
-    ServiceSymbolRef, ServiceUnit, TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
+    CanonicalPublicCallableSignature, ExecutableIr, ExecutableSignatureIr, FileIrRef, FileIrUnit,
+    FunctionTypeParamIr, GatewayConfig, GatewayRoute, GatewayWebSocket, InterfaceInstantiationRef,
+    OperationAbiRef, OperationConstReceiverRef, OperationIngressKind, OperationMode,
+    OperationParam, OperationRouteBinding, OperationTargetRef, PackageAbiExpectation,
+    PackageDependencyConstraint, ParamIr, PublicationAbiUnit, PublicationOperationKind,
+    PublicationPublicInstanceExport, RecoverableArtifactMetadata, ServiceConfigMetadata,
+    ServiceDependencyConstraint, ServiceMeta, ServiceOperation, ServiceSymbolRef, ServiceUnit,
+    TypeRefIr, SERVICE_UNIT_SCHEMA_VERSION,
 };
 
 use super::identity::{assign_publication_abi_identity, file_ir_identity};
-use super::package_unit::{PackageAbiExpectation, PackageDependencyConstraint};
-use super::publication_abi::{
-    public_signature_from_receiver_executable_signature, publication_public_instance_export,
-    push_publication_operation_abi,
-};
+use super::publication_abi::{publication_public_instance_export, push_publication_operation_abi};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServiceUnitFiles {
@@ -53,6 +49,7 @@ pub fn build_service_unit(
     service_dependencies: Vec<ServiceDependencyConstraint>,
     package_abi_expectations: Vec<PackageAbiExpectation>,
     operations: Vec<ServiceOperation>,
+    operation_public_signatures: BTreeMap<String, CanonicalPublicCallableSignature>,
     public_instances: Vec<PublicInstanceExport>,
     gateway: GatewayConfig,
     config: ServiceConfigMetadata,
@@ -100,7 +97,7 @@ pub fn build_service_unit(
         timeout: Default::default(),
         config,
     };
-    unit.publication_abi = service_publication_abi(&unit, executable_signatures.as_ref())?;
+    unit.publication_abi = service_publication_abi(&unit, &operation_public_signatures)?;
     unit.operation_route_bindings = service_operation_route_bindings(&unit)?;
     Ok(unit)
 }
@@ -119,7 +116,7 @@ pub fn service_public_instance_operation_abi_id(
 
 fn service_publication_abi(
     unit: &ServiceUnit,
-    executable_signatures: Option<&BTreeMap<(String, u32), ExecutableSignatureIr>>,
+    operation_public_signatures: &BTreeMap<String, CanonicalPublicCallableSignature>,
 ) -> Result<PublicationAbiUnit> {
     let mut publication_abi = PublicationAbiUnit::empty(&unit.service.id, &unit.version, "");
     let public_instance_operation_ids = unit
@@ -160,8 +157,11 @@ fn service_publication_abi(
             continue;
         }
         let operation_ref = service_operation_abi_ref(unit, operation);
-        let public_signature =
-            service_operation_public_signature(operation, executable_signatures)?;
+        let public_signature = operation_public_signature(
+            "service operation",
+            &operation_ref,
+            operation_public_signatures,
+        )?;
         push_publication_operation_abi(
             &mut publication_abi,
             operation_ref.public_path.clone(),
@@ -173,8 +173,11 @@ fn service_publication_abi(
         for operation in &public_instance.operations {
             let operation_ref =
                 service_public_instance_operation_abi_ref(unit, public_instance, operation);
-            let public_signature =
-                service_public_instance_public_signature(operation, executable_signatures)?;
+            let public_signature = operation_public_signature(
+                "public instance operation",
+                &operation.operation,
+                operation_public_signatures,
+            )?;
             push_publication_operation_abi(
                 &mut publication_abi,
                 operation.operation.public_path.clone(),
@@ -379,58 +382,18 @@ fn http_gateway_selector(route: &GatewayRoute) -> String {
     route.route_identity()
 }
 
-fn service_operation_public_signature(
-    operation: &ServiceOperation,
-    executable_signatures: Option<&BTreeMap<(String, u32), ExecutableSignatureIr>>,
-) -> Result<CanonicalPublicCallableSignature> {
-    let signature = executable_signature_for_target(
-        "service operation",
-        service_operation_ref(operation),
-        service_operation_target(operation),
-        executable_signatures,
-    )?;
-    Ok(match operation {
-        ServiceOperation::LocalExecutable(_) => CanonicalPublicCallableSignature::from(signature),
-        ServiceOperation::LocalReceiverExecutable(_) => {
-            public_signature_from_receiver_executable_signature(signature)
-        }
-    })
-}
-
-fn service_public_instance_public_signature(
-    operation: &PublicInstanceOperation,
-    executable_signatures: Option<&BTreeMap<(String, u32), ExecutableSignatureIr>>,
-) -> Result<CanonicalPublicCallableSignature> {
-    let signature = executable_signature_for_target(
-        "public instance operation",
-        &operation.operation,
-        &operation.receiver_executable.executable_target,
-        executable_signatures,
-    )?;
-    Ok(public_signature_from_receiver_executable_signature(
-        signature,
-    ))
-}
-
-fn executable_signature_for_target(
+fn operation_public_signature(
     context: &str,
     operation: &OperationAbiRef,
-    target: &OperationTargetRef,
-    executable_signatures: Option<&BTreeMap<(String, u32), ExecutableSignatureIr>>,
-) -> Result<ExecutableSignatureIr> {
-    let executable_signatures = executable_signatures.ok_or_else(|| {
-        semantic_error(format!(
-            "{context} `{}` requires FileIrUnit inputs so public ABI signature can be projected",
-            operation.display_name
-        ))
-    })?;
-    executable_signatures
-        .get(&(target.file_ref.module_path.clone(), target.executable_index))
+    operation_public_signatures: &BTreeMap<String, CanonicalPublicCallableSignature>,
+) -> Result<CanonicalPublicCallableSignature> {
+    operation_public_signatures
+        .get(&operation.operation_abi_id)
         .cloned()
         .ok_or_else(|| {
             semantic_error(format!(
-                "{context} `{}` target file `{}` executable index {} is missing from service File IR signatures",
-                operation.display_name, target.file_ref.module_path, target.executable_index
+                "{context} `{}` operationAbiId `{}` is missing its canonical public signature",
+                operation.display_name, operation.operation_abi_id
             ))
         })
 }

@@ -80,8 +80,10 @@ pub fn project_runtime_manifest_projection(
         service_version,
         &contract_service_operations,
         contract_projection,
+        input.file_ir_units(),
+        input.source().callable_effects(),
         &protocol_identity,
-    );
+    )?;
     runtime_operations.extend(build_public_instance_runtime_operations(
         service_id,
         service_version,

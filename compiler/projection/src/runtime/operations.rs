@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    callable_facts::ProjectionCallableFactsIndex,
     error::ProjectionError,
     runtime_manifest_model::ArtifactOperation,
     runtime_manifest_model::JsonSchema,
@@ -14,14 +15,17 @@ use crate::{
     },
 };
 use serde::Serialize;
-use skiff_artifact_model::{ExecutableKind, FileIrUnit, FunctionTypeParamIr, TypeRefIr};
+use skiff_artifact_model::{
+    CanonicalPublicCallableSignature, ExecutableKind, FileIrUnit, FunctionTypeParamIr, TypeRefIr,
+};
 use skiff_compiler_core::source_role::PublicationSourceRole as CompilerSourceRole;
-use skiff_compiler_projection_input::{EntryParamSpec, ProjectionSourceMetadata};
+use skiff_compiler_projection_input::{
+    EntryParamSpec, ProjectionCallableEffectFacts, ProjectionSourceMetadata,
+};
 
-use super::effect_summary_for_signature;
-use super::entrypoints::entry_operation_abi_id;
-use super::operation_effects::effect_summary;
-use super::operation_effects::EffectSummary;
+use super::entry_operation_abi::entry_operation_abi_id_from_public_signature;
+use super::operation_effect_projection_for_signature;
+use super::operation_effects::{operation_effect_projection, OperationEffectProjection};
 use super::service_operations::{
     contract_public_function_operation_abi_id, public_instance_receiver_executable_signature,
     public_instance_source_interface_signature, runtime_operation_abi_id,
@@ -48,7 +52,13 @@ pub struct OperationEntryIr {
     pub parameters: Vec<OperationParamIr>,
     pub return_type: RuntimeTypeDescriptorIr,
     pub response: JsonSchema,
-    pub summary: EffectSummary,
+    pub summary: OperationEffectProjection,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceOperationEntries {
+    pub entries: Vec<OperationEntryIr>,
+    pub public_signatures: BTreeMap<String, CanonicalPublicCallableSignature>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,8 +110,14 @@ pub fn service_operation_entries(
     interface_modules: &BTreeMap<String, InterfaceModule>,
     file_ir_units: &[FileIrUnit],
     public_instances: &[PublicInstanceExport],
-) -> Result<Vec<OperationEntryIr>, ProjectionError> {
-    let mut entries = operations
+    callable_effects: &ProjectionCallableEffectFacts,
+    public_instance_operation_public_signatures: &BTreeMap<
+        String,
+        CanonicalPublicCallableSignature,
+    >,
+) -> Result<ServiceOperationEntries, ProjectionError> {
+    let callable_facts_index = ProjectionCallableFactsIndex::new(file_ir_units, callable_effects);
+    let projected_entries = operations
         .iter()
         .map(|artifact_operation| {
             let resolved = resolve_projected_operation(
@@ -136,12 +152,50 @@ pub fn service_operation_entries(
                         executable_symbol
                     ),
                 })?;
-            let may_suspend =
-                resolved.executable_may_suspend(file_ir_unit, executable_index, &executable_symbol);
+            let executable = usize::try_from(executable_index)
+                .ok()
+                .and_then(|index| file_ir_unit.executables.get(index))
+                .ok_or_else(|| ProjectionError::ImplementationConformance {
+                    message: format!(
+                        "operation {}: executable index {} for {}.{} is out of bounds",
+                        artifact_operation.operation,
+                        executable_index,
+                        resolved.implementation_module(),
+                        executable_symbol
+                    ),
+                })?;
+            let callable_facts = callable_facts_index.for_symbol(
+                &file_ir_unit.module_path,
+                resolved.effect_source_symbol(),
+                &format!("operation {}", artifact_operation.operation),
+            )?;
+            if executable.may_suspend != callable_facts.may_suspend() {
+                return Err(ProjectionError::ImplementationConformance {
+                    message: format!(
+                        "operation {}: linked executable {}.{} maySuspend {} does not match callable owner maySuspend {}",
+                        artifact_operation.operation,
+                        resolved.implementation_module(),
+                        executable_symbol,
+                        executable.may_suspend,
+                        callable_facts.may_suspend()
+                    ),
+                });
+            }
+            let callable_public_signature = callable_facts.receiver_public_signature();
+            let may_suspend = callable_facts.may_suspend();
             let uses_adapter = resolved.uses_non_receiver_adapter();
-            Ok::<OperationEntryIr, ProjectionError>(OperationEntryIr {
+            let operation_abi_id = resolved.operation_abi_id(
+                &artifact_operation.operation,
+                &callable_public_signature,
+            );
+            let public_signature = resolved.public_signature(
+                &operation_abi_id,
+                public_instance_operation_public_signatures,
+                &callable_public_signature,
+            )?;
+            let entry = OperationEntryIr {
                 operation: artifact_operation.operation.clone(),
-                operation_abi_id: resolved.operation_abi_id(&artifact_operation.operation),
+                operation_abi_id,
                 entrypoint: artifact_operation.target.clone(),
                 mode: mode.to_string(),
                 may_suspend,
@@ -165,19 +219,59 @@ pub fn service_operation_entries(
                 parameters,
                 return_type,
                 response,
-                summary: effect_summary(),
-            })
+                summary: operation_effect_projection(callable_facts.effects),
+            };
+            Ok::<_, ProjectionError>((entry, public_signature))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = Vec::with_capacity(projected_entries.len() + entry_operations.len());
+    let mut public_signatures = BTreeMap::new();
+    for (entry, public_signature) in projected_entries {
+        insert_operation_public_signature(
+            &mut public_signatures,
+            &entry.operation_abi_id,
+            public_signature,
+        )?;
+        entries.push(entry);
+    }
     for entry_operation in entry_operations {
-        entries.push(entry_operation_entry(
+        let (entry, public_signature) = entry_operation_entry(
             entry_operation,
             contract_projection,
             projection_index,
             file_ir_units,
-        )?);
+            &callable_facts_index,
+        )?;
+        insert_operation_public_signature(
+            &mut public_signatures,
+            &entry.operation_abi_id,
+            public_signature,
+        )?;
+        entries.push(entry);
     }
-    Ok(entries)
+    Ok(ServiceOperationEntries {
+        entries,
+        public_signatures,
+    })
+}
+
+fn insert_operation_public_signature(
+    public_signatures: &mut BTreeMap<String, CanonicalPublicCallableSignature>,
+    operation_abi_id: &str,
+    public_signature: CanonicalPublicCallableSignature,
+) -> Result<(), ProjectionError> {
+    if let Some(existing) =
+        public_signatures.insert(operation_abi_id.to_string(), public_signature.clone())
+    {
+        if existing != public_signature {
+            return Err(ProjectionError::ContractValidation {
+                message: format!(
+                    "operation ABI id `{operation_abi_id}` has conflicting public signatures"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 enum ResolvedProjectedOperation<'a> {
@@ -261,6 +355,15 @@ impl<'a> ResolvedProjectedOperation<'a> {
         }
     }
 
+    fn effect_source_symbol(&self) -> &str {
+        match self {
+            Self::Contract { implementation, .. } => implementation.executable_symbol.as_str(),
+            Self::PublicInstance {
+                executable_symbol, ..
+            } => executable_symbol.as_str(),
+        }
+    }
+
     fn receiver_type(&self) -> &str {
         match self {
             Self::Contract { implementation, .. } => implementation.type_name.as_str(),
@@ -283,22 +386,6 @@ impl<'a> ResolvedProjectedOperation<'a> {
                 (file_ir_unit.module_path == target.file_ref.module_path)
                     .then_some(u64::from(target.executable_index))
             }
-        }
-    }
-
-    fn executable_may_suspend(
-        &self,
-        file_ir_unit: &FileIrUnit,
-        executable_index: u64,
-        executable_symbol: &str,
-    ) -> bool {
-        match self {
-            Self::Contract { .. } => executable_may_suspend(file_ir_unit, executable_symbol),
-            Self::PublicInstance { .. } => usize::try_from(executable_index)
-                .ok()
-                .and_then(|index| file_ir_unit.executables.get(index))
-                .map(|executable| executable.may_suspend)
-                .unwrap_or(true),
         }
     }
 
@@ -419,16 +506,56 @@ impl<'a> ResolvedProjectedOperation<'a> {
         }
     }
 
-    fn operation_abi_id(&self, operation_name: &str) -> String {
+    fn operation_abi_id(
+        &self,
+        operation_name: &str,
+        public_signature: &CanonicalPublicCallableSignature,
+    ) -> String {
         match self {
-            Self::Contract { operation, .. } => {
-                contract_public_function_operation_abi_id(operation_name, operation)
+            Self::Contract { .. } => {
+                contract_public_function_operation_abi_id(operation_name, public_signature)
             }
             Self::PublicInstance {
                 instance,
                 operation,
                 ..
             } => runtime_operation_abi_id(instance, operation),
+        }
+    }
+
+    fn public_signature(
+        &self,
+        operation_abi_id: &str,
+        public_instance_operation_public_signatures: &BTreeMap<
+            String,
+            CanonicalPublicCallableSignature,
+        >,
+        callable_public_signature: &CanonicalPublicCallableSignature,
+    ) -> Result<CanonicalPublicCallableSignature, ProjectionError> {
+        match self {
+            Self::Contract { .. } => Ok(callable_public_signature.clone()),
+            Self::PublicInstance { operation, .. } => {
+                let public_signature = public_instance_operation_public_signatures
+                    .get(operation_abi_id)
+                    .cloned()
+                    .ok_or_else(|| ProjectionError::ContractValidation {
+                        message: format!(
+                            "public instance operation `{}` ABI id `{operation_abi_id}` is missing its canonical public signature",
+                            operation.operation.public_path
+                        ),
+                    })?;
+                if &public_signature != callable_public_signature {
+                    return Err(ProjectionError::ImplementationConformance {
+                        message: format!(
+                            "public instance operation `{}` public signature does not match callable owner signature; projected {:?}, callable {:?}",
+                            operation.operation.public_path,
+                            public_signature,
+                            callable_public_signature
+                        ),
+                    });
+                }
+                Ok(public_signature)
+            }
         }
     }
 }
@@ -676,7 +803,8 @@ fn entry_operation_entry(
     contract_projection: &ContractProjection,
     projection_index: &ContractProjectionIndex<'_>,
     file_ir_units: &[FileIrUnit],
-) -> Result<OperationEntryIr, ProjectionError> {
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
+) -> Result<(OperationEntryIr, CanonicalPublicCallableSignature), ProjectionError> {
     let file_ir_unit = file_ir_units
         .iter()
         .find(|unit| unit.module_path == operation.implementation_module)
@@ -703,6 +831,12 @@ fn entry_operation_entry(
             ),
         }
     })?;
+    let effect_source_symbol = operation.callable.display_symbol();
+    let callable_facts = callable_facts_index.for_symbol(
+        &file_ir_unit.module_path,
+        &effect_source_symbol,
+        &format!("operation {}", operation.operation),
+    )?;
     let executable = usize::try_from(executable_index)
         .ok()
         .and_then(|index| file_ir_unit.executables.get(index))
@@ -736,7 +870,35 @@ fn entry_operation_entry(
             ),
         });
     }
-    let may_suspend = executable_may_suspend(file_ir_unit, &executable_symbol);
+    if executable.may_suspend != callable_facts.may_suspend() {
+        return Err(ProjectionError::ImplementationConformance {
+            message: format!(
+                "operation {}: linked executable {}.{} maySuspend {} does not match callable owner maySuspend {}",
+                operation.operation,
+                operation.implementation_module,
+                executable_symbol,
+                executable.may_suspend,
+                callable_facts.may_suspend()
+            ),
+        });
+    }
+    let may_suspend = callable_facts.may_suspend();
+    if may_suspend != operation.may_suspend {
+        return Err(ProjectionError::ImplementationConformance {
+            message: format!(
+                "operation {}: projected entrypoint maySuspend {} does not match File IR executable {}.{} maySuspend {}",
+                operation.operation,
+                operation.may_suspend,
+                operation.implementation_module,
+                executable_symbol,
+                may_suspend
+            ),
+        });
+    }
+    let callable_public_signature = match &operation.callable {
+        EntryOperationCallable::ImplMethod { .. } => callable_facts.receiver_public_signature(),
+        EntryOperationCallable::Function { .. } => callable_facts.public_signature(),
+    };
     let implementation = match &operation.callable {
         EntryOperationCallable::ImplMethod { .. } => OperationImplementationIr {
             module_path: operation.implementation_module.clone(),
@@ -759,39 +921,44 @@ fn entry_operation_entry(
             function: Some(name.clone()),
         },
     };
-    Ok(OperationEntryIr {
-        operation: operation.operation.clone(),
-        operation_abi_id: entry_operation_abi_id(
-            &operation.operation,
-            &operation.params,
-            &operation.return_type,
-        ),
-        entrypoint: Some(operation.target.clone()),
-        mode: mode.to_string(),
-        may_suspend,
-        interface_name: None,
-        interface_module_path: None,
-        interface_source_role: None,
-        interface_exported: Some(false),
-        implementation,
-        parameters: source_operation_params(
-            &operation.params,
-            contract_projection,
-            projection_index,
-            &operation.implementation_module,
-        ),
-        return_type: contract_projection.runtime_descriptor_for_source_type_ref(
-            projection_index,
-            &operation.implementation_module,
-            &return_type,
-        ),
-        response: contract_projection.schema_for_source_type_ref(
-            projection_index,
-            &operation.implementation_module,
-            &return_type,
-        ),
-        summary: effect_summary_for_signature(&operation.return_type.ir),
-    })
+    Ok((
+        OperationEntryIr {
+            operation: operation.operation.clone(),
+            operation_abi_id: entry_operation_abi_id_from_public_signature(
+                &operation.operation,
+                &callable_public_signature,
+            ),
+            entrypoint: Some(operation.target.clone()),
+            mode: mode.to_string(),
+            may_suspend,
+            interface_name: None,
+            interface_module_path: None,
+            interface_source_role: None,
+            interface_exported: Some(false),
+            implementation,
+            parameters: source_operation_params(
+                &operation.params,
+                contract_projection,
+                projection_index,
+                &operation.implementation_module,
+            ),
+            return_type: contract_projection.runtime_descriptor_for_source_type_ref(
+                projection_index,
+                &operation.implementation_module,
+                &return_type,
+            ),
+            response: contract_projection.schema_for_source_type_ref(
+                projection_index,
+                &operation.implementation_module,
+                &return_type,
+            ),
+            summary: operation_effect_projection_for_signature(
+                callable_facts.effects,
+                &operation.return_type.ir,
+            ),
+        },
+        callable_public_signature,
+    ))
 }
 
 fn source_operation_params(
@@ -917,14 +1084,6 @@ pub fn interface_modules(
         );
     }
     modules
-}
-
-fn executable_may_suspend(file_ir_unit: &FileIrUnit, symbol: &str) -> bool {
-    executable_index(file_ir_unit, symbol)
-        .and_then(|index| usize::try_from(index).ok())
-        .and_then(|index| file_ir_unit.executables.get(index))
-        .map(|executable| executable.may_suspend)
-        .unwrap_or(true)
 }
 
 fn executable_index(file_ir_unit: &FileIrUnit, symbol: &str) -> Option<u64> {

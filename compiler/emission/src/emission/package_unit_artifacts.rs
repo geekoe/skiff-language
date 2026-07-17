@@ -1,4 +1,7 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::Serialize;
+use skiff_artifact_identity::validate_package_unit_identities;
 use skiff_artifact_model::{FileIrRef, PackageUnit, PACKAGE_UNIT_SCHEMA_VERSION};
 use skiff_compiler_core::id::PublicationId;
 use skiff_compiler_core::json_utils::value_sha256;
@@ -7,8 +10,10 @@ use crate::emission::artifact::{
     PublishedFileIrArtifact, PublishedJsonArtifact, PublishedResourceArtifact,
 };
 use crate::emission::artifact_assembly::{PackageVersionIndexModel, PublishedPackageArtifacts};
-use crate::emission::identity::assign_package_unit_identities;
-use crate::emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts};
+use crate::emission::resources::{
+    normalized_resource_artifacts, publish_resource_artifacts,
+    validated_resource_artifacts_by_content,
+};
 use crate::error::EmissionError;
 use crate::error::Result;
 use crate::projection::package_unit_artifacts::ProjectedPackageIrArtifacts;
@@ -20,21 +25,46 @@ pub struct PublishedPackageIrArtifacts {
     pub resource_blobs: Vec<PublishedResourceArtifact>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterializedPackageUnitArtifact {
+    pub unit: PackageUnit,
+    pub artifact: PublishedJsonArtifact,
+    pub resource_blobs: Vec<PublishedResourceArtifact>,
+}
+
 pub fn publish_package_ir_artifacts(
     package: &PublishedPackageArtifacts,
     projected: &ProjectedPackageIrArtifacts,
 ) -> Result<PublishedPackageIrArtifacts> {
-    let mut unit = projected.unit.clone();
     let resource_blobs = publish_resource_artifacts(&projected.resources)?;
-    attach_published_file_paths_to_package_unit(&mut unit.files, &package.file_ir_units)?;
-    attach_resource_artifact_paths(&mut unit.resources, &resource_blobs)?;
-    assign_package_unit_identities(&mut unit)?;
-    let package_unit = package_unit_artifact(&unit);
+    let materialized = materialize_package_unit_artifact(
+        &projected.unit,
+        &package.file_ir_units,
+        &resource_blobs,
+    )?;
 
     Ok(PublishedPackageIrArtifacts {
-        package_unit,
-        unit,
+        package_unit: materialized.artifact,
+        unit: materialized.unit,
         file_ir_units: package.file_ir_units.clone(),
+        resource_blobs: materialized.resource_blobs,
+    })
+}
+
+pub fn materialize_package_unit_artifact(
+    projected: &PackageUnit,
+    files: &[PublishedFileIrArtifact],
+    resource_blobs: &[PublishedResourceArtifact],
+) -> Result<MaterializedPackageUnitArtifact> {
+    let mut unit = projected.clone();
+    let resource_blobs = normalized_resource_artifacts(resource_blobs)?;
+    attach_published_file_paths_to_package_unit(&mut unit.files, files)?;
+    attach_resource_paths_to_package_unit(&mut unit.resources, &resource_blobs)?;
+    validate_package_unit_identities(&unit)?;
+    let artifact = package_unit_artifact(&unit)?;
+    Ok(MaterializedPackageUnitArtifact {
+        unit,
+        artifact,
         resource_blobs,
     })
 }
@@ -43,10 +73,77 @@ fn attach_published_file_paths_to_package_unit(
     refs: &mut [FileIrRef],
     artifacts: &[PublishedFileIrArtifact],
 ) -> Result<()> {
-    let by_identity = artifacts
-        .iter()
-        .map(|artifact| (artifact.identity.as_str(), artifact))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut expected = BTreeMap::new();
+    for file_ref in refs.iter() {
+        if expected
+            .insert(
+                file_ref.file_ir_identity.as_str(),
+                file_ref.module_path.as_str(),
+            )
+            .is_some()
+        {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "package unit contains duplicate File IR ref {}",
+                    file_ref.file_ir_identity
+                ),
+            });
+        }
+    }
+    let mut by_identity = BTreeMap::new();
+    for artifact in artifacts {
+        if artifact.identity != artifact.unit.file_ir_identity {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published File IR {} identity does not match typed unit identity {}",
+                    artifact.identity, artifact.unit.file_ir_identity
+                ),
+            });
+        }
+        if artifact.module_path != artifact.unit.module_path {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published File IR {} module {} does not match typed unit module {}",
+                    artifact.identity, artifact.module_path, artifact.unit.module_path
+                ),
+            });
+        }
+        if artifact.path.trim().is_empty() {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published File IR {} has an empty artifact path",
+                    artifact.identity
+                ),
+            });
+        }
+        let Some(expected_module) = expected.get(artifact.identity.as_str()) else {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published File IR {} module {} is not referenced by the package unit",
+                    artifact.identity, artifact.module_path
+                ),
+            });
+        };
+        if *expected_module != artifact.module_path {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "package unit File IR {} module {} does not match published module {}",
+                    artifact.identity, expected_module, artifact.module_path
+                ),
+            });
+        }
+        if by_identity
+            .insert(artifact.identity.as_str(), artifact)
+            .is_some()
+        {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published File IR identity {} is duplicated",
+                    artifact.identity
+                ),
+            });
+        }
+    }
     for file_ref in refs {
         let Some(artifact) = by_identity.get(file_ref.file_ir_identity.as_str()) else {
             return Err(EmissionError::ContractValidation {
@@ -62,19 +159,54 @@ fn attach_published_file_paths_to_package_unit(
     Ok(())
 }
 
-fn package_unit_artifact(unit: &PackageUnit) -> PublishedJsonArtifact {
+fn attach_resource_paths_to_package_unit(
+    refs: &mut [skiff_artifact_model::PublicationResourceRef],
+    artifacts: &[PublishedResourceArtifact],
+) -> Result<()> {
+    let by_hash_and_len = validated_resource_artifacts_by_content(artifacts)?;
+    let mut used = BTreeSet::new();
+    for resource_ref in refs {
+        let key = (resource_ref.sha256.as_str(), resource_ref.byte_len);
+        let Some(artifact) = by_hash_and_len.get(&key) else {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "package resource {} has no emitted blob sha256 {} size {}",
+                    resource_ref.path, resource_ref.sha256, resource_ref.byte_len
+                ),
+            });
+        };
+        resource_ref.artifact_path = Some(artifact.artifact_path.clone());
+        used.insert(key);
+    }
+    for artifact in artifacts {
+        let key = (artifact.sha256.as_str(), artifact.byte_len);
+        if !used.contains(&key) {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "published resource blob {} is not referenced by package unit",
+                    artifact.artifact_path
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn package_unit_artifact(unit: &PackageUnit) -> Result<PublishedJsonArtifact> {
     let value = serde_json::to_value(unit).expect("PackageUnit must serialize");
     let hash = value_sha256(&value);
     let package_path = PublicationId::parse(&unit.package_id)
-        .expect("package id was validated before artifact projection")
+        .map_err(|error| EmissionError::ContractValidation {
+            message: format!("package unit id {} is invalid: {error}", unit.package_id),
+        })?
         .artifact_path();
     let path = format!("units/packages/{package_path}/{hash}.json");
-    PublishedJsonArtifact {
+    Ok(PublishedJsonArtifact {
         value,
         identity: unit.build_identity.clone(),
         hash,
         path,
-    }
+    })
 }
 
 pub fn package_index_with_package_unit(
@@ -131,128 +263,4 @@ impl<'a> PackageUnitPointer<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use skiff_artifact_identity::{package_abi_identity, package_build_identity};
-    use skiff_artifact_model::PublicationResourceRef;
-    use skiff_compiler_core::json_utils::sha256_hex;
-
-    use super::*;
-    use crate::{
-        emission::resources::{attach_resource_artifact_paths, publish_resource_artifacts},
-        projection::package_unit_artifacts::ProjectedPublicationResource,
-    };
-
-    #[test]
-    fn resource_blob_and_unit_json_refs_are_emitted_as_raw_artifacts() {
-        let temp = TempDir::new("resource-blob-unit-json");
-        let resource_path = temp.write("prompts/system.md", b"hello resource");
-        let sha256 = sha256_hex(b"hello resource");
-        let resource = ProjectedPublicationResource {
-            path: "prompts/system.md".to_string(),
-            absolute_path: resource_path,
-            byte_len: 14,
-            sha256: sha256.clone(),
-            content_type: None,
-        };
-        let mut unit = PackageUnit::empty("example.com/pkg", "1.0.0", "", "");
-        unit.resources = vec![resource_ref("prompts/system.md", &sha256, 14)];
-
-        let resource_blobs =
-            publish_resource_artifacts(&[resource]).expect("resource blob should publish");
-        attach_resource_artifact_paths(&mut unit.resources, &resource_blobs)
-            .expect("resource refs should attach");
-        assign_package_unit_identities(&mut unit).expect("package identities");
-        let package_unit = package_unit_artifact(&unit);
-
-        assert_eq!(resource_blobs.len(), 1);
-        assert_eq!(
-            resource_blobs[0].artifact_path,
-            format!("resources/sha256/{sha256}")
-        );
-        assert_eq!(resource_blobs[0].sha256, sha256);
-        assert_eq!(resource_blobs[0].byte_len, 14);
-        assert_eq!(resource_blobs[0].bytes, b"hello resource");
-        assert_eq!(
-            package_unit.value["resources"][0]["artifactPath"],
-            resource_blobs[0].artifact_path
-        );
-        assert!(package_unit.value["resources"][0].get("bytes").is_none());
-    }
-
-    #[test]
-    fn resource_content_changes_package_build_identity_not_abi_identity() {
-        let first = package_unit_with_resource(b"first resource");
-        let second = package_unit_with_resource(b"second resource");
-
-        assert_ne!(
-            package_build_identity(&first).expect("first build identity"),
-            package_build_identity(&second).expect("second build identity")
-        );
-        assert_eq!(
-            package_abi_identity(&first).expect("first ABI identity"),
-            package_abi_identity(&second).expect("second ABI identity")
-        );
-    }
-
-    fn package_unit_with_resource(bytes: &[u8]) -> PackageUnit {
-        let sha256 = sha256_hex(bytes);
-        let mut unit = PackageUnit::empty("example.com/pkg", "1.0.0", "", "");
-        unit.resources = vec![PublicationResourceRef {
-            path: "prompts/system.md".to_string(),
-            sha256: sha256.clone(),
-            byte_len: bytes.len() as u64,
-            content_type: None,
-            artifact_path: Some(format!("resources/sha256/{sha256}")),
-        }];
-        assign_package_unit_identities(&mut unit).expect("package identities");
-        unit
-    }
-
-    fn resource_ref(path: &str, sha256: &str, byte_len: u64) -> PublicationResourceRef {
-        PublicationResourceRef {
-            path: path.to_string(),
-            sha256: sha256.to_string(),
-            byte_len,
-            content_type: None,
-            artifact_path: None,
-        }
-    }
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "skiff-emission-{label}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).expect("temp dir");
-            Self { path }
-        }
-
-        fn write(&self, relative_path: &str, bytes: &[u8]) -> PathBuf {
-            let path = self.path.join(Path::new(relative_path));
-            fs::create_dir_all(path.parent().expect("resource parent")).expect("resource parent");
-            fs::write(&path, bytes).expect("resource write");
-            path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-}
+mod tests;

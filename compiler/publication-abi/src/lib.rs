@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::{
+    canonical_interface_instantiation_key, canonical_interface_method_abi_id,
+    interface_instantiation_ref_for_type_ref,
+};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref_for_type_ref,
     CanonicalPublicCallableSignature, ExecutableSignatureIr, InterfaceInstantiationRef,
     InterfaceMethodSignature, OperationAbiRef, OperationCallableKind, PackageExportIndex,
     PackageImplementationLinks, PackageOperationTarget, PublicInstanceExport,
@@ -354,8 +357,7 @@ fn public_instance_operation_interfaces<'a>(
 }
 
 fn interface_key(interface: &InterfaceInstantiationRef) -> String {
-    serde_json::to_string(interface)
-        .expect("interface instantiation ref must serialize for publication ABI helper")
+    canonical_interface_instantiation_key(interface)
 }
 
 pub fn public_instance_operation_method_name(operation: &PublicInstanceOperation) -> String {

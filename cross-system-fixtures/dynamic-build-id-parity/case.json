@@ -679,8 +679,8 @@
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-alpha",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:992dd841ba86b1b29bd907f37832fad7364a44646be8b59a59cfe6ed9bcb18be",
-      "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+      "buildIdentity": "skiff-package-build-v2:sha256:4740f1593c50092e7b1c0614c2547e3b5675ac19e30a68f1fe6c432a3050097f",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:02e9e89f3315e5aa53fb3c7b2f6dafd4308d76140d99c943a3d7214387dc269d",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-alpha",
@@ -774,6 +774,9 @@
             "fields": {},
             "schemaVersion": "skiff-config-shape-v1"
           }
+        },
+        "effects": {
+          "operations": {}
         }
       }
     },
@@ -781,8 +784,8 @@
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-beta",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:73b784f2edf7221d47ea5b7a8eaa607e26868500c63cab193da8535b32a56fa9",
-      "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+      "buildIdentity": "skiff-package-build-v2:sha256:b628dea7776a0699d5a24f48a897d55a02c670b5255fdd43354cfa06d9e8be81",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:b7cf2f4ab2689b286f3f2415b6f0c08d27136ce9a1cf4abdbc421286794d5833",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-beta",
@@ -854,14 +857,18 @@
           }
         }
       ],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/pkg-leaf/1.0.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-leaf",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:d284ae579dc6c9d9afa7c99a5b8f3a03ea5401131fb5027a82a8ee11898f1aa3",
-      "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+      "buildIdentity": "skiff-package-build-v2:sha256:8bbf501c35f5633c0f81f726a918be4262ffb0ef18088ff1649238f87bf1f0e1",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:ff28a8b5e0b0adb82a99b3e74b3cba7d685d6d5ba77c40c7136fcc5d5ebb4420",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-leaf",
@@ -869,14 +876,18 @@
         "abiIdentity": "skiff-publication-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e"
       },
       "files": [],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/pkg-shared/1.0.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "example.com/pkg-shared",
       "version": "1.0.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:abc9a76d44c6c626e0c494f076d0a04bd88a901bdb11d3c11a1e30ea5966cc9a",
-      "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+      "buildIdentity": "skiff-package-build-v2:sha256:02952095c63ec8526cae0c61711749c273f29ecfea6c986fc04b2a9e191084b1",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:521f6cbfa026a7fde4bf373f98308aca666bbb047dc6d2d05839e604c47afcf3",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/pkg-shared",
@@ -894,14 +905,18 @@
           }
         }
       ],
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/packages/skiff~run~~std/0.1.0.json": {
       "schemaVersion": "skiff-package-unit-v1",
       "packageId": "skiff.run/std",
       "version": "0.1.0",
-      "buildIdentity": "skiff-package-build-v1:sha256:458d04cb913f352956f4b417a41bf0d2782a6f430c4f6070a046ae4749aef6c2",
-      "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+      "buildIdentity": "skiff-package-build-v2:sha256:e94cad044596d9e1f5f57b749b1d51f86c809bf75a9dd5c9035cb58776f18ebd",
+      "abiIdentity": "skiff-package-local-abi-v2:sha256:298e0d0d7256748afa0953b78a61c80e408abc5422939ea22c0aa6e01d06a06e",
       "publicationAbi": {
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "skiff.run/std",
@@ -950,7 +965,11 @@
           }
         }
       },
-      "configAndEffectMetadata": {}
+      "configAndEffectMetadata": {
+        "effects": {
+          "operations": {}
+        }
+      }
     },
     "units/services/example~com~~dynamic-golden/2026.06.04.json": {
       "schemaVersion": "skiff-service-unit-v1",
@@ -968,30 +987,30 @@
         "schemaVersion": "skiff-publication-abi-unit-v1",
         "publicationId": "example.com/dynamic-golden",
         "version": "2026.06.04",
-        "abiIdentity": "skiff-publication-abi-v1:sha256:dd07836e47f47ee9f095deb133729182e495eb556fb058ca405e860ac12a1009",
+        "abiIdentity": "skiff-publication-abi-v1:sha256:49484496b3fe2a14917048fb64c36f024489bc10a01e8caa15aa6592d424cdee",
         "operationExports": [
           {
-            "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:run",
+            "operationAbiId": "skiff-operation-abi-v1:sha256:8b5d49fa73aba5143be7ab014587d79f923ad0ebbef888f0e5602db43588fee7",
             "kind": "publicFunction",
             "publicPath": "run",
             "displayName": "run"
           },
           {
-            "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+            "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
             "kind": "publicInstanceMethod",
             "publicPath": "managedLlmService.call",
             "publicInstanceKey": "managedLlmService",
             "interface": {
-              "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+              "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
             },
-            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
             "displayName": "managedLlmService.call"
           }
         ],
         "operationAbi": [
           {
             "operation": {
-              "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:run",
+              "operationAbiId": "skiff-operation-abi-v1:sha256:8b5d49fa73aba5143be7ab014587d79f923ad0ebbef888f0e5602db43588fee7",
               "kind": "publicFunction",
               "publicPath": "run",
               "displayName": "run"
@@ -1027,14 +1046,14 @@
           },
           {
             "operation": {
-              "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+              "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
               "kind": "publicInstanceMethod",
               "publicPath": "managedLlmService.call",
               "publicInstanceKey": "managedLlmService",
               "interface": {
-                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
               },
-              "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+              "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
               "displayName": "managedLlmService.call"
             },
             "publicSignature": {
@@ -1063,21 +1082,21 @@
           {
             "sourceCallPath": "managedLlmService.call",
             "operation": {
-              "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+              "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
               "kind": "publicInstanceMethod",
               "publicPath": "managedLlmService.call",
               "publicInstanceKey": "managedLlmService",
               "interface": {
-                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
               },
-              "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+              "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
               "displayName": "managedLlmService.call"
             }
           },
           {
             "sourceCallPath": "run",
             "operation": {
-              "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:run",
+              "operationAbiId": "skiff-operation-abi-v1:sha256:8b5d49fa73aba5143be7ab014587d79f923ad0ebbef888f0e5602db43588fee7",
               "kind": "publicFunction",
               "publicPath": "run",
               "displayName": "run"
@@ -1089,35 +1108,35 @@
             "publicInstanceKey": "managedLlmService",
             "interfaces": [
               {
-                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
               }
             ],
             "sourceCallMethodIndex": [
               {
                 "methodName": "call",
                 "operation": {
-                  "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+                  "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
                   "kind": "publicInstanceMethod",
                   "publicPath": "managedLlmService.call",
                   "publicInstanceKey": "managedLlmService",
                   "interface": {
-                    "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                    "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
                   },
-                  "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+                  "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
                   "displayName": "managedLlmService.call"
                 }
               }
             ],
             "methodOperations": [
               {
-                "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+                "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
                 "kind": "publicInstanceMethod",
                 "publicPath": "managedLlmService.call",
                 "publicInstanceKey": "managedLlmService",
                 "interface": {
-                  "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                  "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
                 },
-                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
                 "displayName": "managedLlmService.call"
               }
             ]
@@ -1226,7 +1245,7 @@
         {
           "id": "example.com/pkg-alpha",
           "version": "1.0.0",
-          "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+          "abiIdentity": "skiff-package-local-abi-v2:sha256:02e9e89f3315e5aa53fb3c7b2f6dafd4308d76140d99c943a3d7214387dc269d",
           "usedSymbols": [
             {
               "symbolPath": "handle",
@@ -1241,7 +1260,7 @@
         {
           "id": "example.com/pkg-beta",
           "version": "1.0.0",
-          "abiIdentity": "skiff-package-abi-v1:sha256:d10c71abc562ee9c1cde1e6485514c411bee33134f11e0249e6e60b5cc0ad90e",
+          "abiIdentity": "skiff-package-local-abi-v2:sha256:b7cf2f4ab2689b286f3f2415b6f0c08d27136ce9a1cf4abdbc421286794d5833",
           "usedSymbols": [
             {
               "symbolPath": "handle",
@@ -1258,7 +1277,7 @@
         {
           "kind": "localExecutable",
           "operation": {
-            "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:run",
+            "operationAbiId": "skiff-operation-abi-v1:sha256:8b5d49fa73aba5143be7ab014587d79f923ad0ebbef888f0e5602db43588fee7",
             "kind": "publicFunction",
             "publicPath": "run",
             "displayName": "run"
@@ -1278,14 +1297,14 @@
         {
           "kind": "localReceiverExecutable",
           "operation": {
-            "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+            "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
             "kind": "publicInstanceMethod",
             "publicPath": "managedLlmService.call",
             "publicInstanceKey": "managedLlmService",
             "interface": {
-              "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+              "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
             },
-            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
             "displayName": "managedLlmService.call"
           },
           "receiverExecutable": {
@@ -1311,7 +1330,7 @@
               "callableAbiId": "callable:svc.main.managedLlmService.call",
               "callableKind": "implMethod"
             },
-            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+            "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
             "receiverCallAbi": "explicitSelfFirst"
           }
         }
@@ -1339,21 +1358,21 @@
                   "packageId": "example.com/pkg-alpha"
                 },
                 "symbolPath": "ManagedLlmService",
-                "abiExpectation": "skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                "abiExpectation": "skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
               }
             }
           ],
           "operations": [
             {
               "operation": {
-                "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:managedLlmService.call",
+                "operationAbiId": "skiff-operation-abi-v1:sha256:5aa67840a74b2e8ba3917518c4fbbfb07881185b2c49cec6b7795789d474b47a",
                 "kind": "publicInstanceMethod",
                 "publicPath": "managedLlmService.call",
                 "publicInstanceKey": "managedLlmService",
                 "interface": {
-                  "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+                  "interfaceAbiId": "{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
                 },
-                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
                 "displayName": "managedLlmService.call"
               },
               "receiverExecutable": {
@@ -1379,7 +1398,7 @@
                   "callableAbiId": "callable:svc.main.managedLlmService.call",
                   "callableKind": "implMethod"
                 },
-                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
+                "methodAbiId": "method:{\"kind\":\"packageSymbol\",\"symbol\":{\"package\":{\"kind\":\"packageId\",\"packageId\":\"example.com/pkg-alpha\"},\"symbolPath\":\"ManagedLlmService\",\"abiExpectation\":\"skiff-package-local-abi-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}:call",
                 "receiverCallAbi": "explicitSelfFirst"
               }
             }
@@ -1538,7 +1557,7 @@
         "routes": {
           "run": {
             "operation": "run",
-            "operationAbiId": "operation:example.com/dynamic-golden:2026.06.04:run",
+            "operationAbiId": "skiff-operation-abi-v1:sha256:8b5d49fa73aba5143be7ab014587d79f923ad0ebbef888f0e5602db43588fee7",
             "method": "POST",
             "path": "/run"
           }
@@ -1578,8 +1597,8 @@
     }
   },
   "description": "Runtime program dynamicBuildId parity across compiler publish, runtime, and router; covers std normal record, std normal union, and native type refs.",
-  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:c82c57f07cb332497b6823eea3e70511498ab436420c150a73d4b24c3972ee91",
-  "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:7118adcde6527723d1b75401529538dcda3c333922b56abbac1bca62c7ae9388",
+  "expectedDynamicBuildId": "skiff-service-build-v1:sha256:88ad1295c2a757abce6f666a4f79dc588b3809906b70cb7bb6ba3cc505d7e349",
+  "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:1ecd6fa259a0795b75040876db89c0a2dee194efca7755be970b132328822be6",
   "pointerBuildId": "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "schemaVersion": 1,
   "serviceId": "example.com/dynamic-golden",

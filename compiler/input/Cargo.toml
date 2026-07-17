@@ -8,6 +8,7 @@ publish = false
 too_many_lines = "warn"
 
 [dependencies]
+skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-compiler-core = { path = "../core" }
 skiff-compiler-input-model = { path = "../input-model" }

@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use serde_json::{json, Map, Value};
@@ -25,13 +24,9 @@ use crate::{
 use skiff_runtime_activation::RuntimeActivation;
 
 use super::{
-    assembly_identity::{
-        validate_service_assembly_identity, validate_service_assembly_path_identity,
-    },
     identity::identity_hash_with_label,
     program_loader::{LoadedRuntimeProgramParts, RuntimeProgramPartsLoader},
     service_http::parse_service_http_response_max_bytes,
-    utils::read_json_file,
 };
 
 const LOCAL_DEV_CONFIG_PROFILE: &str = "dev";
@@ -98,20 +93,28 @@ pub(super) async fn load_services_from_rooted_artifact_pointers_with_caches(
             );
         }
 
-        let service_assembly_artifact_path =
-            ArtifactRootRelativePath::new(&entry.service_assembly.path, "serviceAssembly")?;
+        let validated_artifacts = skiff_artifact_identity::validate_service_artifact_closure(
+            &artifact_root,
+            &entry.service_id,
+            entry.service_version.as_deref(),
+            &entry.service_assembly.assembly_identity,
+            &entry.service_assembly.assembly_path,
+            &entry.service_unit,
+            &entry.package_units,
+        )?;
+        let loaded = runtime_program_loader
+            .load_validated_pointer_parts_with_service_unit(&validated_artifacts)?;
+        let service_assembly_artifact_path = ArtifactRootRelativePath::parse(
+            &validated_artifacts.service_assembly.path,
+            "serviceAssembly",
+        )?;
         let service_assembly_path = resolve_index_artifact_path(
             &artifact_root,
             &service_assembly_artifact_path,
             "serviceAssembly",
         )?;
-        let assembly = read_json_file(&service_assembly_path, "serviceAssembly")?;
-        let artifact_identity = validate_service_assembly_identity(&entry, &assembly)?;
-        validate_service_assembly_path_identity(
-            &entry.service_assembly.path,
-            &entry.service_id,
-            &artifact_identity,
-        )?;
+        let assembly = validated_artifacts.service_assembly.value;
+        let artifact_identity = validated_artifacts.assembly_identity;
         let short_sha = identity_hash_with_label(&artifact_identity, "serviceAssembly")?
             .get(..12)
             .ok_or_else(|| anyhow::anyhow!("serviceAssembly identity hash is unexpectedly short"))?
@@ -128,12 +131,15 @@ pub(super) async fn load_services_from_rooted_artifact_pointers_with_caches(
             );
         }
 
-        let (service_unit, program_parts) = runtime_program_parts_for_pointer(
-            &runtime_program_loader,
-            &entry,
-            &assembly,
-            &service_assembly_path,
-        )?;
+        let service_unit = loaded.service_unit;
+        let program_parts = loaded.parts;
+        if program_parts.identity.dynamic_build_id != validated_artifacts.dynamic_build_id {
+            anyhow::bail!(
+                "validated runtime program build id {} does not match loaded graph build id {}",
+                validated_artifacts.dynamic_build_id,
+                program_parts.identity.dynamic_build_id
+            );
+        }
         let revision_id = service_revision_id_from_assembly(&assembly, &service_assembly_path)?;
         validate_typed_service_metadata(&entry, &service_unit, &program_parts)?;
         let contract_identity = entry
@@ -941,33 +947,6 @@ fn service_assembly_config_shape(
     Ok(shape)
 }
 
-fn runtime_program_parts_for_pointer(
-    loader: &RuntimeProgramPartsLoader<'_>,
-    entry: &ArtifactIndexPointer,
-    assembly: &Value,
-    service_assembly_path: &Path,
-) -> anyhow::Result<(Arc<ServiceUnit>, LoadedRuntimeProgramParts)> {
-    if entry.service_unit_path.is_none() && !service_assembly_declares_service_unit(assembly) {
-        anyhow::bail!(
-            "{} does not declare canonical serviceUnit.unitPath; production runtime loading requires typed ServiceUnit",
-            service_assembly_path.display()
-        );
-    }
-    let loaded = loader
-        .load_pointer_parts_with_service_unit(entry)
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "failed to load runtime program parts for {} via serviceUnit: {error:#}",
-                service_assembly_path.display()
-            )
-        })?;
-    Ok((loaded.service_unit, loaded.parts))
-}
-
-fn service_assembly_declares_service_unit(assembly: &Value) -> bool {
-    assembly.get("serviceUnit").is_some()
-}
-
 fn validate_typed_service_metadata(
     entry: &ArtifactIndexPointer,
     service_unit: &ServiceUnit,
@@ -1052,11 +1031,15 @@ mod tests {
         collections::HashMap,
         fs,
         path::{Path, PathBuf},
+        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use serde_json::{json, Value};
-    use skiff_artifact_identity::{file_ir_identity, package_abi_identity, package_build_identity};
+    use skiff_artifact_identity::{
+        file_ir_identity, package_build_identity, package_local_abi_identity,
+        publication_abi_identity,
+    };
     use skiff_artifact_model::{MetadataValue, PackageDependencyConstraint};
     use tokio::sync::mpsc;
 
@@ -1064,14 +1047,17 @@ mod tests {
     use crate::{
         host::{RouterWriterMessage, RuntimeConfig, RuntimeHost},
         loader::{
-            assembly_identity::service_assembly_hash_input, identity::identity_hash_with_label,
-            load_services_from_artifact_roots_with_default, value_sha256, ArtifactLoadOptions,
-            SERVICE_ASSEMBLY_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX,
+            identity::identity_hash_with_label,
+            load_services_from_artifact_roots_with_default,
+            test_artifacts::{
+                read_json, service_assembly_path, write_package_unit_ref,
+                write_service_assembly_ref, write_service_unit_ref,
+            },
+            ArtifactLoadOptions, SERVICE_BUILD_IDENTITY_PREFIX,
         },
         program::RuntimeProgramLayers,
     };
     use skiff_runtime_boundary::type_descriptor::{RuntimeTypePlan, RuntimeTypePlanDescriptorExt};
-    use skiff_runtime_loader::ServiceAssemblyPointer;
     use skiff_runtime_request::RequestEnvelope;
     use skiff_runtime_transport::protocol::{
         decode_typed_binary_frame, RuntimeRegisterFrameHeader,
@@ -1106,27 +1092,13 @@ mod tests {
 
         write_file_ir(&root, "units/files/service.json");
         write_service_unit(&root, "units/services/account.json");
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
-
         let services = load_services_from_artifact_pointers(
             &root,
             "runtime-base",
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, false),
             }],
         )
         .await
@@ -1309,7 +1281,6 @@ mod tests {
         write_service_unit_with_package_dependency(&root, "units/services/account.json");
         write_package_index(&root, "skiff.run/pkg", "v1", "units/packages/pkg.json");
         write_package_unit(&root, "units/packages/pkg.json");
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
         let mongo_url = "mongodb://127.0.0.1:27017/skiff-runtime-local";
         write_yaml(
             &root,
@@ -1336,19 +1307,7 @@ mod tests {
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, true),
             }],
         )
         .await
@@ -1406,7 +1365,6 @@ mod tests {
                 ]
             }),
         );
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
         write_yaml(
             &root,
             "configs/services/skiff~run~~account/config.yml",
@@ -1484,19 +1442,7 @@ mod tests {
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, true),
             }],
         )
         .await
@@ -1553,27 +1499,13 @@ mod tests {
         write_service_unit_with_package_dependency(&root, "units/services/account.json");
         write_package_index(&root, "skiff.run/pkg", "v1", "units/packages/pkg.json");
         write_package_unit(&root, "units/packages/pkg.json");
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
-
         let services = load_services_from_artifact_pointers(
             &root,
             "runtime-base",
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, true),
             }],
         )
         .await
@@ -1623,27 +1555,13 @@ mod tests {
                 ]
             }),
         );
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
-
         let error = match load_services_from_artifact_pointers(
             &root,
             "runtime-base",
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, true),
             }],
         )
         .await
@@ -1667,7 +1585,6 @@ mod tests {
 
         write_file_ir(&root, "units/files/service.json");
         write_service_unit(&root, "units/services/account.json");
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
         write_yaml(
             &root,
             "configs/services/skiff~run~~account/config.yml",
@@ -1686,19 +1603,7 @@ mod tests {
             crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             vec![ArtifactPointerFile {
                 path: root.join("build-record.json"),
-                entry: ArtifactIndexPointer {
-                    service_id: "skiff.run/account".to_string(),
-                    service_version: Some("v1".to_string()),
-                    build_id: POINTER_BUILD_ID.to_string(),
-                    contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
-                    implementation_identity: None,
-                    service_unit_path: None,
-                    service_assembly: ServiceAssemblyPointer {
-                        path: PathBuf::from("local/assembly.json"),
-                        assembly_identity: Some(assembly_identity),
-                    },
-                    package_units: None,
-                },
+                entry: canonical_artifact_pointer(&root, false),
             }],
         )
         .await
@@ -2094,34 +1999,12 @@ mod tests {
 
     fn write_service_assembly_with_revision(
         root: &Path,
-        relative_path: &str,
+        _relative_path: &str,
         revision_id: &str,
     ) -> String {
-        let mut assembly = json!({
-            "schemaVersion": "skiff-service-assembly-v1",
-            "kind": "service",
-            "service": {
-                "id": "skiff.run/account",
-                "revisionId": revision_id,
-                "protocolIdentity": PROTOCOL_IDENTITY
-            },
-            "serviceUnit": {
-                "unitPath": "units/services/account.json"
-            },
-            "files": [],
-            "operations": [],
-            "gateway": {},
-            "configShape": empty_config_shape_json()
-        });
-        let hash = value_sha256(
-            &service_assembly_hash_input(&assembly)
-                .expect("service assembly hash input should build"),
-        )
-        .expect("service assembly hash should compute");
-        let assembly_identity = format!("{SERVICE_ASSEMBLY_IDENTITY_PREFIX}:sha256:{hash}");
-        assembly["service"]["assemblyIdentity"] = Value::String(assembly_identity.clone());
-        write_json(root, relative_path, assembly);
-        assembly_identity
+        canonical_artifact_pointer_with_revision(root, false, revision_id)
+            .service_assembly
+            .assembly_identity
     }
 
     fn write_dev_pointer(root: &Path, assembly_identity: &str) {
@@ -2133,20 +2016,26 @@ mod tests {
             .rsplit_once(":sha256:")
             .expect("protocol identity should contain sha256")
             .1;
+        let assembly_path = service_assembly_path("skiff.run/account", assembly_identity);
+        let assembly = read_json(root, &assembly_path);
+        let service_unit = assembly["serviceUnit"].clone();
         write_json(
             root,
             "dev/services/skiff~run~~account.json",
             json!({
                 "mode": "dev",
                 "serviceId": "skiff.run/account",
+                "serviceVersion": "v1",
                 "profile": "test",
                 "protocolIdentity": PROTOCOL_IDENTITY,
                 "contractHash": format!("sha256:{protocol_hash}"),
                 "buildId": format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{assembly_hash}"),
                 "serviceAssembly": {
                     "assemblyIdentity": assembly_identity,
-                    "assemblyPath": "local/assembly.json"
-                }
+                    "assemblyPath": assembly_path
+                },
+                "serviceUnit": service_unit,
+                "packageUnits": []
             }),
         );
     }
@@ -2159,6 +2048,9 @@ mod tests {
         let build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{assembly_hash}");
         let build_hash =
             identity_hash_with_label(&build_id, "buildId").expect("build id hash should compute");
+        let assembly_path = service_assembly_path("skiff.run/account", assembly_identity);
+        let assembly = read_json(root, &assembly_path);
+        let service_unit = assembly["serviceUnit"].clone();
         write_json(
             root,
             "versions/services/skiff~run~~account/v1.json",
@@ -2180,8 +2072,10 @@ mod tests {
                 "contractIdentity": PROTOCOL_IDENTITY,
                 "serviceAssembly": {
                     "assemblyIdentity": assembly_identity,
-                    "assemblyPath": "local/assembly.json"
-                }
+                    "assemblyPath": assembly_path
+                },
+                "serviceUnit": service_unit,
+                "packageUnits": []
             }),
         );
     }
@@ -2394,6 +2288,7 @@ mod tests {
     }
 
     fn write_package_unit_with_metadata(root: &Path, relative_path: &str, metadata: Value) {
+        let config = metadata.get("config").cloned().unwrap_or_else(|| json!({}));
         write_json(
             root,
             relative_path,
@@ -2411,9 +2306,54 @@ mod tests {
                 "files": [],
                 "implementationLinks": {},
                 "dependencies": [],
-                "configAndEffectMetadata": metadata
+                "configAndEffectMetadata": {
+                    "config": config,
+                    "effects": { "operations": {} }
+                }
             }),
         );
+    }
+
+    fn canonical_artifact_pointer(root: &Path, include_package: bool) -> ArtifactIndexPointer {
+        canonical_artifact_pointer_with_revision(root, include_package, SERVICE_REVISION_ID)
+    }
+
+    fn canonical_artifact_pointer_with_revision(
+        root: &Path,
+        include_package: bool,
+        revision_id: &str,
+    ) -> ArtifactIndexPointer {
+        let service_ref =
+            write_service_unit_ref(root, "skiff.run/account", "units/services/account.json");
+        let service_value = read_json(root, &service_ref.unit_path);
+        let service_unit: ServiceUnit =
+            serde_json::from_value(service_value).expect("test service unit should deserialize");
+
+        let package_units = if include_package {
+            vec![write_package_unit_ref(root, "units/packages/pkg.json")
+                .expect("test package unit ref should compute")]
+        } else {
+            Vec::new()
+        };
+        let service_assembly = write_service_assembly_ref(
+            root,
+            "skiff.run/account",
+            revision_id,
+            &service_unit.protocol_identity,
+            &service_ref,
+            Some(empty_config_shape_json()),
+        );
+
+        ArtifactIndexPointer {
+            service_id: "skiff.run/account".to_string(),
+            service_version: Some("v1".to_string()),
+            build_id: POINTER_BUILD_ID.to_string(),
+            contract_identity: Some(PROTOCOL_IDENTITY.to_string()),
+            implementation_identity: None,
+            service_unit: service_ref,
+            service_assembly,
+            package_units,
+        }
     }
 
     fn storage_segment_for_test(publication_id: &str) -> String {
@@ -2455,12 +2395,18 @@ mod tests {
                 value
             }
             Some("skiff-package-unit-v1") => {
+                let publication_abi: skiff_artifact_model::PublicationAbiUnit =
+                    serde_json::from_value(value["publicationAbi"].clone())
+                        .expect("test publication ABI should parse");
+                value["publicationAbi"]["abiIdentity"] =
+                    json!(publication_abi_identity(&publication_abi)
+                        .expect("test publication ABI identity should compute"));
                 let unit: skiff_artifact_model::PackageUnit =
                     serde_json::from_value(value.clone()).expect("test package unit should parse");
                 value["buildIdentity"] =
                     json!(package_build_identity(&unit).expect("package build identity"));
                 value["abiIdentity"] =
-                    json!(package_abi_identity(&unit).expect("package ABI identity"));
+                    json!(package_local_abi_identity(&unit).expect("package ABI identity"));
                 value
             }
             Some("skiff-service-unit-v1") => {

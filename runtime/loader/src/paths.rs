@@ -1,71 +1,15 @@
-use std::{
-    fmt, fs,
-    path::{Component, Display, Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ArtifactRootRelativePath {
-    path: PathBuf,
-}
-
-impl ArtifactRootRelativePath {
-    pub fn new(path: impl AsRef<Path>, label: &str) -> anyhow::Result<Self> {
-        let path = path.as_ref();
-        if !is_safe_artifact_root_relative_path(path) {
-            anyhow::bail!(
-                "{} path {} must be relative and stay inside artifacts root",
-                label,
-                path.display()
-            );
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-        })
-    }
-
-    pub fn parse(path: &str, label: &str) -> anyhow::Result<Self> {
-        Self::new(Path::new(path), label)
-    }
-
-    pub fn as_path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn display(&self) -> Display<'_> {
-        self.path.display()
-    }
-}
-
-impl fmt::Display for ArtifactRootRelativePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.path.display())
-    }
-}
+pub use skiff_artifact_identity::ArtifactRelativePath as ArtifactRootRelativePath;
 
 pub fn resolve_index_artifact_path(
     artifact_root: &Path,
     artifact_path: &ArtifactRootRelativePath,
     label: &str,
 ) -> anyhow::Result<PathBuf> {
-    let root = fs::canonicalize(artifact_root).map_err(|error| {
-        anyhow::anyhow!(
-            "failed to resolve artifacts root {}: {error}",
-            artifact_root.display()
-        )
-    })?;
-    let path = root.join(artifact_path.as_path());
-    let canonical_path = fs::canonicalize(&path)
-        .map_err(|error| anyhow::anyhow!("failed to resolve {}: {error}", path.display()))?;
-    if !canonical_path.starts_with(&root) {
-        anyhow::bail!(
-            "{} path {} escapes artifacts root {}",
-            label,
-            artifact_path,
-            root.display()
-        );
-    }
-
-    Ok(canonical_path)
+    artifact_path
+        .resolve_existing(artifact_root, label)
+        .map_err(anyhow::Error::from)
 }
 
 pub fn service_id_artifact_path(service_id: &str) -> anyhow::Result<PathBuf> {
@@ -83,76 +27,7 @@ pub(crate) fn service_id_artifact_json_path(service_id: &str) -> anyhow::Result<
 }
 
 pub(crate) fn publication_storage_segment(value: &str, label: &str) -> anyhow::Result<String> {
-    validate_publication_id(value, label)?;
-    Ok(value.replace('.', "~").replace('/', "~~"))
-}
-
-fn validate_publication_id(value: &str, label: &str) -> anyhow::Result<()> {
-    if value.is_empty() || value.len() > 63 || value == "std" {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    if value != value.trim()
-        || value.bytes().any(|byte| byte.is_ascii_control())
-        || value.contains("://")
-        || value.starts_with('/')
-        || value.ends_with('/')
-        || value.contains("//")
-        || value.contains('~')
-        || value
-            .bytes()
-            .any(|byte| !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/'))
-    {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-
-    let Some((authority, local)) = value.split_once('/') else {
-        anyhow::bail!("{label} {value} must be a publication id");
-    };
-    validate_authority(authority, label, value)?;
-    if local.is_empty()
-        || local
-            .split('/')
-            .any(|segment| !is_valid_local_segment(segment))
-    {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    Ok(())
-}
-
-fn validate_authority(authority: &str, label: &str, value: &str) -> anyhow::Result<()> {
-    let labels = authority.split('.').collect::<Vec<_>>();
-    if labels.len() < 2 || labels.iter().any(|item| !is_valid_authority_label(item)) {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    Ok(())
-}
-
-fn is_valid_authority_label(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    !bytes.is_empty()
-        && bytes[0] != b'-'
-        && bytes.last() != Some(&b'-')
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-}
-
-fn is_valid_local_segment(segment: &str) -> bool {
-    let bytes = segment.as_bytes();
-    !bytes.is_empty()
-        && bytes[0].is_ascii_lowercase()
-        && bytes.last() != Some(&b'-')
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
-        })
-}
-
-fn is_safe_artifact_root_relative_path(path: &Path) -> bool {
-    if path.as_os_str().is_empty() || path.is_absolute() {
-        return false;
-    }
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
+    skiff_artifact_identity::publication_storage_segment(value, label).map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]

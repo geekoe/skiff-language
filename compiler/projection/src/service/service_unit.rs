@@ -6,34 +6,38 @@ use super::signature_matching::{
     executable_signature_params, signature_type_ref_matches, SignatureTypeRefContext,
 };
 use crate::{
+    callable_facts::ProjectionCallableFactsIndex,
     context::ProjectedPackageDependency,
     contract::{ContractProjection, ContractProjectionIndex},
-    contract_schema::descriptor::RuntimeTypeDescriptorIr,
     error::ProjectionError,
+    package_references::file_ir_units_reference_package,
+    package_unit_artifacts::{package_dependency_constraint, std_package_dependency_constraint},
     runtime::{
         service_operation_adapter_symbol, EntryOperationCallable, EntryOperationSpec, GatewayEntry,
         OperationEntryIr, TimeoutEntry,
     },
     typed_artifacts::{
         public_instance_method_operation_abi_id, GatewayConfig, GatewayRoute, GatewayWebSocket,
-        InterfaceMethodSignature, OperationConstReceiverRef, OperationMode, OperationParam,
-        OperationTargetRef, PackageAbiExpectation, PackageDependencyConstraint, PackageUsedSymbol,
-        PackageUsedSymbolKind, PublicInstanceExport, PublicInstanceOperation,
+        OperationConstReceiverRef, OperationMode, OperationTargetRef, PackageAbiExpectation,
+        PackageDependencyConstraint, PublicInstanceExport, PublicInstanceOperation,
         ServiceConfigMetadata, ServiceOperation,
     },
 };
+use skiff_artifact_identity::{
+    canonical_interface_instantiation_key, canonical_interface_method_abi_id,
+    interface_instantiation_ref, interface_instantiation_ref_for_type_ref, type_ref_abi_key,
+};
 use skiff_artifact_model::{
-    canonical_interface_method_abi_id, interface_instantiation_ref,
-    interface_instantiation_ref_for_type_ref, type_ref_abi_key, BlockIr, BoxSourceIr, CallIr,
-    CallTargetIr, CanonicalPublicCallableSignature, DbBodyIr, DbChangeOpIr, DbOperationIr,
-    DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, ExecutableBody,
-    ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, ExprIr,
-    ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
-    InterfaceInstantiationRef, InterfaceMethodTablePlanIr, LocalReceiverExecutableRef,
-    MetadataValue, OperationAbiRef, OperationCallableKind, PackageRefIr, PackageSymbolRef,
-    PackageUnit, ParamIr, PatternIr, PublicationOperationKind, ReceiverCallAbi,
-    ServiceOperationTarget, ServiceReceiverOperationTarget, ServiceSymbolRef, SlotIr, SlotKind,
-    SlotLayout, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    BlockIr, BoxSourceIr, CallIr, CallTargetIr, CanonicalPublicCallableSignature, DbBodyIr,
+    DbChangeOpIr, DbOperationIr, DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr,
+    ExecutableBody, ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr,
+    ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
+    InterfaceInstantiationRef, InterfaceMethodSignature, InterfaceMethodTablePlanIr,
+    LocalReceiverExecutableRef, MetadataValue, OperationAbiRef, OperationCallableKind,
+    PackageRefIr, PackageSymbolRef, PackageUnit, PackageUsedSymbol, PackageUsedSymbolKind, ParamIr,
+    PatternIr, PublicationOperationKind, ReceiverCallAbi, ServiceOperationTarget,
+    ServiceReceiverOperationTarget, ServiceSymbolRef, SlotIr, SlotKind, SlotLayout, StmtIr,
+    StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_core::naming::impl_method_declaration_name;
 use skiff_compiler_core::package_interface_methods::instantiate_interface_method_signatures;
@@ -42,10 +46,6 @@ use skiff_compiler_projection_input::{
     ExportPublicInstanceInterfaceProjection, ExportPublicInstanceProjection,
     PackageProjectionInput, ProjectionView,
 };
-
-fn type_ref_from_runtime_descriptor(descriptor: &RuntimeTypeDescriptorIr) -> TypeRefIr {
-    descriptor.to_type_ref_for_service_unit()
-}
 
 pub fn service_package_dependency_constraints(
     declared_dependencies: &[ProjectedPackageDependency],
@@ -66,138 +66,16 @@ pub fn service_package_dependency_constraints(
             Some(dependency)
         })
         .collect::<Vec<_>>();
-    if file_ir_units_reference_std_package(service_file_units)
-        && !constraints
-            .iter()
-            .any(|dependency| dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
+    if file_ir_units_reference_package(
+        service_file_units,
+        skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID,
+    ) && !constraints
+        .iter()
+        .any(|dependency| dependency.id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
     {
         constraints.push(std_package_dependency_constraint());
     }
     constraints
-}
-
-fn package_dependency_constraint(
-    dependency: &ProjectedPackageDependency,
-) -> PackageDependencyConstraint {
-    PackageDependencyConstraint {
-        id: dependency.id.clone(),
-        version: dependency.version.clone(),
-        alias: dependency.effective_alias().to_string(),
-        config: dependency.config.clone(),
-    }
-}
-
-fn std_package_dependency_constraint() -> PackageDependencyConstraint {
-    PackageDependencyConstraint {
-        id: skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID.to_string(),
-        version: "1.0.0".to_string(),
-        alias: "std".to_string(),
-        config: crate::context::empty_dependency_config(),
-    }
-}
-
-fn file_ir_units_reference_std_package<'a>(
-    file_ir_units: impl IntoIterator<Item = &'a FileIrUnit>,
-) -> bool {
-    file_ir_units.into_iter().any(|file| {
-        file_unit_references_package(file, skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID)
-    })
-}
-
-fn file_unit_references_package(file: &FileIrUnit, package_id: &str) -> bool {
-    file.external_refs
-        .package_symbols
-        .iter()
-        .any(|symbol| package_symbol_references_package(symbol, package_id))
-        || file.type_table.iter().any(|ty| {
-            type_descriptor_references_package(&ty.descriptor, package_id)
-                || ty
-                    .implements
-                    .iter()
-                    .any(|implemented| type_ref_references_package(implemented, package_id))
-        })
-        || file.executables.iter().any(|executable| {
-            executable
-                .params
-                .iter()
-                .any(|param| type_ref_references_package(&param.ty, package_id))
-                || type_ref_references_package(&executable.return_type, package_id)
-                || executable
-                    .self_type
-                    .as_ref()
-                    .is_some_and(|ty| type_ref_references_package(ty, package_id))
-        })
-}
-
-fn type_descriptor_references_package(descriptor: &TypeDescriptorIr, package_id: &str) -> bool {
-    match descriptor {
-        TypeDescriptorIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_references_package(field, package_id)),
-        TypeDescriptorIr::Alias { target } => type_ref_references_package(target, package_id),
-        TypeDescriptorIr::Union { variants } => variants
-            .iter()
-            .any(|variant| type_ref_references_package(variant, package_id)),
-        TypeDescriptorIr::Native { .. } => false,
-    }
-}
-
-fn type_ref_references_package(ty: &TypeRefIr, package_id: &str) -> bool {
-    match ty {
-        TypeRefIr::PackageSymbol { symbol } => {
-            package_symbol_references_package(symbol, package_id)
-        }
-        TypeRefIr::Native { args, .. } => args
-            .iter()
-            .any(|arg| type_ref_references_package(arg, package_id)),
-        TypeRefIr::Record { fields } => fields
-            .values()
-            .any(|field| type_ref_references_package(field, package_id)),
-        TypeRefIr::Union { items } => items
-            .iter()
-            .any(|item| type_ref_references_package(item, package_id)),
-        TypeRefIr::Nullable { inner } => type_ref_references_package(inner, package_id),
-        TypeRefIr::AnyInterface { interface } => {
-            interface_instantiation_references_package(interface, package_id)
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            params
-                .iter()
-                .any(|param| type_ref_references_package(&param.ty, package_id))
-                || type_ref_references_package(return_type, package_id)
-        }
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => false,
-    }
-}
-
-fn interface_instantiation_references_package(
-    interface: &InterfaceInstantiationRef,
-    package_id: &str,
-) -> bool {
-    serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
-        .ok()
-        .is_some_and(|ty| type_ref_references_package(&ty, package_id))
-        || interface
-            .canonical_type_args
-            .iter()
-            .any(|arg| type_ref_references_package(arg, package_id))
-}
-
-fn package_symbol_references_package(symbol: &PackageSymbolRef, package_id: &str) -> bool {
-    match &symbol.package {
-        PackageRefIr::PackageId {
-            package_id: candidate,
-        } => candidate == package_id,
-        PackageRefIr::Dependency { .. } => false,
-    }
 }
 
 pub fn service_config_metadata(
@@ -1319,16 +1197,25 @@ fn record_package_used_operation(
     Ok(())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ServicePublicInstances {
+    pub exports: Vec<PublicInstanceExport>,
+    pub operation_public_signatures: StdBTreeMap<String, CanonicalPublicCallableSignature>,
+}
+
 pub fn service_unit_public_instances(
     input: ProjectionView<'_>,
     contract: &ContractProjection,
     index: &ContractProjectionIndex<'_>,
     package_dependencies: &[ProjectedPackageDependency],
-) -> Result<Vec<PublicInstanceExport>, ProjectionError> {
+) -> Result<ServicePublicInstances, ProjectionError> {
     let signature_context =
         SignatureTypeRefContext::from_package_dependencies(package_dependencies);
+    let callable_facts_index =
+        ProjectionCallableFactsIndex::new(input.file_ir_units(), input.source().callable_effects());
     let mut names_by_source = StdBTreeMap::<String, String>::new();
     let mut instances = Vec::new();
+    let mut operation_public_signatures = StdBTreeMap::new();
 
     for public_instance in input.source().export_bindings().public_instances().values() {
         let public_instance_key = public_instance.public_path.as_str();
@@ -1390,14 +1277,31 @@ pub fn service_unit_public_instances(
             });
         }
 
-        let operations = public_instance_operations(
+        let projected_operations = public_instance_operations(
             index,
             &signature_context,
+            &callable_facts_index,
             public_instance_key,
             &receiver,
             &receiver_const,
             &implemented_interfaces,
         )?;
+        let mut operations = Vec::with_capacity(projected_operations.len());
+        for projected in projected_operations {
+            let operation_abi_id = projected.operation.operation.operation_abi_id.clone();
+            if let Some(existing) = operation_public_signatures
+                .insert(operation_abi_id.clone(), projected.public_signature.clone())
+            {
+                if existing != projected.public_signature {
+                    return Err(ProjectionError::ContractValidation {
+                        message: format!(
+                            "public instance operation ABI id `{operation_abi_id}` has conflicting public signatures"
+                        ),
+                    });
+                }
+            }
+            operations.push(projected.operation);
+        }
         instances.push(PublicInstanceExport {
             name: public_instance_key.to_string(),
             module_path: unit.module_path.clone(),
@@ -1410,7 +1314,10 @@ pub fn service_unit_public_instances(
         });
     }
 
-    Ok(instances)
+    Ok(ServicePublicInstances {
+        exports: instances,
+        operation_public_signatures,
+    })
 }
 
 fn public_instance_receiver_type_ref(
@@ -1558,8 +1465,7 @@ fn public_instance_listed_interfaces(
                 &interface_display,
                 listed_interface,
             )?;
-            let interface_key =
-                serde_json::to_string(&instantiation).expect("interface ref must serialize");
+            let interface_key = canonical_interface_instantiation_key(&instantiation);
             if !seen.insert(interface_key) {
                 return Err(ProjectionError::ContractValidation {
                     message: format!(
@@ -1613,8 +1519,7 @@ fn public_instance_listed_interfaces(
             });
         };
         let instantiation = interface_instantiation_ref_for_type_ref(&package_interface_identity);
-        let interface_key =
-            serde_json::to_string(&instantiation).expect("interface ref must serialize");
+        let interface_key = canonical_interface_instantiation_key(&instantiation);
         if !seen.insert(interface_key) {
             return Err(ProjectionError::ContractValidation {
                 message: format!(
@@ -1914,14 +1819,21 @@ fn receiver_type_ref(receiver: &ServiceSymbolRef) -> TypeRefIr {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ProjectedPublicInstanceOperation {
+    operation: PublicInstanceOperation,
+    public_signature: CanonicalPublicCallableSignature,
+}
+
 fn public_instance_operations(
     index: &ContractProjectionIndex<'_>,
     signature_context: &SignatureTypeRefContext,
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
     public_instance_name: &str,
     receiver: &ServiceSymbolRef,
     receiver_const: &OperationConstReceiverRef,
     implemented_interfaces: &[PublicImplementedInterface],
-) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
+) -> Result<Vec<ProjectedPublicInstanceOperation>, ProjectionError> {
     let mut operations = Vec::new();
     let mut operation_keys = StdBTreeMap::<String, PublicInstanceOperationKey>::new();
 
@@ -1932,6 +1844,7 @@ fn public_instance_operations(
                 public_instance_interface_operations(
                     index,
                     signature_context,
+                    callable_facts_index,
                     public_instance_name,
                     receiver,
                     receiver_const,
@@ -1942,18 +1855,19 @@ fn public_instance_operations(
         };
 
         for operation in projected {
-            let key = PublicInstanceOperationKey::from(&operation);
-            if let Some(existing) = operation_keys.get(&operation.operation.display_name) {
+            let key = PublicInstanceOperationKey::from(&operation.operation);
+            if let Some(existing) = operation_keys.get(&operation.operation.operation.display_name)
+            {
                 if existing != &key {
                     return Err(ProjectionError::ContractValidation {
                         message: format!(
                             "public instance `{public_instance_name}` derives conflicting operation `{}` from multiple interfaces",
-                            operation.operation.display_name
+                            operation.operation.operation.display_name
                         ),
                     });
                 }
             } else {
-                operation_keys.insert(operation.operation.display_name.clone(), key);
+                operation_keys.insert(operation.operation.operation.display_name.clone(), key);
                 operations.push(operation);
             }
         }
@@ -1965,12 +1879,13 @@ fn public_instance_operations(
 fn public_instance_interface_operations(
     index: &ContractProjectionIndex<'_>,
     signature_context: &SignatureTypeRefContext,
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
     public_instance_name: &str,
     receiver: &ServiceSymbolRef,
     receiver_const: &OperationConstReceiverRef,
     interface: &InterfaceInstantiationRef,
     methods: &[InterfaceMethodSignature],
-) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
+) -> Result<Vec<ProjectedPublicInstanceOperation>, ProjectionError> {
     let receiver_unit =
         index
             .unit_by_module_path(&receiver.module_path)
@@ -2013,26 +1928,37 @@ fn public_instance_interface_operations(
                 executable,
                 signature_context,
             )?;
-            let public_signature = public_callable_signature_from_interface_method(method);
+            let callable_facts = callable_facts_index.for_executable(
+                &receiver_unit.module_path,
+                executable_index,
+                &format!(
+                    "public instance `{public_instance_name}` operation {}.{}",
+                    receiver.module_path, target_symbol
+                ),
+            )?;
+            let public_signature = callable_facts.receiver_public_signature();
             let operation_ref = public_instance_operation_ref(
                 public_instance_name,
                 interface,
                 &method.name,
                 &public_signature,
             );
-            Ok(PublicInstanceOperation {
-                operation: operation_ref.clone(),
-                receiver_executable: local_receiver_executable_ref(
-                    receiver_const,
-                    receiver_unit,
-                    &target_symbol,
-                    executable_index,
-                    operation_ref
-                        .method_abi_id
-                        .as_deref()
-                        .unwrap_or(operation_ref.operation_abi_id.as_str()),
-                    OperationCallableKind::ImplMethod,
-                ),
+            Ok(ProjectedPublicInstanceOperation {
+                operation: PublicInstanceOperation {
+                    operation: operation_ref.clone(),
+                    receiver_executable: local_receiver_executable_ref(
+                        receiver_const,
+                        receiver_unit,
+                        &target_symbol,
+                        executable_index,
+                        operation_ref
+                            .method_abi_id
+                            .as_deref()
+                            .unwrap_or(operation_ref.operation_abi_id.as_str()),
+                        OperationCallableKind::ImplMethod,
+                    ),
+                },
+                public_signature,
             })
         })
         .collect()
@@ -2142,19 +2068,6 @@ fn public_instance_operation_ref(
         interface: Some(interface.clone()),
         method_abi_id: Some(method_abi_id),
         display_name: public_path,
-    }
-}
-
-fn public_callable_signature_from_interface_method(
-    method: &InterfaceMethodSignature,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: method.params.clone(),
-        return_type: method.return_type.clone(),
-        may_suspend: matches!(
-            operation_mode_for_type_ref(&method.return_type),
-            OperationMode::ServerStream
-        ),
     }
 }
 
@@ -2629,17 +2542,6 @@ fn operation_target_ref(
         callable_abi_id: format!("callable:{}.{}", unit.module_path, symbol),
         callable_kind,
     }
-}
-
-fn operation_params_from_entry(entry: &OperationEntryIr) -> Vec<OperationParam> {
-    entry
-        .parameters
-        .iter()
-        .map(|param| OperationParam {
-            name: param.name.clone(),
-            ty: type_ref_from_runtime_descriptor(&param.ty),
-        })
-        .collect()
 }
 
 fn executable_index_by_identity_and_symbol(

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_identity::{canonical_interface_method_abi_id_from_parts, type_ref_abi_key};
 use skiff_artifact_model::{
-    type_ref_abi_key, CanonicalPublicCallableSignature,
-    FunctionTypeParamIr as ArtifactFunctionTypeParamIr, OperationAbiRef, PackageOperationTarget,
-    ReceiverCallAbi, ServiceOperation, TypeRefIr,
+    CanonicalPublicCallableSignature, FunctionTypeParamIr as ArtifactFunctionTypeParamIr,
+    OperationAbiRef, PackageOperationTarget, ReceiverCallAbi, ServiceOperation, TypeRefIr,
 };
 
 use crate::{
@@ -508,16 +508,11 @@ pub(super) fn canonical_linked_interface_method_abi_id(
     interface: &crate::program::LinkedInterfaceInstantiationRef,
     method_name: &str,
 ) -> String {
-    if interface.canonical_type_args.is_empty() {
-        format!("method:{}:{method_name}", interface.interface_abi_id)
-    } else {
-        let type_args = serde_json::to_string(&interface.canonical_type_args)
-            .expect("canonical linked interface type args must serialize for method ABI key");
-        format!(
-            "method:{}:{type_args}:{method_name}",
-            interface.interface_abi_id
-        )
-    }
+    canonical_interface_method_abi_id_from_parts(
+        &interface.interface_abi_id,
+        &interface.canonical_type_args,
+        method_name,
+    )
 }
 
 pub(super) fn linked_type_ref_abi_key(

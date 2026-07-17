@@ -1,7 +1,6 @@
 //! Compiler 侧:从 `SourceDeclarationAnchor` 派生 ABI nominal id(T-P2a)。
 //!
-//! 本模块是 compiler 与 `artifact-model` ABI 类型层的桥接。它消费 compiler 内部的
-//! `SourceDeclarationAnchor` 类型,产出 `artifact-model` 的 `AbiTypeId` 等类型。
+//! 本模块是 compiler source anchor 到 canonical artifact identity API 的 typed adapter。
 //!
 //! # 依赖方向
 //!
@@ -16,11 +15,6 @@
 //!   version / build id。
 //! - 同 anchor + 同 type_args → 同 id;任何字段变 → id 变。
 //!
-//! # 跨 artifact canonical encoding(TODO,后续阶段)
-//!
-//! P2a 阶段的 key 编码是结构化 null-byte 分隔字节序列,满足"同 → 同,异 → 异"但尚未做
-//! sha256。跨 artifact 的稳定 canonical bytes 留给 `artifact-identity` crate(后续)。
-//!
 //! # impl method ABI 身份(保守落法,架构 L309)
 //!
 //! impl method 不独立持有顶层 declaration anchor。若需在此层表示 impl method,使用
@@ -29,10 +23,10 @@
 
 #![allow(dead_code)]
 
-use skiff_artifact_model::abi_identity::derive::{
+use skiff_artifact_identity::{
     abi_alias_id_from_source_anchor, abi_callable_id_from_source_anchor,
     abi_const_id_from_source_anchor, abi_instance_id_from_source_anchor,
-    abi_interface_id_from_source_anchor, abi_type_id_from_source_anchor, AbiSourceAnchorInput,
+    abi_interface_id_from_source_anchor, abi_type_id_from_source_anchor,
 };
 use skiff_artifact_model::{
     AbiAliasId, AbiCallableId, AbiConstId, AbiDeclarationKind, AbiInstanceId, AbiInterfaceId,
@@ -71,23 +65,6 @@ pub fn project_source_anchor(anchor: &SourceDeclarationAnchor) -> AbiSourceDecla
     }
 }
 
-/// `SourceDeclarationAnchor` 转 `AbiSourceAnchorInput`(供 derive 函数消费)。
-fn to_anchor_input(anchor: &SourceDeclarationAnchor) -> AbiSourceAnchorInput {
-    AbiSourceAnchorInput {
-        publication_id: anchor.publication().id().as_str().to_string(),
-        abi_epoch: anchor.publication().abi_epoch().value(),
-        module_path: anchor
-            .selector()
-            .module_path()
-            .segments()
-            .iter()
-            .map(|s| s.clone())
-            .collect(),
-        symbol: anchor.selector().symbol().as_str().to_string(),
-        kind: project_kind(anchor.kind()),
-    }
-}
-
 /// 从 `SourceDeclarationAnchor` + type args 派生 `AbiTypeId`。
 ///
 /// # 语义约束
@@ -102,16 +79,14 @@ pub fn abi_type_id_from_anchor(
     anchor: &SourceDeclarationAnchor,
     type_args: &[AbiTypeId],
 ) -> AbiTypeId {
-    let input = to_anchor_input(anchor);
-    abi_type_id_from_source_anchor(&input, type_args)
+    abi_type_id_from_source_anchor(&project_source_anchor(anchor), type_args)
 }
 
 /// 从 `SourceDeclarationAnchor` 派生 `AbiAliasId`。
 ///
 /// Alias 不建 `AbiTypeId`;按 target 展开(架构 L707-708)。
 pub fn abi_alias_id_from_anchor(anchor: &SourceDeclarationAnchor) -> AbiAliasId {
-    let input = to_anchor_input(anchor);
-    abi_alias_id_from_source_anchor(&input)
+    abi_alias_id_from_source_anchor(&project_source_anchor(anchor))
 }
 
 /// 从 `SourceDeclarationAnchor` 派生 `AbiInterfaceId`。
@@ -119,26 +94,22 @@ pub fn abi_interface_id_from_anchor(
     anchor: &SourceDeclarationAnchor,
     type_args: &[AbiTypeId],
 ) -> AbiInterfaceId {
-    let input = to_anchor_input(anchor);
-    abi_interface_id_from_source_anchor(&input, type_args)
+    abi_interface_id_from_source_anchor(&project_source_anchor(anchor), type_args)
 }
 
 /// 从 `SourceDeclarationAnchor` 派生 `AbiCallableId`。
 pub fn abi_callable_id_from_anchor(anchor: &SourceDeclarationAnchor) -> AbiCallableId {
-    let input = to_anchor_input(anchor);
-    abi_callable_id_from_source_anchor(&input)
+    abi_callable_id_from_source_anchor(&project_source_anchor(anchor))
 }
 
 /// 从 `SourceDeclarationAnchor` 派生 `AbiConstId`。
 pub fn abi_const_id_from_anchor(anchor: &SourceDeclarationAnchor) -> AbiConstId {
-    let input = to_anchor_input(anchor);
-    abi_const_id_from_source_anchor(&input)
+    abi_const_id_from_source_anchor(&project_source_anchor(anchor))
 }
 
 /// 从 `SourceDeclarationAnchor` 派生 `AbiInstanceId`。
 pub fn abi_instance_id_from_anchor(anchor: &SourceDeclarationAnchor) -> AbiInstanceId {
-    let input = to_anchor_input(anchor);
-    abi_instance_id_from_source_anchor(&input)
+    abi_instance_id_from_source_anchor(&project_source_anchor(anchor))
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ const rustImplementationSubjects = [
     leafSelector: 'foundation-rust-tests',
     phaseId: 'implementation:foundation:rust',
     packages: [
+      rustPackage('canonical-json', 'skiff-canonical-json'),
       rustPackage('artifact-model', 'skiff-artifact-model'),
       rustPackage('artifact-identity', 'skiff-artifact-identity'),
       rustPackage('syntax', 'skiff-syntax'),

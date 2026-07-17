@@ -1,6 +1,7 @@
 //! Runtime projection helpers used by publish orchestration and artifact
 //! assembly.
 
+mod entry_operation_abi;
 mod entrypoints;
 mod gateway;
 mod operation_effects;
@@ -22,11 +23,11 @@ pub use entrypoints::{
     PackageGatewayProjection,
 };
 pub use gateway::{gateway_entry, timeout_entry, GatewayEntry, TimeoutEntry};
-pub use operation_effects::effect_summary_for_signature;
+pub use operation_effects::operation_effect_projection_for_signature;
 pub use operation_validation::validate_runtime_operation_modes;
 pub use operations::{
     interface_modules, service_operation_adapter_symbol, service_operation_entries,
-    OperationEntryIr,
+    OperationEntryIr, ServiceOperationEntries,
 };
 pub use schema::{package_runtime_schema_for_type_ref, package_runtime_schema_for_type_spec};
 pub use service_operations::{

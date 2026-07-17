@@ -10,32 +10,33 @@ use crate::{
         source_graph::{CompilerSourceFile, Publication, PublicationSourceGraph},
         ManifestOwner, ManifestProvenance, PackageConfigError, PackageDependency,
         PackageManifestKey, PackageResolutionDirs, PublicationApiEntry, PublicationCompilePolicy,
-        PublicationManifest, ResolvedPackage, ResolvedPackageGraph, SourceTree, SourceTreeFile,
+        PublicationManifest, ResolvedPackageGraph, SourceTree, SourceTreeFile,
     },
     shared::publication_error::PublicationError,
     source_compile::{
-        CompileParsedPublicationSourcesInput, PublicationTypeSymbolIndex,
-        SourceConfigAndEffectMetadata, SourceConfigAndEffectMetadataBatchInput,
-        SourceConfigAndEffectMetadataInput, SourceEffectMetadata, SourceSymbolKey,
+        CompileParsedPublicationSourcesInput, PublicationTypeSymbolIndex, SourceConfigMetadata,
+        SourceConfigMetadataBatchInput, SourceConfigMetadataInput, SourceSymbolKey,
     },
 };
 use skiff_compiler_compiled::{
-    projection_input::{build_package_projection_inputs, build_projection_input},
-    CompiledPublication, PackagePublication,
+    projection_input::build_projection_input, CompiledPublication, PackagePublication,
 };
 use skiff_compiler_core::artifact::{
     ConfigAndEffectMetadata, PackageDependencyConstraint, PackageUnit,
 };
+use skiff_compiler_input::PublicationResourceSpec;
+use skiff_compiler_projection::package_unit_artifacts::config_metadata_from_config_projection;
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
     ConfigRequirementProjection, ConfigRequirementProvenanceProjection,
     ConfigRequirementPublicationProjection, ConfigRequirementScopeProjection,
     ConfigRequirementSetProjection, ConfigRequirementsSeed, ConfigSourcePositionProjection,
-    ConfigSourceSpanProjection,
+    ConfigSourceSpanProjection, PublicationResourceProjectionInput,
 };
 use skiff_syntax::ast::{Expr, SourceFile as AstSourceFile};
 use skiff_syntax::error::CompileError;
 
+mod package_resource_artifacts;
 pub mod package_test_artifacts;
 mod package_units;
 pub mod project_fixtures;
@@ -43,6 +44,10 @@ pub mod service_test_artifacts;
 
 pub const PACKAGE_CONFIG_FILE: &str = crate::input::PACKAGE_CONFIG_FILE;
 
+pub use package_resource_artifacts::{
+    compile_package_dependency_publications_for_test, package_unit_artifacts_for_test,
+    package_unit_artifacts_from_dependency_publications_for_test,
+};
 pub use package_test_artifacts::{
     list_package_test_assemblies, write_package_test_artifact_root,
     write_package_test_artifact_root_with_runtime_path_registration, TestPackageTestArtifactInput,
@@ -98,6 +103,7 @@ pub struct TestPackageManifest {
     pub version: String,
     pub api: Vec<TestPackageApiEntry>,
     pub dependencies: Vec<PackageDependency>,
+    pub resources: Vec<PublicationResourceSpec>,
     pub path: PathBuf,
     pub synthetic: bool,
 }
@@ -147,6 +153,7 @@ pub struct TestPackageUnitArtifact {
     pub package_version: String,
     pub package_dependencies: Vec<PackageDependencyConstraint>,
     pub production_files: Vec<PublishedFileIrArtifact>,
+    pub resource_blobs: Vec<crate::emission::artifact::PublishedResourceArtifact>,
     pub unit: PackageUnit,
 }
 
@@ -154,7 +161,7 @@ pub struct TestPackageUnitArtifact {
 pub struct TestPackageCompiledArtifacts {
     pub file_ir_artifacts: Vec<PublishedFileIrArtifact>,
     pub config_and_effect_metadata: ConfigAndEffectMetadata,
-    pub package_unit: Option<PackageUnit>,
+    pub package_unit_artifact: Option<TestPackageUnitArtifact>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,12 +173,14 @@ pub struct TestPackageCompiledArtifactsWithEntrypointMetadata {
 #[derive(Debug, Clone)]
 pub struct TestPackageDependencyPublications {
     package_publications: Vec<PackagePublication>,
+    resource_inputs: BTreeMap<(String, String), Vec<PublicationResourceProjectionInput>>,
 }
 
 impl TestPackageDependencyPublications {
     pub fn empty() -> Self {
         Self {
             package_publications: Vec::new(),
+            resource_inputs: BTreeMap::new(),
         }
     }
 
@@ -486,8 +495,8 @@ pub fn compile_parsed_only_package_ast_file_ir_artifacts_with_compiled_dependenc
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
     let entrypoint_config_and_effect_metadata =
-        crate::source_compile::source_config_and_effect_metadata_batches_from_parsed_sources(
-            SourceConfigAndEffectMetadataBatchInput {
+        crate::source_compile::source_config_metadata_batches_from_parsed_sources(
+            SourceConfigMetadataBatchInput {
                 diagnostic_root: package_root,
                 parsed_sources: &parsed_sources,
                 production_sources: &production_sources,
@@ -501,7 +510,7 @@ pub fn compile_parsed_only_package_ast_file_ir_artifacts_with_compiled_dependenc
             },
         )?
         .iter()
-        .map(config_and_effect_metadata_from_source_metadata)
+        .map(config_only_transport_metadata_from_source)
         .collect::<Result<Vec<_>, _>>()?;
     let compiled = crate::pipeline::compile_parsed_publication_sources(
         CompileParsedPublicationSourcesInput {
@@ -606,21 +615,20 @@ pub fn compile_package_ast_config_and_effect_metadata_with_compiled_dependency_p
     );
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
-    let source_metadata =
-        crate::source_compile::source_config_and_effect_metadata_from_parsed_sources(
-            SourceConfigAndEffectMetadataInput {
-                diagnostic_root: package_root,
-                parsed_sources: &parsed_sources,
-                production_sources: &production_sources,
-                package_dependencies: &manifest.dependencies,
-                dependency_package_config_facts: Some(&dependency_config_facts),
-                policy: PublicationCompilePolicy::Package {
-                    package_id: &manifest.id,
-                },
-                publication_api: None,
+    let source_metadata = crate::source_compile::source_config_metadata_from_parsed_sources(
+        SourceConfigMetadataInput {
+            diagnostic_root: package_root,
+            parsed_sources: &parsed_sources,
+            production_sources: &production_sources,
+            package_dependencies: &manifest.dependencies,
+            dependency_package_config_facts: Some(&dependency_config_facts),
+            policy: PublicationCompilePolicy::Package {
+                package_id: &manifest.id,
             },
-        )?;
-    config_and_effect_metadata_from_source_metadata(&source_metadata)
+            publication_api: None,
+        },
+    )?;
+    config_only_transport_metadata_from_source(&source_metadata)
 }
 
 pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_dependency_publications_for_test(
@@ -650,8 +658,8 @@ pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_depend
     );
     let dependency_config_facts =
         dependency_package_config_facts_from_source_package_facts(&package_facts);
-    crate::source_compile::source_config_and_effect_metadata_batches_from_parsed_sources(
-        SourceConfigAndEffectMetadataBatchInput {
+    crate::source_compile::source_config_metadata_batches_from_parsed_sources(
+        SourceConfigMetadataBatchInput {
             diagnostic_root: package_root,
             parsed_sources: &parsed_sources,
             production_sources: &production_sources,
@@ -665,7 +673,7 @@ pub fn compile_package_ast_config_and_effect_metadata_batch_with_compiled_depend
         },
     )?
     .iter()
-    .map(config_and_effect_metadata_from_source_metadata)
+    .map(config_only_transport_metadata_from_source)
     .collect()
 }
 
@@ -684,7 +692,7 @@ fn compile_package_ast_with_dependency_publications_inner_for_test(
             package_root,
             &compiler_sources,
             dependency_publications.as_slice(),
-        );
+        )?;
         let input = PublicationInput::Package(PackagePublicationInput::new(
             &publication,
             package_aliases,
@@ -694,12 +702,13 @@ fn compile_package_ast_with_dependency_publications_inner_for_test(
             input,
             dependency_publications.as_slice(),
         )?;
-        let package_unit = Some(package_unit_from_compiled_package_for_test(
-            &publication,
-            &compiled,
-            dependency_publications.as_slice(),
-        )?);
-        return test_package_compiled_artifacts(compiled, package_unit);
+        let package_unit_artifact = Some(
+            package_resource_artifacts::package_unit_from_compiled_package_for_test(
+                &publication,
+                &compiled,
+            )?,
+        );
+        return test_package_compiled_artifacts(compiled, package_unit_artifact);
     }
     let package_facts = crate::pipeline::source_compile_package_facts_from_publications(
         dependency_publications.as_slice(),
@@ -734,34 +743,30 @@ fn compiler_sources_from_test_sources(
 
 fn test_package_compiled_artifacts(
     compiled: CompiledPublication,
-    package_unit: Option<PackageUnit>,
+    package_unit_artifact: Option<TestPackageUnitArtifact>,
 ) -> Result<TestPackageCompiledArtifacts, PublicationError> {
     let projection_input = build_projection_input(&compiled);
     let projection_view = projection_input.view();
     let config_projection = skiff_compiler_projection::project_config_projection(
         projection_view.source().config_requirements(),
     )?;
-    let config_and_effect_metadata =
-        skiff_compiler_projection::package_unit_artifacts::config_and_effect_metadata_from_config_projection(
-            &config_projection,
-        );
+    let config_and_effect_metadata = ConfigAndEffectMetadata {
+        config: config_metadata_from_config_projection(&config_projection),
+        effects: Default::default(),
+    };
     Ok(TestPackageCompiledArtifacts {
         file_ir_artifacts:
             crate::emission::file_ir_artifacts::published_file_ir_artifacts_from_projection_input(
                 projection_view,
             )?,
         config_and_effect_metadata,
-        package_unit,
+        package_unit_artifact,
     })
 }
 
-fn config_and_effect_metadata_from_source_metadata(
-    metadata: &SourceConfigAndEffectMetadata,
+fn config_only_transport_metadata_from_source(
+    config: &SourceConfigMetadata,
 ) -> Result<ConfigAndEffectMetadata, PublicationError> {
-    match metadata.effects() {
-        SourceEffectMetadata::Empty => {}
-    }
-    let config = metadata.config();
     let requirements = ConfigRequirementsSeed::new(
         config_requirement_set_projection(config.legacy_config_projection_requirements()),
         config_requirement_set_projection(config.own_config_requirements()),
@@ -769,11 +774,10 @@ fn config_and_effect_metadata_from_source_metadata(
         config_requirement_set_projection(config.effective_config_requirements()),
     );
     let config_projection = skiff_compiler_projection::project_config_projection(&requirements)?;
-    Ok(
-        skiff_compiler_projection::package_unit_artifacts::config_and_effect_metadata_from_config_projection(
-            &config_projection,
-        ),
-    )
+    Ok(ConfigAndEffectMetadata {
+        config: config_metadata_from_config_projection(&config_projection),
+        effects: Default::default(),
+    })
 }
 
 fn dependency_package_config_facts_from_source_package_facts<'facts>(
@@ -891,7 +895,7 @@ fn test_publication_for_compiler_sources(
     package_root: &Path,
     compiler_sources: &[CompilerSourceFile],
     _package_publications: &[PackagePublication],
-) -> Publication {
+) -> Result<Publication, PublicationError> {
     let source_tree = SourceTree {
         root: package_root.to_path_buf(),
         sources: compiler_sources
@@ -904,159 +908,15 @@ fn test_publication_for_compiler_sources(
             })
             .collect(),
     };
-    Publication::new(
+    let resources =
+        skiff_compiler_input::read_publication_resources(package_root, &manifest.resources)?;
+    Ok(Publication::new_with_resources(
         manifest.clone().into_internal().into_publication(),
         source_tree,
         PublicationSourceGraph::from_compiler_sources(compiler_sources.to_vec()),
         ResolvedPackageGraph::declared_only(manifest.dependencies.clone()),
-    )
-}
-
-fn package_unit_from_compiled_package_for_test(
-    publication: &Publication,
-    compiled: &CompiledPublication,
-    _package_publications: &[PackagePublication],
-) -> Result<PackageUnit, PublicationError> {
-    let prelude_projection = crate::shared::prelude_registry::projection_prelude_context();
-    let projection_context = skiff_compiler_projection::PackageProjectionContext::new(
-        skiff_compiler_projection::context::PackageProjectionContextInput {
-            package_id: publication.manifest.id.as_str(),
-            version: publication.manifest.version.as_str(),
-            dependencies: projected_package_dependencies_for_test(
-                &publication.manifest.dependencies,
-            ),
-            api_entries: package_api_entries_for_test(&publication.manifest),
-            api_source: publication.manifest.api.source.as_ref().map(|source| {
-                skiff_compiler_projection::context::PackageApiSourceProjection {
-                    relative_path: source.relative_path.clone(),
-                    content_hash: source.content_hash.clone(),
-                }
-            }),
-            package_root: &publication.source_tree.root,
-            prelude: &prelude_projection,
-        },
-    );
-    let projection_input = build_projection_input(compiled);
-    let projection_view = projection_input.view();
-    let package_projection =
-        skiff_compiler_projection::project_package(projection_view, projection_context)?;
-    let unit_artifacts = skiff_compiler_projection::package_unit_artifacts::project_package_ir_artifacts(
-        skiff_compiler_projection::package_unit_artifacts::PackageIrProjectionSource {
-            package_id: publication.manifest.id.as_str(),
-            version: publication.manifest.version.as_str(),
-            exports: &package_projection.exports,
-            abi_identity_projection: &package_projection.abi_identity_projection,
-            config_projection: &package_projection.config_projection,
-            resources: &[],
-            file_ir_units: package_projection
-                .input
-                .file_ir_units()
-                .iter()
-                .cloned()
-                .map(skiff_compiler_projection::package_unit_artifacts::PackageFileIrProjection::from_unit)
-                .collect(),
-        },
-        &projected_package_dependencies_for_test(&publication.manifest.dependencies),
-    )?;
-    Ok(unit_artifacts.unit)
-}
-
-pub fn compile_package_dependency_publications_for_test(
-    current: &TestPackageManifest,
-    dependency_packages: &[TestResolvedPackage],
-    available: &BTreeMap<PackageManifestKey, TestPackageManifest>,
-) -> Result<TestPackageDependencyPublications, PublicationError> {
-    Ok(TestPackageDependencyPublications {
-        package_publications: package_publications_for_test(
-            current,
-            dependency_packages,
-            available,
-        )?,
-    })
-}
-
-fn package_publications_for_test(
-    current: &TestPackageManifest,
-    dependency_packages: &[TestResolvedPackage],
-    available: &BTreeMap<PackageManifestKey, TestPackageManifest>,
-) -> Result<Vec<PackagePublication>, PublicationError> {
-    let available = internal_manifest_map(available);
-    let packages = dependency_packages
-        .iter()
-        .filter(|package| package.manifest.id != current.id)
-        .map(|package| ResolvedPackage {
-            manifest: package.manifest.clone().into_internal(),
-            config: package.config.clone(),
-        })
-        .collect::<Vec<_>>();
-    let package_jobs = crate::input::package_job::build_package_jobs(packages)?;
-    crate::pipeline::compile_package_jobs(package_jobs, &available)
-}
-
-pub fn package_unit_artifacts_for_test(
-    packages: &[TestResolvedPackage],
-    available: &BTreeMap<PackageManifestKey, TestPackageManifest>,
-) -> Result<Vec<TestPackageUnitArtifact>, PublicationError> {
-    if packages.is_empty() {
-        return Ok(Vec::new());
-    }
-    let available = internal_manifest_map(available);
-    let packages = packages
-        .iter()
-        .map(|package| ResolvedPackage {
-            manifest: package.manifest.clone().into_internal(),
-            config: package.config.clone(),
-        })
-        .collect::<Vec<_>>();
-    let package_jobs = crate::input::package_job::build_package_jobs(packages)?;
-    let publications = crate::pipeline::compile_package_jobs(package_jobs, &available)?;
-    package_unit_artifacts_from_package_publications(&publications)
-}
-
-pub fn package_unit_artifacts_from_dependency_publications_for_test(
-    dependency_publications: &TestPackageDependencyPublications,
-) -> Result<Vec<TestPackageUnitArtifact>, PublicationError> {
-    package_unit_artifacts_from_package_publications(dependency_publications.as_slice())
-}
-
-fn package_unit_artifacts_from_package_publications(
-    publications: &[PackagePublication],
-) -> Result<Vec<TestPackageUnitArtifact>, PublicationError> {
-    if publications.is_empty() {
-        return Ok(Vec::new());
-    }
-    let projection_inputs = build_package_projection_inputs(publications);
-    let prelude_projection = crate::shared::prelude_registry::projection_prelude_context();
-    let package_projections = skiff_compiler_projection::project_package_publications(
-        &projection_inputs,
-        &prelude_projection,
-    )?;
-    let package_artifacts =
-        crate::emission::package_artifacts::build_package_artifacts(&package_projections)?;
-    let projections_by_id = package_projections
-        .iter()
-        .map(|projection| (projection.manifest().id().to_string(), projection))
-        .collect::<BTreeMap<_, _>>();
-    package_artifacts
-        .into_iter()
-        .map(|artifact| {
-            let projection = projections_by_id
-                .get(&artifact.package_id)
-                .expect("package artifact must have matching package projection");
-            let unit_artifacts =
-                crate::emission::package_unit_artifacts::publish_package_ir_artifacts(
-                    &artifact,
-                    &projection.package_ir,
-                )?;
-            Ok(TestPackageUnitArtifact {
-                package_id: artifact.package_id,
-                package_version: artifact.version,
-                package_dependencies: unit_artifacts.unit.dependencies.clone(),
-                production_files: unit_artifacts.file_ir_units,
-                unit: unit_artifacts.unit,
-            })
-        })
-        .collect()
+        resources,
+    ))
 }
 
 pub fn discover_package_manifests(
@@ -1268,6 +1128,7 @@ fn test_manifest_from_internal(manifest: crate::input::PackageManifest) -> TestP
             .map(test_api_entry_from_internal)
             .collect(),
         dependencies: publication.dependencies,
+        resources: publication.resources,
         path: publication.provenance.path,
         synthetic: publication.provenance.synthetic,
     }
@@ -1281,11 +1142,12 @@ impl TestPackageManifest {
                 .map(test_api_entry_into_internal)
                 .collect(),
         );
-        let publication = PublicationManifest::new(
+        let publication = PublicationManifest::new_with_resources(
             skiff_compiler_core::id::PublicationId::parse(&self.id).unwrap(),
             self.version,
             api,
             self.dependencies,
+            self.resources,
             if self.synthetic {
                 ManifestProvenance::synthetic(self.path, ManifestOwner::UserOrBuiltinPackage)
             } else {

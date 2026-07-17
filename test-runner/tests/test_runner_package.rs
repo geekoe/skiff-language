@@ -179,6 +179,84 @@ version: 1.0.0
 }
 
 #[test]
+fn cli_test_package_resources_follow_current_execution_owner() {
+    let temp = TestDir::new("skiff-compiler", "package-test-resource-owner");
+    let package_dir = temp.path().join("pkg");
+    let packages_dir = temp.path().join("package-store");
+    let dependency_dir = package_store_path(&packages_dir, "example.com/resource_dep", "1.0.0");
+    fs::create_dir_all(&package_dir).unwrap();
+    fs::create_dir_all(&dependency_dir).unwrap();
+
+    fs::write(
+        package_dir.join("package.yml"),
+        r#"
+id: example.com/resource_owner
+version: 1.0.0
+resources:
+  - shared.txt
+packages:
+  - id: example.com/resource_dep
+    version: 1.0.0
+    alias: dep
+"#,
+    )
+    .unwrap();
+    write_api_yml(&package_dir, "resource: { ownText: main.ownText }\n");
+    fs::write(package_dir.join("shared.txt"), "production-owner").unwrap();
+    fs::write(
+        package_dir.join("main.skiff"),
+        r#"
+            import std
+
+            function ownText() -> string {
+                return std.resource.text("shared.txt")
+            }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package_dir.join("main.test.skiff"),
+        r#"
+            import dep
+
+            test "package resources use the call site owner" {
+                assert root.main.ownText() == "production-owner"
+                assert dep.resource.text() == "dependency-owner"
+            }
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        dependency_dir.join("package.yml"),
+        r#"
+id: example.com/resource_dep
+version: 1.0.0
+resources:
+  - shared.txt
+"#,
+    )
+    .unwrap();
+    write_api_yml(&dependency_dir, "resource: { text: dep.readText }\n");
+    fs::write(dependency_dir.join("shared.txt"), "dependency-owner").unwrap();
+    fs::write(
+        dependency_dir.join("dep.skiff"),
+        r#"
+            import std
+
+            function readText() -> string {
+                return std.resource.text("shared.txt")
+            }
+"#,
+    )
+    .unwrap();
+
+    let summary = run_tests_with_package_dirs(&package_dir, vec![packages_dir]);
+    assert_counts(&summary, 1, 0, 0);
+    assert_passed(&summary, "package resources use the call site owner");
+}
+
+#[test]
 fn cli_test_package_links_url_like_std_dependency_alias() {
     let project = PackageProjectBuilder::new("package-url-like-std-link")
         .write_root_file(

@@ -5,7 +5,8 @@ use skiff_artifact_model::cross_package_identity::{
 };
 use skiff_artifact_model::{FunctionTypeParamIr, PackageRefIr, ParamIr, TypeRefIr};
 
-use crate::{context::ProjectedPackageDependency, typed_artifacts::PackageUnit};
+use crate::context::ProjectedPackageDependency;
+use skiff_artifact_model::PackageUnit;
 
 #[derive(Debug, Clone, Default)]
 pub struct SignatureTypeRefContext {

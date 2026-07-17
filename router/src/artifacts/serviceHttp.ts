@@ -1,11 +1,11 @@
 import { isRecord } from "./readUtils.js";
 
-export function serviceHttpHashInput(
+export function validateServiceHttp(
   service: Record<string, unknown>,
   label: string,
-): Record<string, unknown> | undefined {
+): void {
   if (!Object.prototype.hasOwnProperty.call(service, "http")) {
-    return undefined;
+    return;
   }
   const http = service.http;
   if (!isRecord(http)) {
@@ -29,18 +29,8 @@ export function serviceHttpHashInput(
     !Number.isSafeInteger(maxBytes) ||
     maxBytes <= 0
   ) {
-    throw new Error(
-      `${label}.http.response.maxBytes must be a positive integer`,
-    );
+    throw new Error(`${label}.http.response.maxBytes must be a positive integer`);
   }
-
-  return {
-    http: {
-      response: {
-        maxBytes,
-      },
-    },
-  };
 }
 
 function rejectUnsupportedKeys(

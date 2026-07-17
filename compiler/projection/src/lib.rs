@@ -1,9 +1,11 @@
+mod callable_facts;
 mod config;
 pub mod context;
 pub mod contract;
 pub mod contract_schema;
 pub mod error;
 pub mod package_exports;
+mod package_references;
 pub mod package_unit_artifacts;
 pub mod prelude;
 pub mod prelude_metadata;
@@ -18,6 +20,7 @@ pub mod service_config;
 pub mod source_map;
 mod source_symbol;
 pub mod std_type_refs;
+mod type_closure_diagnostics;
 pub mod typed_artifacts;
 
 use crate::{
@@ -121,7 +124,7 @@ pub fn project_service<'a>(
         input,
         &contract_projection_bundle.contract_projection,
         context.service_version(),
-        &public_instances,
+        &public_instances.exports,
         &projection_context,
         &package_gateway_projection,
     )?;
@@ -137,7 +140,9 @@ pub fn project_service<'a>(
             service_version: context.service_version(),
             contract_projection: &contract_projection_bundle.contract_projection,
             runtime_manifest_projection: &runtime_manifest_projection,
-            public_instances: &public_instances,
+            public_instances: &public_instances.exports,
+            public_instance_operation_public_signatures: &public_instances
+                .operation_public_signatures,
             package_publications: context.package_publications(),
             package_artifacts: context.package_artifacts(),
         },
@@ -223,6 +228,7 @@ fn project_package_ir_publication(
             exports: &bundle.exports,
             abi_identity_projection: &bundle.abi_identity_projection,
             config_projection: &bundle.config_projection,
+            callable_effects: bundle.input.source().callable_effects(),
             resources: package_publication.compiled().resources(),
             file_ir_units: bundle
                 .input

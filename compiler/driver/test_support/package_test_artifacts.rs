@@ -10,6 +10,7 @@ use serde_json::Value;
 use skiff_compiler_core::artifact::{
     ConfigAndEffectMetadata, PackageDependencyConstraint, PackageUnit,
 };
+use skiff_compiler_emission::artifact::PublishedResourceArtifact;
 use skiff_compiler_emission::package_test_artifacts::{
     build_package_test_artifacts, PackageTestArtifactBuildError, PackageTestArtifactBuildInput,
     PackageTestDependencyPackageInput, PackageTestEntrypointInput as EmissionEntrypointInput,
@@ -30,6 +31,7 @@ pub struct TestPackageTestArtifactInput {
     pub production_config_and_effect_metadata: ConfigAndEffectMetadata,
     pub package_test_config_and_effect_metadata: ConfigAndEffectMetadata,
     pub production_files: Vec<PublishedFileIrArtifact>,
+    pub production_resource_blobs: Vec<PublishedResourceArtifact>,
     pub dependency_packages: Vec<TestPackageTestDependencyPackageInput>,
     pub test_files: Vec<TestPackageTestFileIrArtifact>,
     pub entrypoints: Vec<TestPackageTestEntrypointInput>,
@@ -41,6 +43,7 @@ pub struct TestPackageTestDependencyPackageInput {
     pub package_version: String,
     pub package_dependencies: Vec<PackageDependencyConstraint>,
     pub production_files: Vec<PublishedFileIrArtifact>,
+    pub resource_blobs: Vec<PublishedResourceArtifact>,
     pub package_unit: Option<PackageUnit>,
 }
 
@@ -159,25 +162,43 @@ pub fn write_package_test_artifact_root_with_runtime_path_registration(
     mut register_runtime_path: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<TestPackageTestArtifactOutput, TestPackageTestArtifactError> {
     let artifact_root = input.artifact_root;
+    let production_package_unit = input.production_package_unit.ok_or_else(|| {
+        TestPackageTestArtifactError::InvalidInput {
+            message: format!(
+                "package {}@{} test artifacts require a production-projected PackageUnit",
+                input.package_id, input.package_version
+            ),
+        }
+    })?;
+    let dependency_packages = input
+        .dependency_packages
+        .into_iter()
+        .map(|dependency| {
+            let package_unit = dependency.package_unit.ok_or_else(|| {
+                TestPackageTestArtifactError::InvalidInput {
+                    message: format!(
+                        "dependency package {}@{} test artifacts require a production-projected PackageUnit",
+                        dependency.package_id, dependency.package_version
+                    ),
+                }
+            })?;
+            Ok(PackageTestDependencyPackageInput {
+                package_id: dependency.package_id,
+                package_version: dependency.package_version,
+                production_files: dependency.production_files,
+                production_resource_blobs: dependency.resource_blobs,
+                package_unit,
+            })
+        })
+        .collect::<Result<Vec<_>, TestPackageTestArtifactError>>()?;
     let built = build_package_test_artifacts(PackageTestArtifactBuildInput {
         package_id: input.package_id,
         package_version: input.package_version,
-        package_dependencies: input.package_dependencies,
-        production_package_unit: input.production_package_unit,
-        production_config_and_effect_metadata: input.production_config_and_effect_metadata,
+        production_package_unit,
         package_test_config_and_effect_metadata: input.package_test_config_and_effect_metadata,
         production_files: input.production_files,
-        dependency_packages: input
-            .dependency_packages
-            .into_iter()
-            .map(|dependency| PackageTestDependencyPackageInput {
-                package_id: dependency.package_id,
-                package_version: dependency.package_version,
-                package_dependencies: dependency.package_dependencies,
-                production_files: dependency.production_files,
-                package_unit: dependency.package_unit,
-            })
-            .collect(),
+        production_resource_blobs: input.production_resource_blobs,
+        dependency_packages,
         test_files: input
             .test_files
             .into_iter()
@@ -236,10 +257,16 @@ pub fn write_package_test_artifact_root_with_runtime_path_registration(
         for file in &dependency.files {
             write_json(&artifact_root, &file.path, &file.value())?;
         }
+        for resource in &dependency.resource_blobs {
+            write_bytes(&artifact_root, &resource.artifact_path, &resource.bytes)?;
+        }
         write_json(&artifact_root, &dependency.unit_path, &dependency.value)?;
     }
     for file in &built.test_files {
         write_json(&artifact_root, &file.path, &file.value())?;
+    }
+    for resource in &built.production_package_unit.resource_blobs {
+        write_bytes(&artifact_root, &resource.artifact_path, &resource.bytes)?;
     }
     write_json(
         &artifact_root,
@@ -351,6 +378,30 @@ fn write_json(
     })
 }
 
+fn write_bytes(
+    root: &Path,
+    relative_path: &str,
+    bytes: &[u8],
+) -> Result<(), TestPackageTestArtifactError> {
+    let path = root.join(relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| TestPackageTestArtifactError::Write {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    match fs::read(&path) {
+        Ok(existing) if existing == bytes => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(_) => {}
+    }
+    fs::write(&path, bytes).map_err(|source| TestPackageTestArtifactError::Write {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -361,6 +412,16 @@ mod tests {
     };
 
     use serde_json::Value;
+    use skiff_compiler_core::artifact::{AbiIdentityFacts, CallableEffectSummary};
+    use skiff_compiler_projection::{
+        context::ProjectedPackageDependency,
+        package_exports::PackageExports,
+        package_unit_artifacts::{
+            project_package_ir_artifacts, PackageFileIrProjection, PackageIrProjectionSource,
+        },
+        project_config_projection,
+    };
+    use skiff_compiler_projection_input::{ConfigRequirementsSeed, ProjectionCallableEffectFacts};
 
     use super::*;
     use crate::test_support::{
@@ -700,13 +761,27 @@ mod tests {
                 "#,
             ),
         ];
+        let production_manifest = TestPackageManifest {
+            id: "example.com/math".to_string(),
+            version: "1.0.0".to_string(),
+            api: vec![TestPackageApiEntry::source(
+                "publicAnswer",
+                "api",
+                "publicAnswer",
+            )],
+            dependencies: Vec::new(),
+            resources: Vec::new(),
+            path: PathBuf::from("/tmp/skiff-package-test-production/package.yml"),
+            synthetic: false,
+        };
         let production_compiled =
-            compile_parsed_only_package_ast_file_ir_artifacts_with_metadata_for_test(
-                "example.com/math",
-                &[],
+            compile_package_ast_file_ir_artifacts_with_dependency_publications_unit_and_metadata_for_test(
+                &production_manifest,
                 Path::new("/tmp/skiff-package-test-production"),
                 &production_sources,
                 &BTreeMap::new(),
+                &[],
+                &manifest_map([production_manifest.clone()]),
             )
             .expect("production package should compile");
         let package_test_compiled =
@@ -745,7 +820,10 @@ mod tests {
                 package_id: "example.com/math".to_string(),
                 package_version: "1.0.0".to_string(),
                 package_dependencies: Vec::new(),
-                production_package_unit: None,
+                production_package_unit: production_compiled
+                    .package_unit_artifact
+                    .as_ref()
+                    .map(|artifact| artifact.unit.clone()),
                 production_config_and_effect_metadata: production_compiled
                     .config_and_effect_metadata
                     .clone(),
@@ -753,6 +831,11 @@ mod tests {
                     .config_and_effect_metadata
                     .clone(),
                 production_files: production_compiled.file_ir_artifacts.clone(),
+                production_resource_blobs: production_compiled
+                    .package_unit_artifact
+                    .as_ref()
+                    .map(|artifact| artifact.resource_blobs.clone())
+                    .unwrap_or_default(),
                 dependency_packages: Vec::new(),
                 test_files: vec![
                     TestPackageTestFileIrArtifact {
@@ -854,16 +937,20 @@ mod tests {
             "second.__test",
             "package-test",
         );
+        let production_files = vec![production];
+        let production_package_unit =
+            projected_package_unit_for_test("example.com/math", "1.0.0", &production_files, &[]);
 
         let written = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/math".to_string(),
             package_version: "1.0.0".to_string(),
             package_dependencies: Vec::new(),
-            production_package_unit: None,
+            production_package_unit: Some(production_package_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production],
+            production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: Vec::new(),
             test_files: vec![
                 test_file_artifact(&first_test),
@@ -972,6 +1059,35 @@ mod tests {
         set_files_readonly(&files, false);
 
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn writer_rejects_missing_production_projected_package_unit() {
+        let artifact_root = temp_artifact_root("missing-production-package-unit");
+        let production = compile_file(
+            "function publicAnswer() -> number { return 42 }",
+            "api.skiff",
+            "api",
+            "package-production",
+        );
+        let test_file = compile_file(
+            "function packageTestEntry() -> number { return 42 }",
+            "api.test.skiff",
+            "api.__test",
+            "package-test",
+        );
+        let mut input = package_test_artifact_input(
+            artifact_root.path_buf(),
+            vec![production],
+            vec![test_file_artifact(&test_file)],
+            entrypoint_input(),
+        );
+        input.production_package_unit = None;
+
+        assert_invalid_input_contains(
+            write_package_test_artifact_root(input),
+            "require a production-projected PackageUnit",
+        );
     }
 
     #[test]
@@ -1174,16 +1290,20 @@ mod tests {
             "api.__test",
             "package-test",
         );
+        let production_files = vec![production.clone()];
+        let production_package_unit =
+            projected_package_unit_for_test("example.com/main", "1.0.0", &production_files, &[]);
 
         let written = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/main".to_string(),
             package_version: "1.0.0".to_string(),
             package_dependencies: Vec::new(),
-            production_package_unit: None,
+            production_package_unit: Some(production_package_unit.clone()),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production.clone()],
+            production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![
                 dependency_package_input("example.com/zeta", "1.0.0", "7"),
                 dependency_package_input("example.com/alpha", "1.0.0", "1"),
@@ -1211,10 +1331,11 @@ mod tests {
                 package_id: "example.com/main".to_string(),
                 package_version: "1.0.0".to_string(),
                 package_dependencies: Vec::new(),
-                production_package_unit: None,
+                production_package_unit: Some(production_package_unit),
                 production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
                 package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-                production_files: vec![production.clone()],
+                production_files,
+                production_resource_blobs: Vec::new(),
                 dependency_packages: vec![
                     dependency_package_input("example.com/alpha", "1.0.0", "1"),
                     dependency_package_input("example.com/alpha", "1.0.0", "2"),
@@ -1249,37 +1370,55 @@ mod tests {
             "package-test",
         );
         let dependency = dependency_package_input("example.com/dep", "1.0.0", "1");
+        let production_files = vec![production.clone()];
+        let duplicate_alias_dependencies = vec![
+            dependency_constraint("example.com/dep", "1.0.0", "dep"),
+            dependency_constraint("example.com/other", "1.0.0", "dep"),
+        ];
+        let duplicate_alias_unit = projected_package_unit_for_test(
+            "example.com/main",
+            "1.0.0",
+            &production_files,
+            &duplicate_alias_dependencies,
+        );
 
         let duplicate_alias = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/main".to_string(),
             package_version: "1.0.0".to_string(),
-            package_dependencies: vec![
-                dependency_constraint("example.com/dep", "1.0.0", "dep"),
-                dependency_constraint("example.com/other", "1.0.0", "dep"),
-            ],
-            production_package_unit: None,
+            package_dependencies: duplicate_alias_dependencies,
+            production_package_unit: Some(duplicate_alias_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production.clone()],
+            production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
         });
         assert_invalid_input_contains(duplicate_alias, "dependency alias dep");
 
+        let multi_alias_dependencies = vec![
+            dependency_constraint("example.com/dep", "1.0.0", "left"),
+            dependency_constraint("example.com/dep", "1.0.0", "right"),
+        ];
+        let multi_alias_unit = projected_package_unit_for_test(
+            "example.com/main",
+            "1.0.0",
+            &production_files,
+            &multi_alias_dependencies,
+        );
+
         let multi_alias = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/main".to_string(),
             package_version: "1.0.0".to_string(),
-            package_dependencies: vec![
-                dependency_constraint("example.com/dep", "1.0.0", "left"),
-                dependency_constraint("example.com/dep", "1.0.0", "right"),
-            ],
-            production_package_unit: None,
+            package_dependencies: multi_alias_dependencies,
+            production_package_unit: Some(multi_alias_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production.clone()],
+            production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1291,29 +1430,46 @@ mod tests {
             1
         );
 
+        let left_dependencies = vec![dependency_constraint("example.com/dep", "1.0.0", "left")];
+        let left_unit = projected_package_unit_for_test(
+            "example.com/main",
+            "1.0.0",
+            &production_files,
+            &left_dependencies,
+        );
+
         let left_alias = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/main".to_string(),
             package_version: "1.0.0".to_string(),
-            package_dependencies: vec![dependency_constraint("example.com/dep", "1.0.0", "left")],
-            production_package_unit: None,
+            package_dependencies: left_dependencies,
+            production_package_unit: Some(left_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production.clone()],
+            production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
         })
         .expect("left alias build should write");
+        let right_dependencies = vec![dependency_constraint("example.com/dep", "1.0.0", "right")];
+        let right_unit = projected_package_unit_for_test(
+            "example.com/main",
+            "1.0.0",
+            &production_files,
+            &right_dependencies,
+        );
         let right_alias = write_package_test_artifact_root(TestPackageTestArtifactInput {
             artifact_root: artifact_root.path_buf(),
             package_id: "example.com/main".to_string(),
             package_version: "1.0.0".to_string(),
-            package_dependencies: vec![dependency_constraint("example.com/dep", "1.0.0", "right")],
-            production_package_unit: None,
+            package_dependencies: right_dependencies,
+            production_package_unit: Some(right_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
-            production_files: vec![production],
+            production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1337,9 +1493,10 @@ mod tests {
             api: vec![TestPackageApiEntry::source(
                 "publicAnswer",
                 "api",
-                "publicAnswer",
+                "internalAnswer",
             )],
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: PathBuf::from("/tmp/skiff-package-publication-api-seed"),
             synthetic: false,
         };
@@ -1347,7 +1504,7 @@ mod tests {
             "api.skiff",
             "api",
             r#"
-                function publicAnswer() -> number {
+                function internalAnswer() -> number {
                     return 42
                 }
             "#,
@@ -1364,8 +1521,9 @@ mod tests {
             )
             .expect("production package publication helper should compile");
         let package_unit = compiled
-            .package_unit
-            .expect("production helper should publish package unit metadata");
+            .package_unit_artifact
+            .expect("production helper should publish package unit metadata")
+            .unit;
 
         assert!(
             package_unit
@@ -1375,6 +1533,34 @@ mod tests {
                 .any(|operation| operation.public_path == "publicAnswer"),
             "production publication compile must preserve manifest API seed: {:?}",
             package_unit.publication_abi.operation_exports
+        );
+        for operation in &package_unit.publication_abi.operation_exports {
+            assert_eq!(
+                package_unit
+                    .config_and_effect_metadata
+                    .effects
+                    .operations
+                    .get(&operation.operation_abi_id),
+                Some(&CallableEffectSummary::analysis_pending()),
+                "every public operation must carry an explicit typed effect fact"
+            );
+        }
+        assert_eq!(
+            package_unit
+                .config_and_effect_metadata
+                .effects
+                .operations
+                .len(),
+            package_unit.publication_abi.operation_exports.len(),
+            "effect map keys are stable operation ABI ids, not display paths"
+        );
+        assert!(
+            !package_unit
+                .config_and_effect_metadata
+                .effects
+                .operations
+                .contains_key("publicAnswer"),
+            "the public display path must not be used as an effect-map key"
         );
     }
 
@@ -1469,6 +1655,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies,
+            resources: Vec::new(),
             path,
             synthetic: false,
         }
@@ -1497,27 +1684,57 @@ mod tests {
             .expect("test File IR should compile")
     }
 
+    fn projected_package_unit_for_test(
+        package_id: &str,
+        version: &str,
+        files: &[PublishedFileIrArtifact],
+        dependencies: &[PackageDependencyConstraint],
+    ) -> PackageUnit {
+        let exports = PackageExports {
+            entries: Vec::new(),
+            symbols: BTreeMap::new(),
+            public_instances: Vec::new(),
+        };
+        let abi_identity_projection = AbiIdentityFacts::default();
+        let config_projection = project_config_projection(&ConfigRequirementsSeed::default())
+            .expect("empty production config projection");
+        let callable_effects = ProjectionCallableEffectFacts::default();
+        let dependencies = dependencies
+            .iter()
+            .map(|dependency| ProjectedPackageDependency {
+                id: dependency.id.clone(),
+                version: dependency.version.clone(),
+                alias: Some(dependency.alias.clone()),
+                config: dependency.config.clone(),
+                collection_name_mapping: BTreeMap::new(),
+            })
+            .collect::<Vec<_>>();
+        project_package_ir_artifacts(
+            PackageIrProjectionSource {
+                package_id,
+                version,
+                exports: &exports,
+                abi_identity_projection: &abi_identity_projection,
+                config_projection: &config_projection,
+                callable_effects: &callable_effects,
+                resources: &[],
+                file_ir_units: files
+                    .iter()
+                    .map(|file| PackageFileIrProjection::from_unit(file.unit.clone()))
+                    .collect(),
+            },
+            &dependencies,
+        )
+        .expect("production PackageUnit projection")
+        .unit
+    }
+
     fn test_file_artifact(file: &PublishedFileIrArtifact) -> TestPackageTestFileIrArtifact {
         TestPackageTestFileIrArtifact {
             source_path: file.source_path.clone(),
             module_path: file.module_path.clone(),
             file_ir: file.unit.clone(),
             explicit_const_type_annotations: BTreeSet::new(),
-        }
-    }
-
-    fn test_file_artifact_with_explicit<const N: usize>(
-        file: &PublishedFileIrArtifact,
-        names: [&str; N],
-    ) -> TestPackageTestFileIrArtifact {
-        TestPackageTestFileIrArtifact {
-            source_path: file.source_path.clone(),
-            module_path: file.module_path.clone(),
-            file_ir: file.unit.clone(),
-            explicit_const_type_annotations: names
-                .into_iter()
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>(),
         }
     }
 
@@ -1541,15 +1758,18 @@ mod tests {
         test_files: Vec<TestPackageTestFileIrArtifact>,
         entrypoint: TestPackageTestEntrypointInput,
     ) -> TestPackageTestArtifactInput {
+        let production_package_unit =
+            projected_package_unit_for_test("example.com/math", "1.0.0", &production_files, &[]);
         TestPackageTestArtifactInput {
             artifact_root,
             package_id: "example.com/math".to_string(),
             package_version: "1.0.0".to_string(),
             package_dependencies: Vec::new(),
-            production_package_unit: None,
+            production_package_unit: Some(production_package_unit),
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: Vec::new(),
             test_files,
             entrypoints: vec![entrypoint],
@@ -1587,27 +1807,16 @@ mod tests {
             "dep",
             "package-production",
         );
+        let production_files = vec![file];
+        let package_unit =
+            projected_package_unit_for_test(package_id, version, &production_files, &[]);
         TestPackageTestDependencyPackageInput {
             package_id: package_id.to_string(),
             package_version: version.to_string(),
             package_dependencies: Vec::new(),
-            production_files: vec![file],
-            package_unit: None,
-        }
-    }
-
-    fn dependency_package_input_with_unit(
-        package_id: &str,
-        version: &str,
-        file: PublishedFileIrArtifact,
-        unit: PackageUnit,
-    ) -> TestPackageTestDependencyPackageInput {
-        TestPackageTestDependencyPackageInput {
-            package_id: package_id.to_string(),
-            package_version: version.to_string(),
-            package_dependencies: Vec::new(),
-            production_files: vec![file],
-            package_unit: Some(unit),
+            production_files,
+            resource_blobs: Vec::new(),
+            package_unit: Some(package_unit),
         }
     }
 

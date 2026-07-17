@@ -7,12 +7,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_identity::{
-    package_abi_identity, package_build_identity,
-    runtime_program_dynamic_build_id_from_artifact_refs,
-    runtime_program_dynamic_build_id_from_artifact_root, ArtifactIdentityError,
-    PackageUnitArtifactRef,
+    package_build_identity, package_local_abi_identity, validate_service_artifact_closure,
+    ArtifactIdentityError, PackageUnitArtifactRef, ServiceAssemblyArtifactRef,
+    ServiceUnitArtifactRef, ValidatedArtifactContent,
 };
-use skiff_artifact_model::{PackageUnit, ServiceUnit};
+use skiff_artifact_model::PackageUnit;
 
 fn main() -> ExitCode {
     match run() {
@@ -49,35 +48,31 @@ fn runtime_program_build_id() -> Result<(), CliError> {
         .map_err(|error| CliError::Internal(format!("failed to read stdin: {error}")))?;
     let request: RuntimeProgramBuildIdRequest =
         serde_json::from_str(&input).map_err(|error| CliError::SchemaInvalid(error.to_string()))?;
-    if !request.artifact_root.is_absolute() {
-        return Err(CliError::SchemaInvalid(
-            "artifactRoot must be an absolute path".to_string(),
-        ));
-    }
-
     let mut results = Vec::with_capacity(request.services.len());
     for service in request.services {
-        let service_unit: ServiceUnit = serde_json::from_value(service.service_unit)
-            .map_err(|error| CliError::SchemaInvalid(format!("serviceUnit is invalid: {error}")))?;
-        let dynamic_build_id = if let Some(package_units) = service.package_units {
-            runtime_program_dynamic_build_id_from_artifact_refs(
-                &request.artifact_root,
-                &service_unit,
-                &package_units
-                    .into_iter()
-                    .map(Into::into)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            runtime_program_dynamic_build_id_from_artifact_root(
-                &request.artifact_root,
-                &service_unit,
-            )
+        if !service.artifact_root.is_absolute() {
+            return Err(CliError::SchemaInvalid(format!(
+                "services[{}].artifactRoot must be an absolute path",
+                service.key
+            )));
         }
+        let validated = validate_service_artifact_closure(
+            &service.artifact_root,
+            &service.service_id,
+            service.service_version.as_deref(),
+            &service.service_assembly.assembly_identity,
+            &service.service_assembly.assembly_path,
+            &service.service_unit,
+            &service.package_units,
+        )
         .map_err(CliError::Identity)?;
         results.push(RuntimeProgramBuildIdResult {
             key: service.key,
-            dynamic_build_id,
+            dynamic_build_id: validated.dynamic_build_id,
+            assembly_identity: validated.assembly_identity,
+            service_assembly: validated.service_assembly,
+            service_unit: validated.service_unit,
+            package_units: validated.package_units,
         });
     }
 
@@ -97,7 +92,7 @@ fn package_unit_identities() -> Result<(), CliError> {
         .map_err(|error| CliError::SchemaInvalid(format!("packageUnit is invalid: {error}")))?;
     let response = PackageUnitIdentitiesResponse {
         build_identity: package_build_identity(&package_unit).map_err(CliError::Identity)?,
-        abi_identity: package_abi_identity(&package_unit).map_err(CliError::Identity)?,
+        abi_identity: package_local_abi_identity(&package_unit).map_err(CliError::Identity)?,
     };
 
     serde_json::to_writer(io::stdout(), &response)
@@ -108,7 +103,6 @@ fn package_unit_identities() -> Result<(), CliError> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RuntimeProgramBuildIdRequest {
-    artifact_root: PathBuf,
     services: Vec<RuntimeProgramBuildIdService>,
 }
 
@@ -116,33 +110,31 @@ struct RuntimeProgramBuildIdRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RuntimeProgramBuildIdService {
     key: String,
-    service_unit: Value,
-    #[serde(default)]
-    package_units: Option<Vec<RuntimeProgramPackageUnitRef>>,
+    artifact_root: PathBuf,
+    service_id: String,
+    #[serde(default, deserialize_with = "deserialize_optional_service_version")]
+    service_version: Option<String>,
+    service_assembly: ServiceAssemblyArtifactRef,
+    service_unit: ServiceUnitArtifactRef,
+    package_units: Vec<PackageUnitArtifactRef>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RuntimeProgramPackageUnitRef {
-    package_id: String,
-    version: String,
-    build_identity: String,
-    abi_identity: String,
-    #[serde(default)]
-    unit_hash: Option<String>,
-    unit_path: PathBuf,
-}
+fn deserialize_optional_service_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
 
-impl From<RuntimeProgramPackageUnitRef> for PackageUnitArtifactRef {
-    fn from(value: RuntimeProgramPackageUnitRef) -> Self {
-        Self {
-            package_id: value.package_id,
-            version: value.version,
-            build_identity: value.build_identity,
-            abi_identity: value.abi_identity,
-            unit_hash: value.unit_hash,
-            unit_path: value.unit_path,
-        }
+    match Value::deserialize(deserializer)? {
+        Value::String(version) if !version.is_empty() => Ok(Some(version)),
+        Value::String(_) => Err(D::Error::custom(
+            "serviceVersion must be a non-empty string",
+        )),
+        _ => Err(D::Error::custom(
+            "serviceVersion must be a non-empty string when present",
+        )),
     }
 }
 
@@ -157,6 +149,10 @@ struct RuntimeProgramBuildIdResponse {
 struct RuntimeProgramBuildIdResult {
     key: String,
     dynamic_build_id: String,
+    assembly_identity: String,
+    service_assembly: ValidatedArtifactContent,
+    service_unit: ValidatedArtifactContent,
+    package_units: Vec<ValidatedArtifactContent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +208,12 @@ impl std::fmt::Display for CliError {
 fn identity_error_code(error: &ArtifactIdentityError) -> &'static str {
     match error {
         ArtifactIdentityError::InvalidServiceUnit(_)
+        | ArtifactIdentityError::InvalidServiceAssembly { .. }
+        | ArtifactIdentityError::ServiceAssemblyIdentityMismatch { .. }
+        | ArtifactIdentityError::ServiceAssemblyProtocolIdentityMismatch { .. }
+        | ArtifactIdentityError::InvalidRuntimeProgramBuildIdentity { .. }
+        | ArtifactIdentityError::ServiceUnitPointerMismatch { .. }
+        | ArtifactIdentityError::ServiceUnitVersionMismatch { .. }
         | ArtifactIdentityError::InvalidPackageUnit { .. }
         | ArtifactIdentityError::PackageUnitSchemaVersionMismatch { .. }
         | ArtifactIdentityError::InvalidPackageIndex { .. }
@@ -231,6 +233,7 @@ fn identity_error_code(error: &ArtifactIdentityError) -> &'static str {
         ArtifactIdentityError::PackageUnitPointerMismatch { .. } => "schema_invalid",
         ArtifactIdentityError::PathEscape { .. }
         | ArtifactIdentityError::ArtifactPathEscapesRoot { .. }
+        | ArtifactIdentityError::NonCanonicalArtifactPath { .. }
         | ArtifactIdentityError::InvalidArtifactSegment { .. } => "path_escape",
         _ => "internal_error",
     }

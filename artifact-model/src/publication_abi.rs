@@ -71,49 +71,6 @@ pub struct InterfaceInstantiationRef {
     pub canonical_type_args: Vec<TypeRefIr>,
 }
 
-pub fn type_ref_abi_key(ty: &TypeRefIr) -> String {
-    serde_json::to_string(ty).expect("TypeRefIr must serialize for publication ABI key")
-}
-
-pub fn interface_instantiation_ref(
-    interface_decl_identity: TypeRefIr,
-    canonical_type_args: Vec<TypeRefIr>,
-) -> InterfaceInstantiationRef {
-    InterfaceInstantiationRef {
-        interface_abi_id: type_ref_abi_key(&interface_decl_identity),
-        canonical_type_args,
-    }
-}
-
-pub fn interface_instantiation_ref_for_type_ref(ty: &TypeRefIr) -> InterfaceInstantiationRef {
-    match ty {
-        TypeRefIr::Native { name, args } if !args.is_empty() => interface_instantiation_ref(
-            TypeRefIr::Native {
-                name: name.clone(),
-                args: Vec::new(),
-            },
-            args.clone(),
-        ),
-        _ => interface_instantiation_ref(ty.clone(), Vec::new()),
-    }
-}
-
-pub fn canonical_interface_method_abi_id(
-    interface: &InterfaceInstantiationRef,
-    method_name: &str,
-) -> String {
-    if interface.canonical_type_args.is_empty() {
-        format!("method:{}:{method_name}", interface.interface_abi_id)
-    } else {
-        let type_args = serde_json::to_string(&interface.canonical_type_args)
-            .expect("canonical interface type args must serialize for method ABI key");
-        format!(
-            "method:{}:{type_args}:{method_name}",
-            interface.interface_abi_id
-        )
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperationAbiRef {
