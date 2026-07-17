@@ -6,6 +6,7 @@ members = [
   "artifact-identity",
   "syntax",
   "compiler/core",
+  "compiler/contract",
   "compiler/publication-abi",
   "compiler/input-model",
   "compiler/input",

@@ -13,5 +13,7 @@ pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v1";
 pub const PUBLICATION_ABI_UNIT_SCHEMA_VERSION: &str = "skiff-publication-abi-unit-v1";
 pub const PACKAGE_UNIT_SCHEMA_VERSION: &str = "skiff-package-unit-v1";
 pub const SERVICE_UNIT_SCHEMA_VERSION: &str = "skiff-service-unit-v1";
+pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v1";
+pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v1";
 pub const SERVICE_VERSION_POINTER_SCHEMA_VERSION: &str = "skiff-service-version-pointer-v1";
 pub const SERVICE_BUILD_SCHEMA_VERSION: &str = "skiff-service-build-v1";

@@ -1,4 +1,4 @@
-mod projection;
+pub(crate) mod projection;
 
 pub use projection::{PackageBuildIdentityProjection, PackageLocalAbiIdentityProjection};
 

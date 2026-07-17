@@ -23,6 +23,7 @@ Checks exported public API types with rustdoc JSON:
   RUSTC_BOOTSTRAP=1 cargo rustdoc -p <crate> --lib -- -Z unstable-options --output-format json
 
 Default gated crates:
+  skiff-compiler-contract
   skiff-compiler-publication-abi
   skiff-compiler-input-model
   skiff-compiler-input

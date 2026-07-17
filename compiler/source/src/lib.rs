@@ -22,6 +22,7 @@ pub mod prelude_registry;
 pub mod provider_rules;
 mod remote_public_instance;
 pub mod reserved_names;
+pub mod resolved_call_targets;
 pub mod root_projection_validation;
 pub mod root_refs;
 pub(crate) mod runtime_type_projection;
@@ -88,6 +89,9 @@ pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCom
 pub use remote_public_instance::{
     RemotePublicInstanceDirectOperation, RemotePublicInstanceOperationProjection,
     RemotePublicInstanceOperationResolver, RemotePublicInstanceOperationSlot,
+};
+pub use resolved_call_targets::{
+    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
 pub use semantics::PublicationCompilePlan;
 pub use service_ingress::{

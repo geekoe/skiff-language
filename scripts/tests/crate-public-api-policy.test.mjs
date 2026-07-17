@@ -11,6 +11,7 @@ import {
 
 test('managed public API policy derives distinct gate and help orders from one source', () => {
   assert.deepEqual(MANAGED_CRATE_NAMES, [
+    'skiff-compiler-contract',
     'skiff-compiler-publication-abi',
     'skiff-compiler-input-model',
     'skiff-compiler-input',
@@ -21,6 +22,7 @@ test('managed public API policy derives distinct gate and help orders from one s
     'skiff-compiler-projection',
   ]);
   assert.deepEqual(MANAGED_CRATE_HELP_NAMES, [
+    'skiff-compiler-contract',
     'skiff-compiler-publication-abi',
     'skiff-compiler-input-model',
     'skiff-compiler-input',
@@ -30,7 +32,7 @@ test('managed public API policy derives distinct gate and help orders from one s
     'skiff-compiler-projection',
     'skiff-compiler-projection-input',
   ]);
-  assert.equal(new Set(MANAGED_CRATE_NAMES).size, 8);
+  assert.equal(new Set(MANAGED_CRATE_NAMES).size, 9);
   assert.deepEqual(new Set(MANAGED_CRATE_HELP_NAMES), new Set(MANAGED_CRATE_NAMES));
 });
 

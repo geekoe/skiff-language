@@ -2,6 +2,32 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ArtifactIdentityError {
+    #[error("failed to serialize contract type identity payload: {0}")]
+    SerializeContractTypeIdentity(serde_json::Error),
+    #[error("failed to serialize contract operation identity payload: {0}")]
+    SerializeContractOperationIdentity(serde_json::Error),
+    #[error("failed to serialize service protocol identity payload: {0}")]
+    SerializeServiceProtocolIdentity(serde_json::Error),
+    #[error("service contract is invalid: {message}")]
+    InvalidServiceContract { message: String },
+    #[error(
+        "service contract declared protocol identity {declared} but content identity is {computed}"
+    )]
+    ServiceProtocolIdentityMismatch { declared: String, computed: String },
+    #[error("failed to serialize PackageArtifact local ABI identity payload: {0}")]
+    SerializePackageArtifactLocalAbiIdentity(serde_json::Error),
+    #[error("failed to serialize PackageArtifact build identity payload: {0}")]
+    SerializePackageArtifactBuildIdentity(serde_json::Error),
+    #[error("PackageArtifact is invalid: {message}")]
+    InvalidPackageArtifact { message: String },
+    #[error(
+        "PackageArtifact declared local ABI identity {declared} but content identity is {computed}"
+    )]
+    PackageArtifactLocalAbiIdentityMismatch { declared: String, computed: String },
+    #[error(
+        "PackageArtifact declared build identity {declared} but content identity is {computed}"
+    )]
+    PackageArtifactBuildIdentityMismatch { declared: String, computed: String },
     #[error("service unit must be a JSON object")]
     ServiceUnitMustBeObject,
     #[error("failed to serialize File IR identity payload: {0}")]
