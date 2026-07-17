@@ -172,6 +172,8 @@ fn service_spawn_target_for_call(
             service_protocol_identity,
         )?)),
         CallTargetIr::InterfaceMethod { .. } => Ok(None),
+        // A service boundary call is not a same-build executable spawn target.
+        CallTargetIr::ServiceCall { .. } => Ok(None),
         CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
@@ -253,6 +255,8 @@ fn package_spawn_target_for_call(
             operation,
             service_protocol_identity,
         )?)),
+        // A service boundary call is not a same-build executable spawn target.
+        CallTargetIr::ServiceCall { .. } => Ok(None),
         CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
@@ -570,7 +574,10 @@ fn error(message: impl Into<String>) -> SpawnTargetProjectionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{ExecutableBody, ExprIr, SlotLayout};
+    use skiff_artifact_model::{
+        validate_file_ir_service_calls, ContractOperationId, ExecutableBody, ExprIr, PackageUnit,
+        ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, SlotLayout,
+    };
 
     #[test]
     fn projects_service_function_spawn_target_from_file_ir() {
@@ -595,6 +602,39 @@ mod tests {
         assert!(error
             .message
             .contains("spawn target app.run must return void/null"));
+    }
+
+    #[test]
+    fn service_boundary_calls_are_not_same_build_spawn_targets() {
+        let mut unit = service_unit("void");
+        unit.external_refs.service_call_refs.push(ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: ContractOperationId::new("operation:run"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:dependency"),
+        });
+        let ExprIr::Call { call } = &mut unit.executables[0].body.expressions[0] else {
+            panic!("fixture must contain a call expression")
+        };
+        call.target = CallTargetIr::ServiceCall {
+            service_call_ref_index: ServiceCallRefIndex::new(0),
+        };
+        validate_file_ir_service_calls(&unit).expect("fixture must be canonical File IR");
+
+        let service_targets =
+            service_spawn_targets_with_packages(std::slice::from_ref(&unit), &[], "proto-1")
+                .expect("service boundary calls must not project spawn targets");
+        assert!(service_targets.is_empty());
+
+        let package = PackageSpawnTargetSource {
+            package_id: "consumer".to_string(),
+            dependency_refs: Vec::new(),
+            unit: PackageUnit::empty("consumer", "1.0.0", "build:consumer", "abi:consumer"),
+            file_ir_units: vec![unit],
+        };
+        let package_targets =
+            service_spawn_targets_with_packages(&[], std::slice::from_ref(&package), "proto-1")
+                .expect("package service boundary calls must not project spawn targets");
+        assert!(package_targets.is_empty());
     }
 
     fn service_unit(return_type: &str) -> FileIrUnit {
