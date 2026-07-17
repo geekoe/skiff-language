@@ -145,7 +145,7 @@ impl CallableState {
         self.return_origins.extend(value.origins.iter().cloned());
         self.effects.returns_caller_alias |= value.contains_caller_reference();
         if value.unknown {
-            self.mark_unknown(CallableProvenanceUnknownReason::UnknownCallTarget);
+            self.mark_unknown_value_if_unowned();
             self.effects.returns_caller_alias = true;
         }
     }
@@ -154,7 +154,7 @@ impl CallableState {
         self.throw_origins.extend(value.origins.iter().cloned());
         self.effects.throws_caller_alias |= value.contains_caller_reference();
         if value.unknown {
-            self.mark_unknown(CallableProvenanceUnknownReason::UnknownCallTarget);
+            self.mark_unknown_value_if_unowned();
             self.effects.throws_caller_alias = true;
         }
     }
@@ -165,12 +165,18 @@ impl CallableState {
             self.escape_lanes.insert(lane);
         }
         if value.unknown {
-            self.mark_unknown(CallableProvenanceUnknownReason::UnknownCallTarget);
+            self.mark_unknown_value_if_unowned();
         }
     }
 
     pub fn mark_unknown(&mut self, reason: CallableProvenanceUnknownReason) {
         self.unknown = join_unknown(self.unknown, Some(reason));
+    }
+
+    fn mark_unknown_value_if_unowned(&mut self) {
+        if self.unknown.is_none() {
+            self.unknown = Some(CallableProvenanceUnknownReason::UnknownCallTarget);
+        }
     }
 
     pub fn into_summaries(self) -> (CallableEffectSummary, CallableProvenanceSummary) {

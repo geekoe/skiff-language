@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, path::Path, path::PathBuf};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId, PackageCallableId,
-    PackageLocalAbiIdentity, ServiceProtocolIdentity, ValueEscapeLane, ValueProvenance,
+    CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
+    ContractOperationId, PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    ValueEscapeLane, ValueProvenance,
 };
 
 use crate::{
@@ -76,6 +77,99 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
             } if module_path == "api" && function_name == "detach"
         )
     }));
+}
+
+#[test]
+fn post_construction_store_of_caller_value_then_return_fails_closed() {
+    let model = analyze(
+        r#"
+            type Child { value: string }
+            type Holder { child: Child }
+
+            function storeAndReturn(input: Child) -> Holder {
+              const holder = Holder { child: Child { value: "fresh" } }
+              holder.child = input
+              return holder
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_heap_store_fail_closed(&model, "storeAndReturn");
+}
+
+#[test]
+fn post_construction_store_then_nested_mutation_fails_closed() {
+    let model = analyze(
+        r#"
+            type Child { value: string }
+            type Holder { child: Child }
+
+            function storeThenMutate(input: Child) -> Holder {
+              const holder = Holder { child: Child { value: "fresh" } }
+              holder.child = input
+              holder.child.value = "changed"
+              return holder
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_heap_store_fail_closed(&model, "storeThenMutate");
+}
+
+#[test]
+fn aliased_fresh_holder_store_then_original_return_fails_closed() {
+    let model = analyze(
+        r#"
+            type Child { value: string }
+            type Holder { child: Child }
+
+            function aliasStore(input: Child) -> Holder {
+              const holder = Holder { child: Child { value: "fresh" } }
+              const alias = holder
+              alias.child = input
+              return holder
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_heap_store_fail_closed(&model, "aliasStore");
+}
+
+#[test]
+fn unsupported_heap_store_fail_closed_state_propagates_through_callers_and_scc() {
+    let model = analyze(
+        r#"
+            type Child { value: string }
+            type Holder { child: Child }
+
+            function storeLeaf(input: Child) -> Holder {
+              const holder = Holder { child: Child { value: "fresh" } }
+              holder.child = input
+              return holder
+            }
+
+            function caller(input: Child) -> Holder {
+              return storeLeaf(input)
+            }
+
+            function first(input: Child, stop: bool) -> Holder {
+              if stop { return storeLeaf(input) }
+              return second(input, true)
+            }
+
+            function second(input: Child, stop: bool) -> Holder {
+              return first(input, stop)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["storeLeaf", "caller", "first", "second"] {
+        assert_heap_store_fail_closed(&model, callable);
+    }
 }
 
 #[test]
@@ -455,6 +549,17 @@ fn assert_escape_lane(model: &SourceCompileModel, symbol: &str, expected: ValueE
         }
         other => panic!("expected analyzed escape provenance for {symbol}, found {other:?}"),
     }
+}
+
+fn assert_heap_store_fail_closed(model: &SourceCompileModel, symbol: &str) {
+    assert_eq!(effects(model, symbol), all_effects(), "{symbol}");
+    assert_eq!(
+        provenance(model, symbol),
+        &CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnsupportedControlFlow,
+        },
+        "{symbol}"
+    );
 }
 
 fn no_effects() -> CallableMayEffects {

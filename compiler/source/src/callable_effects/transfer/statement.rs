@@ -5,7 +5,7 @@ use skiff_artifact_model::CallableProvenanceUnknownReason;
 use crate::shared::ast::{ForBinding, Stmt};
 
 use super::{
-    super::provenance::{all_effects, join_effects, AbstractValue, EscapeLane},
+    super::provenance::{all_effects, join_effects, AbstractValue, CallableState, EscapeLane},
     join_environments, pattern_bindings, Environment, Evaluator,
 };
 
@@ -26,17 +26,18 @@ impl Evaluator<'_, '_> {
                 env.insert(name.clone(), value);
             }
             Stmt::Assign { target, value } => {
-                let target_start = self.next_index;
-                let target_value = self.eval_expr(target, env);
+                self.eval_expr(target, env);
                 let assigned = self.eval_expr(value, env);
                 if let crate::shared::ast::Expr::Identifier(name) = target {
                     env.insert(name.clone(), assigned);
                 } else {
-                    let owner = self
-                        .value_at(target_start.saturating_add(1))
-                        .unwrap_or(&target_value);
-                    self.state.effects.writes_caller_reachable |=
-                        owner.contains_caller_reference() || owner.unknown;
+                    // The current abstract environment has no heap/points-to
+                    // store transfer. Updating only the syntactic owner would
+                    // be unsound through aliases (`alias = holder`) and later
+                    // nested loads. Until a complete heap model exists, every
+                    // post-construction container/field store poisons the whole
+                    // callable instead of emitting false safe facts.
+                    self.mark_unsupported_heap_store();
                 }
             }
             Stmt::If {
@@ -139,5 +140,11 @@ impl Evaluator<'_, '_> {
         join_effects(&mut self.state.effects, &all_effects());
         self.state
             .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
+    }
+
+    fn mark_unsupported_heap_store(&mut self) {
+        self.state.join(&CallableState::fail_closed(
+            CallableProvenanceUnknownReason::UnsupportedControlFlow,
+        ));
     }
 }
