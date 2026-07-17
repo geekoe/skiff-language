@@ -1,4 +1,5 @@
 import {
+  collectDevSyncArtifactPathFailures,
   collectFunctionSourceSinkFailures,
 } from './artifact-identity-dev-sync-check.mjs';
 
@@ -38,6 +39,14 @@ export function devSyncArtifactPathSelfTestFailures() {
       expectedFailures: 1,
     },
     {
+      name: 'rejects a bracket property alias',
+      text: `async function unsafe(root, pointer) {
+  const target = pointer['unitPath'];
+  return readFile(join(root, target));
+}`,
+      expectedFailures: 1,
+    },
+    {
       name: 'rejects raw access despite an unrelated assertion elsewhere',
       text: `function unrelated() {
   assertArtifactReferencesMatchValidated(actual, validated, label);
@@ -71,6 +80,20 @@ function unsafe(root, serviceUnit) {
         `${testCase.name}: expected ${testCase.expectedFailures} dev-sync path failure(s), got ${actual.length}`,
       );
     }
+  }
+  const mainFixture = `async function assertDevReloadPointerContract(root, references, validated, label) {
+  await assertValidatedArtifactClosureFiles({ root, references, validated, label });
+}`;
+  const unsafeOwner = `export async function assertValidatedArtifactClosureFiles({ references, validated }) {
+  const target = references.serviceUnit.unitPath;
+  const trusted = assertArtifactReferencesMatchValidated(references, validated, 'owner');
+  await assertArtifactFile(target, trusted);
+}
+async function assertArtifactFile(path) { return stat(path); }
+`;
+  const ownerFailures = collectDevSyncArtifactPathFailures(mainFixture, unsafeOwner);
+  if (!ownerFailures.some((failure) => failure.includes('before reading artifact paths'))) {
+    failures.push('rejects owner access before exact-match: expected owner ordering failure');
   }
   return failures;
 }

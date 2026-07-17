@@ -2,11 +2,13 @@ const devSyncPath = 'scripts/skiff-dev-sync.mjs';
 const pathOwner = 'scripts/lib/artifact-identity-dev-sync-paths.mjs';
 const ownerFunction = 'assertValidatedArtifactClosureFiles';
 
-const artifactReferenceSource = /(?:\.(?:assemblyPath|unitPath)\b|\[\s*['"](?:assemblyPath|unitPath)['"]\s*\]|(?:\{|,)\s*(?:assemblyPath|unitPath)\s*(?::\s*[A-Za-z_$][\w$]*)?\s*(?=[,}]))/;
+const maskedArtifactReferenceSource = /(?:\.(?:assemblyPath|unitPath)\b|(?:\{|,)\s*(?:assemblyPath|unitPath)\s*(?::\s*[A-Za-z_$][\w$]*)?\s*(?=[,}]))/;
+const rawBracketArtifactReferenceSource = /\[\s*(['"])(?:assemblyPath|unitPath)\1\s*\]/;
 const filesystemSink = /\b(?:access|isFile|join|lstat|mkdir|open|readFile|readdir|realpath|rename|resolve|rm|stat|writeFile)\b/;
 
 export function collectDevSyncArtifactPathFailures(mainText, ownerText, productionFiles = []) {
   const failures = collectFunctionSourceSinkFailures(mainText, devSyncPath);
+  failures.push(...collectFunctionSourceSinkFailures(ownerText, pathOwner));
   for (const file of productionFiles) {
     if (file.relPath === devSyncPath || file.relPath === pathOwner) {
       continue;
@@ -26,14 +28,21 @@ export function collectDevSyncArtifactPathFailures(mainText, ownerText, producti
     }
   }
 
+  const ownerDeclaration = functionDeclarations(ownerText)
+    .find((declaration) => declaration.name === ownerFunction);
   if (!new RegExp(`export\\s+async\\s+function\\s+${ownerFunction}\\b`).test(ownerText)) {
     failures.push(`${pathOwner} must export ${ownerFunction}`);
   }
-  if (!/\bassertArtifactReferencesMatchValidated\s*\(/.test(ownerText)) {
-    failures.push(`${pathOwner} must exact-match references before filesystem access`);
-  }
-  if (!artifactReferenceSource.test(maskNonCode(ownerText)) || !filesystemSink.test(maskNonCode(ownerText))) {
-    failures.push(`${pathOwner} must own validated artifact reference filesystem access`);
+  if (ownerDeclaration === undefined) {
+    failures.push(`${pathOwner} is missing ${ownerFunction}`);
+  } else {
+    const exactMatch = /\bassertArtifactReferencesMatchValidated\s*\(/.exec(ownerDeclaration.code);
+    const firstReferenceIndex = artifactReferenceSourceIndex(ownerDeclaration);
+    if (exactMatch === null) {
+      failures.push(`${pathOwner} ${ownerFunction} must exact-match references`);
+    } else if (firstReferenceIndex !== -1 && exactMatch.index > firstReferenceIndex) {
+      failures.push(`${pathOwner} ${ownerFunction} must exact-match references before reading artifact paths`);
+    }
   }
   return failures;
 }
@@ -41,13 +50,21 @@ export function collectDevSyncArtifactPathFailures(mainText, ownerText, producti
 export function collectFunctionSourceSinkFailures(text, relPath) {
   const failures = [];
   for (const declaration of functionDeclarations(text)) {
-    if (artifactReferenceSource.test(declaration.code) && filesystemSink.test(declaration.code)) {
+    if (artifactReferenceSourceIndex(declaration) !== -1 && filesystemSink.test(declaration.code)) {
       failures.push(
         `${relPath}:${declaration.line} ${declaration.name} combines raw artifact references with filesystem access; delegate to ${pathOwner}`,
       );
     }
   }
   return failures;
+}
+
+function artifactReferenceSourceIndex(declaration) {
+  const maskedMatch = maskedArtifactReferenceSource.exec(declaration.code);
+  const bracketMatch = rawBracketArtifactReferenceSource.exec(declaration.rawCode);
+  const indexes = [maskedMatch?.index, bracketMatch?.index]
+    .filter((index) => index !== undefined);
+  return indexes.length === 0 ? -1 : Math.min(...indexes);
 }
 
 function functionDeclarations(text) {
@@ -74,6 +91,7 @@ function functionDeclarations(text) {
     declarations.push({
       name: match[1],
       code: code.slice(match.index ?? 0, closeBrace + 1),
+      rawCode: text.slice(match.index ?? 0, closeBrace + 1),
       line: lineNumberAt(code, match.index ?? 0),
     });
   }

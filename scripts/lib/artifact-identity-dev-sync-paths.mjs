@@ -12,7 +12,7 @@ export async function assertValidatedArtifactClosureFiles({
   references,
   validated,
   label,
-  statPath = stat,
+  statPath,
 }) {
   const trusted = assertArtifactReferencesMatchValidated(references, validated, label);
   await assertArtifactFile(
@@ -39,9 +39,10 @@ export async function assertValidatedArtifactClosureFiles({
 
 async function assertArtifactFile(root, artifactPath, missingLabel, statPath) {
   const path = join(root, artifactPath);
+  const fileStat = statPath ?? stat;
   let info;
   try {
-    info = await statPath(path);
+    info = await fileStat(path);
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       throw error;
