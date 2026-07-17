@@ -14,6 +14,13 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+pub(crate) fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// Frames an identity from its canonical prefix and an already-derived hash.
 pub fn framed_identity(prefix: &str, hash: &str) -> String {
     format!("{prefix}:{hash}")

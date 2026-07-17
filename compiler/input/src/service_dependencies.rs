@@ -4,10 +4,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::{Map, Value};
-use skiff_artifact_identity::validate_publication_abi_identity;
+use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::Value;
+use skiff_artifact_identity::{
+    service_build_identity_from_assembly_identity, service_build_identity_hash,
+    validate_publication_abi_identity, validate_service_artifact_closure, PackageUnitArtifactRef,
+    ServiceAssemblyArtifactRef, ServiceUnitArtifactRef,
+};
 use skiff_artifact_model::{
-    PublicationAbiUnit, ServiceDependencyConstraint, ServiceUnit, SERVICE_UNIT_SCHEMA_VERSION,
+    schema::{SERVICE_BUILD_SCHEMA_VERSION, SERVICE_VERSION_POINTER_SCHEMA_VERSION},
+    PublicationAbiUnit, ServiceDependencyConstraint, ServiceUnit,
 };
 use skiff_compiler_core::id::PublicationId;
 
@@ -26,7 +32,6 @@ pub fn service_dependency_aliases(dependencies: &[ServiceDependency]) -> BTreeSe
 pub fn resolve_service_dependencies(
     dependencies: &[ServiceDependency],
     artifact_roots: &[PathBuf],
-    build_id_for_root: impl Fn(&Path, &ServiceUnit) -> Result<String, String>,
 ) -> Result<ResolvedServiceDependencies, InputAssemblyError> {
     if dependencies.is_empty() {
         return Ok(ResolvedServiceDependencies::default());
@@ -42,97 +47,81 @@ pub fn resolve_service_dependencies(
     let mut constraints = Vec::with_capacity(dependencies.len());
     let mut lock = Vec::with_capacity(dependencies.len());
     for dependency in dependencies {
-        let resolved = resolve_service_dependency(artifact_roots, dependency, &build_id_for_root)?;
-        lock.push(service_dependency_lock_entry(dependency, &resolved));
+        let pointer = resolve_service_artifact_pointer(artifact_roots, dependency)?;
+        let resolved = load_resolved_service_dependency_artifact(dependency, &pointer)?;
+        lock.push(ServiceDependencyLockEntry::from_resolved_service(
+            dependency, &resolved,
+        ));
         constraints.push(resolved);
     }
     Ok(ResolvedServiceDependencies::new(constraints, lock))
-}
-
-fn resolve_service_dependency(
-    roots: &[PathBuf],
-    dependency: &ServiceDependency,
-    build_id_for_root: &impl Fn(&Path, &ServiceUnit) -> Result<String, String>,
-) -> Result<ServiceDependencyConstraint, InputAssemblyError> {
-    let service_path = service_artifact_path(dependency)?;
-    let resolved = load_resolved_service_dependency_artifact(
-        roots,
-        dependency,
-        &service_path,
-        build_id_for_root,
-    )?;
-
-    Ok(ServiceDependencyConstraint {
-        id: dependency.id.clone(),
-        version: dependency.version.clone(),
-        alias: dependency.alias.clone(),
-        build_id: resolved.build_id,
-        service_protocol_identity: resolved.service_protocol_identity,
-        publication_abi: resolved.publication_abi,
-    })
 }
 
 #[derive(Debug)]
 struct ResolvedServiceArtifactPointer {
     root: PathBuf,
     pointer_path: PathBuf,
-    service_unit_path: String,
-}
-
-#[derive(Debug)]
-struct LoadedServiceDependencyArtifact {
-    build_id: String,
-    service_protocol_identity: String,
-    publication_abi: PublicationAbiUnit,
+    service_assembly: ServiceAssemblyArtifactRef,
+    service_unit: ServiceUnitArtifactRef,
+    package_units: Vec<PackageUnitArtifactRef>,
 }
 
 fn load_resolved_service_dependency_artifact(
-    roots: &[PathBuf],
     dependency: &ServiceDependency,
-    service_path: &str,
-    build_id_for_root: &impl Fn(&Path, &ServiceUnit) -> Result<String, String>,
-) -> Result<LoadedServiceDependencyArtifact, InputAssemblyError> {
-    let resolved = resolve_service_artifact_pointer(roots, dependency, service_path)?;
-    let service_unit = read_json(&resolved.root.join(&resolved.service_unit_path))?;
-    validate_service_unit(&service_unit, dependency, &resolved.service_unit_path)?;
-    let typed_service_unit: ServiceUnit =
-        serde_json::from_value(service_unit.clone()).map_err(|error| {
+    pointer: &ResolvedServiceArtifactPointer,
+) -> Result<ServiceDependencyConstraint, InputAssemblyError> {
+    let validated = validate_service_artifact_closure(
+        &pointer.root,
+        &dependency.id,
+        Some(&dependency.version),
+        &pointer.service_assembly.assembly_identity,
+        &pointer.service_assembly.assembly_path,
+        &pointer.service_unit,
+        &pointer.package_units,
+    )
+    .map_err(|error| InputAssemblyError::Validation {
+        message: format!(
+            "{} service artifact closure validation failed: {error}",
+            pointer.pointer_path.display()
+        ),
+    })?;
+    let service_unit: ServiceUnit =
+        serde_json::from_value(validated.service_unit.value).map_err(|error| {
             InputAssemblyError::Validation {
                 message: format!(
-                    "{} service unit is invalid: {error}",
-                    resolved.service_unit_path
+                    "{} validated service unit is invalid: {error}",
+                    validated.service_unit.path
                 ),
             }
         })?;
-    let build_id = build_id_for_root(&resolved.root, &typed_service_unit).map_err(|message| {
-        InputAssemblyError::Validation {
-            message: message.to_string(),
-        }
-    })?;
-    let publication_abi =
-        service_dependency_publication_abi(&service_unit, &resolved.service_unit_path)?;
     validate_service_dependency_publication_abi(
-        &publication_abi,
-        &resolved.service_unit_path,
+        &service_unit.publication_abi,
+        &validated.service_unit.path,
         dependency,
     )?;
-    Ok(LoadedServiceDependencyArtifact {
-        build_id,
-        service_protocol_identity: typed_service_unit.protocol_identity,
-        publication_abi,
+
+    Ok(ServiceDependencyConstraint {
+        id: dependency.id.clone(),
+        version: dependency.version.clone(),
+        alias: dependency.alias.clone(),
+        build_id: validated.dynamic_build_id,
+        service_protocol_identity: service_unit.protocol_identity,
+        publication_abi: service_unit.publication_abi,
     })
 }
 
 fn resolve_service_artifact_pointer(
     roots: &[PathBuf],
     dependency: &ServiceDependency,
-    service_path: &str,
 ) -> Result<ResolvedServiceArtifactPointer, InputAssemblyError> {
-    let mut errors = Vec::new();
+    let service_path = service_artifact_path(dependency)?;
+    let mut searched_roots = Vec::with_capacity(roots.len());
     for root in roots {
-        match resolve_service_artifact_pointer_from_root(root, dependency, service_path)? {
-            Some(resolved) => return Ok(resolved),
-            None => errors.push(root.display().to_string()),
+        searched_roots.push(root.display().to_string());
+        if let Some(pointer) =
+            resolve_service_artifact_pointer_from_root(root, dependency, &service_path)?
+        {
+            return Ok(pointer);
         }
     }
     Err(InputAssemblyError::Validation {
@@ -140,7 +129,7 @@ fn resolve_service_artifact_pointer(
             "service dependency {}@{} was not found under service artifact roots {}",
             dependency.id,
             dependency.version,
-            errors.join(", ")
+            searched_roots.join(", ")
         ),
     })
 }
@@ -155,92 +144,245 @@ fn resolve_service_artifact_pointer_from_root(
         .join("services")
         .join(format!("{service_path}.json"));
     if dev_path.is_file() {
-        let pointer = read_json(&dev_path)?;
-        if pointer_matches_dependency(&pointer, dependency, true)? {
-            let service_unit_path = service_unit_path_from_index(&pointer, &dev_path)?;
-            return Ok(Some(ResolvedServiceArtifactPointer {
-                root: root.to_path_buf(),
-                pointer_path: dev_path,
-                service_unit_path,
-            }));
-        }
+        let value = read_json(&dev_path)?;
+        return parse_dev_reload_pointer(root, dependency, &dev_path, &value).map(Some);
     }
 
-    let release_path = root
+    let version_path = root
         .join("versions")
         .join("services")
         .join(service_path)
         .join(format!("{}.json", dependency.version));
-    if release_path.is_file() {
-        let version_pointer = read_json(&release_path)?;
-        if !pointer_matches_dependency(&version_pointer, dependency, false)? {
-            return Ok(None);
-        }
-        let build_id = required_string(
-            &version_pointer,
-            "buildId",
-            &format!("{} buildId", release_path.display()),
-        )?;
-        let build_hash = identity_hash(&build_id, &format!("{} buildId", release_path.display()))?;
-        let build_path = root
-            .join("builds")
-            .join("services")
-            .join(service_path)
-            .join(format!("{build_hash}.json"));
-        let pointer = read_json(&build_path)?;
-        if pointer_matches_dependency(&pointer, dependency, false)? {
-            let service_unit_path = service_unit_path_from_index(&pointer, &build_path)?;
-            return Ok(Some(ResolvedServiceArtifactPointer {
-                root: root.to_path_buf(),
-                pointer_path: build_path,
-                service_unit_path,
-            }));
-        }
+    if !version_path.is_file() {
+        return Ok(None);
     }
+    let version_pointer: ServiceVersionPointer = parse_typed(
+        read_json(&version_path)?,
+        &version_path,
+        "service version pointer",
+    )?;
+    validate_service_version_pointer(&version_pointer, dependency, &version_path)?;
+    let build_hash = service_build_identity_hash(&version_pointer.build_id).map_err(|error| {
+        InputAssemblyError::Validation {
+            message: format!("{} buildId is invalid: {error}", version_path.display()),
+        }
+    })?;
+    let build_path = root
+        .join("builds")
+        .join("services")
+        .join(service_path)
+        .join(format!("{build_hash}.json"));
+    let build_value = read_json(&build_path)?;
+    parse_service_build_record(
+        root,
+        dependency,
+        &version_pointer,
+        &build_path,
+        &build_value,
+    )
+    .map(Some)
+}
 
-    let legacy_index_dir = root.join("indexes").join("services").join(service_path);
-    if legacy_index_dir.is_dir() {
-        let mut matches = Vec::new();
-        for entry in fs::read_dir(&legacy_index_dir).map_err(|source| InputAssemblyError::Read {
-            path: legacy_index_dir.display().to_string(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| InputAssemblyError::Read {
-                path: legacy_index_dir.display().to_string(),
-                source,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceVersionPointer {
+    schema_version: String,
+    service_id: String,
+    version: String,
+    build_id: String,
+}
+
+fn validate_service_version_pointer(
+    pointer: &ServiceVersionPointer,
+    dependency: &ServiceDependency,
+    path: &Path,
+) -> Result<(), InputAssemblyError> {
+    if pointer.schema_version != SERVICE_VERSION_POINTER_SCHEMA_VERSION {
+        return invalid_pointer(
+            path,
+            format!("schemaVersion must be {SERVICE_VERSION_POINTER_SCHEMA_VERSION}"),
+        );
+    }
+    if pointer.service_id != dependency.id || pointer.version != dependency.version {
+        return invalid_pointer(
+            path,
+            format!(
+                "coordinates {}@{} do not match dependency {}@{}",
+                pointer.service_id, pointer.version, dependency.id, dependency.version
+            ),
+        );
+    }
+    service_build_identity_hash(&pointer.build_id).map_err(|error| {
+        InputAssemblyError::Validation {
+            message: format!("{} buildId is invalid: {error}", path.display()),
+        }
+    })?;
+    Ok(())
+}
+
+fn parse_dev_reload_pointer(
+    root: &Path,
+    dependency: &ServiceDependency,
+    path: &Path,
+    value: &Value,
+) -> Result<ResolvedServiceArtifactPointer, InputAssemblyError> {
+    let object = pointer_object(value, path, "dev reload pointer")?;
+    reject_pointer_aliases(object, path)?;
+    require_exact_string(object, "mode", "dev", path)?;
+    require_exact_string(object, "serviceId", &dependency.id, path)?;
+    if let Some(version) = object.get("serviceVersion") {
+        let version = version
+            .as_str()
+            .ok_or_else(|| InputAssemblyError::Validation {
+                message: format!("{} serviceVersion must be a string", path.display()),
             })?;
-            let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            let pointer = read_json(&path)?;
-            if pointer_matches_dependency(&pointer, dependency, true)? {
-                let service_unit_path = service_unit_path_from_index(&pointer, &path)?;
-                matches.push(ResolvedServiceArtifactPointer {
-                    root: root.to_path_buf(),
-                    pointer_path: path,
-                    service_unit_path,
-                });
-            }
-        }
-        matches.sort_by(|left, right| left.pointer_path.cmp(&right.pointer_path));
-        match matches.len() {
-            0 => {}
-            1 => return Ok(matches.pop()),
-            _ => {
-                return Err(InputAssemblyError::Validation {
-                    message: format!(
-                        "service dependency {}@{} resolved to multiple legacy artifact indexes under {}",
-                        dependency.id,
-                        dependency.version,
-                        legacy_index_dir.display()
-                    ),
-                });
-            }
+        if version != dependency.version {
+            return invalid_pointer(
+                path,
+                format!(
+                    "serviceVersion {version} does not match dependency version {}",
+                    dependency.version
+                ),
+            );
         }
     }
+    let build_id = required_string(object, "buildId", path)?;
+    service_build_identity_hash(build_id).map_err(|error| InputAssemblyError::Validation {
+        message: format!("{} buildId is invalid: {error}", path.display()),
+    })?;
+    let pointer = artifact_pointer_refs(root, path, object)?;
+    let expected_build_id =
+        service_build_identity_from_assembly_identity(&pointer.service_assembly.assembly_identity)
+            .map_err(|error| InputAssemblyError::Validation {
+                message: format!(
+                    "{} serviceAssembly identity is invalid: {error}",
+                    path.display()
+                ),
+            })?;
+    if build_id != expected_build_id {
+        return invalid_pointer(path, "buildId must match serviceAssembly.assemblyIdentity");
+    }
+    Ok(pointer)
+}
 
-    Ok(None)
+fn parse_service_build_record(
+    root: &Path,
+    dependency: &ServiceDependency,
+    version_pointer: &ServiceVersionPointer,
+    path: &Path,
+    value: &Value,
+) -> Result<ResolvedServiceArtifactPointer, InputAssemblyError> {
+    let object = pointer_object(value, path, "service build record")?;
+    reject_pointer_aliases(object, path)?;
+    require_exact_string(object, "schemaVersion", SERVICE_BUILD_SCHEMA_VERSION, path)?;
+    require_exact_string(object, "serviceId", &dependency.id, path)?;
+    require_exact_string(object, "serviceVersion", &dependency.version, path)?;
+    require_exact_string(object, "buildId", &version_pointer.build_id, path)?;
+    artifact_pointer_refs(root, path, object)
+}
+
+fn artifact_pointer_refs(
+    root: &Path,
+    path: &Path,
+    object: &serde_json::Map<String, Value>,
+) -> Result<ResolvedServiceArtifactPointer, InputAssemblyError> {
+    Ok(ResolvedServiceArtifactPointer {
+        root: root.to_path_buf(),
+        pointer_path: path.to_path_buf(),
+        service_assembly: parse_pointer_field(object, "serviceAssembly", path)?,
+        service_unit: parse_pointer_field(object, "serviceUnit", path)?,
+        package_units: parse_pointer_field(object, "packageUnits", path)?,
+    })
+}
+
+fn parse_pointer_field<T: DeserializeOwned>(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    path: &Path,
+) -> Result<T, InputAssemblyError> {
+    let value = object
+        .get(field)
+        .cloned()
+        .ok_or_else(|| InputAssemblyError::Validation {
+            message: format!("{} {field} is required", path.display()),
+        })?;
+    parse_typed(value, path, field)
+}
+
+fn parse_typed<T: DeserializeOwned>(
+    value: Value,
+    path: &Path,
+    label: &str,
+) -> Result<T, InputAssemblyError> {
+    serde_json::from_value(value).map_err(|error| InputAssemblyError::Validation {
+        message: format!("{} {label} is invalid: {error}", path.display()),
+    })
+}
+
+fn pointer_object<'a>(
+    value: &'a Value,
+    path: &Path,
+    label: &str,
+) -> Result<&'a serde_json::Map<String, Value>, InputAssemblyError> {
+    value
+        .as_object()
+        .ok_or_else(|| InputAssemblyError::Validation {
+            message: format!("{} {label} must be an object", path.display()),
+        })
+}
+
+fn reject_pointer_aliases(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+) -> Result<(), InputAssemblyError> {
+    for alias in [
+        "serviceIr",
+        "serviceIrPath",
+        "artifactIdentity",
+        "serviceAssemblyRef",
+        "service_id",
+        "service_version",
+        "build_id",
+        "version",
+        "service_unit",
+        "service_assembly",
+        "package_units",
+    ] {
+        if object.contains_key(alias) {
+            return invalid_pointer(
+                path,
+                format!("legacy pointer field {alias} is not supported"),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn require_exact_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    expected: &str,
+    path: &Path,
+) -> Result<(), InputAssemblyError> {
+    let actual = required_string(object, field, path)?;
+    if actual != expected {
+        return invalid_pointer(path, format!("{field} must be {expected}, got {actual}"));
+    }
+    Ok(())
+}
+
+fn required_string<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+    path: &Path,
+) -> Result<&'a str, InputAssemblyError> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| InputAssemblyError::Validation {
+            message: format!("{} {field} must be a non-empty string", path.display()),
+        })
 }
 
 fn service_artifact_path(dependency: &ServiceDependency) -> Result<String, InputAssemblyError> {
@@ -254,128 +396,21 @@ fn service_artifact_path(dependency: &ServiceDependency) -> Result<String, Input
         .artifact_path())
 }
 
-fn pointer_matches_dependency(
-    pointer: &Value,
-    dependency: &ServiceDependency,
-    allow_missing_version: bool,
-) -> Result<bool, InputAssemblyError> {
-    let service_id = pointer
-        .get("serviceId")
-        .or_else(|| pointer.get("service_id"))
-        .and_then(Value::as_str);
-    if service_id != Some(dependency.id.as_str()) {
-        return Ok(false);
-    }
-    let version = pointer
-        .get("serviceVersion")
-        .or_else(|| pointer.get("service_version"))
-        .or_else(|| pointer.get("version"))
-        .and_then(Value::as_str);
-    Ok(if allow_missing_version {
-        version.is_none_or(|version| version == dependency.version)
-    } else {
-        version == Some(dependency.version.as_str())
-    })
-}
-
-fn service_unit_path_from_index(
-    index: &Value,
-    index_path: &Path,
-) -> Result<String, InputAssemblyError> {
-    let service_unit = index
-        .get("serviceUnit")
-        .and_then(Value::as_object)
-        .ok_or_else(|| InputAssemblyError::Validation {
-            message: format!("{} is missing serviceUnit", index_path.display()),
-        })?;
-    required_object_string(
-        service_unit,
-        "unitPath",
-        &format!("{} serviceUnit.unitPath", index_path.display()),
-    )
-}
-
-fn validate_service_unit(
-    service_unit: &Value,
-    dependency: &ServiceDependency,
-    service_unit_path: &str,
-) -> Result<(), InputAssemblyError> {
-    if service_unit.get("schemaVersion").and_then(Value::as_str)
-        != Some(SERVICE_UNIT_SCHEMA_VERSION)
-    {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} schemaVersion must be {SERVICE_UNIT_SCHEMA_VERSION}"
-            ),
-        });
-    }
-    let service_id = service_unit
-        .pointer("/service/id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| InputAssemblyError::Validation {
-            message: format!("{service_unit_path} service.id is required"),
-        })?;
-    if service_id != dependency.id {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} service.id {service_id} does not match dependency {}",
-                dependency.id
-            ),
-        });
-    }
-    let version = service_unit
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| InputAssemblyError::Validation {
-            message: format!("{service_unit_path} version is required"),
-        })?;
-    if version != dependency.version {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} version {version} does not match dependency {}@{}",
-                dependency.id, dependency.version
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn service_dependency_publication_abi(
-    service_unit: &Value,
-    service_unit_path: &str,
-) -> Result<PublicationAbiUnit, InputAssemblyError> {
-    let value = service_unit.get("publicationAbi").ok_or_else(|| {
-        InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} missing publicationAbi; service dependencies require publication ABI"
-            ),
-        }
-    })?;
-    let publication_abi: PublicationAbiUnit =
-        serde_json::from_value(value.clone()).map_err(|error| InputAssemblyError::Validation {
-            message: format!("{service_unit_path} publicationAbi is invalid: {error}"),
-        })?;
-    Ok(publication_abi)
-}
-
 fn validate_service_dependency_publication_abi(
     publication_abi: &PublicationAbiUnit,
     service_unit_path: &str,
     dependency: &ServiceDependency,
 ) -> Result<(), InputAssemblyError> {
-    if publication_abi.publication_id != dependency.id {
+    if publication_abi.publication_id != dependency.id
+        || publication_abi.version != dependency.version
+    {
         return Err(InputAssemblyError::Validation {
             message: format!(
-                "{service_unit_path} publicationAbi.publicationId {} does not match dependency {}",
-                publication_abi.publication_id, dependency.id
-            ),
-        });
-    }
-    if publication_abi.version != dependency.version {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} publicationAbi.version {} does not match dependency {}@{}",
-                publication_abi.version, dependency.id, dependency.version
+                "{service_unit_path} publicationAbi coordinates {}@{} do not match dependency {}@{}",
+                publication_abi.publication_id,
+                publication_abi.version,
+                dependency.id,
+                dependency.version
             ),
         });
     }
@@ -386,170 +421,22 @@ fn validate_service_dependency_publication_abi(
     })
 }
 
-fn service_dependency_lock_entry(
-    declared: &ServiceDependency,
-    resolved: &ServiceDependencyConstraint,
-) -> ServiceDependencyLockEntry {
-    ServiceDependencyLockEntry::from_resolved_service(declared, resolved)
-}
-
-fn required_string(value: &Value, field: &str, label: &str) -> Result<String, InputAssemblyError> {
-    value
-        .get(field)
-        .or_else(|| snake_case_field(value, field))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| InputAssemblyError::Validation {
-            message: format!("{label} must be a non-empty string"),
-        })
-}
-
-fn required_object_string(
-    object: &Map<String, Value>,
-    field: &str,
-    label: &str,
-) -> Result<String, InputAssemblyError> {
-    object
-        .get(field)
-        .or_else(|| object.get(&camel_to_snake(field)))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| InputAssemblyError::Validation {
-            message: format!("{label} must be a non-empty string"),
-        })
-}
-
-fn snake_case_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
-    value.as_object()?.get(&camel_to_snake(field))
-}
-
-fn camel_to_snake(value: &str) -> String {
-    let mut result = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_uppercase() {
-            result.push('_');
-            result.push(ch.to_ascii_lowercase());
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 fn read_json(path: &Path) -> Result<Value, InputAssemblyError> {
     let text = fs::read_to_string(path).map_err(|source| InputAssemblyError::Read {
         path: path.display().to_string(),
         source,
     })?;
-    serde_json::from_str(&text).map_err(|error| InputAssemblyError::Validation {
-        message: format!("failed to parse {}: {error}", path.display()),
+    serde_json::from_str(&text).map_err(|source| InputAssemblyError::Validation {
+        message: format!("{} is invalid JSON: {source}", path.display()),
     })
 }
 
-fn identity_hash(identity: &str, label: &str) -> Result<String, InputAssemblyError> {
-    let Some((_, hash)) = identity.rsplit_once(":sha256:") else {
-        return Err(InputAssemblyError::Validation {
-            message: format!("{label} must include :sha256:"),
-        });
-    };
-    if hash.len() != 64
-        || !hash
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-    {
-        return Err(InputAssemblyError::Validation {
-            message: format!("{label} sha256 hash must be 64 lowercase hex characters"),
-        });
-    }
-    Ok(hash.to_string())
+fn invalid_pointer<T>(path: &Path, message: impl Into<String>) -> Result<T, InputAssemblyError> {
+    Err(InputAssemblyError::Validation {
+        message: format!("{} {}", path.display(), message.into()),
+    })
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use skiff_artifact_identity::{
-        assign_publication_abi_identity, public_function_operation_abi_id,
-    };
-    use skiff_artifact_model::{
-        CanonicalPublicCallableSignature, OperationAbiRef, PublicationAbiUnit,
-        PublicationOperationAbi, PublicationOperationKind, SourceCallOperationIndexEntry,
-        TypeRefIr,
-    };
-
-    use super::{service_dependency_publication_abi, validate_service_dependency_publication_abi};
-    use crate::ServiceDependency;
-
-    #[test]
-    fn service_dependency_missing_publication_abi_fails_closed() {
-        let service_unit = serde_json::json!({
-            "schemaVersion": skiff_artifact_model::SERVICE_UNIT_SCHEMA_VERSION,
-            "service": { "id": "skiff.run/remotellm" },
-            "version": "0.1.0",
-            "protocolIdentity": "protocol:test",
-            "operations": []
-        });
-
-        let error = service_dependency_publication_abi(&service_unit, "remoteLlm.service.json")
-            .expect_err("missing publicationAbi must fail closed")
-            .to_string();
-
-        assert!(
-            error.contains("missing publicationAbi"),
-            "unexpected missing publicationAbi error: {error}"
-        );
-    }
-
-    #[test]
-    fn service_dependency_recomputes_declared_publication_identity() {
-        let signature = CanonicalPublicCallableSignature {
-            params: Vec::new(),
-            return_type: TypeRefIr::native("string"),
-            may_suspend: false,
-        };
-        let operation_id =
-            public_function_operation_abi_id("run", &signature, &[], &BTreeMap::new())
-                .expect("operation identity");
-        let operation = OperationAbiRef {
-            operation_abi_id: operation_id,
-            kind: PublicationOperationKind::PublicFunction,
-            public_path: "run".to_string(),
-            public_instance_key: None,
-            interface: None,
-            method_abi_id: None,
-            display_name: "run".to_string(),
-        };
-        let mut publication = PublicationAbiUnit::empty("example.com/callee", "1.0.0", "");
-        publication.operation_exports.push(operation.clone());
-        publication.operation_abi.push(PublicationOperationAbi {
-            operation: operation.clone(),
-            public_signature: signature,
-            schema_closure: Vec::new(),
-            stream_effect_throw_config: BTreeMap::new(),
-        });
-        publication
-            .source_call_operation_index
-            .push(SourceCallOperationIndexEntry {
-                source_call_path: "run".to_string(),
-                operation,
-            });
-        assign_publication_abi_identity(&mut publication).expect("valid publication identity");
-        publication.abi_identity = "skiff-publication-abi-v1:sha256:tampered".to_string();
-
-        let dependency = ServiceDependency {
-            id: "example.com/callee".to_string(),
-            version: "1.0.0".to_string(),
-            alias: "callee".to_string(),
-        };
-        let error = validate_service_dependency_publication_abi(
-            &publication,
-            "callee.service.json",
-            &dependency,
-        )
-        .expect_err("consumer must reject a tampered declared identity")
-        .to_string();
-        assert!(error.contains("declared abiIdentity"), "{error}");
-    }
-}
+#[path = "service_dependencies/tests.rs"]
+mod tests;

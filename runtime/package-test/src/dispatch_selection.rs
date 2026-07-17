@@ -1,12 +1,15 @@
 use std::{
     collections::BTreeSet,
-    fmt, fs,
-    path::{Component, Path, PathBuf},
+    fs,
+    path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
+pub(super) use skiff_artifact_identity::publication_storage_segment;
 use skiff_artifact_identity::{
     derive_package_test_entrypoint_id, validate_package_test_assembly_identity,
+    ArtifactRelativePath, PACKAGE_BUILD_IDENTITY_PREFIX,
+    PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
     PACKAGE_TEST_BUILD_IDENTITY_PREFIX, PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
 };
 use skiff_artifact_model::{
@@ -14,117 +17,7 @@ use skiff_artifact_model::{
     PackageTestFileIrRef, PackageTestPackageUnitRef,
 };
 
-use super::PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX;
-
 const PACKAGE_TEST_ACTIVATION_ID_PREFIX: &str = "skiff-package-test-run-v1:";
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ArtifactRootRelativePath {
-    path: PathBuf,
-}
-
-impl ArtifactRootRelativePath {
-    fn new(path: impl AsRef<Path>, label: &str) -> anyhow::Result<Self> {
-        let path = path.as_ref();
-        if !is_safe_artifact_root_relative_path(path) {
-            anyhow::bail!(
-                "{} path {} must be relative and stay inside artifacts root",
-                label,
-                path.display()
-            );
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-        })
-    }
-
-    fn parse(path: &str, label: &str) -> anyhow::Result<Self> {
-        Self::new(Path::new(path), label)
-    }
-
-    fn as_path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl fmt::Display for ArtifactRootRelativePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.path.display())
-    }
-}
-
-pub(super) fn publication_storage_segment(value: &str, label: &str) -> anyhow::Result<String> {
-    validate_publication_id(value, label)?;
-    Ok(value.replace('.', "~").replace('/', "~~"))
-}
-
-fn validate_publication_id(value: &str, label: &str) -> anyhow::Result<()> {
-    if value.is_empty() || value.len() > 63 || value == "std" {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    if value != value.trim()
-        || value.bytes().any(|byte| byte.is_ascii_control())
-        || value.contains("://")
-        || value.starts_with('/')
-        || value.ends_with('/')
-        || value.contains("//")
-        || value.contains('~')
-        || value
-            .bytes()
-            .any(|byte| !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/'))
-    {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-
-    let Some((authority, local)) = value.split_once('/') else {
-        anyhow::bail!("{label} {value} must be a publication id");
-    };
-    validate_authority(authority, label, value)?;
-    if local.is_empty()
-        || local
-            .split('/')
-            .any(|segment| !is_valid_local_segment(segment))
-    {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    Ok(())
-}
-
-fn validate_authority(authority: &str, label: &str, value: &str) -> anyhow::Result<()> {
-    let labels = authority.split('.').collect::<Vec<_>>();
-    if labels.len() < 2 || labels.iter().any(|item| !is_valid_authority_label(item)) {
-        anyhow::bail!("{label} {value} must be a publication id");
-    }
-    Ok(())
-}
-
-fn is_valid_authority_label(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    !bytes.is_empty()
-        && bytes[0] != b'-'
-        && bytes.last() != Some(&b'-')
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-}
-
-fn is_valid_local_segment(segment: &str) -> bool {
-    let bytes = segment.as_bytes();
-    !bytes.is_empty()
-        && bytes[0].is_ascii_lowercase()
-        && bytes.last() != Some(&b'-')
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
-        })
-}
-
-fn is_safe_artifact_root_relative_path(path: &Path) -> bool {
-    if path.as_os_str().is_empty() || path.is_absolute() {
-        return false;
-    }
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageTestDispatchSelection {
@@ -245,11 +138,8 @@ pub fn load_package_test_build_artifact_from_artifact_roots(
         PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
         "testBuildIdentity",
     )?;
-    let pointer_relative = ArtifactRootRelativePath::new(
-        PathBuf::from("dev")
-            .join("package-tests")
-            .join(&package_path)
-            .join(format!("{test_build_hash}.json")),
+    let pointer_relative = ArtifactRelativePath::parse(
+        &format!("dev/package-tests/{package_path}/{test_build_hash}.json"),
         "package test dev pointer",
     )?;
 
@@ -260,6 +150,8 @@ pub fn load_package_test_build_artifact_from_artifact_roots(
             missing.push(pointer_path);
             continue;
         }
+        let pointer_path =
+            pointer_relative.resolve_existing(artifact_root, "package test dev pointer")?;
         return validate_package_test_build_from_pointer(
             artifact_root,
             &pointer_path,
@@ -294,15 +186,12 @@ fn validate_package_test_build_from_pointer(
     validate_dev_pointer(pointer_path, &pointer, selection)?;
 
     let assembly_pointer = &pointer.package_test_assembly;
-    let assembly_relative = ArtifactRootRelativePath::parse(
+    let assembly_relative = ArtifactRelativePath::parse(
         &assembly_pointer.assembly_path,
         "package test assembly pointer assemblyPath",
     )?;
-    let expected_assembly_relative = ArtifactRootRelativePath::new(
-        PathBuf::from("assemblies")
-            .join("package-tests")
-            .join(package_path)
-            .join(format!("{test_build_hash}.json")),
+    let expected_assembly_relative = ArtifactRelativePath::parse(
+        &format!("assemblies/package-tests/{package_path}/{test_build_hash}.json"),
         "package test assembly",
     )?;
     if assembly_relative != expected_assembly_relative {
@@ -324,7 +213,8 @@ fn validate_package_test_build_from_pointer(
         );
     }
 
-    let assembly_path = artifact_root.join(assembly_relative.as_path());
+    let assembly_path =
+        assembly_relative.resolve_existing(artifact_root, "package test assembly")?;
     let assembly_text = fs::read_to_string(&assembly_path)
         .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", assembly_path.display()))?;
     let assembly: PackageTestAssembly = serde_json::from_str(&assembly_text).map_err(|error| {
@@ -729,14 +619,14 @@ fn validate_package_unit_ref(
     reference: &PackageTestPackageUnitRef,
     label: &str,
 ) -> anyhow::Result<()> {
-    let build_hash = identity_hash(
+    identity_hash(
         &reference.build_identity,
-        "skiff-package-build-v1:sha256",
+        PACKAGE_BUILD_IDENTITY_PREFIX,
         &format!("{label}.buildIdentity"),
     )?;
     identity_hash(
         &reference.public_abi_identity,
-        "skiff-package-abi-v1:sha256",
+        PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
         &format!("{label}.publicAbiIdentity"),
     )?;
     identity_hash(
@@ -744,41 +634,17 @@ fn validate_package_unit_ref(
         PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
         &format!("{label}.implementationLinksIdentity"),
     )?;
-    validate_hash_path_suffix(
-        &reference.unit_path,
-        build_hash,
-        &format!("{label}.unitPath"),
-    )?;
+    ArtifactRelativePath::parse(&reference.unit_path, format!("{label}.unitPath"))?;
     Ok(())
 }
 
 fn validate_file_ir_ref(reference: &PackageTestFileIrRef, label: &str) -> anyhow::Result<()> {
-    let file_hash = identity_hash(
+    identity_hash(
         &reference.file_ir_identity,
         "skiff-file-ir-v3:sha256",
         &format!("{label}.fileIrIdentity"),
     )?;
-    validate_hash_path_suffix(
-        &reference.file_ir_path,
-        file_hash,
-        &format!("{label}.fileIrPath"),
-    )?;
-    Ok(())
-}
-
-fn validate_hash_path_suffix(path: &str, expected_hash: &str, label: &str) -> anyhow::Result<()> {
-    let artifact_path = ArtifactRootRelativePath::parse(path, label)?;
-    let file_name = artifact_path
-        .as_path()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("{label} must end with <hash>.json"))?;
-    let Some(hash) = file_name.strip_suffix(".json") else {
-        anyhow::bail!("{label} must end with <hash>.json");
-    };
-    if hash != expected_hash {
-        anyhow::bail!("{label} hash {hash} does not match identity hash {expected_hash}");
-    }
+    ArtifactRelativePath::parse(&reference.file_ir_path, format!("{label}.fileIrPath"))?;
     Ok(())
 }
 

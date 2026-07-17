@@ -27,10 +27,19 @@ export interface CompilerGeneratedArtifactRoot {
   };
   serviceUnit: {
     unitPath: string;
-    schemaVersion?: string;
-    unitIdentity?: string;
-    unitHash?: string;
+    schemaVersion: 'skiff-service-unit-v1';
+    unitIdentity: string;
+    unitHash: string;
   };
+  packageUnits: Array<{
+    schemaVersion: 'skiff-package-unit-v1';
+    packageId: string;
+    version: string;
+    buildIdentity: string;
+    abiIdentity: string;
+    unitHash: string;
+    unitPath: string;
+  }>;
   contractIdentity: string;
 }
 
@@ -57,12 +66,19 @@ export async function writeCompilerGeneratedWebSocketFixtureArtifactRoot(
   const index = await readSingleCompilerArtifactIndex(root);
   const serviceAssembly = readServiceAssemblyPointer(index);
   const serviceUnit = readServiceUnitPointer(index);
+  const packageUnits = readPackageUnitPointers(index);
   const serviceId = readRequiredString(index.serviceId, 'compiler artifact index serviceId');
   const contractIdentity = readRequiredString(
     index.contractIdentity,
     'compiler artifact index contractIdentity'
   );
-  const serviceVersion = `${serviceIdPathSegments(serviceId).join('-')}-compiler-fixture`;
+  const serviceUnitValue = JSON.parse(
+    await readFile(join(root, serviceUnit.unitPath), 'utf8')
+  ) as Record<string, unknown>;
+  const serviceVersion = readRequiredString(
+    serviceUnitValue.version,
+    'compiler service unit version'
+  );
   const buildId = `skiff-service-build-v1:sha256:${identityHash(
     fixtureIdentity('skiff-service-build-v1', stableStringify(index))
   )}`;
@@ -74,7 +90,8 @@ export async function writeCompilerGeneratedWebSocketFixtureArtifactRoot(
     serviceVersion,
     contractIdentity,
     serviceAssembly,
-    serviceUnit
+    serviceUnit,
+    packageUnits,
   });
 
   return {
@@ -84,6 +101,7 @@ export async function writeCompilerGeneratedWebSocketFixtureArtifactRoot(
     serviceVersion,
     serviceAssembly,
     serviceUnit,
+    packageUnits,
     contractIdentity
   };
 }
@@ -104,12 +122,14 @@ export async function writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoo
       {
         mode: 'dev',
         serviceId: generated.serviceId,
+        serviceVersion: generated.serviceVersion,
         profile,
         contractHash: identityHash(generated.contractIdentity),
         protocolIdentity: generated.contractIdentity,
         buildId,
         serviceAssembly: generated.serviceAssembly,
-        serviceUnit: generated.serviceUnit
+        serviceUnit: generated.serviceUnit,
+        packageUnits: generated.packageUnits,
       },
       null,
       2
@@ -185,39 +205,59 @@ function readServiceAssemblyPointer(index: Record<string, unknown>): {
 
 function readServiceUnitPointer(index: Record<string, unknown>): {
   unitPath: string;
-  schemaVersion?: string;
-  unitIdentity?: string;
-  unitHash?: string;
+  schemaVersion: 'skiff-service-unit-v1';
+  unitIdentity: string;
+  unitHash: string;
 } {
   const serviceUnit = index.serviceUnit;
   if (!serviceUnit || typeof serviceUnit !== 'object') {
     throw new Error('compiler artifact index serviceUnit must be an object');
   }
   const record = serviceUnit as Record<string, unknown>;
-  const pointer: {
-    unitPath: string;
-    schemaVersion?: string;
-    unitIdentity?: string;
-    unitHash?: string;
-  } = {
+  return {
+    schemaVersion: readRequiredLiteral(
+      record.schemaVersion,
+      'skiff-service-unit-v1',
+      'compiler artifact index serviceUnit.schemaVersion'
+    ),
+    unitIdentity: readRequiredString(
+      record.unitIdentity,
+      'compiler artifact index serviceUnit.unitIdentity'
+    ),
+    unitHash: readRequiredString(
+      record.unitHash,
+      'compiler artifact index serviceUnit.unitHash'
+    ),
     unitPath: readRequiredString(
       record.unitPath,
       'compiler artifact index serviceUnit.unitPath'
-    )
+    ),
   };
-  const schemaVersion = readOptionalString(record.schemaVersion);
-  if (schemaVersion !== undefined) {
-    pointer.schemaVersion = schemaVersion;
+}
+
+function readPackageUnitPointers(index: Record<string, unknown>): CompilerGeneratedArtifactRoot['packageUnits'] {
+  if (!Array.isArray(index.packageUnits)) {
+    throw new Error('compiler artifact index packageUnits must be an array');
   }
-  const unitIdentity = readOptionalString(record.unitIdentity);
-  if (unitIdentity !== undefined) {
-    pointer.unitIdentity = unitIdentity;
-  }
-  const unitHash = readOptionalString(record.unitHash);
-  if (unitHash !== undefined) {
-    pointer.unitHash = unitHash;
-  }
-  return pointer;
+  return index.packageUnits.map((value, position) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`compiler artifact index packageUnits[${position}] must be an object`);
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      schemaVersion: readRequiredLiteral(
+        record.schemaVersion,
+        'skiff-package-unit-v1',
+        `packageUnits[${position}].schemaVersion`,
+      ),
+      packageId: readRequiredString(record.packageId, `packageUnits[${position}].packageId`),
+      version: readRequiredString(record.version, `packageUnits[${position}].version`),
+      buildIdentity: readRequiredString(record.buildIdentity, `packageUnits[${position}].buildIdentity`),
+      abiIdentity: readRequiredString(record.abiIdentity, `packageUnits[${position}].abiIdentity`),
+      unitHash: readRequiredString(record.unitHash, `packageUnits[${position}].unitHash`),
+      unitPath: readRequiredString(record.unitPath, `packageUnits[${position}].unitPath`),
+    };
+  });
 }
 
 async function writeVersionPointer(
@@ -256,10 +296,11 @@ async function writeBuildRecord(
     };
     serviceUnit: {
       unitPath: string;
-      schemaVersion?: string;
-      unitIdentity?: string;
-      unitHash?: string;
+      schemaVersion: string;
+      unitIdentity: string;
+      unitHash: string;
     };
+    packageUnits: CompilerGeneratedArtifactRoot['packageUnits'];
   }
 ) {
   const serviceIdSegments = serviceIdPathSegments(input.serviceId);
@@ -275,6 +316,7 @@ async function writeBuildRecord(
         contractIdentity: input.contractIdentity,
         serviceAssembly: input.serviceAssembly,
         serviceUnit: input.serviceUnit,
+        packageUnits: input.packageUnits,
         fingerprint: input.serviceAssembly.assemblyIdentity,
         createdAt: '2026-05-05T00:00:00.000Z'
       },
@@ -289,6 +331,17 @@ function readRequiredString(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value;
+}
+
+function readRequiredLiteral<const T extends string>(
+  value: unknown,
+  expected: T,
+  label: string,
+): T {
+  if (value !== expected) {
+    throw new Error(`${label} must be ${expected}`);
+  }
+  return expected;
 }
 
 function readOptionalString(value: unknown): string | undefined {

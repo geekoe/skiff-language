@@ -3,7 +3,12 @@ import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
-import type { PackageUnitArtifactPointer } from "./types.js";
+import type {
+  PackageUnitArtifactPointer,
+  ServiceUnitArtifactPointer,
+  ValidatedArtifactContent,
+  ValidatedServiceArtifactClosure,
+} from "./types.js";
 
 const IDENTITY_CLI_ENV = "SKIFF_ARTIFACT_IDENTITY_CLI";
 const IDENTITY_CLI_BINARY = process.platform === "win32"
@@ -17,50 +22,173 @@ export interface IdentityCliResolutionOptions {
   releaseMode?: boolean;
 }
 
-export async function computeRuntimeProgramBuildIdWithIdentityCli(input: {
+export interface IdentityCliArtifactInput {
+  key: string;
   artifactRoot: string;
-  packageUnits?: readonly PackageUnitArtifactPointer[];
-  serviceUnit: Record<string, unknown>;
-} & IdentityCliResolutionOptions): Promise<string> {
-  const resolution = resolveIdentityCliPath(input);
+  serviceId: string;
+  serviceVersion?: string;
+  serviceAssembly: {
+    assemblyIdentity: string;
+    assemblyPath: string;
+  };
+  serviceUnit: ServiceUnitArtifactPointer;
+  packageUnits: readonly PackageUnitArtifactPointer[];
+}
+
+/** Validate one complete router load candidate set in exactly one CLI process. */
+export async function validateArtifactClosuresWithIdentityCli(
+  inputs: readonly IdentityCliArtifactInput[],
+  options: IdentityCliResolutionOptions,
+): Promise<ReadonlyMap<string, ValidatedServiceArtifactClosure>> {
+  if (inputs.length === 0) {
+    throw new Error("artifact identity CLI transaction requires at least one service");
+  }
+  const expected = new Map<string, IdentityCliArtifactInput>();
+  for (const input of inputs) {
+    if (expected.has(input.key)) {
+      throw new Error(`artifact identity CLI input contains duplicate key ${input.key}`);
+    }
+    expected.set(input.key, input);
+  }
+
+  const resolution = resolveIdentityCliPath(options);
   if (resolution.path === undefined) {
     throw new Error(
       `artifact identity CLI is not configured; ${formatIdentityCliCandidates(resolution.candidates)}`,
     );
   }
   await assertIdentityCliExecutable(resolution.path, resolution.candidates);
-  const key = "service";
-  const stdout = await runIdentityCli(resolution.path, {
-    artifactRoot: input.artifactRoot,
-    services: [
-      {
-        key,
-        ...(input.packageUnits !== undefined
-          ? { packageUnits: input.packageUnits.map(identityCliPackageUnitRef) }
-          : {}),
-        serviceUnit: input.serviceUnit,
-      },
-    ],
-  }, resolution.candidates);
-  return readDynamicBuildId(stdout, key, resolution.candidates);
+  const stdout = await runIdentityCli(
+    resolution.path,
+    { services: inputs },
+    resolution.candidates,
+  );
+  return readValidatedResults(stdout, expected, resolution.candidates);
 }
 
-function identityCliPackageUnitRef(unit: PackageUnitArtifactPointer): {
-  packageId: string;
-  version: string;
-  buildIdentity: string;
-  abiIdentity: string;
-  unitHash?: string;
-  unitPath: string;
-} {
-  return {
-    packageId: unit.packageId,
-    version: unit.version,
-    buildIdentity: unit.buildIdentity,
-    abiIdentity: unit.abiIdentity,
-    ...(unit.unitHash !== undefined ? { unitHash: unit.unitHash } : {}),
-    unitPath: unit.unitPath,
-  };
+function readValidatedResults(
+  stdout: string,
+  expected: ReadonlyMap<string, IdentityCliArtifactInput>,
+  candidates: readonly IdentityCliCandidate[],
+): ReadonlyMap<string, ValidatedServiceArtifactClosure> {
+  const parsed = parseJsonObject(stdout, "artifact identity CLI stdout", candidates);
+  const rawResults = parsed.results;
+  if (!Array.isArray(rawResults) || rawResults.length !== expected.size) {
+    throw new Error(
+      `artifact identity CLI stdout.results must contain exactly ${expected.size} results; ${formatIdentityCliCandidates(candidates)}`,
+    );
+  }
+  const results = new Map<string, ValidatedServiceArtifactClosure>();
+  for (const [index, value] of rawResults.entries()) {
+    const record = requireObject(value, `artifact identity CLI stdout.results[${index}]`);
+    const key = requireString(record.key, `results[${index}].key`);
+    const input = expected.get(key);
+    if (input === undefined || results.has(key)) {
+      throw new Error(`artifact identity CLI returned unexpected or duplicate key ${key}`);
+    }
+    const dynamicBuildId = requireString(
+      record.dynamicBuildId,
+      `results[${index}].dynamicBuildId`,
+    );
+    if (!DYNAMIC_BUILD_ID_PATTERN.test(dynamicBuildId)) {
+      throw new Error(
+        `artifact identity CLI results[${index}].dynamicBuildId must be skiff-service-build-v1:sha256:<64 lowercase hex>`,
+      );
+    }
+    const assemblyIdentity = requireString(
+      record.assemblyIdentity,
+      `results[${index}].assemblyIdentity`,
+    );
+    if (assemblyIdentity !== input.serviceAssembly.assemblyIdentity) {
+      throw new Error(`artifact identity CLI result ${key} assemblyIdentity mismatch`);
+    }
+    const serviceAssembly = readContent(
+      record.serviceAssembly,
+      `results[${index}].serviceAssembly`,
+      input.serviceAssembly.assemblyPath,
+    );
+    const serviceUnit = readContent(
+      record.serviceUnit,
+      `results[${index}].serviceUnit`,
+      input.serviceUnit.unitPath,
+    );
+    if (!Array.isArray(record.packageUnits)) {
+      throw new Error(`artifact identity CLI results[${index}].packageUnits must be an array`);
+    }
+    if (record.packageUnits.length !== input.packageUnits.length) {
+      throw new Error(`artifact identity CLI result ${key} packageUnits count mismatch`);
+    }
+    const expectedPackagePaths = new Set(
+      input.packageUnits.map((unit) => unit.unitPath),
+    );
+    const packageUnits = record.packageUnits.map((content, packageIndex) => {
+      const loaded = readContent(
+        content,
+        `results[${index}].packageUnits[${packageIndex}]`,
+      );
+      if (!expectedPackagePaths.delete(loaded.path)) {
+        throw new Error(
+          `artifact identity CLI result ${key} returned unexpected duplicate package path ${loaded.path}`,
+        );
+      }
+      return loaded;
+    });
+    if (expectedPackagePaths.size !== 0) {
+      throw new Error(`artifact identity CLI result ${key} omitted package unit content`);
+    }
+    results.set(key, {
+      key,
+      dynamicBuildId,
+      assemblyIdentity,
+      serviceAssembly,
+      serviceUnit,
+      packageUnits,
+    });
+  }
+  return results;
+}
+
+function readContent(
+  value: unknown,
+  label: string,
+  expectedPath?: string,
+): ValidatedArtifactContent {
+  const record = requireObject(value, label);
+  const path = requireString(record.path, `${label}.path`);
+  if (expectedPath !== undefined && path !== expectedPath) {
+    throw new Error(`${label}.path must be ${expectedPath}`);
+  }
+  const content = requireObject(record.value, `${label}.value`);
+  return { path, value: content };
+}
+
+function parseJsonObject(
+  text: string,
+  label: string,
+  candidates: readonly IdentityCliCandidate[],
+): Record<string, unknown> {
+  try {
+    return requireObject(JSON.parse(text) as unknown, label);
+  } catch (error) {
+    throw new Error(
+      `${label} must be valid JSON object; ${formatIdentityCliCandidates(candidates)}`,
+      { cause: error },
+    );
+  }
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
 }
 
 function resolveIdentityCliPath(
@@ -71,30 +199,24 @@ function resolveIdentityCliPath(
     candidates.push({ source: "config/override", path: options.identityCliPath });
     return { path: options.identityCliPath, candidates };
   }
-
   const envPath = process.env[IDENTITY_CLI_ENV];
   if (envPath !== undefined && envPath.trim().length > 0) {
     const path = resolveProcessPath(envPath);
     candidates.push({ source: IDENTITY_CLI_ENV, path });
     return { path, candidates };
   }
-
   if (options.releaseMode === true) {
     candidates.push({ source: "local dev fallback", path: "(disabled in release mode)" });
     return { candidates };
   }
-
   const fallback = defaultDevIdentityCliPath();
   candidates.push({ source: "local dev fallback", path: fallback });
   return { path: fallback, candidates };
 }
 
 function defaultDevIdentityCliPath(): string {
-  const env = process.env;
-  const devHome =
-    env.SKIFF_DEV_HOME && env.SKIFF_DEV_HOME.trim().length > 0
-      ? env.SKIFF_DEV_HOME
-      : join(process.cwd(), ".skiff-instance", "dev-home");
+  const devHome = process.env.SKIFF_DEV_HOME?.trim() ||
+    join(process.cwd(), ".skiff-instance", "dev-home");
   return join(resolve(devHome), "bin", IDENTITY_CLI_BINARY);
 }
 
@@ -131,102 +253,35 @@ function runIdentityCli(
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
-      reject(
-        new Error(
-          `failed to spawn artifact identity CLI ${path}: ${error.message}; ${formatIdentityCliCandidates(candidates)}`,
-          { cause: error },
-        ),
-      );
+      reject(new Error(
+        `failed to spawn artifact identity CLI ${path}: ${error.message}; ${formatIdentityCliCandidates(candidates)}`,
+        { cause: error },
+      ));
     });
     child.on("exit", (code, signal) => {
       const stderrText = Buffer.concat(stderr).toString("utf8");
       if (code === 0) {
         resolvePromise(Buffer.concat(stdout).toString("utf8"));
-        return;
-      }
-      reject(
-        new Error(
+      } else {
+        reject(new Error(
           `artifact identity CLI ${path} failed with ${signal ?? code}: ${identityCliErrorMessage(stderrText)}; ${formatIdentityCliCandidates(candidates)}`,
-        ),
-      );
+        ));
+      }
     });
     child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
 }
 
-function readDynamicBuildId(
-  stdout: string,
-  expectedKey: string,
-  candidates: readonly IdentityCliCandidate[],
-): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(
-      `artifact identity CLI returned invalid JSON stdout; ${formatIdentityCliCandidates(candidates)}`,
-      { cause: error },
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `artifact identity CLI stdout must be an object; ${formatIdentityCliCandidates(candidates)}`,
-    );
-  }
-  const results = (parsed as Record<string, unknown>).results;
-  if (!Array.isArray(results) || results.length !== 1) {
-    throw new Error(
-      `artifact identity CLI stdout.results must contain exactly one result; ${formatIdentityCliCandidates(candidates)}`,
-    );
-  }
-  const result = results[0];
-  if (!result || typeof result !== "object" || Array.isArray(result)) {
-    throw new Error(
-      `artifact identity CLI stdout.results[0] must be an object; ${formatIdentityCliCandidates(candidates)}`,
-    );
-  }
-  const record = result as Record<string, unknown>;
-  if (record.key !== expectedKey) {
-    throw new Error(
-      `artifact identity CLI stdout.results[0].key must be ${expectedKey}; ${formatIdentityCliCandidates(candidates)}`,
-    );
-  }
-  if (
-    typeof record.dynamicBuildId !== "string" ||
-    !DYNAMIC_BUILD_ID_PATTERN.test(record.dynamicBuildId)
-  ) {
-    throw new Error(
-      `artifact identity CLI stdout.results[0].dynamicBuildId must be skiff-service-build-v1:sha256:<64 lowercase hex>; ${formatIdentityCliCandidates(candidates)}`,
-    );
-  }
-  return record.dynamicBuildId;
-}
-
 function identityCliErrorMessage(stderr: string): string {
   const trimmed = stderr.trim();
-  if (trimmed.length === 0) {
-    return "no stderr";
-  }
   try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return trimmed;
-    }
-    const error = (parsed as Record<string, unknown>).error;
-    if (!error || typeof error !== "object" || Array.isArray(error)) {
-      return trimmed;
-    }
-    const message = (error as Record<string, unknown>).message;
-    const code = (error as Record<string, unknown>).code;
-    if (typeof message === "string" && typeof code === "string") {
-      return `${code}: ${message}`;
-    }
-    if (typeof message === "string") {
-      return message;
-    }
-    return trimmed;
+    const parsed = requireObject(JSON.parse(trimmed) as unknown, "identity CLI error");
+    const body = requireObject(parsed.error, "identity CLI error.error");
+    const code = typeof body.code === "string" ? body.code : "error";
+    const message = typeof body.message === "string" ? body.message : trimmed;
+    return `${code}: ${message}`;
   } catch {
-    return trimmed;
+    return trimmed.length > 0 ? trimmed : "no stderr";
   }
 }
 

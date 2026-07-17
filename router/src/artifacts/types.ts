@@ -74,17 +74,17 @@ export interface LoadedServiceAssemblyArtifact {
 }
 
 export interface ArtifactPointer {
-  buildId?: string;
+  buildId: string;
   contractIdentity?: string;
   fingerprint?: string;
   generation?: string;
   indexPath: string;
   serviceVersion?: string;
-  serviceAssembly?: string;
-  serviceAssemblyIdentity?: string;
-  serviceUnit?: string;
-  serviceId?: string;
-  packageUnits?: readonly PackageUnitArtifactPointer[];
+  serviceAssembly: string;
+  serviceAssemblyIdentity: string;
+  serviceUnit: ServiceUnitArtifactPointer;
+  serviceId: string;
+  packageUnits: readonly PackageUnitArtifactPointer[];
 }
 
 export interface SourcedArtifactPointer extends ArtifactPointer {
@@ -97,14 +97,43 @@ export interface PackageUnitArtifactPointer {
   version: string;
   buildIdentity: string;
   abiIdentity: string;
-  unitHash?: string;
+  unitHash: string;
   unitPath: string;
 }
 
+export interface ServiceUnitArtifactPointer {
+  schemaVersion: "skiff-service-unit-v1";
+  unitIdentity: string;
+  unitHash: string;
+  unitPath: string;
+}
+
+export interface ValidatedArtifactContent {
+  path: string;
+  value: Record<string, unknown>;
+}
+
+export interface ValidatedServiceArtifactClosure {
+  key: string;
+  dynamicBuildId: string;
+  assemblyIdentity: string;
+  serviceAssembly: ValidatedArtifactContent;
+  serviceUnit: ValidatedArtifactContent;
+  packageUnits: readonly ValidatedArtifactContent[];
+}
+
 export type ArtifactPointerInput = {
-  [Key in keyof ArtifactPointer]: ArtifactPointer[Key] | undefined;
-} & {
+  buildId: string;
   indexPath: string;
+  serviceAssembly: string;
+  serviceAssemblyIdentity: string;
+  serviceUnit: ServiceUnitArtifactPointer;
+  serviceId: string;
+  packageUnits: readonly PackageUnitArtifactPointer[];
+  contractIdentity?: string;
+  fingerprint?: string;
+  generation?: string;
+  serviceVersion?: string;
 };
 
 export interface ActiveArtifactPointers {

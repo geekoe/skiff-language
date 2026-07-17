@@ -1,3 +1,4 @@
+mod callable_facts;
 mod config;
 pub mod context;
 pub mod contract;

@@ -1,13 +1,10 @@
-use serde_json::Value;
 use std::path::PathBuf;
 
-use super::loader::ArtifactGraphLoader;
 use crate::{
-    paths::ArtifactRootRelativePath,
     pointer_files::{
         load_dev_reload_pointers_from_roots, load_service_version_build_pointers_from_roots,
     },
-    types::{ArtifactIndexPointer, RootedArtifactPointerFile},
+    types::RootedArtifactPointerFile,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,57 +97,4 @@ pub fn select_runtime_program_pointer_from_roots(
             selection.build_id
         ),
     }
-}
-
-impl ArtifactGraphLoader<'_> {
-    pub(super) fn resolve_service_unit_pointer(
-        &self,
-        pointer: &ArtifactIndexPointer,
-    ) -> anyhow::Result<ArtifactRootRelativePath> {
-        if let Some(path) = &pointer.service_unit_path {
-            return ArtifactRootRelativePath::new(path, "service unit");
-        }
-
-        let service_assembly_path =
-            ArtifactRootRelativePath::new(&pointer.service_assembly.path, "serviceAssembly")?;
-        let assembly_value = self.read_artifact_json(&service_assembly_path, "serviceAssembly")?;
-        let assembly_object = assembly_value.as_object().ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} serviceAssembly must be an object",
-                pointer.service_assembly.path.display()
-            )
-        })?;
-        if let Some(path) = unit_ref_path(
-            assembly_object.get("serviceUnit"),
-            &format!(
-                "{} serviceAssembly.serviceUnit",
-                pointer.service_assembly.path.display()
-            ),
-        )? {
-            return Ok(path);
-        }
-
-        anyhow::bail!(
-            "artifact pointer for service {} build {} does not declare canonical serviceUnit.unitPath; old serviceAssembly request path is intentionally not used by RuntimeProgram loader",
-            pointer.service_id,
-            pointer.build_id
-        )
-    }
-}
-
-fn unit_ref_path(
-    value: Option<&Value>,
-    label: &str,
-) -> anyhow::Result<Option<ArtifactRootRelativePath>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("{label} must be an object with unitPath"))?;
-    let path = object
-        .get("unitPath")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("{label} requires unitPath"))?;
-    Ok(Some(ArtifactRootRelativePath::parse(path, label)?))
 }

@@ -6,7 +6,6 @@ use std::{
 use crate::{
     input::{
         package_job::{package_publication_job_from_raw, PackagePublicationJob},
-        service_dependencies::dynamic_build_id,
         service_packages::{
             service_source_package_facts_from_compiler_sources, PackageManifestDiscoveryResult,
         },
@@ -59,7 +58,6 @@ pub(crate) fn build_service_job(
         raw_source_graph,
         &source_package_facts,
         service_dependency_artifact_roots,
-        dynamic_build_id,
         discover_manifests,
     )?;
     let package_jobs = raw_job

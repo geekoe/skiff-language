@@ -1,5 +1,7 @@
 mod common;
 
+use std::fs;
+
 use common::artifacts::{
     assert_publish_error_contains, build_temp_service_publication, source_artifact,
 };
@@ -436,6 +438,50 @@ impl ExampleService {
     assert!(
         json_contains_service_symbol(publication_abi, "internal.types", "Payload"),
         "publication ABI should use stable source symbol identity: {publication_abi}"
+    );
+    let operation_abi = publication_abi["operationAbi"]
+        .as_array()
+        .expect("operation ABI should be an array")
+        .iter()
+        .find(|operation| operation["operation"]["publicPath"] == "ExampleService.run")
+        .expect("ExampleService.run operation ABI should exist");
+    let public_signature = &operation_abi["publicSignature"];
+    assert!(json_contains_service_symbol(
+        &public_signature["params"][0]["ty"],
+        "internal.types",
+        "Payload"
+    ));
+    assert!(json_contains_service_symbol(
+        &public_signature["returnType"],
+        "internal.types",
+        "Payload"
+    ));
+    let operation_abi_id = operation_abi["operation"]["operationAbiId"]
+        .as_str()
+        .expect("operation ABI id should be a string")
+        .to_string();
+
+    fs::write(
+        temp.root().join("api.yml"),
+        r#"
+ExampleService: internal.runner.ExampleService
+renamed:
+  Request: internal.types.Payload
+  Response: internal.types.Payload
+  ExampleService: api.example.ExampleService
+"#,
+    )
+    .unwrap();
+    let renamed = build_temp_service_publication(temp.root());
+    let renamed_operation = renamed.artifacts.service_unit.value["publicationAbi"]["operationAbi"]
+        .as_array()
+        .expect("renamed operation ABI should be an array")
+        .iter()
+        .find(|operation| operation["operation"]["publicPath"] == "ExampleService.run")
+        .expect("renamed ExampleService.run operation ABI should exist");
+    assert_eq!(
+        renamed_operation["operation"]["operationAbiId"], operation_abi_id,
+        "cross-module callable identity must not depend on a public type alias"
     );
 
     let service_assembly_text = published.artifacts.service_assembly.value.to_string();

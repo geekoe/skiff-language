@@ -241,6 +241,63 @@ describe('router artifact reload', () => {
     });
   });
 
+  it('keeps the active snapshot when artifact validation fails during reload', async () => {
+    const snapshot: RouterActiveSnapshot = {
+      activationByServiceOperation: buildActivationLookup([]),
+      control: {
+        artifactRoots: ['/tmp/skiff-artifacts'],
+        devReload: true,
+        generation: 'generation-stable',
+        fingerprint: 'sha256:control-stable'
+      },
+      manifest: loadRawHttpManifest()
+    };
+    const snapshotStore = new RouterActiveSnapshotStore(snapshot);
+    const runtimeRouter = trackResource(createRuntimeRouter());
+    const { dispatcher, endpoint, registry } = runtimeRouter;
+    const controlPlane = new RouterControlPlane({
+      controlBroadcaster: endpoint,
+      dispatcher,
+      registry,
+      snapshotStore,
+      reloadArtifacts: async () => {
+        throw new Error('artifact closure validation failed');
+      }
+    });
+    const registryListen = await endpoint.listen({
+      port: 0,
+      control: snapshot.control!,
+      controlPlane
+    });
+    const controlUrl = registryListen.url.replace('ws://', 'http://').replace('/runtime', '');
+
+    const reload = await requestHttp({
+      url: `${controlUrl}/__skiff/reload-artifacts`,
+      method: 'POST'
+    });
+
+    expect(reload.status).toBe(500);
+    expect(JSON.parse(reload.body)).toEqual({
+      error: {
+        code: 'InternalGatewayError',
+        message: 'artifact closure validation failed'
+      }
+    });
+    expect(snapshotStore.get()).toBe(snapshot);
+
+    const health = await fetch(`${controlUrl}/__router/health`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      artifact: {
+        generation: 'generation-stable',
+        fingerprint: 'sha256:control-stable'
+      },
+      manifest: {
+        protocolIdentity: snapshot.manifest.service.protocolIdentity
+      }
+    });
+  });
+
   it('prunes runtime registrations from the control listener current snapshot', async () => {
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;

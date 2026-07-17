@@ -131,6 +131,110 @@ fn may_suspend_metadata_is_copied_to_service_operations() {
         service_operation(&published, "ExampleService.list")["maySuspend"],
         true
     );
+
+    let runtime_operation = published
+        .manifest
+        .operations
+        .iter()
+        .find(|operation| operation.operation == "ExampleService.list")
+        .expect("runtime operation should exist");
+    let assembly_operation = service_operation(&published, "ExampleService.list");
+    let publication_operation = published.artifacts.service_unit.value["publicationAbi"]
+        ["operationAbi"]
+        .as_array()
+        .expect("publication operation ABI should be an array")
+        .iter()
+        .find(|operation| operation["operation"]["publicPath"] == "ExampleService.list")
+        .expect("publication operation ABI should exist");
+    assert_eq!(publication_operation["publicSignature"]["maySuspend"], true);
+    assert_eq!(
+        assembly_operation["operationAbiId"],
+        runtime_operation.operation_abi_id
+    );
+    assert_eq!(
+        publication_operation["operation"]["operationAbiId"],
+        runtime_operation.operation_abi_id
+    );
+}
+
+#[test]
+fn public_instance_operation_uses_implementation_suspension_in_public_abi() {
+    let temp = TestDir::new(
+        "skiff-service-conformance",
+        "public-instance-operation-suspension",
+    );
+    fs::create_dir_all(temp.path().join("internal")).unwrap();
+    fs::write(
+        temp.path().join("service.yml"),
+        "id: example.com/example\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("api.yml"),
+        r#"
+Managed: internal.managed.Managed
+managed:
+  const: internal.managed.managed
+  interfaces:
+    - internal.managed.Managed
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("internal").join("managed.skiff"),
+        format!(
+            r#"
+interface Managed {{
+  function send(input: string) -> string
+}}
+
+type ManagedImpl implements Managed {{}}
+const managed: ManagedImpl = ManagedImpl {{}}
+
+impl ManagedImpl {{
+  function send(self: ManagedImpl, input: string) -> string {{
+    std.time.sleep({})
+    return input
+  }}
+}}
+"#,
+            time_sleep_argument_source()
+        ),
+    )
+    .unwrap();
+
+    let published = build_temp_service_publication(temp.path());
+    let runtime_operation = published
+        .manifest
+        .operations
+        .iter()
+        .find(|operation| operation.operation == "managed.send")
+        .expect("public-instance runtime operation should exist");
+    let assembly_operation = service_operation(&published, "managed.send");
+    let publication_operation = published.artifacts.service_unit.value["publicationAbi"]
+        ["operationAbi"]
+        .as_array()
+        .expect("publication operation ABI should be an array")
+        .iter()
+        .find(|operation| operation["operation"]["publicPath"] == "managed.send")
+        .expect("public-instance publication operation ABI should exist");
+    let instance_operation =
+        &published.artifacts.service_unit.value["publicInstances"][0]["operations"][0]["operation"];
+
+    assert_eq!(assembly_operation["maySuspend"], true);
+    assert_eq!(publication_operation["publicSignature"]["maySuspend"], true);
+    assert_eq!(
+        assembly_operation["operationAbiId"],
+        runtime_operation.operation_abi_id
+    );
+    assert_eq!(
+        publication_operation["operation"]["operationAbiId"],
+        runtime_operation.operation_abi_id
+    );
+    assert_eq!(
+        instance_operation["operationAbiId"],
+        runtime_operation.operation_abi_id
+    );
 }
 
 fn time_sleep_argument_source() -> &'static str {

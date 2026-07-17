@@ -5,9 +5,10 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
+use skiff_artifact_identity::service_build_identity_hash;
 use skiff_runtime_loader::service_id_artifact_path;
 
-use super::{identity::identity_hash_with_label, SERVICE_VERSION_POINTER_SCHEMA_VERSION};
+use super::SERVICE_VERSION_POINTER_SCHEMA_VERSION;
 
 pub(crate) fn artifact_roots_control_fingerprint(
     artifact_roots: &[PathBuf],
@@ -133,7 +134,9 @@ fn service_version_artifact_fingerprint(artifact_root: &Path) -> anyhow::Result<
             .join(service_id_artifact_path(service_id)?)
             .join(format!(
                 "{}.json",
-                identity_hash_with_label(build_id, "service version pointer buildId")?
+                service_build_identity_hash(build_id).map_err(|error| {
+                    anyhow::anyhow!("service version pointer buildId is invalid: {error}")
+                })?
             ));
         if seen_build_paths.insert(build_path.clone()) {
             let build_bytes = fs::read(&build_path).map_err(|error| {

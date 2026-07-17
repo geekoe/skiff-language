@@ -7,9 +7,9 @@ use std::{
 
 use serde_json::json;
 use skiff_artifact_identity::{
-    derive_package_test_entrypoint_id, file_ir_identity, package_abi_identity,
-    package_build_identity, package_test_build_identity, package_test_entrypoint_local_id,
-    publication_abi_identity,
+    derive_package_test_entrypoint_id, file_ir_identity, package_build_identity,
+    package_implementation_links_identity, package_local_abi_identity, package_test_build_identity,
+    package_test_entrypoint_local_id, publication_abi_identity,
 };
 use skiff_artifact_model::{
     ConfigAndEffectMetadata, FileIrUnit, MetadataValue, PackageProductionLinkScope,
@@ -21,7 +21,7 @@ use skiff_artifact_model::{
 
 use super::*;
 use crate::artifact_cache::PackageTestRuntimeTemplateCache;
-use crate::loader::value_sha256;
+use crate::loader::{value_sha256, write_package_unit_value_ref};
 use skiff_runtime_package_test::PackageTestDispatchSelection;
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, PackageTestStartFrameHeader, RequestCancelFrameHeader,
@@ -31,9 +31,6 @@ use skiff_runtime_transport::protocol::{
     RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader, RuntimeTraceContextFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-
-const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
-    "skiff-package-implementation-links-v1:sha256";
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
@@ -1415,19 +1412,15 @@ fn write_package_test_runtime_fixture() -> PackageTestRuntimeFixture {
         publication_abi_identity(&production_package.publication_abi)
             .expect("publication ABI identity");
     production_package.abi_identity =
-        package_abi_identity(&production_package).expect("package ABI identity");
+        package_local_abi_identity(&production_package).expect("package local ABI identity");
     production_package.build_identity =
         package_build_identity(&production_package).expect("package build identity");
-    let package_build_hash = identity_hash(&production_package.build_identity);
-    let package_unit_path = PathBuf::from("units")
-        .join("packages")
-        .join(package_storage)
-        .join(format!("{package_build_hash}.json"));
-    write_json_artifact(
+    let production_package_ref = write_package_unit_value_ref(
         artifact_root.path(),
-        &package_unit_path,
-        &production_package,
-    );
+        serde_json::to_value(&production_package).expect("production package should serialize"),
+    )
+    .expect("production package ref should be canonical");
+    let package_unit_path = PathBuf::from(&production_package_ref.unit_path);
 
     let mut test_file = package_test_file_ir_fixture();
     test_file.file_ir_identity = file_ir_identity(&test_file).expect("test file identity");
@@ -1489,8 +1482,9 @@ fn write_package_test_runtime_fixture() -> PackageTestRuntimeFixture {
             unit_path: relative_path_string(&package_unit_path),
             public_abi_identity: production_package.abi_identity.clone(),
             implementation_links_identity: package_implementation_links_identity(
-                &production_package,
-            ),
+                &production_package.implementation_links,
+            )
+            .expect("production implementation links identity"),
         },
         test_files: vec![owner_test_file.clone()],
         dependency_package_units: Vec::new(),
@@ -1797,13 +1791,6 @@ fn package_test_allowed_local_link_digest(
         },
     }))
     .expect("test file link scope digest")
-}
-
-fn package_implementation_links_identity(unit: &PackageUnit) -> String {
-    format!(
-        "{PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX}:{}",
-        canonical_digest(&unit.implementation_links)
-    )
 }
 
 fn canonical_digest<T: serde::Serialize>(value: &T) -> String {

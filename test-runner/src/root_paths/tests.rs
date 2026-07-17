@@ -38,6 +38,7 @@ fn official_std_manifest() -> TestPackageManifest {
         version: "1.0.0".to_string(),
         api: vec![TestPackageApiEntry::module("api", "api")],
         dependencies: Vec::new(),
+        resources: Vec::new(),
         path: PathBuf::from("package.yml"),
         synthetic: false,
     }
@@ -207,6 +208,7 @@ fn user_package_export_sources_reject_missing_api_source() {
             "Value",
         )],
         dependencies: Vec::new(),
+        resources: Vec::new(),
         path: package_dir.join("package.yml"),
         synthetic: false,
     };

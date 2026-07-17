@@ -16,9 +16,9 @@ export async function resolveArtifactPath(
   artifactPath: string,
   indexPath: string,
 ): Promise<string> {
-  if (artifactPath.length === 0 || isAbsolute(artifactPath)) {
+  if (!isCanonicalArtifactRelativePath(artifactPath)) {
     throw new Error(
-      `${indexPath} artifact path must be relative: ${artifactPath}`,
+      `${indexPath} artifact path must be canonical and relative: ${artifactPath}`,
     );
   }
   const path = resolve(root, artifactPath);
@@ -45,6 +45,17 @@ export async function resolveArtifactPath(
     );
   }
   return realPath;
+}
+
+function isCanonicalArtifactRelativePath(path: string): boolean {
+  const windowsDrive = /^[A-Za-z]:/.test(path);
+  return (
+    path.length > 0
+    && !isAbsolute(path)
+    && !windowsDrive
+    && !path.includes("\\")
+    && path.split("/").every((part) => part.length > 0 && part !== "." && part !== "..")
+  );
 }
 
 function escapesRoot(path: string): boolean {

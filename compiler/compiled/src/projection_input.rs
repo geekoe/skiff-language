@@ -817,6 +817,7 @@ fn synthetic_entrypoint_index_projection(
                                         ),
                                         entry_function_signature_projection(
                                             executable.signature().clone(),
+                                            executable.may_suspend(),
                                         ),
                                     ),
                                 )
@@ -888,6 +889,7 @@ fn entry_function_signature_from_executable(
             }
         },
         local_type_names,
+        may_suspend: executable.may_suspend,
     }
 }
 
@@ -1147,12 +1149,22 @@ fn package_entrypoint_projection_facts(
                 symbol_path,
             )
             .ok()??;
+            let may_suspend = compiled
+                .file_ir_units()
+                .iter()
+                .find(|unit| unit.module_path == result.0)
+                .and_then(|unit| {
+                    let declaration = unit.declarations.executables.get(&result.1)?;
+                    unit.executables
+                        .get(declaration.executable_index as usize)
+                        .map(|executable| executable.may_suspend)
+                })?;
             Some((
                 symbol_path.clone(),
                 PackageEntrypointFunctionProjection {
                     source_module: result.0,
                     source_symbol: result.1,
-                    signature: entry_function_signature_projection(result.2),
+                    signature: entry_function_signature_projection(result.2, may_suspend),
                 },
             ))
         })
@@ -1232,6 +1244,7 @@ fn package_public_path(package_id: &str, export_path: &str) -> String {
 
 fn entry_function_signature_projection(
     signature: skiff_compiler_lowering::EntryFunctionSignature,
+    may_suspend: bool,
 ) -> EntryFunctionSignature {
     EntryFunctionSignature {
         name: signature.name,
@@ -1245,6 +1258,7 @@ fn entry_function_signature_projection(
             .collect(),
         return_type: entry_type_spec_projection(signature.return_type),
         local_type_names: signature.local_type_names,
+        may_suspend,
     }
 }
 

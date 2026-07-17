@@ -190,11 +190,16 @@ fn package_resource_projection_table(
         .collect()
 }
 
-fn publication_resource_projection_inputs(
+pub(crate) fn publication_resource_projection_inputs(
     publication: &Publication,
 ) -> Vec<PublicationResourceProjectionInput> {
-    publication
-        .resources
+    resource_projection_inputs(&publication.resources)
+}
+
+pub(crate) fn resource_projection_inputs(
+    resources: &[crate::input::PublicationResourceInput],
+) -> Vec<PublicationResourceProjectionInput> {
+    resources
         .iter()
         .map(|resource| {
             PublicationResourceProjectionInput::new(

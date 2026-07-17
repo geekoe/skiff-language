@@ -23,7 +23,9 @@ pub use types::{
     ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile, ServiceAssemblyPointer,
 };
 
+use skiff_artifact_model::schema::{
+    SERVICE_BUILD_SCHEMA_VERSION, SERVICE_VERSION_POINTER_SCHEMA_VERSION,
+};
+
 const PROTOCOL_IDENTITY_PREFIX: &str = "skiff-protocol-v1";
-const SERVICE_VERSION_POINTER_SCHEMA_VERSION: &str = "skiff-service-version-pointer-v1";
-const SERVICE_BUILD_SCHEMA_VERSION: &str = "skiff-service-build-v1";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1";

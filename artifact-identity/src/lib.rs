@@ -1,3 +1,6 @@
+mod artifact_coordinates;
+mod artifact_path;
+mod artifact_reference;
 mod constants;
 mod error;
 mod file_ir;
@@ -11,7 +14,18 @@ mod publication;
 mod publication_validation;
 mod runtime_program;
 mod semantic;
+mod service_artifact_closure;
+mod service_assembly_identity;
 
+pub use artifact_coordinates::{
+    package_unit_content_hash, publication_storage_segment, validate_package_unit_artifact_path,
+    validate_service_assembly_artifact_path,
+};
+pub use artifact_path::ArtifactRelativePath;
+pub use artifact_reference::{
+    package_unit_artifact_ref, service_unit_artifact_ref, PackageUnitArtifactRef,
+    ServiceAssemblyArtifactRef, ServiceUnitArtifactRef,
+};
 pub use constants::{
     BUNDLE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
     PACKAGE_ABI_IDENTITY_PREFIX, PACKAGE_ASSEMBLY_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_PREFIX,
@@ -47,7 +61,7 @@ pub use package_resolver::{
     ordered_package_build_identities_from_artifact_refs,
     ordered_package_build_identities_from_artifact_root, ordered_package_units_from_artifact_refs,
     ordered_package_units_from_artifact_root, runtime_program_dynamic_build_id_from_artifact_refs,
-    runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
+    runtime_program_dynamic_build_id_from_artifact_root,
 };
 pub use package_test::{
     canonical_package_test_build_identity_bytes, canonical_package_test_build_identity_value,
@@ -74,6 +88,14 @@ pub use semantic::{
     abi_type_id_key, canonical_interface_instantiation_key, canonical_interface_method_abi_id,
     canonical_interface_method_abi_id_from_parts, interface_instantiation_ref,
     interface_instantiation_ref_for_type_ref, type_ref_abi_key,
+};
+pub use service_artifact_closure::{
+    validate_service_artifact_closure, ValidatedArtifactContent, ValidatedServiceArtifactClosure,
+};
+pub use service_assembly_identity::{
+    service_assembly_hash, service_assembly_identity, service_assembly_identity_projection,
+    service_build_identity_from_assembly_identity, service_build_identity_hash,
+    validate_service_assembly_identity,
 };
 pub use skiff_canonical_json::{canonical_json_number, canonical_json_value};
 

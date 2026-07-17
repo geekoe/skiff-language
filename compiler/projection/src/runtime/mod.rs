@@ -1,6 +1,7 @@
 //! Runtime projection helpers used by publish orchestration and artifact
 //! assembly.
 
+mod entry_operation_abi;
 mod entrypoints;
 mod gateway;
 mod operation_effects;

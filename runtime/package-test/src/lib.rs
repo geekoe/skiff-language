@@ -3,7 +3,12 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use skiff_artifact_identity::canonical_json_value;
+use skiff_artifact_identity::{canonical_json_value, package_implementation_links_identity};
+#[cfg(test)]
+use skiff_artifact_identity::{
+    package_unit_content_hash, PACKAGE_BUILD_IDENTITY_PREFIX,
+    PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
+};
 use skiff_artifact_model::{
     CallTargetIr, DbIndexIr, DbMetadataIndexIr, DbMetadataIr, ExecutableKind, ExprIr, FileIrRef,
     FileIrUnit, MetadataValue, OperationCallableKind, OperationTargetRef, PackageOperationTarget,
@@ -41,8 +46,6 @@ use self::dispatch_selection::{select_package_test_entrypoint, ValidatedPackageT
 #[cfg(test)]
 use self::executable_graph::validate_package_test_executable_graph;
 
-const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
-    "skiff-package-implementation-links-v1:sha256";
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
 
@@ -384,7 +387,8 @@ fn validate_loaded_dependency_public_scope(
             public_export_digest
         );
     }
-    let implementation_links_identity = package_implementation_links_identity(unit)?;
+    let implementation_links_identity =
+        package_implementation_links_identity(&unit.implementation_links)?;
     if scope.implementation_links_digest != implementation_links_identity {
         anyhow::bail!(
             "linkPolicy.dependencyPublicScopes[{index}].implementationLinksDigest {} does not match loaded dependency implementation links identity {}",
@@ -940,7 +944,8 @@ fn validate_loaded_package_unit_ref(
             reference.public_abi_identity
         );
     }
-    let implementation_links_identity = package_implementation_links_identity(unit)?;
+    let implementation_links_identity =
+        package_implementation_links_identity(&unit.implementation_links)?;
     if implementation_links_identity != reference.implementation_links_identity {
         anyhow::bail!(
             "{label} loaded implementationLinksIdentity {} does not match reference implementationLinksIdentity {}",
@@ -995,18 +1000,6 @@ fn package_test_allowed_local_link_digest(
             "executableCount": file.executables.len(),
         },
     }))
-}
-
-fn package_implementation_links_identity(
-    unit: &skiff_artifact_model::PackageUnit,
-) -> anyhow::Result<String> {
-    Ok(format!(
-        "{PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX}:{}",
-        canonical_digest(
-            &unit.implementation_links,
-            "package implementation links identity"
-        )?
-    ))
 }
 
 fn canonical_digest<T: Serialize>(value: &T, label: &str) -> anyhow::Result<String> {
@@ -2191,8 +2184,10 @@ mod tests {
                 "test dependency publication ABI",
             )
             .expect("dependency publication ABI digest"),
-            implementation_links_digest: package_implementation_links_identity(dependency_unit)
-                .expect("dependency implementation links identity"),
+            implementation_links_digest: package_implementation_links_identity(
+                &dependency_unit.implementation_links,
+            )
+            .expect("dependency implementation links identity"),
             allow_private: false,
         }];
     }
@@ -2201,8 +2196,8 @@ mod tests {
         PackageUnit::empty(
             package_id,
             "1.0.0",
-            format!("skiff-package-build-v1:sha256:{build_hash}"),
-            format!("skiff-package-abi-v1:sha256:{abi_hash}"),
+            format!("{PACKAGE_BUILD_IDENTITY_PREFIX}:{build_hash}"),
+            format!("{PACKAGE_LOCAL_ABI_IDENTITY_PREFIX}:{abi_hash}"),
         )
     }
 
@@ -2566,20 +2561,20 @@ mod tests {
     fn package_unit_ref_fixture(unit: &PackageUnit) -> PackageTestPackageUnitRef {
         let package_path =
             publication_storage_segment(&unit.package_id, "packageId").expect("package path");
-        let build_hash = identity_hash(
-            &unit.build_identity,
-            "skiff-package-build-v1:sha256",
-            "buildIdentity",
+        let unit_hash = package_unit_content_hash(
+            &serde_json::to_value(unit).expect("package unit must serialize"),
         )
-        .expect("build identity hash");
+        .expect("package unit content hash");
         PackageTestPackageUnitRef {
             package_id: unit.package_id.clone(),
             version: unit.version.clone(),
             build_identity: unit.build_identity.clone(),
-            unit_path: format!("units/packages/{package_path}/{build_hash}.json"),
+            unit_path: format!("units/packages/{package_path}/{unit_hash}.json"),
             public_abi_identity: unit.abi_identity.clone(),
-            implementation_links_identity: package_implementation_links_identity(unit)
-                .expect("implementation links identity"),
+            implementation_links_identity: package_implementation_links_identity(
+                &unit.implementation_links,
+            )
+            .expect("implementation links identity"),
         }
     }
 

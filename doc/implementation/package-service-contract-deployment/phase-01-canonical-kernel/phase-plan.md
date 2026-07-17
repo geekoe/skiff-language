@@ -172,7 +172,8 @@ T08 ─────────────────────────�
   调 canonical owner，同时删除 facade test 对 foundation crate 的旁路依赖；不得搬回或复制 identity 算法。
 - T06 在 T02A 与 T05 后独占 PackageUnit builder去重与production/package-test projection收敛；消费T03
   已经迁移的effect shape，并采用T05 identity API，不得重新定义effect wire或identity算法。
-- T07 才能改 runtime/router/scripts 的 identity/ref consumers。
+- T07 才能改 runtime/router/scripts 的 identity/ref consumers，以及 compiler service dependency
+  artifact loader；后者必须消费同一 canonical closure validator，不能保留独立 build-id/path fallback。
 - T08 不能新增语义；语义缺口必须退回相应任务。
 
 ## 9. 验证计划

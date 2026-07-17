@@ -549,6 +549,7 @@ pub struct EntryFunctionSignature {
     pub params: Vec<EntryParamSpec>,
     pub return_type: EntryTypeSpec,
     pub local_type_names: BTreeMap<u32, String>,
+    pub may_suspend: bool,
 }
 
 #[derive(Debug, Clone)]

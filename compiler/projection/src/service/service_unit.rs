@@ -6,6 +6,7 @@ use super::signature_matching::{
     executable_signature_params, signature_type_ref_matches, SignatureTypeRefContext,
 };
 use crate::{
+    callable_facts::ProjectionCallableFactsIndex,
     context::ProjectedPackageDependency,
     contract::{ContractProjection, ContractProjectionIndex},
     error::ProjectionError,
@@ -1210,6 +1211,8 @@ pub fn service_unit_public_instances(
 ) -> Result<ServicePublicInstances, ProjectionError> {
     let signature_context =
         SignatureTypeRefContext::from_package_dependencies(package_dependencies);
+    let callable_facts_index =
+        ProjectionCallableFactsIndex::new(input.file_ir_units(), input.source().callable_effects());
     let mut names_by_source = StdBTreeMap::<String, String>::new();
     let mut instances = Vec::new();
     let mut operation_public_signatures = StdBTreeMap::new();
@@ -1277,6 +1280,7 @@ pub fn service_unit_public_instances(
         let projected_operations = public_instance_operations(
             index,
             &signature_context,
+            &callable_facts_index,
             public_instance_key,
             &receiver,
             &receiver_const,
@@ -1824,6 +1828,7 @@ struct ProjectedPublicInstanceOperation {
 fn public_instance_operations(
     index: &ContractProjectionIndex<'_>,
     signature_context: &SignatureTypeRefContext,
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
     public_instance_name: &str,
     receiver: &ServiceSymbolRef,
     receiver_const: &OperationConstReceiverRef,
@@ -1839,6 +1844,7 @@ fn public_instance_operations(
                 public_instance_interface_operations(
                     index,
                     signature_context,
+                    callable_facts_index,
                     public_instance_name,
                     receiver,
                     receiver_const,
@@ -1873,6 +1879,7 @@ fn public_instance_operations(
 fn public_instance_interface_operations(
     index: &ContractProjectionIndex<'_>,
     signature_context: &SignatureTypeRefContext,
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
     public_instance_name: &str,
     receiver: &ServiceSymbolRef,
     receiver_const: &OperationConstReceiverRef,
@@ -1921,7 +1928,15 @@ fn public_instance_interface_operations(
                 executable,
                 signature_context,
             )?;
-            let public_signature = public_callable_signature_from_interface_method(method);
+            let callable_facts = callable_facts_index.for_executable(
+                &receiver_unit.module_path,
+                executable_index,
+                &format!(
+                    "public instance `{public_instance_name}` operation {}.{}",
+                    receiver.module_path, target_symbol
+                ),
+            )?;
+            let public_signature = callable_facts.receiver_public_signature();
             let operation_ref = public_instance_operation_ref(
                 public_instance_name,
                 interface,
@@ -2053,19 +2068,6 @@ fn public_instance_operation_ref(
         interface: Some(interface.clone()),
         method_abi_id: Some(method_abi_id),
         display_name: public_path,
-    }
-}
-
-fn public_callable_signature_from_interface_method(
-    method: &InterfaceMethodSignature,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: method.params.clone(),
-        return_type: method.return_type.clone(),
-        may_suspend: matches!(
-            operation_mode_for_type_ref(&method.return_type),
-            OperationMode::ServerStream
-        ),
     }
 }
 
