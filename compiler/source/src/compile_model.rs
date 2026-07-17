@@ -4,7 +4,9 @@ use std::{
 };
 
 use crate::{
-    callable_effects::SourceCallableEffectFacts,
+    callable_effects::{
+        analyze_source_callables, SourceCallableEffectFacts, SourceCallableProvenanceFacts,
+    },
     parsed_sources::ParsedCompilerSource,
     semantic::PublicationSemanticContext,
     shared::{
@@ -130,6 +132,7 @@ pub struct SourceCompileModel {
     publication_api: PublicationApiModel,
     export_bindings: ExportBindingModel,
     callable_effects: SourceCallableEffectFacts,
+    callable_provenance: SourceCallableProvenanceFacts,
     resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
     // input in runtime_manifest.rs.  P2 will introduce AbiTypeId consuming declaration_anchors.
@@ -162,6 +165,7 @@ pub struct SourceCompileModelInput<'a> {
     pub declaration_anchors: PublicationDeclarationAnchors,
     pub config_usage_seed: ConfigUsageSeed,
     pub dependency_config_requirements: ConfigRequirementSet,
+    pub dependency_analysis: &'a super::SourceDependencyAnalysisInput,
 }
 
 #[derive(Clone, Debug)]
@@ -172,8 +176,6 @@ enum SourceCompilePolicy {
 
 impl SourceCompileModel {
     pub fn build(input: SourceCompileModelInput<'_>) -> Result<Self, PublicationError> {
-        let callable_effects = SourceCallableEffectFacts::analysis_pending(&input.parsed_sources);
-        let resolved_call_targets = ResolvedCallTargetFacts::empty();
         let policy = SourceCompilePolicy::from_borrowed(input.policy);
         let plan = PublicationCompilePlan::from_policy(policy.as_borrowed());
         let indexes = SourceIndexes::build(
@@ -237,6 +239,21 @@ impl SourceCompileModel {
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("expression type model failed:\n- {}", error.message()),
         })?;
+        let resolved_call_targets = ResolvedCallTargetFacts::build(
+            &input.parsed_sources,
+            &expression_types,
+            &type_resolution,
+            input.dependency_analysis,
+        );
+        let callable_analysis = analyze_source_callables(
+            &input.parsed_sources,
+            &resolved_call_targets,
+            input.dependency_analysis,
+            &expression_types,
+            &type_resolution,
+        );
+        let callable_effects = callable_analysis.effects;
+        let callable_provenance = callable_analysis.provenance;
         if matches!(&policy, SourceCompilePolicy::Service { .. }) {
             let mut violations = Vec::new();
             collect_stream_emit_type_violations(
@@ -280,6 +297,7 @@ impl SourceCompileModel {
             publication_api,
             export_bindings,
             callable_effects,
+            callable_provenance,
             resolved_call_targets,
             source_identity: input.source_identity,
             declaration_anchors: input.declaration_anchors,
@@ -349,6 +367,10 @@ impl SourceCompileModel {
 
     pub fn callable_effects(&self) -> &SourceCallableEffectFacts {
         &self.callable_effects
+    }
+
+    pub fn callable_provenance(&self) -> &SourceCallableProvenanceFacts {
+        &self.callable_provenance
     }
 
     pub fn resolved_call_targets(&self) -> &ResolvedCallTargetFacts {
