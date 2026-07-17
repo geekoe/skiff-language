@@ -99,9 +99,9 @@ T05 + T06 -> T07 phase integration gate -> A01 independent acceptance
 
 | 波次 | 并行任务 | 说明 |
 | --- | --- | --- |
-| 1 | T01 | 独占 artifact-model、artifact-identity、typed contract leaf 与公共 schema/API |
-| 2 | T02、T03、T04 | 分别独占 source effect、input/lowering、projection/emission；不修改中央 driver |
-| 3 | T05、T06 | T05 独占 compiler hot roots；T06 独占 legacy adapter/test-runner/runtime test consumers |
+| 1 | T01 | 独占 artifact-model、artifact-identity、typed contract leaf，以及 fan-out 共用的 source fact carrier/facade |
+| 2 | T02、T03、T04 | T02 独占全部 source 改动；T03 只写 input/lowering；T04 只写 projection/emission；均不修改中央 driver |
+| 3 | T05、T06 | T05 独占 compiler hot roots与全部 structure checker；T06 只写预先约定路径中的 legacy adapter/test consumers |
 
 T07 只负责最终稳定候选的昂贵 gate、机械 fixture 和结果记录，不新增语义。A01 只读验收。
 
@@ -120,18 +120,23 @@ T07 只负责最终稳定候选的昂贵 gate、机械 fixture 和结果记录�
 
 ## 6. 写入冲突规则
 
-- T01 独占 `artifact-model`、`artifact-identity`、新 contract leaf crate、root workspace/API policy。波次 2
-  不修改这些公共 wire；发现缺字段必须回报 T01 checkpoint amendment。
-- T02 独占 `compiler/source` effect/provenance 新模块及直接 source tests；不修改 lowering、projection、emission、
-  driver。中央 source facade 的最小 export 由 T02 提交，T05 后续可机械改名但不改算法。
-- T03 独占 contract dependency reader、dependency operation index、service-call lowering/external refs；不修改
-  source effect、package projection或driver。
+- T01 独占 `artifact-model`、`artifact-identity`、新 contract leaf crate、root workspace/API policy，并在
+  `compiler/source` 冻结波次 2 共用的 resolved call-target fact carrier 与 facade。波次 2 不修改公共 wire 或
+  carrier shape；发现缺字段必须回报 T01 checkpoint amendment。
+- T02 独占 T01 checkpoint 之后的全部 `compiler/source/**` 改动，包括 effect/provenance 算法、contract call
+  target 的 source 侧填充、最小 facade export 与直接 source tests；不修改 input/lowering、projection、
+  emission、driver。
+- T03 独占 contract dependency reader、dependency operation index、service-call lowering/external refs及其
+  tests；**不得修改 `compiler/source/**`**。它以 T01 冻结的 typed carrier/contract identity 为输入，缺字段
+  回报 checkpoint owner，不在自己的分支扩展 source model。
 - T04 独占新的 PackageArtifact projection/materialization、boundary projection 与直接 emission tests；不修改
   source/lowering/driver。
 - T05 独占 `compiler/driver/pipeline`、input-model compile input、compiled/lowering/source 根类型、projection
-  facade、compiler facade 和 compiler structure checker。只消费 T02–T04 API。
-- T06 独占明确命名的 legacy runtime adapter、test-runner、package-test consumer 和相关 fixtures；不修改
-  canonical identity/effect/lowering。
+  facade、compiler facade，以及**全部** compiler structure checker、checker self-test 与 allowlist。checker
+  预先只允许 T06 的固定 adapter 路径；T05 只消费 T02–T04 API。
+- T06 独占 `compiler/emission/src/legacy_runtime_adapter/**`、`runtime/package-test/**`、`test-runner/**` 和各自
+  直接 fixtures/tests；不修改任何 structure checker、checker fixture/allowlist，也不修改 canonical
+  identity/effect/lowering。若实际代码无法落入这些路径，先回报 main 调整 ownership，不能自行改 checker。
 - 超过数百行的新 owner 要按 model/validation/projection/tests 拆文件；同一规则在两个模块出现即暂停并抽
   canonical leaf，不能以时间为由复制。
 

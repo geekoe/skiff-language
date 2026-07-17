@@ -21,15 +21,15 @@
    不维护第二builder或identity helper。
 4. 旧service fixture仍可通过现有测试入口执行；canonical artifacts不dual-write，旧外壳只在临时runtime
    artifact位置产生并有Phase03/05删除ledger。
-5. structure checker精确allowlist adapter/runtime consumer，禁止compiler canonical modules导入
-   PublicationAbiUnit、ServiceUnit、ServiceDependencyConstraint或旧provider closure resolver。
+5. 所有legacy import只落在T05 checker预先约定的固定路径；本任务不修改checker或allowlist。若固定路径无法
+   容纳实现，回报main调整ownership，不扩大例外。
 6. 更新/替换锁定旧PackageUnit canonical owner的tests；删除测试必须给出replacement语义。
 
 ## 写入范围
 
-- 明确legacy adapter模块、compiler emission的adapter入口。
+- `compiler/emission/src/legacy_runtime_adapter/**` 中明确legacy adapter及其入口。
 - `runtime/package-test/**`、`test-runner/**`及直接fixtures/tests。
-- adapter结构checker与self-test。
+- 不修改任何structure checker、checker fixture/self-test或allowlist；这些由T05唯一拥有。
 - 不修改artifact identity、source effect、service-call lowering或compiler driver中央cutover。
 
 ## 验证
@@ -48,4 +48,4 @@ git diff --check
 
 ## 回报
 
-提交commit、自验收矩阵、adapter唯一入口/allowlist、测试 disposition和Phase03/05删除清单。
+提交commit、自验收矩阵、adapter唯一入口与实际legacy import清单、测试 disposition和Phase03/05删除清单。

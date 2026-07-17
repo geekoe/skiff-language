@@ -22,15 +22,17 @@ LoweredPublication和package/service option bundle。不得在集成任务重写
 4. T02 effect facts、T03 ServiceCallRefs与T04 PackageArtifact projection完整接线；不新增局部转换规则。
 5. 删除PackageProjectionBundle/ServiceProjectionBundle等共同option aggregate；contract producer与package
    producer是两条显式pipeline。
-6. compiler facade、rustdoc public API fixture、crate DAG和boundary checker更新到终态；checker负例能捕获
-   production重新引入四个旧Publication compiler symbols。
+6. compiler facade、rustdoc public API fixture、crate DAG和boundary checker更新到终态；本任务是全部
+   compiler structure checker、checker self-test与allowlist的唯一owner。checker负例能捕获production重新
+   引入四个旧Publication compiler symbols。
 7. 直接触碰的超长driver/source root按input/pipeline/adapters拆分，legacy adapter有Phase03删除owner。
 
 ## 写入范围
 
 - compiler input-model、source/compiled/lowering根类型的cutover接线。
 - compiler driver pipeline/source_compile、projection facade、compiler facade及直接tests。
-- compiler boundary/DAG/public API checker和fixtures。
+- compiler boundary/DAG/public API checker、checker self-test、fixtures与全部allowlist；对T06只允许
+  `compiler/emission/src/legacy_runtime_adapter/**`、`runtime/package-test/**`、`test-runner/**`固定路径。
 - 不修改T02 effect算法、T03 lowering算法、T04 projection规则或T06 test-runner/runtime adapter。
 
 ## 验证

@@ -31,19 +31,25 @@
 8. 把目前位于 `service_unit.rs` 但属于 package executable leaf 的 target/callable类型移到中性模块；新对象
    不依赖 ServiceUnit module。
 9. 新增结构 checker/自测，禁止两个最终对象嵌入 PublicationAbiUnit/ServiceUnit或复制 identity owner。
+10. 在 `compiler/source` 冻结波次 2 共用的 resolved call-target fact carrier 与最小 facade：package direct
+    target、contract operation target、unknown target 均为显式 tagged facts；contract target只携带 T01 的
+    contract/operation identity，不携带provider/build/deployment。这里只定义 carrier，不实现 effect 或
+    service-call lowering算法。
 
 ## 写入范围
 
 - `artifact-model/**`、`artifact-identity/**`。
 - 新的 contract definition/compiler leaf crate及其 tests。
+- `compiler/source` 中上述共享 fact carrier、最小 facade与carrier tests；不实现source分析算法。
 - root workspace、Cargo lock、verify subject、crate DAG/public API policy的必要接线。
-- 不修改 compiler source/lowering/projection/emission/driver production path。
+- 不修改 compiler lowering/projection/emission/driver production path。
 
 ## 验证
 
 ```bash
 cargo test -p skiff-artifact-model -p skiff-artifact-identity
 cargo test -p <new-contract-leaf-crate>
+cargo test -p skiff-compiler-source
 node scripts/check-artifact-identity-single-source.mjs --self-test
 node scripts/check-artifact-identity-single-source.mjs
 node scripts/check-compiler-crate-dag.mjs

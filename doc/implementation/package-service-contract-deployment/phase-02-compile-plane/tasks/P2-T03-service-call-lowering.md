@@ -17,8 +17,8 @@
    serviceAssembly、ServiceUnit、PackageUnit或provider path。
 2. ContractRequirement含alias、service coordinate、contract version、expected protocol identity；不含
    provider字段。
-3. source/name/type lookup从contract schema解析ContractTypeId与operation，未知/重复/identity mismatch
-   fail closed；package-local nominal不能冒充contract type。
+3. contract dependency reader建立严格的alias/type/operation typed index，供 T01 source carrier 和 lowering
+   消费；未知/重复/identity mismatch fail closed，package-local nominal不能冒充contract type。
 4. lowering为实际call site分配稳定serviceRequirementSlot，生成ServiceCallRef和usedOperations；未使用的
    declaration不产生ServiceRequirement。
 5. File IR canonical external ref不再生产旧ServiceDependencySymbol/完整OperationAbiRef carrier；package
@@ -30,7 +30,8 @@
 
 - `compiler/input` contract dependency新模块及tests。
 - `compiler/lowering` dependency operation index、service-call lowering/external refs及tests。
-- 必要的source dependency typed facts，但不修改effect analyzer、package projection或driver。
+- 不修改 `compiler/source/**`；聚焦测试用 T01 冻结的 carrier 构造输入，最终 facade 接线由 T05 完成。
+- 不修改effect analyzer、package projection或driver。
 - 不修改artifact-model/identity公共wire；缺字段回报checkpoint owner。
 
 ## 验证

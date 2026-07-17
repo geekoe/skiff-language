@@ -25,11 +25,13 @@
 7. `AnalysisPending` 只允许出现在明确无法分析的测试/诊断路径；正式成功的package compile对所有API
    callable有Analyzed或结构化Unknown原因。
 8. 新分析器按call graph、transfer、provenance、tests拆文件；不扩大现有千行文件。
+9. 本任务是波次 2 唯一 `compiler/source/**` owner：负责用 T01 carrier 表达 contract operation target；不读取
+   provider artifact，也不分配 runtime binding slot。
 
 ## 写入范围
 
-- `compiler/source/**` 中effect/provenance/call-target新模块及直接tests。
-- 必要的source model typed fact字段和最小facade export。
+- T01 checkpoint之后的全部 `compiler/source/**` 改动，包括effect/provenance/call-target模块、必要的source
+  model字段、最小facade export及直接tests。
 - 不修改 artifact wire、compiler input/lowering、projection/emission或driver。
 
 ## 验证
