@@ -113,6 +113,16 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+service_protocol_identity\s*\(/,
   },
   {
+    name: 'BoundaryOperationContract',
+    relPath: 'artifact-model/src/boundary/operation.rs',
+    regexp: /\bpub\s+struct\s+BoundaryOperationContract\b/,
+  },
+  {
+    name: 'BoundaryOperationDescriptor',
+    relPath: 'artifact-model/src/boundary/operation.rs',
+    regexp: /\bpub\s+struct\s+BoundaryOperationDescriptor\b/,
+  },
+  {
     name: 'PackageArtifactLocalAbiIdentityProjection',
     relPath: 'artifact-identity/src/package_artifact.rs',
     regexp: /\bpub\s+struct\s+PackageArtifactLocalAbiIdentityProjection\b/,
@@ -342,6 +352,8 @@ const exclusiveDefinitionNames = new Set([
   'contract_type_id',
   'contract_operation_id',
   'service_protocol_identity',
+  'BoundaryOperationContract',
+  'BoundaryOperationDescriptor',
   'PackageArtifactLocalAbiIdentityProjection',
   'PackageArtifactBuildIdentityProjection',
   'package_artifact_local_abi_identity',
@@ -552,6 +564,11 @@ const canonicalCompileModelPaths = Object.freeze([
   ['artifact-model/src/package_artifact.rs', 'PackageArtifact'],
   ['artifact-model/src/service_contract.rs', 'ServiceContract'],
 ]);
+const canonicalBoundaryContractPaths = Object.freeze({
+  projection: 'artifact-model/src/boundary/projection.rs',
+  operation: 'artifact-model/src/boundary/operation.rs',
+  serviceContract: 'artifact-model/src/service_contract.rs',
+});
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -637,6 +654,7 @@ async function runCheck() {
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
+  failures.push(...collectCanonicalBoundaryContractFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
     ...files,
     ...scriptFiles,
@@ -774,6 +792,35 @@ function collectCanonicalCompileModelFailures(files) {
     if (legacyField !== null) {
       failures.push(`${relPath} canonical ${typeName} embeds legacy ${legacyField[1]}`);
     }
+  }
+  return failures;
+}
+
+function collectCanonicalBoundaryContractFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  const projection = byPath.get(canonicalBoundaryContractPaths.projection);
+  const operation = byPath.get(canonicalBoundaryContractPaths.operation);
+  const serviceContract = byPath.get(canonicalBoundaryContractPaths.serviceContract);
+  if (projection === undefined || operation === undefined || serviceContract === undefined) {
+    return ['canonical boundary operation owner files are incomplete'];
+  }
+
+  const projectionText = stripRustComments(stripInlineTestModules(projection.text));
+  const operationText = stripRustComments(stripInlineTestModules(operation.text));
+  const serviceContractText = stripRustComments(stripInlineTestModules(serviceContract.text));
+  if (!/\bAvailable\s*\{\s*operation_contract\s*:\s*BoundaryOperationContract\s*,\s*implementation_requirements\s*:\s*BoundaryImplementationRequirements\s*,?\s*\}/s.test(projectionText)) {
+    failures.push(
+      'BoundaryCallableProjection::Available must contain only operation_contract and implementation_requirements',
+    );
+  }
+  if (!/\bpub\s+struct\s+BoundaryOperationDescriptor\s*\{\s*pub\s+operation_id\s*:\s*ContractOperationId\s*,\s*pub\s+stable_key\s*:\s*String\s*,\s*pub\s+contract\s*:\s*BoundaryOperationContract\s*,?\s*\}/s.test(operationText)) {
+    failures.push(
+      'BoundaryOperationDescriptor must own the real operation id, stable key, and shared contract body',
+    );
+  }
+  if (!/\bpub\s+operations\s*:\s*BTreeMap\s*<\s*ContractOperationId\s*,\s*BoundaryOperationDescriptor\s*>/.test(serviceContractText)) {
+    failures.push('ServiceContract.operations must require BoundaryOperationDescriptor values');
   }
   return failures;
 }
@@ -1028,6 +1075,16 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
+      name: 'rejects duplicate boundary operation contract owner',
+      files: [
+        {
+          relPath: 'compiler/projection/src/boundary/operation.rs',
+          text: 'pub struct BoundaryOperationContract;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
       name: 'rejects publication ABI byte projection duplicate',
       files: [
         {
@@ -1204,6 +1261,60 @@ function runSelfTest() {
     if (modelFailures.length !== testCase.expectedFailures) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedFailures} canonical model failure(s), got ${modelFailures.length}`,
+      );
+    }
+  }
+
+  const canonicalBoundaryContractFiles = ({
+    projection = 'enum BoundaryCallableProjection { Available { operation_contract: BoundaryOperationContract, implementation_requirements: BoundaryImplementationRequirements } }\n',
+    serviceContract = 'pub struct ServiceContract { pub operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor> }\n',
+  } = {}) => [
+    {
+      relPath: 'artifact-model/src/boundary/projection.rs',
+      text: projection,
+    },
+    {
+      relPath: 'artifact-model/src/boundary/operation.rs',
+      text: 'pub struct BoundaryOperationContract;\npub struct BoundaryOperationDescriptor { pub operation_id: ContractOperationId, pub stable_key: String, pub contract: BoundaryOperationContract }\n',
+    },
+    {
+      relPath: 'artifact-model/src/service_contract.rs',
+      text: serviceContract,
+    },
+  ];
+  const canonicalBoundaryContractCases = [
+    {
+      name: 'accepts contract-agnostic package boundary projections and service descriptors',
+      files: canonicalBoundaryContractFiles(),
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects operation descriptors in package boundary projections',
+      files: canonicalBoundaryContractFiles({
+        projection: 'enum BoundaryCallableProjection { Available { descriptor: BoundaryOperationDescriptor, implementation_requirements: BoundaryImplementationRequirements } }\n',
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects contract identities in package boundary projections',
+      files: canonicalBoundaryContractFiles({
+        projection: 'enum BoundaryCallableProjection { Available { operation_contract: BoundaryOperationContract, operation_id: ContractOperationId, stable_key: String, implementation_requirements: BoundaryImplementationRequirements } }\n',
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects body-only ServiceContract operations',
+      files: canonicalBoundaryContractFiles({
+        serviceContract: 'pub struct ServiceContract { pub operations: BTreeMap<ContractOperationId, BoundaryOperationContract> }\n',
+      }),
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalBoundaryContractCases) {
+    const boundaryFailures = collectCanonicalBoundaryContractFailures(testCase.files);
+    if (boundaryFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} canonical boundary failure(s), got ${boundaryFailures.length}`,
       );
     }
   }

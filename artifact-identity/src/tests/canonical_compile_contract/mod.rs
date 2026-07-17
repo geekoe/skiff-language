@@ -299,7 +299,7 @@ pub(super) fn package_artifact_fixture() -> PackageArtifact {
         boundary_projections: BTreeMap::from([(
             callable_id,
             BoundaryCallableProjection::Available {
-                descriptor: echo.clone(),
+                operation_contract: echo.contract.clone(),
                 implementation_requirements,
             },
         )]),

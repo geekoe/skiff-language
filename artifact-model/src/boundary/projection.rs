@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CallableEffectSummary, CallableMayEffects, ContractOperationId};
 
-use super::BoundaryOperationDescriptor;
+use super::BoundaryOperationContract;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -102,7 +102,7 @@ pub struct BoundaryImplementationRequirements {
 )]
 pub enum BoundaryCallableProjection {
     Available {
-        descriptor: BoundaryOperationDescriptor,
+        operation_contract: BoundaryOperationContract,
         implementation_requirements: BoundaryImplementationRequirements,
     },
     Unavailable {

@@ -10,6 +10,8 @@ pub use value::*;
 mod tests {
     use serde_json::json;
 
+    use crate::{CallableMayEffects, ContractOperationId, ContractTypeRef};
+
     use super::*;
 
     #[test]
@@ -56,7 +58,7 @@ mod tests {
         .is_err());
         assert!(serde_json::from_value::<BoundaryCallableProjection>(json!({
             "kind": "available",
-            "descriptor": {}
+            "operationContract": {}
         }))
         .is_err());
         assert_eq!(
@@ -69,5 +71,112 @@ mod tests {
                 "reasons": [{ "kind": "unknownCallTarget" }]
             })
         );
+    }
+
+    #[test]
+    fn available_projection_wire_is_contract_agnostic_and_descriptor_is_strict() {
+        let operation_contract = operation_contract();
+        let projection = BoundaryCallableProjection::Available {
+            operation_contract: operation_contract.clone(),
+            implementation_requirements: implementation_requirements(),
+        };
+        let wire = serde_json::to_value(&projection).unwrap();
+        assert_eq!(wire["kind"], json!("available"));
+        assert_eq!(
+            wire["operationContract"],
+            serde_json::to_value(&operation_contract).unwrap()
+        );
+        assert!(wire.get("implementationRequirements").is_some());
+        assert_eq!(
+            serde_json::from_value::<BoundaryCallableProjection>(wire.clone()).unwrap(),
+            projection
+        );
+
+        for forbidden in ["descriptor", "operationId", "stableKey"] {
+            let mut invalid = wire.clone();
+            invalid
+                .as_object_mut()
+                .unwrap()
+                .insert(forbidden.to_string(), json!("forbidden"));
+            assert!(
+                serde_json::from_value::<BoundaryCallableProjection>(invalid).is_err(),
+                "available projection must reject {forbidden}"
+            );
+        }
+
+        for required in ["operationContract", "implementationRequirements"] {
+            let mut missing = wire.clone();
+            missing.as_object_mut().unwrap().remove(required);
+            assert!(
+                serde_json::from_value::<BoundaryCallableProjection>(missing).is_err(),
+                "available projection must require {required}"
+            );
+        }
+
+        let descriptor = BoundaryOperationDescriptor {
+            operation_id: ContractOperationId::new("operation:echo"),
+            stable_key: "echo".to_string(),
+            contract: operation_contract,
+        };
+        let descriptor_wire = serde_json::to_value(descriptor).unwrap();
+        for required in ["operationId", "stableKey", "contract"] {
+            let mut invalid = descriptor_wire.clone();
+            invalid.as_object_mut().unwrap().remove(required);
+            assert!(
+                serde_json::from_value::<BoundaryOperationDescriptor>(invalid).is_err(),
+                "service operation descriptor must require {required}"
+            );
+        }
+    }
+
+    fn operation_contract() -> BoundaryOperationContract {
+        BoundaryOperationContract {
+            parameters: Vec::new(),
+            return_value: BoundaryReturn {
+                ty: ContractTypeRef::builtin("void"),
+                value_plan: BoundaryValuePlan::Linkable {
+                    carrier: BoundaryValueCarrier::DetachedValueGraph,
+                    encoding: BoundaryValueEncoding::CanonicalValue,
+                    owner: BoundaryValueOwner::Provider,
+                    lifetime: BoundaryValueLifetime::Call,
+                },
+            },
+            errors: BoundaryErrorContract::None,
+            stream: BoundaryStreamContract::Unary,
+            cancellation: BoundaryCancellationContract::NotCancellable,
+            callbacks: BoundaryCallbackContract::None,
+            may_suspend: false,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: true,
+            },
+        }
+    }
+
+    fn implementation_requirements() -> BoundaryImplementationRequirements {
+        BoundaryImplementationRequirements {
+            config: Vec::new(),
+            state: Vec::new(),
+            native_capabilities: Vec::new(),
+            runtime_capabilities: Vec::new(),
+            complete_may_effects: CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: Vec::new(),
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+        }
     }
 }
