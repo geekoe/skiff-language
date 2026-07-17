@@ -10,8 +10,8 @@ use std::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
-    file_ir_identity, package_abi_identity, package_build_identity, package_local_abi_identity,
-    publication_abi_identity, publication_storage_segment,
+    file_ir_identity, package_build_identity, package_local_abi_identity, publication_abi_identity,
+    publication_storage_segment,
 };
 use skiff_runtime_loader::ArtifactGraphIdentities;
 
@@ -3127,7 +3127,7 @@ fn canonicalize_test_package_unit_json(mut value: Value) -> Value {
     let build_identity =
         package_build_identity(&unit).expect("test package build identity should compute");
     let abi_identity =
-        package_abi_identity(&unit).expect("test package ABI identity should compute");
+        package_local_abi_identity(&unit).expect("test package ABI identity should compute");
     value["buildIdentity"] = json!(build_identity.clone());
     value["abiIdentity"] = json!(abi_identity.clone());
     if !declared_build.is_empty() {

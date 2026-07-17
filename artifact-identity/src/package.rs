@@ -80,18 +80,6 @@ pub fn package_implementation_links_identity(links: &PackageImplementationLinks)
     ))
 }
 
-/// Temporary call-site migration alias. T06/T07 must adopt
-/// [`package_local_abi_hash`] and delete this old conceptual name.
-pub fn package_abi_hash(unit: &PackageUnit) -> Result<String> {
-    package_local_abi_hash(unit)
-}
-
-/// Temporary call-site migration alias. T06/T07 must adopt
-/// [`package_local_abi_identity`] and delete this old conceptual name.
-pub fn package_abi_identity(unit: &PackageUnit) -> Result<String> {
-    package_local_abi_identity(unit)
-}
-
 /// Assigns the nested publication identity, package local ABI identity and
 /// package build identity in dependency order using the same projections as
 /// validation.
