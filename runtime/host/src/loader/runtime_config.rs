@@ -1037,7 +1037,8 @@ mod tests {
 
     use serde_json::{json, Value};
     use skiff_artifact_identity::{
-        file_ir_identity, package_abi_identity, package_build_identity, publication_abi_identity,
+        file_ir_identity, package_build_identity, package_local_abi_identity,
+        publication_abi_identity,
     };
     use skiff_artifact_model::{MetadataValue, PackageDependencyConstraint};
     use tokio::sync::mpsc;
@@ -2405,7 +2406,7 @@ mod tests {
                 value["buildIdentity"] =
                     json!(package_build_identity(&unit).expect("package build identity"));
                 value["abiIdentity"] =
-                    json!(package_abi_identity(&unit).expect("package ABI identity"));
+                    json!(package_local_abi_identity(&unit).expect("package ABI identity"));
                 value
             }
             Some("skiff-service-unit-v1") => {

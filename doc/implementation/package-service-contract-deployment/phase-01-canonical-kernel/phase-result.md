@@ -1,6 +1,6 @@
 # Phase 01 验证结果
 
-状态：P1-T08 PASS，等待 P1-A01 独立只读验收
+状态：P1-A01 首次 FAIL；P1-R01 已修复并自验，等待独立复验后重跑 P1-A01
 
 ## 1. 候选状态
 
@@ -13,13 +13,22 @@
   PASS。该改动没有改变 production DTO 或运行语义。
 - 最终候选 `C` 是 `e864ac9` 加上述 fixture delta；result-record commit is this document's
   commit。本文本身不改变代码门禁结论，因此无需自指提交 hash。
+- P1-A01 在候选 `7be9045` 上首次验收为 FAIL，唯一阻断项是仍公开存在
+  `package_abi_hash`、`package_abi_identity`、`PACKAGE_ABI_IDENTITY_PREFIX` 三个迁移别名。
+- P1-R01 修复 commit `ac5e02d` 删除三个定义与 crate-root re-export，把两处 runtime 测试辅助调用迁移到
+  canonical `package_local_abi_identity`，并增加精确扫描所有 Rust production/test 文件的结构门禁与负例
+  self-test。未修改 identity preimage、wire、prefix 内容或 production load path。
+- 当前修复候选 `R` 是 `ac5e02d` 加本文档记录；等待 P1-R01 独立只读复验，PASS 后重新执行 P1-A01。
 - T08 开始及结果记录前，仓库只剩 `main` 与 phase integration 两个本地分支/worktree；T01–T07
   task worktree 和临时分支均已清理。T08 不 merge `main`，不 push。
 
-## 2. 最终验证证据
+## 2. 验证证据
 
 `C` 表示上一节定义的最终候选。foundation/compiler 在 `e864ac9` 上运行；之后唯一代码变化是
 runtime test fixture，因此两项证据未失效。runtime、router 与最终结构检查均在 `C` 上运行。
+`R` 的 P1-R01 改动影响 artifact-identity public surface、runtime test helper 与 identity checker，因此
+foundation、完整 runtime、identity checker/self-test、targeted rustfmt 和 Rust 旧符号反向搜索已在
+`ac5e02d` 上重跑；未受影响的 T08 证据保留为阶段历史证据，最终 A01 仍需独立重新判断其有效性。
 
 | 层级 | 命令 | owner | commit / 状态 | 结果 | 覆盖范围 |
 | --- | --- | --- | --- | --- | --- |
@@ -36,6 +45,13 @@ runtime test fixture，因此两项证据未失效。runtime、router 与最终�
 | compiler boundary | `node scripts/check-compiler-boundaries.mjs` | T08 | `C` | PASS | compiler layer/API boundary |
 | compiler DAG | `node scripts/check-compiler-crate-dag.mjs` | T08 | `C` | PASS | phase 10，56 workspace edges |
 | whitespace | `git diff --check` | T08 | `C` | PASS | 最终代码与本文 |
+| P1-R01 targeted format | `rustfmt --edition 2021 --check <5 个改动 Rust 文件>` | P1-R01 | `ac5e02d` | PASS | alias owner 与两处 runtime test helper |
+| P1-R01 Rust reverse search | `rg -n '\bpackage_abi_hash\s*\(\|\bpackage_abi_identity\s*\(\|\bPACKAGE_ABI_IDENTITY_PREFIX\b' --glob '*.rs' --glob '!target/**' .` | P1-R01 | `ac5e02d` | PASS（零命中） | production/test Rust 旧符号完全删除 |
+| P1-R01 identity structure | `node scripts/check-artifact-identity-single-source.mjs` | P1-R01 | `ac5e02d` | PASS | 三个精确旧符号 fail-closed |
+| P1-R01 checker self-test | `node scripts/check-artifact-identity-single-source.mjs --self-test` | P1-R01 | `ac5e02d` | PASS | 旧 definition、cfg-test call、prefix import 负例与 canonical near-match 正例 |
+| P1-R01 foundation | `node scripts/verify.mjs --only foundation` | P1-R01 | `ac5e02d` | PASS | artifact-identity public surface、unit/CLI/doc tests |
+| P1-R01 runtime | `node scripts/verify.mjs --only runtime` | P1-R01 | `ac5e02d` | PASS | 18 个 runtime packages、runtime lib 与 doc tests |
+| P1-R01 whitespace | `git diff --check` | P1-R01 | `R` | PASS | 修复代码与本文 |
 
 Router 两项命令第一次启动时因 integration worktree 尚未安装 `router/node_modules` 而在执行
 `tsc`/`vitest` 前返回 `ENOENT`；按 `router/pnpm-lock.yaml` 安装本地依赖后，上表两项真实 gate 均
@@ -114,5 +130,6 @@ self-test corpus；新增 dev-sync source/sink scanner 已拆到独立模块，�
 | production remote relay selection/fallback | 本阶段不改执行语义 | Phase 06 变为不可达，Phase 07 物理删除 |
 | 旧 registry、CLI、watch、test-runner 入口 | 只能作为受结构 gate 约束的 consumer，不 dual-read/dual-write | Phase 07 |
 
-没有把未完成的 Phase 01 条款降级成 follow-up。下一步只进入 P1-A01 独立只读验收；若 A01 FAIL，必须
-回到对应任务修复并使受影响证据失效，不能直接合并 `main`。
+没有把首次 P1-A01 的阻断项降级成 follow-up。下一步先按 P1-R01 任务文档做独立只读复验；复验 PASS 后
+合回 Phase 01 integration branch 并重新执行 P1-A01。任一复验 FAIL 都必须回到对应任务修复并使受影响
+证据失效，不能直接合并 `main`。

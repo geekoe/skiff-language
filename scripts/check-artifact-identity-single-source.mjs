@@ -7,6 +7,10 @@ import {
   collectDevSyncArtifactPathFailures,
 } from './lib/artifact-identity-dev-sync-check.mjs';
 import { devSyncArtifactPathSelfTestFailures } from './lib/artifact-identity-dev-sync-check-self-test.mjs';
+import {
+  collectDeprecatedPackageAbiRustSymbolFailures,
+  deprecatedPackageAbiRustSymbolSelfTestFailures,
+} from './lib/artifact-identity-deprecated-package-abi.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const skippedRustScanDirectories = new Set([
@@ -565,6 +569,7 @@ async function runCheck() {
       `${violation.relPath}:${violation.line} ${violation.name} is owned by ${violation.owner}`,
     );
   }
+  failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
     ...files,
     ...scriptFiles,
@@ -1085,6 +1090,7 @@ function runSelfTest() {
   }
 
   failures.push(...devSyncArtifactPathSelfTestFailures());
+  failures.push(...deprecatedPackageAbiRustSymbolSelfTestFailures());
 
   const artifactEmissionAdapterCases = [
     {

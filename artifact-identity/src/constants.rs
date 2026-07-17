@@ -8,9 +8,6 @@ pub const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v2:sha256";
 pub const PACKAGE_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v2:sha256";
 pub const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
     "skiff-package-implementation-links-v1:sha256";
-/// Temporary call-site migration alias. T06/T07 must adopt
-/// `PACKAGE_LOCAL_ABI_IDENTITY_PREFIX` and remove this old conceptual name.
-pub const PACKAGE_ABI_IDENTITY_PREFIX: &str = PACKAGE_LOCAL_ABI_IDENTITY_PREFIX;
 pub const OPERATION_ABI_IDENTITY_PREFIX: &str = "skiff-operation-abi-v1:sha256";
 pub const PUBLICATION_ABI_IDENTITY_PREFIX: &str = "skiff-publication-abi-v1:sha256";
 pub const PACKAGE_ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-package-assembly-v1:sha256";
