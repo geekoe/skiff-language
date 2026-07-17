@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
-import { validateArtifactClosureBatch } from './lib/artifact-identity-validation.mjs';
+import {
+  assertArtifactReferencesMatchValidated,
+  validateArtifactClosureBatch,
+} from './lib/artifact-identity-validation.mjs';
+import { assertValidatedArtifactClosureFiles } from './lib/artifact-identity-dev-sync-paths.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
@@ -27,7 +31,6 @@ const defaultSharedInputs = [join(skiffRoot, 'prelude'), join(skiffRoot, 'std')]
 const defaultPollIntervalMs = 500;
 const lockTimeoutMs = 120_000;
 const artifactRootContentDirs = new Set(['assemblies', 'bundles', 'contracts', 'files', 'resources', 'units']);
-const artifactPathKeys = new Set(['artifactPath', 'assemblyPath', 'bundlePath', 'fileIrPath', 'path', 'schemaPath', 'unitPath']);
 const generatedArtifactRootEntries = new Set(['indexes', ...artifactRootContentDirs]);
 const rootConfigSourcePattern = /^config(?:\.[A-Za-z_][A-Za-z0-9_-]*)?(?:\.secret)?\.yml$/;
 const artifactIdentityBinary = process.platform === 'win32'
@@ -73,13 +76,6 @@ if (cli.watch) {
     };
     await seedMissingDevReloadPointer(artifactRoot, config.services);
     await assertBrokenConfiguredServiceOutput(syncCheckConfig, 'missing dev reload pointer');
-    await buildAllUntilStable(syncCheckConfig, {
-      syncShared: true,
-      reloadRouter: false,
-      targetDirForService: (service) => join(temp, publicationStorageSegment(service.serviceId)),
-    });
-    await seedMissingDevReloadPointerReference(artifactRoot, config.services);
-    await assertBrokenConfiguredServiceOutput(syncCheckConfig, 'references missing service assembly');
     await buildAllUntilStable(syncCheckConfig, {
       syncShared: true,
       reloadRouter: false,
@@ -244,22 +240,15 @@ async function validateBuiltServiceClosures(results) {
 }
 
 function identityValidationCandidate(artifactRoot, serviceId, index) {
+  const references = artifactReferences(
+    index,
+    `${index.path} artifact references`,
+  );
   return {
     key: serviceId,
     artifactRoot,
     serviceId,
-    serviceAssembly: serviceAssemblyPointer(
-      index.serviceAssembly,
-      `${index.path} serviceAssembly`,
-    ),
-    serviceUnit: serviceUnitPointer(
-      index.serviceUnit,
-      `${index.path} serviceUnit`,
-    ),
-    packageUnits: packageUnitPointers(
-      index.packageUnits,
-      `${index.path} packageUnits`,
-    ),
+    ...references,
   };
 }
 
@@ -595,7 +584,7 @@ async function readDevReloadPointer(root, service) {
   }
 }
 
-async function assertDevReloadPointerContract(root, service, pointer) {
+async function assertDevReloadPointerContract(root, service, pointer, validated) {
   if (!isRecord(pointer)) {
     throw new Error(`dev reload pointer for ${service.serviceId} must be an object`);
   }
@@ -603,30 +592,14 @@ async function assertDevReloadPointerContract(root, service, pointer) {
     throw new Error(`dev reload pointer serviceId mismatch for ${service.serviceId}`);
   }
   assertBuildId(pointer.buildId, `dev reload pointer for ${service.serviceId} buildId`);
-  const serviceAssembly = serviceAssemblyPointer(
-    pointer.serviceAssembly,
-    `dev reload pointer for ${service.serviceId} serviceAssembly`,
-  );
-  const assemblyPath = serviceAssembly.assemblyPath;
-  if (!await isFile(join(root, assemblyPath))) {
-    throw new Error(`dev reload pointer for ${service.serviceId} references missing service assembly ${assemblyPath}`);
-  }
-  const serviceUnit = serviceUnitPointer(
-    pointer.serviceUnit,
-    `dev reload pointer for ${service.serviceId} serviceUnit`,
-  );
-  if (!await isFile(join(root, serviceUnit.unitPath))) {
-    throw new Error(`dev reload pointer for ${service.serviceId} references missing service unit ${serviceUnit.unitPath}`);
-  }
-  const packageUnits = packageUnitPointers(
-    pointer.packageUnits,
-    `dev reload pointer for ${service.serviceId} packageUnits`,
-  );
-  for (const packageUnit of packageUnits) {
-    if (!await isFile(join(root, packageUnit.unitPath))) {
-      throw new Error(`dev reload pointer for ${service.serviceId} references missing package unit ${packageUnit.unitPath}`);
-    }
-  }
+  const label = `dev reload pointer for ${service.serviceId}`;
+  const references = artifactReferences(pointer, label);
+  await assertValidatedArtifactClosureFiles({
+    root,
+    references,
+    validated,
+    label,
+  });
 }
 
 function removedServiceIds(previousServices, nextServices) {
@@ -646,13 +619,26 @@ function devReloadPointerFromIndex(service, indexValue, validated) {
   if (protocolIdentity === undefined) {
     throw new Error(`synced index for ${service.serviceId} is missing protocolIdentity`);
   }
-  const contractHash = `sha256:${identityHash(protocolIdentity)}`;
-  const serviceAssembly = serviceAssemblyPointer(indexValue.serviceAssembly);
-  const serviceUnit = serviceUnitPointer(indexValue.serviceUnit);
-  const packageUnits = packageUnitPointers(indexValue.packageUnits);
-  if (validated?.assemblyIdentity !== serviceAssembly.assemblyIdentity) {
-    throw new Error(`validated assembly identity mismatch for ${service.serviceId}`);
+  const protocolHash = protocolIdentityHash(
+    protocolIdentity,
+    `synced index for ${service.serviceId} contractIdentity`,
+  );
+  const validatedProtocolIdentity = requiredString(
+    validated?.serviceAssembly?.content?.value?.service?.protocolIdentity,
+    `validated service assembly for ${service.serviceId} protocolIdentity`,
+  );
+  if (protocolIdentity !== validatedProtocolIdentity) {
+    throw new Error(`synced index for ${service.serviceId} contractIdentity does not match validated service assembly`);
   }
+  const contractHash = `sha256:${protocolHash}`;
+  const label = `synced index for ${service.serviceId}`;
+  const references = artifactReferences(indexValue, label);
+  const trustedReferences = assertArtifactReferencesMatchValidated(
+    references,
+    validated,
+    label,
+  );
+  const serviceAssembly = trustedReferences.serviceAssembly;
   const buildId = serviceBuildIdFromAssemblyIdentity(serviceAssembly.assemblyIdentity);
   return {
     mode: 'dev',
@@ -665,8 +651,25 @@ function devReloadPointerFromIndex(service, indexValue, validated) {
       assemblyIdentity: serviceAssembly.assemblyIdentity,
       assemblyPath: serviceAssembly.assemblyPath,
     },
-    serviceUnit,
-    packageUnits,
+    serviceUnit: trustedReferences.serviceUnit,
+    packageUnits: trustedReferences.packageUnits,
+  };
+}
+
+function artifactReferences(value, label) {
+  return {
+    serviceAssembly: serviceAssemblyPointer(
+      value?.serviceAssembly,
+      `${label} serviceAssembly`,
+    ),
+    serviceUnit: serviceUnitPointer(
+      value?.serviceUnit,
+      `${label} serviceUnit`,
+    ),
+    packageUnits: packageUnitPointers(
+      value?.packageUnits,
+      `${label} packageUnits`,
+    ),
   };
 }
 
@@ -952,26 +955,9 @@ async function seedMissingDevReloadPointer(root, services) {
   await rm(serviceIdJsonPath(root, ['dev', 'services'], service.serviceId), { force: true });
 }
 
-async function seedMissingDevReloadPointerReference(root, services) {
-  const [service] = services;
-  if (service === undefined) {
-    return;
-  }
-  const pointerPath = serviceIdJsonPath(root, ['dev', 'services'], service.serviceId);
-  const pointer = JSON.parse(await readFile(pointerPath, 'utf8'));
-  pointer.serviceAssembly = {
-    ...pointer.serviceAssembly,
-    assemblyPath: `assemblies/services/${publicationStorageSegment(service.serviceId)}/missing-dev-sync-check.json`,
-  };
-  await writeJson(pointerPath, pointer);
-}
-
 async function assertSyncCheckRoot(root, services) {
   for (const service of services) {
-    const pointer = await readDevReloadPointer(root, service);
-    await assertSyncedService(root, service, pointer, {
-      assemblyIdentity: pointer.serviceAssembly.assemblyIdentity,
-    });
+    await readDevReloadPointer(root, service);
     await assertMissing(serviceScopedHashJsonPath(root, ['indexes', 'services'], service.serviceId, 'stale'));
   }
 
@@ -989,7 +975,12 @@ async function assertConfiguredServiceOutputs(root, services, validated = undefi
   const pointers = new Map();
   for (const service of services) {
     const pointer = await readDevReloadPointer(root, service);
-    await assertDevReloadPointerContract(root, service, pointer);
+    await assertDevReloadPointerContract(
+      root,
+      service,
+      pointer,
+      validated.get(service.serviceId),
+    );
     pointers.set(service.serviceId, pointer);
   }
   for (const service of services) {
@@ -1023,23 +1014,53 @@ async function assertSyncedService(root, service, pointer = undefined, validated
   assertDeepEqual(pointer, expectedPointer, `${pointerPath} dev reload pointer`);
   assertBuildId(pointer.buildId, `${pointerPath} buildId`);
 
-  for (const artifactPath of artifactReferencePaths(index)) {
-    await assertExists(join(root, artifactPath));
+  const contractSchemaPath = canonicalContractSchemaPath(index, indexPath);
+  const contract = JSON.parse(await readFile(join(root, contractSchemaPath), 'utf8'));
+  if (contract.schemaVersion !== 'skiff-contract-schema-v1') {
+    throw new Error(`${contractSchemaPath} schemaVersion must be skiff-contract-schema-v1`);
+  }
+  if (contract.protocolIdentity !== expectedPointer.protocolIdentity) {
+    throw new Error(`${contractSchemaPath} protocolIdentity must match dev reload pointer`);
   }
 
-  const contractSchemaPath = stringValue(index.contract?.schemaPath);
-  if (contractSchemaPath !== undefined) {
-    const contract = JSON.parse(await readFile(join(root, contractSchemaPath), 'utf8'));
-    if (contract.schemaVersion !== 'skiff-contract-schema-v1') {
-      throw new Error(`${contractSchemaPath} schemaVersion must be skiff-contract-schema-v1`);
-    }
-    if (contract.protocolIdentity !== expectedPointer.protocolIdentity) {
-      throw new Error(`${contractSchemaPath} protocolIdentity must match dev reload pointer`);
-    }
-  }
-
-  await assertExists(join(root, expectedPointer.serviceAssembly.assemblyPath));
   await assertSyncedConfigSources(root, service);
+}
+
+function canonicalContractSchemaPath(index, indexPath) {
+  const protocolIdentity = requiredString(
+    index.contractIdentity,
+    `${indexPath} contractIdentity`,
+  );
+  const protocolHash = protocolIdentityHash(
+    protocolIdentity,
+    `${indexPath} contractIdentity`,
+  );
+  const expectedPath = `contracts/${protocolHash}.json`;
+  if (!isRecord(index.contract)) {
+    throw new Error(`${indexPath} contract must be an object`);
+  }
+  const declaredPath = requiredString(
+    index.contract.schemaPath,
+    `${indexPath} contract.schemaPath`,
+  );
+  if (declaredPath !== expectedPath) {
+    throw new Error(`${indexPath} contract.schemaPath must be ${expectedPath}`);
+  }
+  const declaredIdentity = requiredString(
+    index.contract.protocolIdentity,
+    `${indexPath} contract.protocolIdentity`,
+  );
+  if (declaredIdentity !== protocolIdentity) {
+    throw new Error(`${indexPath} contract.protocolIdentity must match contractIdentity`);
+  }
+  const declaredHash = requiredString(
+    index.contract.contractHash,
+    `${indexPath} contract.contractHash`,
+  );
+  if (declaredHash !== protocolHash) {
+    throw new Error(`${indexPath} contract.contractHash must be ${protocolHash}`);
+  }
+  return expectedPath;
 }
 
 async function assertSyncedConfigSources(root, service) {
@@ -1101,35 +1122,6 @@ function parseCanonicalArtifactIndex(value, root, indexPath, expectedServiceId) 
     value: artifactPath,
   });
   return index;
-}
-
-function artifactReferencePaths(value) {
-  const result = new Set();
-  collectArtifactReferencePaths(value, result, undefined);
-  return [...result].sort();
-}
-
-function collectArtifactReferencePaths(value, result, key) {
-  if (typeof value === 'string') {
-    const normalized = value.replaceAll('\\', '/');
-    if (key === 'artifactPath') {
-      result.add(normalized);
-    } else if (artifactPathKeys.has(key) && normalized.endsWith('.json')) {
-      result.add(normalized);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectArtifactReferencePaths(item, result, undefined);
-    }
-    return;
-  }
-  if (isRecord(value)) {
-    for (const [nestedKey, item] of Object.entries(value)) {
-      collectArtifactReferencePaths(item, result, nestedKey);
-    }
-  }
 }
 
 async function inputFingerprint(config) {
@@ -1715,6 +1707,16 @@ function identityHash(identity) {
   if (hash.length === 0) {
     throw new Error('identity sha256 hash must not be empty');
   }
+  return hash;
+}
+
+function protocolIdentityHash(identity, label) {
+  const prefix = 'skiff-protocol-v1:sha256:';
+  if (!identity.startsWith(prefix)) {
+    throw new Error(`${label} must start with ${prefix}`);
+  }
+  const hash = identity.slice(prefix.length);
+  assertSha256Hex(hash, `${label} hash`);
   return hash;
 }
 

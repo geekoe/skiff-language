@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
+
+const dynamicBuildIdPattern = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
 
 /**
- * Runs one canonical closure-validation transaction. Dev sync does not consume
- * artifact contents, so it confirms only transaction cardinality, keys and the
- * assembly marker before publishing the already-staged roots.
+ * Runs one canonical closure-validation transaction and returns the complete,
+ * typed closure together with the source references proven by that transaction.
  */
 export async function validateArtifactClosureBatch(identityCliPath, candidates) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
@@ -32,6 +34,15 @@ export async function validateArtifactClosureBatch(identityCliPath, candidates) 
     if (candidate === undefined || validated.has(key)) {
       throw new Error(`artifact identity CLI returned unexpected or duplicate key ${key}`);
     }
+    const dynamicBuildId = requiredString(
+      result.dynamicBuildId,
+      `artifact identity CLI results[${index}].dynamicBuildId`,
+    );
+    if (!dynamicBuildIdPattern.test(dynamicBuildId)) {
+      throw new Error(
+        `artifact identity CLI results[${index}].dynamicBuildId must be skiff-service-build-v1:sha256:<64 lowercase hex>`,
+      );
+    }
     const assemblyIdentity = requiredString(
       result.assemblyIdentity,
       `artifact identity CLI results[${index}].assemblyIdentity`,
@@ -39,9 +50,123 @@ export async function validateArtifactClosureBatch(identityCliPath, candidates) 
     if (assemblyIdentity !== candidate.serviceAssembly.assemblyIdentity) {
       throw new Error(`artifact identity CLI result ${key} assemblyIdentity mismatch`);
     }
-    validated.set(key, { key, assemblyIdentity });
+    const serviceAssembly = validatedArtifact(
+      candidate.serviceAssembly,
+      result.serviceAssembly,
+      `artifact identity CLI results[${index}].serviceAssembly`,
+      candidate.serviceAssembly.assemblyPath,
+    );
+    const serviceUnit = validatedArtifact(
+      candidate.serviceUnit,
+      result.serviceUnit,
+      `artifact identity CLI results[${index}].serviceUnit`,
+      candidate.serviceUnit.unitPath,
+    );
+    const packageUnits = validatedPackageArtifacts(
+      candidate.packageUnits,
+      result.packageUnits,
+      `artifact identity CLI results[${index}].packageUnits`,
+    );
+    validated.set(key, {
+      key,
+      dynamicBuildId,
+      assemblyIdentity,
+      serviceAssembly,
+      serviceUnit,
+      packageUnits,
+    });
   }
   return validated;
+}
+
+/**
+ * Exact matching is the JS trust boundary: callers may only use the returned
+ * references for filesystem access after the Rust CLI has validated the source
+ * closure and the target wire has matched it field-for-field.
+ */
+export function assertArtifactReferencesMatchValidated(actual, validated, label) {
+  const expected = artifactReferencesFromValidated(validated, label);
+  for (const field of ['serviceAssembly', 'serviceUnit', 'packageUnits']) {
+    if (!isDeepStrictEqual(actual?.[field], expected[field])) {
+      throw new Error(`${label} ${field} does not match validated artifact references`);
+    }
+  }
+  return expected;
+}
+
+function artifactReferencesFromValidated(validated, label) {
+  const closure = record(validated, `${label} validated closure`);
+  const serviceAssembly = record(
+    closure.serviceAssembly,
+    `${label} validated closure serviceAssembly`,
+  );
+  const serviceUnit = record(closure.serviceUnit, `${label} validated closure serviceUnit`);
+  if (!Array.isArray(closure.packageUnits)) {
+    throw new Error(`${label} validated closure packageUnits must be an array`);
+  }
+  return {
+    serviceAssembly: record(
+      serviceAssembly.reference,
+      `${label} validated closure serviceAssembly.reference`,
+    ),
+    serviceUnit: record(
+      serviceUnit.reference,
+      `${label} validated closure serviceUnit.reference`,
+    ),
+    packageUnits: closure.packageUnits.map((unit, index) => record(
+      record(unit, `${label} validated closure packageUnits[${index}]`).reference,
+      `${label} validated closure packageUnits[${index}].reference`,
+    )),
+  };
+}
+
+function validatedPackageArtifacts(references, rawContents, label) {
+  if (!Array.isArray(rawContents)) {
+    throw new Error(`${label} must be an array`);
+  }
+  if (rawContents.length !== references.length) {
+    throw new Error(`${label} must contain exactly ${references.length} entries`);
+  }
+  const byPath = new Map();
+  for (const [index, rawContent] of rawContents.entries()) {
+    const content = validatedContent(rawContent, `${label}[${index}]`);
+    if (byPath.has(content.path)) {
+      throw new Error(`${label} contains duplicate path ${content.path}`);
+    }
+    byPath.set(content.path, content);
+  }
+  return references.map((reference, index) => {
+    const content = byPath.get(reference.unitPath);
+    if (content === undefined) {
+      throw new Error(`${label} is missing validated content for ${reference.unitPath}`);
+    }
+    byPath.delete(reference.unitPath);
+    return validatedArtifact(reference, content, `${label}[${index}]`, reference.unitPath);
+  });
+}
+
+function validatedArtifact(reference, rawContent, label, expectedPath) {
+  const content = rawContent?.path === expectedPath && rawContent?.value !== undefined
+    ? rawContent
+    : validatedContent(rawContent, label);
+  if (content.path !== expectedPath) {
+    throw new Error(`${label}.path must be ${expectedPath}`);
+  }
+  return {
+    reference: { ...reference },
+    content: {
+      path: content.path,
+      value: record(content.value, `${label}.value`),
+    },
+  };
+}
+
+function validatedContent(value, label) {
+  const content = record(value, label);
+  return {
+    path: requiredString(content.path, `${label}.path`),
+    value: record(content.value, `${label}.value`),
+  };
 }
 
 function runIdentityCli(identityCliPath, payload) {
