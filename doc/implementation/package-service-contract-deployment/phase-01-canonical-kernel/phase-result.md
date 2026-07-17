@@ -1,6 +1,6 @@
 # Phase 01 验证结果
 
-状态：P1-A01 首次 FAIL；P1-R01 独立复验 PASS，等待 P1-A01 重验
+状态：PASS；P1-A01 最终独立重验通过
 
 ## 1. 候选状态
 
@@ -22,6 +22,8 @@
   旧符号 Rust 零命中、checker 负例有效、两处 runtime test helper 只调用 canonical API，且 identity
   算法/wire/production path 未变化。R01 已以 merge commit `c3e35c2` 合入 phase branch。
 - 当前重验候选 `A` 是 `c3e35c2` 加本文档状态记录；本文只更新验收状态，不改变任何代码证据。
+- P1-A01 已在 `5d322ea` 上最终重验 PASS：完整生产路径与 legacy ledger 无新增 blocker，R01 merge tree
+  与独立复验 tree 一致；本次完成状态记录仍只修改本文，不改变候选代码。
 - T08 开始及结果记录前，仓库只剩 `main` 与 phase integration 两个本地分支/worktree；T01–T07
   task worktree 和临时分支均已清理。T08 不 merge `main`，不 push。
 
@@ -55,6 +57,7 @@ foundation、完整 runtime、identity checker/self-test、targeted rustfmt 和 
 | P1-R01 foundation | `node scripts/verify.mjs --only foundation` | P1-R01 | `ac5e02d` | PASS | artifact-identity public surface、unit/CLI/doc tests |
 | P1-R01 runtime | `node scripts/verify.mjs --only runtime` | P1-R01 | `ac5e02d` | PASS | 18 个 runtime packages、runtime lib 与 doc tests |
 | P1-R01 whitespace | `git diff --check` | P1-R01 | `R` | PASS | 修复代码与本文 |
+| P1-A01 final | 独立只读生产路径、结构 gate、反向搜索与证据有效性复验 | A01 | `5d322ea` | PASS | Phase 01 全部验收条款；未机械重跑未受影响的昂贵 gate |
 
 Router 两项命令第一次启动时因 integration worktree 尚未安装 `router/node_modules` 而在执行
 `tsc`/`vitest` 前返回 `ENOENT`；按 `router/pnpm-lock.yaml` 安装本地依赖后，上表两项真实 gate 均
@@ -134,5 +137,5 @@ self-test corpus；新增 dev-sync source/sink scanner 已拆到独立模块，�
 | 旧 registry、CLI、watch、test-runner 入口 | 只能作为受结构 gate 约束的 consumer，不 dual-read/dual-write | Phase 07 |
 
 没有把首次 P1-A01 的阻断项降级成 follow-up。P1-R01 已独立复验 PASS 并合回 Phase 01 integration
-branch；下一步对当前候选重新执行 P1-A01。若重验 FAIL，仍须回到对应任务修复并使受影响证据失效，
-不能直接合并 `main`。
+branch，P1-A01 最终重验也已 PASS。Phase 01 可以按总体计划以一个 merge commit 合入 `main`；本文之后
+没有代码变化，合并后只需核对 tree/status，并运行代表性的隔离 runtime smoke。
