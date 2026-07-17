@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     builtin_receiver_ops::BuiltinReceiverOp,
-    file_ir::{DbIndexDirectionIr, FieldPathIr},
+    file_ir::{DbIndexDirectionIr, FieldPathIr, ServiceCallRefIndex},
     metadata::MetadataValue,
     publication_abi::{InterfaceInstantiationRef, OperationAbiRef},
     refs::SourceSpanRef,
@@ -638,6 +638,11 @@ pub enum CallTargetIr {
     },
     ServiceDependencySymbol {
         symbol: ServiceDependencySymbolRef,
+    },
+    /// Canonical service boundary call. The full fact has one owner in the
+    /// containing FileIrUnit external-ref table.
+    ServiceCall {
+        service_call_ref_index: ServiceCallRefIndex,
     },
     PackageSymbol {
         package_ref: PackageRefIr,

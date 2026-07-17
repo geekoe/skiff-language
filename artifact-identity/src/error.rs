@@ -32,6 +32,8 @@ pub enum ArtifactIdentityError {
     ServiceUnitMustBeObject,
     #[error("failed to serialize File IR identity payload: {0}")]
     SerializeFileIrIdentity(serde_json::Error),
+    #[error("File IR service call refs are invalid: {0}")]
+    InvalidFileIrServiceCalls(#[from] skiff_artifact_model::FileIrServiceCallValidationError),
     #[error("File IR unit declared fileIrIdentity {declared} but content identity is {computed}")]
     FileIrIdentityMismatch { declared: String, computed: String },
     #[error("failed to serialize package build identity payload: {0}")]
