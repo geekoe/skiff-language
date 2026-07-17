@@ -12,6 +12,7 @@ import {
   assertArtifactReferencesMatchValidated,
   validateArtifactClosureBatch,
 } from './lib/artifact-identity-validation.mjs';
+import { assertValidatedArtifactClosureFiles } from './lib/artifact-identity-dev-sync-paths.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
 import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
 import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
@@ -593,24 +594,12 @@ async function assertDevReloadPointerContract(root, service, pointer, validated)
   assertBuildId(pointer.buildId, `dev reload pointer for ${service.serviceId} buildId`);
   const label = `dev reload pointer for ${service.serviceId}`;
   const references = artifactReferences(pointer, label);
-  const trustedReferences = assertArtifactReferencesMatchValidated(
+  await assertValidatedArtifactClosureFiles({
+    root,
     references,
     validated,
     label,
-  );
-  const assemblyPath = trustedReferences.serviceAssembly.assemblyPath;
-  if (!await isFile(join(root, assemblyPath))) {
-    throw new Error(`dev reload pointer for ${service.serviceId} references missing service assembly ${assemblyPath}`);
-  }
-  const serviceUnitPath = trustedReferences.serviceUnit.unitPath;
-  if (!await isFile(join(root, serviceUnitPath))) {
-    throw new Error(`dev reload pointer for ${service.serviceId} references missing service unit ${serviceUnitPath}`);
-  }
-  for (const trustedPackageUnit of trustedReferences.packageUnits) {
-    if (!await isFile(join(root, trustedPackageUnit.unitPath))) {
-      throw new Error(`dev reload pointer for ${service.serviceId} references missing package unit ${trustedPackageUnit.unitPath}`);
-    }
-  }
+  });
 }
 
 function removedServiceIds(previousServices, nextServices) {

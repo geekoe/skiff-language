@@ -5,8 +5,8 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   collectDevSyncArtifactPathFailures,
-  devSyncArtifactPathSelfTestFailures,
 } from './lib/artifact-identity-dev-sync-check.mjs';
+import { devSyncArtifactPathSelfTestFailures } from './lib/artifact-identity-dev-sync-check-self-test.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const skippedRustScanDirectories = new Set([
@@ -576,6 +576,8 @@ async function runCheck() {
   }
   failures.push(...collectDevSyncArtifactPathFailures(
     await readFile(join(root, 'scripts/skiff-dev-sync.mjs'), 'utf8'),
+    await readFile(join(root, 'scripts/lib/artifact-identity-dev-sync-paths.mjs'), 'utf8'),
+    scriptFiles,
   ));
 
   if (failures.length > 0) {

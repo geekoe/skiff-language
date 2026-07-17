@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
+import { assertValidatedArtifactClosureFiles } from '../lib/artifact-identity-dev-sync-paths.mjs';
 import {
   assertArtifactReferencesMatchValidated,
   validateArtifactClosureBatch,
@@ -76,6 +77,60 @@ test('returns only CLI-validated references after an exact match', () => {
   assert.deepEqual(trusted, references);
 });
 
+test('rejects a reference mismatch before any filesystem access', async () => {
+  const actual = structuredClone(references);
+  actual.serviceAssembly.assemblyPath = '../outside.json';
+  let filesystemAccesses = 0;
+
+  await assert.rejects(
+    assertValidatedArtifactClosureFiles({
+      root: '/unused-artifact-root',
+      references: actual,
+      validated,
+      label: 'target pointer',
+      statPath: async () => {
+        filesystemAccesses += 1;
+        throw new Error('filesystem must not be reached');
+      },
+    }),
+    /does not match validated artifact references/,
+  );
+  assert.equal(filesystemAccesses, 0);
+});
+
+test('checks every canonical closure file after an exact match', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-paths-'));
+  try {
+    for (const path of [
+      serviceAssembly.assemblyPath,
+      serviceUnit.unitPath,
+      packageUnit.unitPath,
+    ]) {
+      await writeArtifact(root, path);
+    }
+
+    await assertValidatedArtifactClosureFiles({
+      root,
+      references: structuredClone(references),
+      validated,
+      label: 'target pointer',
+    });
+
+    await rm(join(root, packageUnit.unitPath));
+    await assert.rejects(
+      assertValidatedArtifactClosureFiles({
+        root,
+        references: structuredClone(references),
+        validated,
+        label: 'target pointer',
+      }),
+      /references missing package unit/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 for (const testCase of [
   {
     name: 'traversal assemblyPath',
@@ -146,4 +201,10 @@ process.stdout.write(JSON.stringify({
   })),
 }));
 `;
+}
+
+async function writeArtifact(root, artifactPath) {
+  const path = join(root, artifactPath);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, '{}\n');
 }
