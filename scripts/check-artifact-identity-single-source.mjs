@@ -3,6 +3,10 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  collectDevSyncArtifactPathFailures,
+  devSyncArtifactPathSelfTestFailures,
+} from './lib/artifact-identity-dev-sync-check.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const skippedRustScanDirectories = new Set([
@@ -478,7 +482,6 @@ const artifactEmissionFramingRequirements = [
     regexp: /\bframed_identity\s*\(\s*BUNDLE_IDENTITY_PREFIX\s*,/,
   },
 ];
-
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -571,6 +574,9 @@ async function runCheck() {
   for (const violation of collectServiceAssemblyIdentityViolations([...files, ...scriptFiles])) {
     failures.push(`${violation.relPath}:${violation.line} ${violation.message}`);
   }
+  failures.push(...collectDevSyncArtifactPathFailures(
+    await readFile(join(root, 'scripts/skiff-dev-sync.mjs'), 'utf8'),
+  ));
 
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -1075,6 +1081,8 @@ function runSelfTest() {
       );
     }
   }
+
+  failures.push(...devSyncArtifactPathSelfTestFailures());
 
   const artifactEmissionAdapterCases = [
     {
