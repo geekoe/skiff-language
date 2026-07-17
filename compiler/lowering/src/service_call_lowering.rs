@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{ContractOperationId, ServiceCallRef, ServiceRequirement};
+use skiff_artifact_model::{
+    ContractOperationId, ServiceCallRef, ServiceCallRefIndex, ServiceRequirement,
+};
 use skiff_compiler_source::{ExpressionKey, ResolvedCallTarget, ResolvedCallTargetFacts};
 
 use crate::{ContractDependencyOperationIndex, ServiceCallLoweringError};
@@ -18,6 +20,8 @@ pub struct LoweredServiceCallSite {
 pub struct LoweredServiceCalls {
     service_requirements: Vec<ServiceRequirement>,
     call_sites: Vec<LoweredServiceCallSite>,
+    file_refs: BTreeMap<String, Vec<ServiceCallRef>>,
+    call_ref_indices: BTreeMap<ExpressionKey, ServiceCallRefIndex>,
 }
 
 impl LoweredServiceCallSite {
@@ -41,6 +45,30 @@ impl LoweredServiceCalls {
 
     pub fn service_call_refs(&self) -> impl Iterator<Item = &ServiceCallRef> {
         self.call_sites.iter().map(LoweredServiceCallSite::call_ref)
+    }
+
+    /// Exact package-level union contributed by the owner-local File IR
+    /// tables. T04/T05 can compare this typed closure with the PackageArtifact
+    /// aggregate without inspecting instructions or rebuilding slot rules.
+    pub fn service_call_ref_closure(&self) -> BTreeSet<ServiceCallRef> {
+        self.file_refs
+            .values()
+            .flat_map(|refs| refs.iter().cloned())
+            .collect()
+    }
+
+    pub fn file_service_call_refs(&self, module_path: &str) -> &[ServiceCallRef] {
+        self.file_refs
+            .get(module_path)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn service_call_ref_index(
+        &self,
+        expression: &ExpressionKey,
+    ) -> Option<ServiceCallRefIndex> {
+        self.call_ref_indices.get(expression).copied()
     }
 }
 
@@ -108,10 +136,61 @@ pub fn lower_service_calls(
         });
     }
 
+    let (file_refs, call_ref_indices) = index_file_service_call_refs(&call_sites)?;
     Ok(LoweredServiceCalls {
         service_requirements,
         call_sites,
+        file_refs,
+        call_ref_indices,
     })
+}
+
+fn index_file_service_call_refs(
+    call_sites: &[LoweredServiceCallSite],
+) -> Result<
+    (
+        BTreeMap<String, Vec<ServiceCallRef>>,
+        BTreeMap<ExpressionKey, ServiceCallRefIndex>,
+    ),
+    ServiceCallLoweringError,
+> {
+    let refs_by_module = call_sites.iter().fold(
+        BTreeMap::<String, BTreeSet<ServiceCallRef>>::new(),
+        |mut by_module, site| {
+            by_module
+                .entry(site.expression.module_path().to_string())
+                .or_default()
+                .insert(site.call_ref.clone());
+            by_module
+        },
+    );
+    let mut file_refs = BTreeMap::new();
+    let mut indices_by_ref = BTreeMap::new();
+    for (module_path, refs) in refs_by_module {
+        let refs = refs.into_iter().collect::<Vec<_>>();
+        for (index, call_ref) in refs.iter().enumerate() {
+            let index = ServiceCallRefIndex::try_from(index).map_err(|_| {
+                ServiceCallLoweringError::TooManyFileServiceCallRefs {
+                    module_path: module_path.clone(),
+                }
+            })?;
+            indices_by_ref.insert((module_path.clone(), call_ref.clone()), index);
+        }
+        file_refs.insert(module_path, refs);
+    }
+    let call_ref_indices = call_sites
+        .iter()
+        .map(|site| {
+            (
+                site.expression.clone(),
+                indices_by_ref[&(
+                    site.expression.module_path().to_string(),
+                    site.call_ref.clone(),
+                )],
+            )
+        })
+        .collect();
+    Ok((file_refs, call_ref_indices))
 }
 
 #[cfg(test)]

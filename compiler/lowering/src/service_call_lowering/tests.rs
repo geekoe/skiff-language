@@ -79,6 +79,45 @@ fn actual_calls_get_alias_stable_slots_used_operations_and_call_site_refs() {
     assert_eq!(call_sites[2].expression(), &key("a_module", "run", 3));
     assert_eq!(call_sites[3].expression(), &key("z_module", "run", 4));
     assert_eq!(call_sites[3].call_ref().service_requirement_slot, 1);
+    assert_eq!(
+        lowered
+            .service_call_ref_index(&key("a_module", "run", 1))
+            .unwrap(),
+        lowered
+            .service_call_ref_index(&key("a_module", "run", 3))
+            .unwrap(),
+        "same tuple in one file must intern to one owner-local index"
+    );
+    assert_eq!(lowered.file_service_call_refs("a_module").len(), 2);
+    assert_eq!(lowered.file_service_call_refs("z_module").len(), 1);
+    assert_eq!(
+        lowered
+            .service_call_ref_index(&key("a_module", "run", 1))
+            .unwrap()
+            .index(),
+        0,
+        "File IR refs use canonical tuple order"
+    );
+    assert_eq!(
+        lowered
+            .service_call_ref_index(&key("a_module", "run", 2))
+            .unwrap()
+            .index(),
+        1
+    );
+    assert_eq!(
+        lowered
+            .service_call_ref_index(&key("z_module", "run", 4))
+            .unwrap()
+            .index(),
+        0,
+        "the index owner is each File IR unit, not the package"
+    );
+    assert_eq!(
+        lowered.service_call_ref_closure(),
+        lowered.service_call_refs().cloned().collect(),
+        "typed package closure must equal the exact union of per-file tables"
+    );
 
     let reordered_index = index([
         entry(

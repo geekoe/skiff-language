@@ -148,6 +148,23 @@ impl LoweringDependencyOperationIndexes {
             service_dependency_operation_index(dependencies.service_dependencies().constraints()),
         ))
     }
+
+    /// Builds the operation indexes used by the contract-only service-call
+    /// path. Package direct calls retain their existing ABI lookup, while
+    /// service calls must resolve through the typed contract carrier and never
+    /// read a provider PublicationAbi.
+    pub(crate) fn build_for_contract_service_calls(
+        model: &SourceCompileModel,
+    ) -> std::result::Result<Self, PublicationError> {
+        let dependencies = model.dependencies();
+        Ok(Self::new(
+            package_operation_index(
+                dependencies,
+                dependencies.dependency_package_operation_facts(),
+            )?,
+            ServiceDependencyOperationIndex::default(),
+        ))
+    }
 }
 
 fn package_operation_index(
