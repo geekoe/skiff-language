@@ -21,7 +21,8 @@ use skiff_artifact_model::{
 fn runtime_program_build_id_cli_returns_dynamic_build_id() {
     let root = TempArtifactRoot::new("cli-success");
     let service = valid_service();
-    let request = write_service_closure(root.path(), service, Vec::new());
+    let mut request = write_service_closure(root.path(), service, Vec::new());
+    request["serviceVersion"] = json!("1.0.0");
 
     let output = run_cli_command(
         "runtime-program-build-id",
@@ -49,6 +50,49 @@ fn runtime_program_build_id_cli_returns_dynamic_build_id() {
         stdout["results"][0]["serviceAssembly"]["value"]["kind"],
         "service"
     );
+}
+
+#[test]
+fn runtime_program_build_id_cli_rejects_selected_service_version_mismatch() {
+    let root = TempArtifactRoot::new("cli-version-mismatch");
+    let mut request = write_service_closure(root.path(), valid_service(), Vec::new());
+    request["serviceVersion"] = json!("2.0.0");
+
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [request] }));
+
+    assert!(!output.status.success());
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
+    assert!(stderr["error"]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("selected service version 2.0.0"));
+}
+
+#[test]
+fn runtime_program_build_id_cli_keeps_optional_service_version_wire_strict() {
+    let root = TempArtifactRoot::new("cli-version-wire");
+    let request = write_service_closure(root.path(), valid_service(), Vec::new());
+
+    for (label, invalid_version) in [
+        ("null", Value::Null),
+        ("empty", json!("")),
+        ("number", json!(1)),
+    ] {
+        let mut invalid = request.clone();
+        invalid["serviceVersion"] = invalid_version;
+        let output = run_cli_command("runtime-program-build-id", json!({ "services": [invalid] }));
+        assert!(!output.status.success(), "{label} must be rejected");
+        let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+        assert_eq!(stderr["error"]["code"], "schema_invalid", "{label}");
+    }
+
+    let mut unknown = request;
+    unknown["service_version"] = json!("1.0.0");
+    let output = run_cli_command("runtime-program-build-id", json!({ "services": [unknown] }));
+    assert!(!output.status.success(), "unknown alias must be rejected");
+    let stderr: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(stderr["error"]["code"], "schema_invalid");
 }
 
 #[test]

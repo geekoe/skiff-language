@@ -1501,6 +1501,48 @@ describe("router artifact root", () => {
     expect(loaded.manifest.rawHttpEntries[0]?.buildId).toBe(binding?.buildId);
   });
 
+  it("rejects release artifacts whose ServiceUnit version mismatches the selected version", async () => {
+    const root = await createArtifactRoot();
+    const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
+    const serviceIdSegments = serviceIdPathSegments(generated.serviceId);
+    const mismatchedVersion = "2.0.0";
+    await rm(
+      join(
+        root,
+        "versions",
+        "services",
+        ...serviceIdSegments,
+        `${generated.serviceVersion}.json`,
+      ),
+    );
+    await writeVersionPointer(root, {
+      buildId: generated.buildId,
+      serviceId: generated.serviceId,
+      version: mismatchedVersion,
+    });
+    const buildPath = join(
+      root,
+      "builds",
+      "services",
+      ...serviceIdSegments,
+      `${identityHash(generated.buildId)}.json`,
+    );
+    const buildRecord = JSON.parse(
+      await readFile(buildPath, "utf8"),
+    ) as Record<string, unknown>;
+    buildRecord.serviceVersion = mismatchedVersion;
+    await writeFile(buildPath, JSON.stringify(buildRecord, null, 2));
+
+    await expect(
+      loadRouterArtifactRoot(root, {
+        releaseMode: true,
+        identityCliPath: await ensureArtifactIdentityCli(),
+      }),
+    ).rejects.toThrow(
+      /version 1\.0\.0 does not match selected service version 2\.0\.0/,
+    );
+  }, 120_000);
+
   it("rejects incomplete ServiceUnit pointers instead of defaulting fields", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
@@ -1876,6 +1918,32 @@ describe("router artifact root", () => {
         "utf8",
       ),
     ).toContain(`"serviceId": "${serviceId}"`);
+  });
+
+  it("passes an explicit dev serviceVersion through the single CLI batch", async () => {
+    const root = await createArtifactRoot();
+    const assembly = await writeServiceAssembly(
+      root,
+      serviceAssembly(SERVICE_ID),
+    );
+    const serviceVersion = serviceTestVersion(SERVICE_ID);
+    await writeDevReloadPointer(root, assembly, { serviceVersion });
+    const capturePath = join(root, "identity-cli-input.json");
+    const identityCliPath = await writeMockIdentityCli({
+      dir: join(root, "bin"),
+      capturePath,
+    });
+
+    await loadRouterArtifactRoot(root, {
+      devReload: true,
+      identityCliPath,
+    });
+
+    const captured = JSON.parse(
+      await readFile(capturePath, "utf8"),
+    ) as { services: Array<{ serviceVersion?: string }> };
+    expect(captured.services).toHaveLength(1);
+    expect(captured.services[0]?.serviceVersion).toBe(serviceVersion);
   });
 
   it("rejects dev reload pointers missing buildId", async () => {
@@ -3560,6 +3628,7 @@ async function writeDevReloadPointer(
     profile?: string;
     serviceId?: string;
     serviceAssemblyRef?: string;
+    serviceVersion?: string;
   } = {},
 ) {
   const serviceId = options.serviceId ?? SERVICE_ID;
@@ -3580,6 +3649,9 @@ async function writeDevReloadPointer(
       {
         mode: "dev",
         serviceId,
+        ...(options.serviceVersion !== undefined
+          ? { serviceVersion: options.serviceVersion }
+          : {}),
         profile: options.profile ?? "dev",
         contractHash: options.contractHash ?? identityHash(protocolIdentity),
         protocolIdentity,

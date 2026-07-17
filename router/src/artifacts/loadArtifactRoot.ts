@@ -94,6 +94,9 @@ export async function loadRouterArtifactRoot(
         key: validationKeys[index]!,
         artifactRoot: pointer.sourceRoot,
         serviceId: pointer.serviceId,
+        ...(pointer.serviceVersion !== undefined
+          ? { serviceVersion: pointer.serviceVersion }
+          : {}),
         serviceAssembly: {
           assemblyIdentity: pointer.serviceAssemblyIdentity,
           assemblyPath: pointer.serviceAssembly,

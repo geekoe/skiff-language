@@ -10,9 +10,10 @@ use skiff_artifact_model::{
 };
 
 use crate::{
+    artifact_coordinates::publication_storage_segment, artifact_reference::validate_package_ref,
     runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes,
-    service_assembly::validate_package_ref, validate_package_unit_identities,
-    ArtifactIdentityError, ArtifactRelativePath, PackageUnitArtifactRef, Result,
+    validate_package_unit_identities, ArtifactIdentityError, ArtifactRelativePath,
+    PackageUnitArtifactRef, Result,
 };
 
 pub fn ordered_package_build_identities_from_artifact_root(
@@ -463,86 +464,6 @@ fn package_id_artifact_path(package_id: &str) -> Result<String> {
     let path = publication_storage_segment(package_id, "package id")?;
     ArtifactRelativePath::parse(&path, "package id")?;
     Ok(path)
-}
-
-pub fn publication_storage_segment(value: &str, label: &str) -> Result<String> {
-    validate_publication_id(value, label)?;
-    Ok(value.replace('.', "~").replace('/', "~~"))
-}
-
-fn validate_publication_id(value: &str, label: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 63 || value == "std" {
-        return Err(ArtifactIdentityError::InvalidPublicationId {
-            label: label.to_string(),
-            value: value.to_string(),
-        });
-    }
-    if value != value.trim()
-        || value.bytes().any(|byte| byte.is_ascii_control())
-        || value.contains("://")
-        || value.starts_with('/')
-        || value.ends_with('/')
-        || value.contains("//")
-        || value.contains('~')
-        || value
-            .bytes()
-            .any(|byte| !matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/'))
-    {
-        return Err(ArtifactIdentityError::InvalidPublicationId {
-            label: label.to_string(),
-            value: value.to_string(),
-        });
-    }
-
-    let Some((authority, local)) = value.split_once('/') else {
-        return Err(ArtifactIdentityError::InvalidPublicationId {
-            label: label.to_string(),
-            value: value.to_string(),
-        });
-    };
-    validate_authority(authority, label, value)?;
-    if local.is_empty()
-        || local
-            .split('/')
-            .any(|segment| !is_valid_local_segment(segment))
-    {
-        return Err(ArtifactIdentityError::InvalidPublicationId {
-            label: label.to_string(),
-            value: value.to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn validate_authority(authority: &str, label: &str, value: &str) -> Result<()> {
-    let labels = authority.split('.').collect::<Vec<_>>();
-    if labels.len() < 2 || labels.iter().any(|item| !is_valid_authority_label(item)) {
-        return Err(ArtifactIdentityError::InvalidPublicationId {
-            label: label.to_string(),
-            value: value.to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn is_valid_authority_label(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    !bytes.is_empty()
-        && bytes[0] != b'-'
-        && bytes.last() != Some(&b'-')
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-}
-
-fn is_valid_local_segment(segment: &str) -> bool {
-    let bytes = segment.as_bytes();
-    !bytes.is_empty()
-        && bytes[0].is_ascii_lowercase()
-        && bytes.last() != Some(&b'-')
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
-        })
 }
 
 #[cfg(test)]

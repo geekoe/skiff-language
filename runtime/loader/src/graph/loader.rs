@@ -49,6 +49,7 @@ impl<'a> ArtifactGraphLoader<'a> {
         let validated = validate_service_artifact_closure(
             self.artifact_root,
             &pointer.service_id,
+            pointer.service_version.as_deref(),
             &pointer.service_assembly.assembly_identity,
             &pointer.service_assembly.assembly_path,
             &pointer.service_unit,

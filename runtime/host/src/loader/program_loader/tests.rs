@@ -1063,6 +1063,50 @@ fn artifact_loader_rejects_legacy_service_unit_pointer_shapes() {
 }
 
 #[test]
+fn artifact_loader_rejects_release_pointer_service_unit_version_mismatch() {
+    let temp = TempDir::new("runtime-program-release-service-version-mismatch");
+    let root = temp.path().join("artifacts");
+    write_file_ir(
+        &root,
+        "units/files/service.json",
+        "file:service",
+        "svc.main",
+    );
+    write_service_unit(
+        &root,
+        "units/services/svc-v1.json",
+        service_unit_json(
+            "example.com/svc",
+            "unit-v1",
+            "file:service",
+            "units/files/service.json",
+            Vec::new(),
+            Vec::new(),
+        ),
+    );
+    write_release_pointer(
+        &root,
+        "example.com/svc",
+        "release-v2",
+        &build_identity_for_version_pointer(),
+        "units/services/svc-v1.json",
+    );
+
+    let error = load_test_layers_at_root(
+        &root,
+        RuntimeProgramArtifactSelection::release("example.com/svc", "release-v2"),
+    )
+    .expect_err("release pointer and ServiceUnit versions must match");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("version unit-v1")
+            && error_text.contains("selected service version release-v2"),
+        "unexpected error: {error_text}",
+    );
+}
+
+#[test]
 fn artifact_loader_accepts_descriptor_union_variants() {
     let temp = TempDir::new("runtime-program-descriptor-union-variants");
     let root = temp.path().join("artifacts");

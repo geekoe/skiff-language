@@ -72,7 +72,13 @@ export async function writeCompilerGeneratedWebSocketFixtureArtifactRoot(
     index.contractIdentity,
     'compiler artifact index contractIdentity'
   );
-  const serviceVersion = `${serviceIdPathSegments(serviceId).join('-')}-compiler-fixture`;
+  const serviceUnitValue = JSON.parse(
+    await readFile(join(root, serviceUnit.unitPath), 'utf8')
+  ) as Record<string, unknown>;
+  const serviceVersion = readRequiredString(
+    serviceUnitValue.version,
+    'compiler service unit version'
+  );
   const buildId = `skiff-service-build-v1:sha256:${identityHash(
     fixtureIdentity('skiff-service-build-v1', stableStringify(index))
   )}`;
@@ -116,6 +122,7 @@ export async function writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoo
       {
         mode: 'dev',
         serviceId: generated.serviceId,
+        serviceVersion: generated.serviceVersion,
         profile,
         contractHash: identityHash(generated.contractIdentity),
         protocolIdentity: generated.contractIdentity,

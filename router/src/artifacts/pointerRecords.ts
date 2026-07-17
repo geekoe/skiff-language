@@ -64,6 +64,12 @@ export function readDevReloadPointer(
     );
   }
   const fingerprint = readOptionalString(value.fingerprint);
+  const serviceVersion = value.serviceVersion === undefined
+    ? undefined
+    : readRequiredString(
+      value.serviceVersion,
+      `${pointerPath} serviceVersion`,
+    );
   const generation =
     readOptionalString(value.generation) ??
     readOptionalString(value.revision) ??
@@ -74,6 +80,7 @@ export function readDevReloadPointer(
     contractIdentity: protocolIdentity,
     ...(fingerprint !== undefined ? { fingerprint } : {}),
     ...(generation !== undefined ? { generation } : {}),
+    ...(serviceVersion !== undefined ? { serviceVersion } : {}),
     serviceAssembly: serviceAssembly.path,
     serviceAssemblyIdentity: serviceAssembly.assemblyIdentity,
     serviceUnit: readServiceUnitPointer(value, pointerPath),

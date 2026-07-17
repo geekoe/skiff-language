@@ -73,6 +73,7 @@ fn load_resolved_service_dependency_artifact(
     let validated = validate_service_artifact_closure(
         &pointer.root,
         &dependency.id,
+        Some(&dependency.version),
         &pointer.service_assembly.assembly_identity,
         &pointer.service_assembly.assembly_path,
         &pointer.service_unit,
@@ -93,7 +94,11 @@ fn load_resolved_service_dependency_artifact(
                 ),
             }
         })?;
-    validate_service_dependency_unit(&service_unit, dependency, &validated.service_unit.path)?;
+    validate_service_dependency_publication_abi(
+        &service_unit.publication_abi,
+        &validated.service_unit.path,
+        dependency,
+    )?;
 
     Ok(ServiceDependencyConstraint {
         id: dependency.id.clone(),
@@ -389,26 +394,6 @@ fn service_artifact_path(dependency: &ServiceDependency) -> Result<String, Input
             ),
         })?
         .artifact_path())
-}
-
-fn validate_service_dependency_unit(
-    service_unit: &ServiceUnit,
-    dependency: &ServiceDependency,
-    service_unit_path: &str,
-) -> Result<(), InputAssemblyError> {
-    if service_unit.service.id != dependency.id || service_unit.version != dependency.version {
-        return Err(InputAssemblyError::Validation {
-            message: format!(
-                "{service_unit_path} coordinates {}@{} do not match dependency {}@{}",
-                service_unit.service.id, service_unit.version, dependency.id, dependency.version
-            ),
-        });
-    }
-    validate_service_dependency_publication_abi(
-        &service_unit.publication_abi,
-        service_unit_path,
-        dependency,
-    )
 }
 
 fn validate_service_dependency_publication_abi(

@@ -57,8 +57,7 @@ pub(super) fn parse_dev_reload_pointer(
 
     Ok(ArtifactIndexPointer {
         service_id,
-        service_version: object_string(object, "serviceVersion")
-            .or_else(|| object_string(object, "version")),
+        service_version: object_string(object, "serviceVersion"),
         build_id,
         contract_identity: Some(protocol_identity),
         implementation_identity: object_string(object, "implementationIdentity"),

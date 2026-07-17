@@ -26,6 +26,7 @@ export interface IdentityCliArtifactInput {
   key: string;
   artifactRoot: string;
   serviceId: string;
+  serviceVersion?: string;
   serviceAssembly: {
     assemblyIdentity: string;
     assemblyPath: string;

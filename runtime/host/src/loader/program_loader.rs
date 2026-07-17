@@ -44,6 +44,7 @@ pub fn load_runtime_program_parts(
     let validated = skiff_artifact_identity::validate_service_artifact_closure(
         &pointer.artifact_root,
         &pointer.entry.service_id,
+        pointer.entry.service_version.as_deref(),
         &pointer.entry.service_assembly.assembly_identity,
         &pointer.entry.service_assembly.assembly_path,
         &pointer.entry.service_unit,

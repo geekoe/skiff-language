@@ -63,6 +63,14 @@ pub enum ArtifactIdentityError {
         expected: String,
         actual: String,
     },
+    #[error(
+        "service unit {path} version {actual} does not match selected service version {expected}"
+    )]
+    ServiceUnitVersionMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
     #[error("package unit {path} is invalid: {source}")]
     InvalidPackageUnit {
         path: String,

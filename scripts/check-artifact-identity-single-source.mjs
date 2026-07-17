@@ -211,47 +211,47 @@ const ownerRequirements = [
   },
   {
     name: 'ServiceAssemblyArtifactRef',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/artifact_reference.rs',
     regexp: /\bpub\s+struct\s+ServiceAssemblyArtifactRef\b/,
   },
   {
     name: 'ServiceUnitArtifactRef',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/artifact_reference.rs',
     regexp: /\bpub\s+struct\s+ServiceUnitArtifactRef\b/,
   },
   {
     name: 'PackageUnitArtifactRef',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/artifact_reference.rs',
     regexp: /\bpub\s+struct\s+PackageUnitArtifactRef\b/,
   },
   {
     name: 'service_assembly_identity_projection',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/service_assembly_identity.rs',
     regexp: /\bpub\s+fn\s+service_assembly_identity_projection\s*\(/,
   },
   {
     name: 'service_assembly_hash',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/service_assembly_identity.rs',
     regexp: /\bpub\s+fn\s+service_assembly_hash\s*\(/,
   },
   {
     name: 'service_assembly_identity',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/service_assembly_identity.rs',
     regexp: /\bpub\s+fn\s+service_assembly_identity\s*\(/,
   },
   {
     name: 'package_unit_content_hash',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/artifact_coordinates.rs',
     regexp: /\bpub\s+fn\s+package_unit_content_hash\s*\(/,
   },
   {
     name: 'validate_package_unit_artifact_path',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/artifact_coordinates.rs',
     regexp: /\bpub\s+fn\s+validate_package_unit_artifact_path\s*\(/,
   },
   {
     name: 'validate_service_artifact_closure',
-    relPath: 'artifact-identity/src/service_assembly.rs',
+    relPath: 'artifact-identity/src/service_artifact_closure.rs',
     regexp: /\bpub\s+fn\s+validate_service_artifact_closure\s*\(/,
   },
   {
@@ -327,7 +327,9 @@ const ownedDefinitionRegexp = new RegExp(
 );
 
 const facadeModules = [
+  'artifact_coordinates',
   'artifact_path',
+  'artifact_reference',
   'constants',
   'error',
   'file_ir',
@@ -340,7 +342,8 @@ const facadeModules = [
   'publication_validation',
   'runtime_program',
   'semantic',
-  'service_assembly',
+  'service_artifact_closure',
+  'service_assembly_identity',
 ];
 
 const canonicalDelegationRequirements = [
@@ -722,7 +725,7 @@ function collectServiceAssemblyIdentityViolations(files) {
   const violations = [];
   for (const file of files) {
     if (
-      file.relPath === 'artifact-identity/src/service_assembly.rs'
+      file.relPath === 'artifact-identity/src/service_assembly_identity.rs'
       || file.relPath === 'scripts/check-artifact-identity-single-source.mjs'
       || (file.relPath.endsWith('.rs') && !isProductionRustFile(file.relPath))
     ) {

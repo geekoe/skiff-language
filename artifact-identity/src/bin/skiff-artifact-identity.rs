@@ -59,6 +59,7 @@ fn runtime_program_build_id() -> Result<(), CliError> {
         let validated = validate_service_artifact_closure(
             &service.artifact_root,
             &service.service_id,
+            service.service_version.as_deref(),
             &service.service_assembly.assembly_identity,
             &service.service_assembly.assembly_path,
             &service.service_unit,
@@ -111,9 +112,30 @@ struct RuntimeProgramBuildIdService {
     key: String,
     artifact_root: PathBuf,
     service_id: String,
+    #[serde(default, deserialize_with = "deserialize_optional_service_version")]
+    service_version: Option<String>,
     service_assembly: ServiceAssemblyArtifactRef,
     service_unit: ServiceUnitArtifactRef,
     package_units: Vec<PackageUnitArtifactRef>,
+}
+
+fn deserialize_optional_service_version<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    match Value::deserialize(deserializer)? {
+        Value::String(version) if !version.is_empty() => Ok(Some(version)),
+        Value::String(_) => Err(D::Error::custom(
+            "serviceVersion must be a non-empty string",
+        )),
+        _ => Err(D::Error::custom(
+            "serviceVersion must be a non-empty string when present",
+        )),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -191,6 +213,7 @@ fn identity_error_code(error: &ArtifactIdentityError) -> &'static str {
         | ArtifactIdentityError::ServiceAssemblyProtocolIdentityMismatch { .. }
         | ArtifactIdentityError::InvalidRuntimeProgramBuildIdentity { .. }
         | ArtifactIdentityError::ServiceUnitPointerMismatch { .. }
+        | ArtifactIdentityError::ServiceUnitVersionMismatch { .. }
         | ArtifactIdentityError::InvalidPackageUnit { .. }
         | ArtifactIdentityError::PackageUnitSchemaVersionMismatch { .. }
         | ArtifactIdentityError::InvalidPackageIndex { .. }

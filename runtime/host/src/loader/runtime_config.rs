@@ -96,6 +96,7 @@ pub(super) async fn load_services_from_rooted_artifact_pointers_with_caches(
         let validated_artifacts = skiff_artifact_identity::validate_service_artifact_closure(
             &artifact_root,
             &entry.service_id,
+            entry.service_version.as_deref(),
             &entry.service_assembly.assembly_identity,
             &entry.service_assembly.assembly_path,
             &entry.service_unit,
@@ -2023,6 +2024,7 @@ mod tests {
             json!({
                 "mode": "dev",
                 "serviceId": "skiff.run/account",
+                "serviceVersion": "v1",
                 "profile": "test",
                 "protocolIdentity": PROTOCOL_IDENTITY,
                 "contractHash": format!("sha256:{protocol_hash}"),
