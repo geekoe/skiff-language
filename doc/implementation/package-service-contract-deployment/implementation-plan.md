@@ -1,15 +1,14 @@
 # Package、Service Contract 与 Deployment 总体实现计划
 
-状态：active；Phase 01 已细化，其余阶段只冻结边界
+状态：active；Phase 01 已完成并合入 `main`，Phase 02 是下一执行阶段
 
-本文把 `doc/architecture/package-service-contract-deployment.md` 落成可逐阶段验收的实现路线。每个
-阶段只向 `main` 合并一次；上一阶段验收后，下一阶段才展开任务 DAG，允许根据实现事实调整后续阶段
-数量和范围，但不得绕过架构不变量。
+唯一权威架构输入是 `doc/architecture/package-service-contract-deployment.md`。本文不定义新语义，只把
+该设计转化为可逐阶段验收、尽量缩短关键路径的实现路线。每阶段只向 `main` 合并一次；上一阶段验收后
+才细化下一阶段，但阶段内部通过短共享检查点和最多三个并行 worker 扩大 DAG 宽度。
 
 ## 1. 最终结果
 
-最终生产数据流只有四个一等对象。Contract 可以先于任何实现独立产生，package 编译只消费所需
-contract；它不是由 package artifact 派生：
+最终生产数据流只有四个一等对象：
 
 ```text
 ServiceContractDefinition ───────────────► ServiceContract
@@ -25,144 +24,118 @@ ServiceDeployments + PackageArtifact closure ──► RuntimeAssembly
 ```
 
 - 用户代码只由 package compiler 编译并归 `PackageArtifact` 所有。
-- `ServiceContract` 是无代码、可先于实现发布的 typed protocol。
-- `ServiceDeployment` 不读取源码，只把 contract operation 显式绑定到已编译 package callable，并
-  绑定 config/state/resource owner。
+- `ServiceContract` 无代码、可先于实现发布，是 consumer compile 的唯一 service 协议输入。
+- `ServiceDeployment` 无源码，只把 contract operation 绑定到 typed package callable 和运行配置。
 - `RuntimeAssembly` 解析完整 deployment/package 闭包；第一版所有 service edge 都是
   `InProcessBoundary`。
 - `Publication` 不是领域对象或 compiler pipeline；`publish` 只保留为 registry 操作。
-- package direct call 使用 Local ABI，可共享 heap、alias 和 mutation；service call 始终保持 boundary
+- package direct call 使用 Local ABI，可共享 heap、alias 和 mutation；service call 始终执行 boundary
   materialization 与 ActivationContext owner 切换。
 
-## 2. 分阶段迁移约束
+## 2. 迁移约束与删除 ledger
 
-仓库当前仍以 `PublicationInput`、`CompiledPublication`、`PublicationAbiUnit`、`ServiceUnit` 和
-`serviceAssembly` 组织主要路径。不能在第一阶段机械全局重命名：那会同时修改 source compile、
-contract、deployment、runtime 和 router，重新形成一个不可验收的大爆炸提交。
-
-允许的阶段性办法只有薄 adapter：新 canonical owner 先接管规则，旧 aggregate 暂时消费结果。旧
-aggregate 不得继续拥有或重新实现规则，并在对应阶段删除：
+阶段性 adapter 只允许消费新 canonical owner 的结果，不得保留第二套规则；新旧 artifact 不 dual-read、
+dual-write，fixture 直接重建。
 
 | 临时对象或路径 | 允许保留到 | 约束 |
 | --- | --- | --- |
-| `PublicationInput` / `CompiledPublication` / `LoweredPublication` | Phase 02 | 不得新增 service-only code analysis |
-| `PublicationAbiUnit` 共同 aggregate | Phase 03 | Phase 01 后 identity/builder 只能委托 canonical leaf owner |
-| code-owning `ServiceUnit` / service source compile | Phase 04 | 不得成为新 package/contract 事实 owner |
-| 当前 `serviceAssembly` 作为 runtime/linker 语义 owner | Phase 05 | Phase 05 后只允许受结构 gate 约束的 tooling input adapter；不得再拥有 closure/link 语义，Phase 07 物理删除 |
-| 当前 remote relay 的 production selection/fallback | Phase 06 | Phase 06 后 production 不可达；旧实现与 fixtures 在 Phase 07 物理删除 |
-| 旧 registry、CLI、watch、test-runner 入口 | Phase 07 | 不得形成 dual-read/dual-write |
+| `PublicationInput` / `CompiledPublication` / `LoweredPublication` | Phase 02 | Phase 02 后 compiler 只有 package compile pipeline |
+| `PublicationAbiUnit` | Phase 03 | Phase 02 后只能是旧 runtime 输入 adapter，不能进入新 PackageArtifact/ServiceContract |
+| code-owning `ServiceUnit` / service source compile | Phase 03 | 只能委托 Phase 02 compiler；Phase 03 后不再拥有代码或 deployment 语义 |
+| 当前 `serviceAssembly` | Phase 03 退出 semantic owner；Phase 05 物理删除 adapter | Phase 03 后只允许受 gate 约束的 tooling input adapter |
+| 当前 remote relay selection/fallback | Phase 04 | Phase 04 后 production 不可达，能同步删除的实现与 fixture 当阶段删除 |
+| 旧 registry、CLI、watch、test-runner 与跨仓库 consumer | Phase 05 | 不得形成新旧双写；Phase 05 完成后物理归零 |
 
-每项 adapter 都必须有结构 gate 防止新增调用点。这里的保留是仓库内分阶段施工，不是对已发布格式的
-兼容承诺；artifact 与 fixture 可以在任何阶段直接重建。
+## 3. Phase 01 经验与后续约束
 
-## 3. 营地原则盘点
+Phase 01 已建立 canonical identity、type closure、typed effect leaf、PackageUnit projection 和跨层引用验证。
+其早期独立任务并发有效，但后期形成长串行链；单个跨层验证提交触及 89 个文件，证明“一个 Agent 横跨
+compiler/runtime/router/scripts”不是可接受任务边界。
 
-当前改动路径上已经确认的前置问题：
+后续阶段必须遵守：
 
-- `artifact-identity/src/lib.rs` 同时负责 File IR、package、publication、operation、service、runtime
-  program 和 package-test identity，文件过长且 checker 反而把 owner 固定为单文件。
-- nominal/type/method identity 分别使用 artifact-identity canonical JSON、artifact-model framed bytes
-  和字符串拼接，存在三个算法 owner。
-- package build/ABI identity preimage 由 serde 结构偶然决定，遗漏 `abiIdentityProjection`、
-  `recoverableMetadata` 和 effect facts，却可能吞入 storage path/provenance。
-- package artifact 在 production projection 与 package-test emission 各有一套 builder。
-- boundary 与 recoverable 路径重复实现 nominal type closure、trace 和部分 schema validation。
-- effect 在 source、projection、artifact 三层仍是 `Empty`、placeholder 或 raw metadata，无法表达
-  “尚未分析必须保守拒绝”。
-- service assembly identity、unit pointer 校验和 canonical path/ID 检查在 compiler、runtime、router
-  与 scripts 间分散；现有 single-source checker 没覆盖所有生产消费者。
+- 共享 owner/API 是阶段内部的短 checkpoint，不单独占一个长期阶段。
+- checkpoint 后按写入域拆 consumer，最多同时运行三个开发 Agent。
+- 每阶段默认不超过三个实现波次；若超过，先检查是否遗漏可提前冻结的接口或错误制造了串行依赖。
+- 阶段边界选择可独立验收的控制面或执行面，不再机械地为每个 artifact 对象单设阶段。
+- legacy 在失去语义 owner 的阶段立即收缩；Phase 05 不接收本可提前删除的内部生产路径。
 
-Phase 01 只清理上述会被后续直接放大的区域。ID authoring UX、router 其它历史问题和完整 effect
-fixed-point 分析不在第一阶段顺手重构。
+Phase 01 的 `phase-plan.md` 与 `phase-result.md` 是当时执行记录，其中旧 Phase 02–07 编号只表示历史
+ledger；后续以本文当前划分为准。
 
-## 4. 阶段划分
+## 4. 当前阶段划分
 
 ```text
-Phase 01  Canonical semantic / identity kernel
+Phase 01  Canonical semantic / identity foundation（已完成）
     │
-Phase 02  PackageArtifact + package-only compiler + boundary eligibility
+Phase 02  Compile plane：PackageArtifact + ServiceContract
     │
-Phase 03  ServiceContract + ContractRequirement / ServiceCallRef
+Phase 03  Deployment and assembly plane：ServiceDeployment + RuntimeAssembly
     │
-Phase 04  ServiceDeployment projection and validation
+Phase 04  In-process execution plane：ActivationContext + InProcessBoundary
     │
-Phase 05  RuntimeAssembly resolution and linking
-    │
-Phase 06  InProcessBoundary execution
-    │
-Phase 07  Tooling cutover and legacy deletion
+Phase 05  Ecosystem cutover：tooling、services 与 legacy deletion
 ```
 
-### Phase 01：Canonical semantic / identity kernel
+### Phase 01：Canonical semantic / identity foundation
 
 收敛 canonical JSON/framing、nominal/callable identity、package identity preimage、nominal type closure、
-typed effect placeholder、PackageUnit builder 和跨层 artifact reference 校验。当前运行语义保持不变；
-旧 publication/service aggregate 只能作为受控消费者。
+typed effect leaf、PackageUnit builder 和跨层 artifact reference validation。该阶段已验收并合入 `main`。
 
-### Phase 02：PackageArtifact 与唯一代码编译线
+### Phase 02：Compile plane
 
-所有用户源码走 `PackageCompileInput -> PackageSourceModel -> LoweredPackage -> CompiledPackage`；生成
-最终 `PackageArtifact`、`PackageLocalAbi`、callable semantic facts、sound may-effect/provenance 和
-显式 `BoundaryCallableProjection`。删除 production `PublicationKind` 和 service-only code analysis。
+同时建立最终 `PackageArtifact` 与独立 `ServiceContract`。先冻结二者共享的 boundary descriptor、
+ContractTypeId、requirements、identity 和 wire API，再并行实现 contract artifact、package/effect pipeline
+与 service dependency lowering。阶段完成后 provider 和 consumer 可只凭 contract 独立编译，consumer
+artifact 只保存 `ServiceCallRef`，compiler 不再有 publication/package/service 共同 source pipeline。
 
-### Phase 03：ServiceContract 与依赖编译
+### Phase 03：Deployment and assembly plane
 
-确定 code-free contract authoring 输入，生成独立 `ServiceContract`、`ContractTypeId`、closed schema、
-`ServiceProtocolIdentity`；package 通过 `ContractRequirement` 编译，实际调用 lowering 为
-`ServiceRequirement + ServiceCallRef`，不依赖 provider package。
+同时建立无源码 `ServiceDeployment` 与完整 `RuntimeAssembly`。先冻结 deployment/assembly schema、identity
+和 binding template API，再并行实现 deployment projection、assembly closure/provider resolution 与 runtime
+loader/linker adoption。阶段完成后 typed artifacts 足以构建、校验、链接和 admission 一个 assembly；
+service source compile、code-owning ServiceUnit 和旧 serviceAssembly 的 closure/link 语义退出生产 owner。
 
-### Phase 04：ServiceDeployment
+### Phase 04：In-process execution plane
 
-确定 source-free deployment 输入；仅凭 typed PackageArtifact closure 与 ServiceContract 完成 operation、
-effect、config/state/resource 绑定校验并生成 `ServiceDeployment`。删除 service source compile 和
-code-owning `ServiceUnit`。
+建立 ActivationContext、service binding vector 和 transport-neutral materialization kernel；随后并行完成
+ordinary/error、async/stream/cancel、callback/native capability 三类 lane。Ingress 与内部 service call
+切到同一 dispatcher，package direct call 继续保留 same-heap mutation；production remote fallback 不可达。
 
-### Phase 05：RuntimeAssembly
+### Phase 05：Ecosystem cutover
 
-从 root deployments 解析唯一 provider 和完整 package closure，代码在 replica 内只链接一次；生成
-per-ActivationContext binding vector、activation templates 与 AssemblyIdentity。缺失、多 provider 或
-remote-only closure 均 fail closed。旧 `serviceAssembly` 在本阶段退出 runtime/linker semantic owner；
-若工具链尚未切换，只能保留无语义、受结构 gate 约束的 input adapter。
-
-### Phase 06：InProcessBoundary
-
-实现 detached materialization、provider owner 切换、async/stream/cancel/error/callback context 传播和
-capability lifetime。Ingress 与内部 service call 使用同一 contract/binding 路径；当前 production
-remote selection/fallback 变为不可达。旧 relay 代码与 fixtures 的物理删除留给 Phase 07。
-
-### Phase 07：工具链切换与旧模型删除
-
-registry/release、router/runtime reload、CLI/watch、test-runner、fixtures 与实际 services 全部切换；
-物理删除旧 Publication aggregate、`serviceAssembly` tooling adapter、service relay、legacy adapters 和
-旧 artifact readers，完成端到端与多 replica 验收。
+并行迁移仓库 tooling、`skiff-packages` 和 `internals` consumer：registry/release、CLI/watch、router reload、
+test-runner、fixtures 与实际 services。删除剩余 Publication/ServiceUnit/serviceAssembly/relay adapter 和旧
+reader/writer，完成完整非 live verify、必要 live/smoke 与多 replica 验收。
 
 ## 5. Worktree 与提交协议
 
-- 每阶段从最新 `main` 创建 `codex/package-service-phase-NN` 和同名 integration worktree。
-- 当前阶段文档先在 integration branch 提交，所有 task worktree 从该提交或后续明确 checkpoint 创建。
-- 并行任务必须声明非重叠写入范围；有依赖的任务从包含前置提交的新 checkpoint 创建，不能自行拼接
-  多个任务分支。
-- task Agent 完成后提交；主 Agent 按 DAG 合并进 integration branch并清理 task worktree/branch。
-- 阶段验收通过后，以一个 merge commit 合并到 `main`。merge 后只做证据有效性核对，不机械重跑已在
-  相同 commit 上通过的昂贵 gate。
-- 每阶段 merge 是最小回滚单位；不通过长期兼容 shim 回滚。
+- 每阶段从最新 `main` 创建 `codex/package-service-phase-NN` 与 integration worktree。
+- 当前阶段文档先在 integration branch 提交；task worktree 从该提交或后续明确 checkpoint 创建。
+- 并行任务必须声明非重叠写入范围。共同 owner 先合成 checkpoint；consumer 不自行 cherry-pick 多个
+  未集成分支拼装依赖。
+- task Agent 完成并提交后，主 Agent 按 DAG 合入 integration branch并清理 task worktree/branch。
+- 阶段 gate 与独立验收通过后，以一个 merge commit 合入 `main`。merge 后核对 tree 与证据，不机械重跑
+  相同 commit 已通过的昂贵 gate。
+- 跨仓库改动分别提交；未经用户明确授权不 push。
 
 ## 6. 验证层级
 
 ```text
 任务级：format / 静态检查 / 直接 crate 或 test filter
-批次级：受影响 crate 组合 + 结构反向搜索
-阶段级：对应 subject selector + 架构 gate + 独立只读验收
-最终级：Phase 07 才运行完整非 live verify 和必要 live/smoke
+批次级：共享 checkpoint consumer 组合 + 结构反向搜索
+阶段级：受影响 subject selector + 架构 gate + 一次独立阶段验收
+最终级：Phase 05 运行完整非 live verify 和必要 live/smoke
 ```
 
-删除或重写测试时必须说明旧测试锁定的语义，并提供 replacement test 或证明该语义已被整体删除。
-任务 Agent 不跑全量套件替代影响分析；阶段 gate 对最终 commit 只运行一次。
+完整套件、冷构建、E2E 和 live gate 对同一稳定代码状态只指定一个 owner。删除或重写测试时必须说明旧
+测试锁定的语义，并提供 replacement test 或证明该语义已整体删除。
 
 ## 7. 阶段调整规则
 
-- 当前阶段发现会被本功能放大的重复或隐式契约：新增独立前置任务，更新 DAG 后继续。
-- 只影响后续阶段：记录到下一阶段 overview，当前阶段不提前实现。
-- 会改变四对象边界、两类调用语义或本地 assembly 方向：停止并请求用户决策。
-- 评审只阻塞架构矛盾、不可执行 DAG、缺失 owner/删除条件或无法验收的问题；命名偏好、未来 remote
-  细节和额外测试建议不阻塞。
+- 当前阶段发现会被本功能放大的重复、超长 owner 或隐式契约：拆成短前置 checkpoint，随后恢复并发。
+- 只影响后续阶段：更新下一阶段 overview，当前阶段不提前实现。
+- 会改变四对象边界、两类调用语义或本地 assembly 方向：暂停受影响 DAG 分支并请求用户决策。
+- Agent 停滞、范围膨胀或跨越多个顶层写入域：保留有效提交，把剩余工作按 owner 重派。
+- 评审只阻塞架构矛盾、不可执行 DAG、缺失 owner/删除条件或无法验收的问题；完美化和额外未来测试不
+  阻塞。

@@ -1,0 +1,28 @@
+# Phase 04：In-Process Execution Plane
+
+状态：outline-only；Phase 03 验收后细化
+
+## 输入
+
+- 已解析 RuntimeAssembly、ActivationContext templates、service binding vectors 和 contract value plans。
+
+## 完成态
+
+- service call 切换 provider ActivationContext，并按 linkable value plan detached materialize 参数和返回值。
+- ActivationContext 显式传播到 await、stream、callback 与 cancel；不依赖 thread-local current service。
+- request-scope `any I`/native handle 只通过 callback capability crossing，owner/generation/lifetime fail closed。
+- Ingress 与内部 service call 使用同一 contract/binding dispatcher。
+- 所有 production service edge 都是 InProcessBoundary；remote selection/fallback 不可达。
+
+## 预期波次
+
+1. ActivationContext、binding ABI、materialization 和 capability table kernel checkpoint。
+2. ordinary/error、async/stream/cancel、callback/native 三类 lane 并行。
+3. ingress/internal dispatcher cutover、remote path 删除、runtime gate、live smoke 与独立验收。
+
+## 阶段验收
+
+- service boundary 不共享 caller 引用 identity、alias 或原地 mutation。
+- package direct call 仍保持 same-heap mutation，不被强制 linkable/recoverable。
+- callback 返回 owner 后恢复 receiver context，cancel/close/owner exit 使 capability 稳定失效。
+- 缺本地 provider 不经 router fallback。
