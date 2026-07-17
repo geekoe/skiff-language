@@ -30,7 +30,10 @@ use super::{
     executable_declaration_lowering::{
         lower_const_declarations, lower_executables, lowered_executable_signatures,
     },
-    external_refs::{external_refs_for_file_ir_unit, required_receiver_builtin_capability_version},
+    external_refs::{
+        rebuild_external_refs_for_file_ir_unit, required_receiver_builtin_capability_version,
+    },
+    service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_map_source, source_ast_hash},
     suspend_analysis::suspend_index_for_source,
 };
@@ -50,6 +53,7 @@ pub struct PublicationSourceLoweringInput<'a, 'context, 'publication> {
     pub type_resolution: &'a TypeResolutionModel,
     pub expression_types: Option<&'a ExpressionTypeModel>,
     pub callable_return_types: &'a BTreeMap<String, CallableReturnType>,
+    pub service_calls: Option<&'a LoweredServiceCalls>,
 }
 
 struct SourceFileLoweringContext<'a> {
@@ -60,6 +64,7 @@ struct SourceFileLoweringContext<'a> {
     external_type_symbols: &'a PublicationTypeSymbolIndex,
     service_dependency_aliases: &'a BTreeSet<String>,
     publication_db_metadata: &'a PublicationDbMetadataIndex,
+    service_calls: Option<&'a LoweredServiceCalls>,
 }
 
 static EMPTY_PACKAGE_ALIASES: std::sync::LazyLock<BTreeMap<String, Vec<String>>> =
@@ -87,6 +92,7 @@ impl<'a> SourceFileLoweringContext<'a> {
             external_type_symbols: &EMPTY_EXTERNAL_TYPE_SYMBOLS,
             service_dependency_aliases: &EMPTY_SERVICE_DEPENDENCY_ALIASES,
             publication_db_metadata: &EMPTY_PUBLICATION_DB_METADATA,
+            service_calls: None,
         }
     }
 }
@@ -110,6 +116,7 @@ pub fn compile_publication_source_file_ir_unit(
         input.type_resolution,
         input.expression_types,
         input.callable_return_types,
+        input.service_calls,
     )?;
     assign_file_ir_identity(&mut unit);
     Ok(unit)
@@ -208,6 +215,7 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         type_resolution: &type_resolution,
         expression_types: Some(&expression_types),
         callable_return_types: &callable_return_types,
+        service_calls: ctx.service_calls,
     })
 }
 
@@ -313,12 +321,15 @@ fn lower_source_file_ir_unit(
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
+    service_calls: Option<&LoweredServiceCalls>,
 ) -> Result<FileIrUnit> {
     let source = semantic_context.source;
     let ast = source.ast;
     let source_path = source.source_path.as_ref().to_string();
     let module_path = source.module_path;
     let executable_index = semantic_context.executable_index;
+    let empty_service_calls = LoweredServiceCalls::default();
+    let service_calls = service_calls.unwrap_or(&empty_service_calls);
     validate_supported_top_level(ast)?;
 
     let type_indices = type_indices(ast);
@@ -397,6 +408,7 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        service_calls,
         &mut unit,
         &mut next_span_id,
     )?;
@@ -432,12 +444,17 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        service_calls,
         &mut unit,
         &mut next_span_id,
     )?;
     unit.required_receiver_builtin_capability_version =
         required_receiver_builtin_capability_version(&unit);
-    unit.external_refs = external_refs_for_file_ir_unit(&unit);
+    unit.external_refs.service_call_refs =
+        service_calls.file_service_call_refs(module_path).to_vec();
+    rebuild_external_refs_for_file_ir_unit(&mut unit).map_err(|error| {
+        CompileError::Semantic(format!("invalid service call File IR: {error}"))
+    })?;
     Ok(unit)
 }
 
@@ -509,13 +526,22 @@ fn unsupported(message: impl Into<String>) -> CompileError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        path::PathBuf,
+    };
 
     use crate::{
         file_ir::{BoxSourceIr, CallTargetIr, ExecutableIr, ExprIr, PackageRefIr, TypeRefIr},
         source_unit_lowering::symbol,
     };
-    use skiff_artifact_model::ReceiverCallAbi;
+    use skiff_artifact_model::{
+        validate_file_ir_service_calls, BoundaryCallbackContract, BoundaryCancellationContract,
+        BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract,
+        BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+        ContractOperationId, ContractRequirement, ReceiverCallAbi, ServiceProtocolIdentity,
+    };
     use skiff_compiler_source::{
         api::PublicTypeKind, build_from_parsed_sources, parsed_sources::parse_publication_sources,
         source_graph::CompilerSourceFile, CompileParsedPublicationSourcesInput, PackageDependency,
@@ -1157,5 +1183,111 @@ mod tests {
             matches!(receiver_arg, ExprIr::LoadSlot { .. }),
             "receiver arg should load the boxed local binding"
         );
+    }
+
+    #[test]
+    fn typed_contract_call_site_lowers_to_canonical_service_call_without_legacy_operation_abi() {
+        let source = r#"
+          function run() -> void {
+            echo.ping()
+          }
+        "#;
+        let operation = BoundaryOperationDescriptor {
+            operation_id: ContractOperationId::new("operation:ping"),
+            stable_key: "ping".to_string(),
+            contract: BoundaryOperationContract {
+                parameters: Vec::new(),
+                return_value: BoundaryReturn {
+                    ty: skiff_artifact_model::ContractTypeRef::builtin("void"),
+                    value_plan: BoundaryValuePlan::Linkable {
+                        carrier: BoundaryValueCarrier::DetachedValueGraph,
+                        encoding: BoundaryValueEncoding::CanonicalValue,
+                        owner: BoundaryValueOwner::Provider,
+                        lifetime: BoundaryValueLifetime::Call,
+                    },
+                },
+                errors: BoundaryErrorContract::None,
+                stream: BoundaryStreamContract::Unary,
+                cancellation: BoundaryCancellationContract::NotCancellable,
+                callbacks: BoundaryCallbackContract::None,
+                may_suspend: false,
+                effect_guarantee: BoundaryEffectGuarantee {
+                    detached_parameters: true,
+                    detached_return: true,
+                    detached_error: true,
+                    no_caller_reachable_mutation: true,
+                    no_caller_value_escape: true,
+                    no_same_heap_identity: true,
+                },
+            },
+        };
+        let protocol = ServiceProtocolIdentity::new("protocol:echo");
+        let operation_index = crate::ContractDependencyOperationIndex::build([
+            crate::ContractDependencyOperationIndexEntry::new(
+                ContractRequirement {
+                    alias: "echo".to_string(),
+                    service_id: "example.echo".to_string(),
+                    contract_version: "1.0.0".to_string(),
+                    expected_protocol_identity: protocol.clone(),
+                },
+                BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
+            ),
+        ])
+        .unwrap();
+        let expression = skiff_compiler_source::ExpressionKey::new(
+            MODULE,
+            skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
+            0,
+        );
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                expression,
+                skiff_compiler_source::ResolvedCallTarget::ContractOperation {
+                    contract_requirement_alias: "echo".to_string(),
+                    contract_operation_id: operation.operation_id.clone(),
+                    expected_protocol_identity: protocol.clone(),
+                },
+            )]));
+        let service_calls = crate::lower_service_calls(&targets, &operation_index).unwrap();
+        let service_aliases = BTreeSet::from(["echo".to_string()]);
+        let ast = parse_source(source).unwrap();
+        let unit = compile_parsed_source_file_ir_unit_with_lowering_context(
+            ast,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                service_dependency_aliases: &service_aliases,
+                service_calls: Some(&service_calls),
+                ..SourceFileLoweringContext::none()
+            },
+        )
+        .unwrap();
+
+        validate_file_ir_service_calls(&unit).unwrap();
+        assert_eq!(unit.external_refs.service_call_refs.len(), 1);
+        assert_eq!(
+            unit.external_refs.service_call_refs[0].contract_operation_id,
+            operation.operation_id
+        );
+        assert_eq!(
+            unit.external_refs.service_call_refs[0].expected_protocol_identity,
+            protocol
+        );
+        let run = executable(&unit, "run");
+        assert!(run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(call.target, CallTargetIr::ServiceCall { .. })
+        )));
+        assert!(!run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(call.target, CallTargetIr::ServiceDependencySymbol { .. })
+        )));
+        let wire = serde_json::to_string(&unit).unwrap();
+        assert!(!wire.contains("operationAbiId"));
+        assert!(!wire.contains("serviceDependencySymbols"));
     }
 }

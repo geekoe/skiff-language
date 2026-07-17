@@ -33,6 +33,7 @@ pub struct LoweredPublication {
     diagnostics: LoweringDiagnostics,
     metadata: LoweringMetadata,
     entrypoint_abi: EntrypointAbiIndex,
+    service_calls: crate::LoweredServiceCalls,
 }
 
 #[derive(Debug, Default)]
@@ -76,6 +77,7 @@ impl LoweredPublication {
     pub(crate) fn lower(
         model: &SourceCompileModel,
         operation_indexes: &LoweringDependencyOperationIndexes,
+        service_calls: crate::LoweredServiceCalls,
     ) -> Result<Self, PublicationError> {
         let plan = model.plan();
         let parsed_sources = model.sources().parsed_sources();
@@ -124,6 +126,7 @@ impl LoweredPublication {
                         type_resolution: model.type_resolution(),
                         expression_types: Some(model.expression_types()),
                         callable_return_types: &callable_return_types,
+                        service_calls: Some(&service_calls),
                     })
                     .map_err(|error| {
                         plan.diagnostics
@@ -139,7 +142,11 @@ impl LoweredPublication {
             PublicationCompilePolicy::Package { package_id } => Some(package_id),
             PublicationCompilePolicy::Service { .. } => None,
         };
-        rewrite_publication_local_refs(&mut file_ir_units, current_package_id);
+        rewrite_publication_local_refs(&mut file_ir_units, current_package_id).map_err(
+            |error| PublicationError::ContractValidation {
+                message: format!("File IR external ref rebuild failed: {error}"),
+            },
+        )?;
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration
@@ -171,6 +178,7 @@ impl LoweredPublication {
                 synthetic_operations,
             },
             entrypoint_abi,
+            service_calls,
         })
     }
 
@@ -222,6 +230,10 @@ impl LoweredPublication {
 
     pub fn entrypoint_abi(&self) -> &EntrypointAbiIndex {
         &self.entrypoint_abi
+    }
+
+    pub fn service_calls(&self) -> &crate::LoweredServiceCalls {
+        &self.service_calls
     }
 }
 

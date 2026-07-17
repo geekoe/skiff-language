@@ -26,6 +26,7 @@ use super::{
         native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, LocalTypeFieldIndex,
         LoweredExecutableSignature,
     },
+    service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_span, source_span_ref, symbol, type_param_scope},
     suspend_analysis::SuspendIndex,
     type_lowering::{
@@ -80,6 +81,7 @@ pub(super) fn lower_const_declarations(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -133,6 +135,7 @@ pub(super) fn lower_const_declarations(
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
         )?;
         unit.constants.push(ConstIr {
             name: constant.name.clone(),
@@ -185,6 +188,7 @@ fn lower_const_initializer_body(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableBody> {
     let mut lowerer = FunctionLowerer::new(
         type_indices,
@@ -210,6 +214,7 @@ fn lower_const_initializer_body(
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     );
     let value = lowerer.lower_expr(&constant.value)?;
     let mut entry = BlockIr {
@@ -385,6 +390,7 @@ pub(super) fn lower_executables(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -425,6 +431,7 @@ pub(super) fn lower_executables(
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
             unit,
             next_span_id,
         )?;
@@ -490,6 +497,7 @@ pub(super) fn lower_executables(
                 callable_return_types,
                 local_type_fields,
                 executable_signatures,
+                service_calls,
                 unit,
                 next_span_id,
             )?;
@@ -570,6 +578,7 @@ fn push_executable(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -602,6 +611,7 @@ fn push_executable(
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     )?;
     let source_span = source_span_ref(function.span);
 
@@ -655,6 +665,7 @@ fn lower_function_with_params(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableIr> {
     validate_bare_return_statements(function, &executable_symbol)?;
     let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
@@ -683,6 +694,7 @@ fn lower_function_with_params(
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     );
     let self_type = function
         .implicit_self

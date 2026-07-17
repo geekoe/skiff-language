@@ -78,3 +78,85 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
 
     assert_ne!(identity_hash, encrypted_hash);
 }
+
+#[test]
+fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() {
+    let base = service_call_file_ir_fixture();
+    let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
+    assert_eq!(
+        baseline,
+        "skiff-file-ir-v4:sha256:4b361e3f2a72ce1afe32eab0524070d616957b41bac4c437a0a3423667d85d5f"
+    );
+
+    let mut changed_ref = base.clone();
+    changed_ref.external_refs.service_call_refs[0].contract_operation_id =
+        ContractOperationId::new("operation:echo-v2");
+    assert_ne!(
+        file_ir_identity(&changed_ref).unwrap(),
+        file_ir_identity(&base).unwrap()
+    );
+
+    let mut changed_indices = base.clone();
+    let expressions = &mut changed_indices.constants[0].body.expressions;
+    for (expression, index) in expressions.iter_mut().zip([1, 0]) {
+        let ExprIr::Call { call } = expression else {
+            panic!("fixture call expression")
+        };
+        call.target = CallTargetIr::ServiceCall {
+            service_call_ref_index: ServiceCallRefIndex::new(index),
+        };
+    }
+    assert_ne!(file_ir_identity(&changed_indices).unwrap(), baseline);
+}
+
+#[test]
+fn file_ir_identity_reuses_canonical_service_call_validation() {
+    let mut orphan = service_call_file_ir_fixture();
+    orphan.constants[0].body.expressions.pop();
+
+    assert!(matches!(
+        file_ir_identity(&orphan),
+        Err(ArtifactIdentityError::InvalidFileIrServiceCalls(
+            skiff_artifact_model::FileIrServiceCallValidationError::OrphanRef { .. }
+        ))
+    ));
+}
+
+fn service_call_file_ir_fixture() -> FileIrUnit {
+    let mut unit = FileIrUnit::empty("consumer.main", "source-ast-hash");
+    unit.external_refs.service_call_refs = vec![
+        ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: ContractOperationId::new("operation:echo"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+        },
+        ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: ContractOperationId::new("operation:health"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+        },
+    ];
+    unit.constants.push(skiff_artifact_model::ConstIr {
+        name: "calls".to_string(),
+        ty: TypeRefIr::native("void"),
+        body: skiff_artifact_model::ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: [0, 1]
+                .into_iter()
+                .map(|index| ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::ServiceCall {
+                            service_call_ref_index: ServiceCallRefIndex::new(index),
+                        },
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                })
+                .collect(),
+        },
+        source_span: None,
+    });
+    unit
+}

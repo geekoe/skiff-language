@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    compile_requirements::ServiceCallRef,
     executable::{ExecutableBody, ExecutableIr},
     refs::SourceSpanRef,
     schema::{FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION},
@@ -12,6 +13,14 @@ use crate::{
     },
     targets::NativeTarget,
     types::{InterfaceDeclIr, TypeDeclIr, TypeRefIr},
+};
+
+mod service_calls;
+
+pub use service_calls::{
+    file_ir_service_call_sites, validate_file_ir_service_calls,
+    validated_file_ir_service_call_refs, FileIrServiceCallOwner, FileIrServiceCallSite,
+    FileIrServiceCallValidationError,
 };
 
 pub const FILE_IR_SOURCE_MAP_FORMAT: &str = "skiff-file-ir-source-map-v1";
@@ -269,8 +278,13 @@ pub struct ConstLinkTargetIr {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExternalRefTable {
+    /// Canonical service-call facts. ServiceCall instructions reference this
+    /// table by ServiceCallRefIndex and never inline a second copy.
+    pub service_call_refs: Vec<ServiceCallRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_symbols: Vec<ServiceSymbolRef>,
+    /// Legacy runtime adapter refs. Canonical package lowering uses
+    /// service_call_refs plus CallTargetIr::ServiceCall instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_dependency_symbols: Vec<ServiceDependencySymbolRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -279,6 +293,35 @@ pub struct ExternalRefTable {
     pub package_operation_symbols: Vec<PackageOperationSymbolRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_targets: Vec<NativeTarget>,
+}
+
+/// Owner-local index into `FileIrUnit.externalRefs.serviceCallRefs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ServiceCallRefIndex(u32);
+
+impl ServiceCallRefIndex {
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<usize> for ServiceCallRefIndex {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(index: usize) -> Result<Self, Self::Error> {
+        Ok(Self(u32::try_from(index)?))
+    }
+}
+
+impl ExternalRefTable {
+    pub fn service_call_ref(&self, index: ServiceCallRefIndex) -> Option<&ServiceCallRef> {
+        self.service_call_refs.get(index.index() as usize)
+    }
 }
 
 impl FileIrUnit {

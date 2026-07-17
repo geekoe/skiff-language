@@ -35,6 +35,7 @@ use super::{
         is_db_readonly_result_operation, DbMetadataIr, LoweredPublicationDbMetadataIndex,
     },
     dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
+    service_call_lowering::LoweredServiceCalls,
     type_lowering::{
         is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
         lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
@@ -106,6 +107,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &'a LoweredServiceCalls,
     pub(super) next_expression_index: u32,
     pub(super) bindings: BTreeMap<String, Binding>,
     pub(super) scope_names: Vec<BTreeSet<String>>,
@@ -150,6 +152,7 @@ impl<'a> FunctionLowerer<'a> {
         callable_return_types: &'a BTreeMap<String, CallableReturnType>,
         local_type_fields: &'a LocalTypeFieldIndex,
         executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+        service_calls: &'a LoweredServiceCalls,
     ) -> Self {
         Self {
             type_indices,
@@ -175,6 +178,7 @@ impl<'a> FunctionLowerer<'a> {
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
             next_expression_index: 0,
             bindings: BTreeMap::new(),
             scope_names: vec![BTreeSet::new()],
@@ -1136,7 +1140,7 @@ impl<'a> FunctionLowerer<'a> {
                 {
                     return Ok(payload);
                 }
-                self.lower_call(callee, args)?
+                self.lower_call(expression_key.as_ref(), callee, args)?
             }
             Expr::Generic { .. } => {
                 return Err(unsupported(
@@ -1239,7 +1243,12 @@ impl<'a> FunctionLowerer<'a> {
         Ok(ExprIr::MapLiteral { entries })
     }
 
-    fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<ExprIr> {
+    fn lower_call(
+        &mut self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<ExprIr> {
         let (callee, type_arg_refs) = match callee {
             Expr::Generic { callee, type_args } => {
                 self.next_expression_key();
@@ -1248,7 +1257,14 @@ impl<'a> FunctionLowerer<'a> {
             _ => (callee, &[][..]),
         };
         let mut lowered_args = Vec::new();
-        let target = if let Expr::Field { object, field } = callee {
+        let target = if let Some(service_call_ref_index) = expression_key
+            .and_then(|expression| self.service_calls.service_call_ref_index(expression))
+        {
+            self.consume_static_callee_expression_keys(callee)?;
+            CallTargetIr::ServiceCall {
+                service_call_ref_index,
+            }
+        } else if let Expr::Field { object, field } = callee {
             if let Some(target) = self.remote_public_instance_direct_call_target(object, field)? {
                 self.consume_static_callee_expression_keys(callee)?;
                 target

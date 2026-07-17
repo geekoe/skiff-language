@@ -48,6 +48,16 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+canonical_file_ir_identity_bytes\s*\(/,
   },
   {
+    name: 'ServiceCallRefIndex',
+    relPath: 'artifact-model/src/file_ir.rs',
+    regexp: /\bpub\s+struct\s+ServiceCallRefIndex\s*\(\s*u32\s*\)\s*;/,
+  },
+  {
+    name: 'validate_file_ir_service_calls',
+    relPath: 'artifact-model/src/file_ir/service_calls.rs',
+    regexp: /\bpub\s+fn\s+validate_file_ir_service_calls\s*\(/,
+  },
+  {
     name: 'ServiceUnitStorageIdentityPayload',
     relPath: 'artifact-identity/src/legacy_service.rs',
     regexp: /\bstruct\s+ServiceUnitStorageIdentityPayload\b/,
@@ -342,6 +352,8 @@ const ownerRequirements = [
 const exclusiveDefinitionNames = new Set([
   'framed_identity',
   'FileIrIdentityPayload',
+  'ServiceCallRefIndex',
+  'validate_file_ir_service_calls',
   'ServiceUnitStorageIdentityPayload',
   'PackageLocalAbiIdentityProjection',
   'PackageBuildIdentityProjection',
@@ -569,6 +581,11 @@ const canonicalBoundaryContractPaths = Object.freeze({
   operation: 'artifact-model/src/boundary/operation.rs',
   serviceContract: 'artifact-model/src/service_contract.rs',
 });
+const canonicalFileIrServiceCallPaths = Object.freeze({
+  fileIr: 'artifact-model/src/file_ir.rs',
+  executable: 'artifact-model/src/executable.rs',
+  validation: 'artifact-model/src/file_ir/service_calls.rs',
+});
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -655,6 +672,7 @@ async function runCheck() {
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
   failures.push(...collectCanonicalBoundaryContractFailures(files));
+  failures.push(...collectCanonicalFileIrServiceCallFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
     ...files,
     ...scriptFiles,
@@ -821,6 +839,34 @@ function collectCanonicalBoundaryContractFailures(files) {
   }
   if (!/\bpub\s+operations\s*:\s*BTreeMap\s*<\s*ContractOperationId\s*,\s*BoundaryOperationDescriptor\s*>/.test(serviceContractText)) {
     failures.push('ServiceContract.operations must require BoundaryOperationDescriptor values');
+  }
+  return failures;
+}
+
+function collectCanonicalFileIrServiceCallFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  const fileIr = byPath.get(canonicalFileIrServiceCallPaths.fileIr);
+  const executable = byPath.get(canonicalFileIrServiceCallPaths.executable);
+  const validation = byPath.get(canonicalFileIrServiceCallPaths.validation);
+  if (fileIr === undefined || executable === undefined || validation === undefined) {
+    return ['canonical File IR service-call owner files are incomplete'];
+  }
+
+  const fileIrText = stripRustComments(stripInlineTestModules(fileIr.text));
+  const executableText = stripRustComments(stripInlineTestModules(executable.text));
+  const validationText = stripRustComments(stripInlineTestModules(validation.text));
+  if (!/\bpub\s+service_call_refs\s*:\s*Vec\s*<\s*ServiceCallRef\s*>/.test(fileIrText)) {
+    failures.push('ExternalRefTable must own typed service_call_refs');
+  }
+  if (/serde\s*\([^)]*default[^)]*\)\s*]\s*pub\s+service_call_refs\b/s.test(fileIrText)) {
+    failures.push('ExternalRefTable.service_call_refs must be a required wire field');
+  }
+  if (!/\bServiceCall\s*\{\s*service_call_ref_index\s*:\s*ServiceCallRefIndex\s*,?\s*\}/s.test(executableText)) {
+    failures.push('CallTargetIr::ServiceCall must contain only a typed table index');
+  }
+  if (!/\bpub\s+fn\s+validate_file_ir_service_calls\s*\(/.test(validationText)) {
+    failures.push('canonical File IR service-call validator is missing');
   }
   return failures;
 }
@@ -1050,6 +1096,16 @@ function runSelfTest() {
         {
           relPath: 'compiler/lowering/src/file_ir/identity.rs',
           text: 'struct FileIrIdentityPayload;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects duplicate File IR service-call validator owner',
+      files: [
+        {
+          relPath: 'compiler/lowering/src/service_call_validation.rs',
+          text: 'fn validate_file_ir_service_calls() {}\n',
         },
       ],
       expectedViolations: 1,
@@ -1315,6 +1371,71 @@ function runSelfTest() {
     if (boundaryFailures.length !== testCase.expectedFailures) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedFailures} canonical boundary failure(s), got ${boundaryFailures.length}`,
+      );
+    }
+  }
+
+  const canonicalFileIrCases = [
+    {
+      name: 'accepts required table-owned indexed service calls',
+      files: [
+        {
+          relPath: 'artifact-model/src/file_ir.rs',
+          text: 'pub struct ExternalRefTable { pub service_call_refs: Vec<ServiceCallRef> }\npub struct ServiceCallRefIndex(u32);\n',
+        },
+        {
+          relPath: 'artifact-model/src/executable.rs',
+          text: 'enum CallTargetIr { ServiceCall { service_call_ref_index: ServiceCallRefIndex } }\n',
+        },
+        {
+          relPath: 'artifact-model/src/file_ir/service_calls.rs',
+          text: 'pub fn validate_file_ir_service_calls() {}\n',
+        },
+      ],
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects optional service-call table ownership',
+      files: [
+        {
+          relPath: 'artifact-model/src/file_ir.rs',
+          text: '#[serde(default)] pub service_call_refs: Vec<ServiceCallRef>\npub struct ServiceCallRefIndex(u32);\n',
+        },
+        {
+          relPath: 'artifact-model/src/executable.rs',
+          text: 'enum CallTargetIr { ServiceCall { service_call_ref_index: ServiceCallRefIndex } }\n',
+        },
+        {
+          relPath: 'artifact-model/src/file_ir/service_calls.rs',
+          text: 'pub fn validate_file_ir_service_calls() {}\n',
+        },
+      ],
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects inline service-call refs in instructions',
+      files: [
+        {
+          relPath: 'artifact-model/src/file_ir.rs',
+          text: 'pub struct ExternalRefTable { pub service_call_refs: Vec<ServiceCallRef> }\npub struct ServiceCallRefIndex(u32);\n',
+        },
+        {
+          relPath: 'artifact-model/src/executable.rs',
+          text: 'enum CallTargetIr { ServiceCall { service_call_ref: ServiceCallRef } }\n',
+        },
+        {
+          relPath: 'artifact-model/src/file_ir/service_calls.rs',
+          text: 'pub fn validate_file_ir_service_calls() {}\n',
+        },
+      ],
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalFileIrCases) {
+    const fileIrFailures = collectCanonicalFileIrServiceCallFailures(testCase.files);
+    if (fileIrFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} canonical File IR failure(s), got ${fileIrFailures.length}`,
       );
     }
   }

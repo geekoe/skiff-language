@@ -32,7 +32,7 @@ pub struct ServiceRequirement {
     pub used_operations: BTreeSet<ContractOperationId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceCallRef {
     pub service_requirement_slot: u32,
