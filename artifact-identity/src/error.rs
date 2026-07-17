@@ -39,6 +39,30 @@ pub enum ArtifactIdentityError {
     SerializeOperationAbiIdentity(serde_json::Error),
     #[error("service unit is invalid: {0}")]
     InvalidServiceUnit(serde_json::Error),
+    #[error("service assembly is invalid: {message}")]
+    InvalidServiceAssembly { message: String },
+    #[error("service assembly declared identity {declared} but content identity is {computed}")]
+    ServiceAssemblyIdentityMismatch { declared: String, computed: String },
+    #[error(
+        "service assembly protocolIdentity {assembly} does not match service unit protocolIdentity {service_unit}"
+    )]
+    ServiceAssemblyProtocolIdentityMismatch {
+        assembly: String,
+        service_unit: String,
+    },
+    #[error(
+        "runtime program build identity {identity} must use skiff-service-build-v1:sha256:<64 lowercase hex>"
+    )]
+    InvalidRuntimeProgramBuildIdentity { identity: String },
+    #[error(
+        "service unit pointer for {path} declared {field} {expected} but service unit has {actual}"
+    )]
+    ServiceUnitPointerMismatch {
+        path: String,
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
     #[error("package unit {path} is invalid: {source}")]
     InvalidPackageUnit {
         path: String,
@@ -125,6 +149,12 @@ pub enum ArtifactIdentityError {
         field: &'static str,
         expected: String,
         actual: String,
+    },
+    #[error("artifact path {path} is not canonical for {label}; expected {expected}")]
+    NonCanonicalArtifactPath {
+        label: String,
+        path: String,
+        expected: String,
     },
     #[error("{message}")]
     InvalidPackageIndex { message: String },

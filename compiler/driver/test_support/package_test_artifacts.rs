@@ -10,6 +10,7 @@ use serde_json::Value;
 use skiff_compiler_core::artifact::{
     ConfigAndEffectMetadata, PackageDependencyConstraint, PackageUnit,
 };
+use skiff_compiler_emission::artifact::PublishedResourceArtifact;
 use skiff_compiler_emission::package_test_artifacts::{
     build_package_test_artifacts, PackageTestArtifactBuildError, PackageTestArtifactBuildInput,
     PackageTestDependencyPackageInput, PackageTestEntrypointInput as EmissionEntrypointInput,
@@ -30,6 +31,7 @@ pub struct TestPackageTestArtifactInput {
     pub production_config_and_effect_metadata: ConfigAndEffectMetadata,
     pub package_test_config_and_effect_metadata: ConfigAndEffectMetadata,
     pub production_files: Vec<PublishedFileIrArtifact>,
+    pub production_resource_blobs: Vec<PublishedResourceArtifact>,
     pub dependency_packages: Vec<TestPackageTestDependencyPackageInput>,
     pub test_files: Vec<TestPackageTestFileIrArtifact>,
     pub entrypoints: Vec<TestPackageTestEntrypointInput>,
@@ -41,6 +43,7 @@ pub struct TestPackageTestDependencyPackageInput {
     pub package_version: String,
     pub package_dependencies: Vec<PackageDependencyConstraint>,
     pub production_files: Vec<PublishedFileIrArtifact>,
+    pub resource_blobs: Vec<PublishedResourceArtifact>,
     pub package_unit: Option<PackageUnit>,
 }
 
@@ -183,7 +186,7 @@ pub fn write_package_test_artifact_root_with_runtime_path_registration(
                 package_id: dependency.package_id,
                 package_version: dependency.package_version,
                 production_files: dependency.production_files,
-                production_resource_blobs: Vec::new(),
+                production_resource_blobs: dependency.resource_blobs,
                 package_unit,
             })
         })
@@ -194,7 +197,7 @@ pub fn write_package_test_artifact_root_with_runtime_path_registration(
         production_package_unit,
         package_test_config_and_effect_metadata: input.package_test_config_and_effect_metadata,
         production_files: input.production_files,
-        production_resource_blobs: Vec::new(),
+        production_resource_blobs: input.production_resource_blobs,
         dependency_packages,
         test_files: input
             .test_files
@@ -767,6 +770,7 @@ mod tests {
                 "publicAnswer",
             )],
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: PathBuf::from("/tmp/skiff-package-test-production/package.yml"),
             synthetic: false,
         };
@@ -816,7 +820,10 @@ mod tests {
                 package_id: "example.com/math".to_string(),
                 package_version: "1.0.0".to_string(),
                 package_dependencies: Vec::new(),
-                production_package_unit: production_compiled.package_unit.clone(),
+                production_package_unit: production_compiled
+                    .package_unit_artifact
+                    .as_ref()
+                    .map(|artifact| artifact.unit.clone()),
                 production_config_and_effect_metadata: production_compiled
                     .config_and_effect_metadata
                     .clone(),
@@ -824,6 +831,11 @@ mod tests {
                     .config_and_effect_metadata
                     .clone(),
                 production_files: production_compiled.file_ir_artifacts.clone(),
+                production_resource_blobs: production_compiled
+                    .package_unit_artifact
+                    .as_ref()
+                    .map(|artifact| artifact.resource_blobs.clone())
+                    .unwrap_or_default(),
                 dependency_packages: Vec::new(),
                 test_files: vec![
                     TestPackageTestFileIrArtifact {
@@ -938,6 +950,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: Vec::new(),
             test_files: vec![
                 test_file_artifact(&first_test),
@@ -1290,6 +1303,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![
                 dependency_package_input("example.com/zeta", "1.0.0", "7"),
                 dependency_package_input("example.com/alpha", "1.0.0", "1"),
@@ -1321,6 +1335,7 @@ mod tests {
                 production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
                 package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
                 production_files,
+                production_resource_blobs: Vec::new(),
                 dependency_packages: vec![
                     dependency_package_input("example.com/alpha", "1.0.0", "1"),
                     dependency_package_input("example.com/alpha", "1.0.0", "2"),
@@ -1376,6 +1391,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1402,6 +1418,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1430,6 +1447,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files: production_files.clone(),
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency.clone()],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1451,6 +1469,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: vec![dependency],
             test_files: vec![test_file_artifact(&test_file)],
             entrypoints: vec![entrypoint_input()],
@@ -1477,6 +1496,7 @@ mod tests {
                 "internalAnswer",
             )],
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: PathBuf::from("/tmp/skiff-package-publication-api-seed"),
             synthetic: false,
         };
@@ -1501,8 +1521,9 @@ mod tests {
             )
             .expect("production package publication helper should compile");
         let package_unit = compiled
-            .package_unit
-            .expect("production helper should publish package unit metadata");
+            .package_unit_artifact
+            .expect("production helper should publish package unit metadata")
+            .unit;
 
         assert!(
             package_unit
@@ -1634,6 +1655,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies,
+            resources: Vec::new(),
             path,
             synthetic: false,
         }
@@ -1747,6 +1769,7 @@ mod tests {
             production_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             package_test_config_and_effect_metadata: ConfigAndEffectMetadata::default(),
             production_files,
+            production_resource_blobs: Vec::new(),
             dependency_packages: Vec::new(),
             test_files,
             entrypoints: vec![entrypoint],
@@ -1792,6 +1815,7 @@ mod tests {
             package_version: version.to_string(),
             package_dependencies: Vec::new(),
             production_files,
+            resource_blobs: Vec::new(),
             package_unit: Some(package_unit),
         }
     }

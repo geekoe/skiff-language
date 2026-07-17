@@ -52,6 +52,9 @@
    owner；checker删除“runtime留给T07”的临时放行，并把该identity纳入全局exclusive owner检查。
 9. compiler driver/test-runner的真实package-test调用传入生产与依赖package的resource blobs，删除
    `Vec::new()`占位；非空resource refs端到端可运行，missing/extra/hash/path不一致仍fail-closed。
+10. compiler service dependency artifact loader也是本任务的closure consumer。dev/release locator只选择
+    canonical pointer；后续必须调用`artifact-identity`的完整closure validation并使用其dynamic build id，
+    不得保留legacy index、snake_case/path-only wire或独立root扫描/build-id callback。
 
 ## 实现顺序与边界
 

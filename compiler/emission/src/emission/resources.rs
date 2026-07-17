@@ -9,7 +9,7 @@ use crate::{
     projection::package_unit_artifacts::ProjectedPublicationResource,
 };
 
-pub(crate) fn publish_resource_artifacts(
+pub fn publish_resource_artifacts(
     resources: &[ProjectedPublicationResource],
 ) -> Result<Vec<PublishedResourceArtifact>> {
     let mut by_artifact_path = BTreeMap::<String, PublishedResourceArtifact>::new();

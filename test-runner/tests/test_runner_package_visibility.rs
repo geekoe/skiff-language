@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -14,9 +15,11 @@ use common::{
 use skiff_artifact_model::ConfigAndEffectMetadata;
 use skiff_compiler::{
     test_support::{
+        compile_package_ast_file_ir_artifacts_with_dependency_publications_unit_and_metadata_for_test,
         compile_source_file_ir_artifact_for_test, list_package_test_assemblies,
         project_fixtures::PackageProjectBuilder, write_package_test_artifact_root,
-        TestPackageTestArtifactInput, TestPackageTestEntrypointInput,
+        TestCompilerSourceFile, TestPackageApiEntry, TestPackageCompiledArtifacts,
+        TestPackageManifest, TestPackageTestArtifactInput, TestPackageTestEntrypointInput,
         TestPackageTestFileIrArtifact,
     },
     PublicationId,
@@ -69,21 +72,64 @@ fn empty_metadata() -> ConfigAndEffectMetadata {
     ConfigAndEffectMetadata::default()
 }
 
+fn compile_math_production_package(
+    package_root: &Path,
+    source: &str,
+) -> TestPackageCompiledArtifacts {
+    let manifest = TestPackageManifest {
+        id: "example.com/math".to_string(),
+        version: "1.0.0".to_string(),
+        api: vec![TestPackageApiEntry::source(
+            "publicAnswer",
+            "api",
+            "publicAnswer",
+        )],
+        dependencies: Vec::new(),
+        resources: Vec::new(),
+        path: package_root.join("package.yml"),
+        synthetic: false,
+    };
+    let sources = vec![(
+        TestCompilerSourceFile {
+            relative_path: PathBuf::from("api.skiff"),
+            module_path: "api".to_string(),
+            is_api: false,
+            is_test_file: false,
+            text: source.to_string(),
+        },
+        skiff_syntax::parser::parse_source(source).expect("production source should parse"),
+    )];
+    let available = BTreeMap::from([(
+        (manifest.id.clone(), manifest.version.clone()),
+        manifest.clone(),
+    )]);
+    compile_package_ast_file_ir_artifacts_with_dependency_publications_unit_and_metadata_for_test(
+        &manifest,
+        package_root,
+        &sources,
+        &BTreeMap::new(),
+        &[],
+        &available,
+    )
+    .expect("production package should compile through the canonical PackageUnit path")
+}
+
 #[test]
 fn package_test_artifact_writer_writes_assembly_dev_pointer_and_listing() {
     let temp = TestDir::new("skiff-compiler", "package-test-artifact-writer");
     let artifact_root = temp.path().join("artifacts");
-    let production = compile_source_file_ir_artifact_for_test(
+    let production = compile_math_production_package(
+        temp.path(),
         r#"
             function publicAnswer() -> number {
                 return 42
             }
         "#,
-        "api.skiff",
-        "api",
-        "package-production",
-    )
-    .expect("production file should compile");
+    );
+    let production_unit_artifact = production
+        .package_unit_artifact
+        .as_ref()
+        .expect("production package should project a PackageUnit");
     let test_file = compile_source_file_ir_artifact_for_test(
         r#"
             function packageTestEntry() -> number {
@@ -101,10 +147,11 @@ fn package_test_artifact_writer_writes_assembly_dev_pointer_and_listing() {
         package_id: "example.com/math".to_string(),
         package_version: "1.0.0".to_string(),
         package_dependencies: Vec::new(),
-        production_package_unit: None,
-        production_config_and_effect_metadata: empty_metadata(),
+        production_package_unit: Some(production_unit_artifact.unit.clone()),
+        production_config_and_effect_metadata: production.config_and_effect_metadata.clone(),
         package_test_config_and_effect_metadata: empty_metadata(),
-        production_files: vec![production],
+        production_files: production_unit_artifact.production_files.clone(),
+        production_resource_blobs: production_unit_artifact.resource_blobs.clone(),
         dependency_packages: Vec::new(),
         test_files: vec![TestPackageTestFileIrArtifact {
             source_path: "api.test.skiff".to_string(),
@@ -186,17 +233,18 @@ fn package_test_artifact_writer_keeps_production_identity_when_test_only_file_ch
         "package-test-artifact-production-identity",
     );
     let artifact_root = temp.path().join("artifacts");
-    let production = compile_source_file_ir_artifact_for_test(
+    let production = compile_math_production_package(
+        temp.path(),
         r#"
             function publicAnswer() -> number {
                 return 42
             }
         "#,
-        "api.skiff",
-        "api",
-        "package-production",
-    )
-    .expect("production file should compile");
+    );
+    let production_unit_artifact = production
+        .package_unit_artifact
+        .as_ref()
+        .expect("production package should project a PackageUnit");
 
     let write_with_test_body = |source: &str| {
         let test_file = compile_source_file_ir_artifact_for_test(
@@ -211,10 +259,11 @@ fn package_test_artifact_writer_keeps_production_identity_when_test_only_file_ch
             package_id: "example.com/math".to_string(),
             package_version: "1.0.0".to_string(),
             package_dependencies: Vec::new(),
-            production_package_unit: None,
-            production_config_and_effect_metadata: empty_metadata(),
+            production_package_unit: Some(production_unit_artifact.unit.clone()),
+            production_config_and_effect_metadata: production.config_and_effect_metadata.clone(),
             package_test_config_and_effect_metadata: empty_metadata(),
-            production_files: vec![production.clone()],
+            production_files: production_unit_artifact.production_files.clone(),
+            production_resource_blobs: production_unit_artifact.resource_blobs.clone(),
             dependency_packages: Vec::new(),
             test_files: vec![TestPackageTestFileIrArtifact {
                 source_path: "api.test.skiff".to_string(),

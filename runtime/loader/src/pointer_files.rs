@@ -5,13 +5,14 @@ use std::{
 };
 
 use serde_json::Value;
+use skiff_artifact_identity::service_build_identity_hash;
 
 use super::{
-    identity::{identity_hash, identity_hash_with_label, validate_identity_prefix},
+    identity::{identity_hash, validate_identity_prefix},
     paths::{service_id_artifact_json_path, service_id_artifact_path},
     pointer_parse::{
         parse_dev_reload_pointer, parse_package_unit_pointers, parse_service_assembly_pointer,
-        reject_unsupported_pointer_aliases,
+        parse_service_unit_pointer, reject_unsupported_pointer_aliases,
     },
     types::{ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile},
     utils::{object_string, read_json_file},
@@ -129,7 +130,8 @@ fn load_service_version_build_pointers_from_paths(
             .join(service_id_artifact_path(&version_pointer.service_id)?)
             .join(format!(
                 "{}.json",
-                identity_hash_with_label(&version_pointer.build_id, "buildId")?
+                service_build_identity_hash(&version_pointer.build_id)
+                    .map_err(|error| anyhow::anyhow!("buildId is invalid: {error}"))?
             ));
         let build_value = read_json_file(&build_path, "service build record")?;
         let entry = parse_service_build_record(&build_value, &build_path, &version_pointer)?;
@@ -332,7 +334,7 @@ fn parse_service_build_record(
         identity_hash(contract_identity)?;
     }
     let service_assembly = parse_service_assembly_pointer(object, build_path)?;
-    let service_unit_path = parse_service_unit_path(object)?;
+    let service_unit = parse_service_unit_pointer(object, build_path)?;
     let package_units = parse_package_unit_pointers(object, build_path)?;
 
     Ok(ArtifactIndexPointer {
@@ -341,7 +343,7 @@ fn parse_service_build_record(
         build_id,
         contract_identity,
         implementation_identity: object_string(object, "implementationIdentity"),
-        service_unit_path,
+        service_unit,
         service_assembly,
         package_units,
     })
@@ -368,7 +370,8 @@ fn validate_service_build_file_name(
     entry: &ArtifactIndexPointer,
 ) -> anyhow::Result<()> {
     let build_id = entry.build_id.as_str();
-    let build_hash = identity_hash_with_label(build_id, "buildId")?;
+    let build_hash = service_build_identity_hash(build_id)
+        .map_err(|error| anyhow::anyhow!("buildId is invalid: {error}"))?;
     let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
         anyhow::bail!(
             "service build record {} has invalid file name",
@@ -402,23 +405,4 @@ fn validate_service_build_file_name(
         );
     }
     Ok(())
-}
-
-fn parse_service_unit_path(
-    object: &serde_json::Map<String, Value>,
-) -> anyhow::Result<Option<std::path::PathBuf>> {
-    if object.contains_key("serviceUnitPath") {
-        anyhow::bail!("serviceUnitPath is not supported; use serviceUnit.unitPath");
-    }
-    let Some(value) = object.get("serviceUnit") else {
-        return Ok(None);
-    };
-    let service_unit = value
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("serviceUnit must be an object with unitPath"))?;
-    let path = service_unit
-        .get("unitPath")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("serviceUnit requires unitPath"))?;
-    Ok(Some(std::path::PathBuf::from(path)))
 }

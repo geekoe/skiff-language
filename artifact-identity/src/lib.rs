@@ -1,3 +1,4 @@
+mod artifact_path;
 mod constants;
 mod error;
 mod file_ir;
@@ -11,7 +12,9 @@ mod publication;
 mod publication_validation;
 mod runtime_program;
 mod semantic;
+mod service_assembly;
 
+pub use artifact_path::ArtifactRelativePath;
 pub use constants::{
     BUNDLE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
     PACKAGE_ABI_IDENTITY_PREFIX, PACKAGE_ASSEMBLY_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_PREFIX,
@@ -46,8 +49,9 @@ pub use package::{
 pub use package_resolver::{
     ordered_package_build_identities_from_artifact_refs,
     ordered_package_build_identities_from_artifact_root, ordered_package_units_from_artifact_refs,
-    ordered_package_units_from_artifact_root, runtime_program_dynamic_build_id_from_artifact_refs,
-    runtime_program_dynamic_build_id_from_artifact_root, PackageUnitArtifactRef,
+    ordered_package_units_from_artifact_root, publication_storage_segment,
+    runtime_program_dynamic_build_id_from_artifact_refs,
+    runtime_program_dynamic_build_id_from_artifact_root,
 };
 pub use package_test::{
     canonical_package_test_build_identity_bytes, canonical_package_test_build_identity_value,
@@ -74,6 +78,15 @@ pub use semantic::{
     abi_type_id_key, canonical_interface_instantiation_key, canonical_interface_method_abi_id,
     canonical_interface_method_abi_id_from_parts, interface_instantiation_ref,
     interface_instantiation_ref_for_type_ref, type_ref_abi_key,
+};
+pub use service_assembly::{
+    package_unit_artifact_ref, package_unit_content_hash, service_assembly_hash,
+    service_assembly_identity, service_assembly_identity_projection,
+    service_build_identity_from_assembly_identity, service_build_identity_hash,
+    service_unit_artifact_ref, validate_package_unit_artifact_path,
+    validate_service_artifact_closure, validate_service_assembly_artifact_path,
+    validate_service_assembly_identity, PackageUnitArtifactRef, ServiceAssemblyArtifactRef,
+    ServiceUnitArtifactRef, ValidatedArtifactContent, ValidatedServiceArtifactClosure,
 };
 pub use skiff_canonical_json::{canonical_json_number, canonical_json_value};
 

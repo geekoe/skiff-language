@@ -1,338 +1,293 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
 import {
-  computeRuntimeProgramBuildId,
-  readRuntimeProgramServiceUnit
-} from '../src/artifacts/dynamicBuildId.js';
-import { computeRuntimeProgramBuildIdWithIdentityCli } from '../src/artifacts/identityCli.js';
-import { writeMockIdentityCli } from './helpers/mockIdentityCli.js';
+  validateArtifactClosuresWithIdentityCli,
+  type IdentityCliArtifactInput,
+} from "../src/artifacts/identityCli.js";
+import { resolveArtifactPath } from "../src/artifacts/artifactPath.js";
+import { ensureArtifactIdentityCli } from "./helpers/artifactIdentityCli.js";
+import { writeCompilerGeneratedWebSocketFixtureArtifactRoot } from "./helpers/compilerArtifacts.js";
+import { writeMockIdentityCli } from "./helpers/mockIdentityCli.js";
 
-type DynamicBuildIdFixture = {
-  appliesTo: string[];
-  serviceUnitPath: string;
-  expectedDynamicBuildId: string;
-  artifactRoot: Record<string, unknown>;
-};
+const DYNAMIC_BUILD_ID =
+  "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-const fixturePath = new URL(
-  '../../cross-system-fixtures/dynamic-build-id-parity/case.json',
-  import.meta.url
-);
-const EXPECTED_DYNAMIC_BUILD_ID =
-  'skiff-service-build-v1:sha256:53551698b2ea17df098e1a334bd75d0993c977c1c5502056d34dfb074f9fb92d';
-
-async function dynamicBuildIdFixture(): Promise<DynamicBuildIdFixture> {
-  return JSON.parse(await readFile(fixturePath, 'utf8')) as DynamicBuildIdFixture;
-}
-
-describe('dynamic build id fixture', () => {
-  it('preserves the fixed cross-system fixture shape', async () => {
-    const fixture = await dynamicBuildIdFixture();
-    expect(fixture.appliesTo).toContain('router-cli-boundary');
-    expect(fixture.expectedDynamicBuildId).toBe(EXPECTED_DYNAMIC_BUILD_ID);
-    expect(fixtureContainsTypeRef(fixture.artifactRoot, 'packageSymbol', 'std.http.HttpClientRequest')).toBe(
-      true
-    );
-    expect(
-      fixtureContainsTypeRef(fixture.artifactRoot, 'packageSymbol', 'std.http.HttpResponseStreamEvent')
-    ).toBe(true);
-    expect(fixtureContainsTypeRef(fixture.artifactRoot, 'packageSymbol', 'std.file.ImmutableFile')).toBe(
-      true
-    );
-    expect(fixtureContainsTypeRef(fixture.artifactRoot, 'builtin', 'bytes')).toBe(true);
-    expect(fixtureServiceUnitArray(fixture, 'spawnTargets').length).toBeGreaterThan(0);
-    expect(fixtureServiceUnitArray(fixture, 'actors').length).toBeGreaterThan(0);
-    expect(fixtureServiceUnitTimeout(fixture)).toEqual({
-      defaultMs: 120000,
-      methods: {
-        'managedLlmService.call': 90000,
-        run: 45000
-      }
-    });
-    expect(fixtureOperationTarget(fixture, 0).executableIndex).toBe(0);
-
-    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-'));
+describe("artifact identity CLI transaction", () => {
+  it("validates multiple artifact roots in one batch and returns loaded content", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "skiff-router-identity-batch-"));
     try {
-      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
-      const serviceUnit = await readRuntimeProgramServiceUnit({
-        root,
-        pointer: {
-          indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
-          serviceUnit: fixture.serviceUnitPath
-        },
-        serviceAssembly: {}
+      const first = await writeCandidate(join(temp, "first"), "first");
+      const second = await writeCandidate(join(temp, "second"), "second");
+      const capturePath = join(temp, "stdin.json");
+      const identityCliPath = await writeMockIdentityCli({
+        dir: join(temp, "bin"),
+        capturePath,
+        dynamicBuildId: DYNAMIC_BUILD_ID,
       });
-      const operations = serviceUnit.value.operations;
-      if (!Array.isArray(operations)) {
-        throw new Error('service unit operations should be an array');
-      }
-      expect(operationExecutableTarget(operations[0] as Record<string, unknown>)).toEqual(
-        fixtureOperationTarget(fixture, 0)
+
+      const results = await validateArtifactClosuresWithIdentityCli(
+        [first, second],
+        { identityCliPath },
+      );
+
+      expect(results.size).toBe(2);
+      expect(results.get("first")?.serviceAssembly.value.service).toMatchObject({
+        id: "example.com/first",
+      });
+      expect(results.get("second")?.serviceUnit.value.version).toBe("1.0.0");
+      const captured = JSON.parse(await readFile(capturePath, "utf8")) as {
+        services: unknown[];
+      };
+      expect(captured.services).toHaveLength(2);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("passes all seven package pointer fields and returns package content", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "skiff-router-identity-package-"));
+    try {
+      const candidate = await writeCandidate(temp, "package", true);
+      const identityCliPath = await writeMockIdentityCli({ dir: join(temp, "bin") });
+      const result = await validateArtifactClosuresWithIdentityCli(
+        [candidate],
+        { identityCliPath },
+      );
+      expect(result.get("package")?.packageUnits).toHaveLength(1);
+      expect(result.get("package")?.packageUnits[0]?.value.packageId).toBe(
+        "example.com/pkg",
       );
     } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('dynamic build id identity CLI boundary', () => {
-  it('passes artifact root and service unit through the production build id path', async () => {
-    const fixture = await dynamicBuildIdFixture();
-    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-cli-'));
-    const capturePath = join(root, 'identity-cli-stdin.json');
-    try {
-      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
-      const identityCliPath = await writeMockIdentityCli({
-        dir: join(root, 'bin'),
-        dynamicBuildId: EXPECTED_DYNAMIC_BUILD_ID,
-        capturePath,
-      });
-      const serviceUnit = await readRuntimeProgramServiceUnit({
-        root,
-        pointer: {
-          indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
-          serviceUnit: fixture.serviceUnitPath
-        },
-        serviceAssembly: {}
-      });
-
-      await expect(
-        computeRuntimeProgramBuildId({
-          root,
-          pointer: {
-            indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
-            serviceUnit: fixture.serviceUnitPath
-          },
-          serviceAssembly: {},
-          serviceUnit,
-          identityCliPath
-        })
-      ).resolves.toBe(EXPECTED_DYNAMIC_BUILD_ID);
-
-      const cliInput = JSON.parse(await readFile(capturePath, 'utf8')) as Record<string, any>;
-      expect(cliInput.artifactRoot).toBe(root);
-      expect(cliInput.services).toHaveLength(1);
-      expect(cliInput.services[0].serviceUnit).toEqual(fixture.artifactRoot[fixture.serviceUnitPath]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(temp, { recursive: true, force: true });
     }
   });
 
-  it('passes pinned package units to the identity CLI when the pointer carries them', async () => {
-    const fixture = await dynamicBuildIdFixture();
-    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-package-units-'));
-    const capturePath = join(root, 'identity-cli-stdin.json');
-    const packageUnits = [
-      {
-        schemaVersion: 'skiff-package-unit-v1' as const,
-        packageId: 'skiff.run/llm',
-        version: '1.0.0',
-        buildIdentity:
-          'skiff-package-build-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111',
-        abiIdentity:
-          'skiff-package-abi-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222',
-        unitHash: '3333333333333333333333333333333333333333333333333333333333333333',
-        unitPath: 'units/packages/skiff~run~~llm/3333333333333333333333333333333333333333333333333333333333333333.json'
-      }
-    ];
+  it("fails closed on CLI failure, unavailable CLI, and incomplete stdout", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "skiff-router-identity-failure-"));
     try {
-      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
-      const identityCliPath = await writeMockIdentityCli({
-        dir: join(root, 'bin'),
-        dynamicBuildId: EXPECTED_DYNAMIC_BUILD_ID,
-        capturePath,
-      });
-      const serviceUnit = await readRuntimeProgramServiceUnit({
-        root,
-        pointer: {
-          indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
-          serviceUnit: fixture.serviceUnitPath,
-          packageUnits
-        },
-        serviceAssembly: {}
-      });
-
-      await expect(
-        computeRuntimeProgramBuildId({
-          root,
-          pointer: {
-            indexPath: 'cross-system-fixtures/dynamic-build-id-parity/case.json',
-            serviceUnit: fixture.serviceUnitPath,
-            packageUnits
-          },
-          serviceAssembly: {},
-          serviceUnit,
-          identityCliPath
-        })
-      ).resolves.toBe(EXPECTED_DYNAMIC_BUILD_ID);
-
-      const cliInput = JSON.parse(await readFile(capturePath, 'utf8')) as Record<string, any>;
-      const firstPackageUnit = packageUnits[0]!;
-      expect(cliInput.services[0].packageUnits).toEqual([
-        {
-          packageId: firstPackageUnit.packageId,
-          version: firstPackageUnit.version,
-          buildIdentity: firstPackageUnit.buildIdentity,
-          abiIdentity: firstPackageUnit.abiIdentity,
-          unitHash: firstPackageUnit.unitHash,
-          unitPath: firstPackageUnit.unitPath
-        }
-      ]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed when the identity CLI exits non-zero', async () => {
-    const fixture = await dynamicBuildIdFixture();
-    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-error-'));
-    try {
-      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
-      const identityCliPath = await writeMockIdentityCli({
-        dir: join(root, 'bin'),
+      const candidate = await writeCandidate(temp, "failure");
+      const failingCli = await writeMockIdentityCli({
+        dir: join(temp, "fail-bin"),
         exitCode: 2,
         stderrJson: {
-          error: {
-            code: 'schema_invalid',
-            message: 'service unit is invalid',
-          },
+          error: { code: "schema_invalid", message: "pointer hash mismatch" },
         },
       });
+      await expect(
+        validateArtifactClosuresWithIdentityCli([candidate], {
+          identityCliPath: failingCli,
+        }),
+      ).rejects.toThrow(/schema_invalid: pointer hash mismatch/);
 
       await expect(
-        computeRuntimeProgramBuildIdWithIdentityCli({
-          artifactRoot: root,
-          serviceUnit: fixture.artifactRoot[fixture.serviceUnitPath] as Record<string, unknown>,
-          identityCliPath,
-        })
-      ).rejects.toThrow(/schema_invalid: service unit is invalid/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+        validateArtifactClosuresWithIdentityCli([candidate], {
+          identityCliPath: join(temp, "missing-cli"),
+        }),
+      ).rejects.toThrow(/not executable/);
 
-  it('fails closed when the identity CLI returns bad stdout', async () => {
-    const fixture = await dynamicBuildIdFixture();
-    const root = await mkdtemp(join(tmpdir(), 'skiff-router-dynamic-build-id-bad-stdout-'));
-    try {
-      await writeFixtureArtifactRoot(root, fixture.artifactRoot);
-      const identityCliPath = await writeMockIdentityCli({
-        dir: join(root, 'bin'),
-        stdoutText: '{"results":[]}',
+      const incompleteCli = await writeMockIdentityCli({
+        dir: join(temp, "bad-bin"),
+        stdoutText: JSON.stringify({ results: [] }),
       });
-
       await expect(
-        computeRuntimeProgramBuildIdWithIdentityCli({
-          artifactRoot: root,
-          serviceUnit: fixture.artifactRoot[fixture.serviceUnitPath] as Record<string, unknown>,
-          identityCliPath,
-        })
-      ).rejects.toThrow(/stdout\.results must contain exactly one result/);
+        validateArtifactClosuresWithIdentityCli([candidate], {
+          identityCliPath: incompleteCli,
+        }),
+      ).rejects.toThrow(/exactly 1 results/);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(temp, { recursive: true, force: true });
     }
   });
+
+  it("uses the shared Rust/router artifact path and coordinate cases", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../../cross-system-fixtures/artifact-reference-validation/cases.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as ArtifactReferenceFixture;
+    const identityCliPath = await ensureArtifactIdentityCli();
+    const temp = await mkdtemp(join(tmpdir(), "skiff-router-artifact-paths-"));
+    try {
+      const baseRoot = join(temp, "base");
+      const closure = await writeCompilerGeneratedClosure(baseRoot);
+      for (const [index, testCase] of fixture.cases.entries()) {
+        expect(testCase.appliesTo).toEqual(
+          expect.arrayContaining(["runtime", "router"]),
+        );
+        const root = join(temp, String(index));
+        await cp(baseRoot, root, { recursive: true });
+        const path = renderFixturePath(testCase.path, closure);
+        const candidate: IdentityCliArtifactInput = {
+          ...closure.input,
+          key: `case-${index}`,
+          artifactRoot: root,
+          serviceAssembly: {
+            ...closure.input.serviceAssembly,
+            assemblyPath: path,
+          },
+        };
+        if (testCase.materialize === true) {
+          await writeJson(root, path, closure.assemblyValue);
+        }
+
+        if (testCase.validation === "artifactRelativePath") {
+          const resolution = resolveArtifactPath(root, path, testCase.name);
+          if (testCase.valid) {
+            await expect(resolution, testCase.name).resolves.toEqual(
+              expect.any(String),
+            );
+          } else {
+            await expect(resolution, testCase.name).rejects.toThrow();
+          }
+          continue;
+        }
+
+        const validation = validateArtifactClosuresWithIdentityCli(
+          [candidate],
+          { identityCliPath },
+        );
+        if (testCase.valid) {
+          await expect(validation, testCase.name).resolves.toBeInstanceOf(Map);
+        } else {
+          await expect(validation, testCase.name).rejects.toThrow();
+        }
+      }
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
-async function writeFixtureArtifactRoot(
+interface ArtifactReferenceFixture {
+  serviceId: string;
+  cases: ArtifactReferenceCase[];
+}
+
+interface ArtifactReferenceCase {
+  name: string;
+  appliesTo: string[];
+  validation: "artifactRelativePath" | "serviceAssemblyCoordinate";
+  path: string;
+  materialize?: boolean;
+  valid: boolean;
+}
+
+interface CanonicalClosureFixture {
+  input: IdentityCliArtifactInput;
+  assemblyHash: string;
+  serviceStorageSegment: string;
+  assemblyValue: Record<string, unknown>;
+}
+
+async function writeCompilerGeneratedClosure(
   root: string,
-  artifactRoot: Record<string, unknown>
-): Promise<void> {
-  for (const [relativePath, value] of Object.entries(artifactRoot)) {
-    const path = join(root, relativePath);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify(value, null, 2));
-  }
-}
-
-function fixtureContainsTypeRef(
-  value: unknown,
-  kind: 'builtin' | 'packageSymbol',
-  symbol: string
-): boolean {
-  if (Array.isArray(value)) {
-    return value.some((item) => fixtureContainsTypeRef(item, kind, symbol));
-  }
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (kind === 'builtin' && record.kind === 'builtin' && record.name === symbol) {
-    return true;
-  }
+): Promise<CanonicalClosureFixture> {
+  const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
+  const assemblySegments = generated.serviceAssembly.assemblyPath.split("/");
+  const assemblyFile = assemblySegments.at(-1);
+  const serviceStorageSegment = assemblySegments.at(-2);
   if (
-    kind === 'packageSymbol' &&
-    record.kind === 'packageSymbol' &&
-    typeSymbolPath(record.symbol) === symbol
+    assemblyFile === undefined
+    || !assemblyFile.endsWith(".json")
+    || serviceStorageSegment === undefined
   ) {
-    return true;
+    throw new Error(
+      `compiler generated non-canonical assembly path ${generated.serviceAssembly.assemblyPath}`,
+    );
   }
-  return Object.values(record).some((item) => fixtureContainsTypeRef(item, kind, symbol));
+  const assemblyValue = JSON.parse(
+    await readFile(join(root, generated.serviceAssembly.assemblyPath), "utf8"),
+  ) as Record<string, unknown>;
+
+  return {
+    assemblyHash: assemblyFile.slice(0, -".json".length),
+    serviceStorageSegment,
+    assemblyValue,
+    input: {
+      key: "canonical",
+      artifactRoot: root,
+      serviceId: generated.serviceId,
+      serviceAssembly: generated.serviceAssembly,
+      serviceUnit: generated.serviceUnit,
+      packageUnits: generated.packageUnits,
+    },
+  };
 }
 
-function fixtureServiceUnitArray(
-  fixture: DynamicBuildIdFixture,
-  field: 'spawnTargets' | 'actors'
-): unknown[] {
-  const value = fixture.artifactRoot[fixture.serviceUnitPath];
-  if (!value || typeof value !== 'object') {
-    return [];
-  }
-  const fieldValue = (value as Record<string, unknown>)[field];
-  return Array.isArray(fieldValue) ? fieldValue : [];
+function renderFixturePath(
+  template: string,
+  closure: CanonicalClosureFixture,
+): string {
+  return template
+    .replaceAll("{serviceStorageSegment}", closure.serviceStorageSegment)
+    .replaceAll("{assemblyHash}", closure.assemblyHash)
+    .replaceAll("{otherHash}", "b".repeat(64));
 }
 
-function fixtureServiceUnitTimeout(fixture: DynamicBuildIdFixture): unknown {
-  const value = fixture.artifactRoot[fixture.serviceUnitPath];
-  if (!value || typeof value !== 'object') {
-    return undefined;
+async function writeCandidate(
+  root: string,
+  key: string,
+  withPackage = false,
+): Promise<IdentityCliArtifactInput> {
+  const serviceId = `example.com/${key}`;
+  const serviceUnitPath = `units/services/${key}/service.json`;
+  const assemblyPath = `assemblies/services/${key}/assembly.json`;
+  const assemblyIdentity =
+    "skiff-service-assembly-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const serviceUnit = {
+    schemaVersion: "skiff-service-unit-v1" as const,
+    unitIdentity:
+      "skiff-service-unit-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    unitHash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    unitPath: serviceUnitPath,
+  };
+  await writeJson(root, serviceUnitPath, {
+    schemaVersion: "skiff-service-unit-v1",
+    service: { id: serviceId },
+    version: "1.0.0",
+  });
+  await writeJson(root, assemblyPath, {
+    schemaVersion: "skiff-assembly-v1",
+    kind: "service",
+    service: { id: serviceId, assemblyIdentity },
+    serviceUnit,
+  });
+  const packageUnits = [];
+  if (withPackage) {
+    const packageUnit = {
+      schemaVersion: "skiff-package-unit-v1" as const,
+      packageId: "example.com/pkg",
+      version: "1.0.0",
+      buildIdentity:
+        "skiff-package-build-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      abiIdentity:
+        "skiff-package-local-abi-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      unitHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      unitPath: "units/packages/pkg/package.json",
+    };
+    packageUnits.push(packageUnit);
+    await writeJson(root, packageUnit.unitPath, packageUnit);
   }
-  return (value as Record<string, unknown>).timeout;
+  return {
+    key,
+    artifactRoot: root,
+    serviceId,
+    serviceAssembly: { assemblyIdentity, assemblyPath },
+    serviceUnit,
+    packageUnits,
+  };
 }
 
-function fixtureOperationTarget(
-  fixture: DynamicBuildIdFixture,
-  operationIndex: number
-): Record<string, unknown> {
-  const serviceUnit = fixture.artifactRoot[fixture.serviceUnitPath];
-  if (!serviceUnit || typeof serviceUnit !== 'object') {
-    throw new Error('fixture service unit should be an object');
-  }
-  const operations = (serviceUnit as Record<string, unknown>).operations;
-  if (!Array.isArray(operations)) {
-    throw new Error('fixture service unit operations should be an array');
-  }
-  const operation = operations[operationIndex];
-  if (!operation || typeof operation !== 'object') {
-    throw new Error(`fixture operation ${operationIndex} should be an object`);
-  }
-  const target = operationExecutableTarget(operation as Record<string, unknown>);
-  if (!target || typeof target !== 'object' || Array.isArray(target)) {
-    throw new Error(`fixture operation ${operationIndex} executable target should be an object`);
-  }
-  return target as Record<string, unknown>;
-}
-
-function operationExecutableTarget(operation: Record<string, unknown>): unknown {
-  const executable = operation.executable;
-  if (executable !== undefined) {
-    return executable;
-  }
-  const receiverExecutable = operation.receiverExecutable;
-  if (receiverExecutable && typeof receiverExecutable === 'object') {
-    return (receiverExecutable as Record<string, unknown>).executableTarget;
-  }
-  return undefined;
-}
-
-function typeSymbolPath(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  return typeof record.symbolPath === 'string' ? record.symbolPath : undefined;
+async function writeJson(root: string, path: string, value: unknown): Promise<void> {
+  const absolute = join(root, path);
+  await mkdir(dirname(absolute), { recursive: true });
+  await writeFile(absolute, JSON.stringify(value));
 }

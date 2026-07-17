@@ -1,11 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 
 use super::{
     identity::{identity_hash, identity_hash_with_label, validate_identity_prefix},
-    types::{ArtifactIndexPointer, PackageUnitArtifactPointer, ServiceAssemblyPointer},
-    utils::{is_sha256_hash, map_string, object_string},
+    types::{
+        ArtifactIndexPointer, PackageUnitArtifactPointer, ServiceAssemblyPointer,
+        ServiceUnitArtifactPointer,
+    },
+    utils::{is_sha256_hash, object_string},
     SERVICE_BUILD_IDENTITY_PREFIX,
 };
 
@@ -48,7 +51,7 @@ pub(super) fn parse_dev_reload_pointer(
         "dev reload pointer buildId",
     )?;
     let service_assembly = parse_service_assembly_pointer(object, pointer_path)?;
-    let service_unit_path = parse_service_unit_path(object)?;
+    let service_unit = parse_service_unit_pointer(object, pointer_path)?;
     let package_units = parse_package_unit_pointers(object, pointer_path)?;
     validate_dev_build_id_matches_service_assembly(&build_id, &service_assembly, pointer_path)?;
 
@@ -59,7 +62,7 @@ pub(super) fn parse_dev_reload_pointer(
         build_id,
         contract_identity: Some(protocol_identity),
         implementation_identity: object_string(object, "implementationIdentity"),
-        service_unit_path,
+        service_unit,
         service_assembly,
         package_units,
     })
@@ -70,15 +73,7 @@ fn validate_dev_build_id_matches_service_assembly(
     service_assembly: &ServiceAssemblyPointer,
     pointer_path: &Path,
 ) -> anyhow::Result<()> {
-    let assembly_identity = service_assembly
-        .assembly_identity
-        .as_deref()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} serviceAssembly.assemblyIdentity is required",
-                pointer_path.display()
-            )
-        })?;
+    let assembly_identity = service_assembly.assembly_identity.as_str();
     let assembly_hash = identity_hash_with_label(assembly_identity, "serviceAssembly")?;
     let expected_build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{assembly_hash}");
     if build_id != expected_build_id {
@@ -175,64 +170,59 @@ pub(super) fn parse_service_assembly_pointer(
             );
         }
     }
-    let path = map_string(Some(assembly), "assemblyPath").ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} serviceAssembly.assemblyPath is required",
-            index_path.display()
-        )
-    })?;
-    let assembly_identity = map_string(Some(assembly), "assemblyIdentity").ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} serviceAssembly.assemblyIdentity is required",
-            index_path.display()
-        )
-    })?;
-    if assembly_identity.starts_with("skiff-service-ir-v1") {
+    let pointer: ServiceAssemblyPointer =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            anyhow::anyhow!(
+                "{} serviceAssembly is invalid: {error}",
+                index_path.display()
+            )
+        })?;
+    if pointer.assembly_identity.starts_with("skiff-service-ir-v1") {
         anyhow::bail!(
             "{} legacy serviceIr pointers are not supported",
             index_path.display()
         );
     }
-    Ok(ServiceAssemblyPointer {
-        path: PathBuf::from(path),
-        assembly_identity: Some(assembly_identity),
-    })
+    Ok(pointer)
 }
 
-fn parse_service_unit_path(object: &Map<String, Value>) -> anyhow::Result<Option<PathBuf>> {
+pub(super) fn parse_service_unit_pointer(
+    object: &Map<String, Value>,
+    pointer_path: &Path,
+) -> anyhow::Result<ServiceUnitArtifactPointer> {
     if object.contains_key("serviceUnitPath") {
         anyhow::bail!("serviceUnitPath is not supported; use serviceUnit.unitPath");
     }
-    let Some(value) = object.get("serviceUnit") else {
-        return Ok(None);
-    };
-    let service_unit = value
+    let value = object
+        .get("serviceUnit")
+        .ok_or_else(|| anyhow::anyhow!("{} serviceUnit is required", pointer_path.display()))?;
+    let _service_unit = value
         .as_object()
-        .ok_or_else(|| anyhow::anyhow!("serviceUnit must be an object with unitPath"))?;
-    let path = service_unit
-        .get("unitPath")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("serviceUnit requires unitPath"))?;
-    Ok(Some(PathBuf::from(path)))
+        .ok_or_else(|| anyhow::anyhow!("serviceUnit must be an object"))?;
+    let label = format!("{} serviceUnit", pointer_path.display());
+    let pointer: ServiceUnitArtifactPointer = serde_json::from_value(value.clone())
+        .map_err(|error| anyhow::anyhow!("{label} is invalid: {error}"))?;
+    if pointer.schema_version != "skiff-service-unit-v1" {
+        anyhow::bail!("{label}.schemaVersion must be skiff-service-unit-v1");
+    }
+    Ok(pointer)
 }
 
 pub(super) fn parse_package_unit_pointers(
     object: &Map<String, Value>,
     pointer_path: &Path,
-) -> anyhow::Result<Option<Vec<PackageUnitArtifactPointer>>> {
-    let Some(value) = object.get("packageUnits") else {
-        return Ok(None);
-    };
+) -> anyhow::Result<Vec<PackageUnitArtifactPointer>> {
+    let value = object
+        .get("packageUnits")
+        .ok_or_else(|| anyhow::anyhow!("{} packageUnits is required", pointer_path.display()))?;
     let items = value.as_array().ok_or_else(|| {
         anyhow::anyhow!("{} packageUnits must be an array", pointer_path.display())
     })?;
-    Ok(Some(
-        items
-            .iter()
-            .enumerate()
-            .map(|(index, value)| parse_package_unit_pointer(value, pointer_path, index))
-            .collect::<anyhow::Result<Vec<_>>>()?,
-    ))
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_package_unit_pointer(value, pointer_path, index))
+        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 fn parse_package_unit_pointer(
@@ -241,28 +231,13 @@ fn parse_package_unit_pointer(
     index: usize,
 ) -> anyhow::Result<PackageUnitArtifactPointer> {
     let label = format!("{} packageUnits[{index}]", pointer_path.display());
-    let object = value
+    let _object = value
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("{label} must be an object"))?;
-    if let Some(schema_version) = map_string(Some(object), "schemaVersion") {
-        if schema_version != "skiff-package-unit-v1" {
-            anyhow::bail!("{label}.schemaVersion must be skiff-package-unit-v1");
-        }
+    let pointer: PackageUnitArtifactPointer = serde_json::from_value(value.clone())
+        .map_err(|error| anyhow::anyhow!("{label} is invalid: {error}"))?;
+    if pointer.schema_version != "skiff-package-unit-v1" {
+        anyhow::bail!("{label}.schemaVersion must be skiff-package-unit-v1");
     }
-    Ok(PackageUnitArtifactPointer {
-        package_id: required_package_unit_string(object, "packageId", &label)?,
-        version: required_package_unit_string(object, "version", &label)?,
-        build_identity: required_package_unit_string(object, "buildIdentity", &label)?,
-        abi_identity: required_package_unit_string(object, "abiIdentity", &label)?,
-        unit_hash: map_string(Some(object), "unitHash"),
-        unit_path: PathBuf::from(required_package_unit_string(object, "unitPath", &label)?),
-    })
-}
-
-fn required_package_unit_string(
-    object: &Map<String, Value>,
-    field: &str,
-    label: &str,
-) -> anyhow::Result<String> {
-    map_string(Some(object), field).ok_or_else(|| anyhow::anyhow!("{label}.{field} is required"))
+    Ok(pointer)
 }

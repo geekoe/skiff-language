@@ -1,16 +1,6 @@
 import type { SkiffRuntimeManifest } from "../manifest/types.js";
 import { assertRevisionId } from "../manifest/revisionId.js";
-import {
-  isPublicationId,
-  publicationStorageSegment,
-} from "../publicationId.js";
-import { readConfigShape, type JsonObject } from "../config/index.js";
-import { readJsonAtArtifactPath } from "./artifactPath.js";
-import {
-  validateServiceAssemblyContentIdentity,
-  validateServiceAssemblyIdentity,
-  validateServiceAssemblyPathIdentity,
-} from "./identity.js";
+import { readConfigShape } from "../config/index.js";
 import {
   accessFromServiceAssembly,
   gatewayFromServiceAssembly,
@@ -18,20 +8,16 @@ import {
   timeoutFromServiceAssembly,
 } from "./manifestProjection.js";
 import {
-  computeRuntimeProgramBuildId,
-  readRuntimeProgramServiceUnit,
-} from "./dynamicBuildId.js";
-import {
   assertRecord,
   readOptionalRecord,
-  readOptionalString,
   readRequiredString,
 } from "./readUtils.js";
 import type {
   LoadedServiceAssemblyArtifact,
   LoadRouterArtifactRootOptions,
-  PackageUnitArtifactPointer,
   SourcedArtifactPointer,
+  ValidatedArtifactContent,
+  ValidatedServiceArtifactClosure,
 } from "./types.js";
 import {
   buildServiceConfigActivation,
@@ -39,21 +25,20 @@ import {
   type PackageConfigActivationInput,
 } from "./configActivation.js";
 import { readServiceTestConfigActivations } from "./serviceTestActivations.js";
+import { validateServiceHttp } from "./serviceHttp.js";
 
 export async function readRouterArtifactValue(
   pointer: SourcedArtifactPointer,
   options: LoadRouterArtifactRootOptions,
+  validated: ValidatedServiceArtifactClosure,
 ): Promise<LoadedServiceAssemblyArtifact> {
-  if (pointer.serviceAssembly) {
-    const root = pointer.sourceRoot;
-    const assembly = await readJsonAtArtifactPath(
-      root,
-      pointer.serviceAssembly,
-      pointer.indexPath,
-    );
-    return routerManifestFromServiceAssembly(root, assembly, pointer, options);
-  }
-  throw new Error(`${pointer.indexPath} serviceAssembly is required`);
+  return routerManifestFromServiceAssembly(
+    pointer.sourceRoot,
+    validated.serviceAssembly.value,
+    pointer,
+    options,
+    validated,
+  );
 }
 
 async function routerManifestFromServiceAssembly(
@@ -61,6 +46,7 @@ async function routerManifestFromServiceAssembly(
   assembly: unknown,
   pointer: SourcedArtifactPointer,
   options: LoadRouterArtifactRootOptions,
+  validated: ValidatedServiceArtifactClosure,
 ): Promise<LoadedServiceAssemblyArtifact> {
   assertRecord(assembly, `${pointer.indexPath} serviceAssembly`);
   if (assembly.schemaVersion !== "skiff-assembly-v1") {
@@ -94,30 +80,24 @@ async function routerManifestFromServiceAssembly(
       `${pointer.indexPath} serviceAssembly.service must be an object`,
     );
   }
-  const effectiveAssemblyIdentity = validateServiceAssemblyIdentity(
-    pointer,
-    readOptionalString(service.assemblyIdentity),
+  validateServiceHttp(
+    service,
+    `${pointer.indexPath} serviceAssembly.service`,
   );
-  validateServiceAssemblyContentIdentity(
-    assembly,
-    effectiveAssemblyIdentity,
-    pointer.indexPath,
+  const embeddedAssemblyIdentity = readRequiredString(
+    service.assemblyIdentity,
+    `${pointer.indexPath} serviceAssembly.service.assemblyIdentity`,
   );
+  if (
+    embeddedAssemblyIdentity !== validated.assemblyIdentity ||
+    pointer.serviceAssemblyIdentity !== validated.assemblyIdentity
+  ) {
+    throw new Error(`${pointer.indexPath} validated assembly identity mismatch`);
+  }
   const serviceId = readRequiredString(
     service.id,
     `${pointer.indexPath} serviceAssembly.service.id`,
   );
-  validateServiceAssemblyPathIdentity(
-    pointer.serviceAssembly!,
-    serviceId,
-    effectiveAssemblyIdentity,
-    pointer.indexPath,
-  );
-  if (pointer.serviceId === undefined) {
-    throw new Error(
-      `${pointer.indexPath} serviceAssembly pointer must declare serviceId`,
-    );
-  }
   if (pointer.serviceId !== serviceId) {
     throw new Error(
       `${pointer.indexPath} serviceId must match serviceAssembly.service.id`,
@@ -135,36 +115,16 @@ async function routerManifestFromServiceAssembly(
     service.protocolIdentity,
     `${pointer.indexPath} serviceAssembly.service.protocolIdentity`,
   );
-  if (pointer.buildId === undefined) {
-    throw new Error(
-      `${pointer.indexPath} serviceAssembly pointer must declare buildId`,
-    );
-  }
   const pointerBuildId = readRequiredString(
     pointer.buildId,
     `${pointer.indexPath} buildId`,
   );
-  const serviceUnit = await readRuntimeProgramServiceUnit({
-    root,
-    pointer,
-    serviceAssembly: assembly,
-  });
+  const serviceUnit = validated.serviceUnit;
   const serviceVersion = readRequiredString(
     serviceUnit.value.version,
     `${serviceUnit.path} service unit.version`,
   );
-  const dynamicBuildId = await computeRuntimeProgramBuildId({
-    root,
-    pointer,
-    serviceAssembly: assembly,
-    serviceUnit,
-    ...(options.identityCliPath !== undefined
-      ? { identityCliPath: options.identityCliPath }
-      : {}),
-    ...(options.releaseMode !== undefined
-      ? { releaseMode: options.releaseMode }
-      : {}),
-  });
+  const dynamicBuildId = validated.dynamicBuildId;
   if (
     pointer.contractIdentity !== undefined &&
     pointer.contractIdentity !== protocolIdentity
@@ -204,10 +164,9 @@ async function routerManifestFromServiceAssembly(
   if (timeout !== undefined) {
     manifest.timeout = timeout;
   }
-  const packageConfigs = await packageConfigActivationInputs(
-    root,
+  const packageConfigs = packageConfigActivationInputs(
     serviceUnit.value,
-    pointer.packageUnits,
+    validated.packageUnits,
     pointer.indexPath,
     serviceUnit.path,
   );
@@ -261,27 +220,28 @@ async function routerManifestFromServiceAssembly(
   };
 }
 
-async function packageConfigActivationInputs(
-  root: string,
+function packageConfigActivationInputs(
   serviceUnit: Record<string, unknown>,
-  packageUnits: readonly PackageUnitArtifactPointer[] | undefined,
+  packageUnits: readonly ValidatedArtifactContent[],
   indexPath: string,
   serviceUnitPath: string,
-): Promise<PackageConfigActivationInput[]> {
+): PackageConfigActivationInput[] {
   const packageDependencies = serviceUnitPackageDependencies(
-    serviceUnit.packageDependencies ?? serviceUnit.package_dependencies,
+    serviceUnit.packageDependencies,
     `${serviceUnitPath} serviceUnit.packageDependencies`,
   );
   const inputs: PackageConfigActivationInput[] = [];
   for (const dependency of packageDependencies) {
-    const packageUnit = packageUnits
-      ? await readPinnedPackageUnitForDependency(
-          root,
-          dependency,
-          packageUnits,
-          indexPath,
-        )
-      : await readPackageUnitForDependency(root, dependency);
+    const matches = packageUnits.filter((unit) =>
+      unit.value.packageId === dependency.id &&
+      unit.value.version === dependency.version
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `${indexPath} validated package closure must contain exactly one ${dependency.id}@${dependency.version}`,
+      );
+    }
+    const packageUnit = matches[0]!;
     const configMetadata = readPackageConfigMetadata(packageUnit.value);
     const configShape = readConfigShape(
       configMetadata.shape,
@@ -300,114 +260,6 @@ async function packageConfigActivationInputs(
     });
   }
   return inputs;
-}
-
-async function readPinnedPackageUnitForDependency(
-  root: string,
-  dependency: ServiceUnitPackageDependency,
-  packageUnits: readonly PackageUnitArtifactPointer[],
-  indexPath: string,
-): Promise<{ path: string; value: Record<string, unknown> }> {
-  const matches = packageUnits.filter(
-    (unit) =>
-      unit.packageId === dependency.id && unit.version === dependency.version,
-  );
-  if (matches.length === 0) {
-    throw new Error(
-      `${indexPath} packageUnits missing direct dependency ${dependency.id}@${dependency.version}`,
-    );
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      `${indexPath} packageUnits declares duplicate dependency ${dependency.id}@${dependency.version}`,
-    );
-  }
-  const packageUnitPointer = matches[0]!;
-  const unit = await readJsonAtArtifactPath(
-    root,
-    packageUnitPointer.unitPath,
-    indexPath,
-  );
-  assertRecord(unit, `${packageUnitPointer.unitPath} package unit`);
-  validatePinnedPackageUnit(
-    unit,
-    packageUnitPointer,
-    dependency,
-    packageUnitPointer.unitPath,
-  );
-  return { path: packageUnitPointer.unitPath, value: unit };
-}
-
-function validatePinnedPackageUnit(
-  unit: Record<string, unknown>,
-  pointer: PackageUnitArtifactPointer,
-  dependency: ServiceUnitPackageDependency,
-  unitPath: string,
-): void {
-  if (unit.schemaVersion !== "skiff-package-unit-v1") {
-    throw new Error(
-      `${unitPath} package unit schemaVersion must be skiff-package-unit-v1`,
-    );
-  }
-  validatePinnedPackageUnitField(
-    unitPath,
-    "packageId",
-    dependency.id,
-    pointer.packageId,
-    "Service Unit dependency",
-  );
-  validatePinnedPackageUnitField(
-    unitPath,
-    "version",
-    dependency.version,
-    pointer.version,
-    "Service Unit dependency",
-  );
-  validatePinnedPackageUnitField(
-    unitPath,
-    "packageId",
-    pointer.packageId,
-    readRequiredString(unit.packageId, `${unitPath} packageUnit.packageId`),
-    "package unit",
-  );
-  validatePinnedPackageUnitField(
-    unitPath,
-    "version",
-    pointer.version,
-    readRequiredString(unit.version, `${unitPath} packageUnit.version`),
-    "package unit",
-  );
-  validatePinnedPackageUnitField(
-    unitPath,
-    "buildIdentity",
-    pointer.buildIdentity,
-    readRequiredString(
-      unit.buildIdentity,
-      `${unitPath} packageUnit.buildIdentity`,
-    ),
-    "package unit",
-  );
-  validatePinnedPackageUnitField(
-    unitPath,
-    "abiIdentity",
-    pointer.abiIdentity,
-    readRequiredString(unit.abiIdentity, `${unitPath} packageUnit.abiIdentity`),
-    "package unit",
-  );
-}
-
-function validatePinnedPackageUnitField(
-  unitPath: string,
-  field: string,
-  expected: string,
-  actual: string,
-  source: string,
-): void {
-  if (actual !== expected) {
-    throw new Error(
-      `${unitPath} package unit ${field} ${actual} does not match ${source} ${expected}`,
-    );
-  }
 }
 
 interface ServiceUnitPackageDependency {
@@ -462,146 +314,18 @@ function rejectLegacyPackageDependencyFields(
   }
 }
 
-async function readPackageUnitForDependency(
-  root: string,
-  dependency: ServiceUnitPackageDependency,
-): Promise<{ path: string; value: Record<string, unknown> }> {
-  const indexPath = packageVersionIndexPath(dependency.id, dependency.version);
-  const index = await readJsonAtArtifactPath(root, indexPath, indexPath).catch(
-    (error: unknown) => {
-      throw new Error(
-        `no package unit found for ${dependency.id} version ${dependency.version}`,
-        {
-          cause: error,
-        },
-      );
-    },
-  );
-  assertRecord(index, `${indexPath} package unit index`);
-  validatePackageIndexIdentity(index, dependency, indexPath);
-  const unitPath = packageUnitPathFromIndex(index, indexPath);
-  const unit =
-    unitPath === indexPath
-      ? index
-      : await readJsonAtArtifactPath(root, unitPath, indexPath);
-  assertRecord(unit, `${unitPath} package unit`);
-  if ((unit.schemaVersion ?? unit.schema_version) !== "skiff-package-unit-v1") {
-    throw new Error(
-      `${unitPath} package unit schemaVersion must be skiff-package-unit-v1`,
-    );
-  }
-  const packageId = readOptionalString(
-    unit.packageId ?? unit.package_id ?? unit.id,
-  );
-  if (packageId !== undefined && packageId !== dependency.id) {
-    throw new Error(
-      `${unitPath} packageId ${packageId} does not match dependency ${dependency.id}`,
-    );
-  }
-  return { path: unitPath, value: unit };
-}
-
-function packageUnitPathFromIndex(
-  index: Record<string, unknown>,
-  indexPath: string,
-): string {
-  const packageUnit = index.packageUnit;
-  const stringPath = readOptionalString(packageUnit);
-  if (stringPath !== undefined) {
-    return stringPath;
-  }
-  const object = readOptionalRecord(packageUnit);
-  if (object) {
-    const path =
-      readOptionalString(object.unitPath) ??
-      readOptionalString(object.artifactPath) ??
-      readOptionalString(object.path) ??
-      readOptionalString(object.packageUnitPath);
-    if (path !== undefined) {
-      return path;
-    }
-    throw new Error(
-      `${indexPath} packageUnit requires unitPath/artifactPath/path`,
-    );
-  }
-  const packageUnitPath = readOptionalString(index.packageUnitPath);
-  if (packageUnitPath !== undefined) {
-    return packageUnitPath;
-  }
-  if (
-    (index.schemaVersion ?? index.schema_version) === "skiff-package-unit-v1"
-  ) {
-    return indexPath;
-  }
-  throw new Error(
-    `${indexPath} package index must declare packageUnit/packageUnitPath or be a PackageUnit`,
-  );
-}
-
-function validatePackageIndexIdentity(
-  index: Record<string, unknown>,
-  dependency: ServiceUnitPackageDependency,
-  indexPath: string,
-): void {
-  const packageRecord = readOptionalRecord(index.package);
-  const packageId =
-    readOptionalString(index.packageId) ??
-    readOptionalString(index.id) ??
-    readOptionalString(packageRecord?.packageId) ??
-    readOptionalString(packageRecord?.id);
-  if (packageId !== undefined && packageId !== dependency.id) {
-    throw new Error(
-      `${indexPath} package id ${packageId} does not match dependency id ${dependency.id}`,
-    );
-  }
-  const version =
-    readOptionalString(index.version) ??
-    readOptionalString(packageRecord?.version);
-  if (version !== undefined && version !== dependency.version) {
-    throw new Error(
-      `${indexPath} package version ${version} does not match dependency version ${dependency.version}`,
-    );
-  }
-}
-
-function packageVersionIndexPath(packageId: string, version: string): string {
-  if (!isPublicationId(packageId)) {
-    throw new Error(`package id ${packageId} must be a publication id`);
-  }
-  if (
-    version.length === 0 ||
-    version === "." ||
-    version === ".." ||
-    /[\\/]/.test(version)
-  ) {
-    throw new Error(
-      `package version ${version} is not a safe artifact path segment`,
-    );
-  }
-  return `indexes/packages/${publicationStorageSegment(packageId)}/versions/${version}.json`;
-}
-
 function readPackageConfigMetadata(packageUnit: Record<string, unknown>): {
   shape: unknown;
   activation: unknown;
 } {
   const metadata = readOptionalRecord(
-    packageUnit.configAndEffectMetadata ??
-      packageUnit.config_and_effect_metadata,
+    packageUnit.configAndEffectMetadata,
   );
   const config = readOptionalRecord(metadata?.config);
   return {
     shape: config?.shape,
     activation: config?.activation,
   };
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function cloneJsonObject(value: JsonObject): JsonObject {
-  return JSON.parse(JSON.stringify(value)) as JsonObject;
 }
 
 function rejectLegacyServiceAssemblyConfigFields(

@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_artifact_model::ServiceUnit;
 use skiff_compiler_core::id::PublicationId;
 use skiff_compiler_input_model::RawPublicationSourceGraph;
 
@@ -52,7 +51,6 @@ pub fn build_service_job(
     raw_source_graph: RawPublicationSourceGraph,
     source_package_facts: &ServiceSourcePackageFacts,
     service_dependency_artifact_roots: &[PathBuf],
-    build_id_for_root: impl Fn(&Path, &ServiceUnit) -> Result<String, String>,
     discover_manifests: impl FnOnce(&Path, &[PackageDependency]) -> PackageManifestDiscoveryResult,
 ) -> Result<RawServicePublicationJob, InputAssemblyError> {
     let service_publication_id =
@@ -86,11 +84,8 @@ pub fn build_service_job(
     let package_manifests = resolved_packages.package_manifests;
     let package_aliases =
         package_alias_bindings(&config.publication.dependencies, &package_manifests);
-    let service_dependencies = resolve_service_dependencies(
-        &config.runtime.services,
-        service_dependency_artifact_roots,
-        build_id_for_root,
-    )?;
+    let service_dependencies =
+        resolve_service_dependencies(&config.runtime.services, service_dependency_artifact_roots)?;
 
     let seeds = ServiceJobSeeds {
         service_id: service_id.to_string(),

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt, fs,
-    path::{Component, Display, Path, PathBuf},
+    fs,
+    path::Path,
 };
 
 use serde_json::Value;
@@ -11,18 +11,9 @@ use skiff_artifact_model::{
 
 use crate::{
     runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes,
-    validate_package_unit_identities, ArtifactIdentityError, Result,
+    service_assembly::validate_package_ref, validate_package_unit_identities,
+    ArtifactIdentityError, ArtifactRelativePath, PackageUnitArtifactRef, Result,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageUnitArtifactRef {
-    pub package_id: String,
-    pub version: String,
-    pub build_identity: String,
-    pub abi_identity: String,
-    pub unit_hash: Option<String>,
-    pub unit_path: PathBuf,
-}
 
 pub fn ordered_package_build_identities_from_artifact_root(
     artifact_root: &Path,
@@ -125,49 +116,14 @@ impl<'a> PackageResolver<'a> {
         package_refs: &[PackageUnitArtifactRef],
     ) -> Result<Vec<PackageUnit>> {
         let mut packages = Vec::new();
-        let mut loaded_build_by_package_id = BTreeMap::<String, String>::new();
         for package_ref in package_refs {
             let package = self.load_package_unit_from_ref(package_ref)?;
-            if let Some(existing_build) = loaded_build_by_package_id.get(&package.package_id) {
-                if existing_build != &package.build_identity {
-                    return Err(ArtifactIdentityError::PackageDependencyConflict {
-                        package_id: package.package_id,
-                        existing_build: existing_build.clone(),
-                        new_build: package.build_identity,
-                    });
-                }
-                continue;
-            }
-            loaded_build_by_package_id
-                .insert(package.package_id.clone(), package.build_identity.clone());
             packages.push(package);
         }
-
-        let package_by_id = packages
-            .iter()
-            .map(|package| (package.package_id.as_str(), package))
-            .collect::<BTreeMap<_, _>>();
-        let mut visiting = BTreeSet::new();
-        let mut visited = BTreeSet::new();
-        for dependency in &service_unit.package_dependencies {
-            validate_pinned_dependency_recursive(
-                dependency,
-                &package_by_id,
-                &mut visiting,
-                &mut visited,
-            )?;
-        }
-        for package in &packages {
-            if !visited.contains(&package.package_id) {
-                return Err(ArtifactIdentityError::InvalidPackageIndex {
-                    message: format!(
-                        "pinned packageUnits includes unreachable package {}@{}",
-                        package.package_id, package.version
-                    ),
-                });
-            }
-        }
-        Ok(packages)
+        Ok(ordered_pinned_package_closure(service_unit, &packages)?
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     fn resolve_package_dependency_recursive(
@@ -219,12 +175,18 @@ impl<'a> PackageResolver<'a> {
         &self,
         package_ref: &PackageUnitArtifactRef,
     ) -> Result<PackageUnit> {
-        let path = ArtifactRootRelativePath::new(
+        let path = ArtifactRelativePath::parse(
             &package_ref.unit_path,
             &format!("package unit {} unitPath", package_ref.package_id),
         )?;
-        let package = self.load_package_unit_at_artifact_path(&path)?;
-        validate_package_unit_ref(&package, package_ref, &path)?;
+        let value = self.read_artifact_json(&path, "package unit")?;
+        let package: PackageUnit = serde_json::from_value(value.clone()).map_err(|source| {
+            ArtifactIdentityError::InvalidPackageUnit {
+                path: path.to_string(),
+                source,
+            }
+        })?;
+        validate_package_ref(&value, &package, package_ref, &path)?;
         Ok(package)
     }
 
@@ -232,7 +194,7 @@ impl<'a> PackageResolver<'a> {
         &self,
         package_id: &str,
         version: &str,
-    ) -> Result<ArtifactRootRelativePath> {
+    ) -> Result<ArtifactRelativePath> {
         let index_path = package_version_index_path(package_id, version)?;
         if self.artifact_path_exists(&index_path) {
             return self.package_unit_path_from_index(package_id, version, &index_path);
@@ -250,36 +212,36 @@ impl<'a> PackageResolver<'a> {
         &self,
         package_id: &str,
         version: &str,
-        index_path: &ArtifactRootRelativePath,
-    ) -> Result<ArtifactRootRelativePath> {
+        index_path: &ArtifactRelativePath,
+    ) -> Result<ArtifactRelativePath> {
         let index = self.read_artifact_json(index_path, "package unit index")?;
         validate_package_index_identity(&index, package_id, version, index_path)?;
         unit_ref_path(
             index.get("packageUnit"),
-            &format!("{} packageUnit", index_path.display()),
+            &format!("{index_path} packageUnit"),
         )?
         .ok_or_else(|| ArtifactIdentityError::InvalidPackageIndex {
             message: format!(
                 "{} package index must declare canonical packageUnit.unitPath",
-                index_path.display()
+                index_path
             ),
         })
     }
 
     fn load_package_unit_at_artifact_path(
         &self,
-        relative_path: &ArtifactRootRelativePath,
+        relative_path: &ArtifactRelativePath,
     ) -> Result<PackageUnit> {
         let value = self.read_artifact_json(relative_path, "package unit")?;
         let unit: PackageUnit = serde_json::from_value(value).map_err(|source| {
             ArtifactIdentityError::InvalidPackageUnit {
-                path: relative_path.display().to_string(),
+                path: relative_path.to_string(),
                 source,
             }
         })?;
         if unit.schema_version != PACKAGE_UNIT_SCHEMA_VERSION {
             return Err(ArtifactIdentityError::PackageUnitSchemaVersionMismatch {
-                path: relative_path.display().to_string(),
+                path: relative_path.to_string(),
                 expected: PACKAGE_UNIT_SCHEMA_VERSION,
                 actual: unit.schema_version,
             });
@@ -290,10 +252,10 @@ impl<'a> PackageResolver<'a> {
 
     fn read_artifact_json(
         &self,
-        relative_path: &ArtifactRootRelativePath,
+        relative_path: &ArtifactRelativePath,
         label: &str,
     ) -> Result<Value> {
-        let path = resolve_index_artifact_path(self.artifact_root, relative_path, label)?;
+        let path = relative_path.resolve_existing(self.artifact_root, label)?;
         let text =
             fs::read_to_string(&path).map_err(|source| ArtifactIdentityError::ReadArtifact {
                 path: path.display().to_string(),
@@ -305,16 +267,56 @@ impl<'a> PackageResolver<'a> {
         })
     }
 
-    fn artifact_path_exists(&self, relative_path: &ArtifactRootRelativePath) -> bool {
+    fn artifact_path_exists(&self, relative_path: &ArtifactRelativePath) -> bool {
         self.artifact_root.join(relative_path.as_path()).is_file()
     }
 }
 
-fn validate_pinned_dependency_recursive<'a>(
+pub(crate) fn ordered_pinned_package_closure<'a>(
+    service_unit: &ServiceUnit,
+    packages: &'a [PackageUnit],
+) -> Result<Vec<&'a PackageUnit>> {
+    let mut package_by_id = BTreeMap::new();
+    for package in packages {
+        if let Some(existing) = package_by_id.insert(package.package_id.as_str(), package) {
+            return Err(ArtifactIdentityError::PackageDependencyConflict {
+                package_id: package.package_id.clone(),
+                existing_build: existing.build_identity.clone(),
+                new_build: package.build_identity.clone(),
+            });
+        }
+    }
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut ordered = Vec::new();
+    for dependency in &service_unit.package_dependencies {
+        order_pinned_dependency_recursive(
+            dependency,
+            &package_by_id,
+            &mut visiting,
+            &mut visited,
+            &mut ordered,
+        )?;
+    }
+    for package in packages {
+        if !visited.contains(&package.package_id) {
+            return Err(ArtifactIdentityError::InvalidPackageIndex {
+                message: format!(
+                    "pinned packageUnits includes unreachable package {}@{}",
+                    package.package_id, package.version
+                ),
+            });
+        }
+    }
+    Ok(ordered)
+}
+
+fn order_pinned_dependency_recursive<'a>(
     dependency: &PackageDependencyConstraint,
     package_by_id: &BTreeMap<&'a str, &'a PackageUnit>,
     visiting: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
+    ordered: &mut Vec<&'a PackageUnit>,
 ) -> Result<()> {
     if visiting.contains(&dependency.id) {
         return Err(ArtifactIdentityError::PackageDependencyCycle {
@@ -332,7 +334,7 @@ fn validate_pinned_dependency_recursive<'a>(
             ),
         });
     };
-    if package.version.as_str() != dependency.version.as_str() {
+    if package.version != dependency.version {
         return Err(ArtifactIdentityError::InvalidPackageIndex {
             message: format!(
                 "pinned packageUnits dependency {} version {} does not match required {}",
@@ -340,126 +342,17 @@ fn validate_pinned_dependency_recursive<'a>(
             ),
         });
     }
-
     visiting.insert(dependency.id.clone());
+    ordered.push(package);
     for nested in &package.dependencies {
-        validate_pinned_dependency_recursive(nested, package_by_id, visiting, visited)?;
+        order_pinned_dependency_recursive(nested, package_by_id, visiting, visited, ordered)?;
     }
     visiting.remove(&dependency.id);
     visited.insert(dependency.id.clone());
     Ok(())
 }
 
-fn validate_package_unit_ref(
-    package: &PackageUnit,
-    package_ref: &PackageUnitArtifactRef,
-    path: &ArtifactRootRelativePath,
-) -> Result<()> {
-    validate_package_unit_ref_field(
-        path,
-        "packageId",
-        &package_ref.package_id,
-        &package.package_id,
-    )?;
-    validate_package_unit_ref_field(path, "version", &package_ref.version, &package.version)?;
-    validate_package_unit_ref_field(
-        path,
-        "buildIdentity",
-        &package_ref.build_identity,
-        &package.build_identity,
-    )?;
-    validate_package_unit_ref_field(
-        path,
-        "abiIdentity",
-        &package_ref.abi_identity,
-        &package.abi_identity,
-    )?;
-    Ok(())
-}
-
-fn validate_package_unit_ref_field(
-    path: &ArtifactRootRelativePath,
-    field: &'static str,
-    expected: &str,
-    actual: &str,
-) -> Result<()> {
-    if expected != actual {
-        return Err(ArtifactIdentityError::PackageUnitPointerMismatch {
-            path: path.display().to_string(),
-            field,
-            expected: expected.to_string(),
-            actual: actual.to_string(),
-        });
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ArtifactRootRelativePath {
-    path: PathBuf,
-}
-
-impl ArtifactRootRelativePath {
-    fn new(path: impl AsRef<Path>, label: &str) -> Result<Self> {
-        let path = path.as_ref();
-        if !is_safe_artifact_root_relative_path(path) {
-            return Err(ArtifactIdentityError::PathEscape {
-                label: label.to_string(),
-                path: path.display().to_string(),
-            });
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-        })
-    }
-
-    fn parse(path: &str, label: &str) -> Result<Self> {
-        Self::new(Path::new(path), label)
-    }
-
-    fn as_path(&self) -> &Path {
-        &self.path
-    }
-
-    fn display(&self) -> Display<'_> {
-        self.path.display()
-    }
-}
-
-impl fmt::Display for ArtifactRootRelativePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.path.display())
-    }
-}
-
-fn resolve_index_artifact_path(
-    artifact_root: &Path,
-    artifact_path: &ArtifactRootRelativePath,
-    label: &str,
-) -> Result<PathBuf> {
-    let root = fs::canonicalize(artifact_root).map_err(|source| {
-        ArtifactIdentityError::ResolveArtifactRoot {
-            path: artifact_root.display().to_string(),
-            source,
-        }
-    })?;
-    let path = root.join(artifact_path.as_path());
-    let canonical_path =
-        fs::canonicalize(&path).map_err(|source| ArtifactIdentityError::ResolveArtifactPath {
-            path: path.display().to_string(),
-            source,
-        })?;
-    if !canonical_path.starts_with(&root) {
-        return Err(ArtifactIdentityError::ArtifactPathEscapesRoot {
-            label: label.to_string(),
-            path: artifact_path.display().to_string(),
-            root: root.display().to_string(),
-        });
-    }
-    Ok(canonical_path)
-}
-
-fn unit_ref_path(value: Option<&Value>, label: &str) -> Result<Option<ArtifactRootRelativePath>> {
+fn unit_ref_path(value: Option<&Value>, label: &str) -> Result<Option<ArtifactRelativePath>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -474,14 +367,14 @@ fn unit_ref_path(value: Option<&Value>, label: &str) -> Result<Option<ArtifactRo
         .ok_or_else(|| ArtifactIdentityError::InvalidPackageIndex {
             message: format!("{label} requires unitPath"),
         })?;
-    Ok(Some(ArtifactRootRelativePath::parse(path, label)?))
+    Ok(Some(ArtifactRelativePath::parse(path, label)?))
 }
 
 fn validate_package_index_identity(
     index: &Value,
     dependency_package_id: &str,
     dependency_version: &str,
-    index_path: &ArtifactRootRelativePath,
+    index_path: &ArtifactRelativePath,
 ) -> Result<()> {
     if let Some(package_id) = first_string(index, &["packageId", "id"]).or_else(|| {
         index
@@ -494,9 +387,7 @@ fn validate_package_index_identity(
             return Err(ArtifactIdentityError::InvalidPackageIndex {
                 message: format!(
                     "{} package id {} does not match dependency id {}",
-                    index_path.display(),
-                    package_id,
-                    dependency_package_id
+                    index_path, package_id, dependency_package_id
                 ),
             });
         }
@@ -511,9 +402,7 @@ fn validate_package_index_identity(
             return Err(ArtifactIdentityError::InvalidPackageIndex {
                 message: format!(
                     "{} package version {} does not match dependency version {}",
-                    index_path.display(),
-                    version,
-                    dependency_version
+                    index_path, version, dependency_version
                 ),
             });
         }
@@ -526,15 +415,11 @@ fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
         .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_string))
 }
 
-fn package_version_index_path(package_id: &str, version: &str) -> Result<ArtifactRootRelativePath> {
+fn package_version_index_path(package_id: &str, version: &str) -> Result<ArtifactRelativePath> {
     let package_path = package_id_artifact_path(package_id)?;
     validate_package_version_segment(version)?;
-    ArtifactRootRelativePath::new(
-        Path::new("indexes")
-            .join("packages")
-            .join(package_path)
-            .join("versions")
-            .join(format!("{version}.json")),
+    ArtifactRelativePath::parse(
+        &format!("indexes/packages/{package_path}/versions/{version}.json"),
         "package version index",
     )
 }
@@ -574,18 +459,13 @@ fn validate_artifact_segment(segment: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn package_id_artifact_path(package_id: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(publication_storage_segment(package_id, "package id")?);
-    if ArtifactRootRelativePath::new(&path, "package id").is_err() {
-        return Err(ArtifactIdentityError::PathEscape {
-            label: "package id".to_string(),
-            path: package_id.to_string(),
-        });
-    }
+fn package_id_artifact_path(package_id: &str) -> Result<String> {
+    let path = publication_storage_segment(package_id, "package id")?;
+    ArtifactRelativePath::parse(&path, "package id")?;
     Ok(path)
 }
 
-fn publication_storage_segment(value: &str, label: &str) -> Result<String> {
+pub fn publication_storage_segment(value: &str, label: &str) -> Result<String> {
     validate_publication_id(value, label)?;
     Ok(value.replace('.', "~").replace('/', "~~"))
 }
@@ -663,14 +543,6 @@ fn is_valid_local_segment(segment: &str) -> bool {
         && bytes.iter().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_' || *byte == b'-'
         })
-}
-
-fn is_safe_artifact_root_relative_path(path: &Path) -> bool {
-    if path.as_os_str().is_empty() || path.is_absolute() {
-        return false;
-    }
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
 }
 
 #[cfg(test)]

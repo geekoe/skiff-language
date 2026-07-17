@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "skiff-artifact-reference-validation-cases-v1",
+  "serviceId": "example.com/svc",
+  "cases": [
+    {
+      "name": "canonical relative path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "assemblies/services/{serviceStorageSegment}/{assemblyHash}.json",
+      "valid": true
+    },
+    {
+      "name": "empty path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "",
+      "valid": false
+    },
+    {
+      "name": "unix absolute path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "/assemblies/services/{serviceStorageSegment}/{assemblyHash}.json",
+      "valid": false
+    },
+    {
+      "name": "windows absolute path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "C:/assemblies/services/{serviceStorageSegment}/{assemblyHash}.json",
+      "valid": false
+    },
+    {
+      "name": "dot path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": ".",
+      "valid": false
+    },
+    {
+      "name": "parent path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "..",
+      "valid": false
+    },
+    {
+      "name": "embedded parent segment",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "assemblies/services/../{serviceStorageSegment}/{assemblyHash}.json",
+      "valid": false
+    },
+    {
+      "name": "backslash path",
+      "appliesTo": ["runtime", "router"],
+      "validation": "artifactRelativePath",
+      "path": "assemblies\\services\\{serviceStorageSegment}\\{assemblyHash}.json",
+      "valid": false
+    },
+    {
+      "name": "canonical owner and identity stem",
+      "appliesTo": ["runtime", "router"],
+      "validation": "serviceAssemblyCoordinate",
+      "path": "assemblies/services/{serviceStorageSegment}/{assemblyHash}.json",
+      "valid": true
+    },
+    {
+      "name": "identity stem mismatch",
+      "appliesTo": ["runtime", "router"],
+      "validation": "serviceAssemblyCoordinate",
+      "path": "assemblies/services/{serviceStorageSegment}/{otherHash}.json",
+      "materialize": true,
+      "valid": false
+    },
+    {
+      "name": "owner coordinate mismatch",
+      "appliesTo": ["runtime", "router"],
+      "validation": "serviceAssemblyCoordinate",
+      "path": "assemblies/services/example~com~~other/{assemblyHash}.json",
+      "materialize": true,
+      "valid": false
+    }
+  ]
+}

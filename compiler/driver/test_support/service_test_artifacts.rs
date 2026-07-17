@@ -13,8 +13,9 @@ use skiff_compiler_core::artifact::{
     SourceCallOperationIndexEntry,
 };
 use skiff_compiler_emission::identity::{
-    framed_identity, runtime_program_dynamic_build_id,
-    runtime_program_service_unit_identity_bytes_from_json, SERVICE_BUILD_IDENTITY_PREFIX,
+    package_unit_artifact_ref, runtime_program_dynamic_build_id,
+    runtime_program_service_unit_identity_bytes_from_json, service_assembly_hash,
+    service_assembly_identity, service_build_identity_hash, SERVICE_BUILD_IDENTITY_PREFIX,
 };
 use skiff_compiler_emission::package_unit_artifacts::materialize_package_unit_artifact;
 use thiserror::Error;
@@ -28,10 +29,7 @@ use crate::{
         PACKAGE_UNIT_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
         SERVICE_UNIT_SCHEMA_VERSION,
     },
-    emission::{
-        file_ir_artifacts::published_file_ir_artifact_from_unit,
-        service_artifacts::SERVICE_ASSEMBLY_IDENTITY_PREFIX,
-    },
+    emission::file_ir_artifacts::published_file_ir_artifact_from_unit,
     test_support::package_units::file_ref_for_published,
 };
 use skiff_compiler_lowering::file_ir::{
@@ -243,7 +241,7 @@ pub fn write_test_service_artifact_root_with_runtime_path_registration(
         &service_unit_artifact,
         &config_activation,
         &db,
-    );
+    )?;
     let pointer_build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{}", assembly.hash);
     let runtime_config = config_wrapped_for_router(
         &input.test_config,
@@ -709,7 +707,7 @@ fn service_assembly_artifact(
     service_unit: &PublishedJsonArtifact,
     config_activation: &Value,
     db_metadata: &[DbMetadataIr],
-) -> PublishedJsonArtifact {
+) -> Result<PublishedJsonArtifact, TestArtifactError> {
     let service_path = PublicationId::parse(&input.service_id)
         .expect("service id was already validated")
         .artifact_path();
@@ -760,18 +758,25 @@ fn service_assembly_artifact(
         "serviceUnit": service_unit_pointer.clone(),
         "sourceMap": source_map,
     });
-    let hash = value_sha256(&hash_input);
-    let assembly_identity = framed_identity(SERVICE_ASSEMBLY_IDENTITY_PREFIX, &hash);
+    let hash =
+        service_assembly_hash(&hash_input).map_err(|error| TestArtifactError::InvalidInput {
+            message: format!("failed to hash service assembly: {error}"),
+        })?;
+    let assembly_identity = service_assembly_identity(&hash_input).map_err(|error| {
+        TestArtifactError::InvalidInput {
+            message: format!("failed to identify service assembly: {error}"),
+        }
+    })?;
     let path = format!("assemblies/services/{service_path}/{hash}.json");
     let mut value = hash_input;
     value["service"]["assemblyIdentity"] = Value::String(assembly_identity.clone());
     value["serviceUnit"] = service_unit_pointer;
-    PublishedJsonArtifact {
+    Ok(PublishedJsonArtifact {
         value,
         identity: assembly_identity,
         hash,
         path,
-    }
+    })
 }
 
 fn assembly_operation(
@@ -983,6 +988,22 @@ fn write_artifact_tree(
     }
     write_json(root, &service_unit.path, &service_unit.value)?;
     write_json(root, &assembly.path, &assembly.value)?;
+    let service_unit_ref = assembly
+        .value
+        .get("serviceUnit")
+        .cloned()
+        .expect("test assembly should contain serviceUnit pointer");
+    let package_unit_refs = package_artifacts
+        .units
+        .iter()
+        .map(|unit| {
+            package_unit_artifact_ref(unit.path.clone(), &unit.value).map_err(|error| {
+                TestArtifactError::InvalidInput {
+                    message: format!("failed to build package unit pointer: {error}"),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let pointer_path = format!("dev/services/{}.json", service_id.artifact_path());
     let pointer = json!({
         "mode": "dev",
@@ -1003,11 +1024,8 @@ fn write_artifact_tree(
             "assemblyIdentity": assembly.identity,
             "assemblyPath": assembly.path,
         },
-        "serviceUnit": {
-            "unitIdentity": service_unit.identity,
-            "unitHash": service_unit.hash,
-            "unitPath": service_unit.path,
-        },
+        "serviceUnit": service_unit_ref.clone(),
+        "packageUnits": package_unit_refs.clone(),
     });
     write_json(root, &pointer_path, &pointer)?;
     let service_path = service_id.artifact_path();
@@ -1033,11 +1051,8 @@ fn write_artifact_tree(
             "assemblyIdentity": assembly.identity,
             "assemblyPath": assembly.path,
         },
-        "serviceUnit": {
-            "unitIdentity": service_unit.identity,
-            "unitHash": service_unit.hash,
-            "unitPath": service_unit.path,
-        },
+        "serviceUnit": service_unit_ref,
+        "packageUnits": package_unit_refs,
     });
     write_json(root, &build_path, &build_record)?;
     if config.as_object().is_some_and(|object| !object.is_empty()) {
@@ -1051,28 +1066,9 @@ fn write_artifact_tree(
 }
 
 fn service_build_hash(build_id: &str) -> Result<&str, TestArtifactError> {
-    let Some((prefix, hash)) = build_id.rsplit_once(":sha256:") else {
-        return Err(TestArtifactError::InvalidInput {
-            message: "service buildId must include :sha256:".to_string(),
-        });
-    };
-    if prefix != SERVICE_BUILD_IDENTITY_PREFIX {
-        return Err(TestArtifactError::InvalidInput {
-            message: format!(
-                "service buildId prefix must be {SERVICE_BUILD_IDENTITY_PREFIX}, got {prefix}"
-            ),
-        });
-    }
-    if hash.len() != 64
-        || !hash
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-    {
-        return Err(TestArtifactError::InvalidInput {
-            message: "service buildId sha256 hash must be 64 lowercase hex characters".to_string(),
-        });
-    }
-    Ok(hash)
+    service_build_identity_hash(build_id).map_err(|error| TestArtifactError::InvalidInput {
+        message: error.to_string(),
+    })
 }
 
 fn write_json(root: &Path, relative_path: &str, value: &Value) -> Result<(), TestArtifactError> {
@@ -1577,7 +1573,8 @@ mod tests {
         InterfaceOperationIr, TypeDeclIr, TypeDescriptorIr,
     };
     use skiff_compiler_emission::identity::{
-        interface_instantiation_ref, PACKAGE_BUILD_IDENTITY_PREFIX,
+        framed_identity, interface_instantiation_ref, PACKAGE_BUILD_IDENTITY_PREFIX,
+        SERVICE_ASSEMBLY_IDENTITY_PREFIX,
     };
     use skiff_compiler_lowering::file_ir::{
         ExecutableBody, ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, SlotLayout, TypeRefIr,

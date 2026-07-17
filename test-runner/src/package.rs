@@ -16,7 +16,7 @@ use skiff_compiler::test_support::{
     TestPackageTestArtifactInput, TestPackageTestEntrypointInput, TestPackageTestFileIrArtifact,
     PACKAGE_CONFIG_FILE,
 };
-use skiff_compiler::PublishedFileIrArtifact;
+use skiff_compiler::{PublishedFileIrArtifact, PublishedResourceArtifact};
 use skiff_syntax::ast::SourceFile as AstSourceFile;
 
 use super::{
@@ -109,6 +109,7 @@ pub(super) fn run_package_tests(
     let production_config_and_effect_metadata =
         production_compiled.config_and_effect_metadata.clone();
     let production_package_unit = production_compiled.package_unit.clone();
+    let production_resource_blobs = production_compiled.resource_blobs;
     let production_artifacts = production_compiled.artifacts;
     let package_dependencies = production_package_unit.dependencies.clone();
     let tests = collect_package_test_cases(&test_sources);
@@ -123,6 +124,7 @@ pub(super) fn run_package_tests(
         production_package_unit: &production_package_unit,
         production_config_and_effect_metadata: &production_config_and_effect_metadata,
         production_artifacts: &production_artifacts,
+        production_resource_blobs: &production_resource_blobs,
     };
     let mut results = (0..test_count).map(|_| None).collect::<Vec<_>>();
     let mut ready_tests = Vec::new();
@@ -236,6 +238,7 @@ struct PackageTestBatchCompileContext<'a> {
     production_package_unit: &'a PackageUnit,
     production_config_and_effect_metadata: &'a ConfigAndEffectMetadata,
     production_artifacts: &'a [PublishedFileIrArtifact],
+    production_resource_blobs: &'a [PublishedResourceArtifact],
 }
 
 struct CompiledPackageTestOwnerArtifactInput {
@@ -320,6 +323,7 @@ fn package_test_artifact_input_for_ready_tests(
             .clone(),
         package_test_config_and_effect_metadata,
         production_files: context.production_artifacts.to_vec(),
+        production_resource_blobs: context.production_resource_blobs.to_vec(),
         dependency_packages: context
             .dependency_artifacts
             .package_test_dependency_packages
@@ -981,6 +985,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: package_root.join("package.yml"),
             synthetic: false,
         };
@@ -1030,6 +1035,7 @@ mod tests {
         let production_package_unit = production_compiled.package_unit.clone();
         let production_config_and_effect_metadata =
             production_compiled.config_and_effect_metadata.clone();
+        let production_resource_blobs = production_compiled.resource_blobs;
         let production_artifacts = production_compiled.artifacts;
         let compile_context = PackageTestBatchCompileContext {
             current_manifest: &manifest,
@@ -1041,6 +1047,7 @@ mod tests {
             production_package_unit: &production_package_unit,
             production_config_and_effect_metadata: &production_config_and_effect_metadata,
             production_artifacts: &production_artifacts,
+            production_resource_blobs: &production_resource_blobs,
         };
         let test_cases = collect_package_test_cases(std::slice::from_ref(&test_source));
         let ready_tests = test_cases
@@ -1146,6 +1153,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: dependency_root.join("package.yml"),
             synthetic: false,
         };
@@ -1156,6 +1164,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies: vec![dependency_ref],
+            resources: Vec::new(),
             path: package_root.join("package.yml"),
             synthetic: false,
         };
@@ -1220,6 +1229,7 @@ mod tests {
         let production_package_unit = production_compiled.package_unit.clone();
         let production_config_and_effect_metadata =
             production_compiled.config_and_effect_metadata.clone();
+        let production_resource_blobs = production_compiled.resource_blobs;
         let production_artifacts = production_compiled.artifacts;
         let compile_context = PackageTestBatchCompileContext {
             current_manifest: &manifest,
@@ -1231,6 +1241,7 @@ mod tests {
             production_package_unit: &production_package_unit,
             production_config_and_effect_metadata: &production_config_and_effect_metadata,
             production_artifacts: &production_artifacts,
+            production_resource_blobs: &production_resource_blobs,
         };
         let test_cases = collect_package_test_cases(std::slice::from_ref(&test_source));
         let ready_tests = test_cases
@@ -1270,6 +1281,7 @@ mod tests {
             version: "1.0.0".to_string(),
             api: Vec::new(),
             dependencies: Vec::new(),
+            resources: Vec::new(),
             path: package_root.join("package.yml"),
             synthetic: false,
         };
@@ -1321,6 +1333,7 @@ mod tests {
         let production_package_unit = production_compiled.package_unit.clone();
         let production_config_and_effect_metadata =
             production_compiled.config_and_effect_metadata.clone();
+        let production_resource_blobs = production_compiled.resource_blobs;
         let production_artifacts = production_compiled.artifacts;
         let compile_context = PackageTestBatchCompileContext {
             current_manifest: &manifest,
@@ -1332,6 +1345,7 @@ mod tests {
             production_package_unit: &production_package_unit,
             production_config_and_effect_metadata: &production_config_and_effect_metadata,
             production_artifacts: &production_artifacts,
+            production_resource_blobs: &production_resource_blobs,
         };
         let test_cases = collect_package_test_cases(&[first_test_source, second_test_source]);
         let ready_tests = test_cases

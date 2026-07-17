@@ -19,6 +19,7 @@ use skiff_artifact_model::{
 
 use super::*;
 
+mod artifact_reference;
 mod file_ir;
 mod framing;
 mod golden;

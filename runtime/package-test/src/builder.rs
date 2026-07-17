@@ -100,6 +100,25 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
                 )
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let production_resources = artifact_loader.load_resource_refs(
+            &production_unit.resources,
+            &format!(
+                "package-test production package {}@{} resources",
+                production_unit.package_id, production_unit.version
+            ),
+        )?;
+        let dependency_resources = dependency_units
+            .iter()
+            .map(|unit| {
+                artifact_loader.load_resource_refs(
+                    &unit.resources,
+                    &format!(
+                        "package-test dependency package {}@{} resources",
+                        unit.package_id, unit.version
+                    ),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let test_file_refs = assembly
             .test_files
@@ -117,6 +136,7 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         );
         synthetic_service.files = production_unit.files.clone();
         synthetic_service.files.extend(test_file_refs);
+        synthetic_service.resources = production_unit.resources.clone();
         synthetic_service.package_dependencies = production_unit.dependencies.clone();
         synthetic_service.db =
             package_test_db_metadata(production_unit.as_ref(), &production_files);
@@ -149,10 +169,10 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         let graph = ArtifactGraph {
             service_unit: synthetic_service.clone(),
             service_files,
-            service_resources: Default::default(),
+            service_resources: production_resources,
             package_units: dependency_units,
             package_files: dependency_files,
-            package_resources: Vec::new(),
+            package_resources: dependency_resources,
             identities,
         };
         let image_build = link_runtime_program_image(graph).map_err(|error| {

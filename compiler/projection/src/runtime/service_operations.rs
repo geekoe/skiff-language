@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    callable_facts::{ProjectedCallableFacts, ProjectionCallableFactsIndex},
     contract::{
         ContractPackageRefKey, ContractProjection, ContractProjectionIndex, ContractTypeKey,
     },
@@ -14,10 +15,8 @@ use crate::{
         public_function_operation_abi_id, PublicInstanceExport, PublicInstanceOperation,
     },
 };
-use skiff_artifact_identity::interface_instantiation_ref;
 use skiff_artifact_model::{
-    CanonicalPublicCallableSignature, FunctionTypeParamIr, LiteralIr, PackageRefIr,
-    PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
+    CanonicalPublicCallableSignature, FileIrUnit, FunctionTypeParamIr, TypeRefIr,
 };
 use skiff_compiler_core::prelude_registry::PRELUDE_REGISTRY_ID;
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref;
@@ -54,25 +53,53 @@ pub fn build_runtime_operations(
     _service_version: &str,
     operations: &[ArtifactOperation],
     contract: &ContractProjection,
+    file_ir_units: &[FileIrUnit],
+    callable_effects: &skiff_compiler_projection_input::ProjectionCallableEffectFacts,
     protocol_identity: &str,
-) -> Vec<RuntimeOperationManifest> {
+) -> Result<Vec<RuntimeOperationManifest>, ProjectionError> {
+    let callable_facts_index = ProjectionCallableFactsIndex::new(file_ir_units, callable_effects);
     operations
         .iter()
-        .filter_map(|artifact_operation| {
-            let (interface_name, method_name) =
-                contract.split_operation_name(&artifact_operation.operation)?;
-            let interface = contract.interfaces.get(interface_name)?;
+        .map(|artifact_operation| {
+            let (interface_name, method_name) = contract
+                .split_operation_name(&artifact_operation.operation)
+                .ok_or_else(|| ProjectionError::ImplementationConformance {
+                    message: format!(
+                        "operation {} is not a projected contract operation",
+                        artifact_operation.operation
+                    ),
+                })?;
+            let interface = contract.interfaces.get(interface_name).ok_or_else(|| {
+                ProjectionError::ImplementationConformance {
+                    message: format!(
+                        "operation {} references missing contract interface {interface_name}",
+                        artifact_operation.operation
+                    ),
+                }
+            })?;
             let operation = interface
                 .operations
                 .iter()
-                .find(|operation| operation.name == method_name)?;
+                .find(|operation| operation.name == method_name)
+                .ok_or_else(|| ProjectionError::ImplementationConformance {
+                    message: format!(
+                        "operation {} references missing contract method {interface_name}.{method_name}",
+                        artifact_operation.operation
+                    ),
+                })?;
+            let callable_facts = contract_operation_callable_facts(
+                &callable_facts_index,
+                contract,
+                &artifact_operation.operation,
+            )?;
+            let public_signature = callable_facts.receiver_public_signature();
             let (mode, response_type) =
                 projection_operation_response_mode_and_type(&operation.return_type);
-            Some(RuntimeOperationManifest {
+            Ok(RuntimeOperationManifest {
                 operation: artifact_operation.operation.clone(),
                 operation_abi_id: contract_public_function_operation_abi_id(
                     &artifact_operation.operation,
-                    operation,
+                    &public_signature,
                 ),
                 target: artifact_operation.target.clone().unwrap(),
                 mode,
@@ -89,6 +116,33 @@ pub fn build_runtime_operations(
             })
         })
         .collect()
+}
+
+pub(crate) fn contract_operation_callable_facts(
+    callable_facts_index: &ProjectionCallableFactsIndex<'_>,
+    contract: &ContractProjection,
+    operation_name: &str,
+) -> Result<ProjectedCallableFacts, ProjectionError> {
+    let (interface_name, method_name) =
+        contract
+            .split_operation_name(operation_name)
+            .ok_or_else(|| ProjectionError::ImplementationConformance {
+                message: format!(
+                    "operation {operation_name} is not a projected contract operation"
+                ),
+            })?;
+    let implementation = contract
+        .operation_binding(interface_name, method_name)
+        .ok_or_else(|| ProjectionError::ImplementationConformance {
+            message: format!(
+                "operation {operation_name} implementation binding {interface_name}.{method_name} is missing"
+            ),
+        })?;
+    callable_facts_index.for_symbol(
+        &implementation.module_path,
+        &implementation.executable_symbol,
+        &format!("operation {operation_name}"),
+    )
 }
 
 pub fn build_public_instance_runtime_operations(
@@ -199,145 +253,9 @@ pub fn runtime_operation_abi_id(
 
 pub fn contract_public_function_operation_abi_id(
     public_path: &str,
-    operation: &crate::contract::ContractInterfaceOperationProjection,
+    public_signature: &CanonicalPublicCallableSignature,
 ) -> String {
-    let public_signature = contract_public_function_signature(operation);
-    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
-}
-
-pub fn contract_public_function_signature(
-    operation: &crate::contract::ContractInterfaceOperationProjection,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: operation
-            .params
-            .iter()
-            .map(|param| FunctionTypeParamIr {
-                name: param.name.clone(),
-                ty: contract_type_key_to_type_ref(&param.ty),
-            })
-            .collect(),
-        return_type: contract_type_key_to_type_ref(&operation.return_type),
-        may_suspend: matches!(
-            projection_operation_response_mode_and_type(&operation.return_type)
-                .0
-                .as_str(),
-            RUNTIME_OPERATION_MODE_SERVER_STREAM
-        ),
-    }
-}
-
-fn contract_type_key_to_type_ref(ty: &ContractTypeKey) -> TypeRefIr {
-    match ty {
-        ContractTypeKey::Builtin { name, args } => TypeRefIr::Native {
-            name: name.clone(),
-            args: args.iter().map(contract_type_key_to_type_ref).collect(),
-        },
-        ContractTypeKey::Named(name) => TypeRefIr::ServiceSymbol {
-            symbol: contract_named_type_key_symbol(name),
-        },
-        ContractTypeKey::PackageSymbol {
-            package,
-            symbol_path,
-            abi_expectation,
-        } => TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: contract_package_ref_key_to_ref(package),
-                symbol_path: symbol_path.clone(),
-                abi_expectation: abi_expectation.clone(),
-            },
-        },
-        ContractTypeKey::AnyInterface {
-            interface,
-            canonical_type_args,
-        } => TypeRefIr::AnyInterface {
-            interface: interface_instantiation_ref(
-                contract_type_key_to_type_ref(interface),
-                canonical_type_args
-                    .iter()
-                    .map(contract_type_key_to_type_ref)
-                    .collect(),
-            ),
-        },
-        ContractTypeKey::DbObjectSymbol {
-            module_path,
-            symbol,
-        } => TypeRefIr::DbObjectSymbol {
-            symbol: ServiceSymbolRef {
-                module_path: module_path.clone(),
-                symbol: symbol.clone(),
-            },
-        },
-        ContractTypeKey::Record { fields } => TypeRefIr::Record {
-            fields: fields
-                .iter()
-                .map(|(name, ty)| (name.clone(), contract_type_key_to_type_ref(ty)))
-                .collect(),
-        },
-        ContractTypeKey::Union { items } => TypeRefIr::Union {
-            items: items.iter().map(contract_type_key_to_type_ref).collect(),
-        },
-        ContractTypeKey::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(contract_type_key_to_type_ref(inner)),
-        },
-        ContractTypeKey::Literal(literal) => TypeRefIr::Literal {
-            value: contract_literal_key_to_literal(literal),
-        },
-        ContractTypeKey::TypeParam { name } => TypeRefIr::TypeParam { name: name.clone() },
-        ContractTypeKey::Function {
-            params,
-            return_type,
-        } => TypeRefIr::Function {
-            params: params
-                .iter()
-                .map(|param| FunctionTypeParamIr {
-                    name: param.name.clone(),
-                    ty: contract_type_key_to_type_ref(&param.ty),
-                })
-                .collect(),
-            return_type: Box::new(contract_type_key_to_type_ref(return_type)),
-        },
-    }
-}
-
-fn contract_named_type_key_symbol(
-    name: &crate::contract::ContractNamedTypeKey,
-) -> ServiceSymbolRef {
-    match name {
-        crate::contract::ContractNamedTypeKey::Public { symbol } => ServiceSymbolRef {
-            module_path: String::new(),
-            symbol: symbol.clone(),
-        },
-        crate::contract::ContractNamedTypeKey::Source { source } => ServiceSymbolRef {
-            module_path: source.module_path().to_string(),
-            symbol: source.symbol().to_string(),
-        },
-    }
-}
-
-fn contract_package_ref_key_to_ref(package: &ContractPackageRefKey) -> PackageRefIr {
-    match package {
-        ContractPackageRefKey::PackageId { package_id } => PackageRefIr::PackageId {
-            package_id: package_id.clone(),
-        },
-        ContractPackageRefKey::Dependency { dependency_ref } => PackageRefIr::Dependency {
-            dependency_ref: dependency_ref.clone(),
-        },
-    }
-}
-
-fn contract_literal_key_to_literal(literal: &crate::contract::ContractLiteralKey) -> LiteralIr {
-    match literal {
-        crate::contract::ContractLiteralKey::Null => LiteralIr::Null,
-        crate::contract::ContractLiteralKey::Bool(value) => LiteralIr::Bool { value: *value },
-        crate::contract::ContractLiteralKey::Number(value) => LiteralIr::Number {
-            value: serde_json::from_str(value)
-                .expect("contract number literal should be valid JSON number"),
-        },
-        crate::contract::ContractLiteralKey::String(value) => LiteralIr::String {
-            value: value.clone(),
-        },
-    }
+    public_function_operation_abi_id(public_path, public_signature, &[], &Default::default())
 }
 
 fn public_instance_runtime_surface(

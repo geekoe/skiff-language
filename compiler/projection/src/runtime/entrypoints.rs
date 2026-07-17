@@ -37,11 +37,13 @@ use skiff_compiler_projection_input::{
 };
 
 use super::{
-    entry_function_type_ref_source_text, entry_type_source_text_with_named_types,
-    is_connection_message_type, is_gateway_connect_result_type, is_http_request_type,
-    is_http_response_stream_event_type, is_http_response_type, is_nullable_http_response_type,
-    is_websocket_connect_request_type, is_websocket_receive_event_root, normalize_type_name,
-    package_runtime_schema_for_type_ref, package_runtime_schema_for_type_spec, response_type_ir,
+    entry_function_type_ref_source_text,
+    entry_operation_abi::{canonicalize_service_entry_operation_abis, entry_operation_abi_id},
+    entry_type_source_text_with_named_types, is_connection_message_type,
+    is_gateway_connect_result_type, is_http_request_type, is_http_response_stream_event_type,
+    is_http_response_type, is_nullable_http_response_type, is_websocket_connect_request_type,
+    is_websocket_receive_event_root, normalize_type_name, package_runtime_schema_for_type_ref,
+    package_runtime_schema_for_type_spec, response_type_ir,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +54,7 @@ pub struct EntryOperationSpec {
     pub callable: EntryOperationCallable,
     pub params: Vec<EntryParamSpec>,
     pub return_type: EntryTypeSpec,
+    pub may_suspend: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +254,7 @@ pub fn build_entry_point_artifacts(
         }
     }
 
+    canonicalize_service_entry_operation_abis(&mut artifacts, input)?;
     Ok(artifacts)
 }
 
@@ -424,6 +428,7 @@ fn push_websocket_function_operation(
                     },
                     params: function.function.params,
                     return_type: function.function.return_type,
+                    may_suspend: function.function.may_suspend,
                 },
                 service_id,
                 service_version,
@@ -471,7 +476,12 @@ fn push_runtime_package_websocket_operation(
     });
     artifacts.runtime_operations.push(RuntimeOperationManifest {
         operation: operation.clone(),
-        operation_abi_id: entry_operation_abi_id(&operation, &params, &return_type),
+        operation_abi_id: entry_operation_abi_id(
+            &operation,
+            &params,
+            &return_type,
+            function.function.may_suspend,
+        ),
         target,
         mode: operation_response_mode(&return_type),
         parameters: params
@@ -1240,7 +1250,7 @@ fn package_gateway_operation_ref(
             })
             .collect(),
         return_type: function.return_type.ir.clone(),
-        may_suspend: operation_response_mode(&function.return_type) == "serverStream",
+        may_suspend: function.may_suspend,
     };
     OperationAbiRef {
         operation_abi_id: public_function_operation_abi_id(
@@ -1538,6 +1548,7 @@ fn build_http_route_artifacts(
                         &operation,
                         &target.function.params,
                         &target.function.return_type,
+                        target.function.may_suspend,
                     )),
                     target: target_name.clone(),
                     handler: Some(handler_manifest),
@@ -1555,6 +1566,7 @@ fn build_http_route_artifacts(
                             callable: EntryOperationCallable::Function { name: symbol },
                             params: target.function.params,
                             return_type: target.function.return_type,
+                            may_suspend: target.function.may_suspend,
                         },
                         service_id,
                         service_version,
@@ -1619,6 +1631,7 @@ fn build_http_route_artifacts(
                                 },
                                 params: projected.signature.operation.params.clone(),
                                 return_type: projected.signature.operation.return_type.clone(),
+                                may_suspend: projected.signature.operation.may_suspend,
                             },
                             projected,
                             service_id,
@@ -1663,6 +1676,7 @@ fn build_http_route_artifacts(
                             },
                             params: projected.signature.operation.params.clone(),
                             return_type: projected.signature.operation.return_type.clone(),
+                            may_suspend: projected.signature.operation.may_suspend,
                         },
                         projected,
                         service_id,
@@ -2302,6 +2316,7 @@ fn entry_operation_spec(
         },
         params: method.params.clone(),
         return_type: method.return_type.clone(),
+        may_suspend: method.may_suspend,
     }
 }
 
@@ -2324,7 +2339,12 @@ fn push_entry_operation(
     let response_type_ir = response_type_ir(&spec.return_type);
     artifacts.runtime_operations.push(RuntimeOperationManifest {
         operation: spec.operation.clone(),
-        operation_abi_id: entry_operation_abi_id(&spec.operation, &spec.params, &spec.return_type),
+        operation_abi_id: entry_operation_abi_id(
+            &spec.operation,
+            &spec.params,
+            &spec.return_type,
+            spec.may_suspend,
+        ),
         target: spec.target.clone(),
         mode,
         parameters: spec
@@ -2367,32 +2387,6 @@ fn operation_response_mode(return_type: &EntryTypeSpec) -> String {
             "serverStream".to_string()
         }
         _ => "unary".to_string(),
-    }
-}
-
-pub fn entry_operation_abi_id(
-    public_path: &str,
-    params: &[EntryParamSpec],
-    return_type: &EntryTypeSpec,
-) -> String {
-    let public_signature = entry_operation_public_signature(params, return_type);
-    public_function_operation_abi_id(public_path, &public_signature, &[], &Default::default())
-}
-
-pub fn entry_operation_public_signature(
-    params: &[EntryParamSpec],
-    return_type: &EntryTypeSpec,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: params
-            .iter()
-            .map(|param| FunctionTypeParamIr {
-                name: param.name.clone(),
-                ty: param.ty.ir.clone(),
-            })
-            .collect(),
-        return_type: return_type.ir.clone(),
-        may_suspend: operation_response_mode(return_type) == "serverStream",
     }
 }
 

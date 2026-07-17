@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use skiff_artifact_identity::ValidatedServiceArtifactClosure;
 use skiff_artifact_model::ServiceUnit;
 use skiff_runtime_linked_program::{
     ArtifactFileIrUnit as FileIrUnit, FileIrRef, LinkedProgramImage, PackageUnit,
@@ -40,8 +41,16 @@ pub fn load_runtime_program_parts(
         &local_caches
     };
     let pointer = select_runtime_program_pointer_from_roots(opts.roots, &selection)?;
+    let validated = skiff_artifact_identity::validate_service_artifact_closure(
+        &pointer.artifact_root,
+        &pointer.entry.service_id,
+        &pointer.entry.service_assembly.assembly_identity,
+        &pointer.entry.service_assembly.assembly_path,
+        &pointer.entry.service_unit,
+        &pointer.entry.package_units,
+    )?;
     let loaded = RuntimeProgramPartsLoader::new(&pointer.artifact_root, caches)
-        .load_pointer_parts_with_service_unit(&pointer.entry)?;
+        .load_validated_pointer_parts_with_service_unit(&validated)?;
     caches.evict_lru_to_budget();
     Ok(loaded.parts)
 }
@@ -108,18 +117,26 @@ impl<'a> RuntimeProgramPartsLoader<'a> {
         })
     }
 
+    pub(super) fn load_validated_pointer_parts_with_service_unit(
+        &self,
+        validated: &ValidatedServiceArtifactClosure,
+    ) -> anyhow::Result<LoadedRuntimeProgramPartsArtifact> {
+        let graph = self
+            .graph_loader
+            .load_validated_pointer_artifact_graph(validated)?;
+        let service_unit = graph.service_unit.clone();
+        let parts = self.link_loaded_artifact_graph_parts(graph)?;
+        Ok(LoadedRuntimeProgramPartsArtifact {
+            service_unit,
+            parts,
+        })
+    }
+
     pub(super) fn load_pointer_artifact_graph(
         &self,
         pointer: &ArtifactIndexPointer,
     ) -> anyhow::Result<ArtifactGraph> {
         self.graph_loader.load_pointer_artifact_graph(pointer)
-    }
-
-    pub fn load_service_artifact_graph(
-        &self,
-        service: Arc<ServiceUnit>,
-    ) -> anyhow::Result<ArtifactGraph> {
-        self.graph_loader.load_service_artifact_graph(service)
     }
 
     pub(super) fn link_loaded_artifact_graph_parts(

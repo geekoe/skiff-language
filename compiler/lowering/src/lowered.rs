@@ -63,6 +63,7 @@ pub struct SyntheticEntrypointModule {
 pub struct SyntheticEntrypointExecutable {
     kind: SyntheticEntrypointExecutableKind,
     signature: EntryFunctionSignature,
+    may_suspend: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +293,7 @@ impl SyntheticEntrypointModule {
                             executable,
                             publication_type_names,
                         ),
+                        may_suspend: executable.may_suspend,
                     },
                 ))
             })
@@ -329,6 +331,10 @@ impl SyntheticEntrypointExecutable {
 
     pub fn signature(&self) -> &EntryFunctionSignature {
         &self.signature
+    }
+
+    pub fn may_suspend(&self) -> bool {
+        self.may_suspend
     }
 
     pub fn signature_with_name(&self, name: &str) -> EntryFunctionSignature {

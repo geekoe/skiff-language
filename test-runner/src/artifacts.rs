@@ -19,6 +19,7 @@ use skiff_compiler::{
         TestResolvedPackage,
     },
     PackageDependency, PackageManifestKey, PackageResolutionDirs, PublishedFileIrArtifact,
+    PublishedResourceArtifact,
 };
 use skiff_syntax::ast::SourceFile as AstSourceFile;
 
@@ -35,6 +36,7 @@ use super::{
 
 pub(super) struct PackageSourceCompiledArtifacts {
     pub(super) artifacts: Vec<PublishedFileIrArtifact>,
+    pub(super) resource_blobs: Vec<PublishedResourceArtifact>,
     pub(super) config_and_effect_metadata: skiff_artifact_model::ConfigAndEffectMetadata,
     pub(super) package_unit: PackageUnit,
 }
@@ -121,6 +123,7 @@ pub(super) fn package_dependency_artifacts(
             package_version: unit_artifact.package_version.clone(),
             package_dependencies: unit_artifact.package_dependencies.clone(),
             production_files: unit_artifact.production_files.clone(),
+            resource_blobs: unit_artifact.resource_blobs.clone(),
             package_unit: Some(unit_artifact.unit.clone()),
         });
     }
@@ -297,15 +300,15 @@ pub(super) fn package_source_file_ir_artifacts_with_dependency_publications(
             package_aliases,
             dependency_publications,
         )?;
-    let package_unit =
+    let package_unit_artifact =
         compiled
-            .package_unit
+            .package_unit_artifact
             .clone()
             .ok_or_else(|| SkiffTestError::RuntimeSetup {
                 message: format!("package {} did not produce a PackageUnit", manifest.id),
             })?;
-    let artifacts = compiled
-        .file_ir_artifacts
+    let artifacts = package_unit_artifact
+        .production_files
         .into_iter()
         .map(|mut artifact| {
             artifact.role = "package".to_string();
@@ -314,8 +317,9 @@ pub(super) fn package_source_file_ir_artifacts_with_dependency_publications(
         .collect::<Vec<_>>();
     Ok(PackageSourceCompiledArtifacts {
         artifacts,
+        resource_blobs: package_unit_artifact.resource_blobs,
         config_and_effect_metadata: compiled.config_and_effect_metadata,
-        package_unit,
+        package_unit: package_unit_artifact.unit,
     })
 }
 

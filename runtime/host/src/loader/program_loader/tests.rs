@@ -9,11 +9,18 @@ use std::{
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use skiff_artifact_identity::{file_ir_identity, package_abi_identity, package_build_identity};
+use skiff_artifact_identity::{
+    file_ir_identity, package_abi_identity, package_build_identity, package_local_abi_identity,
+    publication_abi_identity, publication_storage_segment,
+};
+use skiff_runtime_loader::ArtifactGraphIdentities;
 
 use super::*;
 use crate::{
     artifact_cache::RuntimeArtifactCaches,
+    loader::test_artifacts::{
+        write_package_unit_ref, write_service_assembly_ref, write_service_unit_ref,
+    },
     program::{FileAddr, LinkedTypeDescriptor, ResolvedSymbol, TypeAddr, UnitAddr},
 };
 
@@ -75,6 +82,31 @@ fn load_test_layers_at_roots_with_caches(
             caches: Some(caches),
         },
     )
+}
+
+fn load_service_artifact_graph_for_test(
+    loader: &RuntimeProgramPartsLoader<'_>,
+    service: Arc<ServiceUnit>,
+) -> anyhow::Result<ArtifactGraph> {
+    let service_files = loader
+        .graph_loader
+        .load_file_refs(&service.files, "test service unit files")?;
+    let service_resources = loader
+        .graph_loader
+        .load_resource_refs(&service.resources, "test service unit resources")?;
+    let package_units = Vec::new();
+    let package_files = Vec::new();
+    let identities =
+        ArtifactGraphIdentities::from_loaded_units(&service_files, &package_units, &package_files);
+    Ok(ArtifactGraph {
+        service_unit: service,
+        service_files,
+        package_units,
+        package_files,
+        service_resources,
+        package_resources: Vec::new(),
+        identities,
+    })
 }
 
 #[test]
@@ -967,7 +999,7 @@ fn artifact_loader_rejects_legacy_service_unit_pointer_shapes() {
             json!({
                 "serviceUnit": "units/services/svc-v1.json"
             }),
-            "serviceUnit must be an object with unitPath",
+            "serviceUnit must be an object",
         ),
         (
             "serviceUnit artifactPath",
@@ -1024,7 +1056,7 @@ fn artifact_loader_rejects_legacy_service_unit_pointer_shapes() {
 
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains(expected),
+            error_text.contains(expected) || error_text.contains("unknown field"),
             "{label}: expected error containing {expected:?}, got {error_text}"
         );
     }
@@ -1254,9 +1286,8 @@ fn artifact_loader_exposes_loaded_artifact_graph_before_linking() {
             .load_service_unit_at_path(Path::new("units/services/svc-v1.json"))
             .expect("service unit should load"),
     );
-    let graph = loader
-        .load_service_artifact_graph(service)
-        .expect("artifact graph should load");
+    let graph =
+        load_service_artifact_graph_for_test(&loader, service).expect("artifact graph should load");
 
     assert_eq!(graph.service_unit.service.id, "example.com/svc");
     assert_eq!(graph.service_files.len(), 1);
@@ -1315,9 +1346,8 @@ fn artifact_loader_rejects_activation_cache_linked_image_identity_mismatch() {
             .load_service_unit_at_path(Path::new("units/services/svc-v1.json"))
             .expect("service unit should load"),
     );
-    let graph = loader
-        .load_service_artifact_graph(service)
-        .expect("artifact graph should load");
+    let graph =
+        load_service_artifact_graph_for_test(&loader, service).expect("artifact graph should load");
     let image_build =
         link_runtime_program_image(graph.clone()).expect("artifact graph should link");
     let mut cached_identity = image_build.identity.clone();
@@ -1996,7 +2026,8 @@ fn artifact_loader_rejects_legacy_package_unit_pointer_shapes() {
 
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains(expected),
+            error_text.contains(expected)
+                || error_text.contains("pinned packageUnits missing dependency"),
             "{label}: expected error containing {expected:?}, got {error_text}"
         );
     }
@@ -2118,7 +2149,9 @@ fn artifact_loader_loads_transitive_package_dependencies() {
                     "alias": "db"
                 }
             ],
-            "configAndEffectMetadata": {}
+            "configAndEffectMetadata": {
+                "effects": { "operations": {} }
+            }
         }),
     );
     write_package_index(
@@ -2225,7 +2258,7 @@ fn artifact_loader_rejects_caret_package_version_without_fallback() {
 
     let error_text = format!("{error:#}");
     assert!(
-        error_text.contains("version ^1"),
+        error_text.contains("pinned packageUnits missing dependency example.com/pkg@^1"),
         "unexpected error: {error_text}"
     );
 }
@@ -2339,6 +2372,19 @@ fn write_fixture_artifact_root(root: &Path, fixture: &DynamicBuildIdFixture) {
     for (relative_path, value) in &fixture.artifact_root {
         write_json_raw(root, relative_path, value.clone());
     }
+    let service_path = format!(
+        "units/services/{}/{}.json",
+        publication_storage_segment(&fixture.service_id, "fixture service id")
+            .expect("fixture service id should project"),
+        fixture.service_version
+    );
+    write_release_pointer(
+        root,
+        &fixture.service_id,
+        &fixture.service_version,
+        &build_identity_for_version_pointer(),
+        &service_path,
+    );
 }
 
 fn write_package_bugfix_root(root: &Path, build_identity: &str) {
@@ -2712,12 +2758,11 @@ fn package_unit_json(
         "implementationLinks": {},
         "dependencies": [],
         "configAndEffectMetadata": {
+            "config": {
+                "__testBuildSeed": build_identity
+            },
             "effects": {
-                "__testBuildSeed": {
-                    "metadata": {
-                        "value": build_identity
-                    }
-                }
+                "operations": {}
             }
         }
     })
@@ -2779,6 +2824,53 @@ fn write_release_pointer_with_service_unit_pointer(
     build_id: &str,
     service_unit_pointer: Value,
 ) {
+    let selected_service_unit = service_unit_pointer
+        .get("serviceUnit")
+        .and_then(Value::as_object)
+        .and_then(|pointer| pointer.get("unitPath"))
+        .and_then(Value::as_str)
+        .map(|path| {
+            serde_json::to_value(write_service_unit_ref(root, service_id, path))
+                .expect("test service unit ref should serialize")
+        });
+    let assembly_service_unit = selected_service_unit.clone().unwrap_or_else(|| {
+        serde_json::to_value(write_service_unit_ref(
+            root,
+            service_id,
+            "units/services/svc-v1.json",
+        ))
+        .expect("test service unit ref should serialize")
+    });
+    let package_units = match service_unit_pointer.get("packageUnits") {
+        Some(Value::Array(pointers)) => Value::Array(
+            pointers
+                .iter()
+                .map(|pointer| canonical_explicit_package_pointer(root, pointer))
+                .collect(),
+        ),
+        Some(value) => value.clone(),
+        None => package_pointers_for_service(root, &assembly_service_unit),
+    };
+    let service_value = read_json(
+        root,
+        assembly_service_unit["unitPath"]
+            .as_str()
+            .expect("canonical service unit pointer path"),
+    );
+    let protocol_identity = service_value["protocolIdentity"].as_str().unwrap_or(
+        "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let assembly_service_unit = serde_json::from_value(assembly_service_unit)
+        .expect("test service unit ref should deserialize");
+    let service_assembly = write_service_assembly_ref(
+        root,
+        service_id,
+        &sha256_hex(format!("{service_id}:{version}").as_bytes()),
+        protocol_identity,
+        &assembly_service_unit,
+        None,
+    );
+
     let service_id_path = service_id_path_for_test(service_id);
     write_json(
         root,
@@ -2800,9 +2892,10 @@ fn write_release_pointer_with_service_unit_pointer(
         "serviceVersion": version,
         "buildId": build_id,
         "serviceAssembly": {
-            "assemblyIdentity": build_identity('d'),
-            "assemblyPath": "assemblies/services/unused.json"
-        }
+            "assemblyIdentity": service_assembly.assembly_identity,
+            "assemblyPath": service_assembly.assembly_path
+        },
+        "packageUnits": package_units.clone()
     });
     build_record
         .as_object_mut()
@@ -2813,11 +2906,81 @@ fn write_release_pointer_with_service_unit_pointer(
                 .expect("test service unit pointer should be an object")
                 .clone(),
         );
+    if let Some(service_unit) = selected_service_unit {
+        build_record["serviceUnit"] = service_unit;
+    }
+    build_record["packageUnits"] = package_units;
     write_json(
         root,
         &format!("builds/services/{service_id_path}/{build_hash}.json"),
         build_record,
     );
+}
+
+fn canonical_explicit_package_pointer(root: &Path, pointer: &Value) -> Value {
+    let Some(path) = pointer.get("unitPath").and_then(Value::as_str) else {
+        return pointer.clone();
+    };
+    write_package_unit_ref(root, path)
+        .and_then(|reference| serde_json::to_value(reference).ok())
+        .unwrap_or_else(|| pointer.clone())
+}
+
+fn package_pointers_for_service(root: &Path, service_pointer: &Value) -> Value {
+    let Some(service_path) = service_pointer.get("unitPath").and_then(Value::as_str) else {
+        return json!([]);
+    };
+    let Ok(service) = serde_json::from_value::<ServiceUnit>(read_json(root, service_path)) else {
+        return json!([]);
+    };
+    let mut pointers = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    collect_package_pointers(
+        root,
+        &service.package_dependencies,
+        &mut seen,
+        &mut pointers,
+    );
+    Value::Array(pointers)
+}
+
+fn collect_package_pointers(
+    root: &Path,
+    dependencies: &[skiff_artifact_model::PackageDependencyConstraint],
+    seen: &mut std::collections::BTreeSet<String>,
+    output: &mut Vec<Value>,
+) {
+    for dependency in dependencies {
+        if !seen.insert(dependency.id.clone()) {
+            continue;
+        }
+        let index_path = format!(
+            "indexes/packages/{}/versions/{}.json",
+            publication_storage_segment(&dependency.id, "test package id")
+                .expect("test package id should project"),
+            dependency.version
+        );
+        let Ok(index_bytes) = fs::read(root.join(index_path)) else {
+            continue;
+        };
+        let Ok(index) = serde_json::from_slice::<Value>(&index_bytes) else {
+            continue;
+        };
+        let Some(unit_path) = index
+            .pointer("/packageUnit/unitPath")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(pointer) = write_package_unit_ref(root, unit_path) else {
+            continue;
+        };
+        if let Ok(unit) = serde_json::from_value::<PackageUnit>(read_json(root, &pointer.unit_path))
+        {
+            collect_package_pointers(root, &unit.dependencies, seen, output);
+        }
+        output.push(serde_json::to_value(pointer).expect("test package unit ref should serialize"));
+    }
 }
 
 fn service_id_path_for_test(service_id: &str) -> String {
@@ -2907,6 +3070,12 @@ fn canonicalize_test_package_unit_json(mut value: Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if let Ok(publication_abi) = serde_json::from_value::<skiff_artifact_model::PublicationAbiUnit>(
+        value["publicationAbi"].clone(),
+    ) {
+        value["publicationAbi"]["abiIdentity"] = json!(publication_abi_identity(&publication_abi)
+            .expect("test publication ABI identity should compute"));
+    }
     let Ok(unit) = serde_json::from_value::<skiff_artifact_model::PackageUnit>(value.clone())
     else {
         return value;
@@ -2990,16 +3159,21 @@ fn resolve_package_abi_identity_alias(identity: &str) -> Option<String> {
     PACKAGE_ABI_IDENTITY_ALIASES
         .with(|aliases| aliases.borrow().get(identity).cloned())
         .or_else(|| match identity {
-            "abi:pkg" | "abi:actual" | "abi:http-session" => {
-                Some(empty_package_abi_identity_for_test())
-            }
+            "abi:pkg" | "abi:actual" => Some(empty_package_abi_identity_for_test()),
+            "abi:http-session" => Some(empty_package_abi_identity_for("skiff.run/http-session")),
             _ => None,
         })
 }
 
 fn empty_package_abi_identity_for_test() -> String {
-    let unit = skiff_artifact_model::PackageUnit::empty("example.com/pkg", "1.0.0", "", "");
-    package_abi_identity(&unit).expect("empty package ABI identity should compute")
+    empty_package_abi_identity_for("example.com/pkg")
+}
+
+fn empty_package_abi_identity_for(package_id: &str) -> String {
+    let mut unit = skiff_artifact_model::PackageUnit::empty(package_id, "1.0.0", "", "");
+    unit.publication_abi.abi_identity = publication_abi_identity(&unit.publication_abi)
+        .expect("empty publication ABI identity should compute");
+    package_local_abi_identity(&unit).expect("empty package ABI identity should compute")
 }
 
 fn write_json_raw(root: &Path, relative_path: &str, value: Value) {

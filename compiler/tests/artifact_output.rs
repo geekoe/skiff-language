@@ -9,13 +9,15 @@ use common::{
     cli_command::{assert_failure, assert_success, stderr, CliCommand},
     TestDir,
 };
+use skiff_compiler_core::json_utils::value_sha256;
 use skiff_compiler_emission::identity::{
     canonical_interface_method_abi_id, canonical_interface_method_abi_id_from_parts,
     public_function_operation_abi_id as canonical_public_function_operation_abi_id,
     public_instance_method_operation_abi_id as canonical_public_instance_method_operation_abi_id,
     publication_abi_identity, runtime_program_dynamic_build_id,
-    runtime_program_service_unit_identity_bytes_from_json, FILE_IR_IDENTITY_PREFIX,
-    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
+    runtime_program_service_unit_identity_bytes_from_json, service_assembly_identity,
+    service_build_identity_from_assembly_identity, service_unit_hash, service_unit_identity,
+    FILE_IR_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_UNIT_IDENTITY_PREFIX,
 };
 
 #[test]
@@ -2000,11 +2002,60 @@ fn write_callee_service_artifact_root_with_publication_abi(
         "gateway": {},
         "config": {}
     });
-    let service_unit_hash = sha256_json(&service_unit);
+    let (service_unit_hash, service_unit_identity) = match serde_json::from_value::<
+        skiff_compiler_core::artifact::ServiceUnit,
+    >(service_unit.clone())
+    {
+        Ok(typed_service_unit) => (
+            service_unit_hash(&typed_service_unit)
+                .expect("callee service unit hash should compute"),
+            service_unit_identity(&typed_service_unit)
+                .expect("callee service unit identity should compute"),
+        ),
+        Err(_) => {
+            // Deliberately malformed units still need a content-addressed pointer so the
+            // production loader, rather than the fixture writer, owns schema rejection.
+            let hash = value_sha256(&serde_json::json!({
+                "identitySchema": "skiff-service-unit-identity-v1",
+                "unit": service_unit,
+            }));
+            let identity = format!("{SERVICE_UNIT_IDENTITY_PREFIX}:{hash}");
+            (hash, identity)
+        }
+    };
     let service_unit_path = format!("units/services/skiff~run~~account/{service_unit_hash}.json");
     write_json(root, &service_unit_path, &service_unit);
     let build_id = dynamic_build_id_for_test_service_unit(&service_unit)
         .unwrap_or_else(|| format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{service_unit_hash}"));
+    let service_unit_ref = serde_json::json!({
+        "schemaVersion": "skiff-service-unit-v1",
+        "unitIdentity": service_unit_identity,
+        "unitHash": service_unit_hash,
+        "unitPath": service_unit_path,
+    });
+    let mut service_assembly = serde_json::json!({
+        "schemaVersion": "skiff-assembly-v1",
+        "kind": "service",
+        "service": {
+            "id": "skiff.run/account",
+            "revisionId": "test-revision",
+            "protocolIdentity": service_unit["protocolIdentity"],
+            "api": { "bindings": {} },
+        },
+        "serviceUnit": service_unit_ref,
+    });
+    let assembly_identity = service_assembly_identity(&service_assembly)
+        .expect("callee service assembly identity should compute");
+    let pointer_build_id = service_build_identity_from_assembly_identity(&assembly_identity)
+        .expect("callee dev pointer build identity should compute");
+    service_assembly["service"]["assemblyIdentity"] =
+        serde_json::Value::String(assembly_identity.clone());
+    let assembly_hash = assembly_identity
+        .rsplit_once(":sha256:")
+        .expect("service assembly identity should contain hash")
+        .1;
+    let assembly_path = format!("assemblies/services/skiff~run~~account/{assembly_hash}.json");
+    write_json(root, &assembly_path, &service_assembly);
     write_json(
         root,
         "dev/services/skiff~run~~account.json",
@@ -2013,19 +2064,15 @@ fn write_callee_service_artifact_root_with_publication_abi(
             "serviceId": "skiff.run/account",
             "serviceVersion": "0.1.0",
             "profile": "test",
-            "buildId": build_id,
+            "buildId": pointer_build_id,
             "contractHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "protocolIdentity": service_unit["protocolIdentity"],
             "serviceAssembly": {
-                "assemblyIdentity": "skiff-service-assembly-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
-                "assemblyPath": "assemblies/services/skiff~run~~account/3333333333333333333333333333333333333333333333333333333333333333.json"
+                "assemblyIdentity": assembly_identity,
+                "assemblyPath": assembly_path,
             },
-            "serviceUnit": {
-                "schemaVersion": "skiff-service-unit-v1",
-                "unitIdentity": format!("{SERVICE_UNIT_IDENTITY_PREFIX}:{service_unit_hash}"),
-                "unitHash": service_unit_hash,
-                "unitPath": service_unit_path
-            }
+            "serviceUnit": service_unit_ref,
+            "packageUnits": [],
         }),
     );
 
@@ -2051,31 +2098,6 @@ fn write_json(root: &Path, relative_path: &str, value: &serde_json::Value) {
         format!("{}\n", serde_json::to_string_pretty(value).unwrap()),
     )
     .unwrap();
-}
-
-fn sha256_json(value: &serde_json::Value) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(&canonical_json(value)).unwrap(),
-    ))
-}
-
-fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(object) => {
-            let mut sorted = serde_json::Map::new();
-            let mut keys = object.keys().collect::<Vec<_>>();
-            keys.sort();
-            for key in keys {
-                sorted.insert(key.clone(), canonical_json(&object[key]));
-            }
-            serde_json::Value::Object(sorted)
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(canonical_json).collect())
-        }
-        _ => value.clone(),
-    }
 }
 
 fn json_file_count(path: &Path) -> usize {
