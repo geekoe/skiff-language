@@ -620,7 +620,7 @@ fn program_units_deserialize_compiler_shaped_ir_json() {
         ],
         "configAndEffectMetadata": {
             "config": {},
-            "effects": {}
+            "effects": { "operations": {} }
         }
     }))
     .expect("compiler-shaped package unit should deserialize");
