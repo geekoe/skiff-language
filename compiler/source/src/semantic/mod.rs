@@ -9,8 +9,8 @@ pub mod executable_semantics;
 pub mod interface;
 
 pub use context::{PublicationSemanticContext, SourceSemanticContext};
-pub(crate) use db_attachment::validate_db_storage_declarations;
 pub use db_attachment::{validate_db_attachments, DbAttachmentIndex};
+pub(crate) use db_attachment::{validate_db_schema_attachments, validate_db_storage_declarations};
 pub use executable::{executable_symbol, impl_method_declaration_name, ExecutableIndex};
 pub use executable_semantics::{build_executable_semantics, ExecutableSemantics};
 pub use interface::InterfaceSemantics;

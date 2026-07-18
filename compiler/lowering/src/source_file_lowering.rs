@@ -661,6 +661,41 @@ mod tests {
             .clone()
     }
 
+    #[test]
+    fn validated_package_db_schema_lowers_to_typed_file_ir() {
+        let unit = lowered_unit(
+            r#"
+                type Owner { id: string }
+                type Thread { id: string, owner: Owner }
+                db object Thread {
+                  primary key(id)
+                  unique index byOwner(owner.id desc) where owner.id != ""
+                }
+            "#,
+        );
+
+        let db = unit
+            .declarations
+            .db
+            .get("Thread")
+            .expect("validated package DB declaration should lower");
+        assert_eq!(db.key.name, "id");
+        assert!(db.fields.iter().any(|field| field.name == "owner"));
+        assert_eq!(db.indexes.len(), 1);
+        assert_eq!(db.indexes[0].name, "byOwner");
+        assert!(db.indexes[0].unique);
+        assert_eq!(db.indexes[0].fields[0].field.text, "owner.id");
+        assert_eq!(
+            db.indexes[0].fields[0].field.segments,
+            ["owner".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            db.indexes[0].fields[0].direction,
+            skiff_artifact_model::DbIndexDirectionIr::Desc
+        );
+        assert!(db.indexes[0].where_expr.is_some());
+    }
+
     fn lowered_units(sources: Vec<(&str, &str, &str)>) -> Vec<FileIrUnit> {
         lowered_units_for_package("example.com/publication-local-refs", sources)
     }

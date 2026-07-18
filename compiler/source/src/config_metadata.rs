@@ -42,7 +42,6 @@ pub fn source_config_metadata_from_parsed_sources(
 ) -> Result<SourceConfigMetadata, PublicationError> {
     validate_source_config_metadata_input(
         input.diagnostic_root,
-        input.parsed_sources,
         input.production_sources,
         input.policy,
     )?;
@@ -72,7 +71,6 @@ pub fn source_config_metadata_batches_from_parsed_sources(
 ) -> Result<Vec<SourceConfigMetadata>, PublicationError> {
     validate_source_config_metadata_input(
         input.diagnostic_root,
-        input.parsed_sources,
         input.production_sources,
         input.policy,
     )?;
@@ -104,13 +102,11 @@ pub fn source_config_metadata_batches_from_parsed_sources(
 
 fn validate_source_config_metadata_input(
     diagnostic_root: &Path,
-    parsed_sources: &[ParsedCompilerSource],
     production_sources: &[CompilerSourceFile],
     policy: PackageCompilePolicy<'_>,
 ) -> Result<(), PublicationError> {
     let root_ref_policy = root_refs::RootRefValidationPolicy::parsed_publication_sources();
     root_refs::validate_source_root_refs(diagnostic_root, production_sources, root_ref_policy)?;
-    crate::service_storage_rules::validate_db_storage_sources(parsed_sources)?;
     let _ = policy;
     Ok(())
 }

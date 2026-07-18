@@ -15,6 +15,7 @@ pub(crate) mod expression_type_model;
 mod linked_facts;
 pub(crate) mod linked_publication;
 mod name_resolution_model;
+mod package_db_schema;
 mod package_dependency_facts;
 mod package_export_resolver;
 pub mod package_rules;
@@ -32,7 +33,6 @@ mod semantics;
 pub mod service_ingress;
 pub mod service_package_facts;
 pub(crate) mod service_rules;
-pub(crate) mod service_storage_rules;
 pub(crate) mod shared;
 mod source_file_facts;
 pub mod source_graph;
@@ -153,7 +153,7 @@ fn build_from_linked(
         root_ref_policy,
     )?;
     let parsed_sources = linked.parsed_sources;
-    service_storage_rules::validate_db_storage_sources(&parsed_sources)?;
+    package_db_schema::validate_package_db_schema(&parsed_sources)?;
     let dependency_package_config_facts = linked.package_facts.map(dependency_package_config_facts);
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
     let package_db_metadata_index =

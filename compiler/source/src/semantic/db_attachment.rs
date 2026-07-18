@@ -89,6 +89,18 @@ impl<'a> DbAttachmentIndex<'a> {
 }
 
 pub fn validate_db_attachments(_module_path: &str, ast: &SourceFile) -> Vec<String> {
+    let mut violations = validate_db_schema_attachments(ast);
+    for db in &ast.dbs {
+        let Some(ty) = ast.types.iter().find(|ty| ty.name == db.name) else {
+            continue;
+        };
+        let fields = ty.fields.iter().map(|field| field.name.as_str()).collect();
+        validate_db_storage_declarations(db, &fields, &mut violations);
+    }
+    violations
+}
+
+pub(crate) fn validate_db_schema_attachments(ast: &SourceFile) -> Vec<String> {
     let mut violations = Vec::new();
     for db in &ast.dbs {
         if ast.aliases.iter().any(|alias| alias.name == db.name) {
@@ -145,7 +157,6 @@ pub fn validate_db_attachments(_module_path: &str, ast: &SourceFile) -> Vec<Stri
         } else {
             violations.push(format!("db object {} must declare key", db.name));
         }
-        validate_db_storage_declarations(db, &fields.keys().copied().collect(), &mut violations);
     }
     violations
 }
