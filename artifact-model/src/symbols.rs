@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::publication_abi::OperationAbiRef;
+use crate::{compile_identity::PackageCallableId, publication_abi::OperationAbiRef};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -24,11 +24,11 @@ pub struct PackageSymbolRef {
     pub abi_expectation: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageOperationSymbolRef {
+pub struct PackageCallableRef {
     pub package_ref: PackageRefIr,
-    pub operation: OperationAbiRef,
+    pub package_callable_id: PackageCallableId,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

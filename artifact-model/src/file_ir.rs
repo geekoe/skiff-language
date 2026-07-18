@@ -8,9 +8,7 @@ use crate::{
     executable::{ExecutableBody, ExecutableIr},
     refs::SourceSpanRef,
     schema::{FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION},
-    symbols::{
-        PackageOperationSymbolRef, PackageSymbolRef, ServiceDependencySymbolRef, ServiceSymbolRef,
-    },
+    symbols::{PackageCallableRef, PackageSymbolRef, ServiceDependencySymbolRef, ServiceSymbolRef},
     targets::NativeTarget,
     types::{InterfaceDeclIr, TypeDeclIr, TypeRefIr},
 };
@@ -289,8 +287,10 @@ pub struct ExternalRefTable {
     pub service_dependency_symbols: Vec<ServiceDependencySymbolRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_symbols: Vec<PackageSymbolRef>,
+    /// Owner-local package direct-call identities. Local ABI expectations are
+    /// carried by package requirements rather than repeated here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub package_operation_symbols: Vec<PackageOperationSymbolRef>,
+    pub package_callables: Vec<PackageCallableRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_targets: Vec<NativeTarget>,
 }

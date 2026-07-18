@@ -145,7 +145,7 @@ pub use service_unit::{
     SpawnTargetKindIr,
 };
 pub use symbols::{
-    PackageOperationSymbolRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,
+    PackageCallableRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,
     ServiceSymbolRef,
 };
 pub use targets::NativeTarget;
