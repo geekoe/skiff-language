@@ -13,7 +13,7 @@ use skiff_compiler_source::{
 
 use crate::{
     input::{compile_input::PackageCompileInput, PackageDependency},
-    shared::publication_error::PublicationError,
+    shared::package_compile_error::PackageCompileError,
 };
 
 pub(super) struct CanonicalDependencyHandoff {
@@ -22,7 +22,7 @@ pub(super) struct CanonicalDependencyHandoff {
 }
 
 impl CanonicalDependencyHandoff {
-    pub(super) fn build(input: &PackageCompileInput<'_>) -> Result<Self, PublicationError> {
+    pub(super) fn build(input: &PackageCompileInput<'_>) -> Result<Self, PackageCompileError> {
         let contracts = validated_contract_index(input)?;
         Ok(Self {
             source_analysis: SourceDependencyAnalysisInput::new(
@@ -44,7 +44,7 @@ impl CanonicalDependencyHandoff {
 
 fn validated_contract_index(
     input: &PackageCompileInput<'_>,
-) -> Result<ContractDependencyIndex, PublicationError> {
+) -> Result<ContractDependencyIndex, PackageCompileError> {
     let dependencies = input
         .contract_dependencies
         .iter()
@@ -61,7 +61,7 @@ fn validated_contract_index(
 
 fn package_analysis(
     input: &PackageCompileInput<'_>,
-) -> Result<BTreeMap<String, PackageDependencyAnalysisFacts>, PublicationError> {
+) -> Result<BTreeMap<String, PackageDependencyAnalysisFacts>, PackageCompileError> {
     let artifacts = input
         .dependency_packages
         .iter()
@@ -114,7 +114,7 @@ fn package_analysis(
 fn package_callable_analysis(
     dependency: &PackageDependency,
     artifact: &PackageArtifact,
-) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PublicationError> {
+) -> Result<BTreeMap<String, PackageDependencyCallableAnalysis>, PackageCompileError> {
     artifact
         .package_local_abi
         .public_symbols
@@ -181,7 +181,7 @@ fn contract_analysis(
 
 fn contract_operation_index(
     contracts: &ContractDependencyIndex,
-) -> Result<ContractDependencyOperationIndex, PublicationError> {
+) -> Result<ContractDependencyOperationIndex, PackageCompileError> {
     ContractDependencyOperationIndex::build(contracts.dependencies().map(|dependency| {
         ContractDependencyOperationIndexEntry::new(
             dependency.requirement().clone(),
@@ -191,10 +191,10 @@ fn contract_operation_index(
     .map_err(|error| validation_error(format!("contract operation index failed: {error}")))
 }
 
-fn contract_error(error: impl std::fmt::Display) -> PublicationError {
+fn contract_error(error: impl std::fmt::Display) -> PackageCompileError {
     validation_error(format!("contract dependency validation failed: {error}"))
 }
 
-fn validation_error(message: String) -> PublicationError {
-    PublicationError::ContractValidation { message }
+fn validation_error(message: String) -> PackageCompileError {
+    PackageCompileError::ContractValidation { message }
 }

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum PublicationError {
+pub enum PackageCompileError {
     #[error("failed to read {path}: {source}")]
     Read {
         path: String,
@@ -14,43 +14,13 @@ pub enum PublicationError {
         #[source]
         source: skiff_syntax::error::CompileError,
     },
-    #[error("service publication exports no interfaces")]
-    NoExportedInterfaces,
     #[error("contract validation failed:\n{message}")]
     ContractValidation { message: String },
-    #[error("service implementation conformance failed:\n{message}")]
-    ImplementationConformance { message: String },
-    #[error("service id {service_id} is invalid: {message}")]
-    InvalidServiceId { service_id: String, message: String },
-    #[error("{source}")]
-    PackageConfig {
-        #[from]
-        source: crate::input::PackageConfigError,
-    },
     #[error("invalid root reference in {path}:\n{message}")]
     RootPathReference { path: String, message: String },
 }
 
-impl From<skiff_compiler_input::InputAssemblyError> for PublicationError {
-    fn from(error: skiff_compiler_input::InputAssemblyError) -> Self {
-        use skiff_compiler_input::InputAssemblyError as E;
-
-        match error {
-            E::Read { path, source } => Self::Read { path, source },
-            E::Validation { message } => Self::ContractValidation { message },
-            E::InvalidServiceId {
-                service_id,
-                message,
-            } => Self::InvalidServiceId {
-                service_id,
-                message,
-            },
-            E::PackageConfig { source } => Self::PackageConfig { source },
-        }
-    }
-}
-
-impl From<skiff_compiler_source::SourceCompileError> for PublicationError {
+impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {
     fn from(error: skiff_compiler_source::SourceCompileError) -> Self {
         match error {
             skiff_compiler_source::SourceCompileError::Parse { path, source } => {
@@ -66,23 +36,25 @@ impl From<skiff_compiler_source::SourceCompileError> for PublicationError {
     }
 }
 
-impl From<skiff_compiler_projection::error::ProjectionError> for PublicationError {
+impl From<skiff_compiler_projection::error::ProjectionError> for PackageCompileError {
     fn from(error: skiff_compiler_projection::error::ProjectionError) -> Self {
         match error {
             skiff_compiler_projection::error::ProjectionError::NoExportedInterfaces => {
-                Self::NoExportedInterfaces
+                Self::ContractValidation {
+                    message: "projection exported no interfaces".to_string(),
+                }
             }
             skiff_compiler_projection::error::ProjectionError::ContractValidation { message } => {
                 Self::ContractValidation { message }
             }
             skiff_compiler_projection::error::ProjectionError::ImplementationConformance {
                 message,
-            } => Self::ImplementationConformance { message },
+            } => Self::ContractValidation { message },
         }
     }
 }
 
-impl From<skiff_compiler_emission::error::EmissionError> for PublicationError {
+impl From<skiff_compiler_emission::error::EmissionError> for PackageCompileError {
     fn from(error: skiff_compiler_emission::error::EmissionError) -> Self {
         match error {
             skiff_compiler_emission::error::EmissionError::ContractValidation { message } => {

@@ -2163,6 +2163,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "skiff-compiler-compiled",
+ "skiff-compiler-contract",
  "skiff-compiler-core",
  "skiff-compiler-emission",
  "skiff-compiler-input",

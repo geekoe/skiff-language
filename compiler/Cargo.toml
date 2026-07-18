@@ -8,10 +8,6 @@ autotests = false
 [lib]
 path = "driver/lib.rs"
 
-[[bin]]
-name = "skiff-compiler"
-path = "driver/main.rs"
-
 [lints.clippy]
 too_many_lines = "warn"
 
@@ -112,6 +108,7 @@ skiff-compiler-input = { path = "input" }
 skiff-compiler-input-model = { path = "input-model" }
 skiff-compiler-lowering = { path = "lowering" }
 skiff-compiler-compiled = { path = "compiled" }
+skiff-compiler-contract = { path = "contract" }
 skiff-compiler-emission = { path = "emission" }
 skiff-compiler-projection = { path = "projection" }
 skiff-compiler-projection-input = { path = "projection-input" }
