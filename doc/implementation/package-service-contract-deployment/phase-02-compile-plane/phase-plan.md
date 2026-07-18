@@ -139,9 +139,14 @@ T05C9 + terminal compiler cleanup
   └── T05C10F identity checker terminal-owner repair
 
 R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9 + T05C10A + T05C10B + T05C10D + T05C10E + T05C10F
-  └── R10 canonical compiler integration fixtures
+  └── R10 canonical compiler shared fixture checkpoint
 
-R03 + R04 + R06 + R10 + R11 + R13
+R10
+  ├── R10B type/import/File IR fixtures
+  ├── R10C artifact/config/DB/resource fixtures
+  └── R10D contract/disposition fixtures
+
+R03 + R04 + R06 + R10B + R10C + R10D + R11 + R13
   └── T07 phase integration gate -> A01 independent acceptance
 ```
 
@@ -153,16 +158,16 @@ R03 + R04 + R06 + R10 + R11 + R13
 | 3 | T05C4、T05C7、T05C8、T05C9 | lowering、emission、driver/core、identity consumers并行迁移 |
 | 4a | T05C10A、T05C10B、T05C10C | checkpoint review 暴露的 requirement、fail-closed、共享 validator 前置修复 |
 | 4b | T05C10D、T05C10E、T05C10F | validator consumers 与 terminal identity checker 并行收敛 |
-| 5 | R10 | production cleanup合流并通过结构探针后，只迁移canonical test fixtures |
+| 5a | R10 | production cleanup合流后先冻结共享 canonical fixture API |
+| 5b | R10B、R10C、R10D | 三个互斥 integration-test consumer 批次并行迁移 |
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
 
-T06/R02/R05/R07/R08/R09 与旧 R10B/R10C 位于被放弃的 integration tail，不进入新分支 ancestry；
-对应终态能力在 Phase 03–05 直接实现，canonical fixture 部分由 R10 重建。R12 的“在污染 tree 上清理”
+T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
+Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
 策略被干净基线重建吸收，不再执行。
 
-R10 是 T07 首次编译 gate 暴露的独立前置：旧 compiler integration fixture 仍把
-service 当作代码与部署聚合。它按真实测试语义拆成 canonical package fixture 与显式
-ServiceContract fixture，不修改 production 语义。T07 只负责最终稳定候选的昂贵 gate、纯机械
+R10 是共享 fixture checkpoint；R10B/R10C/R10D 按真实测试语义并行消费 canonical package fixture 与
+显式 ServiceContract fixture，不修改 production 语义。T07 只负责最终稳定候选的昂贵 gate、纯机械
 fixture 和结果记录，不新增语义。A01 只读验收。
 
 ## 5. 任务索引
@@ -202,7 +207,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R09 | [Canonical test dependency closure](tasks/P2-R09-canonical-test-dependency-closure.md) | 已吸收 | canonical graph 进 R10；旧 holder 不移植 |
 | R07 | [Service-test local entrypoint assembly](tasks/P2-R07-service-test-local-entrypoint.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R11 | [Canonical contract schema fidelity](tasks/P2-R11-canonical-contract-schema-fidelity.md) | `9ca2547` | 高；移植已验收 commit `834cd55` |
-| R10 | [Canonical compiler integration fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C、T05C3、T05C4、T05C5、T05C6、T05C7、T05C8、T05C9、R03、R04、R06、R11、R13 | 中；canonical test architecture |
+| R10 | [Canonical compiler shared fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C10A–F、R03、R04、R06、R11、R13 | 中；shared fixture checkpoint |
+| R10B | [Type/import/File IR fixtures](tasks/P2-R10B-type-import-file-ir-fixtures.md) | R10 | 中；consumer batch 1 |
+| R10C | [Artifact/config/DB/resource fixtures](tasks/P2-R10C-artifact-config-db-resource-fixtures.md) | R10 | 中；consumer batch 2 |
+| R10D | [Contract/disposition fixtures](tasks/P2-R10D-contract-disposition-fixtures.md) | R10 | 中；consumer batch 3 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
 | T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10、R11、R13 | gate owner |
@@ -258,11 +266,12 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   不复制遍历或集合一致性规则。
 - T05C10D 独占 artifact-identity validator 接入与 mutation tests；T05C10E 独占 emission/materialization 接入
   与 direct tests；T05C10F 独占 identity single-source checker 的 terminal owner graph 与 self-test。
-- R10 独占 compiler test-support 与 `compiler/tests/**` 中的旧 service publication fixture 退役；
-  不修改 `compiler/driver/service_publication_tests.rs`。源码、
-  effect、logical DB schema 及 compile 语义测试改用 canonical package/test-support API；只有真正验证
-  service protocol/conformance 的测试才构造显式 ServiceContract。禁止空/fake contract、provider 反推、
-  一个新的万能聚合 builder，也不得为了通过编译整批删除 Cargo test targets。
+- R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
+  复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
+- R10B 独占类型/import/File IR consumer targets；R10C 独占 artifact/config/DB/resource consumer targets；
+  R10D 独占 service conformance、明确删除的 targets、`compiler/Cargo.toml` 与退役 driver test-support。
+  三者都不修改 production 或 `compiler/driver/service_publication_tests.rs`。只有真正验证 service protocol/
+  conformance 的测试才构造显式 ServiceContract；禁止空/fake contract、provider 反推、万能聚合 builder。
 - R11 独占 canonical ServiceContract schema grammar、normalization、validation 与 identity。
   discriminator/branch tag、map key identity 和当前 recursion policy 必须进入 typed contract；旧
   JSON-schema/serviceAssembly presentation 不进入 R11，也不得从 provider source 推导 contract。
