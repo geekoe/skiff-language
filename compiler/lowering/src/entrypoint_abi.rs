@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::file_ir::TypeRefIr;
 use skiff_compiler_source::{
     api::PublicTypeKind, parsed_sources::ParsedCompilerSource,
-    semantic::impl_method_declaration_name, type_indices, LocalDbObjectIndex, ResolutionModels,
-    SourceCompileModel, SourceIndexes,
+    semantic::impl_method_declaration_name, type_indices, LocalDbObjectIndex, PackageSourceModel,
+    ResolutionModels, SourceIndexes,
 };
 use skiff_syntax::{
     ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
@@ -82,7 +82,7 @@ impl EntrypointAbiIndex {
 }
 
 pub fn package_entrypoint_function_signature(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     entrypoint_abi: &EntrypointAbiIndex,
     package_id: &str,
     symbol_path: &str,
@@ -118,7 +118,7 @@ pub fn package_entrypoint_function_signature(
 }
 
 pub fn package_public_schema_type_names_for_module(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     module_path: &str,
 ) -> Vec<String> {
     source_model
@@ -134,7 +134,7 @@ pub fn package_public_schema_type_names_for_module(
 }
 
 pub fn package_public_schema_abi_types_for_module(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     module_path: &str,
 ) -> Result<Vec<PackageAbiType>, String> {
     let source = package_source_for_module(source_model, module_path).ok_or_else(|| {
@@ -274,7 +274,7 @@ fn entrypoint_abi_type_spec(
 }
 
 fn package_abi_function_signature(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     ast: &SourceFile,
     module_path: &str,
     symbol: &str,
@@ -346,7 +346,7 @@ fn package_abi_function_signature(
 }
 
 fn package_source_for_module<'a>(
-    source_model: &'a SourceCompileModel,
+    source_model: &'a PackageSourceModel,
     module_path: &str,
 ) -> Option<&'a ParsedCompilerSource> {
     source_model
@@ -367,7 +367,7 @@ fn package_public_path(package_id: &str, export_path: &str) -> String {
 }
 
 fn package_abi_type(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     ast: &SourceFile,
     module_path: &str,
     name: &str,
@@ -394,7 +394,7 @@ fn package_abi_type(
 }
 
 fn package_abi_type_from_decl(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     ast: &SourceFile,
     module_path: &str,
     ty: &TypeDecl,
@@ -442,7 +442,7 @@ fn package_abi_type_from_decl(
 }
 
 fn package_abi_type_from_alias(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     ast: &SourceFile,
     module_path: &str,
     alias: &AliasDecl,
@@ -472,7 +472,7 @@ fn package_abi_type_from_alias(
 }
 
 fn package_publication_callable_for_symbol(
-    source_model: &SourceCompileModel,
+    source_model: &PackageSourceModel,
     package_id: &str,
     symbol_path: &str,
 ) -> Option<PublishedPackageCallable> {

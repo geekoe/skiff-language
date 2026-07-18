@@ -52,6 +52,6 @@ pub use resolve::{
 };
 pub use table::{
     LexicalScope, LexicalScopeId, LocalEntity, LocalEntityOwner, LocalEntityTable, ModulePath,
-    ModulePathIndex, PublicationEntityModel, PublicationEntityTable, PublicationKind,
-    ResolverRootTable, TopLevelEntity,
+    ModulePathIndex, PublicationEntityModel, PublicationEntityTable, ResolverRootTable,
+    TopLevelEntity,
 };

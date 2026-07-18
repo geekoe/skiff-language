@@ -11,7 +11,7 @@ use crate::shared::id::PublicationId;
 
 /// 源码文本拼接 identity(角色 b:revision 变更检测历史入口)。
 ///
-/// **注意**:这个字符串当前仍被 `SourceCompileModel` 保留以便向后兼容,但
+/// **注意**:这个字符串当前仍被 `PackageSourceModel` 保留以便向后兼容,但
 /// `runtime_manifest.rs` 的 revision_id 计算已切换到 descriptor-based revision,
 /// 不再直接使用它。见 P1b 任务说明。
 pub fn source_identity(parsed_sources: &[ParsedCompilerSource]) -> String {

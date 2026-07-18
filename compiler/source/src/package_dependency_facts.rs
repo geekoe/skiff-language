@@ -1,13 +1,13 @@
 use skiff_artifact_model::FileIrUnit;
 
-use crate::SourceCompileModel;
+use crate::PackageSourceModel;
 
 #[derive(Debug)]
 pub struct SourceCompilePackageFacts<'a> {
     id: &'a str,
     version: &'a str,
     dependencies: Vec<SourceCompilePackageDependencyFact>,
-    compile_model: &'a SourceCompileModel,
+    compile_model: &'a PackageSourceModel,
     file_ir_units: &'a [FileIrUnit],
 }
 
@@ -16,7 +16,7 @@ impl<'a> SourceCompilePackageFacts<'a> {
         id: &'a str,
         version: &'a str,
         dependencies: Vec<SourceCompilePackageDependencyFact>,
-        compile_model: &'a SourceCompileModel,
+        compile_model: &'a PackageSourceModel,
         file_ir_units: &'a [FileIrUnit],
     ) -> Self {
         Self {
@@ -40,7 +40,7 @@ impl<'a> SourceCompilePackageFacts<'a> {
         &self.dependencies
     }
 
-    pub fn compile_model(&self) -> &SourceCompileModel {
+    pub fn compile_model(&self) -> &PackageSourceModel {
         self.compile_model
     }
 

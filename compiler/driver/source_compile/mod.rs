@@ -1,76 +1,67 @@
 use crate::{
-    input::{
-        compile_input::PublicationInput, PackageDependency, Publication, PublicationCompilePolicy,
-        ResolvedServiceDependencies, ServiceIngressSeed,
-    },
+    input::{compile_input::PackageCompileInput, PackageCompilePolicy},
     shared::publication_error::PublicationError,
 };
-use std::collections::BTreeMap;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+mod canonical_dependencies;
 
 pub(crate) use skiff_compiler_source::*;
 
-pub(crate) fn build(input: PublicationInput<'_>) -> Result<SourceCompileModel, PublicationError> {
-    build_with_package_facts(input, None)
+pub(crate) fn compile(
+    input: PackageCompileInput<'_>,
+    package_facts: Option<&[SourceCompilePackageFacts<'_>]>,
+) -> Result<skiff_compiler_compiled::CompiledPackage, PublicationError> {
+    #[cfg(test)]
+    TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
+    let dependency_handoff = canonical_dependencies::CanonicalDependencyHandoff::build(&input)?;
+    let model = build(input, package_facts, dependency_handoff.source_analysis())?;
+    let lowered = skiff_compiler_lowering::lower_with_contract_operations(
+        &model,
+        dependency_handoff.contract_operations(),
+    )?;
+    Ok(skiff_compiler_compiled::CompiledPackage::new(
+        model, lowered,
+    ))
 }
 
-pub(crate) fn build_with_package_facts<'a, 'facts>(
-    input: PublicationInput<'a>,
+#[cfg(test)]
+pub(crate) fn reset_test_compile_count() {
+    TEST_COMPILE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn test_compile_count() -> usize {
+    TEST_COMPILE_COUNT.with(std::cell::Cell::get)
+}
+
+fn build<'a, 'facts>(
+    input: PackageCompileInput<'a>,
     package_facts: Option<&'facts [SourceCompilePackageFacts<'a>]>,
-) -> Result<SourceCompileModel, PublicationError> {
-    let parts = SourceCompileInputParts::from_publication_input(input);
-    let production_sources = parts.publication.production_sources();
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<PackageSourceModel, PublicationError> {
+    let production_sources = input.package.production_sources();
     let parsed_sources = skiff_compiler_source::parsed_sources::parse_publication_sources(
-        &parts.publication.source_tree.root,
+        &input.package.source_tree.root,
         &production_sources,
     )?;
-    Ok(skiff_compiler_source::build_from_parsed_sources(
-        CompileParsedPublicationSourcesInput {
-            parsed_sources,
-            production_sources,
-            diagnostic_root: &parts.publication.source_tree.root,
-            publication_api: Some(&parts.publication.manifest.api),
-            package_aliases: parts.package_aliases,
-            package_dependencies: parts.package_dependencies,
-            package_facts,
-            service_dependencies: parts.service_dependencies,
-            service_ingress: parts.service_ingress,
-            policy: parts.policy,
-        },
-    )?)
-}
-
-struct SourceCompileInputParts<'a> {
-    publication: &'a Publication,
-    package_aliases: &'a BTreeMap<String, Vec<String>>,
-    package_dependencies: &'a [PackageDependency],
-    service_dependencies: ResolvedServiceDependencies,
-    service_ingress: Option<ServiceIngressSeed>,
-    policy: PublicationCompilePolicy<'a>,
-}
-
-impl<'a> SourceCompileInputParts<'a> {
-    fn from_publication_input(input: PublicationInput<'a>) -> Self {
-        match input {
-            PublicationInput::Package(package) => Self {
-                publication: package.core.publication,
-                package_aliases: package.core.package_aliases,
-                package_dependencies: package.core.package_dependencies,
-                service_dependencies: Default::default(),
-                service_ingress: None,
-                policy: PublicationCompilePolicy::Package {
-                    package_id: package.package_id,
-                },
+    Ok(
+        skiff_compiler_source::build_package_from_parsed_sources_with_dependency_analysis(
+            CompileParsedPackageSourcesInput {
+                parsed_sources,
+                production_sources,
+                diagnostic_root: &input.package.source_tree.root,
+                publication_api: Some(&input.package.manifest.api),
+                package_aliases: input.package_aliases,
+                package_dependencies: input.package_dependencies,
+                package_facts,
+                policy: PackageCompilePolicy::new(input.package_id),
             },
-            PublicationInput::Service(service) => Self {
-                publication: service.core.publication,
-                package_aliases: service.core.package_aliases,
-                package_dependencies: service.core.package_dependencies,
-                service_dependencies: service.service_dependencies,
-                service_ingress: Some(service.service_ingress),
-                policy: PublicationCompilePolicy::Service {
-                    service_id: service.service_id,
-                },
-            },
-        }
-    }
+            dependency_analysis,
+        )?,
+    )
 }

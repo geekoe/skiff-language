@@ -20,7 +20,7 @@ use crate::{
 
 /// Source-level name resolution model。
 ///
-/// 这是 `SourceCompileModel` 的 `name_resolution` 字段——pipeline 文档要求的"单一事实来源"。
+/// 这是 `PackageSourceModel` 的 `name_resolution` 字段——pipeline 文档要求的"单一事实来源"。
 /// 它捕获了 source compile 阶段完成 name resolution 所需的所有信息,让 lowering 直接消费
 /// 而不必重算。
 ///

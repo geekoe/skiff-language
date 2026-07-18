@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    ExecutableKind, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr,
-    ServiceSymbolRef, TypeRefIr,
+    CallableSemanticFacts, CallableTargetFact, ExecutableKind, FileIrUnit, FunctionTypeParamIr,
+    InterfaceInstantiationRef, LiteralIr, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
     ConfigRequirementAccessProjection, ConfigRequirementDependencyStepProjection,
@@ -26,9 +26,7 @@ use skiff_compiler_projection_input::{
     PublicCallableKindProjection, PublicCallableProjection, PublicInstanceInterfaceProjection,
     PublicInstanceProjection, PublicModuleExportProjection, PublicSymbolKindProjection,
     PublicSymbolProjection, PublicTypeKindProjection, PublicTypeProjection,
-    PublicationApiProjectionSeed, ServiceDependencyProjectionFacts, ServiceHttpIngressProjection,
-    ServiceHttpRouteIngressProjection, ServiceIngressHandlerProjection, ServiceIngressProjection,
-    ServiceWebSocketIngressProjection,
+    PublicationApiProjectionSeed,
 };
 use skiff_compiler_source::{
     api::{PublicCallableKind, PublicSymbolKind, PublicTypeKind},
@@ -36,20 +34,19 @@ use skiff_compiler_source::{
         abi::{abi_alias_id_from_anchor, abi_interface_id_from_anchor, abi_type_id_from_anchor},
         SourceDeclarationKind,
     },
-    service_ingress::ServiceHttpIngress,
     ConfigRequirement, ConfigRequirementAccess, ConfigRequirementScope, ConfigRequirementSet,
-    ConfigSourceSpan, PublicationApiSeed, ServiceHttpRouteIngress, ServiceIngressHandler,
-    ServiceIngressModel, ServiceWebSocketIngress, SourceCompileModel, SourceSymbolKey,
+    ConfigSourceSpan, ExpressionOwnerKey, PackageSourceModel, PublicationApiSeed,
+    ResolvedCallTarget, SourceSymbolKey,
 };
 
-use crate::{CompiledPublication, PackagePublication};
+use crate::{CompiledPackage, PackagePublication};
 
-pub fn build_projection_input(compiled: &CompiledPublication) -> ProjectionInput {
+pub fn build_projection_input(compiled: &CompiledPackage) -> ProjectionInput {
     build_projection_input_with_package_id(compiled, None)
 }
 
 fn build_projection_input_with_package_id(
-    compiled: &CompiledPublication,
+    compiled: &CompiledPackage,
     package_id: Option<&str>,
 ) -> ProjectionInput {
     let model = compiled.compile_model();
@@ -69,9 +66,8 @@ fn build_projection_input_with_package_id(
         export_bindings: export_bindings_projection(model, compiled.file_ir_units()),
         config_requirements: config_requirements_seed(model),
         abi_ids: abi_declaration_ids(model, compiled.file_ir_units()),
-        service_ingress: model.service_ingress().map(service_ingress_projection),
-        service_dependencies: service_dependency_projection_facts(model),
         callable_effects: callable_effect_facts(model, compiled.file_ir_units()),
+        callable_semantic_facts: callable_semantic_facts(model, compiled.file_ir_units()),
     });
     let lowering = ProjectionLoweringFacts::new(
         entrypoint_abi_index_from_file_ir_units(compiled.file_ir_units()),
@@ -85,8 +81,92 @@ fn build_projection_input_with_package_id(
     ProjectionInput::new(file_ir_units, source_metadata, source, lowering)
 }
 
+fn callable_semantic_facts(
+    model: &PackageSourceModel,
+    file_ir_units: &[FileIrUnit],
+) -> BTreeMap<ProjectionExecutableKey, CallableSemanticFacts> {
+    let units_by_module = file_ir_units
+        .iter()
+        .map(|unit| (unit.module_path.as_str(), unit))
+        .collect::<BTreeMap<_, _>>();
+    model
+        .callable_effects()
+        .operations()
+        .iter()
+        .map(|(source_key, effects)| {
+            let unit = units_by_module[source_key.module_path()];
+            let declaration = &unit.declarations.executables[source_key.symbol()];
+            let provenance = model
+                .callable_provenance()
+                .operations()
+                .get(source_key)
+                .cloned()
+                .expect("callable provenance must share the effect owner set");
+            let resolved_call_targets = model
+                .resolved_call_targets()
+                .iter()
+                .filter(|(expression, _)| expression_matches_source_owner(expression, source_key))
+                .filter_map(|(expression, target)| {
+                    callable_target_fact(target).map(|target| (expression.preorder_index(), target))
+                })
+                .collect();
+            (
+                ProjectionExecutableKey::new(
+                    source_key.module_path(),
+                    declaration.executable_index,
+                ),
+                CallableSemanticFacts {
+                    effects: effects.clone(),
+                    provenance,
+                    resolved_call_targets,
+                },
+            )
+        })
+        .collect()
+}
+
+fn expression_matches_source_owner(
+    expression: &skiff_compiler_source::ExpressionKey,
+    source_key: &SourceSymbolKey,
+) -> bool {
+    if expression.module_path() != source_key.module_path() {
+        return false;
+    }
+    match expression.owner() {
+        ExpressionOwnerKey::Function(function) => function == source_key.symbol(),
+        ExpressionOwnerKey::ImplMethod { type_name, method } => {
+            skiff_compiler_source::semantic::impl_method_declaration_name(type_name, method)
+                == source_key.symbol()
+        }
+        ExpressionOwnerKey::Const(_)
+        | ExpressionOwnerKey::Test(_)
+        | ExpressionOwnerKey::DbIndexWhere { .. } => false,
+    }
+}
+
+fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFact> {
+    match target {
+        ResolvedCallTarget::DependencyPackageFunction {
+            package_callable_id,
+            ..
+        } => Some(CallableTargetFact::PackageDirect {
+            package_callable_id: package_callable_id.to_string(),
+        }),
+        ResolvedCallTarget::ContractOperation {
+            contract_operation_id,
+            ..
+        } => Some(CallableTargetFact::ContractOperation {
+            operation_id: contract_operation_id.clone(),
+        }),
+        ResolvedCallTarget::Unknown { .. } => Some(CallableTargetFact::Unknown),
+        ResolvedCallTarget::LocalFunction { .. } | ResolvedCallTarget::LocalImplMethod { .. } => {
+            None
+        }
+    }
+}
+
 fn callable_effect_facts(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     file_ir_units: &[FileIrUnit],
 ) -> ProjectionCallableEffectFacts {
     let units_by_module = file_ir_units
@@ -238,7 +318,7 @@ fn publication_api_seed_projection(seed: &PublicationApiSeed) -> PublicationApiP
 }
 
 fn export_bindings_projection(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     file_ir_units: &[FileIrUnit],
 ) -> ExportBindingProjection {
     let bindings = model.export_bindings();
@@ -410,7 +490,7 @@ fn package_nominal_service_symbol_for_adapter(
 }
 
 fn public_instance_listed_package_interface_for_adapter(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
     receiver: &ServiceSymbolRef,
     listed_interface: &skiff_compiler_source::ExportPublicInstanceInterfaceBinding,
@@ -574,7 +654,7 @@ fn source_symbol_key_projection(key: &SourceSymbolKey) -> ProjectionSourceSymbol
     ProjectionSourceSymbolKey::new(key.module_path(), key.symbol())
 }
 
-fn config_requirements_seed(model: &SourceCompileModel) -> ConfigRequirementsSeed {
+fn config_requirements_seed(model: &PackageSourceModel) -> ConfigRequirementsSeed {
     ConfigRequirementsSeed::new(
         config_requirement_set_projection(&model.legacy_config_projection_requirements()),
         config_requirement_set_projection(model.own_config_requirements()),
@@ -663,102 +743,6 @@ fn config_source_span_projection(span: ConfigSourceSpan) -> ConfigSourceSpanProj
             offset: span.end.offset,
         },
     }
-}
-
-fn service_ingress_projection(ingress: &ServiceIngressModel) -> ServiceIngressProjection {
-    ServiceIngressProjection {
-        package_aliases: ingress.package_aliases.clone(),
-        http: ingress.http.as_ref().map(service_http_ingress_projection),
-        websocket: ingress
-            .websocket
-            .as_ref()
-            .map(service_websocket_ingress_projection),
-    }
-}
-
-fn service_http_ingress_projection(ingress: &ServiceHttpIngress) -> ServiceHttpIngressProjection {
-    ServiceHttpIngressProjection {
-        entry_target: ingress.entry_target.clone(),
-        guard: ingress
-            .guard
-            .as_ref()
-            .map(service_ingress_handler_projection),
-        pre: ingress.pre.as_ref().map(service_ingress_handler_projection),
-        routes: ingress
-            .routes
-            .iter()
-            .map(service_http_route_ingress_projection)
-            .collect(),
-    }
-}
-
-fn service_http_route_ingress_projection(
-    route: &ServiceHttpRouteIngress,
-) -> ServiceHttpRouteIngressProjection {
-    ServiceHttpRouteIngressProjection {
-        method: route.method.clone(),
-        path: route.path.clone(),
-        handler: service_ingress_handler_projection(&route.handler),
-    }
-}
-
-fn service_websocket_ingress_projection(
-    ingress: &ServiceWebSocketIngress,
-) -> ServiceWebSocketIngressProjection {
-    ServiceWebSocketIngressProjection {
-        target: ingress.target.clone(),
-        connect: ingress
-            .connect
-            .as_ref()
-            .map(service_ingress_handler_projection),
-        receive: ingress
-            .receive
-            .as_ref()
-            .map(service_ingress_handler_projection),
-    }
-}
-
-fn service_ingress_handler_projection(
-    handler: &ServiceIngressHandler,
-) -> ServiceIngressHandlerProjection {
-    match handler {
-        ServiceIngressHandler::ServiceFunction {
-            source,
-            module_path,
-            symbol,
-        } => ServiceIngressHandlerProjection::ServiceFunction {
-            source: source.clone(),
-            module_path: module_path.clone(),
-            symbol: symbol.clone(),
-        },
-        ServiceIngressHandler::PackageFunction {
-            source,
-            package_id,
-            alias,
-            symbol_path,
-        } => ServiceIngressHandlerProjection::PackageFunction {
-            source: source.clone(),
-            package_id: package_id.clone(),
-            alias: alias.clone(),
-            symbol_path: symbol_path.clone(),
-        },
-    }
-}
-
-fn service_dependency_projection_facts(
-    model: &SourceCompileModel,
-) -> ServiceDependencyProjectionFacts {
-    let dependencies = model.dependencies().service_dependencies();
-    ServiceDependencyProjectionFacts::new(
-        dependencies.constraints().to_vec(),
-        dependencies
-            .dependency_lock()
-            .iter()
-            .map(|entry| {
-                serde_json::to_value(entry).expect("service dependency lock entry should serialize")
-            })
-            .collect(),
-    )
 }
 
 fn entrypoint_abi_index_from_file_ir_units(
@@ -1131,7 +1115,7 @@ fn file_ir_local_type_names(unit: &FileIrUnit) -> BTreeMap<u32, String> {
 }
 
 fn package_entrypoint_projection_facts(
-    compiled: &CompiledPublication,
+    compiled: &CompiledPackage,
     package_id: Option<&str>,
 ) -> PackageEntrypointProjectionFacts {
     let Some(package_id) = package_id else {
@@ -1213,7 +1197,7 @@ fn package_entrypoint_projection_facts(
 }
 
 fn package_entrypoint_symbol_paths(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     package_id: &str,
 ) -> BTreeSet<String> {
     model
@@ -1293,7 +1277,7 @@ fn package_abi_type_projection(ty: skiff_compiler_lowering::PackageAbiType) -> P
 }
 
 fn abi_declaration_ids(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     file_ir_units: &[FileIrUnit],
 ) -> BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds> {
     let candidates = abi_candidate_keys(model, file_ir_units);
@@ -1327,7 +1311,7 @@ fn abi_declaration_ids(
 }
 
 fn abi_candidate_keys(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     file_ir_units: &[FileIrUnit],
 ) -> BTreeSet<(
     ProjectionSourceSymbolKey,

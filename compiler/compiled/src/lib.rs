@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use serde_json::Value;
 use skiff_artifact_model::{ActorMetadataIr, DbMetadataIr, FileIrUnit};
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
-use skiff_compiler_lowering::{CompiledPublicationSource, LoweredPublication};
+use skiff_compiler_lowering::{CompiledPackageSource, LoweredPackage};
 use skiff_compiler_source::{
-    source_identity::PublicationDeclarationAnchors, CompileParsedPublicationSourcesInput,
-    PublicationApiSeed, SourceCompileError, SourceCompileModel, SourceCompilePackageDependencyFact,
+    source_identity::PublicationDeclarationAnchors, CompileParsedPackageSourcesInput,
+    PackageSourceModel, PublicationApiSeed, SourceCompileError, SourceCompilePackageDependencyFact,
     SourceCompilePackageFacts,
 };
 
@@ -16,22 +16,22 @@ pub mod projection_input;
 use skiff_compiler_source::{ConfigRequirementSet, ExportBindingModel};
 
 #[derive(Debug)]
-pub struct CompiledPublication {
-    model: SourceCompileModel,
-    lowered: LoweredPublication,
+pub struct CompiledPackage {
+    model: PackageSourceModel,
+    lowered: LoweredPackage,
 }
 
 #[derive(Debug, Clone)]
 pub struct PackagePublication {
     info: PackagePublicationInfo,
-    compiled: Arc<CompiledPublication>,
+    compiled: Arc<CompiledPackage>,
     dependency_config: Value,
 }
 
 impl PackagePublication {
     pub fn new(
         info: PackagePublicationInfo,
-        compiled: CompiledPublication,
+        compiled: CompiledPackage,
         dependency_config: Value,
     ) -> Self {
         Self {
@@ -73,16 +73,16 @@ impl PackagePublication {
         &self.dependency_config
     }
 
-    pub fn compiled(&self) -> &CompiledPublication {
+    pub fn compiled(&self) -> &CompiledPackage {
         self.compiled.as_ref()
     }
 
-    pub fn compiled_arc(&self) -> &Arc<CompiledPublication> {
+    pub fn compiled_arc(&self) -> &Arc<CompiledPackage> {
         &self.compiled
     }
 
     #[cfg(feature = "test-support")]
-    pub fn compiled_arc_mut(&mut self) -> &mut Arc<CompiledPublication> {
+    pub fn compiled_arc_mut(&mut self) -> &mut Arc<CompiledPackage> {
         &mut self.compiled
     }
 }
@@ -264,17 +264,17 @@ impl PackageApiSourceInfo {
 }
 
 pub fn compile_parsed_publication_sources(
-    input: CompileParsedPublicationSourcesInput<'_, '_>,
-) -> Result<CompiledPublication, SourceCompileError> {
-    let model = skiff_compiler_source::build_from_parsed_sources(input)?;
+    input: CompileParsedPackageSourcesInput<'_, '_>,
+) -> Result<CompiledPackage, SourceCompileError> {
+    let model = skiff_compiler_source::build_package_from_parsed_sources(input)?;
     compile_source_model(model)
 }
 
 pub fn compile_source_model(
-    model: SourceCompileModel,
-) -> Result<CompiledPublication, SourceCompileError> {
+    model: PackageSourceModel,
+) -> Result<CompiledPackage, SourceCompileError> {
     let lowered = skiff_compiler_lowering::lower(&model)?;
-    Ok(CompiledPublication::new(model, lowered))
+    Ok(CompiledPackage::new(model, lowered))
 }
 
 pub fn source_compile_package_facts_from_publications<'a>(
@@ -306,16 +306,16 @@ fn source_compile_package_fact_from_publication<'a>(
     )
 }
 
-impl CompiledPublication {
-    pub fn new(model: SourceCompileModel, lowered: LoweredPublication) -> Self {
+impl CompiledPackage {
+    pub fn new(model: PackageSourceModel, lowered: LoweredPackage) -> Self {
         Self { model, lowered }
     }
 
-    pub fn compile_model(&self) -> &SourceCompileModel {
+    pub fn compile_model(&self) -> &PackageSourceModel {
         &self.model
     }
 
-    pub fn lowered(&self) -> &LoweredPublication {
+    pub fn lowered(&self) -> &LoweredPackage {
         &self.lowered
     }
 
@@ -328,7 +328,7 @@ impl CompiledPublication {
         self.lowered.file_ir_units_mut()
     }
 
-    pub fn source_metadata(&self) -> &[CompiledPublicationSource] {
+    pub fn source_metadata(&self) -> &[CompiledPackageSource] {
         self.lowered.sources()
     }
 
