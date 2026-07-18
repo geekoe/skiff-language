@@ -97,7 +97,11 @@ service config 或 runtime projection 的 aggregate 不得成为 ServiceContract
 R03 + R11
   └── T05A terminal PackageArtifact projection/emission handoff
 
-R03 + R11 + T05 + T05A checkpoint
+T05 package-only dataflow checkpoint
+  ├── T05 terminal driver/facade cutover
+  └── T05B terminal compiler structure gates
+
+R03 + R11 + T05 + T05A + T05B checkpoint
   ├── R04 canonical package config shape
   ├── R06 complete canonical package requirement closure
   └── R13 canonical package DB schema validation
@@ -111,7 +115,7 @@ R03 + R04 + R06 + R10 + R11 + R13
 
 | 波次 | 并行任务 | 说明 |
 | --- | --- | --- |
-| checkpoint | R03、R11、T05、T05A | R03/R11 先快速移植；T05 与 T05A 按 central compiler 和 projection/emission 两域并行 |
+| checkpoint | R03、R11、T05、T05A、T05B | dataflow 后按 driver、projection/emission、structure gates 三域并行 |
 | 1 | R04、R06、R13 | config、package requirement graph、DB schema 三个非重叠 owner 并行 |
 | 2 | R10 | 只迁移 canonical compiler test-support/integration fixtures |
 | 3 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
@@ -135,6 +139,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T04 | [PackageArtifact 与 boundary projection](tasks/P2-T04-package-artifact.md) | T01 | 高；artifact group |
 | T05 | [Package-only compiler terminal cutover](tasks/P2-T05-compiler-cutover.md) | `9ca2547` | 高；从干净基线重做 central compiler |
 | T05A | [Terminal PackageArtifact projection/emission handoff](tasks/P2-T05A-terminal-package-artifact-handoff.md) | R03、R11 | 高；projection/emission 独占 owner |
+| T05B | [Terminal compiler structure gates](tasks/P2-T05B-terminal-compiler-structure-gates.md) | T05 dataflow checkpoint | 中；scripts/checker 独占 owner |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -170,6 +175,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   `9adfd64` 或其后 integration tail；不得修改 `compiler/projection/**`、`compiler/emission/**`。
 - T05A 独占 `compiler/projection/**`、`compiler/emission/**` terminal cutover与直接 tests；保留 R03 export
   payload 语义和 R11 schema leaf，不修改 T05 central 目录或 foundation artifact crates。
+- T05B 独占 compiler structure checker、crate-DAG/public-API policy及 self-tests/fixtures；不修改 Rust
+  production 或 tests。T05/T05A 不再修改 checker。
 - R03 独占 canonical package export link 中 payload symbol 的精确投影与直接测试；map key
   继续表达 public path，link `symbol` 只能表达 file/index 指向的真实 payload declaration。
 - R04 独占 canonical package config requirements 与 `ConfigShape` 的唯一 typed 表达；不为旧
