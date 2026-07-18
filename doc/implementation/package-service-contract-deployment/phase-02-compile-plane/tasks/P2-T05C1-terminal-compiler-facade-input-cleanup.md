@@ -8,10 +8,11 @@
 ## 目标与 ownership
 
 - 收敛 `skiff-compiler` facade/Cargo 到 PackageArtifact 与 ServiceContract 两个 terminal producer。
-- 物理删除 compiler input、publication-ABI、projection-input 与直接 production error surface 中已断链的
+- 物理删除 compiler input、projection-input、直接 production error surface 与 facade 侧已断链的
   publication/service orchestration owner。
 - 独占 `compiler/Cargo.toml`、必要 workspace Cargo、`compiler/input/**`、
-  `compiler/publication-abi/**`、`compiler/projection-input/**` 及直接 projection/error cleanup。
+  `compiler/projection-input/**` 及直接 projection/error cleanup；不修改 `compiler/publication-abi/**`，
+  其 source edge 与 orphan crate disposition 由 T05C2 独占。
 - 禁止修改 `compiler/core/**`、source、lowering、driver pipeline、emission、checker 与 integration tests；
   core 残留由 R13 后的 T05C 处理。
 
@@ -20,7 +21,7 @@
 1. facade 显式声明实际使用的 artifact-model/artifact-identity 依赖，并删除
    `skiff-compiler -> skiff-compiler-publication-abi` normal edge。
 2. compiler input 不再公开或构造 PublicationInputKind、RawServicePublicationJob、service dependency
-   assembly reader；publication-ABI crate 不再被 production/workspace graph 使用。
+   assembly reader；facade 不再依赖或导出 publication-ABI，crate 最终 disposition 交给 T05C2。
 3. projection-input 和直接 production error surface 不保留已断链的 service dependency/ingress DTO、
    service-publication/conformance adapter 分支。
 4. 不通过 feature、phase、exception、legacy/compatibility adapter 或 provider inference 隐藏旧边。
@@ -31,7 +32,8 @@
 - `cargo check -p skiff-compiler` 及直接受影响 production crates；若只被尚未合流的 R13/T05C core
   cleanup 阻断，记录精确诊断。
 - `node scripts/check-compiler-crate-dag.mjs` 必须 PASS。
-- boundary checker 只允许命中明确留给 T05C 的 `compiler/core/**` 残留，并列出完整命中。
+- boundary checker 只允许命中明确留给 T05C/T05C2 的 core、input-model、source、lowering 写域，
+  并列出完整命中。
 - production 反向搜索、targeted rustfmt、`git diff --check`。
 - 不运行 compiler integration tests或 T07 完整 gate。
 

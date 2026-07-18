@@ -22,7 +22,7 @@ publication/service orchestration owner。facade/input/publication-ABI 表面由
 ## 完成态
 
 1. `compiler/core/**` 及本任务直接 production 邻接中 structure boundary checker 零 deny；合流前完整
-   checker 只允许命中 T05C1 明确拥有的路径，并列出精确结果。
+   checker 只允许命中 T05C1/T05C2 明确拥有的路径，并列出精确结果。
 2. 不通过 core 特例重新引入 T05C1 正在删除的 facade/input/Cargo/DAG 旧 owner。
 3. 不建立 legacy/compatibility adapter，不恢复 provider inference，不改 artifact wire/identity。
 4. `compiler/tests/**`、test-support、Cargo integration test target 与旧 fixture 不在本任务处理；由 R10
@@ -31,7 +31,7 @@ publication/service orchestration owner。facade/input/publication-ABI 表面由
 ## 验证
 
 - `cargo check -p skiff-compiler` 及直接受影响 core production crates。
-- `node scripts/check-compiler-boundaries.mjs`；合流前仅允许 T05C1 写域的精确命中。
+- `node scripts/check-compiler-boundaries.mjs`；合流前仅允许 T05C1/T05C2 写域的精确命中。
 - crate DAG 由 T05C1 验证；本任务只反向检查 core 不新增旧 edge。
 - production 旧 symbol/owner 反向搜索、targeted rustfmt、`git diff --check`。
 - 不运行 compiler integration tests、T07 完整 gate或 runtime/router/test-runner 测试。
