@@ -36,11 +36,21 @@ fn contract_only_dependency_builds_strict_typed_indexes_without_provider_artifac
     );
     assert_eq!(
         index
-            .contract_type_by_stable_key("echo", "payload")
+            .contract_schema_type_by_stable_key("echo", "payload")
             .unwrap()
             .stable_key,
         "payload"
     );
+    assert_eq!(
+        index
+            .public_contract_type_id_by_stable_key("echo", "payload")
+            .unwrap(),
+        &contract_type_id("example.echo", "1.0.0", "payload").unwrap()
+    );
+    assert!(matches!(
+        index.public_contract_type_id_by_stable_key("echo", "payloadClosure"),
+        Err(ContractDependencyError::ContractTypeNotPublicNameable { .. })
+    ));
 
     let wire = serde_json::to_string(index.contract("echo").unwrap()).unwrap();
     for forbidden in [
@@ -231,6 +241,7 @@ fn requirement(alias: &str, contract: &ServiceContract) -> ContractRequirement {
 
 fn contract_fixture(service_id: &str, version: &str, operation_keys: &[&str]) -> ServiceContract {
     let payload_type_id = contract_type_id(service_id, version, "payload").unwrap();
+    let closure_type_id = contract_type_id(service_id, version, "payloadClosure").unwrap();
     let operations = operation_keys
         .iter()
         .map(|stable_key| {
@@ -268,22 +279,40 @@ fn contract_fixture(service_id: &str, version: &str, operation_keys: &[&str]) ->
             )
         })
         .collect();
-    let boundary_schema = BTreeMap::from([(
-        payload_type_id.clone(),
-        ContractSchemaType {
-            contract_type_id: payload_type_id,
-            stable_key: "payload".to_string(),
-            shape: ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "message".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    )]),
+    let boundary_schema = BTreeMap::from([
+        (
+            payload_type_id.clone(),
+            ContractSchemaType {
+                contract_type_id: payload_type_id,
+                stable_key: "payload".to_string(),
+                shape: ContractTypeShape {
+                    nameability: ContractTypeNameability::PublicNameable,
+                    descriptor: ContractTypeDescriptor::Record {
+                        fields: BTreeMap::from([(
+                            "message".to_string(),
+                            ContractTypeRef::contract(closure_type_id.clone()),
+                        )]),
+                    },
                 },
             },
-        },
-    )]);
+        ),
+        (
+            closure_type_id.clone(),
+            ContractSchemaType {
+                contract_type_id: closure_type_id,
+                stable_key: "payloadClosure".to_string(),
+                shape: ContractTypeShape {
+                    nameability: ContractTypeNameability::ClosureOnly,
+                    descriptor: ContractTypeDescriptor::Record {
+                        fields: BTreeMap::from([(
+                            "value".to_string(),
+                            ContractTypeRef::builtin("string"),
+                        )]),
+                    },
+                },
+            },
+        ),
+    ]);
     let mut contract = ServiceContract {
         schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
         service_id: service_id.to_string(),

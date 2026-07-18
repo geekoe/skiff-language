@@ -215,10 +215,11 @@ impl PackageSourceModel {
         })?;
         let resolved_call_targets = ResolvedCallTargetFacts::build(
             &input.parsed_sources,
+            &expression_sources,
             &expression_types,
             &type_resolution,
             input.dependency_analysis,
-        );
+        )?;
         let callable_analysis = analyze_source_callables(
             &input.parsed_sources,
             &resolved_call_targets,

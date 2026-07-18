@@ -10,8 +10,8 @@ use crate::{
         ast_utils::{expr_path, walk_expr, walk_pattern, walk_stmt, AstVisitor},
         type_syntax::generic_parts,
     },
-    ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel, SourceDependencyAnalysisInput,
-    SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
+    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, ExpressionTypeModel,
+    SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 
 use super::{ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason};
@@ -36,43 +36,52 @@ struct LocalCallTargetIndex {
 }
 
 struct TargetCollector<'a> {
+    diagnostic_path: &'a str,
     module_path: &'a str,
     owner: ExpressionOwnerKey,
     next_index: u32,
     local_targets: &'a LocalCallTargetIndex,
+    expression_sources: &'a ExpressionSourceMap,
     expression_types: &'a ExpressionTypeModel,
     type_resolution: &'a TypeResolutionModel,
     dependencies: &'a SourceDependencyAnalysisInput,
     local_value_names: BTreeSet<String>,
     targets: &'a mut BTreeMap<ExpressionKey, ResolvedCallTarget>,
+    errors: &'a mut Vec<String>,
 }
 
 pub(super) fn build_resolved_call_targets(
     parsed_sources: &[ParsedCompilerSource],
+    expression_sources: &ExpressionSourceMap,
     expression_types: &ExpressionTypeModel,
     type_resolution: &TypeResolutionModel,
     dependencies: &SourceDependencyAnalysisInput,
-) -> ResolvedCallTargetFacts {
+) -> Result<ResolvedCallTargetFacts, crate::SourceCompileError> {
     let local_targets = LocalCallTargetIndex::build(parsed_sources);
     let mut targets = BTreeMap::new();
+    let mut errors = Vec::new();
     for parsed in parsed_sources
         .iter()
         .filter(|parsed| !parsed.source().is_test_file)
     {
         let module_path = parsed.module_path();
+        let diagnostic_path = parsed.source().relative_path.display().to_string();
         for function in &parsed.ast().functions {
             if function.is_native || function.is_provider {
                 continue;
             }
             collect_owner(
+                &diagnostic_path,
                 module_path,
                 ExpressionOwnerKey::Function(function.name.clone()),
                 function,
                 &local_targets,
+                expression_sources,
                 expression_types,
                 type_resolution,
                 dependencies,
                 &mut targets,
+                &mut errors,
             );
         }
         for implementation in &parsed.ast().impls {
@@ -81,6 +90,7 @@ pub(super) fn build_resolved_call_targets(
                     continue;
                 }
                 collect_owner(
+                    &diagnostic_path,
                     module_path,
                     ExpressionOwnerKey::ImplMethod {
                         type_name: implementation.target.clone(),
@@ -88,38 +98,58 @@ pub(super) fn build_resolved_call_targets(
                     },
                     method,
                     &local_targets,
+                    expression_sources,
                     expression_types,
                     type_resolution,
                     dependencies,
                     &mut targets,
+                    &mut errors,
                 );
             }
         }
     }
-    ResolvedCallTargetFacts::from_targets(targets)
+    if !errors.is_empty() {
+        return Err(crate::SourceCompileError::ContractValidation {
+            message: format!(
+                "contract call target resolution failed:\n{}",
+                errors
+                    .into_iter()
+                    .map(|error| format!("- {error}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        });
+    }
+    Ok(ResolvedCallTargetFacts::from_targets(targets))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn collect_owner(
+    diagnostic_path: &str,
     module_path: &str,
     owner: ExpressionOwnerKey,
     function: &FunctionDecl,
     local_targets: &LocalCallTargetIndex,
+    expression_sources: &ExpressionSourceMap,
     expression_types: &ExpressionTypeModel,
     type_resolution: &TypeResolutionModel,
     dependencies: &SourceDependencyAnalysisInput,
     targets: &mut BTreeMap<ExpressionKey, ResolvedCallTarget>,
+    errors: &mut Vec<String>,
 ) {
     let mut collector = TargetCollector {
+        diagnostic_path,
         module_path,
         owner,
         next_index: 0,
         local_targets,
+        expression_sources,
         expression_types,
         type_resolution,
         dependencies,
         local_value_names: local_value_names(function),
         targets,
+        errors,
     };
     collector.visit_block(&function.body);
 }
@@ -140,7 +170,11 @@ impl AstVisitor for TargetCollector<'_> {
 }
 
 impl TargetCollector<'_> {
-    fn resolve_call_target(&self, call_key: &ExpressionKey, callee: &Expr) -> ResolvedCallTarget {
+    fn resolve_call_target(
+        &mut self,
+        call_key: &ExpressionKey,
+        callee: &Expr,
+    ) -> ResolvedCallTarget {
         let semantic_callee = without_generic(callee);
         if let Some(path) = expr_path(semantic_callee) {
             let path_root_is_local = path
@@ -165,21 +199,29 @@ impl TargetCollector<'_> {
                         };
                     }
                     ResolvedDependencyAnalysisTarget::Contract {
-                        alias,
-                        expected_protocol_identity,
-                        operation_id,
+                        requirement,
+                        operation,
                     } => {
                         if local_target.is_some() {
                             return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
                         }
                         return ResolvedCallTarget::ContractOperation {
-                            contract_requirement_alias: alias,
-                            contract_operation_id: operation_id.clone(),
-                            expected_protocol_identity: expected_protocol_identity.clone(),
+                            contract_requirement: requirement.clone(),
+                            contract_operation_id: operation.operation_id.clone(),
                         };
                     }
-                    ResolvedDependencyAnalysisTarget::Ambiguous => {
-                        return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
+                    ResolvedDependencyAnalysisTarget::UnknownContractMember {
+                        alias,
+                        stable_key,
+                    } => {
+                        self.errors.push(contract_member_error(
+                            self.diagnostic_path,
+                            call_key,
+                            self.expression_sources,
+                            &alias,
+                            stable_key.as_deref(),
+                        ));
+                        return unknown(UnknownCallTargetReason::UnresolvedName);
                     }
                     ResolvedDependencyAnalysisTarget::MissingMember => {
                         return unknown(UnknownCallTargetReason::UnresolvedName);
@@ -412,6 +454,46 @@ fn local_value_names(function: &FunctionDecl) -> BTreeSet<String> {
     }
     collector.visit_block(&function.body);
     collector.0
+}
+
+fn contract_member_error(
+    diagnostic_path: &str,
+    call_key: &ExpressionKey,
+    expression_sources: &ExpressionSourceMap,
+    alias: &str,
+    stable_key: Option<&str>,
+) -> String {
+    let source_location = expression_sources
+        .fact(call_key)
+        .map(|fact| format!("{}:{}", fact.span.start.line, fact.span.start.column))
+        .unwrap_or_else(|| "unknown location".to_string());
+    let location = format!(
+        "{diagnostic_path}:{source_location}: {}, call expression #{}",
+        expression_owner_label(call_key.owner()),
+        call_key.preorder_index()
+    );
+    match stable_key {
+        Some(stable_key) => format!(
+            "{location}: contract dependency `{alias}` has no operation stable key `{stable_key}`"
+        ),
+        None => format!(
+            "{location}: contract dependency `{alias}` must be followed by an operation stable key"
+        ),
+    }
+}
+
+fn expression_owner_label(owner: &ExpressionOwnerKey) -> String {
+    match owner {
+        ExpressionOwnerKey::Function(name) => format!("function `{name}`"),
+        ExpressionOwnerKey::ImplMethod { type_name, method } => {
+            format!("method `{type_name}.{method}`")
+        }
+        ExpressionOwnerKey::Const(name) => format!("const `{name}`"),
+        ExpressionOwnerKey::Test(name) => format!("test `{name}`"),
+        ExpressionOwnerKey::DbIndexWhere { db, index } => {
+            format!("db index `{db}.{index}`")
+        }
+    }
 }
 
 fn unknown(reason: UnknownCallTargetReason) -> ResolvedCallTarget {

@@ -2302,6 +2302,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler-core",
+ "skiff-compiler-input",
  "skiff-compiler-input-model",
  "skiff-syntax",
  "thiserror",

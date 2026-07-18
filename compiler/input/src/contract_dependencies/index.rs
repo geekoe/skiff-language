@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, ContractOperationId, ContractRequirement, ContractSchemaType,
-    ContractTypeId, ServiceContract,
+    ContractTypeId, ContractTypeNameability, ServiceContract,
 };
 
 use super::{ContractDependencyError, ResolvedContractDependency};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct IndexedContractDependency {
     dependency: ResolvedContractDependency,
     operations_by_stable_key: BTreeMap<String, ContractOperationId>,
@@ -17,7 +17,7 @@ struct IndexedContractDependency {
 /// Strict alias/type/operation index over already validated ServiceContracts.
 /// It contains no provider package, build, deployment, route, or executable
 /// facts.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ContractDependencyIndex {
     dependencies: BTreeMap<String, IndexedContractDependency>,
 }
@@ -106,7 +106,7 @@ impl ContractDependencyIndex {
             })
     }
 
-    pub fn contract_type_by_stable_key(
+    pub(super) fn contract_schema_type_by_stable_key(
         &self,
         alias: &str,
         stable_key: &str,
@@ -119,6 +119,25 @@ impl ContractDependencyIndex {
             }
         })?;
         Ok(&entry.dependency.contract().boundary_schema[type_id])
+    }
+
+    /// Resolves only source-nameable contract nominal types. Closure-only
+    /// schema entries remain available to descriptor closure validation but
+    /// can never be selected by a qualified source name.
+    pub fn public_contract_type_id_by_stable_key(
+        &self,
+        alias: &str,
+        stable_key: &str,
+    ) -> Result<&ContractTypeId, ContractDependencyError> {
+        let schema_type = self.contract_schema_type_by_stable_key(alias, stable_key)?;
+        if schema_type.shape.nameability != ContractTypeNameability::PublicNameable {
+            return Err(ContractDependencyError::ContractTypeNotPublicNameable {
+                alias: alias.to_string(),
+                stable_key: stable_key.to_string(),
+                contract_type_id: schema_type.contract_type_id.clone(),
+            });
+        }
+        Ok(&schema_type.contract_type_id)
     }
 
     fn entry(&self, alias: &str) -> Result<&IndexedContractDependency, ContractDependencyError> {

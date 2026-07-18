@@ -7,8 +7,8 @@ use skiff_compiler_lowering::{
     ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
 };
 use skiff_compiler_source::{
-    ContractDependencyAnalysisFacts, PackageDependencyAnalysisFacts,
-    PackageDependencyCallableAnalysis, SourceDependencyAnalysisInput,
+    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
+    SourceDependencyAnalysisInput,
 };
 
 use crate::{
@@ -23,13 +23,16 @@ pub(super) struct CanonicalDependencyHandoff {
 
 impl CanonicalDependencyHandoff {
     pub(super) fn build(input: &PackageCompileInput<'_>) -> Result<Self, PackageCompileError> {
-        let contracts = validated_contract_index(input)?;
+        let source_analysis = SourceDependencyAnalysisInput::new(
+            package_analysis(input)?,
+            validated_contract_dependencies(input)?,
+        )
+        .map_err(dependency_analysis_error)?;
+        let contract_operations =
+            contract_operation_index(source_analysis.contract_dependencies())?;
         Ok(Self {
-            source_analysis: SourceDependencyAnalysisInput::new(
-                package_analysis(input)?,
-                contract_analysis(&contracts),
-            ),
-            contract_operations: contract_operation_index(&contracts)?,
+            source_analysis,
+            contract_operations,
         })
     }
 
@@ -42,10 +45,10 @@ impl CanonicalDependencyHandoff {
     }
 }
 
-fn validated_contract_index(
+fn validated_contract_dependencies(
     input: &PackageCompileInput<'_>,
-) -> Result<ContractDependencyIndex, PackageCompileError> {
-    let dependencies = input
+) -> Result<Vec<ResolvedContractDependency>, PackageCompileError> {
+    input
         .contract_dependencies
         .iter()
         .map(|dependency| {
@@ -55,13 +58,12 @@ fn validated_contract_index(
             )
         })
         .collect::<Result<Vec<_>, _>>()
-        .map_err(contract_error)?;
-    ContractDependencyIndex::build(dependencies).map_err(contract_error)
+        .map_err(contract_error)
 }
 
 fn package_analysis(
     input: &PackageCompileInput<'_>,
-) -> Result<BTreeMap<String, PackageDependencyAnalysisFacts>, PackageCompileError> {
+) -> Result<Vec<(String, PackageDependencyAnalysisFacts)>, PackageCompileError> {
     let artifacts = input
         .dependency_packages
         .iter()
@@ -75,7 +77,7 @@ fn package_analysis(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let mut facts = BTreeMap::new();
+    let mut facts = Vec::new();
     for dependency in input.package_dependencies {
         let Some(artifact) = artifacts.get(&(dependency.id.as_str(), dependency.version.as_str()))
         else {
@@ -92,21 +94,13 @@ fn package_analysis(
         })?;
         let alias = dependency.effective_alias().to_string();
         let callables = package_callable_analysis(dependency, artifact)?;
-        if facts
-            .insert(
-                alias.clone(),
-                PackageDependencyAnalysisFacts::new(
-                    artifact.package_local_abi.local_abi_identity.clone(),
-                    callables,
-                ),
-            )
-            .is_some()
-        {
-            return Err(validation_error(format!(
-                "package {} has duplicate dependency alias {alias}",
-                input.package_id
-            )));
-        }
+        facts.push((
+            alias,
+            PackageDependencyAnalysisFacts::new(
+                artifact.package_local_abi.local_abi_identity.clone(),
+                callables,
+            ),
+        ));
     }
     Ok(facts)
 }
@@ -155,30 +149,6 @@ fn dependency_member_path(dependency: &PackageDependency, public_path: &str) -> 
     }
 }
 
-fn contract_analysis(
-    contracts: &ContractDependencyIndex,
-) -> BTreeMap<String, ContractDependencyAnalysisFacts> {
-    contracts
-        .dependencies()
-        .map(|dependency| {
-            let contract = dependency.contract();
-            (
-                dependency.requirement().alias.clone(),
-                ContractDependencyAnalysisFacts::new(
-                    contract.service_protocol_identity.clone(),
-                    contract
-                        .operations
-                        .values()
-                        .map(|operation| {
-                            (operation.stable_key.clone(), operation.operation_id.clone())
-                        })
-                        .collect(),
-                ),
-            )
-        })
-        .collect()
-}
-
 fn contract_operation_index(
     contracts: &ContractDependencyIndex,
 ) -> Result<ContractDependencyOperationIndex, PackageCompileError> {
@@ -193,6 +163,10 @@ fn contract_operation_index(
 
 fn contract_error(error: impl std::fmt::Display) -> PackageCompileError {
     validation_error(format!("contract dependency validation failed: {error}"))
+}
+
+fn dependency_analysis_error(error: impl std::fmt::Display) -> PackageCompileError {
+    validation_error(format!("dependency alias validation failed: {error}"))
 }
 
 fn validation_error(message: String) -> PackageCompileError {

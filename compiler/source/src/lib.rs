@@ -68,8 +68,8 @@ pub use config_requirements::{
 };
 pub use config_usage::ConfigSourceSpan;
 pub use dependency_analysis::{
-    ContractDependencyAnalysisFacts, PackageDependencyAnalysisFacts,
-    PackageDependencyCallableAnalysis, SourceDependencyAnalysisInput,
+    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
+    SourceDependencyAnalysisError, SourceDependencyAnalysisInput,
 };
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,

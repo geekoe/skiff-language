@@ -81,20 +81,19 @@ pub fn lower_service_calls(
     let mut used_operations = BTreeMap::<String, BTreeSet<ContractOperationId>>::new();
     for (_, target) in targets.iter() {
         let ResolvedCallTarget::ContractOperation {
-            contract_requirement_alias,
+            contract_requirement,
             contract_operation_id,
-            expected_protocol_identity,
         } = target
         else {
             continue;
         };
         operations.operation(
-            contract_requirement_alias,
+            &contract_requirement.alias,
             contract_operation_id,
-            expected_protocol_identity,
+            &contract_requirement.expected_protocol_identity,
         )?;
         used_operations
-            .entry(contract_requirement_alias.clone())
+            .entry(contract_requirement.alias.clone())
             .or_default()
             .insert(contract_operation_id.clone());
     }
@@ -118,20 +117,19 @@ pub fn lower_service_calls(
     let mut call_sites = Vec::new();
     for (expression, target) in targets.iter() {
         let ResolvedCallTarget::ContractOperation {
-            contract_requirement_alias,
+            contract_requirement,
             contract_operation_id,
-            expected_protocol_identity,
         } = target
         else {
             continue;
         };
-        let slot = slots[contract_requirement_alias];
+        let slot = slots[&contract_requirement.alias];
         call_sites.push(LoweredServiceCallSite {
             expression: expression.clone(),
             call_ref: ServiceCallRef {
                 service_requirement_slot: slot,
                 contract_operation_id: contract_operation_id.clone(),
-                expected_protocol_identity: expected_protocol_identity.clone(),
+                expected_protocol_identity: contract_requirement.expected_protocol_identity.clone(),
             },
         });
     }

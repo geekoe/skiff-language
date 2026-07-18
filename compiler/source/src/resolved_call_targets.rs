@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    ContractOperationId, PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    ContractOperationId, ContractRequirement, PackageCallableId, PackageLocalAbiIdentity,
 };
 
 use crate::{semantic::impl_method_declaration_name, ExpressionKey, SourceSymbolKey};
@@ -34,9 +34,8 @@ pub enum ResolvedCallTarget {
         expected_local_abi: PackageLocalAbiIdentity,
     },
     ContractOperation {
-        contract_requirement_alias: String,
+        contract_requirement: ContractRequirement,
         contract_operation_id: ContractOperationId,
-        expected_protocol_identity: ServiceProtocolIdentity,
     },
     Unknown {
         reason: UnknownCallTargetReason,
@@ -106,12 +105,14 @@ impl ResolvedCallTargetFacts {
 
     pub(crate) fn build(
         parsed_sources: &[crate::parsed_sources::ParsedCompilerSource],
+        expression_sources: &crate::ExpressionSourceMap,
         expression_types: &crate::ExpressionTypeModel,
         type_resolution: &crate::TypeResolutionModel,
         dependencies: &crate::SourceDependencyAnalysisInput,
-    ) -> Self {
+    ) -> Result<Self, crate::SourceCompileError> {
         builder::build_resolved_call_targets(
             parsed_sources,
+            expression_sources,
             expression_types,
             type_resolution,
             dependencies,
@@ -173,22 +174,29 @@ mod tests {
         );
 
         let contract = ResolvedCallTarget::ContractOperation {
-            contract_requirement_alias: "echo".to_string(),
+            contract_requirement: contract_requirement("echo", "protocol:echo"),
             contract_operation_id: ContractOperationId::new("operation:echo"),
-            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
         };
         let contract_value = serde_json::to_value(&contract).unwrap();
         assert_eq!(
             contract_value,
             json!({
                 "kind": "contractOperation",
-                "contractRequirementAlias": "echo",
-                "contractOperationId": "operation:echo",
-                "expectedProtocolIdentity": "protocol:echo"
+                "contractRequirement": {
+                    "alias": "echo",
+                    "serviceId": "example.echo",
+                    "contractVersion": "1.0.0",
+                    "expectedProtocolIdentity": "protocol:echo"
+                },
+                "contractOperationId": "operation:echo"
             })
         );
+        assert!(contract_value.get("contractRequirementAlias").is_none());
+        assert!(contract_value.get("expectedProtocolIdentity").is_none());
         let text = contract_value.to_string();
         for forbidden in [
+            "operationStableKey",
+            "diagnosticText",
             "providerPackageId",
             "providerBuildId",
             "deploymentRevision",
@@ -225,9 +233,13 @@ mod tests {
             json!({ "kind": "unknown" }),
             json!({
                 "kind": "contractOperation",
-                "contractRequirementAlias": "echo",
+                "contractRequirement": {
+                    "alias": "echo",
+                    "serviceId": "example.echo",
+                    "contractVersion": "1.0.0",
+                    "expectedProtocolIdentity": "protocol"
+                },
                 "contractOperationId": "op",
-                "expectedProtocolIdentity": "protocol",
                 "providerBuildId": "forbidden"
             }),
         ] {
@@ -282,5 +294,16 @@ mod tests {
             serde_json::from_value::<ResolvedCallTarget>(wire).unwrap(),
             target
         );
+    }
+
+    fn contract_requirement(alias: &str, protocol: &str) -> ContractRequirement {
+        ContractRequirement {
+            alias: alias.to_string(),
+            service_id: format!("example.{alias}"),
+            contract_version: "1.0.0".to_string(),
+            expected_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new(
+                protocol,
+            ),
+        }
     }
 }

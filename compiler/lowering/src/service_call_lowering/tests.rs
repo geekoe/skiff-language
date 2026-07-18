@@ -329,9 +329,8 @@ fn contract_target(
     protocol: &str,
 ) -> ResolvedCallTarget {
     ResolvedCallTarget::ContractOperation {
-        contract_requirement_alias: alias.to_string(),
+        contract_requirement: requirement(alias, protocol),
         contract_operation_id: operation.operation_id.clone(),
-        expected_protocol_identity: ServiceProtocolIdentity::new(protocol),
     }
 }
 

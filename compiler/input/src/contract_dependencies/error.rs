@@ -60,4 +60,12 @@ pub enum ContractDependencyError {
     },
     #[error("contract dependency `{alias}` has no contract type stable key `{stable_key}`")]
     UnknownTypeStableKey { alias: String, stable_key: String },
+    #[error(
+        "contract dependency `{alias}` type stable key `{stable_key}` resolves to closure-only type {contract_type_id}"
+    )]
+    ContractTypeNotPublicNameable {
+        alias: String,
+        stable_key: String,
+        contract_type_id: ContractTypeId,
+    },
 }

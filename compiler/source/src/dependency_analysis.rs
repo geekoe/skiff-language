@@ -1,9 +1,25 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallableSemanticFacts, ContractOperationId, PackageCallableId, PackageLocalAbiIdentity,
-    ServiceProtocolIdentity,
+    BoundaryOperationDescriptor, CallableSemanticFacts, ContractRequirement, ContractTypeId,
+    PackageCallableId, PackageLocalAbiIdentity, ServiceContract,
 };
+use skiff_compiler_input::{
+    ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
+};
+use thiserror::Error;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SourceDependencyAnalysisError {
+    #[error("package dependency alias `{alias}` is declared more than once")]
+    DuplicatePackageAlias { alias: String },
+    #[error("contract dependency alias `{alias}` is declared more than once")]
+    DuplicateContractAlias { alias: String },
+    #[error("dependency alias `{alias}` is declared by both a package and a contract")]
+    AliasKindConflict { alias: String },
+    #[error("invalid validated contract dependency facts: {message}")]
+    InvalidContractFacts { message: String },
+}
 
 /// Canonical dependency facts made available to source call-target and effect
 /// analysis. This input is intentionally independent from legacy publication
@@ -11,7 +27,7 @@ use skiff_artifact_model::{
 #[derive(Debug, Clone, Default)]
 pub struct SourceDependencyAnalysisInput {
     packages: BTreeMap<String, PackageDependencyAnalysisFacts>,
-    contracts: BTreeMap<String, ContractDependencyAnalysisFacts>,
+    contracts: ContractDependencyIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -26,12 +42,6 @@ pub struct PackageDependencyCallableAnalysis {
     semantic_facts: CallableSemanticFacts,
 }
 
-#[derive(Debug, Clone)]
-pub struct ContractDependencyAnalysisFacts {
-    expected_protocol_identity: ServiceProtocolIdentity,
-    operations: BTreeMap<String, ContractOperationId>,
-}
-
 pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
     Package {
         alias: String,
@@ -39,61 +49,123 @@ pub(crate) enum ResolvedDependencyAnalysisTarget<'a> {
         callable: &'a PackageDependencyCallableAnalysis,
     },
     Contract {
-        alias: String,
-        expected_protocol_identity: &'a ServiceProtocolIdentity,
-        operation_id: &'a ContractOperationId,
+        requirement: &'a ContractRequirement,
+        operation: &'a BoundaryOperationDescriptor,
     },
-    Ambiguous,
+    UnknownContractMember {
+        alias: String,
+        stable_key: Option<String>,
+    },
     MissingMember,
     Missing,
 }
 
 impl SourceDependencyAnalysisInput {
+    /// Freezes the package/contract alias namespace before source analysis.
+    /// Both inputs remain iterators so duplicates cannot be hidden by an
+    /// eager map construction at a caller.
     pub fn new(
-        packages: BTreeMap<String, PackageDependencyAnalysisFacts>,
-        contracts: BTreeMap<String, ContractDependencyAnalysisFacts>,
-    ) -> Self {
-        Self {
-            packages,
-            contracts,
+        packages: impl IntoIterator<Item = (String, PackageDependencyAnalysisFacts)>,
+        contracts: impl IntoIterator<Item = ResolvedContractDependency>,
+    ) -> Result<Self, SourceDependencyAnalysisError> {
+        let mut package_index = BTreeMap::new();
+        for (alias, facts) in packages {
+            if package_index.insert(alias.clone(), facts).is_some() {
+                return Err(SourceDependencyAnalysisError::DuplicatePackageAlias { alias });
+            }
         }
+        let contracts = ContractDependencyIndex::build(contracts).map_err(|error| match error {
+            ContractDependencyError::DuplicateAlias { alias } => {
+                SourceDependencyAnalysisError::DuplicateContractAlias { alias }
+            }
+            error => SourceDependencyAnalysisError::InvalidContractFacts {
+                message: error.to_string(),
+            },
+        })?;
+        if let Some(alias) = contracts
+            .dependencies()
+            .map(|dependency| dependency.requirement().alias.as_str())
+            .find(|alias| package_index.contains_key(*alias))
+        {
+            return Err(SourceDependencyAnalysisError::AliasKindConflict {
+                alias: alias.to_string(),
+            });
+        }
+        Ok(Self {
+            packages: package_index,
+            contracts,
+        })
     }
 
-    /// Resolves both dependency kinds through one alias/path rule. An alias
-    /// present in both namespaces is ambiguous and therefore never guessed.
+    /// Resolves both dependency kinds through the namespace frozen by `new`.
     pub(crate) fn resolve_path(&self, path: &str) -> ResolvedDependencyAnalysisTarget<'_> {
         let Some((alias, callable_path)) = path.split_once('.') else {
-            return match (
-                self.packages.contains_key(path),
-                self.contracts.contains_key(path),
-            ) {
-                (true, true) => ResolvedDependencyAnalysisTarget::Ambiguous,
-                (true, false) | (false, true) => ResolvedDependencyAnalysisTarget::MissingMember,
-                (false, false) => ResolvedDependencyAnalysisTarget::Missing,
+            return if self.packages.contains_key(path) {
+                ResolvedDependencyAnalysisTarget::MissingMember
+            } else if self.contracts.requirement(path).is_ok() {
+                ResolvedDependencyAnalysisTarget::UnknownContractMember {
+                    alias: path.to_string(),
+                    stable_key: None,
+                }
+            } else {
+                ResolvedDependencyAnalysisTarget::Missing
             };
         };
-        let package = self.packages.get(alias);
-        let contract = self.contracts.get(alias);
-        match (package, contract) {
-            (Some(_), Some(_)) => ResolvedDependencyAnalysisTarget::Ambiguous,
-            (Some(facts), None) => match facts.callables.get(callable_path) {
+        if let Some(facts) = self.packages.get(alias) {
+            return match facts.callables.get(callable_path) {
                 Some(callable) => ResolvedDependencyAnalysisTarget::Package {
                     alias: alias.to_string(),
                     expected_local_abi: &facts.expected_local_abi,
                     callable,
                 },
                 None => ResolvedDependencyAnalysisTarget::MissingMember,
-            },
-            (None, Some(facts)) => match facts.operations.get(callable_path) {
-                Some(operation_id) => ResolvedDependencyAnalysisTarget::Contract {
-                    alias: alias.to_string(),
-                    expected_protocol_identity: &facts.expected_protocol_identity,
-                    operation_id,
-                },
-                None => ResolvedDependencyAnalysisTarget::MissingMember,
-            },
-            (None, None) => ResolvedDependencyAnalysisTarget::Missing,
+            };
         }
+        let Ok(requirement) = self.contracts.requirement(alias) else {
+            return ResolvedDependencyAnalysisTarget::Missing;
+        };
+        match self.contracts.operation_by_stable_key(alias, callable_path) {
+            Ok(operation) => ResolvedDependencyAnalysisTarget::Contract {
+                requirement,
+                operation,
+            },
+            Err(_) => ResolvedDependencyAnalysisTarget::UnknownContractMember {
+                alias: alias.to_string(),
+                stable_key: Some(callable_path.to_string()),
+            },
+        }
+    }
+
+    pub fn contract_requirement(
+        &self,
+        alias: &str,
+    ) -> Result<&ContractRequirement, ContractDependencyError> {
+        self.contracts.requirement(alias)
+    }
+
+    pub fn contract(&self, alias: &str) -> Result<&ServiceContract, ContractDependencyError> {
+        self.contracts.contract(alias)
+    }
+
+    pub fn contract_operation_by_stable_key(
+        &self,
+        alias: &str,
+        stable_key: &str,
+    ) -> Result<&BoundaryOperationDescriptor, ContractDependencyError> {
+        self.contracts.operation_by_stable_key(alias, stable_key)
+    }
+
+    pub fn public_contract_type_id_by_stable_key(
+        &self,
+        alias: &str,
+        stable_key: &str,
+    ) -> Result<&ContractTypeId, ContractDependencyError> {
+        self.contracts
+            .public_contract_type_id_by_stable_key(alias, stable_key)
+    }
+
+    pub fn contract_dependencies(&self) -> &ContractDependencyIndex {
+        &self.contracts
     }
 
     pub(crate) fn package_callable(
@@ -119,7 +191,9 @@ impl SourceDependencyAnalysisInput {
     }
 
     pub(crate) fn contract_aliases(&self) -> impl Iterator<Item = &str> {
-        self.contracts.keys().map(String::as_str)
+        self.contracts
+            .dependencies()
+            .map(|dependency| dependency.requirement().alias.as_str())
     }
 }
 
@@ -152,22 +226,20 @@ impl PackageDependencyCallableAnalysis {
     }
 }
 
-impl ContractDependencyAnalysisFacts {
-    pub fn new(
-        expected_protocol_identity: ServiceProtocolIdentity,
-        operations: BTreeMap<String, ContractOperationId>,
-    ) -> Self {
-        Self {
-            expected_protocol_identity,
-            operations,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use skiff_artifact_identity::{
+        assign_service_contract_identities, contract_operation_id, contract_type_id,
+    };
     use skiff_artifact_model::{
+        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
+        BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
+        BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
         CallableEffectSummary, CallableProvenanceSummary, CallableSemanticFacts,
+        ContractDiagnosticText, ContractSchemaType, ContractTypeDescriptor,
+        ContractTypeNameability, ContractTypeRef, ContractTypeShape, ServiceProtocolIdentity,
+        SERVICE_CONTRACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -186,54 +258,36 @@ mod tests {
     }
 
     #[test]
-    fn one_lookup_rule_distinguishes_package_contract_ambiguous_and_missing() {
+    fn canonical_contract_facts_preserve_requirement_descriptor_and_public_nominal_type() {
+        let contract = contract_fixture("example.svc", "1.0.0", "run");
+        let expected_requirement = requirement("svc", &contract);
         let input = SourceDependencyAnalysisInput::new(
-            BTreeMap::from([
-                (
-                    "pkg".to_string(),
-                    PackageDependencyAnalysisFacts::new(
-                        PackageLocalAbiIdentity::new("abi:pkg"),
-                        BTreeMap::from([("run".to_string(), package_callable("callable:run"))]),
-                    ),
-                ),
-                (
-                    "both".to_string(),
-                    PackageDependencyAnalysisFacts::new(
-                        PackageLocalAbiIdentity::new("abi:both"),
-                        BTreeMap::from([("run".to_string(), package_callable("callable:both"))]),
-                    ),
-                ),
-            ]),
-            BTreeMap::from([
-                (
-                    "svc".to_string(),
-                    ContractDependencyAnalysisFacts::new(
-                        ServiceProtocolIdentity::new("protocol:svc"),
-                        BTreeMap::from([(
-                            "run".to_string(),
-                            ContractOperationId::new("operation:run"),
-                        )]),
-                    ),
-                ),
-                (
-                    "both".to_string(),
-                    ContractDependencyAnalysisFacts::new(
-                        ServiceProtocolIdentity::new("protocol:both"),
-                        BTreeMap::from([
-                            (
-                                "run".to_string(),
-                                ContractOperationId::new("operation:both"),
-                            ),
-                            (
-                                "other".to_string(),
-                                ContractOperationId::new("operation:other"),
-                            ),
-                        ]),
-                    ),
-                ),
-            ]),
-        );
+            [("pkg".to_string(), package_facts("abi:pkg", "callable:run"))],
+            [resolved_contract(
+                expected_requirement.clone(),
+                contract.clone(),
+            )],
+        )
+        .unwrap();
 
+        assert_eq!(
+            input.contract_requirement("svc").unwrap(),
+            &expected_requirement
+        );
+        assert_eq!(input.contract("svc").unwrap(), &contract);
+        let operation = input
+            .contract_operation_by_stable_key("svc", "run")
+            .unwrap();
+        assert_eq!(
+            operation.operation_id,
+            contract_operation_id("example.svc", "1.0.0", "run").unwrap()
+        );
+        assert_eq!(
+            input
+                .public_contract_type_id_by_stable_key("svc", "payload")
+                .unwrap(),
+            &contract_type_id("example.svc", "1.0.0", "payload").unwrap()
+        );
         assert!(matches!(
             input.resolve_path("pkg.run"),
             ResolvedDependencyAnalysisTarget::Package { .. }
@@ -243,12 +297,12 @@ mod tests {
             ResolvedDependencyAnalysisTarget::Contract { .. }
         ));
         assert!(matches!(
-            input.resolve_path("both.run"),
-            ResolvedDependencyAnalysisTarget::Ambiguous
+            input.contract_operation_by_stable_key("missing", "run"),
+            Err(ContractDependencyError::UnknownAlias { .. })
         ));
         assert!(matches!(
-            input.resolve_path("both.other"),
-            ResolvedDependencyAnalysisTarget::Ambiguous
+            input.contract_operation_by_stable_key("svc", "missing"),
+            Err(ContractDependencyError::UnknownOperationStableKey { .. })
         ));
         assert!(matches!(
             input.resolve_path("missing.run"),
@@ -260,7 +314,55 @@ mod tests {
         ));
         assert!(matches!(
             input.resolve_path("svc.missing"),
-            ResolvedDependencyAnalysisTarget::MissingMember
+            ResolvedDependencyAnalysisTarget::UnknownContractMember {
+                alias,
+                stable_key: Some(stable_key),
+            } if alias == "svc" && stable_key == "missing"
+        ));
+        assert!(matches!(
+            input.resolve_path("svc"),
+            ResolvedDependencyAnalysisTarget::UnknownContractMember {
+                alias,
+                stable_key: None,
+            } if alias == "svc"
+        ));
+        assert!(matches!(
+            input.public_contract_type_id_by_stable_key("svc", "payloadClosure"),
+            Err(ContractDependencyError::ContractTypeNotPublicNameable { .. })
+        ));
+    }
+
+    #[test]
+    fn constructor_rejects_duplicates_and_cross_kind_alias_conflicts() {
+        let package = || package_facts("abi:pkg", "callable:run");
+        assert!(matches!(
+            SourceDependencyAnalysisInput::new(
+                [("dup".to_string(), package()), ("dup".to_string(), package())],
+                Vec::new(),
+            ),
+            Err(SourceDependencyAnalysisError::DuplicatePackageAlias { alias }) if alias == "dup"
+        ));
+
+        let first = contract_fixture("example.first", "1.0.0", "run");
+        let second = contract_fixture("example.second", "1.0.0", "run");
+        assert!(matches!(
+            SourceDependencyAnalysisInput::new(
+                Vec::new(),
+                [
+                    resolved_contract(requirement("dup", &first), first),
+                    resolved_contract(requirement("dup", &second), second),
+                ],
+            ),
+            Err(SourceDependencyAnalysisError::DuplicateContractAlias { alias }) if alias == "dup"
+        ));
+
+        let contract = contract_fixture("example.conflict", "1.0.0", "run");
+        assert!(matches!(
+            SourceDependencyAnalysisInput::new(
+                [("same".to_string(), package())],
+                [resolved_contract(requirement("same", &contract), contract)],
+            ),
+            Err(SourceDependencyAnalysisError::AliasKindConflict { alias }) if alias == "same"
         ));
     }
 
@@ -274,8 +376,9 @@ mod tests {
                     BTreeMap::from([("run".to_string(), package_callable("callable:run"))]),
                 ),
             )]),
-            BTreeMap::new(),
-        );
+            Vec::new(),
+        )
+        .unwrap();
         assert!(input
             .package_callable(
                 "pkg",
@@ -305,8 +408,9 @@ mod tests {
                     ]),
                 ),
             )]),
-            BTreeMap::new(),
-        );
+            Vec::new(),
+        )
+        .unwrap();
         assert!(input
             .package_callable(
                 "pkg",
@@ -314,5 +418,120 @@ mod tests {
                 &PackageCallableId::new("callable:duplicate"),
             )
             .is_none());
+    }
+
+    fn package_facts(abi: &str, callable: &str) -> PackageDependencyAnalysisFacts {
+        PackageDependencyAnalysisFacts::new(
+            PackageLocalAbiIdentity::new(abi),
+            BTreeMap::from([("run".to_string(), package_callable(callable))]),
+        )
+    }
+
+    fn resolved_contract(
+        requirement: ContractRequirement,
+        contract: ServiceContract,
+    ) -> ResolvedContractDependency {
+        ResolvedContractDependency::validated(requirement, contract).unwrap()
+    }
+
+    fn requirement(alias: &str, contract: &ServiceContract) -> ContractRequirement {
+        ContractRequirement {
+            alias: alias.to_string(),
+            service_id: contract.service_id.clone(),
+            contract_version: contract.contract_version.clone(),
+            expected_protocol_identity: contract.service_protocol_identity.clone(),
+        }
+    }
+
+    fn contract_fixture(service_id: &str, version: &str, operation_key: &str) -> ServiceContract {
+        let payload_type_id = contract_type_id(service_id, version, "payload").unwrap();
+        let closure_type_id = contract_type_id(service_id, version, "payloadClosure").unwrap();
+        let operation_id = contract_operation_id(service_id, version, operation_key).unwrap();
+        let operation = BoundaryOperationDescriptor {
+            operation_id: operation_id.clone(),
+            stable_key: operation_key.to_string(),
+            contract: BoundaryOperationContract {
+                parameters: vec![BoundaryParameter {
+                    name: "input".to_string(),
+                    ty: ContractTypeRef::contract(payload_type_id.clone()),
+                    value_plan: linkable(BoundaryValueOwner::Caller),
+                }],
+                return_value: BoundaryReturn {
+                    ty: ContractTypeRef::contract(payload_type_id.clone()),
+                    value_plan: linkable(BoundaryValueOwner::Provider),
+                },
+                errors: BoundaryErrorContract::None,
+                stream: BoundaryStreamContract::Unary,
+                cancellation: BoundaryCancellationContract::NotCancellable,
+                callbacks: BoundaryCallbackContract::None,
+                may_suspend: false,
+                effect_guarantee: BoundaryEffectGuarantee {
+                    detached_parameters: true,
+                    detached_return: true,
+                    detached_error: true,
+                    no_caller_reachable_mutation: true,
+                    no_caller_value_escape: true,
+                    no_same_heap_identity: true,
+                },
+            },
+        };
+        let boundary_schema = BTreeMap::from([
+            (
+                payload_type_id.clone(),
+                ContractSchemaType {
+                    contract_type_id: payload_type_id,
+                    stable_key: "payload".to_string(),
+                    shape: ContractTypeShape {
+                        nameability: ContractTypeNameability::PublicNameable,
+                        descriptor: ContractTypeDescriptor::Record {
+                            fields: BTreeMap::from([(
+                                "value".to_string(),
+                                ContractTypeRef::contract(closure_type_id.clone()),
+                            )]),
+                        },
+                    },
+                },
+            ),
+            (
+                closure_type_id.clone(),
+                ContractSchemaType {
+                    contract_type_id: closure_type_id,
+                    stable_key: "payloadClosure".to_string(),
+                    shape: ContractTypeShape {
+                        nameability: ContractTypeNameability::ClosureOnly,
+                        descriptor: ContractTypeDescriptor::Record {
+                            fields: BTreeMap::from([(
+                                "inner".to_string(),
+                                ContractTypeRef::builtin("string"),
+                            )]),
+                        },
+                    },
+                },
+            ),
+        ]);
+        let mut contract = ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: service_id.to_string(),
+            contract_version: version.to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::from([(operation_id, operation)]),
+            boundary_schema,
+            diagnostic_text: ContractDiagnosticText {
+                service: service_id.to_string(),
+                operations: BTreeMap::new(),
+                types: BTreeMap::new(),
+            },
+        };
+        assign_service_contract_identities(&mut contract).unwrap();
+        contract
+    }
+
+    fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime: BoundaryValueLifetime::Call,
+        }
     }
 }

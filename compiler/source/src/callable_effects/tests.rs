@@ -1,18 +1,25 @@
 use std::{collections::BTreeMap, path::Path, path::PathBuf};
 
+use skiff_artifact_identity::{assign_service_contract_identities, contract_operation_id};
 use skiff_artifact_model::{
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
+    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    ContractOperationId, PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
-    ValueEscapeLane, ValueProvenance,
+    ContractDiagnosticText, ContractRequirement, ContractTypeRef, PackageCallableId,
+    PackageLocalAbiIdentity, ServiceContract, ServiceProtocolIdentity, ValueEscapeLane,
+    ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
+use skiff_compiler_input::ResolvedContractDependency;
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
     parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, ContractDependencyAnalysisFacts, PackageCompilePolicy,
-    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis, PackageSourceModel,
-    ResolvedCallTarget, SourceDependencyAnalysisInput, SourceSymbolKey,
+    CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
+    PackageDependencyCallableAnalysis, PackageSourceModel, ResolvedCallTarget,
+    SourceDependencyAnalysisInput, SourceSymbolKey,
 };
 
 #[test]
@@ -382,8 +389,9 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
                 BTreeMap::from([("run".to_string(), dependency)]),
             ),
         )]),
-        BTreeMap::new(),
-    );
+        Vec::new(),
+    )
+    .unwrap();
     let model = analyze(
         r#"
             type Boxed { value: string }
@@ -412,20 +420,17 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
 }
 
 #[test]
-fn contract_target_is_typed_but_effects_fail_closed_without_descriptor_facts() {
-    let dependency_input = SourceDependencyAnalysisInput::new(
-        BTreeMap::new(),
-        BTreeMap::from([(
-            "echo".to_string(),
-            ContractDependencyAnalysisFacts::new(
-                ServiceProtocolIdentity::new("service-protocol:echo"),
-                BTreeMap::from([(
-                    "send".to_string(),
-                    ContractOperationId::new("contract-operation:send"),
-                )]),
-            ),
-        )]),
-    );
+fn contract_target_carries_full_requirement_while_effects_fail_closed() {
+    let dependency = contract_dependency("echo", "send");
+    let expected_requirement = dependency.requirement().clone();
+    let expected_operation = dependency
+        .contract()
+        .operations
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let dependency_input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
     let model = analyze(
         r#"
             function wrapper(input: string) -> void {
@@ -445,19 +450,112 @@ fn contract_target_is_typed_but_effects_fail_closed_without_descriptor_facts() {
         matches!(
             target,
             ResolvedCallTarget::ContractOperation {
-                contract_requirement_alias,
+                contract_requirement,
                 contract_operation_id,
-                expected_protocol_identity,
-            } if contract_requirement_alias == "echo"
-                && contract_operation_id == &ContractOperationId::new("contract-operation:send")
-                && expected_protocol_identity
-                    == &ServiceProtocolIdentity::new("service-protocol:echo")
+            } if contract_requirement == &expected_requirement
+                && contract_operation_id == &expected_operation
         )
     }));
 }
 
+#[test]
+fn unknown_contract_member_fails_with_source_location_and_stable_key() {
+    let dependency = contract_dependency("echo", "send");
+    let dependency_input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
+    let error = match analyze_result(
+        r#"
+            function wrapper() -> void {
+              echo.missing()
+            }
+        "#,
+        dependency_input,
+    ) {
+        Ok(_) => panic!("unknown contract member must fail source compilation"),
+        Err(error) => error.to_string(),
+    };
+    for expected in ["api.skiff", "function `wrapper`", "`echo`", "`missing`"] {
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+fn contract_dependency(alias: &str, operation_key: &str) -> ResolvedContractDependency {
+    let service_id = format!("example.{alias}");
+    let version = "1.0.0";
+    let operation_id = contract_operation_id(&service_id, version, operation_key).unwrap();
+    let operation = BoundaryOperationDescriptor {
+        operation_id: operation_id.clone(),
+        stable_key: operation_key.to_string(),
+        contract: BoundaryOperationContract {
+            parameters: vec![BoundaryParameter {
+                name: "input".to_string(),
+                ty: ContractTypeRef::builtin("string"),
+                value_plan: linkable(BoundaryValueOwner::Caller),
+            }],
+            return_value: BoundaryReturn {
+                ty: ContractTypeRef::builtin("void"),
+                value_plan: linkable(BoundaryValueOwner::Provider),
+            },
+            errors: BoundaryErrorContract::None,
+            stream: BoundaryStreamContract::Unary,
+            cancellation: BoundaryCancellationContract::NotCancellable,
+            callbacks: BoundaryCallbackContract::None,
+            may_suspend: false,
+            effect_guarantee: BoundaryEffectGuarantee {
+                detached_parameters: true,
+                detached_return: true,
+                detached_error: true,
+                no_caller_reachable_mutation: true,
+                no_caller_value_escape: true,
+                no_same_heap_identity: true,
+            },
+        },
+    };
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id: service_id.clone(),
+        contract_version: version.to_string(),
+        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+        operations: BTreeMap::from([(operation_id, operation)]),
+        boundary_schema: BTreeMap::new(),
+        diagnostic_text: ContractDiagnosticText {
+            service: service_id.clone(),
+            operations: BTreeMap::new(),
+            types: BTreeMap::new(),
+        },
+    };
+    assign_service_contract_identities(&mut contract).unwrap();
+    let requirement = ContractRequirement {
+        alias: alias.to_string(),
+        service_id,
+        contract_version: version.to_string(),
+        expected_protocol_identity: contract.service_protocol_identity.clone(),
+    };
+    ResolvedContractDependency::validated(requirement, contract).unwrap()
+}
+
+fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+    BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner,
+        lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
 fn analyze(source: &str, dependency_analysis: SourceDependencyAnalysisInput) -> PackageSourceModel {
     analyze_named(
+        source,
+        dependency_analysis,
+        "api",
+        "example.com/effect-test",
+    )
+}
+
+fn analyze_result(
+    source: &str,
+    dependency_analysis: SourceDependencyAnalysisInput,
+) -> Result<PackageSourceModel, crate::SourceCompileError> {
+    analyze_named_result(
         source,
         dependency_analysis,
         "api",
@@ -471,6 +569,16 @@ fn analyze_named(
     module_path: &str,
     package_id: &str,
 ) -> PackageSourceModel {
+    analyze_named_result(source, dependency_analysis, module_path, package_id)
+        .expect("source model builds")
+}
+
+fn analyze_named_result(
+    source: &str,
+    dependency_analysis: SourceDependencyAnalysisInput,
+    module_path: &str,
+    package_id: &str,
+) -> Result<PackageSourceModel, crate::SourceCompileError> {
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         module_path.to_string(),
@@ -499,7 +607,6 @@ fn analyze_named(
         },
         &dependency_analysis,
     )
-    .expect("source model builds")
 }
 
 fn effects(model: &PackageSourceModel, symbol: &str) -> CallableMayEffects {

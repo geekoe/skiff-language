@@ -1230,14 +1230,15 @@ mod tests {
             },
         };
         let protocol = ServiceProtocolIdentity::new("protocol:echo");
+        let contract_requirement = ContractRequirement {
+            alias: "echo".to_string(),
+            service_id: "example.echo".to_string(),
+            contract_version: "1.0.0".to_string(),
+            expected_protocol_identity: protocol.clone(),
+        };
         let operation_index = crate::ContractDependencyOperationIndex::build([
             crate::ContractDependencyOperationIndexEntry::new(
-                ContractRequirement {
-                    alias: "echo".to_string(),
-                    service_id: "example.echo".to_string(),
-                    contract_version: "1.0.0".to_string(),
-                    expected_protocol_identity: protocol.clone(),
-                },
+                contract_requirement.clone(),
                 BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
             ),
         ])
@@ -1251,9 +1252,8 @@ mod tests {
             skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
                 expression,
                 skiff_compiler_source::ResolvedCallTarget::ContractOperation {
-                    contract_requirement_alias: "echo".to_string(),
+                    contract_requirement,
                     contract_operation_id: operation.operation_id.clone(),
-                    expected_protocol_identity: protocol.clone(),
                 },
             )]));
         let service_calls = crate::lower_service_calls(&targets, &operation_index).unwrap();
