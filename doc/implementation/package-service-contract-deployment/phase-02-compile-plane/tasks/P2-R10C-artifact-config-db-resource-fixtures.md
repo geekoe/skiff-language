@@ -1,6 +1,6 @@
 # P2-R10C：Artifact / Config / DB / Resource Fixtures
 
-状态：R10 consumer batch 2；依赖 R10，可与 R10B/R10D 并行。
+状态：R10 consumer batch 2；依赖 R10A，可与 R10B/R10D 并行。
 
 权威设计：`doc/architecture/package-service-contract-deployment.md` 的“四对象模型”“Package 编译”
 “依赖与 Identity”。
@@ -26,6 +26,7 @@
 
 ## 验证
 
-- 本批 `cargo check/test --test <target>`，反向搜索、targeted rustfmt、`git diff --check`；不跑全量 gate。
+- 以本批 `cargo test --test <target>` 为主；只有无需执行的 target 才用 check。另做反向搜索、targeted
+  rustfmt、`git diff --check`；不重复 check+test，不跑全量 gate。
 
 提交 clean；回报断言 disposition 表。

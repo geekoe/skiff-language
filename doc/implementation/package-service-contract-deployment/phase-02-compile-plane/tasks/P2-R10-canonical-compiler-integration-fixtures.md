@@ -2,7 +2,7 @@
 
 状态：shared test checkpoint；旧 R10 脏 worktree 只作只读证据，禁止整体提交、移植或继续开发。
 
-依赖：T05C10A–F、R03、R04、R06、R11、R13 已合入 terminal integration checkpoint。
+依赖：T05C10A–G、R03、R04、R06、R11、R13 已合入 terminal integration checkpoint。
 
 权威设计：`doc/architecture/package-service-contract-deployment.md` 的“四对象模型”“Compiler 与 Projection
 流水线”“ServiceContract 编译”“Fail-closed 条件”。
@@ -30,4 +30,5 @@
 - 可运行能独立编译的 common fixture test/check；consumer targets 在 R10B/C/D 前暂时失败须精确记录，不跑
   compiler 全量 gate。
 
-提交 clean checkpoint；回报 public fixture API、旧 helper disposition 与 consumer handoff。
+提交 clean checkpoint；回报 public fixture API、旧 helper disposition 与 R10A probe handoff。R10A 通过前不直接
+扇出 R10B/C/D。

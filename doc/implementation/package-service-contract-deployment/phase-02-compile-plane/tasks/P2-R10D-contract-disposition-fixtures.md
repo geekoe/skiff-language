@@ -1,6 +1,6 @@
 # P2-R10D：Contract / Disposition Fixtures
 
-状态：R10 consumer batch 3；依赖 R10，可与 R10B/R10C 并行。
+状态：R10 consumer batch 3；依赖 R10A，可与 R10B/R10C 并行。
 
 权威设计：`doc/architecture/package-service-contract-deployment.md` 的“四对象模型”“ServiceContract 编译”
 “部署与调用语义”“Fail-closed 条件”。

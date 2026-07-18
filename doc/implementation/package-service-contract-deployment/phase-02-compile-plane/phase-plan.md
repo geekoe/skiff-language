@@ -145,6 +145,9 @@ R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9 +
   └── R10 canonical compiler shared fixture checkpoint
 
 R10
+  └── R10A shared-fixture lane contract probes
+
+R10A
   ├── R10B type/import/File IR fixtures
   ├── R10C artifact/config/DB/resource fixtures
   └── R10D contract/disposition fixtures
@@ -163,7 +166,8 @@ R03 + R04 + R06 + R10B + R10C + R10D + R11 + R13
 | 4b | T05C10D、T05C10E、T05C10F | validator consumers 与 terminal identity checker 并行收敛 |
 | 4c | T05C10G | 独立验收暴露的 package-call checker owner 漏管修复 |
 | 5a | R10 | production cleanup合流后先冻结共享 canonical fixture API |
-| 5b | R10B、R10C、R10D | 三个互斥 integration-test consumer 批次并行迁移 |
+| 5b | R10A | 三条 consumer lane 的 representative compile-only probe，最后收敛 shared API |
+| 5c | R10B、R10C、R10D | 三个互斥 integration-test consumer 批次并行迁移 |
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
@@ -212,13 +216,14 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R09 | [Canonical test dependency closure](tasks/P2-R09-canonical-test-dependency-closure.md) | 已吸收 | canonical graph 进 R10；旧 holder 不移植 |
 | R07 | [Service-test local entrypoint assembly](tasks/P2-R07-service-test-local-entrypoint.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R11 | [Canonical contract schema fidelity](tasks/P2-R11-canonical-contract-schema-fidelity.md) | `9ca2547` | 高；移植已验收 commit `834cd55` |
-| R10 | [Canonical compiler shared fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C10A–F、R03、R04、R06、R11、R13 | 中；shared fixture checkpoint |
-| R10B | [Type/import/File IR fixtures](tasks/P2-R10B-type-import-file-ir-fixtures.md) | R10 | 中；consumer batch 1 |
-| R10C | [Artifact/config/DB/resource fixtures](tasks/P2-R10C-artifact-config-db-resource-fixtures.md) | R10 | 中；consumer batch 2 |
-| R10D | [Contract/disposition fixtures](tasks/P2-R10D-contract-disposition-fixtures.md) | R10 | 中；consumer batch 3 |
+| R10 | [Canonical compiler shared fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C10A–G、R03、R04、R06、R11、R13 | 中；shared fixture checkpoint |
+| R10A | [Shared-fixture lane contract probes](tasks/P2-R10A-shared-fixture-lane-probes.md) | R10 | 高；fan-out gate |
+| R10B | [Type/import/File IR fixtures](tasks/P2-R10B-type-import-file-ir-fixtures.md) | R10A | 中；consumer batch 1 |
+| R10C | [Artifact/config/DB/resource fixtures](tasks/P2-R10C-artifact-config-db-resource-fixtures.md) | R10A | 中；consumer batch 2 |
+| R10D | [Contract/disposition fixtures](tasks/P2-R10D-contract-disposition-fixtures.md) | R10A | 中；consumer batch 3 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10、R11、R13 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10B、R10C、R10D、R11、R13 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
@@ -276,6 +281,9 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   registry 派生，不能再增加一组互相漂移的手写清单。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
+- R10A 在 R10 后独占 `compiler/tests/common/**` 的最后 API 修正、一个 representative lane probe target 与其
+  `compiler/Cargo.toml` entry。它必须证明 type/import/File IR、config/DB/resource、explicit contract 三条 lane
+  都能编译；通过后 common API 冻结，R10B/C/D 不再回开。
 - R10B 独占类型/import/File IR consumer targets；R10C 独占 artifact/config/DB/resource consumer targets；
   R10D 独占 service conformance、明确删除的 targets、`compiler/Cargo.toml` 与退役 driver test-support。
   三者都不修改 production 或 `compiler/driver/service_publication_tests.rs`。只有真正验证 service protocol/
