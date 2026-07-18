@@ -107,6 +107,9 @@ R03 + R11 + T05 + T05A + T05B checkpoint
   └── R13 canonical package DB schema validation
 
 R04 + R06 + R13
+  └── T05C terminal compiler production cleanup
+
+T05C
   └── R10 canonical compiler integration fixtures
 
 R03 + R04 + R06 + R10 + R11 + R13
@@ -117,8 +120,9 @@ R03 + R04 + R06 + R10 + R11 + R13
 | --- | --- | --- |
 | checkpoint | R03、R11、T05、T05A、T05B | dataflow 后按 driver、projection/emission、structure gates 三域并行 |
 | 1 | R04、R06、R13 | config、package requirement graph、DB schema 三个非重叠 owner 并行 |
-| 2 | R10 | 只迁移 canonical compiler test-support/integration fixtures |
-| 3 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
+| 2 | T05C | 收敛验收暴露的 terminal compiler production/Cargo/DAG 遗漏，不迁移 integration fixtures |
+| 3 | R10 | 只迁移 canonical compiler test-support/integration fixtures |
+| 4 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 与旧 R10B/R10C 位于被放弃的 integration tail，不进入新分支 ancestry；
 对应终态能力在 Phase 03–05 直接实现，canonical fixture 部分由 R10 重建。R12 的“在污染 tree 上清理”
@@ -140,6 +144,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05 | [Package-only compiler terminal cutover](tasks/P2-T05-compiler-cutover.md) | `9ca2547` | 高；从干净基线重做 central compiler |
 | T05A | [Terminal PackageArtifact projection/emission handoff](tasks/P2-T05A-terminal-package-artifact-handoff.md) | R03、R11 | 高；projection/emission 独占 owner |
 | T05B | [Terminal compiler structure gates](tasks/P2-T05B-terminal-compiler-structure-gates.md) | T05 dataflow checkpoint | 中；scripts/checker 独占 owner |
+| T05C | [Terminal compiler production cleanup](tasks/P2-T05C-terminal-compiler-production-cleanup.md) | R06、R13 | 高；checkpoint 验收 blocker repair，R10 前置 |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -177,6 +182,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   payload 语义和 R11 schema leaf，不修改 T05 central 目录或 foundation artifact crates。
 - T05B 独占 compiler structure checker、crate-DAG/public-API policy及 self-tests/fixtures；不修改 Rust
   production 或 tests。T05/T05A 不再修改 checker。
+- T05C 在 R06/R13 后独占 terminal compiler production/Cargo/DAG 遗漏清理；不得修改 compiler
+  integration tests、test-support 或恢复旧 fixture，后者仍由 R10 独占。
 - R03 独占 canonical package export link 中 payload symbol 的精确投影与直接测试；map key
   继续表达 public path，link `symbol` 只能表达 file/index 指向的真实 payload declaration。
 - R04 独占 canonical package config requirements 与 `ConfigShape` 的唯一 typed 表达；不为旧
