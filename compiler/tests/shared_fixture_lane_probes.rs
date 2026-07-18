@@ -12,8 +12,10 @@ use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnos
 
 use common::{
     artifacts::{module_artifact, resource_blob},
-    contracts::compile_service_contract,
-    package_project::compile_package_project,
+    contracts::{compile_service_contract, package_contract_dependency},
+    package_project::{
+        compile_package_project, compile_package_project_with_contract_dependencies,
+    },
     TestDir,
 };
 
@@ -91,6 +93,9 @@ fn config_db_resource_lane_exposes_package_artifact_projection() {
 
 #[test]
 fn explicit_contract_lane_compiles_without_provider_source() {
+    let temp = TestDir::new("skiff-compiler", "shared-fixture-contract-lane");
+    write_representative_package_project(&temp);
+
     let operation = BoundaryOperationContract {
         parameters: vec![BoundaryParameter {
             name: "input".to_string(),
@@ -128,10 +133,23 @@ fn explicit_contract_lane_compiles_without_provider_source() {
     })
     .expect("code-free service contract should compile");
 
-    assert_eq!(contract.service_id, "example.probe");
-    assert_eq!(contract.contract_version, "1.0.0");
-    assert_eq!(contract.operations.len(), 1);
-    assert!(contract.boundary_schema.is_empty());
+    let dependency = package_contract_dependency("probe_contract", contract);
+    let expected_requirement = dependency.requirement.clone();
+    let contract_dependencies = BTreeMap::from([(
+        ("example.com/probe-app".to_string(), "1.0.0".to_string()),
+        vec![dependency],
+    )]);
+
+    let project =
+        compile_package_project_with_contract_dependencies(temp.path(), &contract_dependencies)
+            .expect("package should compile with an unused typed contract dependency");
+
+    assert_eq!(
+        project.package.artifact.contract_requirements,
+        vec![expected_requirement]
+    );
+    assert!(project.package.artifact.service_requirements.is_empty());
+    assert!(project.package.artifact.service_call_refs.is_empty());
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {

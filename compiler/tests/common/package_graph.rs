@@ -7,7 +7,8 @@ use std::{
 
 use skiff_artifact_model::PackageArtifact;
 use skiff_compiler::{
-    compile_package, PackageCompileInput, PackageSourceInput, PublishedPackageArtifact,
+    compile_package, PackageCompileInput, PackageContractCompileDependency, PackageSourceInput,
+    PublishedPackageArtifact,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
@@ -19,17 +20,25 @@ use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
 use super::package_project::PackageProjectCompileError;
 
-pub(super) struct PackageGraphCompiler {
+pub(super) struct PackageGraphCompiler<'a> {
     manifests: BTreeMap<PackageManifestKey, PackageManifest>,
+    contract_dependencies: &'a BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
     published: BTreeMap<PackageManifestKey, PublishedPackageArtifact>,
     visiting: Vec<PackageManifestKey>,
     visiting_set: BTreeSet<PackageManifestKey>,
 }
 
-impl PackageGraphCompiler {
-    pub(super) fn new(manifests: BTreeMap<PackageManifestKey, PackageManifest>) -> Self {
+impl<'a> PackageGraphCompiler<'a> {
+    pub(super) fn new(
+        manifests: BTreeMap<PackageManifestKey, PackageManifest>,
+        contract_dependencies: &'a BTreeMap<
+            PackageManifestKey,
+            Vec<PackageContractCompileDependency>,
+        >,
+    ) -> Self {
         Self {
             manifests,
+            contract_dependencies,
             published: BTreeMap::new(),
             visiting: Vec::new(),
             visiting_set: BTreeSet::new(),
@@ -129,8 +138,13 @@ impl PackageGraphCompiler {
             .values()
             .map(|published| published.artifact.clone())
             .collect::<Vec<PackageArtifact>>();
+        let contract_dependencies = self
+            .contract_dependencies
+            .get(&(package_id.clone(), manifest.version.clone()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let input = PackageCompileInput::new(&package, &aliases, &package_id)
-            .with_canonical_dependencies(&dependency_artifacts, &[])
+            .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
             .with_available_canonical_packages(&available_artifacts);
         Ok(compile_package(input)?)
     }

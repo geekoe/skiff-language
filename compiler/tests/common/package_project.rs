@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
-use skiff_compiler::{PackageCompileError, PublishedPackageArtifact};
+use skiff_compiler::{
+    PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
+};
 use skiff_compiler_input::{
     package_config::{
         discover_package_manifests_with_dependency_dirs, read_user_package_manifest,
-        PackageConfigError, PackageResolutionDirs, PACKAGE_CONFIG_FILE,
+        PackageConfigError, PackageManifestKey, PackageResolutionDirs, PACKAGE_CONFIG_FILE,
     },
     InputAssemblyError,
 };
@@ -86,11 +88,24 @@ pub enum PackageProjectCompileError {
 pub fn compile_package_project(
     root: &Path,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
+    compile_package_project_with_contract_dependencies(root, &BTreeMap::new())
+}
+
+/// Compiles a package graph with validated contract dependencies attached to
+/// the package coordinate that declares them.
+pub fn compile_package_project_with_contract_dependencies(
+    root: &Path,
+    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     let store = root.join(LOCAL_PACKAGE_STORE);
     let package_dirs = PackageResolutionDirs {
         package_dirs: store.is_dir().then_some(store).into_iter().collect(),
     };
-    compile_package_project_with_dirs(root, &package_dirs)
+    compile_package_project_with_dirs_and_contract_dependencies(
+        root,
+        &package_dirs,
+        contract_dependencies,
+    )
 }
 
 /// Compiles the exact package dependency graph selected by `package.yml` and
@@ -100,6 +115,18 @@ pub fn compile_package_project_with_dirs(
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
+    compile_package_project_with_dirs_and_contract_dependencies(
+        root,
+        package_dirs,
+        &BTreeMap::new(),
+    )
+}
+
+fn compile_package_project_with_dirs_and_contract_dependencies(
+    root: &Path,
+    package_dirs: &PackageResolutionDirs,
+    contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
+) -> Result<PublishedPackageProject, PackageProjectCompileError> {
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
     let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
     let manifests = discover_package_manifests_with_dependency_dirs(
@@ -107,7 +134,7 @@ pub fn compile_package_project_with_dirs(
         package_dirs,
         &root_manifest.dependencies,
     )?;
-    let mut graph = PackageGraphCompiler::new(manifests);
+    let mut graph = PackageGraphCompiler::new(manifests, contract_dependencies);
     graph.compile_platform_std()?;
     let package = graph.compile(&root_key)?;
     let dependency_packages = graph.compiled_dependency_closure(&package)?;
