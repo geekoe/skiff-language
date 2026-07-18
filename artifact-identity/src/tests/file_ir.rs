@@ -1,4 +1,5 @@
 use super::*;
+use skiff_artifact_model::FileIrPackageCallValidationError;
 
 #[test]
 fn file_ir_identity_omits_storage_identity_and_source_hashes() {
@@ -114,21 +115,23 @@ fn package_call_target_and_ref_fields_participate_in_file_ir_identity() {
     let base = package_call_file_ir_fixture();
     let baseline = file_ir_identity(&base).expect("valid package-call File IR identity");
 
-    let mut changed_target_ref = base.clone();
-    let ExprIr::Call { call } = &mut changed_target_ref.constants[0].body.expressions[0] else {
+    let mut changed_package_ref = base.clone();
+    let replacement_package_ref = PackageRefIr::Dependency {
+        dependency_ref: "tools-v2".to_string(),
+    };
+    let ExprIr::Call { call } = &mut changed_package_ref.constants[0].body.expressions[0] else {
         panic!("fixture call expression")
     };
     let CallTargetIr::PackageCallable { package_ref, .. } = &mut call.target else {
         panic!("fixture package-call target")
     };
-    *package_ref = PackageRefIr::Dependency {
-        dependency_ref: "tools-v2".to_string(),
-    };
-    assert_ne!(file_ir_identity(&changed_target_ref).unwrap(), baseline);
+    *package_ref = replacement_package_ref.clone();
+    changed_package_ref.external_refs.package_callables[0].package_ref = replacement_package_ref;
+    assert_ne!(file_ir_identity(&changed_package_ref).unwrap(), baseline);
 
-    let mut changed_target_callable = base.clone();
-    let ExprIr::Call { call } = &mut changed_target_callable.constants[0].body.expressions[0]
-    else {
+    let mut changed_callable = base.clone();
+    let replacement_callable_id = PackageCallableId::new("callable:other.echo");
+    let ExprIr::Call { call } = &mut changed_callable.constants[0].body.expressions[0] else {
         panic!("fixture call expression")
     };
     let CallTargetIr::PackageCallable {
@@ -138,23 +141,56 @@ fn package_call_target_and_ref_fields_participate_in_file_ir_identity() {
     else {
         panic!("fixture package-call target")
     };
-    *package_callable_id = PackageCallableId::new("callable:other.echo");
+    *package_callable_id = replacement_callable_id.clone();
+    changed_callable.external_refs.package_callables[0].package_callable_id =
+        replacement_callable_id;
     assert_ne!(
-        file_ir_identity(&changed_target_callable).unwrap(),
+        file_ir_identity(&changed_callable).unwrap(),
         baseline,
         "owner-qualified callable identities must not collapse on the shared display suffix"
     );
+}
 
-    let mut changed_ref_package = base.clone();
-    changed_ref_package.external_refs.package_callables[0].package_ref = PackageRefIr::PackageId {
+#[test]
+fn file_ir_identity_reuses_canonical_package_call_validation() {
+    let mut missing = package_call_file_ir_fixture();
+    missing.external_refs.package_callables.clear();
+    assert!(matches!(
+        package_call_identity_validation_error(&missing),
+        FileIrPackageCallValidationError::MissingRef { .. }
+    ));
+
+    let mut orphan = package_call_file_ir_fixture();
+    orphan.constants[0].body.expressions.clear();
+    assert!(matches!(
+        package_call_identity_validation_error(&orphan),
+        FileIrPackageCallValidationError::OrphanRef { .. }
+    ));
+
+    let mut mismatch = package_call_file_ir_fixture();
+    let ExprIr::Call { call } = &mut mismatch.constants[0].body.expressions[0] else {
+        panic!("fixture call expression")
+    };
+    let CallTargetIr::PackageCallable { package_ref, .. } = &mut call.target else {
+        panic!("fixture package-call target")
+    };
+    *package_ref = PackageRefIr::PackageId {
         package_id: "example.com/tools".to_string(),
     };
-    assert_ne!(file_ir_identity(&changed_ref_package).unwrap(), baseline);
+    assert!(matches!(
+        package_call_identity_validation_error(&mismatch),
+        FileIrPackageCallValidationError::FieldMismatch { .. }
+    ));
 
-    let mut changed_ref_callable = base.clone();
-    changed_ref_callable.external_refs.package_callables[0].package_callable_id =
-        PackageCallableId::new("callable:other.echo");
-    assert_ne!(file_ir_identity(&changed_ref_callable).unwrap(), baseline);
+    let mut duplicate = package_call_file_ir_fixture();
+    duplicate
+        .external_refs
+        .package_callables
+        .push(duplicate.external_refs.package_callables[0].clone());
+    assert!(matches!(
+        package_call_identity_validation_error(&duplicate),
+        FileIrPackageCallValidationError::DuplicateRef { .. }
+    ));
 }
 
 #[test]
@@ -240,4 +276,11 @@ fn package_call_file_ir_fixture() -> FileIrUnit {
         source_span: None,
     });
     unit
+}
+
+fn package_call_identity_validation_error(unit: &FileIrUnit) -> FileIrPackageCallValidationError {
+    match file_ir_identity(unit) {
+        Err(ArtifactIdentityError::InvalidFileIrPackageCalls(error)) => error,
+        result => panic!("expected canonical package-call validation error, got {result:?}"),
+    }
 }
