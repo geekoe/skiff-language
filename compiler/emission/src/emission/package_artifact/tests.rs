@@ -4,9 +4,9 @@ use skiff_artifact_identity::{
     assign_package_artifact_identities, validate_package_artifact_identities,
 };
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PublicationResourceRef,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    config_shape_from_package_requirements, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
+    PackageConfigRequirement, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PublicationResourceRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::json_utils::sha256_hex;
 
@@ -64,6 +64,51 @@ fn repeated_materialization_is_bit_identical() {
     )
     .unwrap();
     assert_eq!(first, second);
+}
+
+#[test]
+fn materializer_preserves_canonical_config_requirements_without_a_second_shape_owner() {
+    let (mut projected, file, resource) = fixture();
+    projected.runtime_requirements.config = vec![
+        PackageConfigRequirement {
+            path: "app.timeout".to_string(),
+            value_type: "number".to_string(),
+            required: false,
+        },
+        PackageConfigRequirement {
+            path: "app.token".to_string(),
+            value_type: "string".to_string(),
+            required: true,
+        },
+    ];
+    assign_package_artifact_identities(&mut projected).unwrap();
+
+    let materialized = materialize_package_artifact(
+        &projected,
+        std::slice::from_ref(&file),
+        std::slice::from_ref(&resource),
+    )
+    .unwrap();
+    assert_eq!(
+        materialized.published.value["runtimeRequirements"]["config"],
+        serde_json::json!([
+            { "path": "app.timeout", "valueType": "number", "required": false },
+            { "path": "app.token", "valueType": "string", "required": true }
+        ])
+    );
+    assert!(materialized.published.value.get("configShape").is_none());
+
+    let shape =
+        config_shape_from_package_requirements(&materialized.artifact.runtime_requirements.config)
+            .unwrap();
+    assert_eq!(
+        shape
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["app.timeout", "app.token"]
+    );
 }
 
 #[test]

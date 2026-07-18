@@ -63,8 +63,9 @@ pub use compile_requirements::{
     ServiceRequirement,
 };
 pub use config::{
-    ConfigMetadataFacts, ConfigShape, ConfigShapeEntry, ConfigShapeValueType,
-    ConfigShapeValueTypeParseError, CONFIG_SHAPE_SCHEMA_VERSION,
+    config_shape_from_package_requirements, ConfigMetadataFacts, ConfigShape, ConfigShapeEntry,
+    ConfigShapeValueType, ConfigShapeValueTypeParseError, PackageConfigShapeError,
+    CONFIG_SHAPE_SCHEMA_VERSION,
 };
 pub use contract_types::{
     BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractLiteral,

@@ -17,6 +17,7 @@ use super::{
     api_exports::project_package_exports,
     assets::{file_ir_refs_from_units, project_package_resources, resource_refs_from_projected},
     callables::project_package_callable_surface,
+    config_requirements::validate_canonical_config_projection,
     export_links::project_package_export_index,
     model::{
         PackageArtifactProjectionInput, PackageExportLinkProjectionInput, ProjectedPackageArtifact,
@@ -94,6 +95,11 @@ pub(super) fn project_package_artifact_facts(
         &input.callable_semantic_facts,
         &input.callable_signatures,
         &input.runtime_requirements,
+    )?;
+    validate_canonical_config_projection(
+        input.package_id,
+        &input.runtime_requirements,
+        &callables.boundary_projections,
     )?;
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),

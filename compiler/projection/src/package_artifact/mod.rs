@@ -2,6 +2,7 @@ mod api_exports;
 mod assets;
 mod boundary;
 mod callables;
+mod config_requirements;
 mod export_links;
 mod model;
 mod projection;

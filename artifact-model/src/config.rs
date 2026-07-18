@@ -1,8 +1,12 @@
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::metadata::MetadataValue;
+use crate::{compile_requirements::PackageConfigRequirement, metadata::MetadataValue};
 
 pub const CONFIG_SHAPE_SCHEMA_VERSION: &str = "skiff-config-shape-v1";
 
@@ -68,6 +72,78 @@ impl ConfigShape {
 impl Default for ConfigShape {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+/// Constructs the canonical runtime config shape from package requirements.
+///
+/// `PackageRuntimeRequirements.config` owns these facts. Package and future
+/// deployment consumers must use this conversion instead of reconstructing a
+/// shape from source seeds, service config, or presentation DTOs.
+pub fn config_shape_from_package_requirements(
+    requirements: &[PackageConfigRequirement],
+) -> Result<ConfigShape, PackageConfigShapeError> {
+    let mut seen_paths = BTreeSet::new();
+    let mut entries = Vec::with_capacity(requirements.len());
+    for requirement in requirements {
+        if !seen_paths.insert(requirement.path.as_str()) {
+            return Err(PackageConfigShapeError::DuplicatePath {
+                path: requirement.path.clone(),
+            });
+        }
+        let ty =
+            ConfigShapeValueType::try_from(requirement.value_type.as_str()).map_err(|source| {
+                PackageConfigShapeError::InvalidValueType {
+                    path: requirement.path.clone(),
+                    source,
+                }
+            })?;
+        entries.push(ConfigShapeEntry {
+            path: requirement.path.clone(),
+            ty,
+            required: requirement.required,
+        });
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(ConfigShape {
+        schema_version: CONFIG_SHAPE_SCHEMA_VERSION.to_string(),
+        entries,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageConfigShapeError {
+    InvalidValueType {
+        path: String,
+        source: ConfigShapeValueTypeParseError,
+    },
+    DuplicatePath {
+        path: String,
+    },
+}
+
+impl fmt::Display for PackageConfigShapeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidValueType { path, source } => {
+                write!(formatter, "config requirement {path} is invalid: {source}")
+            }
+            Self::DuplicatePath { path } => {
+                write!(
+                    formatter,
+                    "config requirement path {path} is declared more than once"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PackageConfigShapeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidValueType { source, .. } => Some(source),
+            Self::DuplicatePath { .. } => None,
+        }
     }
 }
 
@@ -175,7 +251,12 @@ impl std::error::Error for ConfigShapeSchemaVersionError {}
 mod tests {
     use serde_json::json;
 
-    use super::{ConfigShape, ConfigShapeEntry, ConfigShapeValueType, CONFIG_SHAPE_SCHEMA_VERSION};
+    use crate::PackageConfigRequirement;
+
+    use super::{
+        config_shape_from_package_requirements, ConfigShape, ConfigShapeEntry,
+        ConfigShapeValueType, PackageConfigShapeError, CONFIG_SHAPE_SCHEMA_VERSION,
+    };
 
     #[test]
     fn config_shape_value_type_uses_canonical_wire_strings() {
@@ -210,6 +291,74 @@ mod tests {
                     { "path": "object", "type": "JsonObject", "required": true }
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn package_requirements_produce_a_sorted_typed_config_shape() {
+        let shape = config_shape_from_package_requirements(&[
+            PackageConfigRequirement {
+                path: "service.token".to_string(),
+                value_type: "string".to_string(),
+                required: true,
+            },
+            PackageConfigRequirement {
+                path: "service.timeout".to_string(),
+                value_type: "number".to_string(),
+                required: false,
+            },
+        ])
+        .expect("valid package requirements");
+
+        assert_eq!(
+            shape.entries,
+            vec![
+                ConfigShapeEntry {
+                    path: "service.timeout".to_string(),
+                    ty: ConfigShapeValueType::Number,
+                    required: false,
+                },
+                ConfigShapeEntry {
+                    path: "service.token".to_string(),
+                    ty: ConfigShapeValueType::String,
+                    required: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn package_requirements_fail_closed_on_invalid_type_and_duplicate_path() {
+        let invalid_type = config_shape_from_package_requirements(&[PackageConfigRequirement {
+            path: "service.token".to_string(),
+            value_type: "bytes".to_string(),
+            required: true,
+        }])
+        .expect_err("unsupported value type must fail");
+        assert!(matches!(
+            invalid_type,
+            PackageConfigShapeError::InvalidValueType { ref path, .. }
+                if path == "service.token"
+        ));
+
+        let duplicate = config_shape_from_package_requirements(&[
+            PackageConfigRequirement {
+                path: "service.token".to_string(),
+                value_type: "string".to_string(),
+                required: true,
+            },
+            PackageConfigRequirement {
+                path: "service.token".to_string(),
+                value_type: "string".to_string(),
+                required: false,
+            },
+        ])
+        .expect_err("duplicate path must fail");
+        assert_eq!(
+            duplicate,
+            PackageConfigShapeError::DuplicatePath {
+                path: "service.token".to_string()
+            }
         );
     }
 }

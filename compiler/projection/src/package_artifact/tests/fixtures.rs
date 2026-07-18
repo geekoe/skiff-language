@@ -31,6 +31,16 @@ pub(super) fn project_fixture(
     signature_set: SignatureSet,
     runtime_capability: &str,
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+    project_fixture_with_runtime_requirements(
+        signature_set,
+        runtime_requirements(runtime_capability),
+    )
+}
+
+pub(super) fn project_fixture_with_runtime_requirements(
+    signature_set: SignatureSet,
+    runtime_requirements: PackageRuntimeRequirements,
+) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
     let file_ref = file_ref();
     let export_index = PackageExportIndex {
         functions: BTreeMap::from([
@@ -136,7 +146,7 @@ pub(super) fn project_fixture(
             service_binding_slot: 3,
             used_operations: BTreeSet::from([operation_id.clone()]),
         }],
-        runtime_requirements: runtime_requirements(runtime_capability),
+        runtime_requirements,
         callable_semantic_facts: semantic_facts,
         callable_signatures: signatures,
         service_call_refs: vec![ServiceCallRef {

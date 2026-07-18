@@ -1,10 +1,13 @@
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryUnavailableReason, PackageLocalAbiSymbol,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    config_shape_from_package_requirements, BoundaryCallableProjection, BoundaryUnavailableReason,
+    PackageLocalAbiSymbol, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
-use super::fixtures::{callable_id, project_fixture, SignatureSet};
+use super::fixtures::{
+    callable_id, project_fixture, project_fixture_with_runtime_requirements, runtime_requirements,
+    SignatureSet,
+};
 
 #[test]
 fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
@@ -34,6 +37,12 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     assert_eq!(artifact.service_requirements.len(), 1);
     assert_eq!(artifact.service_call_refs.len(), 1);
     assert_eq!(artifact.service_call_refs[0].service_requirement_slot, 3);
+    let config_shape =
+        config_shape_from_package_requirements(&artifact.runtime_requirements.config).unwrap();
+    assert_eq!(config_shape.entries.len(), 1);
+    assert_eq!(config_shape.entries[0].path, "app.token");
+    assert_eq!(artifact.runtime_requirements.resources.len(), 1);
+    assert_eq!(artifact.runtime_requirements.runtime_capabilities.len(), 1);
 
     let PackageLocalAbiSymbol::PublicInstance { methods, .. } =
         &artifact.package_local_abi.public_symbols["worker"]
@@ -64,6 +73,30 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     ] {
         assert!(!wire.contains(forbidden), "forbidden field {forbidden}");
     }
+}
+
+#[test]
+fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
+    let mut invalid_type = runtime_requirements("async");
+    invalid_type.config[0].value_type = "bytes".to_string();
+    let error = project_fixture_with_runtime_requirements(SignatureSet::Complete, invalid_type)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("canonical runtime config requirements are invalid"),
+        "unexpected error: {error}"
+    );
+    assert!(error.contains("app.token"), "unexpected error: {error}");
+
+    let mut duplicate = runtime_requirements("async");
+    duplicate.config.push(duplicate.config[0].clone());
+    let error = project_fixture_with_runtime_requirements(SignatureSet::Complete, duplicate)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("declared more than once"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
