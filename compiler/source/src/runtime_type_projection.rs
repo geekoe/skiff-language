@@ -19,10 +19,6 @@ pub struct ProviderRuntimePolicy {
 }
 
 impl ProviderRuntimePolicy {
-    pub fn service_source(_ast: &SourceFile) -> Self {
-        Self { package_id: None }
-    }
-
     pub fn disabled() -> Self {
         Self { package_id: None }
     }

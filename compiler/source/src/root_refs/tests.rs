@@ -609,80 +609,7 @@ fn compiler_source(
 }
 
 #[test]
-fn service_policy_skips_invalid_test_file_root_refs() {
-    let sources = vec![
-        compiler_source(
-            "internal/main.skiff",
-            "internal.main",
-            false,
-            "type Main {}\n",
-        ),
-        compiler_source(
-            "internal/main.test.skiff",
-            "internal.main_test",
-            true,
-            r#"
-                test "invalid root ref" {
-                  let _missing: root.internal.missing.Helper = root.internal.missing.Helper {}
-                  assert true
-                }
-            "#,
-        ),
-    ];
-
-    validate_source_root_refs(
-        Path::new("/tmp/service-policy-skip-test"),
-        &sources,
-        RootRefValidationPolicy::service_sources(),
-    )
-    .expect("service policy should ignore invalid test-file root refs");
-
-    let parsed_error = validate_source_root_refs(
-        Path::new("/tmp/parsed-policy-includes-test"),
-        &sources,
-        RootRefValidationPolicy::parsed_publication_sources(),
-    )
-    .expect_err("parsed publication policy should include test-file root refs")
-    .to_string();
-    assert!(parsed_error.contains("root.internal.missing.Helper"));
-}
-
-#[test]
-fn service_policy_excludes_test_only_symbols_from_root_index() {
-    let sources = vec![
-        compiler_source(
-            "internal/main.skiff",
-            "internal.main",
-            false,
-            "type Main { helper: root.internal.test_only.Helper }\n",
-        ),
-        compiler_source(
-            "internal/test_only.test.skiff",
-            "internal.test_only",
-            true,
-            "type Helper {}\n",
-        ),
-    ];
-
-    let service_error = validate_source_root_refs(
-        Path::new("/tmp/service-policy-test-symbols"),
-        &sources,
-        RootRefValidationPolicy::service_sources(),
-    )
-    .expect_err("service policy should not index test-only symbols")
-    .to_string();
-    assert!(service_error.contains("root.internal.test_only.Helper"));
-
-    validate_source_root_refs(
-        Path::new("/tmp/parsed-policy-test-symbols"),
-        &sources,
-        RootRefValidationPolicy::parsed_publication_sources(),
-    )
-    .expect("parsed publication policy should index included test sources");
-}
-
-#[test]
-fn std_projection_roots_are_policy_controlled() {
+fn parsed_publication_policy_adds_std_projection_roots() {
     let sources = vec![
         compiler_source(
             "log.skiff",
@@ -692,15 +619,6 @@ fn std_projection_roots_are_policy_controlled() {
         ),
         compiler_source("telemetry.skiff", "std.telemetry", false, "type Event {}\n"),
     ];
-
-    let service_error = validate_source_root_refs(
-        Path::new("/tmp/service-policy-std-root"),
-        &sources,
-        RootRefValidationPolicy::service_sources(),
-    )
-    .expect_err("service policy should not add stripped std projection roots")
-    .to_string();
-    assert!(service_error.contains("root.telemetry.Event"));
 
     validate_source_root_refs(
         Path::new("/tmp/parsed-policy-std-root"),

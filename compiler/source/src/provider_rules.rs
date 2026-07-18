@@ -61,20 +61,6 @@ pub fn collect_non_std_package_native_function_violations(
     );
 }
 
-pub fn collect_service_native_function_violations(
-    path: &str,
-    ast: &SourceFile,
-    violations: &mut Vec<String>,
-) {
-    collect_native_function_violations(
-        path,
-        ast,
-        "service source",
-        "call std native APIs or provider functions instead",
-        violations,
-    );
-}
-
 pub fn collect_non_std_package_native_type_violations(
     package_id: &str,
     path: &str,
@@ -85,14 +71,6 @@ pub fn collect_non_std_package_native_type_violations(
         return;
     }
     collect_native_type_violations(path, ast, &format!("package {package_id}"), violations);
-}
-
-pub fn collect_service_native_type_violations(
-    path: &str,
-    ast: &SourceFile,
-    violations: &mut Vec<String>,
-) {
-    collect_native_type_violations(path, ast, "service source", violations);
 }
 
 fn collect_native_function_violations(
