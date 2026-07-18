@@ -25,6 +25,7 @@ use super::*;
 
 mod contract_identity;
 mod package_artifact_identity;
+mod schema_fidelity;
 
 pub(super) fn contract_fixture() -> ServiceContract {
     let service_id = "example.echo";

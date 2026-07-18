@@ -1,13 +1,10 @@
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationContract,
-    BoundaryStreamContract, ContractTypeDescriptor, ContractTypeId, ContractTypeRef,
-    ServiceContract, SERVICE_CONTRACT_SCHEMA_VERSION,
-};
+use skiff_artifact_model::{ServiceContract, SERVICE_CONTRACT_SCHEMA_VERSION};
 
 use crate::{ArtifactIdentityError, Result};
 
+use super::schema_validation::validate_contract_schema;
 use super::{contract_operation_id, contract_type_id};
 
 pub(super) fn validate_service_contract_surface(contract: &ServiceContract) -> Result<()> {
@@ -77,100 +74,8 @@ pub(super) fn validate_service_contract_surface(contract: &ServiceContract) -> R
         }
     }
 
-    validate_closed_schema(contract)?;
+    validate_contract_schema(contract)?;
     validate_diagnostic_keys(contract)
-}
-
-fn validate_closed_schema(contract: &ServiceContract) -> Result<()> {
-    let mut referenced = BTreeSet::new();
-    for descriptor in contract.operations.values() {
-        collect_operation_contract_refs(&descriptor.contract, &mut referenced);
-    }
-    for schema_type in contract.boundary_schema.values() {
-        collect_descriptor_refs(&schema_type.shape.descriptor, &mut referenced);
-    }
-    for type_id in referenced {
-        if !contract.boundary_schema.contains_key(&type_id) {
-            return invalid_contract(format!(
-                "boundary schema is not closed: referenced ContractTypeId {type_id} is absent"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn collect_operation_contract_refs(
-    operation: &BoundaryOperationContract,
-    referenced: &mut BTreeSet<ContractTypeId>,
-) {
-    for parameter in &operation.parameters {
-        collect_type_ref(&parameter.ty, referenced);
-    }
-    collect_type_ref(&operation.return_value.ty, referenced);
-    if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
-        collect_type_ref(payload_type, referenced);
-    }
-    if let BoundaryStreamContract::ServerStream { item_type, .. } = &operation.stream {
-        collect_type_ref(item_type, referenced);
-    }
-    if let BoundaryCallbackContract::RequestScoped {
-        interface_type_ids, ..
-    } = &operation.callbacks
-    {
-        referenced.extend(interface_type_ids.iter().cloned());
-    }
-}
-
-fn collect_descriptor_refs(
-    descriptor: &ContractTypeDescriptor,
-    referenced: &mut BTreeSet<ContractTypeId>,
-) {
-    match descriptor {
-        ContractTypeDescriptor::Record { fields } => {
-            for ty in fields.values() {
-                collect_type_ref(ty, referenced);
-            }
-        }
-        ContractTypeDescriptor::Union { variants } => {
-            for ty in variants {
-                collect_type_ref(ty, referenced);
-            }
-        }
-        ContractTypeDescriptor::Alias { target } => collect_type_ref(target, referenced),
-        ContractTypeDescriptor::Enumeration { .. } => {}
-        ContractTypeDescriptor::CallbackInterface { operations } => {
-            for operation in operations.values() {
-                for parameter in &operation.parameters {
-                    collect_type_ref(parameter, referenced);
-                }
-                collect_type_ref(&operation.return_type, referenced);
-            }
-        }
-    }
-}
-
-fn collect_type_ref(ty: &ContractTypeRef, referenced: &mut BTreeSet<ContractTypeId>) {
-    match ty {
-        ContractTypeRef::Builtin { arguments, .. } => {
-            for argument in arguments {
-                collect_type_ref(argument, referenced);
-            }
-        }
-        ContractTypeRef::Contract { contract_type_id } => {
-            referenced.insert(contract_type_id.clone());
-        }
-        ContractTypeRef::Record { fields } => {
-            for field in fields.values() {
-                collect_type_ref(field, referenced);
-            }
-        }
-        ContractTypeRef::Union { variants } => {
-            for variant in variants {
-                collect_type_ref(variant, referenced);
-            }
-        }
-        ContractTypeRef::Nullable { inner } => collect_type_ref(inner, referenced),
-    }
 }
 
 fn validate_diagnostic_keys(contract: &ServiceContract) -> Result<()> {

@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn service_contract_wire_rejects_missing_and_provider_fields() {
         let minimal = json!({
-            "schemaVersion": "skiff-service-contract-v1",
+            "schemaVersion": "skiff-service-contract-v2",
             "serviceId": "example.echo",
             "contractVersion": "1.0.0",
             "serviceProtocolIdentity": "protocol",

@@ -45,7 +45,8 @@ pub use constants::{
 };
 pub use contract::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
-    service_protocol_identity, service_protocol_identity_projection,
+    normalize_contract_definition_surface, normalize_contract_operation_contract,
+    normalize_contract_type_shape, service_protocol_identity, service_protocol_identity_projection,
     validate_service_contract_identities, ServiceProtocolIdentityProjection,
 };
 pub use error::{ArtifactIdentityError, Result};

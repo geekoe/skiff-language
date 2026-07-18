@@ -14,7 +14,14 @@ use crate::{
     SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
 };
 
+mod alias_expansion;
+mod normalization;
+mod schema_graph;
+mod schema_validation;
 mod validation;
+
+pub use alias_expansion::normalize_contract_definition_surface;
+pub use normalization::{normalize_contract_operation_contract, normalize_contract_type_shape};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

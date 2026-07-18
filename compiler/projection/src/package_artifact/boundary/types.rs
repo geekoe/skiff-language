@@ -58,7 +58,7 @@ pub(super) fn project_operation_contract(
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
         many => BoundaryErrorContract::Typed {
-            payload_type: ContractTypeRef::Union {
+            payload_type: ContractTypeRef::StructuralUnion {
                 variants: many.to_vec(),
             },
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
@@ -140,9 +140,9 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy {
                 classify_native(name, args.len())?;
                 Ok(TypeClosureControl::Continue)
             }
-            TypeRefIr::Record { .. }
-            | TypeRefIr::Union { .. }
-            | TypeRefIr::Nullable { .. } => Ok(TypeClosureControl::Continue),
+            TypeRefIr::Record { .. } | TypeRefIr::Union { .. } | TypeRefIr::Nullable { .. } => {
+                Ok(TypeClosureControl::Continue)
+            }
             TypeRefIr::Literal { value } => {
                 project_literal(value)?;
                 Ok(TypeClosureControl::Continue)
@@ -189,7 +189,7 @@ fn project_local_type(
                 })
                 .collect::<Result<_, BoundaryUnavailableReason>>()?,
         }),
-        TypeRefIr::Union { items } => Ok(ContractTypeRef::Union {
+        TypeRefIr::Union { items } => Ok(ContractTypeRef::StructuralUnion {
             variants: items
                 .iter()
                 .map(|item| project_local_type(owner_module, item, file_ir_units))
