@@ -1179,7 +1179,7 @@ impl<'a> FunctionLowerer<'a> {
             _ => (callee, &[][..]),
         };
         let mut lowered_args = Vec::new();
-        let target = if let Some(target) = self.package_call_target(expression_key) {
+        let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
             self.consume_static_callee_expression_keys(callee)?;
             target
         } else if let Some(service_call_ref_index) = expression_key
@@ -1244,21 +1244,82 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
-    fn package_call_target(&self, expression_key: Option<&ExpressionKey>) -> Option<CallTargetIr> {
-        let ResolvedCallTarget::DependencyPackageFunction {
+    fn package_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+    ) -> Result<Option<CallTargetIr>> {
+        let path = expr_path(callee);
+        let target = expression_key.and_then(|key| self.resolved_call_targets.target(key));
+
+        if let Some(ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias,
             package_callable_id,
             expected_local_abi: _,
-        } = self.resolved_call_targets.target(expression_key?)?
-        else {
-            return None;
+        }) = target
+        {
+            let path = path.as_deref().ok_or_else(|| {
+                package_call_resolution_error(
+                    expression_key,
+                    "<complex callee>",
+                    "typed package target does not have a static symbol path",
+                )
+            })?;
+            let root = path.split('.').next().unwrap_or(path);
+            if self.bindings.contains_key(root) {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names dependency `{package_requirement_alias}`, but root `{root}` is a local binding"
+                    ),
+                ));
+            }
+            if !self.package_aliases.contains_key(package_requirement_alias) {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names undeclared dependency `{package_requirement_alias}`"
+                    ),
+                ));
+            }
+            if root != package_requirement_alias {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names dependency `{package_requirement_alias}`, but the callee root is `{root}`"
+                    ),
+                ));
+            }
+            return Ok(Some(CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency {
+                    dependency_ref: package_requirement_alias.clone(),
+                },
+                package_callable_id: package_callable_id.clone(),
+            }));
+        }
+
+        let Some(path) = path.as_deref() else {
+            return Ok(None);
         };
-        Some(CallTargetIr::PackageCallable {
-            package_ref: PackageRefIr::Dependency {
-                dependency_ref: package_requirement_alias.clone(),
-            },
-            package_callable_id: package_callable_id.clone(),
-        })
+        let root = path.split('.').next().unwrap_or(path);
+        if self.bindings.contains_key(root) || !self.package_aliases.contains_key(root) {
+            return Ok(None);
+        }
+
+        let detail = match target {
+            None => "missing ResolvedCallTargetFacts entry".to_string(),
+            Some(ResolvedCallTarget::Unknown { reason }) => {
+                format!("typed call target is Unknown({reason:?})")
+            }
+            Some(target) => format!(
+                "typed call target kind is `{}` instead of DependencyPackageFunction",
+                resolved_call_target_kind(target)
+            ),
+        };
+        Err(package_call_resolution_error(expression_key, path, detail))
     }
 
     fn infer_native_call_type_args(
@@ -1913,6 +1974,26 @@ fn unsupported_file_ir_callee(callee: &str) -> CompileError {
     unsupported(format!(
         "function call callee `{callee}` is not resolved by the File IR unit emitter"
     ))
+}
+
+fn package_call_resolution_error(
+    expression_key: Option<&ExpressionKey>,
+    callee: &str,
+    detail: impl std::fmt::Display,
+) -> CompileError {
+    unsupported(format!(
+        "package dependency call `{callee}` at ExpressionKey {expression_key:?} cannot be lowered: {detail}"
+    ))
+}
+
+fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
+    match target {
+        ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
+        ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
+        ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
+        ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
+        ResolvedCallTarget::Unknown { .. } => "Unknown",
+    }
 }
 
 fn unsupported(message: impl Into<String>) -> CompileError {

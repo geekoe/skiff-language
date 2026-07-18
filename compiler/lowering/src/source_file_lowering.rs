@@ -1299,18 +1299,45 @@ mod tests {
         assert!(!wire.contains("serviceDependencySymbols"));
     }
 
-    #[test]
-    fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
-        let source = r#"
+    fn package_call_source() -> &'static str {
+        r#"
           function run() -> void {
             utils.format()
           }
-        "#;
-        let expression = skiff_compiler_source::ExpressionKey::new(
+        "#
+    }
+
+    fn package_call_expression() -> skiff_compiler_source::ExpressionKey {
+        skiff_compiler_source::ExpressionKey::new(
             MODULE,
             skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
             0,
-        );
+        )
+    }
+
+    fn lower_package_call(
+        package_aliases: &BTreeMap<String, Vec<String>>,
+        targets: &skiff_compiler_source::ResolvedCallTargetFacts,
+    ) -> skiff_syntax::error::Result<FileIrUnit> {
+        let source = package_call_source();
+        let ast = parse_source(source)?;
+        compile_parsed_source_file_ir_unit_with_lowering_context(
+            ast,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                package_aliases,
+                resolved_call_targets: targets,
+                ..SourceFileLoweringContext::none()
+            },
+        )
+    }
+
+    #[test]
+    fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
+        let expression = package_call_expression();
         let expected_local_abi = PackageLocalAbiIdentity::new("local-abi:must-not-enter-call-site");
         let package_callable_id = PackageCallableId::new("callable:utils.format");
         let targets =
@@ -1322,19 +1349,8 @@ mod tests {
                     expected_local_abi: expected_local_abi.clone(),
                 },
             )]));
-        let ast = parse_source(source).unwrap();
-        let unit = compile_parsed_source_file_ir_unit_with_lowering_context(
-            ast,
-            source,
-            "internal/any_lowering.skiff",
-            MODULE,
-            "package",
-            &SourceFileLoweringContext {
-                resolved_call_targets: &targets,
-                ..SourceFileLoweringContext::none()
-            },
-        )
-        .unwrap();
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let unit = lower_package_call(&package_aliases, &targets).unwrap();
 
         let run = executable(&unit, "run");
         assert!(run.body.expressions.iter().any(|expression| matches!(
@@ -1363,5 +1379,63 @@ mod tests {
         assert!(wire.contains("packageCallableId"));
         assert!(!wire.contains(expected_local_abi.as_str()));
         assert!(!wire.contains("operationAbiId"));
+        assert!(unit
+            .file_ir_identity
+            .starts_with("skiff-file-ir-v5:sha256:"));
+    }
+
+    #[test]
+    fn known_package_call_without_typed_target_fails_closed() {
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let error = lower_package_call(
+            &package_aliases,
+            &skiff_compiler_source::ResolvedCallTargetFacts::empty(),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("package dependency call `utils.format`"));
+        assert!(message.contains("missing ResolvedCallTargetFacts entry"));
+        assert!(!message.contains("ExternalServiceSymbol"));
+    }
+
+    #[test]
+    fn known_package_call_with_unknown_typed_target_fails_closed() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                package_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::Unknown {
+                    reason: skiff_compiler_source::UnknownCallTargetReason::UnresolvedName,
+                },
+            )]));
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let error = lower_package_call(&package_aliases, &targets).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("package dependency call `utils.format`"));
+        assert!(message.contains("Unknown(UnresolvedName)"));
+        assert!(!message.contains("ExternalServiceSymbol"));
+    }
+
+    #[test]
+    fn package_call_target_alias_must_match_callee_root() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                package_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
+                    package_requirement_alias: "other".to_string(),
+                    package_callable_id: PackageCallableId::new("callable:other.format"),
+                    expected_local_abi: PackageLocalAbiIdentity::new("local-abi:other"),
+                },
+            )]));
+        let package_aliases = BTreeMap::from([
+            ("other".to_string(), vec![String::new()]),
+            ("utils".to_string(), vec![String::new()]),
+        ]);
+        let error = lower_package_call(&package_aliases, &targets).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("typed package target names dependency `other`"));
+        assert!(message.contains("callee root is `utils`"));
     }
 }
