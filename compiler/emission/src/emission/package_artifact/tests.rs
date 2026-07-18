@@ -12,6 +12,8 @@ use skiff_compiler_core::json_utils::sha256_hex;
 
 use super::*;
 
+mod requirements;
+
 #[test]
 fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity() {
     let (projected, file, resource) = fixture();

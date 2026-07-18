@@ -103,6 +103,8 @@ name = "test_artifact_identity"
 path = "tests/test_artifact_identity.rs"
 
 [dependencies]
+skiff-artifact-identity = { path = "../artifact-identity" }
+skiff-artifact-model = { path = "../artifact-model" }
 skiff-compiler-core = { path = "core" }
 skiff-compiler-input = { path = "input" }
 skiff-compiler-input-model = { path = "input-model" }

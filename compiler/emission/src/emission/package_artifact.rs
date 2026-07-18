@@ -45,6 +45,9 @@ pub fn materialize_package_artifact(
         &mut artifact.static_resources,
         &resource_blobs,
     )?;
+    super::package_requirement_coverage::validate_file_ir_package_requirement_coverage(
+        &artifact, files,
+    )?;
     validate_package_artifact_identities(&artifact)?;
     let published = package_artifact_json(&artifact)?;
     Ok(MaterializedPackageArtifact {

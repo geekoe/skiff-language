@@ -2,6 +2,7 @@ pub mod artifact;
 pub mod file_ir_artifacts;
 pub mod package_artifact;
 mod package_assets;
+mod package_requirement_coverage;
 mod resources;
 
 pub use artifact::{PublishedFileIrArtifact, PublishedJsonArtifact, PublishedResourceArtifact};

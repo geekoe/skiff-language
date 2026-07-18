@@ -21,15 +21,19 @@ pub struct PackageContractCompileDependency {
 
 /// The only production input for user source compilation.
 ///
-/// Package dependencies are canonical PackageArtifacts and service calls are
-/// compiled solely against ServiceContracts. Legacy service configuration is
-/// adapted before this boundary and is never stored here.
+/// Declared package dependencies are canonical PackageArtifacts and service
+/// calls are compiled solely against ServiceContracts. Additional canonical
+/// artifacts from the same package graph may close compiler-owned requirements
+/// after File IR is produced, but never participate in source resolution.
+/// Legacy service configuration is adapted before this boundary and is never
+/// stored here.
 pub struct PackageCompileInput<'a, P: ?Sized> {
     pub package: &'a P,
     pub package_id: &'a str,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub package_dependencies: &'a [PackageDependency],
     pub dependency_packages: &'a [PackageArtifact],
+    pub available_packages: &'a [PackageArtifact],
     pub contract_dependencies: &'a [PackageContractCompileDependency],
 }
 
@@ -45,6 +49,7 @@ impl<'a, P: PackageCompileInputMetadata + ?Sized> PackageCompileInput<'a, P> {
             package_aliases,
             package_dependencies: package.package_dependencies(),
             dependency_packages: &[],
+            available_packages: &[],
             contract_dependencies: &[],
         }
     }
@@ -56,6 +61,16 @@ impl<'a, P: PackageCompileInputMetadata + ?Sized> PackageCompileInput<'a, P> {
     ) -> Self {
         self.dependency_packages = dependency_packages;
         self.contract_dependencies = contract_dependencies;
+        self
+    }
+
+    /// Supplies canonical artifacts already produced by this compile graph.
+    /// They are candidates only for post-File-IR requirement closure.
+    pub fn with_available_canonical_packages(
+        mut self,
+        available_packages: &'a [PackageArtifact],
+    ) -> Self {
+        self.available_packages = available_packages;
         self
     }
 }
