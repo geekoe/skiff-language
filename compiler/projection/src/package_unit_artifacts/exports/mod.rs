@@ -1,5 +1,8 @@
 mod public_instances;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
@@ -94,7 +97,7 @@ pub fn project_package_export_index(
                 TypeExport {
                     file: file_ref,
                     type_index,
-                    symbol: package_symbol.clone(),
+                    symbol: ty.name.clone(),
                     descriptor: Some(projection_visible_type_descriptor(
                         module,
                         &ty.descriptor,
@@ -114,7 +117,7 @@ pub fn project_package_export_index(
                 ConstExport {
                     file: file_ref,
                     const_index,
-                    symbol: package_symbol.clone(),
+                    symbol: constant.name.clone(),
                     ty: projection_visible_type_ref(module, &constant.ty, &publication_type_names),
                 },
             );
