@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_identity::{assign_file_ir_identity, assign_package_artifact_identities};
 use skiff_artifact_model::{
-    PackageArtifact, PackageCallableId, PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr,
-    PackageRequirement,
+    CallIr, CallTargetIr, ConstIr, ExecutableBody, ExprIr, PackageArtifact, PackageCallableId,
+    PackageCallableRef, PackageLocalAbiIdentity, PackageRefIr, PackageRequirement, TypeRefIr,
 };
 
 use crate::emission::{
@@ -10,21 +12,23 @@ use crate::emission::{
 
 use super::fixture;
 
+mod package_call_validation;
+
 #[test]
 fn materializer_accepts_covered_package_callable_coordinates_with_extra_requirements() {
     let (mut projected, mut file, resource) = fixture();
-    file.unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::Dependency {
+    push_package_call(
+        &mut file,
+        PackageRefIr::Dependency {
             dependency_ref: "direct".to_string(),
-        }));
-    file.unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::PackageId {
+        },
+    );
+    push_package_call(
+        &mut file,
+        PackageRefIr::PackageId {
             package_id: "example.com/transitive".to_string(),
-        }));
+        },
+    );
     projected.package_requirements = vec![
         package_requirement("direct", "example.com/direct"),
         package_requirement("transitive", "example.com/transitive"),
@@ -43,13 +47,12 @@ fn materializer_accepts_covered_package_callable_coordinates_with_extra_requirem
 #[test]
 fn materializer_rejects_unknown_alias_and_package_id_coordinates() {
     let (mut alias_artifact, mut alias_file, resource) = fixture();
-    alias_file
-        .unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::Dependency {
+    push_package_call(
+        &mut alias_file,
+        PackageRefIr::Dependency {
             dependency_ref: "missing".to_string(),
-        }));
+        },
+    );
     refresh_file_and_artifact_identities(&mut alias_artifact, &mut alias_file);
     let alias_error = materialize_package_artifact(
         &alias_artifact,
@@ -65,13 +68,12 @@ fn materializer_rejects_unknown_alias_and_package_id_coordinates() {
     );
 
     let (mut id_artifact, mut id_file, resource) = fixture();
-    id_file
-        .unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::PackageId {
+    push_package_call(
+        &mut id_file,
+        PackageRefIr::PackageId {
             package_id: "example.com/missing".to_string(),
-        }));
+        },
+    );
     refresh_file_and_artifact_identities(&mut id_artifact, &mut id_file);
     let id_error = materialize_package_artifact(
         &id_artifact,
@@ -89,13 +91,12 @@ fn materializer_rejects_unknown_alias_and_package_id_coordinates() {
 #[test]
 fn materializer_rejects_package_callable_external_self_references() {
     let (mut alias_artifact, mut alias_file, resource) = fixture();
-    alias_file
-        .unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::Dependency {
+    push_package_call(
+        &mut alias_file,
+        PackageRefIr::Dependency {
             dependency_ref: "self".to_string(),
-        }));
+        },
+    );
     alias_artifact.package_requirements = vec![package_requirement(
         "self",
         alias_artifact.package_id.as_str(),
@@ -117,13 +118,12 @@ fn materializer_rejects_package_callable_external_self_references() {
     );
 
     let (mut id_artifact, mut id_file, resource) = fixture();
-    id_file
-        .unit
-        .external_refs
-        .package_callables
-        .push(package_callable(PackageRefIr::PackageId {
+    push_package_call(
+        &mut id_file,
+        PackageRefIr::PackageId {
             package_id: id_artifact.package_id.clone(),
-        }));
+        },
+    );
     refresh_file_and_artifact_identities(&mut id_artifact, &mut id_file);
 
     let id_error = materialize_package_artifact(
@@ -155,6 +155,33 @@ fn package_callable(package_ref: PackageRefIr) -> PackageCallableRef {
         package_ref,
         package_callable_id: PackageCallableId::new("callable:run"),
     }
+}
+
+fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRefIr) {
+    let callable = package_callable(package_ref.clone());
+    file.unit
+        .external_refs
+        .package_callables
+        .push(callable.clone());
+    if file.unit.constants.is_empty() {
+        file.unit.constants.push(ConstIr {
+            name: "package_calls".to_string(),
+            ty: TypeRefIr::native("void"),
+            body: ExecutableBody::default(),
+            source_span: None,
+        });
+    }
+    file.unit.constants[0].body.expressions.push(ExprIr::Call {
+        call: CallIr {
+            target: CallTargetIr::PackageCallable {
+                package_ref,
+                package_callable_id: callable.package_callable_id,
+            },
+            args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+    });
 }
 
 fn refresh_file_and_artifact_identities(

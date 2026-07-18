@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{PackageArtifact, PackageRefIr};
+use skiff_artifact_model::{validate_file_ir_package_calls, PackageArtifact, PackageRefIr};
 
 use crate::{
     emission::artifact::PublishedFileIrArtifact,
@@ -27,6 +27,12 @@ pub(super) fn validate_file_ir_package_requirement_coverage(
     }
 
     for file in files {
+        validate_file_ir_package_calls(&file.unit).map_err(|error| {
+            validation_error(format!(
+                "package {}@{} File IR module {} has invalid package-call references: {error}",
+                artifact.package_id, artifact.package_version, file.unit.module_path
+            ))
+        })?;
         for symbol in &file.unit.external_refs.package_symbols {
             validate_package_ref(
                 artifact,
