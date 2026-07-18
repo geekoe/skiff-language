@@ -146,13 +146,23 @@ fn complete_package_requirement_closure(
 
 fn file_ir_unit_references_platform_std(file: &FileIrUnit) -> bool {
     file.external_refs
-        .package_callables
+        .package_symbols
         .iter()
-        .map(|callable| &callable.package_ref)
-        .any(|package_ref| match package_ref {
-            PackageRefIr::PackageId { package_id } => package_id == SKIFF_STD_PUBLICATION_ID,
-            PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
-        })
+        .map(|symbol| &symbol.package)
+        .chain(
+            file.external_refs
+                .package_callables
+                .iter()
+                .map(|callable| &callable.package_ref),
+        )
+        .any(package_ref_references_platform_std)
+}
+
+fn package_ref_references_platform_std(package_ref: &PackageRefIr) -> bool {
+    match package_ref {
+        PackageRefIr::PackageId { package_id } => package_id == SKIFF_STD_PUBLICATION_ID,
+        PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
+    }
 }
 
 fn package_requirement(

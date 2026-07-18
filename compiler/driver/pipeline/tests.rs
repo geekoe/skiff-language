@@ -3,24 +3,23 @@ use std::collections::BTreeMap;
 use skiff_artifact_identity::assign_package_artifact_identities;
 use skiff_artifact_model::{
     PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSymbolRef,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
 
 #[test]
-fn used_std_adds_exact_requirement_from_validated_canonical_artifact() {
+fn type_only_std_reference_adds_exact_requirement_from_validated_canonical_artifact() {
     let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "7.4.2");
     let mut file = FileIrUnit::empty("main", "source");
-    file.external_refs
-        .package_callables
-        .push(PackageCallableRef {
-            package_ref: PackageRefIr::PackageId {
-                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
-            },
-            package_callable_id: PackageCallableId::new("callable:clock.now"),
-        });
+    file.external_refs.package_symbols.push(PackageSymbolRef {
+        package: PackageRefIr::PackageId {
+            package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+        },
+        symbol_path: "time.Instant".to_string(),
+        abi_expectation: None,
+    });
 
     let requirements = complete_package_requirement_closure(
         "example.com/app",
@@ -41,7 +40,7 @@ fn used_std_adds_exact_requirement_from_validated_canonical_artifact() {
 }
 
 #[test]
-fn package_callable_ref_requires_std_but_unused_and_std_self_do_not() {
+fn callable_only_std_reference_adds_exact_requirement() {
     let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "2.0.0");
     let mut callable_file = FileIrUnit::empty("main", "source");
     callable_file
@@ -53,28 +52,48 @@ fn package_callable_ref_requires_std_but_unused_and_std_self_do_not() {
             },
             package_callable_id: PackageCallableId::new("callable:std.task.run"),
         });
-    assert_eq!(
-        complete_package_requirement_closure(
-            "example.com/app",
-            Vec::new(),
-            std::slice::from_ref(&callable_file),
-            std::slice::from_ref(&std_artifact),
-        )
-        .unwrap()
-        .len(),
-        1
-    );
+    let requirements = complete_package_requirement_closure(
+        "example.com/app",
+        Vec::new(),
+        std::slice::from_ref(&callable_file),
+        std::slice::from_ref(&std_artifact),
+    )
+    .unwrap();
 
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].alias, "std");
+    assert_eq!(requirements[0].package_id, SKIFF_STD_PUBLICATION_ID);
+    assert_eq!(requirements[0].exact_version, "2.0.0");
+    assert_eq!(
+        requirements[0].expected_local_abi,
+        std_artifact.package_local_abi.local_abi_identity
+    );
+}
+
+#[test]
+fn unused_std_and_std_self_do_not_add_requirements() {
     let unused = FileIrUnit::empty("main", "source");
     assert!(
         complete_package_requirement_closure("example.com/app", Vec::new(), &[unused], &[],)
             .unwrap()
             .is_empty()
     );
+
+    let mut std_self_reference = FileIrUnit::empty("main", "source");
+    std_self_reference
+        .external_refs
+        .package_symbols
+        .push(PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+            },
+            symbol_path: "time.Instant".to_string(),
+            abi_expectation: None,
+        });
     assert!(complete_package_requirement_closure(
         SKIFF_STD_PUBLICATION_ID,
         Vec::new(),
-        &[callable_file],
+        &[std_self_reference],
         &[],
     )
     .unwrap()
