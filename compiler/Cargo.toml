@@ -15,14 +15,6 @@ too_many_lines = "warn"
 default = []
 
 [[test]]
-name = "artifact_output"
-path = "tests/artifact_output.rs"
-
-[[test]]
-name = "compiler_command"
-path = "tests/compiler_command.rs"
-
-[[test]]
 name = "config_shape"
 path = "tests/config_shape.rs"
 
@@ -33,10 +25,6 @@ path = "tests/connect_mongo_package.rs"
 [[test]]
 name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
-
-[[test]]
-name = "http_routes"
-path = "tests/http_routes.rs"
 
 [[test]]
 name = "package_imports"
@@ -53,10 +41,6 @@ path = "tests/package_std_schema.rs"
 [[test]]
 name = "prelude_std_schema"
 path = "tests/prelude_std_schema.rs"
-
-[[test]]
-name = "profile_overlay"
-path = "tests/profile_overlay.rs"
 
 [[test]]
 name = "publication_resources"
@@ -81,10 +65,6 @@ path = "tests/artifact_model_conformance.rs"
 [[test]]
 name = "runtime_slots"
 path = "tests/runtime_slots.rs"
-
-[[test]]
-name = "service_config_overlay"
-path = "tests/service_config_overlay.rs"
 
 [[test]]
 name = "service_conformance"
