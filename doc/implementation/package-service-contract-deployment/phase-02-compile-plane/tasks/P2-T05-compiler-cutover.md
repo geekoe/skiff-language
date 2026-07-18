@@ -29,9 +29,9 @@ LoweredPublication和package/service option bundle。不得在集成任务重写
 4. T02 effect facts、T03 ServiceCallRefs与T04 PackageArtifact projection完整接线；不新增局部转换规则。
 5. 删除PackageProjectionBundle/ServiceProjectionBundle等共同option aggregate；contract producer与package
    producer是两条显式pipeline。
-6. compiler facade、rustdoc public API fixture、crate DAG和boundary checker更新到终态；本任务是全部
-   compiler structure checker 与 checker self-test的唯一owner。checker负例能捕获production重新
-   引入四个旧Publication compiler symbols。
+6. compiler facade 与 Rust production public surface 更新到终态；compiler structure checker、crate DAG、
+   rustdoc public API policy及其self-tests/fixtures由T05B唯一更新。本任务只提供T05B检查的终态
+   production shape，不修改checker或allowlist。
 7. 直接触碰的超长driver/source root按input/pipeline拆分，不新建 adapter 目录或 allowlist。
 8. 删除 clean base 仍有的旧 service publication/orchestration production 入口及只锁定该语义的 driver
    tests；不修改 runtime/router/test-runner 来弥补断链。
@@ -49,11 +49,11 @@ LoweredPublication和package/service option bundle。不得在集成任务重写
 ```bash
 cargo test -p skiff-compiler-input-model -p skiff-compiler-source -p skiff-compiler-lowering
 cargo test -p skiff-compiler-compiled -p skiff-compiler
-node scripts/check-compiler-boundaries.mjs
-node scripts/check-compiler-crate-dag.mjs
-node scripts/check-crate-public-api.mjs --all-configured
 git diff --check
 ```
+
+结构checker由T05B在自己的分支运行self-test，并由T07在T05/T05A/T05B合流后的稳定候选上运行production
+gate；T05不重复运行或修改这些checker。
 
 ## 回报
 
