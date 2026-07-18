@@ -204,6 +204,33 @@ package dependency调用使用`PackageLocalAbi`和implementation links：
 - 不经过service dispatcher，不切换activation owner；
 - 不要求linkable或recoverable。
 
+File IR 对 package direct call 使用唯一 canonical target，不携带 legacy publication operation ABI：
+
+```text
+CallTargetIr::PackageCallable {
+  packageRef: PackageRefIr
+  packageCallableId: PackageCallableId
+}
+```
+
+同一引用同时进入 owner-local `ExternalRefTable.packageCallables`，元素为
+`PackageCallableRef { packageRef, packageCallableId }`。`expectedLocalAbi` 只由对应
+`PackageRequirement` 拥有，不在每个 call site 或 external-ref table 重复。链接按以下链路 fail closed：
+
+```text
+PackageRefIr::Dependency(alias)
+  -> PackageRequirement(alias, expectedLocalAbi)
+  -> dependency PackageArtifact.packageLocalAbi.localAbiIdentity
+  -> dependency PackageArtifact.callableLinks[PackageCallableId]
+  -> OperationTargetRef
+```
+
+compiler source resolution必须先从已验证的dependency PackageArtifact取得`PackageCallableId`；lowering只
+保持该typed identity，不从symbol path重建target。File IR materialization校验package coordinate被
+`PackageRequirement`覆盖；assembly/linker再次校验local ABI并解析`callableLinks`。不得把
+`PackageCallableId`编码进`OperationAbiRef`，也不得恢复`PackageOperationIndex`、publication ABI builder或
+used-symbol closure作为bridge。
+
 ### 6.2 Service boundary call
 
 service dependency调用只解析到`ServiceContract` operation。assembly把它绑定到某个
@@ -333,7 +360,8 @@ ServiceDeploymentInput
 ```
 
 PackageSourceModel拥有name/type resolution、public API graph、effect/provenance与dependency facts。
-Lowering只消费typed source facts。Package projection不读deployment配置。
+Lowering只消费typed source facts。package direct call降低为`PackageCallable` target；service call降低为
+`ServiceCallRef`。Package projection不读deployment配置。
 
 Service call lowering只生成`ServiceCallRef`和contract value plan refs。Assembly linking为每个
 ActivationContext生成service binding vector / thunk；它不是stub package，也不让consumer依赖provider
