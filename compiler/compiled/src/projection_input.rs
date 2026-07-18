@@ -12,21 +12,17 @@ use skiff_compiler_projection_input::{
     ConfigRequirementSetProjection, ConfigRequirementsSeed, ConfigSourcePositionProjection,
     ConfigSourceSpanProjection, EntryFunctionSignature, EntryParamSpec, EntryTypeSpec,
     ExportBindingProjection, ExportCallableProjection, ExportPublicInstanceInterfaceProjection,
-    ExportPublicInstanceProjection, ExportSchemaProjection, ExportSymbolProjection, PackageAbiType,
-    PackageAbiTypeDescriptor, PackageApiEntryProjectionInfo, PackageApiSourceProjectionInfo,
-    PackageDependencyProjectionInfo, PackageEntrypointFunctionProjection,
-    PackageEntrypointProjectionFacts, PackageProjectionInput, PackageProjectionInputParts,
-    PackagePublicationProjectionInfo, PackagePublicationProjectionProvenance,
-    ProjectionAbiDeclarationIds, ProjectionCallableEffectFacts, ProjectionDeclarationKey,
-    ProjectionEntrypointAbiIndex, ProjectionExecutableKey, ProjectionInput,
-    ProjectionLoweringFacts, ProjectionSourceDeclarationKind, ProjectionSourceFacts,
-    ProjectionSourceFactsParts, ProjectionSourceMetadata, ProjectionSourceSymbolKey,
-    ProjectionSyntheticEntrypointExecutable, ProjectionSyntheticEntrypointExecutableKind,
-    ProjectionSyntheticEntrypointIndex, ProjectionSyntheticEntrypointModule,
-    PublicCallableKindProjection, PublicCallableProjection, PublicInstanceInterfaceProjection,
-    PublicInstanceProjection, PublicModuleExportProjection, PublicSymbolKindProjection,
-    PublicSymbolProjection, PublicTypeKindProjection, PublicTypeProjection,
-    PublicationApiProjectionSeed,
+    ExportPublicInstanceProjection, ExportSchemaProjection, ExportSymbolProjection,
+    PackageEntrypointProjectionFacts, ProjectionAbiDeclarationIds, ProjectionCallableEffectFacts,
+    ProjectionDeclarationKey, ProjectionEntrypointAbiIndex, ProjectionExecutableKey,
+    ProjectionInput, ProjectionLoweringFacts, ProjectionSourceDeclarationKind,
+    ProjectionSourceFacts, ProjectionSourceFactsParts, ProjectionSourceMetadata,
+    ProjectionSourceSymbolKey, ProjectionSyntheticEntrypointExecutable,
+    ProjectionSyntheticEntrypointExecutableKind, ProjectionSyntheticEntrypointIndex,
+    ProjectionSyntheticEntrypointModule, PublicCallableKindProjection, PublicCallableProjection,
+    PublicInstanceInterfaceProjection, PublicInstanceProjection, PublicModuleExportProjection,
+    PublicSymbolKindProjection, PublicSymbolProjection, PublicTypeKindProjection,
+    PublicTypeProjection, PublicationApiProjectionSeed,
 };
 use skiff_compiler_source::{
     api::{PublicCallableKind, PublicSymbolKind, PublicTypeKind},
@@ -39,16 +35,9 @@ use skiff_compiler_source::{
     ResolvedCallTarget, SourceSymbolKey,
 };
 
-use crate::{CompiledPackage, PackagePublication};
+use crate::CompiledPackage;
 
 pub fn build_projection_input(compiled: &CompiledPackage) -> ProjectionInput {
-    build_projection_input_with_package_id(compiled, None)
-}
-
-fn build_projection_input_with_package_id(
-    compiled: &CompiledPackage,
-    package_id: Option<&str>,
-) -> ProjectionInput {
     let model = compiled.compile_model();
     let file_ir_units = compiled.file_ir_units().to_vec();
     let source_metadata = compiled
@@ -76,7 +65,7 @@ fn build_projection_input_with_package_id(
         ),
         compiled.service_db_metadata().to_vec(),
         compiled.service_actor_metadata().to_vec(),
-        package_entrypoint_projection_facts(compiled, package_id),
+        PackageEntrypointProjectionFacts::default(),
     );
     ProjectionInput::new(file_ir_units, source_metadata, source, lowering)
 }
@@ -207,68 +196,6 @@ fn callable_effect_facts(
         })
         .collect();
     ProjectionCallableEffectFacts::new(operations)
-}
-
-pub fn build_package_projection_input(package: &PackagePublication) -> PackageProjectionInput {
-    PackageProjectionInput::new(PackageProjectionInputParts {
-        info: package_publication_info_projection(package),
-        compiled: build_projection_input_with_package_id(package.compiled(), Some(package.id())),
-        dependency_config: package.config().clone(),
-    })
-}
-
-pub fn build_package_projection_inputs(
-    packages: &[PackagePublication],
-) -> Vec<PackageProjectionInput> {
-    packages
-        .iter()
-        .map(build_package_projection_input)
-        .collect()
-}
-
-fn package_publication_info_projection(
-    package: &PackagePublication,
-) -> PackagePublicationProjectionInfo {
-    let manifest = package.manifest();
-    PackagePublicationProjectionInfo::new(
-        manifest.id().to_string(),
-        manifest.version().to_string(),
-        manifest
-            .dependencies()
-            .iter()
-            .map(package_dependency_projection)
-            .collect(),
-        manifest
-            .api_entries()
-            .iter()
-            .map(|entry| {
-                PackageApiEntryProjectionInfo::new(
-                    entry.path().to_string(),
-                    entry.module().to_string(),
-                )
-            })
-            .collect(),
-        manifest.api_source().map(|source| {
-            PackageApiSourceProjectionInfo::new(
-                source.relative_path().to_path_buf(),
-                source.content_hash().to_string(),
-            )
-        }),
-        manifest.source_root().to_path_buf(),
-        PackagePublicationProjectionProvenance::new(manifest.provenance().synthetic()),
-    )
-}
-
-fn package_dependency_projection(
-    dependency: &crate::PackageDependencyInfo,
-) -> PackageDependencyProjectionInfo {
-    PackageDependencyProjectionInfo::new(
-        dependency.id().to_string(),
-        dependency.version().to_string(),
-        dependency.alias().map(str::to_string),
-        dependency.config().clone(),
-        dependency.collection_name_mapping().clone(),
-    )
 }
 
 fn publication_api_seed_projection(seed: &PublicationApiSeed) -> PublicationApiProjectionSeed {
@@ -1114,118 +1041,6 @@ fn file_ir_local_type_names(unit: &FileIrUnit) -> BTreeMap<u32, String> {
         .collect()
 }
 
-fn package_entrypoint_projection_facts(
-    compiled: &CompiledPackage,
-    package_id: Option<&str>,
-) -> PackageEntrypointProjectionFacts {
-    let Some(package_id) = package_id else {
-        return PackageEntrypointProjectionFacts::default();
-    };
-    let model = compiled.compile_model();
-    let symbol_paths = package_entrypoint_symbol_paths(model, package_id);
-    let functions: BTreeMap<_, _> = symbol_paths
-        .iter()
-        .filter_map(|symbol_path| {
-            let result = skiff_compiler_lowering::package_entrypoint_function_signature(
-                model,
-                compiled.lowered().entrypoint_abi(),
-                package_id,
-                symbol_path,
-            )
-            .ok()??;
-            let may_suspend = compiled
-                .file_ir_units()
-                .iter()
-                .find(|unit| unit.module_path == result.0)
-                .and_then(|unit| {
-                    let declaration = unit.declarations.executables.get(&result.1)?;
-                    unit.executables
-                        .get(declaration.executable_index as usize)
-                        .map(|executable| executable.may_suspend)
-                })?;
-            Some((
-                symbol_path.clone(),
-                PackageEntrypointFunctionProjection {
-                    source_module: result.0,
-                    source_symbol: result.1,
-                    signature: entry_function_signature_projection(result.2, may_suspend),
-                },
-            ))
-        })
-        .collect();
-    let mut modules = model
-        .export_bindings()
-        .public_schema_types()
-        .values()
-        .map(|public_type| public_type.source_module.clone())
-        .collect::<BTreeSet<_>>();
-    modules.extend(
-        functions
-            .values()
-            .map(|function| function.source_module.clone()),
-    );
-    let schema_type_names_by_module = modules
-        .iter()
-        .map(|module| {
-            (
-                module.clone(),
-                skiff_compiler_lowering::package_public_schema_type_names_for_module(model, module),
-            )
-        })
-        .collect();
-    let schema_abi_types_by_module = modules
-        .into_iter()
-        .filter_map(|module| {
-            skiff_compiler_lowering::package_public_schema_abi_types_for_module(model, &module)
-                .ok()
-                .map(|types| {
-                    (
-                        module,
-                        types
-                            .into_iter()
-                            .map(package_abi_type_projection)
-                            .collect::<Vec<_>>(),
-                    )
-                })
-        })
-        .collect();
-    PackageEntrypointProjectionFacts::new(
-        functions,
-        schema_type_names_by_module,
-        schema_abi_types_by_module,
-    )
-}
-
-fn package_entrypoint_symbol_paths(
-    model: &PackageSourceModel,
-    package_id: &str,
-) -> BTreeSet<String> {
-    model
-        .export_bindings()
-        .public_callables()
-        .values()
-        .flat_map(|callable| {
-            let mut paths = Vec::new();
-            paths.push(callable.public_path.clone());
-            if let Some((export_path, symbol)) = callable.public_path.rsplit_once('.') {
-                let public_path = package_public_path(package_id, export_path);
-                paths.push(format!("{public_path}.{symbol}"));
-            }
-            paths
-        })
-        .collect()
-}
-
-fn package_public_path(package_id: &str, export_path: &str) -> String {
-    if export_path.is_empty() {
-        package_id.to_string()
-    } else if package_id.is_empty() {
-        export_path.to_string()
-    } else {
-        format!("{package_id}.{export_path}")
-    }
-}
-
 fn entry_function_signature_projection(
     signature: skiff_compiler_lowering::EntryFunctionSignature,
     may_suspend: bool,
@@ -1251,28 +1066,6 @@ fn entry_type_spec_projection(spec: skiff_compiler_lowering::EntryTypeSpec) -> E
         name: spec.name,
         ir: spec.ir,
         local_type_names: spec.local_type_names,
-    }
-}
-
-fn package_abi_type_projection(ty: skiff_compiler_lowering::PackageAbiType) -> PackageAbiType {
-    PackageAbiType {
-        name: ty.name,
-        descriptor: match ty.descriptor {
-            skiff_compiler_lowering::PackageAbiTypeDescriptor::Alias { target } => {
-                PackageAbiTypeDescriptor::Alias { target }
-            }
-            skiff_compiler_lowering::PackageAbiTypeDescriptor::Union { variants } => {
-                PackageAbiTypeDescriptor::Union { variants }
-            }
-            skiff_compiler_lowering::PackageAbiTypeDescriptor::Record { fields } => {
-                PackageAbiTypeDescriptor::Record { fields }
-            }
-            skiff_compiler_lowering::PackageAbiTypeDescriptor::External => {
-                PackageAbiTypeDescriptor::External
-            }
-        },
-        discriminator: ty.discriminator,
-        local_type_names: ty.local_type_names,
     }
 }
 

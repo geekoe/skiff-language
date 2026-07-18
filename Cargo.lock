@@ -2185,7 +2185,6 @@ dependencies = [
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-compiler-core",
  "skiff-compiler-lowering",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
@@ -2287,7 +2286,6 @@ name = "skiff-compiler-projection-input"
 version = "0.1.0"
 dependencies = [
  "serde",
- "serde_json",
  "skiff-artifact-model",
  "skiff-compiler-core",
 ]

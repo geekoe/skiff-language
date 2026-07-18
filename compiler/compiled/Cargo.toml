@@ -14,7 +14,6 @@ test-support = []
 [dependencies]
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-compiler-core = { path = "../core" }
 skiff-compiler-lowering = { path = "../lowering" }
 skiff-compiler-projection-input = { path = "../projection-input" }
 skiff-compiler-source = { path = "../source" }
