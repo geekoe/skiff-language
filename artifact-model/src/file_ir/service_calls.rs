@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     compile_requirements::ServiceCallRef,
-    executable::{CallTargetIr, ExecutableBody, ExprIr},
+    executable::{CallTargetIr, ExprIr},
 };
 
-use super::{FileIrUnit, ServiceCallRefIndex};
+use super::{file_ir_expressions, FileIrExpressionOwner, FileIrUnit, ServiceCallRefIndex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileIrServiceCallOwner {
@@ -66,31 +66,29 @@ impl std::error::Error for FileIrServiceCallValidationError {}
 pub fn file_ir_service_call_sites(
     unit: &FileIrUnit,
 ) -> impl Iterator<Item = FileIrServiceCallSite> + '_ {
-    let constant_sites = unit
-        .constants
-        .iter()
-        .enumerate()
-        .flat_map(|(index, value)| {
-            service_call_sites_in_body(
-                FileIrServiceCallOwner::Constant {
-                    constant_index: index,
-                },
-                &value.body,
-            )
-        });
-    let executable_sites = unit
-        .executables
-        .iter()
-        .enumerate()
-        .flat_map(|(index, executable)| {
-            service_call_sites_in_body(
-                FileIrServiceCallOwner::Executable {
-                    executable_index: index,
-                },
-                &executable.body,
-            )
-        });
-    constant_sites.chain(executable_sites)
+    file_ir_expressions(unit).filter_map(|(owner, expression_index, expression)| {
+        let ExprIr::Call { call } = expression else {
+            return None;
+        };
+        let CallTargetIr::ServiceCall {
+            service_call_ref_index,
+        } = &call.target
+        else {
+            return None;
+        };
+        Some(FileIrServiceCallSite {
+            owner: match owner {
+                FileIrExpressionOwner::Constant { constant_index } => {
+                    FileIrServiceCallOwner::Constant { constant_index }
+                }
+                FileIrExpressionOwner::Executable { executable_index } => {
+                    FileIrServiceCallOwner::Executable { executable_index }
+                }
+            },
+            expression_index,
+            service_call_ref_index: *service_call_ref_index,
+        })
+    })
 }
 
 /// Validates the complete owner-local table/index relationship once. Identity,
@@ -124,31 +122,6 @@ pub fn validated_file_ir_service_call_refs(
 ) -> Result<&[ServiceCallRef], FileIrServiceCallValidationError> {
     validate_file_ir_service_calls(unit)?;
     Ok(&unit.external_refs.service_call_refs)
-}
-
-fn service_call_sites_in_body(
-    owner: FileIrServiceCallOwner,
-    body: &ExecutableBody,
-) -> impl Iterator<Item = FileIrServiceCallSite> + '_ {
-    body.expressions
-        .iter()
-        .enumerate()
-        .filter_map(move |(expression_index, expression)| {
-            let ExprIr::Call { call } = expression else {
-                return None;
-            };
-            let CallTargetIr::ServiceCall {
-                service_call_ref_index,
-            } = &call.target
-            else {
-                return None;
-            };
-            Some(FileIrServiceCallSite {
-                owner,
-                expression_index,
-                service_call_ref_index: *service_call_ref_index,
-            })
-        })
 }
 
 fn validate_unique_refs(refs: &[ServiceCallRef]) -> Result<(), FileIrServiceCallValidationError> {

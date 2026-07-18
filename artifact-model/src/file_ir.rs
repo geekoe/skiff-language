@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     compile_requirements::ServiceCallRef,
-    executable::{ExecutableBody, ExecutableIr},
+    executable::{ExecutableBody, ExecutableIr, ExprIr},
     refs::SourceSpanRef,
     schema::{FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION},
     symbols::{PackageCallableRef, PackageSymbolRef, ServiceDependencySymbolRef, ServiceSymbolRef},
@@ -13,13 +13,66 @@ use crate::{
     types::{InterfaceDeclIr, TypeDeclIr, TypeRefIr},
 };
 
+mod package_calls;
 mod service_calls;
+
+pub use package_calls::{
+    file_ir_package_call_sites, validate_file_ir_package_calls,
+    validated_file_ir_package_callable_refs, FileIrPackageCallOwner, FileIrPackageCallSite,
+    FileIrPackageCallValidationError,
+};
 
 pub use service_calls::{
     file_ir_service_call_sites, validate_file_ir_service_calls,
     validated_file_ir_service_call_refs, FileIrServiceCallOwner, FileIrServiceCallSite,
     FileIrServiceCallValidationError,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FileIrExpressionOwner {
+    Constant { constant_index: usize },
+    Executable { executable_index: usize },
+}
+
+pub(super) fn file_ir_expressions(
+    unit: &FileIrUnit,
+) -> impl Iterator<Item = (FileIrExpressionOwner, usize, &ExprIr)> {
+    let constants =
+        unit.constants
+            .iter()
+            .enumerate()
+            .flat_map(|(index, value)| {
+                value.body.expressions.iter().enumerate().map(
+                    move |(expression_index, expression)| {
+                        (
+                            FileIrExpressionOwner::Constant {
+                                constant_index: index,
+                            },
+                            expression_index,
+                            expression,
+                        )
+                    },
+                )
+            });
+    let executables = unit
+        .executables
+        .iter()
+        .enumerate()
+        .flat_map(|(index, executable)| {
+            executable.body.expressions.iter().enumerate().map(
+                move |(expression_index, expression)| {
+                    (
+                        FileIrExpressionOwner::Executable {
+                            executable_index: index,
+                        },
+                        expression_index,
+                        expression,
+                    )
+                },
+            )
+        });
+    constants.chain(executables)
+}
 
 pub const FILE_IR_SOURCE_MAP_FORMAT: &str = "skiff-file-ir-source-map-v1";
 
