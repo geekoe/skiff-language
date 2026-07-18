@@ -22,15 +22,15 @@ API callable生成显式boundary availability。任务消费typed effects，不�
    填入或伪造ContractOperationId/stable key。implementation facts不污染contract/protocol identity。
 5. PackageRequirement、ContractRequirement、ServiceRequirement、ServiceCallRef、config/resource/capability、
    effect/provenance完整进入artifact与build identity projection。
-6. production与package-test共享同一个PackageArtifact projection/materializer API；T06只负责runtime adapter
-   consumer，不允许第二builder。
+6. production 与 compiler test-support 共享同一个 PackageArtifact projection/materializer API；
+   runtime package-test 留待终态 consumer 阶段，不允许第二 builder。
 7. projection/emission按model、boundary policy、materialization、tests拆分；不得继续扩大现有monolith。
 
 ## 写入范围
 
 - `compiler/projection` 新PackageArtifact与boundary目录及直接复用leaf。
 - `compiler/emission` 新PackageArtifact materializer与直接tests。
-- 必要的projection-input消费adapter；不修改source/lowering/driver/artifact公共wire。
+- 必要的 projection-input typed mapping；不修改 source/lowering/driver/artifact 公共 wire。
 
 ## 验证
 

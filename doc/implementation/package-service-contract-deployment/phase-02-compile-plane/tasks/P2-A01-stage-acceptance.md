@@ -8,7 +8,7 @@
 
 - 原始用户目标。
 - 唯一设计：`doc/architecture/package-service-contract-deployment.md`。
-- 总纲、Phase02 plan及P2-T01–T07全部任务文件。
+- 总纲、Phase02 plan及P2-T01–T07、P2-R02–R13全部任务文件。
 - integration branch最终commit与T07证据表。
 
 ## 必验条款
@@ -21,8 +21,15 @@
 5. direct package call的alias/mutation不被service boundary规则禁止。
 6. 实际service call生成ServiceRequirement/ServiceCallRef；未调用声明不生成runtime edge，consumer artifact
    无provider target。
-7. package-test/test-runner复用production PackageArtifact；legacy adapter只转换shape且有删除owner/gate。
+7. compiler 不产出 PublicationAbiUnit/PackageUnit/ServiceUnit/serviceAssembly，不存在 legacy/
+   compatibility adapter、空 runtime holder、dual-write、fallback 或 checker allowlist。
 8. T07证据对应最终commit；高风险schema/identity/effect/lowering有独立代码和负例证据。
+9. compiler integration fixtures 没有通过空/fake contract、provider inference 或新聚合 builder 恢复
+   旧 service=code+deployment 模型，原 test targets 的覆盖不是无证据删除。
+10. canonical contract 的 discriminator/branch tag、map key identity、builtin grammar、nullable normalization
+    与当前 recursion policy 全部进入 typed validation/identity，不依赖未来 JSON renderer 补语义。
+11. 当前 service CLI/watch/runtime 不可用被明确记录为阶段断链，没有为让它们继续运行
+    而引入 provider inference 或兼容代码。
 
 ## 输出
 

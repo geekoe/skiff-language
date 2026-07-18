@@ -16,8 +16,9 @@
 - 每阶段使用一个 integration worktree。task branch 从明确 checkpoint 创建，提交后合入 integration
   branch；阶段验收通过后才合入 `main` 并删除 worktree 与已合并分支。
 - 发现设计缺口时暂停受影响 DAG 分支，询问用户或等待设计文档单独更新；不受影响分支继续执行。
-- 临时 adapter 只能转换形状，不能拥有 identity、type/effect、validation、projection、closure 或 link
-  规则。任务文件必须写明删除阶段，并用结构 gate 防止扩散。
+- 每个阶段只能在自己负责的生产域落终态。尚未轮到的下游允许暂时不可用，
+  但禁止为保持跨阶段可运行性新增 legacy/compatibility adapter、dual path、fallback 或临时
+  authoring inference。未触碰的旧下游在其终态阶段直接替换；已切换的上游不再输出旧 DTO。
 - Skiff 尚未发布，不兼容旧 artifact、manifest 或 CLI；禁止 dual-read、dual-write 和 runtime fallback。
 - 直接触碰的重复规则、超长文件和职责混杂必须在当前任务处理；无关重构不进入本计划。
 

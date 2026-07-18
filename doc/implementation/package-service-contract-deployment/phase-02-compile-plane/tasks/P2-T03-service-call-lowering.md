@@ -24,7 +24,7 @@
 5. File IR canonical external ref不再生产旧ServiceDependencySymbol/完整OperationAbiRef carrier；package
    direct call target保持原local implementation link语义。
 6. 普通A→B→A service requirement cycle不需要provider compile closure；跨contract schema引用cycle拒绝。
-7. 旧provider closure resolver退出canonical compile path，只允许T06 legacy adapter/runtime allowlist使用。
+7. 旧 provider closure resolver 从 compiler production 与 test-support 删除，不保留 allowlist 或旁路调用。
 
 ## 写入范围
 
