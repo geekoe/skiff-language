@@ -7,7 +7,7 @@ use skiff_artifact_model::{
 
 use crate::type_ref::substitute_type_params_in_type_ref;
 
-pub use skiff_artifact_model::package_unit::InterfaceMethodSignature;
+pub use skiff_artifact_model::InterfaceMethodSignature;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterfaceMethodInstantiationError {

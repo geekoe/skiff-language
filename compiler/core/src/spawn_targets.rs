@@ -317,7 +317,6 @@ fn package_operation_spawn_target(
 ) -> Result<SpawnTargetIr> {
     let package = package_source_for_ref(package_sources, package_ref, &operation.public_path)?;
     let Some(target) = package
-        .unit
         .implementation_links
         .operation_targets
         .get(&operation.operation_abi_id)
@@ -575,14 +574,16 @@ fn error(message: impl Into<String>) -> SpawnTargetProjectionError {
 mod tests {
     use super::*;
     use skiff_artifact_model::{
-        validate_file_ir_service_calls, ContractOperationId, ExecutableBody, ExprIr, PackageUnit,
-        ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, SlotLayout,
+        validate_file_ir_service_calls, ContractOperationId, ExecutableBody, ExprIr,
+        PackageImplementationLinks, ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+        SlotLayout,
     };
 
     #[test]
     fn projects_service_function_spawn_target_from_file_ir() {
-        let targets = service_spawn_targets_with_packages(&[service_unit("void")], &[], "proto-1")
-            .expect("spawn target projection should succeed");
+        let targets =
+            service_spawn_targets_with_packages(&[service_file_ir("void")], &[], "proto-1")
+                .expect("spawn target projection should succeed");
 
         assert_eq!(targets.len(), 1);
         let target = &targets[0];
@@ -596,8 +597,9 @@ mod tests {
 
     #[test]
     fn rejects_non_void_spawn_function_return() {
-        let error = service_spawn_targets_with_packages(&[service_unit("string")], &[], "proto-1")
-            .expect_err("spawn target projection should reject non-void return");
+        let error =
+            service_spawn_targets_with_packages(&[service_file_ir("string")], &[], "proto-1")
+                .expect_err("spawn target projection should reject non-void return");
 
         assert!(error
             .message
@@ -606,7 +608,7 @@ mod tests {
 
     #[test]
     fn service_boundary_calls_are_not_same_build_spawn_targets() {
-        let mut unit = service_unit("void");
+        let mut unit = service_file_ir("void");
         unit.external_refs.service_call_refs.push(ServiceCallRef {
             service_requirement_slot: 0,
             contract_operation_id: ContractOperationId::new("operation:run"),
@@ -628,7 +630,7 @@ mod tests {
         let package = PackageSpawnTargetSource {
             package_id: "consumer".to_string(),
             dependency_refs: Vec::new(),
-            unit: PackageUnit::empty("consumer", "1.0.0", "build:consumer", "abi:consumer"),
+            implementation_links: PackageImplementationLinks::default(),
             file_ir_units: vec![unit],
         };
         let package_targets =
@@ -637,7 +639,7 @@ mod tests {
         assert!(package_targets.is_empty());
     }
 
-    fn service_unit(return_type: &str) -> FileIrUnit {
+    fn service_file_ir(return_type: &str) -> FileIrUnit {
         let mut unit = FileIrUnit::empty("app", "hash");
         unit.file_ir_identity = "file:app".to_string();
         unit.declarations.executables.insert(

@@ -500,16 +500,6 @@ const adapterRequirements = [
     regexp: /\bskiff_artifact_identity::publication_abi_identity\b/,
   },
   {
-    relPath: 'compiler/publication-abi/src/lib.rs',
-    helper: 'public function operation ABI identity',
-    regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
-  },
-  {
-    relPath: 'compiler/publication-abi/src/lib.rs',
-    helper: 'public instance operation ABI identity',
-    regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
-  },
-  {
     relPath: 'compiler/emission/src/emission/identity.rs',
     helper: 'artifact emission identity re-export',
     regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,

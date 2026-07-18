@@ -2293,16 +2293,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-compiler-publication-abi"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skiff-artifact-identity",
- "skiff-artifact-model",
- "thiserror",
-]
-
-[[package]]
 name = "skiff-compiler-source"
 version = "0.1.0"
 dependencies = [

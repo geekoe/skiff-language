@@ -69,23 +69,6 @@ const compilerCoreForbiddenImports = regexpUnion([
     'publication_error',
   ]),
 ]);
-const publicationAbiForbiddenImports = regexpUnion([
-  /\bserde_yaml\b/,
-  /\bskiff_compiler\b/,
-  /\bskiff_compiler_(?:core|input_model|input|source|lowering|projection_input|compiled|projection|emission)\b/,
-  /\bstd\s*::\s*fs\b/,
-  /\bstd\s*::\s*\{[^;]*?\bfs\b/,
-  crateModuleImportRegexp([
-    'input',
-    'source_compile',
-    'lowering',
-    'compiled',
-    'projection',
-    'emission',
-    'facade',
-    'publication_error',
-  ]),
-]);
 const terminalCompilerLegacyShape = regexpUnion([
   /\b(?:PublicationInput(?:Kind|Error)?|PublicationKind|CompiledPublication|LoweredPublication)\b/,
   /\b(?:PublicationAbiUnit|PackageUnit|ServiceUnit|ServiceAssembly)\b/,
@@ -131,16 +114,6 @@ const denyRules = [
     pattern: 'crate::(lowering|projection|emission|compiled)',
     regexp: sourceCompileDownstreamStageImports,
     remove_when: 'source_compile consumes only input, shared, skiff_artifact_model, and its own typed models',
-  },
-  {
-    id: 'publication_abi_no_stage_or_io_imports',
-    owner: 'compiler-publication-abi',
-    phase: 'final',
-    roots: ['compiler/publication-abi/src'],
-    pattern: 'compiler core/stages/facade, serde_yaml, or std::fs dependencies',
-    regexp: publicationAbiForbiddenImports,
-    remove_when:
-      'publication-abi remains neutral semantic assembly over artifact-model and artifact-identity',
   },
   {
     id: 'lowering_no_forbidden_imports',

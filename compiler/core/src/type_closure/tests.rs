@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, PackageRefIr,
-    PackageSymbolRef, PackageUnit, ServiceSymbolRef, TypeDeclIr, TypeDeclarationIr,
-    TypeDescriptorIr, TypeExport, TypeRefIr,
+    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
+    PackageImplementationLinks, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeDeclIr,
+    TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
 
 use super::*;
@@ -228,8 +228,8 @@ fn resolves_package_dependency_and_records_nominal_trace() {
             source_span: None,
         },
     );
-    let mut package_unit = PackageUnit::empty("dep", "1.0.0", "package:dep", "package-abi:dep");
-    package_unit.implementation_links.types.insert(
+    let mut implementation_links = PackageImplementationLinks::default();
+    implementation_links.types.insert(
         "dep.Payload".to_string(),
         TypeExport {
             symbol: "Payload".to_string(),
@@ -248,7 +248,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
     let package_source = PackageTypeSource {
         package_id: "dep".to_string(),
         dependency_refs: vec!["depAlias".to_string()],
-        unit: package_unit,
+        implementation_links,
         file_ir_units: vec![package_file],
     };
     let resolver = ArtifactNominalTypeSource::new(&[], std::slice::from_ref(&package_source));
