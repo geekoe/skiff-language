@@ -1,11 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ContractOperationId, ServiceCallRef, ServiceCallRefIndex, ServiceRequirement,
+    ContractOperationId, ContractRequirement, ServiceCallRef, ServiceCallRefIndex,
+    ServiceRequirement,
 };
 use skiff_compiler_source::{ExpressionKey, ResolvedCallTarget, ResolvedCallTargetFacts};
 
-use crate::{ContractDependencyOperationIndex, ServiceCallLoweringError};
+use crate::ServiceCallLoweringError;
 
 /// Call-site association retained until canonical File IR materialization. It
 /// deliberately carries ServiceCallRef rather than a legacy OperationAbiRef or
@@ -76,9 +77,9 @@ impl LoweredServiceCalls {
 /// targets are borrowed and left untouched by construction.
 pub fn lower_service_calls(
     targets: &ResolvedCallTargetFacts,
-    operations: &ContractDependencyOperationIndex,
 ) -> Result<LoweredServiceCalls, ServiceCallLoweringError> {
-    let mut used_operations = BTreeMap::<String, BTreeSet<ContractOperationId>>::new();
+    let mut used_operations =
+        BTreeMap::<String, (ContractRequirement, BTreeSet<ContractOperationId>)>::new();
     for (_, target) in targets.iter() {
         let ResolvedCallTarget::ContractOperation {
             contract_requirement,
@@ -87,15 +88,21 @@ pub fn lower_service_calls(
         else {
             continue;
         };
-        operations.operation(
-            &contract_requirement.alias,
-            contract_operation_id,
-            &contract_requirement.expected_protocol_identity,
-        )?;
-        used_operations
-            .entry(contract_requirement.alias.clone())
-            .or_default()
-            .insert(contract_operation_id.clone());
+        let alias = contract_requirement.alias.clone();
+        let operation_ids = match used_operations.entry(alias.clone()) {
+            Entry::Vacant(entry) => {
+                &mut entry
+                    .insert((contract_requirement.clone(), BTreeSet::new()))
+                    .1
+            }
+            Entry::Occupied(entry) => {
+                if entry.get().0 != *contract_requirement {
+                    return Err(ServiceCallLoweringError::ContractRequirementMismatch { alias });
+                }
+                &mut entry.into_mut().1
+            }
+        };
+        operation_ids.insert(contract_operation_id.clone());
     }
 
     // Slots are dense over used requirements and ordered by validated alias.
@@ -103,12 +110,14 @@ pub fn lower_service_calls(
     // calls, and unused declarations cannot perturb the slot assignment.
     let mut slots = BTreeMap::new();
     let mut service_requirements = Vec::with_capacity(used_operations.len());
-    for (slot_index, (alias, operation_ids)) in used_operations.into_iter().enumerate() {
+    for (slot_index, (alias, (contract_requirement, operation_ids))) in
+        used_operations.into_iter().enumerate()
+    {
         let slot = u32::try_from(slot_index)
             .map_err(|_| ServiceCallLoweringError::TooManyServiceRequirements)?;
         slots.insert(alias.clone(), slot);
         service_requirements.push(ServiceRequirement {
-            contract_requirement: operations.requirement(&alias)?.clone(),
+            contract_requirement,
             service_binding_slot: slot,
             used_operations: operation_ids,
         });

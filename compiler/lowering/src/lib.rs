@@ -1,5 +1,4 @@
 pub mod callable_return_types;
-mod contract_dependency_operation_index;
 mod db_lowering;
 mod declaration_lowering;
 pub mod entrypoint_abi;
@@ -20,9 +19,6 @@ mod suspend_analysis;
 mod type_inference;
 mod type_lowering;
 
-pub use contract_dependency_operation_index::{
-    ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
-};
 pub use entrypoint_abi::{
     package_entrypoint_function_signature, package_public_schema_abi_types_for_module,
     package_public_schema_type_names_for_module, EntrypointAbiIndex,
@@ -45,20 +41,11 @@ pub use storage_projection::{
 use skiff_compiler_source::{PackageSourceModel, SourceCompileError};
 
 pub fn lower(model: &PackageSourceModel) -> Result<LoweredPackage, SourceCompileError> {
-    lower_with_contract_operations(model, &ContractDependencyOperationIndex::default())
-}
-
-/// T05 facade entry for canonical package compilation. Contract operations
-/// come from compiler/input's validated ServiceContract-only index; no provider
-/// artifact is accepted by this boundary.
-pub fn lower_with_contract_operations(
-    model: &PackageSourceModel,
-    contract_operations: &ContractDependencyOperationIndex,
-) -> Result<LoweredPackage, SourceCompileError> {
-    let service_calls = lower_service_calls(model.resolved_call_targets(), contract_operations)
-        .map_err(|error| SourceCompileError::ContractValidation {
+    let service_calls = lower_service_calls(model.resolved_call_targets()).map_err(|error| {
+        SourceCompileError::ContractValidation {
             message: format!("service call lowering failed: {error}"),
-        })?;
+        }
+    })?;
     lower_with_service_calls(model, service_calls)
 }
 

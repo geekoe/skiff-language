@@ -18,12 +18,9 @@ pub(crate) fn compile(
 ) -> Result<skiff_compiler_compiled::CompiledPackage, PackageCompileError> {
     #[cfg(test)]
     TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
-    let dependency_handoff = canonical_dependencies::CanonicalDependencyHandoff::build(input)?;
-    let model = build(input, dependency_handoff.source_analysis())?;
-    let lowered = skiff_compiler_lowering::lower_with_contract_operations(
-        &model,
-        dependency_handoff.contract_operations(),
-    )?;
+    let dependency_analysis = canonical_dependencies::source_dependency_analysis(input)?;
+    let model = build(input, &dependency_analysis)?;
+    let lowered = skiff_compiler_lowering::lower(&model)?;
     Ok(skiff_compiler_compiled::CompiledPackage::new(
         model, lowered,
     ))

@@ -522,12 +522,8 @@ mod tests {
         source_unit_lowering::symbol,
     };
     use skiff_artifact_model::{
-        validate_file_ir_service_calls, BoundaryCallbackContract, BoundaryCancellationContract,
-        BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract,
-        BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-        BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-        ContractOperationId, ContractRequirement, PackageCallableId, PackageLocalAbiIdentity,
-        ReceiverCallAbi, ServiceProtocolIdentity,
+        validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
+        PackageCallableId, PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
     };
     use skiff_compiler_source::{
         api::PublicTypeKind, build_package_from_parsed_sources,
@@ -1200,35 +1196,7 @@ mod tests {
             echo.ping()
           }
         "#;
-        let operation = BoundaryOperationDescriptor {
-            operation_id: ContractOperationId::new("operation:ping"),
-            stable_key: "ping".to_string(),
-            contract: BoundaryOperationContract {
-                parameters: Vec::new(),
-                return_value: BoundaryReturn {
-                    ty: skiff_artifact_model::ContractTypeRef::builtin("void"),
-                    value_plan: BoundaryValuePlan::Linkable {
-                        carrier: BoundaryValueCarrier::DetachedValueGraph,
-                        encoding: BoundaryValueEncoding::CanonicalValue,
-                        owner: BoundaryValueOwner::Provider,
-                        lifetime: BoundaryValueLifetime::Call,
-                    },
-                },
-                errors: BoundaryErrorContract::None,
-                stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::NotCancellable,
-                callbacks: BoundaryCallbackContract::None,
-                may_suspend: false,
-                effect_guarantee: BoundaryEffectGuarantee {
-                    detached_parameters: true,
-                    detached_return: true,
-                    detached_error: true,
-                    no_caller_reachable_mutation: true,
-                    no_caller_value_escape: true,
-                    no_same_heap_identity: true,
-                },
-            },
-        };
+        let operation_id = ContractOperationId::new("operation:ping");
         let protocol = ServiceProtocolIdentity::new("protocol:echo");
         let contract_requirement = ContractRequirement {
             alias: "echo".to_string(),
@@ -1236,13 +1204,6 @@ mod tests {
             contract_version: "1.0.0".to_string(),
             expected_protocol_identity: protocol.clone(),
         };
-        let operation_index = crate::ContractDependencyOperationIndex::build([
-            crate::ContractDependencyOperationIndexEntry::new(
-                contract_requirement.clone(),
-                BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
-            ),
-        ])
-        .unwrap();
         let expression = skiff_compiler_source::ExpressionKey::new(
             MODULE,
             skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
@@ -1253,10 +1214,10 @@ mod tests {
                 expression,
                 skiff_compiler_source::ResolvedCallTarget::ContractOperation {
                     contract_requirement,
-                    contract_operation_id: operation.operation_id.clone(),
+                    contract_operation_id: operation_id.clone(),
                 },
             )]));
-        let service_calls = crate::lower_service_calls(&targets, &operation_index).unwrap();
+        let service_calls = crate::lower_service_calls(&targets).unwrap();
         let service_aliases = BTreeSet::from(["echo".to_string()]);
         let ast = parse_source(source).unwrap();
         let unit = compile_parsed_source_file_ir_unit_with_lowering_context(
@@ -1277,7 +1238,7 @@ mod tests {
         assert_eq!(unit.external_refs.service_call_refs.len(), 1);
         assert_eq!(
             unit.external_refs.service_call_refs[0].contract_operation_id,
-            operation.operation_id
+            operation_id
         );
         assert_eq!(
             unit.external_refs.service_call_refs[0].expected_protocol_identity,

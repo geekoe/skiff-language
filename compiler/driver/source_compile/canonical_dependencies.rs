@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::validate_package_artifact_identities;
 use skiff_artifact_model::{PackageArtifact, PackageLocalAbiSymbol};
-use skiff_compiler_input::{ContractDependencyIndex, ResolvedContractDependency};
-use skiff_compiler_lowering::{
-    ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
-};
+use skiff_compiler_input::ResolvedContractDependency;
 use skiff_compiler_source::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
     SourceDependencyAnalysisInput,
@@ -16,33 +13,14 @@ use crate::{
     shared::package_compile_error::PackageCompileError,
 };
 
-pub(super) struct CanonicalDependencyHandoff {
-    source_analysis: SourceDependencyAnalysisInput,
-    contract_operations: ContractDependencyOperationIndex,
-}
-
-impl CanonicalDependencyHandoff {
-    pub(super) fn build(input: &PackageCompileInput<'_>) -> Result<Self, PackageCompileError> {
-        let source_analysis = SourceDependencyAnalysisInput::new(
-            package_analysis(input)?,
-            validated_contract_dependencies(input)?,
-        )
-        .map_err(dependency_analysis_error)?;
-        let contract_operations =
-            contract_operation_index(source_analysis.contract_dependencies())?;
-        Ok(Self {
-            source_analysis,
-            contract_operations,
-        })
-    }
-
-    pub(super) fn source_analysis(&self) -> &SourceDependencyAnalysisInput {
-        &self.source_analysis
-    }
-
-    pub(super) fn contract_operations(&self) -> &ContractDependencyOperationIndex {
-        &self.contract_operations
-    }
+pub(super) fn source_dependency_analysis(
+    input: &PackageCompileInput<'_>,
+) -> Result<SourceDependencyAnalysisInput, PackageCompileError> {
+    SourceDependencyAnalysisInput::new(
+        package_analysis(input)?,
+        validated_contract_dependencies(input)?,
+    )
+    .map_err(dependency_analysis_error)
 }
 
 fn validated_contract_dependencies(
@@ -147,18 +125,6 @@ fn dependency_member_path(dependency: &PackageDependency, public_path: &str) -> 
     } else {
         public_path.to_string()
     }
-}
-
-fn contract_operation_index(
-    contracts: &ContractDependencyIndex,
-) -> Result<ContractDependencyOperationIndex, PackageCompileError> {
-    ContractDependencyOperationIndex::build(contracts.dependencies().map(|dependency| {
-        ContractDependencyOperationIndexEntry::new(
-            dependency.requirement().clone(),
-            dependency.contract().operations.clone(),
-        )
-    }))
-    .map_err(|error| validation_error(format!("contract operation index failed: {error}")))
 }
 
 fn contract_error(error: impl std::fmt::Display) -> PackageCompileError {

@@ -1,74 +1,95 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, ContractRequirement,
-    PackageCallableId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    ContractOperationId, ContractRequirement, PackageCallableId, PackageLocalAbiIdentity,
+    ServiceProtocolIdentity,
 };
 use skiff_compiler_source::{
     ExpressionKey, ExpressionOwnerKey, ResolvedCallTarget, ResolvedCallTargetFacts,
 };
 
 use super::*;
-use crate::{
-    ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
-    ServiceCallLoweringError,
-};
+use crate::ServiceCallLoweringError;
 
 #[test]
-fn actual_calls_get_alias_stable_slots_used_operations_and_call_site_refs() {
-    let alpha_echo = operation("operation:alpha-echo", "echo");
-    let alpha_status = operation("operation:alpha-status", "status");
-    let zeta_send = operation("operation:zeta-send", "send");
-    let unused_ping = operation("operation:unused-ping", "ping");
-    let operation_index = index([
-        entry("zeta", "protocol:zeta", [zeta_send.clone()]),
-        entry("unused", "protocol:unused", [unused_ping]),
-        entry(
-            "alpha",
-            "protocol:alpha",
-            [alpha_echo.clone(), alpha_status.clone()],
-        ),
-    ]);
+fn one_contract_call_uses_the_typed_requirement_and_operation_identity() {
+    let expression = key("api", "run", 0);
+    let requirement = requirement("echo", "protocol:echo");
+    let operation_id = ContractOperationId::new("operation:echo");
+    let targets = target_facts([(
+        expression.clone(),
+        contract_target(requirement.clone(), operation_id.clone()),
+    )]);
+
+    let lowered = lower_service_calls(&targets).unwrap();
+
+    assert_eq!(
+        lowered.service_requirements(),
+        &[skiff_artifact_model::ServiceRequirement {
+            contract_requirement: requirement.clone(),
+            service_binding_slot: 0,
+            used_operations: BTreeSet::from([operation_id.clone()]),
+        }]
+    );
+    assert_eq!(lowered.call_sites().len(), 1);
+    assert_eq!(lowered.call_sites()[0].expression(), &expression);
+    assert_eq!(
+        lowered.call_sites()[0].call_ref().service_requirement_slot,
+        0
+    );
+    assert_eq!(
+        lowered.call_sites()[0].call_ref().contract_operation_id,
+        operation_id
+    );
+    assert_eq!(
+        lowered.call_sites()[0]
+            .call_ref()
+            .expected_protocol_identity,
+        requirement.expected_protocol_identity
+    );
+}
+
+#[test]
+fn slots_and_used_operations_are_canonical_across_multiple_and_duplicate_calls() {
+    let alpha_echo = ContractOperationId::new("operation:alpha-echo");
+    let alpha_status = ContractOperationId::new("operation:alpha-status");
+    let zeta_send = ContractOperationId::new("operation:zeta-send");
+    let alpha = requirement("alpha", "protocol:alpha");
+    let zeta = requirement("zeta", "protocol:zeta");
     let targets = target_facts([
         (
             key("z_module", "run", 4),
-            contract_target("zeta", &zeta_send, "protocol:zeta"),
+            contract_target(zeta.clone(), zeta_send.clone()),
         ),
         (
             key("a_module", "run", 2),
-            contract_target("alpha", &alpha_status, "protocol:alpha"),
+            contract_target(alpha.clone(), alpha_status.clone()),
         ),
         (
             key("a_module", "run", 1),
-            contract_target("alpha", &alpha_echo, "protocol:alpha"),
+            contract_target(alpha.clone(), alpha_echo.clone()),
         ),
         (
             key("a_module", "run", 3),
-            contract_target("alpha", &alpha_echo, "protocol:alpha"),
+            contract_target(alpha.clone(), alpha_echo.clone()),
         ),
     ]);
 
-    let lowered = lower_service_calls(&targets, &operation_index).unwrap();
+    let lowered = lower_service_calls(&targets).unwrap();
     assert_eq!(lowered.service_requirements().len(), 2);
-    let alpha = &lowered.service_requirements()[0];
-    assert_eq!(alpha.contract_requirement.alias, "alpha");
-    assert_eq!(alpha.service_binding_slot, 0);
+    let alpha_requirement = &lowered.service_requirements()[0];
+    assert_eq!(alpha_requirement.contract_requirement, alpha);
+    assert_eq!(alpha_requirement.service_binding_slot, 0);
     assert_eq!(
-        alpha.used_operations,
-        BTreeSet::from([
-            alpha_echo.operation_id.clone(),
-            alpha_status.operation_id.clone()
-        ])
+        alpha_requirement.used_operations,
+        BTreeSet::from([alpha_echo.clone(), alpha_status.clone()])
     );
-    let zeta = &lowered.service_requirements()[1];
-    assert_eq!(zeta.contract_requirement.alias, "zeta");
-    assert_eq!(zeta.service_binding_slot, 1);
+    let zeta_requirement = &lowered.service_requirements()[1];
+    assert_eq!(zeta_requirement.contract_requirement, zeta);
+    assert_eq!(zeta_requirement.service_binding_slot, 1);
     assert_eq!(
-        zeta.used_operations,
-        BTreeSet::from([zeta_send.operation_id.clone()])
+        zeta_requirement.used_operations,
+        BTreeSet::from([zeta_send.clone()])
     );
 
     let call_sites = lowered.call_sites();
@@ -119,70 +140,58 @@ fn actual_calls_get_alias_stable_slots_used_operations_and_call_site_refs() {
         "typed package closure must equal the exact union of per-file tables"
     );
 
-    let reordered_index = index([
-        entry(
-            "alpha",
-            "protocol:alpha",
-            [alpha_status.clone(), alpha_echo.clone()],
+    let reordered_targets = target_facts([
+        (
+            key("a_module", "run", 3),
+            contract_target(alpha.clone(), alpha_echo.clone()),
         ),
-        entry("zeta", "protocol:zeta", [zeta_send]),
-        entry(
-            "unused",
-            "protocol:unused",
-            [operation("operation:unused-ping", "ping")],
+        (
+            key("a_module", "run", 1),
+            contract_target(alpha.clone(), alpha_echo),
+        ),
+        (key("z_module", "run", 4), contract_target(zeta, zeta_send)),
+        (
+            key("a_module", "run", 2),
+            contract_target(alpha, alpha_status),
         ),
     ]);
     assert_eq!(
-        lower_service_calls(&targets, &reordered_index).unwrap(),
+        lower_service_calls(&reordered_targets).unwrap(),
         lowered,
-        "declaration and operation insertion order must not perturb slots"
+        "fact insertion order must not perturb slots or owner-local refs"
     );
 }
 
 #[test]
 fn unused_contract_declaration_produces_no_runtime_requirement() {
-    let index = index([entry(
-        "unused",
-        "protocol:unused",
-        [operation("operation:ping", "ping")],
-    )]);
-    let targets = ResolvedCallTargetFacts::empty();
-    let lowered = lower_service_calls(&targets, &index).unwrap();
+    let lowered = lower_service_calls(&ResolvedCallTargetFacts::empty()).unwrap();
     assert!(lowered.service_requirements().is_empty());
     assert!(lowered.call_sites().is_empty());
 }
 
 #[test]
-fn protocol_unknown_alias_and_unknown_operation_fail_closed() {
-    let echo = operation("operation:echo", "echo");
-    let index = index([entry("echo", "protocol:echo", [echo.clone()])]);
+fn inconsistent_requirement_identity_for_one_alias_fails_closed() {
+    let targets = target_facts([
+        (
+            key("api", "run", 0),
+            contract_target(
+                requirement("echo", "protocol:echo-v1"),
+                ContractOperationId::new("operation:echo"),
+            ),
+        ),
+        (
+            key("api", "run", 1),
+            contract_target(
+                requirement("echo", "protocol:echo-v2"),
+                ContractOperationId::new("operation:status"),
+            ),
+        ),
+    ]);
 
-    let protocol_mismatch = target_facts([(
-        key("api", "run", 0),
-        contract_target("echo", &echo, "protocol:wrong"),
-    )]);
     assert!(matches!(
-        lower_service_calls(&protocol_mismatch, &index),
-        Err(ServiceCallLoweringError::ProtocolIdentityMismatch { .. })
-    ));
-
-    let unknown_alias = target_facts([(
-        key("api", "run", 0),
-        contract_target("missing", &echo, "protocol:echo"),
-    )]);
-    assert!(matches!(
-        lower_service_calls(&unknown_alias, &index),
-        Err(ServiceCallLoweringError::UnknownContractAlias { .. })
-    ));
-
-    let missing = operation("operation:missing", "missing");
-    let unknown_operation = target_facts([(
-        key("api", "run", 0),
-        contract_target("echo", &missing, "protocol:echo"),
-    )]);
-    assert!(matches!(
-        lower_service_calls(&unknown_operation, &index),
-        Err(ServiceCallLoweringError::UnknownContractOperation { .. })
+        lower_service_calls(&targets),
+        Err(ServiceCallLoweringError::ContractRequirementMismatch { alias })
+            if alias == "echo"
     ));
 }
 
@@ -196,47 +205,22 @@ fn direct_package_call_target_is_not_rewritten_as_a_service_call() {
     };
     let targets = target_facts([(expression.clone(), package_target.clone())]);
 
-    let lowered =
-        lower_service_calls(&targets, &ContractDependencyOperationIndex::default()).unwrap();
+    let lowered = lower_service_calls(&targets).unwrap();
     assert!(lowered.service_requirements().is_empty());
     assert!(lowered.call_sites().is_empty());
     assert_eq!(targets.target(&expression), Some(&package_target));
 }
 
 #[test]
-fn operation_index_rejects_duplicate_alias_and_mismatched_nested_identity() {
-    let operation = operation("operation:echo", "echo");
-    let duplicate = ContractDependencyOperationIndex::build([
-        entry("echo", "protocol:echo", [operation.clone()]),
-        entry("echo", "protocol:echo", [operation.clone()]),
-    ]);
-    assert!(matches!(
-        duplicate,
-        Err(ServiceCallLoweringError::DuplicateContractAlias { .. })
-    ));
-
-    let mut operations = BTreeMap::new();
-    operations.insert(ContractOperationId::new("operation:map-key"), operation);
-    let mismatch =
-        ContractDependencyOperationIndex::build([ContractDependencyOperationIndexEntry::new(
-            requirement("echo", "protocol:echo"),
-            operations,
-        )]);
-    assert!(matches!(
-        mismatch,
-        Err(ServiceCallLoweringError::OperationIdentityMismatch { .. })
-    ));
-}
-
-#[test]
-fn lowered_runtime_refs_contain_only_contract_identity_and_slot_facts() {
-    let echo = operation("operation:echo", "echo");
-    let index = index([entry("echo", "protocol:echo", [echo.clone()])]);
+fn lowered_runtime_refs_contain_no_provider_or_deployment_target() {
     let targets = target_facts([(
         key("api", "run", 0),
-        contract_target("echo", &echo, "protocol:echo"),
+        contract_target(
+            requirement("echo", "protocol:echo"),
+            ContractOperationId::new("operation:echo"),
+        ),
     )]);
-    let lowered = lower_service_calls(&targets, &index).unwrap();
+    let lowered = lower_service_calls(&targets).unwrap();
     let wire = serde_json::to_string(&(
         lowered.service_requirements(),
         lowered.service_call_refs().collect::<Vec<_>>(),
@@ -258,26 +242,6 @@ fn lowered_runtime_refs_contain_only_contract_identity_and_slot_facts() {
     }
 }
 
-fn index<const N: usize>(
-    entries: [ContractDependencyOperationIndexEntry; N],
-) -> ContractDependencyOperationIndex {
-    ContractDependencyOperationIndex::build(entries).unwrap()
-}
-
-fn entry<const N: usize>(
-    alias: &str,
-    protocol: &str,
-    operations: [BoundaryOperationDescriptor; N],
-) -> ContractDependencyOperationIndexEntry {
-    ContractDependencyOperationIndexEntry::new(
-        requirement(alias, protocol),
-        operations
-            .into_iter()
-            .map(|operation| (operation.operation_id.clone(), operation))
-            .collect(),
-    )
-}
-
 fn requirement(alias: &str, protocol: &str) -> ContractRequirement {
     ContractRequirement {
         alias: alias.to_string(),
@@ -287,50 +251,13 @@ fn requirement(alias: &str, protocol: &str) -> ContractRequirement {
     }
 }
 
-fn operation(operation_id: &str, stable_key: &str) -> BoundaryOperationDescriptor {
-    BoundaryOperationDescriptor {
-        operation_id: ContractOperationId::new(operation_id),
-        stable_key: stable_key.to_string(),
-        contract: BoundaryOperationContract {
-            parameters: Vec::new(),
-            return_value: BoundaryReturn {
-                ty: skiff_artifact_model::ContractTypeRef::builtin("unit"),
-                value_plan: linkable(),
-            },
-            errors: BoundaryErrorContract::None,
-            stream: BoundaryStreamContract::Unary,
-            cancellation: BoundaryCancellationContract::NotCancellable,
-            callbacks: BoundaryCallbackContract::None,
-            may_suspend: false,
-            effect_guarantee: BoundaryEffectGuarantee {
-                detached_parameters: true,
-                detached_return: true,
-                detached_error: true,
-                no_caller_reachable_mutation: true,
-                no_caller_value_escape: true,
-                no_same_heap_identity: true,
-            },
-        },
-    }
-}
-
-fn linkable() -> BoundaryValuePlan {
-    BoundaryValuePlan::Linkable {
-        carrier: BoundaryValueCarrier::DetachedValueGraph,
-        encoding: BoundaryValueEncoding::CanonicalValue,
-        owner: BoundaryValueOwner::Provider,
-        lifetime: BoundaryValueLifetime::Call,
-    }
-}
-
 fn contract_target(
-    alias: &str,
-    operation: &BoundaryOperationDescriptor,
-    protocol: &str,
+    contract_requirement: ContractRequirement,
+    contract_operation_id: ContractOperationId,
 ) -> ResolvedCallTarget {
     ResolvedCallTarget::ContractOperation {
-        contract_requirement: requirement(alias, protocol),
-        contract_operation_id: operation.operation_id.clone(),
+        contract_requirement,
+        contract_operation_id,
     }
 }
 
