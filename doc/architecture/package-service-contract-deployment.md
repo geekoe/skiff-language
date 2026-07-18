@@ -174,6 +174,21 @@ ServiceContract的nominal boundary types使用独立`ContractTypeId`。Provider 
 compile dependency，不产生runtime service edge。Package自己的nominal type即使结构相同也不能充当
 contract type；需要转换时，开发者在package中编写显式wrapper。
 
+Package source中的contract dependency alias使用现有qualified namespace，不新增另一套type/import语法：
+
+- `payments.User`按`ContractRequirement(alias = payments)`解析到ServiceContract中stable key为`User`的
+  `ContractTypeId`；
+- `payments.charge(...)`按同一validated ServiceContract中的operation descriptor解析，并在source typed
+  analysis阶段检查参数与返回类型；
+- package dependency alias与contract dependency alias共享一个dependency alias namespace，任何冲突在
+  compile input trust boundary fail closed，不能靠type/call上下文猜测；
+- qualified alias只选择typed dependency，不进入ContractTypeId/ContractOperationId本体，也不能从provider
+  package、deployment或display name补事实。
+
+这里冻结的是typed compiler binding。contract dependency最终由YAML、IDL、CLI或其它authoring表面如何声明，
+仍留给后续阶段；未冻结authoring UX不允许compiler把contract operation signature降成无类型symbol，或把
+contract nominal type重写成package-local nominal type。
+
 `dependencyBindings`只表达当前deployment对implementation package requirements的provider selector/约束，
 不拥有全局解析结果。RuntimeAssembly projection负责在root set及闭包中解析唯一provider、验证闭包并生成
 每个ActivationContext的binding vector。

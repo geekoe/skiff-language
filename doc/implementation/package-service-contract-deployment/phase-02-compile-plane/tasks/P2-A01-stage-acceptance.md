@@ -30,6 +30,10 @@
     与当前 recursion policy 全部进入 typed validation/identity，不依赖未来 JSON renderer 补语义。
 11. 当前 service CLI/watch/runtime 不可用被明确记录为阶段断链，没有为让它们继续运行
     而引入 provider inference 或兼容代码。
+12. `alias.Type`解析为validated ServiceContract的public-nameable ContractTypeId，`alias.operation(...)`按同一
+    descriptor在source阶段完成参数/返回检查；package/contract alias冲突在trust boundary失败。
+13. exact contract-aware callable signature沿唯一compiled/projection-input路径进入PackageArtifact；没有
+    File IR/display string反推或blanket Local producer，lowering也没有第二份contract operation index。
 
 ## 输出
 

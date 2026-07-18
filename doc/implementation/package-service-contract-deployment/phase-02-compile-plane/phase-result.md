@@ -1,6 +1,7 @@
 # Phase 02 验证结果
 
-状态：PASS；P2-T07 gate 完成，等待 P2-A01 独立只读验收
+状态：STALE；旧T07证据对应`648bc68`之前的候选。A01发现typed contract source/signature主链未闭合，
+Phase 02已按phase-plan波次8重新打开；R10I完成后由T07整体刷新，本文旧命令只保留历史证据价值。
 
 ## 1. 候选状态
 

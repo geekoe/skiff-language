@@ -50,6 +50,12 @@ DAG、写入 ownership 和验收证据，不改变四对象模型。
 - PackageArtifact 的 Available projection只保存contract-agnostic `BoundaryOperationContract`；真实
   `BoundaryOperationDescriptor`、`ContractOperationId`和contract stable key只由ServiceContract拥有。禁止用
   PackageCallableId或public path伪造contract identity。
+- package source复用现有qualified dependency namespace：`payments.User`解析到validated contract中的
+  `ContractTypeId`，`payments.charge(...)`按同一contract的operation descriptor完成source typecheck。
+  package alias与contract alias冲突在compile-input trust boundary失败，不靠type/call上下文消歧。
+- PackageArtifact callable signature必须沿source typed facts显式携带`PackageTypeRef::{Local, Contract,
+  Container, Nullable}`；projection不得从File IR把全部类型重建为Local。当前没有source命名与终态
+  `PackageTypeRef`表达的inline structural contract shape保守拒绝，不静默flatten。
 - `PackageArtifact` identity 继续复用 Phase 01 canonical framing，但以新显式 projection 重建并更新 marker/
   prefix/golden；不把旧 PackageUnit serde shape 当 preimage。
 
@@ -74,7 +80,7 @@ compiler source
   typed call-target/provenance + sound may-effect fixed point
 
 compiler lowering
-  ContractRequirement lookup + ServiceCallRef generation
+  consume resolved ContractRequirement + ServiceRequirement / ServiceCallRef generation
 
 compiler projection/emission
   PackageArtifact + BoundaryCallableProjection
@@ -86,7 +92,7 @@ compiler driver
 旧 `compiler/projection/src/contract/**` 中纯 schema/type-closure 算法可以抽出复用；含 implementation binding、
 service config 或 runtime projection 的 aggregate 不得成为 ServiceContract owner。
 
-## 4. DAG 与三个实现波次
+## 4. DAG 与实现波次
 
 ```text
 9ca2547 = T01 + T02 + T03 + T04 clean checkpoint
@@ -170,6 +176,24 @@ T05C11
 
 T05C12 + remaining A01 findings closed
   └── T07 evidence refresh -> A01 independent re-acceptance
+
+A01 typed-contract finding + qualified alias decision
+  ├── T03A canonical contract semantic facts
+  └── R10H typed contract fixture checkpoint
+
+T03A
+  ├── T03B qualified contract type resolution
+  └── T03D terminal service-call lowering
+
+T03B
+  ├── T03C contract call type checking
+  └── T04A contract-aware callable signature handoff
+
+T03C + T03D + T04A + R10H
+  └── R10I provider/consumer contract E2E
+
+R10I
+  └── T07 evidence refresh -> A01 independent re-acceptance
 ```
 
 | 波次 | 并行任务 | 说明 |
@@ -189,7 +213,11 @@ T05C12 + remaining A01 findings closed
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
 | 7a | T05C11 | A01 暴露的孤儿 publication aggregate/adapter 物理删除 |
 | 7b | T05C12 | 对 compiled/projection-input terminal public shape 建结构 gate |
-| 7c | T07、A01 | 刷新受影响证据并独立复验，不机械重跑无效 gate |
+| 8a | T03A、R10H | canonical semantic facts与typed fixture入口并行 |
+| 8b | T03B、T03D | qualified type resolution与terminal lowering并行 |
+| 8c | T03C、T04A | contract call typing与exact signature handoff并行 |
+| 8d | R10I | provider/consumer真实source E2E与负例 |
+| 8e | T07 → A01 | 先刷新受影响gate证据，再独立复验；不机械重跑无效gate |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -229,6 +257,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05C10G | [Identity checker package-call owner coverage](tasks/P2-T05C10G-identity-checker-package-call-owner.md) | T05C10C、T05C10D、T05C10E、T05C10F | 高；checker fail-closed repair |
 | T05C11 | [Orphan publication owner cleanup](tasks/P2-T05C11-orphan-publication-owner-cleanup.md) | A01 finding、T07 candidate | 高；terminal model/adapter cleanup |
 | T05C12 | [Terminal compiler public-shape gate](tasks/P2-T05C12-terminal-compiler-public-shape-gate.md) | T05C11 | 高；renamed hidden-adapter negative gate |
+| T03A | [Canonical contract semantic facts](tasks/P2-T03A-canonical-contract-semantic-facts.md) | terminal checkpoint、qualified alias decision | 高；typed dependency checkpoint |
+| T03B | [Qualified contract type resolution](tasks/P2-T03B-qualified-contract-type-resolution.md) | T03A | 高；source type owner |
+| T03C | [Contract call type checking](tasks/P2-T03C-contract-call-type-checking.md) | T03A、T03B | 高；source expression owner |
+| T03D | [Terminal service-call lowering](tasks/P2-T03D-terminal-service-call-lowering.md) | T03A | 高；lowering terminal cleanup |
+| T04A | [Contract-aware callable signature handoff](tasks/P2-T04A-contract-callable-signature-handoff.md) | T03B | 高；compiled/projection handoff |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -247,9 +280,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10E | [Std/prelude schema fixtures](tasks/P2-R10E-std-schema-fixtures.md) | R10A | 中；从 R10B 独立出的 consumer batch 4 |
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
+| R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03C、T03D、T04A、R10H | 高；真实source验收 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–D、T04A、R10H、R10I及既有terminal任务 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
@@ -309,6 +344,12 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   只保留 canonical `CompiledPackage -> ProjectionInput` handoff；不得修改 checker 或恢复 facade caller。
 - T05C12 独占 compiler boundary/public-shape checker 与 self-test。必须约束 terminal public surface/field shape，
   并以 renamed aggregate/adapter 负例证明有效；不得只追加 `PackagePublication` 名字 blacklist。
+- T03A独占input/source/driver的canonical contract semantic fact shape、alias namespace validation与resolved
+  contract target shape；只为保持typed carrier编译可窄改直接consumer。T03B随后独占source qualified type
+  resolution和exact source signature facts；T03C再独占source contract-call expression typing。T03B/T03C都
+  必须拆小模块，不把新职责继续堆入数千行owner。
+- T03D独占lowering旧contract operation index删除和terminal consumer；只能消费T03A target，不回读callee字符串。
+  T04A独占compiled/projection-input/projection exact signature handoff与blanket Local producer删除；不回开source。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
 - R10A 在 R10 后独占 `compiler/tests/common/**` 的最后 API 修正、一个 representative lane probe target 与其
@@ -321,6 +362,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 - R10E 独占 `package_std_schema.rs` 与 `prelude_std_schema.rs`；它从 R10B 动态拆出，二者不得再修改对方文件。
 - R10G 独占 `common/test_dir.rs` 与 review 列出的重复 file-write call sites，只做单一 IO abstraction 与机械
   consumer migration；R10F 随后独占 `std_package_imports.rs`，不得恢复 test-support/service aggregate。
+- R10H在生产任务并行期间独占`compiler/tests/common/**`的typed contract dependency入口和representative probe；
+  R10I只消费冻结后的common API，独占`service_conformance.rs` provider/consumer E2E，不修改production。
 - R11 独占 canonical ServiceContract schema grammar、normalization、validation 与 identity。
   discriminator/branch tag、map key identity 和当前 recursion policy 必须进入 typed contract；旧
   JSON-schema/serviceAssembly presentation 不进入 R11，也不得从 provider source 推导 contract。

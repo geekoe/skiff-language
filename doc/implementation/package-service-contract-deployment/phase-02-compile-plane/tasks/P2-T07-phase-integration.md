@@ -2,14 +2,14 @@
 
 ## 目标
 
-在 R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 合入，且旧 integration tail 从未进入新 branch ancestry 后，运行一次
-阶段gate、修复纯机械fixture、记录精确证据。
+在既有terminal任务以及T03A–D、T04A、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
+ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖 R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 和所有高风险任务证据。
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–D、T04A、R10H、R10I和所有高风险任务证据。
 
 ## 完成态
 
@@ -20,6 +20,8 @@
 4. 运行结构反向搜索与checker self-test，证明旧compiler owners和所有compatibility adapter/allowlist归零。
 5. 记录`phase-result.md`：commit、命令、owner、结果、覆盖、baseline与证据失效规则。
 6. targeted rustfmt覆盖全部phase修改Rust文件；full rustfmt失败必须在main同环境复现才可标baseline。
+7. 结构/typed证据证明source contract facts只有一个owner、lowering operation index归零、projection不再blanket
+   Local，并且provider/consumer E2E未读取provider/deployment。
 
 ## Gate
 
