@@ -65,8 +65,14 @@ test('policy violations continue later crates and classify the final exit once',
   });
 
   assert.deepEqual(outcome, { exitCode: 1, violationCount: 1 });
-  assert.equal(calls.filter((call) => call.startsWith('build:')).length, 8);
-  assert.equal(events.filter((event) => event.kind === 'crate-result').length, 8);
+  assert.equal(
+    calls.filter((call) => call.startsWith('build:')).length,
+    MANAGED_CRATE_NAMES.length,
+  );
+  assert.equal(
+    events.filter((event) => event.kind === 'crate-result').length,
+    MANAGED_CRATE_NAMES.length,
+  );
 });
 
 test('gate emits typed fallback warning before rustdoc read and result report', async () => {
@@ -105,7 +111,7 @@ test('gate emits typed fallback warning before rustdoc read and result report', 
 test('operational failure preserves prior reports and stops the serial session immediately', async () => {
   const calls = [];
   const events = [];
-  const failedCrate = MANAGED_CRATE_NAMES[2];
+  const failedCrate = MANAGED_CRATE_NAMES[0];
   const dependencies = fakeDependencies(calls, {
     buildFailure: failedCrate,
     packages: MANAGED_CRATE_NAMES.map(packageInfo),
@@ -122,13 +128,13 @@ test('operational failure preserves prior reports and stops the serial session i
   );
   assert.deepEqual(
     events.filter((event) => event.kind === 'crate-result').map((event) => event.crateName),
-    MANAGED_CRATE_NAMES.slice(0, 2),
+    [],
   );
   assert.deepEqual(
     calls.filter((call) => call.startsWith('build:')).map((call) => call.slice(6)),
-    MANAGED_CRATE_NAMES.slice(0, 3),
+    [failedCrate],
   );
-  assert.equal(calls.some((call) => call.includes(MANAGED_CRATE_NAMES[3])), false);
+  assert.equal(calls.includes(`build:${MANAGED_CRATE_NAMES[1]}`), false);
 });
 
 test('configured package resolution fails closed before probe and explicit absence is a skip', async () => {
@@ -137,7 +143,7 @@ test('configured package resolution fails closed before probe and explicit absen
       { packages: MANAGED_CRATE_NAMES.slice(1).map(packageInfo) },
       MANAGED_CRATE_NAMES,
     ),
-    /configured public API crate\(s\) missing.*publication-abi/,
+    /configured public API crate\(s\) missing.*compiler-contract/,
   );
 
   const missingCalls = [];

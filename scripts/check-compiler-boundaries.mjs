@@ -86,8 +86,33 @@ const publicationAbiForbiddenImports = regexpUnion([
     'publication_error',
   ]),
 ]);
+const terminalCompilerLegacyShape = regexpUnion([
+  /\b(?:PublicationInput(?:Kind|Error)?|PublicationKind|CompiledPublication|LoweredPublication)\b/,
+  /\b(?:PublicationAbiUnit|PackageUnit|ServiceUnit|ServiceAssembly)\b/,
+  /\b(?:package_unit|service_unit|service_assembly|serviceAssembly)\b/,
+  /\b(?:compile|project|emit|assemble)_(?:publication|service_(?:publication|unit|assembly))(?:_[A-Za-z0-9_]+)?\b/,
+  /\b[A-Za-z0-9_]*ServicePublication[A-Za-z0-9_]*\b/,
+  /\b[A-Za-z0-9_]*service(?:_[a-z0-9]+)*_publication[A-Za-z0-9_]*\b/,
+  /\bPublicationServiceFacade\b/,
+  /\b(?:Legacy|Compat|Compatibility)(?:Publication|Compile|Compiler|Package|Service)?(?:Adapter|Facade|Provider|Input|Output)\b/,
+  /\b(?:legacy|compat|compatibility)(?:_[a-z0-9]+)*_(?:adapter|facade|provider|input|output)\b/,
+  /\b(?:infer|resolve|select)_(?:service_)?provider(?:_[A-Za-z0-9_]+)?\b/,
+  /\b(?:ProviderInference|ProviderResolver|InferredProvider|ResolvedProvider)\b/,
+  /\bprovider_(?:inference|resolver|selection)\b/,
+]);
 
 const denyRules = [
+  {
+    id: 'terminal_compiler_shape_no_legacy_publication_or_provider_paths',
+    owner: 'terminal-package-and-contract-producers',
+    phase: '2',
+    roots: ['compiler'],
+    pattern:
+      'legacy publication sum types, PackageUnit/ServiceUnit/service assembly producers, service publication facades, compatibility adapters, or provider inference',
+    regexp: terminalCompilerLegacyShape,
+    remove_when:
+      'compiler public shape remains exactly the package compile and code-free contract compile producers',
+  },
   {
     id: 'compiler_core_no_forbidden_imports',
     owner: 'compiler-core',
@@ -371,16 +396,7 @@ function projectionInputPurityMatch(file, text, declaration, pattern) {
 
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
-  await collectRustFiles(join(repoRoot, 'compiler/core/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/publication-abi/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/source/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/lowering/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/projection-input/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/compiled/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/projection/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/emission/src'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/driver'), files, repoRoot);
-  await collectRustFiles(join(repoRoot, 'compiler/tests'), files, repoRoot);
+  await collectRustFiles(join(repoRoot, 'compiler'), files, repoRoot);
   return files.filter((file) => isProductionRustFile(file.relPath));
 }
 
@@ -412,26 +428,13 @@ async function collectRustFiles(directory, files, repoRoot) {
 }
 
 function isProductionRustFile(relPath) {
-  if (relPath.startsWith('compiler/tests/')) {
-    return false;
-  }
-  if (
-    !relPath.startsWith('compiler/driver/')
-    && !relPath.startsWith('compiler/core/src/')
-    && !relPath.startsWith('compiler/publication-abi/src/')
-    && !relPath.startsWith('compiler/source/src/')
-    && !relPath.startsWith('compiler/lowering/src/')
-    && !relPath.startsWith('compiler/projection-input/src/')
-    && !relPath.startsWith('compiler/compiled/src/')
-    && !relPath.startsWith('compiler/projection/src/')
-    && !relPath.startsWith('compiler/emission/src/')
-  ) {
+  if (!relPath.startsWith('compiler/') || relPath.startsWith('compiler/tests/')) {
     return false;
   }
   if (relPath.endsWith('/tests.rs')) {
     return false;
   }
-  return !relPath.split('/').includes('tests');
+  return !relPath.split('/').some((part) => part === 'tests' || part === 'test_support' || part === 'test_support.rs');
 }
 
 function lineNumberAt(text, index) {

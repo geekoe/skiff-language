@@ -24,20 +24,14 @@ Checks exported public API types with rustdoc JSON:
 
 Default gated crates:
   skiff-compiler-contract
-  skiff-compiler-publication-abi
-  skiff-compiler-input-model
-  skiff-compiler-input
-  skiff-compiler-source
-  skiff-compiler-lowering
-  skiff-compiler-compiled
-  skiff-compiler-projection
-  skiff-compiler-projection-input
+  skiff-compiler
 `;
 
 const selfTestOutput =
   'Self-test passed: allowed fixture 0 violation(s), denied fixture 7 violation(s).\n';
 const nightlyUnavailableWarning =
   'Nightly Rust toolchain is unavailable; falling back to current toolchain with RUSTC_BOOTSTRAP=1.\n';
+const managedCrateCount = GATE_POLICY.length;
 
 function fallbackOutput(crateName, extraAllowedCrates = []) {
   const allowed = [crateName, 'std', 'core', 'alloc', ...extraAllowedCrates];
@@ -84,10 +78,10 @@ test('help aliases and duplicate help preserve the exact help snapshot and help 
     assert.deepEqual(result.cargoLog, []);
   }
   assert.deepEqual(
-    helpOutput.match(/^  skiff-compiler-.+$/gm).map((line) => line.trim()),
+    helpOutput.match(/^  skiff-compiler(?:-.+)?$/gm).map((line) => line.trim()),
     HELP_ORDER,
   );
-  assert.notDeepEqual(HELP_ORDER, GATE_POLICY.map(({ name }) => name));
+  assert.deepEqual(HELP_ORDER, GATE_POLICY.map(({ name }) => name));
 });
 
 test('self-test aliases and duplicate self-test preserve exact output without Cargo', async () => {
@@ -259,7 +253,7 @@ test('explicit unmanaged package uses self plus std/core/alloc fallback policy',
 });
 
 test('all-configured fails closed after one metadata call when any managed crate is missing', async () => {
-  const missing = GATE_POLICY[3].name;
+  const missing = GATE_POLICY.at(-1).name;
   const packageNames = GATE_POLICY.map(({ name }) => name).filter((name) => name !== missing);
   const result = await runPublicApiCli(['--all-configured'], { packageNames });
   assert.deepEqual(
@@ -279,7 +273,11 @@ test('nightly-available all-configured does metadata/probe once and rustdoc seri
     { code: result.code, stderr: result.stderr, stdout: result.stdout },
     { code: 0, stderr: '', stdout: expectedPassingOutput() },
   );
-  assert.deepEqual(cargoKinds(result), ['metadata', 'probe', ...Array(8).fill('rustdoc')]);
+  assert.deepEqual(cargoKinds(result), [
+    'metadata',
+    'probe',
+    ...Array(managedCrateCount).fill('rustdoc'),
+  ]);
   const rustdocCalls = result.cargoLog.filter(({ kind }) => kind === 'rustdoc');
   assert.deepEqual(
     rustdocCalls.map(({ args }) => args[args.indexOf('-p') + 1]),
@@ -319,16 +317,28 @@ test('empty inline allow-list does not count as an all-configured override', asy
     { code: result.code, stderr: result.stderr, stdout: result.stdout },
     { code: 0, stderr: '', stdout: expectedPassingOutput() },
   );
-  assert.deepEqual(cargoKinds(result), ['metadata', 'probe', ...Array(8).fill('rustdoc')]);
+  assert.deepEqual(cargoKinds(result), [
+    'metadata',
+    'probe',
+    ...Array(managedCrateCount).fill('rustdoc'),
+  ]);
 });
 
-test('nightly-unavailable all-configured emits eight warnings at per-crate build time', async () => {
+test('nightly-unavailable all-configured emits one warning per terminal owner', async () => {
   const result = await runPublicApiCli(['--all-configured'], { nightlyAvailable: false });
   assert.deepEqual(
     { code: result.code, stderr: result.stderr, stdout: result.stdout },
-    { code: 0, stderr: nightlyUnavailableWarning.repeat(8), stdout: expectedPassingOutput() },
+    {
+      code: 0,
+      stderr: nightlyUnavailableWarning.repeat(managedCrateCount),
+      stdout: expectedPassingOutput(),
+    },
   );
-  assert.deepEqual(cargoKinds(result), ['metadata', 'probe', ...Array(8).fill('rustdoc')]);
+  assert.deepEqual(cargoKinds(result), [
+    'metadata',
+    'probe',
+    ...Array(managedCrateCount).fill('rustdoc'),
+  ]);
   const rustdocCalls = result.cargoLog.filter(({ kind }) => kind === 'rustdoc');
   assert.deepEqual(
     rustdocCalls.map(({ args }) => args[args.indexOf('-p') + 1]),
@@ -364,23 +374,28 @@ test('nightly rustdoc failure falls back to bootstrap and warns before result re
 
 test('policy violations remain sorted, continue later crates, and produce final exit 1', async () => {
   const first = GATE_POLICY[0].name;
-  const third = GATE_POLICY[2].name;
   const denied = GRAPH_CASES.find(({ id }) => id === 'stable-violation-sort').rustdoc;
   const rustdocs = Object.fromEntries(GATE_POLICY.map(({ name }) => [name, passingRustdoc(name)]));
   rustdocs[first] = denied;
-  rustdocs[third] = denied;
   const result = await runPublicApiCli(['--all-configured'], { rustdocs });
   assert.equal(result.code, 1);
-  assert.deepEqual(cargoKinds(result), ['metadata', 'probe', ...Array(8).fill('rustdoc')]);
+  assert.deepEqual(cargoKinds(result), [
+    'metadata',
+    'probe',
+    ...Array(managedCrateCount).fill('rustdoc'),
+  ]);
   assert.match(result.stdout, new RegExp(`^Public API allow-list for ${first}:`));
   assert.match(result.stdout, new RegExp(`Public API check passed for ${GATE_POLICY.at(-1).name}\\.\\n$`));
-  assert.equal((result.stdout.match(/Public API check passed/g) ?? []).length, 6);
+  assert.equal(
+    (result.stdout.match(/Public API check passed/g) ?? []).length,
+    managedCrateCount - 1,
+  );
   const expectedFailure = (crateName) => [
     `Public API check failed for ${crateName}: 2 forbidden reference(s).`,
     'DENY matrix_crate::call signature input alpha references forbidden_dep::Denied from forbidden crate forbidden_dep',
     'DENY matrix_crate::call signature input zeta references forbidden_dep::Denied from forbidden crate forbidden_dep',
   ].join('\n');
-  assert.equal(result.stderr, `${expectedFailure(first)}\n${expectedFailure(third)}\n`);
+  assert.equal(result.stderr, `${expectedFailure(first)}\n`);
 });
 
 test('metadata operational failures stop immediately', async () => {
@@ -401,7 +416,7 @@ test('metadata operational failures stop immediately', async () => {
 });
 
 test('Nth-crate rustdoc operational failure preserves prior streaming output and stops the session', async () => {
-  const failingIndex = 3;
+  const failingIndex = 1;
   const failingCrate = GATE_POLICY[failingIndex].name;
   const result = await runPublicApiCli(['--all-configured'], {
     rustdocFailures: {
@@ -425,7 +440,7 @@ test('Nth-crate rustdoc operational failure preserves prior streaming output and
 
 test('Nth-crate missing/invalid rustdoc JSON stops after preserving prior output', async () => {
   for (const mode of ['omitRustdoc', 'invalidRustdoc']) {
-    const failingIndex = 2;
+    const failingIndex = 1;
     const failingCrate = GATE_POLICY[failingIndex].name;
     const result = await runPublicApiCli(['--all-configured'], { [mode]: [failingCrate] });
     assert.equal(result.code, 1, mode);

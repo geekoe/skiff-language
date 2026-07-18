@@ -8,118 +8,30 @@ import { captureCheckedCommand } from './lib/command-execution.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultCliPhase = 10;
 const facadePackage = 'skiff-compiler';
-const foundationPackages = [
-  'skiff-canonical-json',
-  'skiff-artifact-model',
-  'skiff-artifact-identity',
-];
-const compilerSubCrates = [
-  'skiff-syntax',
+const contractPackage = 'skiff-compiler-contract';
+const terminalProducerPackages = [facadePackage, contractPackage];
+const terminalPackageDependencies = [
+  contractPackage,
   'skiff-compiler-core',
-  'skiff-compiler-contract',
-  'skiff-compiler-publication-abi',
   'skiff-compiler-input-model',
   'skiff-compiler-input',
   'skiff-compiler-source',
   'skiff-compiler-lowering',
-  'skiff-compiler-projection-input',
   'skiff-compiler-compiled',
+  'skiff-compiler-projection-input',
   'skiff-compiler-projection',
   'skiff-compiler-emission',
-];
-const targetPackageNames = [
-  ...foundationPackages,
-  ...compilerSubCrates,
-  facadePackage,
+  'skiff-artifact-model',
+  'skiff-artifact-identity',
+  'skiff-canonical-json',
+  'skiff-syntax',
 ];
 
-// skiff-artifact-identity owns shared identity bytes; publication-abi owns neutral ABI assembly.
+// The public compiler graph has only two owners: package compilation and code-free contract compilation.
 const finalProductionEdges = new Map([
-  ['skiff-canonical-json', []],
-  ['skiff-artifact-model', []],
-  ['skiff-artifact-identity', ['skiff-artifact-model', 'skiff-canonical-json']],
-  ['skiff-syntax', []],
-  [
-    'skiff-compiler-core',
-    ['skiff-syntax', 'skiff-artifact-model', 'skiff-canonical-json'],
-  ],
-  [
-    'skiff-compiler-contract',
-    ['skiff-artifact-model', 'skiff-artifact-identity'],
-  ],
-  [
-    'skiff-compiler-publication-abi',
-    ['skiff-artifact-model', 'skiff-artifact-identity'],
-  ],
-  ['skiff-compiler-input-model', ['skiff-syntax', 'skiff-compiler-core', 'skiff-artifact-model']],
-  [
-    'skiff-compiler-input',
-    [
-      'skiff-syntax',
-      'skiff-compiler-core',
-      'skiff-compiler-input-model',
-      'skiff-artifact-model',
-      // Trust boundary: validate external dependency artifacts before accepting them as input.
-      'skiff-artifact-identity',
-    ],
-  ],
-  [
-    'skiff-compiler-source',
-    [
-      'skiff-syntax',
-      'skiff-compiler-core',
-      'skiff-compiler-input-model',
-      'skiff-compiler-publication-abi',
-      'skiff-artifact-model',
-      'skiff-artifact-identity',
-    ],
-  ],
-  [
-    'skiff-compiler-lowering',
-    [
-      'skiff-syntax',
-      'skiff-compiler-core',
-      'skiff-compiler-source',
-      'skiff-artifact-model',
-      'skiff-artifact-identity',
-    ],
-  ],
-  ['skiff-compiler-projection-input', ['skiff-compiler-core', 'skiff-artifact-model']],
-  [
-    'skiff-compiler-compiled',
-    [
-      'skiff-compiler-core',
-      'skiff-compiler-source',
-      'skiff-compiler-lowering',
-      'skiff-compiler-projection-input',
-      'skiff-artifact-model',
-      // Projection handoff: derive canonical semantic keys from compiled facts.
-      'skiff-artifact-identity',
-    ],
-  ],
-  [
-    'skiff-compiler-projection',
-    [
-      'skiff-compiler-core',
-      'skiff-compiler-projection-input',
-      'skiff-compiler-publication-abi',
-      'skiff-artifact-model',
-      'skiff-artifact-identity',
-    ],
-  ],
-  [
-    'skiff-compiler-emission',
-    [
-      'skiff-compiler-core',
-      'skiff-compiler-projection',
-      'skiff-artifact-model',
-      'skiff-artifact-identity',
-    ],
-  ],
-  [facadePackage, compilerSubCrates],
+  [facadePackage, terminalPackageDependencies],
+  [contractPackage, ['skiff-artifact-model', 'skiff-artifact-identity']],
 ]);
-
-const temporaryDependencyExceptions = [];
 
 const cliOptions = parseCliOptions(process.argv.slice(2));
 
@@ -131,7 +43,6 @@ if (cliOptions.help) {
   const metadata = await readCargoMetadata();
   const result = checkCompilerCrateDag(metadata, {
     phase: cliOptions.phase,
-    exceptions: temporaryDependencyExceptions,
   });
   printCheckResult(result);
   if (result.failures.length > 0) {
@@ -140,17 +51,13 @@ if (cliOptions.help) {
 }
 
 function checkCompilerCrateDag(metadata, options = {}) {
-  const phase = options.phase ?? 0;
-  const exceptions = options.exceptions ?? [];
+  const phase = options.phase ?? defaultCliPhase;
   const result = {
     phase,
     failures: [],
     notes: [],
     checkedEdges: [],
-    usedExceptions: [],
   };
-
-  validateExceptionRegistry(exceptions, result.failures);
 
   const workspaceMemberIds = new Set(metadata.workspace_members ?? []);
   const packageById = new Map((metadata.packages ?? []).map((pkg) => [pkg.id, pkg]));
@@ -171,9 +78,9 @@ function checkCompilerCrateDag(metadata, options = {}) {
     workspacePackagesByName.set(pkg.name, pkg);
   }
 
-  for (const packageName of compilerSubCrates) {
+  for (const packageName of terminalProducerPackages) {
     if (!workspacePackagesByName.has(packageName)) {
-      result.notes.push(`skipped future compiler package not present in workspace: ${packageName}`);
+      result.failures.push(`required terminal compiler package is missing from workspace: ${packageName}`);
     }
   }
 
@@ -183,9 +90,8 @@ function checkCompilerCrateDag(metadata, options = {}) {
   }
 
   const resolveNodeById = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
-  const activeExceptions = exceptions.filter((exception) => exceptionAppliesToPhase(exception, phase));
 
-  for (const packageName of targetPackageNames) {
+  for (const packageName of terminalProducerPackages) {
     const sourcePackage = workspacePackagesByName.get(packageName);
     if (sourcePackage === undefined) {
       continue;
@@ -220,7 +126,7 @@ function checkCompilerCrateDag(metadata, options = {}) {
           dependency_key: resolvedDependency.name,
         };
         result.checkedEdges.push(edge);
-        checkEdge(edge, phase, activeExceptions, result);
+        checkEdge(edge, phase, result);
       }
     }
   }
@@ -228,45 +134,19 @@ function checkCompilerCrateDag(metadata, options = {}) {
   return result;
 }
 
-function checkEdge(edge, phase, activeExceptions, result) {
-  if (isAllowedProductionEdge(edge.package, edge.dependency, phase)) {
+function checkEdge(edge, phase, result) {
+  if (isAllowedProductionEdge(edge.package, edge.dependency)) {
     return;
   }
-
-  if (edge.dependency_kind !== 'normal') {
-    const matchingException = activeExceptions.find((exception) => exceptionMatchesEdge(exception, edge));
-    if (matchingException !== undefined) {
-      result.usedExceptions.push({ ...matchingException, dependency_key: edge.dependency_key });
-      return;
-    }
-  }
-
   result.failures.push(formatDisallowedEdge(edge, phase));
 }
 
-function isAllowedProductionEdge(packageName, dependencyName, phase) {
+function isAllowedProductionEdge(packageName, dependencyName) {
   const allowedDependencies = finalProductionEdges.get(packageName);
   if (allowedDependencies === undefined) {
     return false;
   }
-  if (
-    packageName === 'skiff-compiler-compiled'
-    && dependencyName === 'skiff-compiler-projection-input'
-    && phase < 7.5
-  ) {
-    return false;
-  }
-  if (allowedDependencies.includes(dependencyName)) {
-    return true;
-  }
-  if (phase >= 0 && phase <= 9 && packageName === facadePackage) {
-    return facadeMigrationShellDependencies().has(dependencyName);
-  }
-  return false;
-}
-
-function facadeMigrationShellDependencies() {
-  return new Set([...compilerSubCrates, ...foundationPackages]);
+  return allowedDependencies.includes(dependencyName);
 }
 
 function resolvedDependencyKinds(resolvedDependency) {
@@ -275,45 +155,6 @@ function resolvedDependencyKinds(resolvedDependency) {
     return ['normal'];
   }
   return unique(depKinds.map((depKind) => normalizeDependencyKind(depKind.kind)));
-}
-
-function validateExceptionRegistry(exceptions, failures) {
-  for (const [index, exception] of exceptions.entries()) {
-    const label = `temporary dependency exception #${index + 1}`;
-    for (const key of ['package', 'dependency', 'dependency_kind', 'reason', 'remove_when']) {
-      if (exception[key] === undefined || exception[key] === '') {
-        failures.push(`${label} is missing ${key}`);
-      }
-    }
-    if (exception.phase === undefined && exception.issue === undefined) {
-      failures.push(`${label} must include phase or issue`);
-    }
-    const dependencyKind = normalizeDependencyKind(exception.dependency_kind);
-    if (!['normal', 'build', 'dev'].includes(dependencyKind)) {
-      failures.push(`${label} has unsupported dependency_kind ${exception.dependency_kind}`);
-    }
-    if (dependencyKind === 'normal') {
-      failures.push(`${label} uses dependency_kind normal; normal dependency exceptions are not allowed`);
-    }
-  }
-}
-
-function exceptionMatchesEdge(exception, edge) {
-  return (
-    exception.package === edge.package
-    && exception.dependency === edge.dependency
-    && normalizeDependencyKind(exception.dependency_kind) === edge.dependency_kind
-  );
-}
-
-function exceptionAppliesToPhase(exception, phase) {
-  if (exception.phase === undefined) {
-    return true;
-  }
-  if (Array.isArray(exception.phase)) {
-    return exception.phase.includes(phase);
-  }
-  return Number(exception.phase) === phase;
 }
 
 function normalizeDependencyKind(kind) {
@@ -333,16 +174,6 @@ function formatDisallowedEdge(edge, phase) {
 function printCheckResult(result) {
   for (const note of result.notes) {
     console.log(`NOTE ${note}`);
-  }
-  for (const exception of result.usedExceptions) {
-    console.log(
-      [
-        `NOTE temporary ${exception.dependency_kind} exception used:`,
-        `${exception.package} -> ${exception.dependency}`,
-        `remove_when=${JSON.stringify(exception.remove_when)}`,
-        `reason=${JSON.stringify(exception.reason)}`,
-      ].join(' '),
-    );
   }
   for (const failure of result.failures) {
     console.error(`FAIL ${failure}`);
@@ -435,335 +266,185 @@ function streamDiagnostic(label, value) {
 function runSelfTests() {
   const tests = [
     {
-      name: 'renamed dependency key uses resolved package name',
+      name: 'terminal producers accept the final package and contract edges by resolved package name',
       run: () => {
         const metadata = fixtureMetadata({
-          packages: ['skiff-compiler-core', 'skiff-syntax'],
-          edges: [
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-syntax',
-              dependency_key: 'syntax_renamed',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        assertPass(checkCompilerCrateDag(metadata), 'renamed dependency should pass by resolved package name');
-      },
-    },
-    {
-      name: 'temporary dev and build exceptions are accepted',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: ['skiff-compiler-projection', 'skiff-syntax', 'skiff-compiler-input'],
-          edges: [
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-syntax',
-              dependency_kind: 'dev',
-            },
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-compiler-input',
-              dependency_kind: 'build',
-            },
-          ],
-        });
-        const result = checkCompilerCrateDag(metadata, {
-          exceptions: [
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-syntax',
-              dependency_kind: 'dev',
-              phase: 0,
-              reason: 'test fixture needs parser syntax during split',
-              remove_when: 'projection fixtures use projection-input DTOs only',
-            },
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-compiler-input',
-              dependency_kind: 'build',
-              phase: 0,
-              reason: 'build fixture validates temporary generated inputs',
-              remove_when: 'generated inputs move behind projection-input fixture data',
-            },
-          ],
-        });
-        assertPass(result, 'temporary dev/build exceptions should pass');
-        assertEqual(result.usedExceptions.length, 2, 'temporary dev/build exceptions should be used');
-      },
-    },
-    {
-      name: 'normal dependency exceptions are rejected',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: ['skiff-compiler-projection', 'skiff-syntax'],
-          edges: [
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-syntax',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const result = checkCompilerCrateDag(metadata, {
-          exceptions: [
-            {
-              package: 'skiff-compiler-projection',
-              dependency: 'skiff-syntax',
-              dependency_kind: 'normal',
-              phase: 0,
-              reason: 'fixture attempts to exempt a production edge',
-              remove_when: 'never',
-            },
-          ],
-        });
-        assertFail(result, 'normal dependency exceptions must fail');
-        assertIncludes(result.failures.join('\n'), 'normal dependency exceptions are not allowed');
-      },
-    },
-    {
-      name: 'future packages missing emit skipped notes only',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: ['skiff-compiler', 'skiff-artifact-model', 'skiff-artifact-identity'],
-          edges: [
-            {
-              package: 'skiff-compiler',
-              dependency: 'skiff-artifact-model',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-artifact-identity',
-              dependency: 'skiff-artifact-model',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const result = checkCompilerCrateDag(metadata);
-        assertPass(result, 'missing future packages should not fail');
-        assertIncludes(result.notes.join('\n'), 'skipped future compiler package not present in workspace: skiff-syntax');
-      },
-    },
-    {
-      name: 'sub-crate cannot depend back on facade',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: ['skiff-compiler-core', 'skiff-compiler'],
-          edges: [
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-compiler',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const result = checkCompilerCrateDag(metadata);
-        assertFail(result, 'sub-crate dependency back on facade must fail');
-        assertIncludes(result.failures.join('\n'), 'skiff-compiler-core has disallowed normal dependency on skiff-compiler');
-      },
-    },
-    {
-      name: 'compiler core cannot depend on artifact identity owner',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: ['skiff-compiler-core', 'skiff-artifact-identity'],
-          edges: [
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-artifact-identity',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const result = checkCompilerCrateDag(metadata);
-        assertFail(result, 'compiler core must stay below the artifact identity owner');
-        assertIncludes(
-          result.failures.join('\n'),
-          'skiff-compiler-core has disallowed normal dependency on skiff-artifact-identity',
-        );
-      },
-    },
-    {
-      name: 'identity owner is limited to the input trust boundary and compiled handoff',
-      run: () => {
-        const allowedMetadata = fixtureMetadata({
           packages: [
-            'skiff-compiler-input',
-            'skiff-compiler-compiled',
-            'skiff-artifact-identity',
-          ],
-          edges: [
-            {
-              package: 'skiff-compiler-input',
-              dependency: 'skiff-artifact-identity',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-compiled',
-              dependency: 'skiff-artifact-identity',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        assertPass(
-          checkCompilerCrateDag(allowedMetadata),
-          'input and compiled should call the canonical identity owner at their semantic boundaries',
-        );
-
-        const dtoMetadata = fixtureMetadata({
-          packages: [
-            'skiff-compiler-input-model',
-            'skiff-compiler-projection-input',
-            'skiff-artifact-identity',
-          ],
-          edges: [
-            {
-              package: 'skiff-compiler-input-model',
-              dependency: 'skiff-artifact-identity',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-projection-input',
-              dependency: 'skiff-artifact-identity',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const dtoResult = checkCompilerCrateDag(dtoMetadata);
-        assertFail(dtoResult, 'DTO crates must not acquire the identity owner');
-        assertIncludes(
-          dtoResult.failures.join('\n'),
-          'skiff-compiler-input-model has disallowed normal dependency on skiff-artifact-identity',
-        );
-        assertIncludes(
-          dtoResult.failures.join('\n'),
-          'skiff-compiler-projection-input has disallowed normal dependency on skiff-artifact-identity',
-        );
-      },
-    },
-    {
-      name: 'canonical JSON remains a leaf consumable by identity and core',
-      run: () => {
-        const allowedMetadata = fixtureMetadata({
-          packages: [
-            'skiff-canonical-json',
-            'skiff-artifact-identity',
-            'skiff-artifact-model',
+            facadePackage,
+            contractPackage,
             'skiff-compiler-core',
+            'skiff-compiler-emission',
+            'skiff-artifact-model',
+            'skiff-artifact-identity',
             'skiff-syntax',
           ],
           edges: [
             {
-              package: 'skiff-artifact-identity',
-              dependency: 'skiff-canonical-json',
+              package: facadePackage,
+              dependency: contractPackage,
+              dependency_key: 'contract_renamed',
               dependency_kind: 'normal',
             },
             {
-              package: 'skiff-artifact-identity',
-              dependency: 'skiff-artifact-model',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-canonical-json',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-artifact-model',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-core',
-              dependency: 'skiff-syntax',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        assertPass(
-          checkCompilerCrateDag(allowedMetadata),
-          'identity and compiler core should consume canonical JSON',
-        );
-
-        const reverseMetadata = fixtureMetadata({
-          packages: ['skiff-canonical-json', 'skiff-artifact-model'],
-          edges: [
-            {
-              package: 'skiff-canonical-json',
-              dependency: 'skiff-artifact-model',
-              dependency_kind: 'normal',
-            },
-          ],
-        });
-        const reverseResult = checkCompilerCrateDag(reverseMetadata);
-        assertFail(reverseResult, 'canonical JSON must remain a leaf');
-        assertIncludes(
-          reverseResult.failures.join('\n'),
-          'skiff-canonical-json has disallowed normal dependency on skiff-artifact-model',
-        );
-      },
-    },
-    {
-      name: 'publication ABI cannot depend on core or compiler stages',
-      run: () => {
-        const metadata = fixtureMetadata({
-          packages: [
-            'skiff-compiler-publication-abi',
-            'skiff-compiler-core',
-            'skiff-compiler-source',
-          ],
-          edges: [
-            {
-              package: 'skiff-compiler-publication-abi',
+              package: facadePackage,
               dependency: 'skiff-compiler-core',
               dependency_kind: 'normal',
             },
             {
-              package: 'skiff-compiler-publication-abi',
-              dependency: 'skiff-compiler-source',
+              package: facadePackage,
+              dependency: 'skiff-compiler-emission',
+              dependency_kind: 'dev',
+            },
+            {
+              package: facadePackage,
+              dependency: 'skiff-syntax',
+              dependency_key: 'syntax_renamed',
+              dependency_kind: 'normal',
+            },
+            {
+              package: contractPackage,
+              dependency: 'skiff-artifact-model',
+              dependency_kind: 'normal',
+            },
+            {
+              package: contractPackage,
+              dependency: 'skiff-artifact-identity',
               dependency_kind: 'normal',
             },
           ],
         });
         const result = checkCompilerCrateDag(metadata);
-        assertFail(result, 'publication ABI must stay stage neutral');
+        assertPass(result, 'terminal dependency graph should pass');
+        assertEqual(result.checkedEdges.length, 6, 'every terminal owner edge should be checked');
+      },
+    },
+    {
+      name: 'both terminal producer packages are required',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [facadePackage],
+          edges: [],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'missing contract producer must fail');
         assertIncludes(
           result.failures.join('\n'),
-          'skiff-compiler-publication-abi has disallowed normal dependency on skiff-compiler-core',
-        );
-        assertIncludes(
-          result.failures.join('\n'),
-          'skiff-compiler-publication-abi has disallowed normal dependency on skiff-compiler-source',
+          `required terminal compiler package is missing from workspace: ${contractPackage}`,
         );
       },
     },
     {
-      name: 'source and projection may depend on publication ABI',
+      name: 'deleted publication ABI edge fails in every phase',
       run: () => {
         const metadata = fixtureMetadata({
-          packages: [
-            'skiff-compiler-source',
-            'skiff-compiler-projection',
-            'skiff-compiler-publication-abi',
-          ],
+          packages: [facadePackage, contractPackage, 'skiff-compiler-publication-abi'],
           edges: [
             {
-              package: 'skiff-compiler-source',
-              dependency: 'skiff-compiler-publication-abi',
-              dependency_kind: 'normal',
-            },
-            {
-              package: 'skiff-compiler-projection',
+              package: facadePackage,
               dependency: 'skiff-compiler-publication-abi',
               dependency_kind: 'normal',
             },
           ],
         });
-        assertPass(
-          checkCompilerCrateDag(metadata),
-          'source and projection should consume neutral publication ABI assembly',
+        for (const phase of [0, defaultCliPhase]) {
+          const result = checkCompilerCrateDag(metadata, { phase });
+          assertFail(result, `publication ABI edge must fail in phase ${phase}`);
+          assertIncludes(
+            result.failures.join('\n'),
+            `${facadePackage} has disallowed normal dependency on skiff-compiler-publication-abi in phase ${phase}`,
+          );
+        }
+      },
+    },
+    {
+      name: 'temporary exception-shaped input cannot exempt dev or build edges',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [facadePackage, contractPackage, 'skiff-compiler-publication-abi'],
+          edges: [
+            {
+              package: facadePackage,
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'dev',
+            },
+            {
+              package: facadePackage,
+              dependency: 'skiff-compiler-publication-abi',
+              dependency_kind: 'build',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata, {
+          exceptions: [{
+            package: facadePackage,
+            dependency: 'skiff-compiler-publication-abi',
+            dependency_kind: 'dev',
+            phase: defaultCliPhase,
+            reason: 'legacy option must have no effect',
+            remove_when: 'already terminal',
+          }],
+        });
+        assertFail(result, 'deleted exception mechanism must not exempt edges');
+        assertEqual(result.failures.length, 2, 'both disallowed dependency kinds should fail');
+        assertEqual(result.usedExceptions, undefined, 'result must not expose an exception ledger');
+      },
+    },
+    {
+      name: 'contract compiler cannot depend on facade or package implementation crates',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [facadePackage, contractPackage, 'skiff-syntax'],
+          edges: [
+            {
+              package: contractPackage,
+              dependency: facadePackage,
+              dependency_kind: 'normal',
+            },
+            {
+              package: contractPackage,
+              dependency: 'skiff-syntax',
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'code-free contract producer must remain independent');
+        assertIncludes(
+          result.failures.join('\n'),
+          `${contractPackage} has disallowed normal dependency on ${facadePackage}`,
         );
+        assertIncludes(
+          result.failures.join('\n'),
+          `${contractPackage} has disallowed normal dependency on skiff-syntax`,
+        );
+      },
+    },
+    {
+      name: 'non-terminal implementation crates are not public DAG owners',
+      run: () => {
+        const metadata = fixtureMetadata({
+          packages: [facadePackage, contractPackage, 'skiff-compiler-core'],
+          edges: [
+            {
+              package: 'skiff-compiler-core',
+              dependency: facadePackage,
+              dependency_kind: 'normal',
+            },
+          ],
+        });
+        const result = checkCompilerCrateDag(metadata);
+        assertPass(result, 'only the two terminal producer owners should be declared and checked');
+        assertEqual(result.checkedEdges.length, 0, 'implementation-crate edges must be outside this public DAG');
+      },
+    },
+    {
+      name: 'missing resolve graph fails closed after terminal owner validation',
+      run: () => {
+        const metadata = fixtureMetadata({ packages: [facadePackage, contractPackage], edges: [] });
+        metadata.resolve = null;
+        const result = checkCompilerCrateDag(metadata);
+        assertFail(result, 'missing resolve graph must fail');
+        assertIncludes(result.failures.join('\n'), 'cargo metadata resolve graph is missing');
       },
     },
   ];

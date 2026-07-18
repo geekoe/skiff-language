@@ -9,6 +9,100 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checker = join(repoRoot, 'scripts', 'check-compiler-boundaries.mjs');
 
+test('terminal package and code-free contract producers remain permitted', async () => {
+  await withFixture(async (root) => {
+    await write(
+      root,
+      'compiler/driver/lib.rs',
+      `pub fn compile_package() {}
+pub fn compile_contract() {}
+`,
+    );
+    await write(
+      root,
+      'compiler/contract/src/lib.rs',
+      `pub fn compile_service_contract_definition() {}
+`,
+    );
+
+    const result = await runChecker(['--root', root]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /passed with no known violations/);
+  });
+});
+
+test('terminal compiler shape rejects legacy publication, unit, facade, adapter, and provider paths', async () => {
+  await withFixture(async (root) => {
+    await write(
+      root,
+      'compiler/input/src/lib.rs',
+      `pub struct PublicationInput;
+pub enum PublicationInputKind { Package }
+`,
+    );
+    await write(
+      root,
+      'compiler/input-model/src/lib.rs',
+      `pub enum PublicationKind { Package }
+`,
+    );
+    await write(
+      root,
+      'compiler/future-terminal/src/lib.rs',
+      'pub struct CompatibilityCompilerFacade;\n',
+    );
+    await write(
+      root,
+      'compiler/driver/lib.rs',
+      `pub struct CompiledPublication;
+pub struct LoweredPublication;
+pub struct PublicationAbiUnit;
+pub struct PackageUnit;
+pub struct ServiceUnit;
+pub fn service_assembly() {}
+pub fn compile_service_publication() {}
+pub struct RawServicePublicationJob;
+pub struct LegacyPublicationAdapter;
+pub fn compatibility_output_adapter() {}
+pub fn infer_provider() {}
+pub struct ProviderInference;
+`,
+    );
+
+    const result = await runChecker(['--root', root]);
+    assert.notEqual(result.code, 0, result.stdout);
+    assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 16, result.stderr);
+    assert.match(result.stderr, /terminal_compiler_shape_no_legacy_publication_or_provider_paths/);
+    assert.match(result.stderr, /PublicationInput/);
+    assert.match(result.stderr, /compiler\/input-model\/src\/lib\.rs/);
+    assert.match(result.stderr, /PublicationAbiUnit/);
+    assert.match(result.stderr, /PackageUnit/);
+    assert.match(result.stderr, /service_assembly/);
+    assert.match(result.stderr, /ServicePublication/);
+    assert.match(result.stderr, /LegacyPublicationAdapter/);
+    assert.match(result.stderr, /compiler\/future-terminal\/src\/lib\.rs/);
+    assert.match(result.stderr, /compatibility_output_adapter/);
+    assert.match(result.stderr, /infer_provider/);
+  });
+});
+
+test('terminal compiler shape ignores test-only support files', async () => {
+  await withFixture(async (root) => {
+    await write(root, 'compiler/driver/lib.rs', 'pub fn compile_package() {}\n');
+    await write(root, 'compiler/driver/test_support.rs', 'pub struct PublicationInput;\n');
+    await write(
+      root,
+      'compiler/input/src/test_support/legacy_fixture.rs',
+      'pub struct ServiceUnit;\n',
+    );
+    await write(root, 'compiler/core/src/tests.rs', 'pub fn infer_provider() {}\n');
+
+    const result = await runChecker(['--root', root]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /passed with no known violations/);
+  });
+});
+
 test('projection-input permits arbitrary DTO constructors, getters, and builders', async () => {
   await withFixture(async (root) => {
     await write(
