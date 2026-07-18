@@ -138,7 +138,10 @@ T05C10C
 T05C9 + terminal compiler cleanup
   └── T05C10F identity checker terminal-owner repair
 
-R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9 + T05C10A + T05C10B + T05C10D + T05C10E + T05C10F
+T05C10C + T05C10D + T05C10E + T05C10F checkpoint acceptance
+  └── T05C10G identity checker package-call owner coverage
+
+R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9 + T05C10A + T05C10B + T05C10D + T05C10E + T05C10F + T05C10G
   └── R10 canonical compiler shared fixture checkpoint
 
 R10
@@ -158,6 +161,7 @@ R03 + R04 + R06 + R10B + R10C + R10D + R11 + R13
 | 3 | T05C4、T05C7、T05C8、T05C9 | lowering、emission、driver/core、identity consumers并行迁移 |
 | 4a | T05C10A、T05C10B、T05C10C | checkpoint review 暴露的 requirement、fail-closed、共享 validator 前置修复 |
 | 4b | T05C10D、T05C10E、T05C10F | validator consumers 与 terminal identity checker 并行收敛 |
+| 4c | T05C10G | 独立验收暴露的 package-call checker owner 漏管修复 |
 | 5a | R10 | production cleanup合流后先冻结共享 canonical fixture API |
 | 5b | R10B、R10C、R10D | 三个互斥 integration-test consumer 批次并行迁移 |
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
@@ -197,6 +201,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05C10D | [Identity package-call validation](tasks/P2-T05C10D-identity-package-call-validation.md) | T05C10C、T05C9 | 高；identity consumer |
 | T05C10E | [Materialization package-call validation](tasks/P2-T05C10E-materialization-package-call-validation.md) | T05C10C、T05C7 | 高；emission consumer |
 | T05C10F | [Identity checker terminal owners](tasks/P2-T05C10F-identity-checker-terminal-owners.md) | T05C9、terminal cleanup | 中；T07 checker repair |
+| T05C10G | [Identity checker package-call owner coverage](tasks/P2-T05C10G-identity-checker-package-call-owner.md) | T05C10C、T05C10D、T05C10E、T05C10F | 高；checker fail-closed repair |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -266,6 +271,9 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   不复制遍历或集合一致性规则。
 - T05C10D 独占 artifact-identity validator 接入与 mutation tests；T05C10E 独占 emission/materialization 接入
   与 direct tests；T05C10F 独占 identity single-source checker 的 terminal owner graph 与 self-test。
+- T05C10G 继续独占同一 checker，但只补 canonical package-call validator owner、identity/emission delegation 与
+  missing/duplicate self-test；不得修改 Rust production/tests。owner existence、exclusivity 与 self-test 应从同一
+  registry 派生，不能再增加一组互相漂移的手写清单。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
 - R10B 独占类型/import/File IR consumer targets；R10C 独占 artifact/config/DB/resource consumer targets；
