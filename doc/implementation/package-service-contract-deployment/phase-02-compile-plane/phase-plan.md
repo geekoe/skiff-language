@@ -109,13 +109,15 @@ R03 + R11 + T05 + T05A + T05B checkpoint
 R06
   └── T05C1 terminal compiler facade/input cleanup（与 R04/R13 并行）
 
-R13
-  └── T05C terminal compiler core cleanup（与 T05C1 并行）
-
 R06 + R13
   └── T05C2 terminal compiler model cleanup（与 T05C1/T05C 并行）
 
-R04 + R06 + R13 + T05C1 + T05C2 + T05C
+T05C1 + T05C2
+  ├── T05C core/orphan publication-ABI cleanup
+  ├── T05C3 terminal source helper cleanup
+  └── T05C4 terminal lowering cleanup
+
+R04 + R06 + R13 + T05C + T05C3 + T05C4
   └── R10 canonical compiler integration fixtures
 
 R03 + R04 + R06 + R10 + R11 + R13
@@ -125,9 +127,10 @@ R03 + R04 + R06 + R10 + R11 + R13
 | 波次 | 并行任务 | 说明 |
 | --- | --- | --- |
 | checkpoint | R03、R11、T05、T05A、T05B | dataflow 后按 driver、projection/emission、structure gates 三域并行 |
-| 1 | R04、R06、R13、T05C1、T05C2、T05C | R06/R13 完成即扇出三域 production cleanup，写域互斥 |
-| 2 | R10 | 两个 cleanup 合流并通过 production 结构探针后，只迁移 canonical test fixtures |
-| 3 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
+| 1 | R04、R06、R13、T05C1、T05C2 | canonical wave 与 facade/input/model checkpoint cleanup |
+| 2 | T05C、T05C3、T05C4 | core/orphan crate、source helper、lowering 参数链三域并行收尾 |
+| 3 | R10 | production cleanup 合流并通过结构探针后，只迁移 canonical test fixtures |
+| 4 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 与旧 R10B/R10C 位于被放弃的 integration tail，不进入新分支 ancestry；
 对应终态能力在 Phase 03–05 直接实现，canonical fixture 部分由 R10 重建。R12 的“在污染 tree 上清理”
@@ -151,7 +154,9 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05B | [Terminal compiler structure gates](tasks/P2-T05B-terminal-compiler-structure-gates.md) | T05 dataflow checkpoint | 中；scripts/checker 独占 owner |
 | T05C1 | [Terminal compiler facade/input cleanup](tasks/P2-T05C1-terminal-compiler-facade-input-cleanup.md) | R06 | 高；与 R04/R13 并行的 checkpoint repair |
 | T05C2 | [Terminal compiler model cleanup](tasks/P2-T05C2-terminal-compiler-model-cleanup.md) | R06、R13 | 高；input-model/source/lowering blocker repair |
-| T05C | [Terminal compiler core cleanup](tasks/P2-T05C-terminal-compiler-production-cleanup.md) | R13 | 高；与 T05C1 并行的 core blocker repair，R10 前置 |
+| T05C | [Terminal compiler core/orphan cleanup](tasks/P2-T05C-terminal-compiler-production-cleanup.md) | T05C1、T05C2 | 高；core 与 orphan crate blocker repair |
+| T05C3 | [Terminal source helper cleanup](tasks/P2-T05C3-terminal-source-helper-cleanup.md) | T05C2 | 中；source orphan owner cleanup |
+| T05C4 | [Terminal lowering cleanup](tasks/P2-T05C4-terminal-lowering-cleanup.md) | T05C2 | 高；empty index/parameter-chain cleanup |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -162,7 +167,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R09 | [Canonical test dependency closure](tasks/P2-R09-canonical-test-dependency-closure.md) | 已吸收 | canonical graph 进 R10；旧 holder 不移植 |
 | R07 | [Service-test local entrypoint assembly](tasks/P2-R07-service-test-local-entrypoint.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R11 | [Canonical contract schema fidelity](tasks/P2-R11-canonical-contract-schema-fidelity.md) | `9ca2547` | 高；移植已验收 commit `834cd55` |
-| R10 | [Canonical compiler integration fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C1、T05C2、T05C、R03、R04、R06、R11、R13 | 中；canonical test architecture |
+| R10 | [Canonical compiler integration fixtures](tasks/P2-R10-canonical-compiler-integration-fixtures.md) | T05C、T05C3、T05C4、R03、R04、R06、R11、R13 | 中；canonical test architecture |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
 | T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10、R11、R13 | gate owner |
@@ -193,8 +198,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   error surface cleanup；不得修改 core/source/lowering/driver/emission/checker 或 integration tests。
 - T05C2 在 R06/R13 后独占 input-model/source/lowering 旧 model cleanup、publication-ABI production edge
   与 orphan crate disposition；不得修改 facade/input/core/projection/emission/driver/checker 或 integration tests。
-- T05C 在 R13 后与 T05C1 并行，独占 core 残留 cleanup；不得修改 compiler
-  integration tests、test-support 或恢复旧 fixture，后者仍由 R10 独占。
+- T05C 在 T05C1/T05C2 后独占 core aggregate 与 orphan publication-ABI crate/gate-config cleanup；不得修改
+  source/lowering 或 compiler integration tests。
+- T05C3 独占 T05C2 后 source orphan helper cleanup；T05C4 独占 lowering empty index/参数链 cleanup；
+  二者不得修改彼此或 core/facade/Cargo/checker/integration tests。
 - R03 独占 canonical package export link 中 payload symbol 的精确投影与直接测试；map key
   继续表达 public path，link `symbol` 只能表达 file/index 指向的真实 payload declaration。
 - R04 独占 canonical package config requirements 与 `ConfigShape` 的唯一 typed 表达；不为旧
