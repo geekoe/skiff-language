@@ -109,10 +109,10 @@ R03 + R11 + T05 + T05A + T05B checkpoint
 R06
   └── T05C1 terminal compiler facade/input cleanup（与 R04/R13 并行）
 
-R13 + T05C1
-  └── T05C terminal compiler core cleanup
+R13
+  └── T05C terminal compiler core cleanup（与 T05C1 并行）
 
-R04 + R06 + R13 + T05C
+R04 + R06 + R13 + T05C1 + T05C
   └── R10 canonical compiler integration fixtures
 
 R03 + R04 + R06 + R10 + R11 + R13
@@ -122,10 +122,9 @@ R03 + R04 + R06 + R10 + R11 + R13
 | 波次 | 并行任务 | 说明 |
 | --- | --- | --- |
 | checkpoint | R03、R11、T05、T05A、T05B | dataflow 后按 driver、projection/emission、structure gates 三域并行 |
-| 1 | R04、R06、R13、T05C1 | config、requirement graph、DB schema 并行；R06 完成后立刻扇出 facade/input cleanup |
-| 2 | T05C | R13/T05C1 后收敛 core 残留并验证 terminal production shape |
-| 3 | R10 | 只迁移 canonical compiler test-support/integration fixtures |
-| 4 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
+| 1 | R04、R06、R13、T05C1、T05C | R06/R13 完成即分别扇出 facade/input 与 core cleanup，写域互斥 |
+| 2 | R10 | 两个 cleanup 合流并通过 production 结构探针后，只迁移 canonical test fixtures |
+| 3 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 与旧 R10B/R10C 位于被放弃的 integration tail，不进入新分支 ancestry；
 对应终态能力在 Phase 03–05 直接实现，canonical fixture 部分由 R10 重建。R12 的“在污染 tree 上清理”
@@ -148,7 +147,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05A | [Terminal PackageArtifact projection/emission handoff](tasks/P2-T05A-terminal-package-artifact-handoff.md) | R03、R11 | 高；projection/emission 独占 owner |
 | T05B | [Terminal compiler structure gates](tasks/P2-T05B-terminal-compiler-structure-gates.md) | T05 dataflow checkpoint | 中；scripts/checker 独占 owner |
 | T05C1 | [Terminal compiler facade/input cleanup](tasks/P2-T05C1-terminal-compiler-facade-input-cleanup.md) | R06 | 高；与 R04/R13 并行的 checkpoint repair |
-| T05C | [Terminal compiler core cleanup](tasks/P2-T05C-terminal-compiler-production-cleanup.md) | T05C1、R13 | 高；core blocker repair，R10 前置 |
+| T05C | [Terminal compiler core cleanup](tasks/P2-T05C-terminal-compiler-production-cleanup.md) | R13 | 高；与 T05C1 并行的 core blocker repair，R10 前置 |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -188,7 +187,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   production 或 tests。T05/T05A 不再修改 checker。
 - T05C1 在 R06 后独占 terminal compiler facade/Cargo、input、publication-ABI、projection-input 和直接
   error surface cleanup；不得修改 core/source/lowering/driver/emission/checker 或 integration tests。
-- T05C 在 T05C1/R13 后独占 core 残留和最终 production structure cleanup；不得修改 compiler
+- T05C 在 R13 后与 T05C1 并行，独占 core 残留 cleanup；不得修改 compiler
   integration tests、test-support 或恢复旧 fixture，后者仍由 R10 独占。
 - R03 独占 canonical package export link 中 payload symbol 的精确投影与直接测试；map key
   继续表达 public path，link `symbol` 只能表达 file/index 指向的真实 payload declaration。

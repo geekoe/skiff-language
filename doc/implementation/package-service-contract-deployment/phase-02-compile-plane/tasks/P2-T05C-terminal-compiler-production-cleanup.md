@@ -1,6 +1,6 @@
 # P2-T05C：Terminal Compiler Core Cleanup
 
-状态：checkpoint repair final；依赖 T05C1 与 R13，必须在 R10 fixture 迁移前完成。
+状态：checkpoint repair split；依赖 R13，可与 T05C1 并行，二者都必须在 R10 fixture 迁移前完成。
 
 权威设计：`doc/architecture/package-service-contract-deployment.md` 的“核心结论”“不变量”
 “Compiler 与 Projection 流水线”“Fail-closed 条件”“非目标”。
@@ -9,7 +9,8 @@
 
 T05/T05A/T05B 合流后的 structure checker 已正确 fail closed，但 production tree 仍保留旧
 publication/service orchestration owner。facade/input/publication-ABI 表面由 T05C1 并行清理；本任务
-负责 R13 合流后的 core 残留与最终 production gate。旧 compiler integration tests 的迁移属于 R10。
+负责 R13 合流后的 core 残留。完整 production gate 在二者合流后运行；旧 compiler integration tests
+的迁移属于 R10。
 
 ## 目标与 ownership
 
@@ -20,9 +21,9 @@ publication/service orchestration owner。facade/input/publication-ABI 表面由
 
 ## 完成态
 
-1. `compiler/**` production Rust 中 structure boundary checker 零 deny；旧 crate/module 不再由 workspace、
-   facade 或 production crate graph 引用。
-2. T05C1 的 facade/input/Cargo/DAG 终态保持成立，不通过 core 特例重新引入旧 owner。
+1. `compiler/core/**` 及本任务直接 production 邻接中 structure boundary checker 零 deny；合流前完整
+   checker 只允许命中 T05C1 明确拥有的路径，并列出精确结果。
+2. 不通过 core 特例重新引入 T05C1 正在删除的 facade/input/Cargo/DAG 旧 owner。
 3. 不建立 legacy/compatibility adapter，不恢复 provider inference，不改 artifact wire/identity。
 4. `compiler/tests/**`、test-support、Cargo integration test target 与旧 fixture 不在本任务处理；由 R10
    按逐项 disposition 迁移，不能为让测试暂时编译而恢复 production owner。
@@ -30,8 +31,8 @@ publication/service orchestration owner。facade/input/publication-ABI 表面由
 ## 验证
 
 - `cargo check -p skiff-compiler` 及直接受影响 core production crates。
-- `node scripts/check-compiler-boundaries.mjs`。
-- `node scripts/check-compiler-crate-dag.mjs`。
+- `node scripts/check-compiler-boundaries.mjs`；合流前仅允许 T05C1 写域的精确命中。
+- crate DAG 由 T05C1 验证；本任务只反向检查 core 不新增旧 edge。
 - production 旧 symbol/owner 反向搜索、targeted rustfmt、`git diff --check`。
 - 不运行 compiler integration tests、T07 完整 gate或 runtime/router/test-runner 测试。
 
