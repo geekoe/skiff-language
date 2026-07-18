@@ -161,6 +161,15 @@ R10G
 
 R03 + R04 + R06 + R10B + R10C + R10D + R10E + R10F + R10G + R11 + R13
   └── T07 phase integration gate -> A01 independent acceptance
+
+A01 hidden-owner finding
+  └── T05C11 orphan publication owner cleanup
+
+T05C11
+  └── T05C12 terminal compiler public-shape gate
+
+T05C12 + remaining A01 findings closed
+  └── T07 evidence refresh -> A01 independent re-acceptance
 ```
 
 | 波次 | 并行任务 | 说明 |
@@ -178,6 +187,9 @@ R03 + R04 + R06 + R10B + R10C + R10D + R10E + R10F + R10G + R11 + R13
 | 5d | R10G | independent review 暴露的共享 fixture file-write 抽象前置 |
 | 5e | R10F | 修复遗漏的 std_package_imports terminal target |
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
+| 7a | T05C11 | A01 暴露的孤儿 publication aggregate/adapter 物理删除 |
+| 7b | T05C12 | 对 compiled/projection-input terminal public shape 建结构 gate |
+| 7c | T07、A01 | 刷新受影响证据并独立复验，不机械重跑无效 gate |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -215,6 +227,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05C10E | [Materialization package-call validation](tasks/P2-T05C10E-materialization-package-call-validation.md) | T05C10C、T05C7 | 高；emission consumer |
 | T05C10F | [Identity checker terminal owners](tasks/P2-T05C10F-identity-checker-terminal-owners.md) | T05C9、terminal cleanup | 中；T07 checker repair |
 | T05C10G | [Identity checker package-call owner coverage](tasks/P2-T05C10G-identity-checker-package-call-owner.md) | T05C10C、T05C10D、T05C10E、T05C10F | 高；checker fail-closed repair |
+| T05C11 | [Orphan publication owner cleanup](tasks/P2-T05C11-orphan-publication-owner-cleanup.md) | A01 finding、T07 candidate | 高；terminal model/adapter cleanup |
+| T05C12 | [Terminal compiler public-shape gate](tasks/P2-T05C12-terminal-compiler-public-shape-gate.md) | T05C11 | 高；renamed hidden-adapter negative gate |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -291,6 +305,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 - T05C10G 继续独占同一 checker，但只补 canonical package-call validator owner、identity/emission delegation 与
   missing/duplicate self-test；不得修改 Rust production/tests。owner existence、exclusivity 与 self-test 应从同一
   registry 派生，不能再增加一组互相漂移的手写清单。
+- T05C11 独占 `compiler/compiled/**` 与 `compiler/projection-input/**` 的孤儿 publication aggregate/adapter删除，
+  只保留 canonical `CompiledPackage -> ProjectionInput` handoff；不得修改 checker 或恢复 facade caller。
+- T05C12 独占 compiler boundary/public-shape checker 与 self-test。必须约束 terminal public surface/field shape，
+  并以 renamed aggregate/adapter 负例证明有效；不得只追加 `PackagePublication` 名字 blacklist。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
 - R10A 在 R10 后独占 `compiler/tests/common/**` 的最后 API 修正、一个 representative lane probe target 与其
