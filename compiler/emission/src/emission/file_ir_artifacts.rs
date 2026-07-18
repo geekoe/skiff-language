@@ -1,40 +1,16 @@
-use crate::projection::{ProjectionSourceMetadata, ProjectionView};
 use crate::{
     emission::artifact::PublishedFileIrArtifact,
     error::{EmissionError, Result},
+    projection::{ProjectionSourceMetadata, ProjectionView},
 };
 use skiff_artifact_model::FileIrUnit;
-use skiff_compiler_core::{
-    json_utils::{canonical_json_value, sha256_hex},
-    source_role::PublicationSourceRole,
-};
+use skiff_compiler_core::json_utils::{canonical_json_value, sha256_hex};
 
-pub fn published_file_ir_artifacts_from_projection_input(
+pub fn publish_file_ir_artifacts(
     input: ProjectionView<'_>,
 ) -> Result<Vec<PublishedFileIrArtifact>> {
     projection_input_units_with_sources(input)?
         .into_iter()
-        .map(|(unit, source)| published_compiled_file_ir_artifact(unit, source))
-        .collect()
-}
-
-pub fn published_file_ir_artifacts_from_units_with_projection_sources(
-    units: &[FileIrUnit],
-    input: ProjectionView<'_>,
-) -> Result<Vec<PublishedFileIrArtifact>> {
-    let sources = input.source_metadata();
-    if units.len() != sources.len() {
-        return Err(EmissionError::ContractValidation {
-            message: format!(
-                "publication has {} File IR units but {} source metadata entries",
-                units.len(),
-                sources.len()
-            ),
-        });
-    }
-    units
-        .iter()
-        .zip(sources.iter())
         .map(|(unit, source)| published_compiled_file_ir_artifact(unit, source))
         .collect()
 }
@@ -48,23 +24,13 @@ fn published_compiled_file_ir_artifact(
         unit,
         source.source_path.clone(),
         source.module_path.clone(),
-        file_ir_role_for_source_role(source.role).to_string(),
     ))
-}
-
-fn file_ir_role_for_source_role(role: PublicationSourceRole) -> &'static str {
-    match role {
-        PublicationSourceRole::Contract => "contract",
-        PublicationSourceRole::Implementation => "implementation",
-        PublicationSourceRole::Package => "package",
-    }
 }
 
 pub fn published_file_ir_artifact_from_unit(
     unit: &FileIrUnit,
     source_path: String,
     module_path: String,
-    role: String,
 ) -> PublishedFileIrArtifact {
     let hash = file_ir_artifact_hash(unit);
     PublishedFileIrArtifact {
@@ -74,7 +40,6 @@ pub fn published_file_ir_artifact_from_unit(
         path: format!("units/files/{hash}.json"),
         source_path,
         module_path,
-        role,
     }
 }
 
@@ -93,7 +58,7 @@ fn projection_input_units_with_sources(
     if input.file_ir_units().len() != sources.len() {
         return Err(EmissionError::ContractValidation {
             message: format!(
-                "compiled publication has {} File IR units but {} source metadata entries",
+                "compiled package has {} File IR units but {} source metadata entries",
                 input.file_ir_units().len(),
                 sources.len()
             ),
@@ -145,7 +110,7 @@ fn file_ir_unit_source(unit: &FileIrUnit) -> Result<FileIrSourceMetadata> {
 #[cfg(test)]
 mod tests {
     use super::file_ir_artifact_hash;
-    use crate::emission::identity::assign_file_ir_identity;
+    use skiff_artifact_identity::assign_file_ir_identity;
     use skiff_artifact_model::FileIrUnit;
 
     #[test]

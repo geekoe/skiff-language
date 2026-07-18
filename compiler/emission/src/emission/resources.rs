@@ -1,16 +1,15 @@
 use std::{collections::BTreeMap, fs};
 
-use skiff_artifact_model::PublicationResourceRef;
 use skiff_compiler_core::json_utils::sha256_hex;
 
 use crate::{
     emission::artifact::PublishedResourceArtifact,
     error::{EmissionError, Result},
-    projection::package_unit_artifacts::ProjectedPublicationResource,
+    projection::package_artifact::ProjectedPackageResource,
 };
 
 pub fn publish_resource_artifacts(
-    resources: &[ProjectedPublicationResource],
+    resources: &[ProjectedPackageResource],
 ) -> Result<Vec<PublishedResourceArtifact>> {
     let mut by_artifact_path = BTreeMap::<String, PublishedResourceArtifact>::new();
     for resource in resources {
@@ -62,27 +61,6 @@ pub fn publish_resource_artifacts(
         }
     }
     Ok(by_artifact_path.into_values().collect())
-}
-
-pub(crate) fn attach_resource_artifact_paths(
-    refs: &mut [PublicationResourceRef],
-    artifacts: &[PublishedResourceArtifact],
-) -> Result<()> {
-    let by_hash_and_len = validated_resource_artifacts_by_content(artifacts)?;
-    for resource_ref in refs {
-        let Some(artifact) =
-            by_hash_and_len.get(&(resource_ref.sha256.as_str(), resource_ref.byte_len))
-        else {
-            return Err(EmissionError::ContractValidation {
-                message: format!(
-                    "resource {} did not emit blob sha256 {} size {}",
-                    resource_ref.path, resource_ref.sha256, resource_ref.byte_len
-                ),
-            });
-        };
-        resource_ref.artifact_path = Some(artifact.artifact_path.clone());
-    }
-    Ok(())
 }
 
 pub(crate) fn validated_resource_artifacts_by_content(

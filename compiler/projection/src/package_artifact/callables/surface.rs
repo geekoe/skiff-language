@@ -6,9 +6,9 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_projection_input::ProjectionPackageCallableSignatureFacts;
 
-use crate::{error::ProjectionError, package_exports::PackageExports};
+use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
 
-use super::{projection_error, signatures};
+use super::signatures;
 
 pub(super) struct LocalCallableSurface {
     pub public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
@@ -31,16 +31,9 @@ pub(super) fn project_local_surface(
     exports: &PackageExportIndex,
     signatures: &ProjectionPackageCallableSignatureFacts,
 ) -> Result<LocalCallableSurface, ProjectionError> {
-    let publication_abi = skiff_compiler_publication_abi::package_publication_abi(
-        package_id,
-        "package-artifact-projection",
-        exports,
-    )
-    .map_err(|error| projection_error(package_id, error.to_string()))?;
-    let implementation_links =
-        skiff_compiler_publication_abi::package_implementation_links(exports, &publication_abi);
-    let mut public_symbols = project_non_callable_symbols(exports, &publication_abi)?;
-    let mut callables = signatures::publication_callable_seeds(package_id, exports);
+    let implementation_links = PackageImplementationLinks::from_exports(exports);
+    let mut public_symbols = project_non_callable_symbols(exports)?;
+    let mut callables = signatures::package_callable_seeds(package_id, exports);
     signatures::add_direct_impl_method_seeds(package_id, api_exports, exports, &mut callables);
     signatures::attach_canonical_signatures(package_id, signatures, &mut callables)?;
     add_public_instance_symbols(exports, &callables, &mut public_symbols)?;
@@ -53,23 +46,9 @@ pub(super) fn project_local_surface(
 
 fn project_non_callable_symbols(
     exports: &PackageExportIndex,
-    publication_abi: &skiff_artifact_model::PublicationAbiUnit,
 ) -> Result<BTreeMap<String, PackageLocalAbiSymbol>, ProjectionError> {
-    let type_ids = publication_abi
-        .schema_closure
-        .iter()
-        .map(|schema| (schema.abi_type_id.as_str(), schema))
-        .collect::<BTreeMap<_, _>>();
     let mut symbols = BTreeMap::new();
     for (public_path, export) in &exports.types {
-        let expected_id = format!("type:{public_path}");
-        let schema = type_ids.get(expected_id.as_str()).ok_or_else(|| {
-            ProjectionError::ContractValidation {
-                message: format!(
-                    "package type export {public_path} is missing from the shared ABI type leaf"
-                ),
-            }
-        })?;
         let descriptor =
             export
                 .descriptor
@@ -81,7 +60,7 @@ fn project_non_callable_symbols(
             &mut symbols,
             public_path.clone(),
             PackageLocalAbiSymbol::Type {
-                local_type_id: schema.abi_type_id.clone(),
+                local_type_id: format!("type:{public_path}"),
                 descriptor,
             },
         )?;

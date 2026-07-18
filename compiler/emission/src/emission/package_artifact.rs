@@ -26,9 +26,8 @@ pub struct PublishedPackageArtifact {
     pub resource_blobs: Vec<PublishedResourceArtifact>,
 }
 
-/// The single storage materializer shared by production package compilation
-/// and package-test consumers. It validates canonical identities; it never
-/// repairs or recomputes projection semantics.
+/// Terminal PackageArtifact storage materializer. It validates canonical
+/// identities and never repairs or recomputes projection semantics.
 pub fn materialize_package_artifact(
     projected: &PackageArtifact,
     files: &[PublishedFileIrArtifact],
@@ -59,6 +58,7 @@ pub fn publish_projected_package_artifact(
     projected: &ProjectedPackageArtifact,
     files: &[PublishedFileIrArtifact],
 ) -> Result<PublishedPackageArtifact> {
+    validate_projected_file_ir_units(projected, files)?;
     let resource_blobs = publish_resource_artifacts(&projected.resources)?;
     let materialized = materialize_package_artifact(&projected.artifact, files, &resource_blobs)?;
     Ok(PublishedPackageArtifact {
@@ -67,6 +67,43 @@ pub fn publish_projected_package_artifact(
         file_ir_units: files.to_vec(),
         resource_blobs: materialized.resource_blobs,
     })
+}
+
+fn validate_projected_file_ir_units(
+    projected: &ProjectedPackageArtifact,
+    files: &[PublishedFileIrArtifact],
+) -> Result<()> {
+    if projected.file_ir_units.len() != files.len() {
+        return Err(EmissionError::ContractValidation {
+            message: format!(
+                "projected package has {} File IR units but emission received {}",
+                projected.file_ir_units.len(),
+                files.len()
+            ),
+        });
+    }
+    for unit in &projected.file_ir_units {
+        let Some(published) = files
+            .iter()
+            .find(|file| file.identity == unit.file_ir_identity)
+        else {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "projected File IR {} has no exact emitted unit",
+                    unit.file_ir_identity
+                ),
+            });
+        };
+        if published.unit != *unit {
+            return Err(EmissionError::ContractValidation {
+                message: format!(
+                    "emitted File IR {} does not match its projected typed unit",
+                    unit.file_ir_identity
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn package_artifact_json(artifact: &PackageArtifact) -> Result<PublishedJsonArtifact> {

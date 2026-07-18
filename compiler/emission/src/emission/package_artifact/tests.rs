@@ -47,21 +47,21 @@ fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity()
 }
 
 #[test]
-fn production_and_package_test_consumers_share_bit_identical_materializer_output() {
+fn repeated_materialization_is_bit_identical() {
     let (projected, file, resource) = fixture();
-    let production = materialize_package_artifact(
+    let first = materialize_package_artifact(
         &projected,
         std::slice::from_ref(&file),
         std::slice::from_ref(&resource),
     )
     .unwrap();
-    let package_test = materialize_package_artifact(
+    let second = materialize_package_artifact(
         &projected,
         std::slice::from_ref(&file),
         std::slice::from_ref(&resource),
     )
     .unwrap();
-    assert_eq!(production, package_test);
+    assert_eq!(first, second);
 }
 
 #[test]
@@ -117,6 +117,27 @@ fn materializer_rejects_missing_or_unreferenced_assets() {
     );
 }
 
+#[test]
+fn projected_file_ir_handoff_requires_exact_typed_units() {
+    let (artifact, file, _) = fixture();
+    let projected = ProjectedPackageArtifact {
+        artifact,
+        file_ir_units: vec![file.unit.clone()],
+        resources: Vec::new(),
+    };
+    validate_projected_file_ir_units(&projected, std::slice::from_ref(&file)).unwrap();
+
+    let mut mismatched = file;
+    mismatched.unit.source_ast_hash = "different-source".to_string();
+    let error = validate_projected_file_ir_units(&projected, &[mismatched])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("does not match"),
+        "unexpected error: {error}"
+    );
+}
+
 fn fixture() -> (
     PackageArtifact,
     PublishedFileIrArtifact,
@@ -141,7 +162,6 @@ fn fixture() -> (
         path: "units/files/api.json".to_string(),
         source_path: "src/api.skiff".to_string(),
         module_path: file_unit.module_path.clone(),
-        role: "package".to_string(),
     };
     let resource_ref = PublicationResourceRef {
         path: "templates/message.txt".to_string(),

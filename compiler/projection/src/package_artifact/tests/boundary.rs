@@ -22,14 +22,8 @@ fn safe_detached_callable_is_available_with_contract_agnostic_body_and_requireme
         contract_type_id: error_type.clone(),
     }];
     let runtime = runtime_requirements("async");
-    let projection = project_boundary_callable(
-        "api",
-        &signature,
-        &safe_facts(),
-        &runtime,
-        &[],
-    )
-    .unwrap();
+    let projection =
+        project_boundary_callable("api", &signature, &safe_facts(), &runtime, &[]).unwrap();
 
     let BoundaryCallableProjection::Available {
         operation_contract,

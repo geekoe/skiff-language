@@ -1,44 +1,46 @@
-use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use skiff_artifact_model::{
-    CallableSemanticFacts, ContractRequirement, PackageArtifact, PackageExportIndex,
-    PackageRequirement, PackageRuntimeRequirements, ServiceCallRef, ServiceRequirement,
+    ContractRequirement, FileIrUnit, PackageArtifact, PackageRequirement, ServiceCallRef,
+    ServiceRequirement,
 };
-use skiff_compiler_projection_input::{
-    ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
-};
+use skiff_compiler_projection_input::ProjectionView;
 
-use crate::{
-    package_exports::PackageExports,
-    package_unit_artifacts::{PackageFileIrProjection, ProjectedPublicationResource},
-};
+use super::api_exports::PackageExports;
 
-/// Fully typed inputs consumed by the canonical PackageArtifact projector.
+/// Complete typed input for terminal PackageArtifact projection.
 ///
-/// The export index and executable-keyed facts are produced before this
-/// boundary. No source text, deployment config, provider artifact, or legacy
-/// aggregate is accepted here.
+/// Projection owns exports, executable signatures, semantic facts, runtime
+/// requirements, File IR references, and resource projection. The driver only
+/// supplies coordinates plus already-resolved dependency/call facts.
 pub struct PackageArtifactProjectionInput<'a> {
     pub package_id: &'a str,
     pub package_version: &'a str,
-    pub api_exports: &'a PackageExports,
-    pub export_index: PackageExportIndex,
-    pub file_ir_units: Vec<PackageFileIrProjection>,
-    pub resources: Vec<ProjectedPublicationResource>,
+    pub projection: ProjectionView<'a>,
     pub package_requirements: Vec<PackageRequirement>,
     pub contract_requirements: Vec<ContractRequirement>,
     pub service_requirements: Vec<ServiceRequirement>,
-    pub runtime_requirements: PackageRuntimeRequirements,
-    pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
-    /// Exact canonical signature set. File IR is an implementation/link leaf,
-    /// never a fallback signature source at this boundary.
-    pub callable_signatures: ProjectionPackageCallableSignatureFacts,
     pub service_call_refs: Vec<ServiceCallRef>,
+}
+
+pub(super) struct PackageExportLinkProjectionInput<'a> {
+    pub package_id: &'a str,
+    pub exports: &'a PackageExports,
+    pub file_ir_units: &'a [FileIrUnit],
 }
 
 #[derive(Debug, Clone)]
 pub struct ProjectedPackageArtifact {
     pub artifact: PackageArtifact,
-    pub file_ir_units: Vec<PackageFileIrProjection>,
-    pub resources: Vec<ProjectedPublicationResource>,
+    pub file_ir_units: Vec<FileIrUnit>,
+    pub resources: Vec<ProjectedPackageResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedPackageResource {
+    pub path: String,
+    pub absolute_path: PathBuf,
+    pub byte_len: u64,
+    pub sha256: String,
+    pub content_type: Option<String>,
 }

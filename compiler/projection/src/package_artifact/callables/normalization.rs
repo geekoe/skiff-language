@@ -1,6 +1,4 @@
-use skiff_artifact_model::{
-    CallableProvenanceSummary, CallableSemanticFacts, ValueProvenance,
-};
+use skiff_artifact_model::{CallableProvenanceSummary, CallableSemanticFacts, ValueProvenance};
 
 use crate::package_artifact::boundary::ordering::escape_lane_rank;
 

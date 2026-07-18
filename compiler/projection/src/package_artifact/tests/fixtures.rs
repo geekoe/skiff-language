@@ -15,10 +15,9 @@ use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
 
-use crate::{
-    package_artifact::{project_package_artifact, PackageArtifactProjectionInput},
-    package_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
-    package_unit_artifacts::PackageFileIrProjection,
+use crate::package_artifact::{
+    api_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
+    projection::{project_package_artifact_facts, ProjectedPackageFacts},
 };
 
 #[derive(Clone, Copy)]
@@ -118,12 +117,12 @@ pub(super) fn project_fixture(
         contract_version: "1.0.0".to_string(),
         expected_protocol_identity: protocol_identity.clone(),
     };
-    Ok(project_package_artifact(PackageArtifactProjectionInput {
+    Ok(project_package_artifact_facts(ProjectedPackageFacts {
         package_id: "example.pkg",
         package_version: "1.0.0",
         api_exports: &api_exports,
         export_index,
-        file_ir_units: vec![PackageFileIrProjection::from_unit(file)],
+        file_ir_units: vec![file],
         resources: Vec::new(),
         package_requirements: vec![PackageRequirement {
             alias: "dependency".to_string(),
@@ -183,7 +182,7 @@ fn public_instance(file: &FileIrRef) -> PublicInstanceExport {
                 executable_target: OperationTargetRef {
                     file_ref: file.clone(),
                     executable_index: 2,
-                    callable_abi_id: "legacy:Worker.handle".to_string(),
+                    callable_abi_id: "callable:Worker.handle".to_string(),
                     callable_kind: OperationCallableKind::ImplMethod,
                 },
                 method_abi_id: operation.method_abi_id.clone().unwrap(),

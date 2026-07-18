@@ -2219,7 +2219,6 @@ dependencies = [
 name = "skiff-compiler-emission"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
@@ -2274,10 +2273,8 @@ dependencies = [
 name = "skiff-compiler-projection"
 version = "0.1.0"
 dependencies = [
- "hex",
  "serde",
  "serde_json",
- "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler-core",

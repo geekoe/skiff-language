@@ -8,11 +8,11 @@ use skiff_compiler_projection_input::{
     ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
 
-use crate::{error::ProjectionError, package_exports::PackageExports};
+use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
 
 use super::{projection_error, surface::CallableSeed};
 
-pub(super) fn publication_callable_seeds(
+pub(super) fn package_callable_seeds(
     package_id: &str,
     exports: &PackageExportIndex,
 ) -> Vec<CallableSeed> {

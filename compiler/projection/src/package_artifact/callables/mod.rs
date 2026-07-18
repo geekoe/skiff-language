@@ -5,18 +5,15 @@ mod surface;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, PackageCallableId, PackageCallableLinkFact,
-    PackageExportIndex, PackageImplementationLinks, PackageLocalAbiSymbol,
+    BoundaryCallableProjection, CallableSemanticFacts, FileIrUnit, PackageCallableId,
+    PackageCallableLinkFact, PackageExportIndex, PackageImplementationLinks, PackageLocalAbiSymbol,
     PackageRuntimeRequirements,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
 };
 
-use crate::{
-    error::ProjectionError, package_exports::PackageExports,
-    package_unit_artifacts::PackageFileIrProjection,
-};
+use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
 
 use super::boundary::project_boundary_callable;
 
@@ -33,17 +30,13 @@ pub(super) fn project_package_callable_surface(
     package_id: &str,
     api_exports: &PackageExports,
     exports: &PackageExportIndex,
-    file_ir_units: &[PackageFileIrProjection],
+    file_ir_units: &[FileIrUnit],
     semantic_facts_by_executable: &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
     signatures: &ProjectionPackageCallableSignatureFacts,
     runtime_requirements: &PackageRuntimeRequirements,
 ) -> Result<ProjectedPackageCallableSurface, ProjectionError> {
     let mut local_surface =
         surface::project_local_surface(package_id, api_exports, exports, signatures)?;
-    let file_ir = file_ir_units
-        .iter()
-        .map(|file| file.unit.clone())
-        .collect::<Vec<_>>();
     let mut callable_links = BTreeMap::new();
     let mut semantic_facts = BTreeMap::new();
     let mut boundary_projections = BTreeMap::new();
@@ -76,7 +69,7 @@ pub(super) fn project_package_callable_surface(
             &seed.signature,
             &facts,
             runtime_requirements,
-            &file_ir,
+            file_ir_units,
         )?;
         insert_callable_entry(
             &mut callable_links,
