@@ -324,7 +324,7 @@ fn rewrite_call_target(
         | CallTargetIr::PublicationExecutable { .. }
         | CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::ServiceCall { .. }
-        | CallTargetIr::PackageSymbol { .. }
+        | CallTargetIr::PackageCallable { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
         | CallTargetIr::ReceiverBuiltin { .. } => {}

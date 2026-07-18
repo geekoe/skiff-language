@@ -2,7 +2,6 @@ pub mod callable_return_types;
 mod contract_dependency_operation_index;
 mod db_lowering;
 mod declaration_lowering;
-pub mod dependency_operation_indexes;
 pub mod entrypoint_abi;
 pub mod entrypoint_abi_model;
 mod executable_declaration_lowering;
@@ -24,7 +23,6 @@ mod type_lowering;
 pub use contract_dependency_operation_index::{
     ContractDependencyOperationIndex, ContractDependencyOperationIndexEntry,
 };
-use dependency_operation_indexes::LoweringDependencyOperationIndexes;
 pub use entrypoint_abi::{
     package_entrypoint_function_signature, package_public_schema_abi_types_for_module,
     package_public_schema_type_names_for_module, EntrypointAbiIndex,
@@ -61,17 +59,14 @@ pub fn lower_with_contract_operations(
         .map_err(|error| SourceCompileError::ContractValidation {
             message: format!("service call lowering failed: {error}"),
         })?;
-    let operation_indexes =
-        LoweringDependencyOperationIndexes::build_for_contract_service_calls(model)?;
-    lower_with_service_calls(model, &operation_indexes, service_calls)
+    lower_with_service_calls(model, service_calls)
 }
 
 fn lower_with_service_calls(
     model: &PackageSourceModel,
-    operation_indexes: &LoweringDependencyOperationIndexes,
     service_calls: LoweredServiceCalls,
 ) -> Result<LoweredPackage, SourceCompileError> {
-    let mut lowered = LoweredPackage::lower(model, operation_indexes, service_calls)?;
+    let mut lowered = LoweredPackage::lower(model, service_calls)?;
     let storage_projection =
         storage_projection::project_service_storage_projection(model, &lowered)?;
     lowered.set_service_storage_projection(storage_projection);

@@ -4,11 +4,9 @@ use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     publication_local_refs::rewrite_publication_local_refs,
-    source_file_lowering::{
-        compile_publication_source_file_ir_unit, PublicationSourceLoweringInput,
-    },
+    source_file_lowering::{compile_package_source_file_ir_unit, PackageSourceLoweringInput},
     type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
-    EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex, LoweringDependencyOperationIndexes,
+    EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex,
 };
 use crate::file_ir::{
     assign_file_ir_identity, CallTargetIr, ConstLinkTargetIr, ExecutableIr, ExecutableKind,
@@ -74,7 +72,6 @@ pub enum SyntheticEntrypointExecutableKind {
 impl LoweredPackage {
     pub(crate) fn lower(
         model: &PackageSourceModel,
-        operation_indexes: &LoweringDependencyOperationIndexes,
         service_calls: crate::LoweredServiceCalls,
     ) -> Result<Self, PublicationError> {
         let plan = model.plan();
@@ -102,35 +99,30 @@ impl LoweredPackage {
                         plan.diagnostics
                             .source_semantic_context_error(&source_path, error)
                     })?;
-                let unit =
-                    compile_publication_source_file_ir_unit(PublicationSourceLoweringInput {
-                        source: parsed.source_text(),
-                        role: file_ir_role_for_source_role(role),
-                        // pipeline 文档禁止 lowering 重算 name resolution:
-                        // package aliases 和 service aliases 必须从 name_resolution model 读,
-                        // 不得通过 model.dependencies 重新拿原始数据。
-                        package_aliases: model.name_resolution().package_aliases_map(),
-                        package_interface_methods: &package_interface_methods,
-                        package_operations: operation_indexes.package_operations(),
-                        service_dependency_operations: operation_indexes
-                            .service_dependency_operations(),
-                        external_type_symbols: model.indexes().publication_type_symbols(),
-                        service_dependency_aliases: model.name_resolution().service_aliases(),
-                        publication_db_metadata: model.indexes().publication_db_metadata_index(),
-                        semantic_context: &source_semantic_context,
-                        source_alias_targets: model
-                            .resolutions()
-                            .alias_targets_for_module(module_path),
-                        type_resolution: model.type_resolution(),
-                        expression_types: Some(model.expression_types()),
-                        callable_return_types: &callable_return_types,
-                        service_calls: Some(&service_calls),
-                    })
-                    .map_err(|error| {
-                        plan.diagnostics
-                            .source_file_ir_unit_error(&source_path, error)
-                    })?;
-                sources.push(compiled_publication_source(parsed, role, &unit));
+                let unit = compile_package_source_file_ir_unit(PackageSourceLoweringInput {
+                    source: parsed.source_text(),
+                    role: file_ir_role_for_source_role(role),
+                    // pipeline 文档禁止 lowering 重算 name resolution:
+                    // package aliases 和 service aliases 必须从 name_resolution model 读,
+                    // 不得通过 model.dependencies 重新拿原始数据。
+                    package_aliases: model.name_resolution().package_aliases_map(),
+                    package_interface_methods: &package_interface_methods,
+                    resolved_call_targets: model.resolved_call_targets(),
+                    external_type_symbols: model.indexes().publication_type_symbols(),
+                    service_dependency_aliases: model.name_resolution().service_aliases(),
+                    publication_db_metadata: model.indexes().publication_db_metadata_index(),
+                    semantic_context: &source_semantic_context,
+                    source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
+                    type_resolution: model.type_resolution(),
+                    expression_types: Some(model.expression_types()),
+                    callable_return_types: &callable_return_types,
+                    service_calls: Some(&service_calls),
+                })
+                .map_err(|error| {
+                    plan.diagnostics
+                        .source_file_ir_unit_error(&source_path, error)
+                })?;
+                sources.push(compiled_package_source(parsed, role, &unit));
                 file_ir_units.push(unit);
             }
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
@@ -846,7 +838,7 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
                         };
                         executable_seeds.push((target_unit_index, *executable_index));
                     }
-                    CallTargetIr::PackageSymbol { .. } => {}
+                    CallTargetIr::PackageCallable { .. } => {}
                     _ => {}
                 }
             }
@@ -935,7 +927,7 @@ fn collect_type_ref_named_locations(
     }
 }
 
-fn compiled_publication_source(
+fn compiled_package_source(
     source: &ParsedCompilerSource,
     role: PublicationSourceRole,
     unit: &FileIrUnit,

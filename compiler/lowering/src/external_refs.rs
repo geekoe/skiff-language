@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use crate::file_ir::{
     validate_file_ir_service_calls, AssignTargetIr, BoxSourceIr, CallIr, CallTargetIr,
     ExecutableBody, ExprIr, ExternalRefTable, FileIrServiceCallValidationError, FileIrUnit,
-    InterfaceDeclIr, MetadataValue, PackageOperationSymbolRef, PatternIr, ServiceCallRefIndex,
-    StmtIr, TypeDescriptorIr, TypeRefIr,
+    InterfaceDeclIr, MetadataValue, PackageCallableRef, PatternIr, ServiceCallRefIndex, StmtIr,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_model::{ServiceCallRef, RECEIVER_BUILTIN_CAPABILITY_VERSION};
 
@@ -269,15 +269,15 @@ fn collect_call_target_external_refs(target: &CallTargetIr, refs: &mut ExternalR
             push_unique(&mut refs.service_dependency_symbols, symbol.clone());
         }
         CallTargetIr::ServiceCall { .. } => {}
-        CallTargetIr::PackageSymbol {
+        CallTargetIr::PackageCallable {
             package_ref,
-            operation,
+            package_callable_id,
         } => {
             push_unique(
-                &mut refs.package_operation_symbols,
-                PackageOperationSymbolRef {
+                &mut refs.package_callables,
+                PackageCallableRef {
                     package_ref: package_ref.clone(),
-                    operation: operation.clone(),
+                    package_callable_id: package_callable_id.clone(),
                 },
             );
         }

@@ -14,7 +14,7 @@ use skiff_compiler_source::{
     source_graph::CompilerSourceFile,
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
-    TypeResolutionModel,
+    ResolvedCallTargetFacts, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, SourceFile},
@@ -26,7 +26,6 @@ use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     db_lowering::{lower_db_declarations, LoweredPackageDbMetadataIndex},
     declaration_lowering::{local_type_field_index, lower_type_declarations},
-    dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     executable_declaration_lowering::{
         lower_const_declarations, lower_executables, lowered_executable_signatures,
     },
@@ -38,13 +37,12 @@ use super::{
     suspend_analysis::suspend_index_for_source,
 };
 
-pub struct PublicationSourceLoweringInput<'a, 'context, 'publication> {
+pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub source: &'a str,
     pub role: &'a str,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub package_interface_methods: &'a PackageInterfaceMethodIndex,
-    pub package_operations: &'a PackageOperationIndex,
-    pub service_dependency_operations: &'a ServiceDependencyOperationIndex,
+    pub resolved_call_targets: &'a ResolvedCallTargetFacts,
     pub external_type_symbols: &'a PublicationTypeSymbolIndex,
     pub service_dependency_aliases: &'a BTreeSet<String>,
     pub publication_db_metadata: &'a PublicationDbMetadataIndex,
@@ -59,8 +57,7 @@ pub struct PublicationSourceLoweringInput<'a, 'context, 'publication> {
 struct SourceFileLoweringContext<'a> {
     package_aliases: &'a BTreeMap<String, Vec<String>>,
     package_interface_methods: &'a PackageInterfaceMethodIndex,
-    package_operations: &'a PackageOperationIndex,
-    service_dependency_operations: &'a ServiceDependencyOperationIndex,
+    resolved_call_targets: &'a ResolvedCallTargetFacts,
     external_type_symbols: &'a PublicationTypeSymbolIndex,
     service_dependency_aliases: &'a BTreeSet<String>,
     publication_db_metadata: &'a PublicationDbMetadataIndex,
@@ -71,10 +68,8 @@ static EMPTY_PACKAGE_ALIASES: std::sync::LazyLock<BTreeMap<String, Vec<String>>>
     std::sync::LazyLock::new(BTreeMap::new);
 static EMPTY_PACKAGE_INTERFACE_METHODS: std::sync::LazyLock<PackageInterfaceMethodIndex> =
     std::sync::LazyLock::new(PackageInterfaceMethodIndex::default);
-static EMPTY_PACKAGE_OPERATIONS: std::sync::LazyLock<PackageOperationIndex> =
-    std::sync::LazyLock::new(PackageOperationIndex::default);
-static EMPTY_SERVICE_DEPENDENCY_OPERATIONS: std::sync::LazyLock<ServiceDependencyOperationIndex> =
-    std::sync::LazyLock::new(ServiceDependencyOperationIndex::default);
+static EMPTY_RESOLVED_CALL_TARGETS: std::sync::LazyLock<ResolvedCallTargetFacts> =
+    std::sync::LazyLock::new(ResolvedCallTargetFacts::empty);
 static EMPTY_EXTERNAL_TYPE_SYMBOLS: std::sync::LazyLock<PublicationTypeSymbolIndex> =
     std::sync::LazyLock::new(PublicationTypeSymbolIndex::default);
 static EMPTY_SERVICE_DEPENDENCY_ALIASES: std::sync::LazyLock<BTreeSet<String>> =
@@ -87,8 +82,7 @@ impl<'a> SourceFileLoweringContext<'a> {
         SourceFileLoweringContext {
             package_aliases: &EMPTY_PACKAGE_ALIASES,
             package_interface_methods: &EMPTY_PACKAGE_INTERFACE_METHODS,
-            package_operations: &EMPTY_PACKAGE_OPERATIONS,
-            service_dependency_operations: &EMPTY_SERVICE_DEPENDENCY_OPERATIONS,
+            resolved_call_targets: &EMPTY_RESOLVED_CALL_TARGETS,
             external_type_symbols: &EMPTY_EXTERNAL_TYPE_SYMBOLS,
             service_dependency_aliases: &EMPTY_SERVICE_DEPENDENCY_ALIASES,
             publication_db_metadata: &EMPTY_PUBLICATION_DB_METADATA,
@@ -97,8 +91,8 @@ impl<'a> SourceFileLoweringContext<'a> {
     }
 }
 
-pub fn compile_publication_source_file_ir_unit(
-    input: PublicationSourceLoweringInput<'_, '_, '_>,
+pub fn compile_package_source_file_ir_unit(
+    input: PackageSourceLoweringInput<'_, '_, '_>,
 ) -> Result<FileIrUnit> {
     validate_file_ir_unit_role(input.role)?;
     let source_ast_hash = source_ast_hash(input.source)?;
@@ -107,8 +101,7 @@ pub fn compile_publication_source_file_ir_unit(
         source_ast_hash,
         input.package_aliases,
         input.package_interface_methods,
-        input.package_operations,
-        input.service_dependency_operations,
+        input.resolved_call_targets,
         input.external_type_symbols,
         input.service_dependency_aliases,
         input.publication_db_metadata,
@@ -199,13 +192,12 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
     let source_semantic_context = publication_semantic_context.source_context(&module_path)?;
     let mut callable_return_types = BTreeMap::new();
     extend_callable_return_types_for_source(&mut callable_return_types, &module_path, parsed.ast());
-    compile_publication_source_file_ir_unit(PublicationSourceLoweringInput {
+    compile_package_source_file_ir_unit(PackageSourceLoweringInput {
         source,
         role: &role,
         package_aliases: ctx.package_aliases,
         package_interface_methods: ctx.package_interface_methods,
-        package_operations: ctx.package_operations,
-        service_dependency_operations: ctx.service_dependency_operations,
+        resolved_call_targets: ctx.resolved_call_targets,
         external_type_symbols: ctx.external_type_symbols,
         service_dependency_aliases: ctx.service_dependency_aliases,
         publication_db_metadata: ctx.publication_db_metadata,
@@ -311,8 +303,7 @@ fn lower_source_file_ir_unit(
     source_ast_hash: String,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     external_type_symbols: &PublicationTypeSymbolIndex,
     service_dependency_aliases: &BTreeSet<String>,
     publication_db_metadata: &PublicationDbMetadataIndex,
@@ -394,10 +385,8 @@ fn lower_source_file_ir_unit(
         &type_indices,
         package_aliases,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         external_type_symbols,
-        service_dependency_aliases,
         module_path,
         &local_db_objects,
         semantic_context.interface_semantics,
@@ -429,12 +418,10 @@ fn lower_source_file_ir_unit(
         &const_indices,
         &type_indices,
         external_type_symbols,
-        service_dependency_aliases,
         module_path,
         package_aliases,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         &local_db_objects,
         semantic_context.interface_semantics,
         source_alias_targets,
@@ -539,7 +526,8 @@ mod tests {
         BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract,
         BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
         BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-        ContractOperationId, ContractRequirement, ReceiverCallAbi, ServiceProtocolIdentity,
+        ContractOperationId, ContractRequirement, PackageCallableId, PackageLocalAbiIdentity,
+        ReceiverCallAbi, ServiceProtocolIdentity,
     };
     use skiff_compiler_source::{
         api::PublicTypeKind, build_package_from_parsed_sources,
@@ -1309,5 +1297,71 @@ mod tests {
         let wire = serde_json::to_string(&unit).unwrap();
         assert!(!wire.contains("operationAbiId"));
         assert!(!wire.contains("serviceDependencySymbols"));
+    }
+
+    #[test]
+    fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
+        let source = r#"
+          function run() -> void {
+            utils.format()
+          }
+        "#;
+        let expression = skiff_compiler_source::ExpressionKey::new(
+            MODULE,
+            skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
+            0,
+        );
+        let expected_local_abi = PackageLocalAbiIdentity::new("local-abi:must-not-enter-call-site");
+        let package_callable_id = PackageCallableId::new("callable:utils.format");
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                expression,
+                skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
+                    package_requirement_alias: "utils".to_string(),
+                    package_callable_id: package_callable_id.clone(),
+                    expected_local_abi: expected_local_abi.clone(),
+                },
+            )]));
+        let ast = parse_source(source).unwrap();
+        let unit = compile_parsed_source_file_ir_unit_with_lowering_context(
+            ast,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                resolved_call_targets: &targets,
+                ..SourceFileLoweringContext::none()
+            },
+        )
+        .unwrap();
+
+        let run = executable(&unit, "run");
+        assert!(run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(
+                    &call.target,
+                    CallTargetIr::PackageCallable {
+                        package_ref: PackageRefIr::Dependency { dependency_ref },
+                        package_callable_id: target_callable_id,
+                    } if dependency_ref == "utils" && target_callable_id == &package_callable_id
+                )
+        )));
+        assert_eq!(unit.external_refs.package_callables.len(), 1);
+        assert_eq!(
+            unit.external_refs.package_callables[0].package_callable_id,
+            package_callable_id
+        );
+        assert_eq!(
+            unit.external_refs.package_callables[0].package_ref,
+            PackageRefIr::Dependency {
+                dependency_ref: "utils".to_string(),
+            }
+        );
+        let wire = serde_json::to_string(&unit).unwrap();
+        assert!(wire.contains("packageCallableId"));
+        assert!(!wire.contains(expected_local_abi.as_str()));
+        assert!(!wire.contains("operationAbiId"));
     }
 }
