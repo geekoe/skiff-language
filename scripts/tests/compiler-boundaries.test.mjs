@@ -9,6 +9,12 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checker = join(repoRoot, 'scripts', 'check-compiler-boundaries.mjs');
 
+test('terminal public-shape registry self-test rejects renamed aggregate and adapter shapes', async () => {
+  const result = await runChecker(['--self-test']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /terminal public-shape self-test passed \(5 cases\)/);
+});
+
 test('terminal package and code-free contract producers remain permitted', async () => {
   await withFixture(async (root) => {
     await write(
@@ -103,21 +109,19 @@ test('terminal compiler shape ignores test-only support files', async () => {
   });
 });
 
-test('projection-input permits arbitrary DTO constructors, getters, and builders', async () => {
+test('projection-input permits arbitrary DTO methods on its frozen public aggregate', async () => {
   await withFixture(async (root) => {
     await write(
       root,
       'compiler/projection-input/src/lib.rs',
-      `pub struct ResourceDto;
-
-impl ResourceDto {
+      projectionInputFixture(`impl ProjectionInput {
     pub fn construct_resource() -> Self { Self }
     pub fn checksum_bytes(&self) -> u64 { 0 }
     pub fn replacing_metadata(self) -> Self { self }
     #[must_use]
     pub const fn qualified_getter(&self) -> u64 { 0 }
 }
-`,
+`),
     );
 
     const result = await runChecker(['--root', root]);
@@ -132,22 +136,22 @@ test('projection-input rejects only an exact known behavior receiver and method 
     await write(
       root,
       'compiler/projection-input/src/lib.rs',
-      `pub struct ProjectionSourceFacts;
-pub struct HarmlessDto;
+      projectionInputFixture(`pub struct ProjectionSourceFacts;
+pub struct ProjectionSourceMetadata;
 
 impl ProjectionSourceFacts {
     pub fn derive_projection_abi_ids(&self) {}
 }
 
-impl HarmlessDto {
+impl ProjectionSourceMetadata {
     pub fn derive_projection_abi_ids(&self) {}
 }
-`,
+`),
     );
 
     const result = await runChecker(['--root', root]);
     assert.notEqual(result.code, 0, result.stdout);
-    assert.match(result.stderr, /compiler\/projection-input\/src\/lib\.rs:5/);
+    assert.match(result.stderr, /compiler\/projection-input\/src\/lib\.rs:13/);
     assert.match(result.stderr, /projection_input_pure_dto_api_phase_7_5/);
     assert.match(result.stderr, /known non-DTO public behavior/);
     assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 1, result.stderr);
@@ -159,7 +163,7 @@ test('projection-input rejects indented and qualified public free functions', as
     await write(
       root,
       'compiler/projection-input/src/lib.rs',
-      `mod nested {
+      projectionInputFixture(`mod nested {
   pub fn plain() {}
   #[must_use]
   pub async fn asynchronous() {}
@@ -167,14 +171,19 @@ test('projection-input rejects indented and qualified public free functions', as
   pub unsafe fn unsafe_behavior() {}
   #[allow(improper_ctypes_definitions)] pub extern "C" fn external() {}
 }
-`,
+`),
     );
 
     const result = await runChecker(['--root', root]);
     assert.notEqual(result.code, 0, result.stdout);
-    assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 5, result.stderr);
+    assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 10, result.stderr);
     assert.equal(
       (result.stderr.match(/pattern="public free functions"/g) ?? []).length,
+      5,
+      result.stderr,
+    );
+    assert.equal(
+      (result.stderr.match(/pattern="undeclared public fn"/g) ?? []).length,
       5,
       result.stderr,
     );
@@ -224,6 +233,18 @@ async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, contents);
+}
+
+function projectionInputFixture(contents) {
+  return `pub struct ProjectionInput {
+    file_ir_units: (),
+    lowering: (),
+    resources: (),
+    source: (),
+    source_metadata: (),
+}
+
+${contents}`;
 }
 
 function runChecker(args) {

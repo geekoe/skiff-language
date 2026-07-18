@@ -2,7 +2,20 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  collectTerminalPublicShapeViolations,
+  runTerminalPublicShapeSelfTest,
+} from './lib/compiler-terminal-public-shape.mjs';
+
 const defaultRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const terminalPublicShapeTools = {
+  implNameAt: projectionInputImplNameAt,
+  lineNumberAt,
+  matchingBraceIndex,
+  publicFunctionDeclarations: projectionInputPublicFunctionDeclarations,
+  readText: async (file) =>
+    stripInlineTestModules(file.text ?? (await readFile(file.absPath, 'utf8'))),
+};
 
 const sourceCompileDownstreamStageImports = crateModuleImportRegexp([
   'lowering',
@@ -198,6 +211,8 @@ for (const entry of transitionalLedger) {
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
   printUsage();
+} else if (options.selfTest) {
+  await runTerminalPublicShapeSelfTest(terminalPublicShapeTools);
 } else {
   await assertRootDirectory(options.root);
   await runCheck(options.root);
@@ -212,6 +227,9 @@ async function runCheck(repoRoot) {
     denials.push(...(await collectMatches(rule, rustFiles, 'deny')));
   }
   denials.push(...(await collectProjectionInputPurityViolations(rustFiles)));
+  denials.push(
+    ...(await collectTerminalPublicShapeViolations(rustFiles, terminalPublicShapeTools)),
+  );
 
   for (const entry of transitionalLedger) {
     warnings.push(...(await collectMatches(entry, rustFiles, 'warn')));
@@ -429,11 +447,15 @@ function normalizePath(path) {
 }
 
 function parseArgs(argv) {
-  const options = { help: false, root: defaultRoot };
+  const options = { help: false, root: defaultRoot, selfTest: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--help' || arg === '-h') {
       options.help = true;
+      continue;
+    }
+    if (arg === '--self-test') {
+      options.selfTest = true;
       continue;
     }
     if (arg === '--root') {
@@ -474,9 +496,10 @@ async function assertRootDirectory(repoRoot) {
 }
 
 function printUsage() {
-  console.log(`Usage: node scripts/check-compiler-boundaries.mjs [--root <path>]
+  console.log(`Usage: node scripts/check-compiler-boundaries.mjs [--root <path>] [--self-test]
 
-Checks compiler production source boundaries. --root is reserved for hermetic fixtures.`);
+Checks compiler production source boundaries. --root is reserved for hermetic fixtures.
+--self-test runs registry-derived terminal public-shape mutations without scanning the repository.`);
 }
 
 function stripInlineTestModules(text) {
