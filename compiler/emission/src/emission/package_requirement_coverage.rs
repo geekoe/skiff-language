@@ -37,12 +37,12 @@ pub(super) fn validate_file_ir_package_requirement_coverage(
                 &package_ids,
             )?;
         }
-        for symbol in &file.unit.external_refs.package_operation_symbols {
+        for callable in &file.unit.external_refs.package_callables {
             validate_package_ref(
                 artifact,
                 &file.unit.module_path,
-                "packageOperationSymbols",
-                &symbol.package_ref,
+                "packageCallables",
+                &callable.package_ref,
                 &aliases,
                 &package_ids,
             )?;
