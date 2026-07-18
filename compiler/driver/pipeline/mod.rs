@@ -146,15 +146,9 @@ fn complete_package_requirement_closure(
 
 fn file_ir_unit_references_platform_std(file: &FileIrUnit) -> bool {
     file.external_refs
-        .package_symbols
+        .package_callables
         .iter()
-        .map(|symbol| &symbol.package)
-        .chain(
-            file.external_refs
-                .package_operation_symbols
-                .iter()
-                .map(|symbol| &symbol.package_ref),
-        )
+        .map(|callable| &callable.package_ref)
         .any(|package_ref| match package_ref {
             PackageRefIr::PackageId { package_id } => package_id == SKIFF_STD_PUBLICATION_ID,
             PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",

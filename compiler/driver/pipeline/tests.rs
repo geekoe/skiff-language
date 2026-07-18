@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::assign_package_artifact_identities;
 use skiff_artifact_model::{
-    PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageOperationSymbolRef, PackageRuntimeRequirements, PackageSymbolRef,
-    PublicationOperationKind, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -13,13 +13,14 @@ use super::*;
 fn used_std_adds_exact_requirement_from_validated_canonical_artifact() {
     let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "7.4.2");
     let mut file = FileIrUnit::empty("main", "source");
-    file.external_refs.package_symbols.push(PackageSymbolRef {
-        package: PackageRefIr::PackageId {
-            package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
-        },
-        symbol_path: "std.time.Date".to_string(),
-        abi_expectation: None,
-    });
+    file.external_refs
+        .package_callables
+        .push(PackageCallableRef {
+            package_ref: PackageRefIr::PackageId {
+                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+            },
+            package_callable_id: PackageCallableId::new("callable:clock.now"),
+        });
 
     let requirements = complete_package_requirement_closure(
         "example.com/app",
@@ -40,31 +41,23 @@ fn used_std_adds_exact_requirement_from_validated_canonical_artifact() {
 }
 
 #[test]
-fn operation_ref_requires_std_but_unused_and_std_self_do_not() {
+fn package_callable_ref_requires_std_but_unused_and_std_self_do_not() {
     let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "2.0.0");
-    let mut operation_file = FileIrUnit::empty("main", "source");
-    operation_file
+    let mut callable_file = FileIrUnit::empty("main", "source");
+    callable_file
         .external_refs
-        .package_operation_symbols
-        .push(PackageOperationSymbolRef {
+        .package_callables
+        .push(PackageCallableRef {
             package_ref: PackageRefIr::Dependency {
                 dependency_ref: "std".to_string(),
             },
-            operation: skiff_artifact_model::OperationAbiRef {
-                operation_abi_id: "operation".to_string(),
-                kind: PublicationOperationKind::PublicFunction,
-                public_path: "std.task.run".to_string(),
-                public_instance_key: None,
-                interface: None,
-                method_abi_id: None,
-                display_name: "run".to_string(),
-            },
+            package_callable_id: PackageCallableId::new("callable:std.task.run"),
         });
     assert_eq!(
         complete_package_requirement_closure(
             "example.com/app",
             Vec::new(),
-            std::slice::from_ref(&operation_file),
+            std::slice::from_ref(&callable_file),
             std::slice::from_ref(&std_artifact),
         )
         .unwrap()
@@ -81,7 +74,7 @@ fn operation_ref_requires_std_but_unused_and_std_self_do_not() {
     assert!(complete_package_requirement_closure(
         SKIFF_STD_PUBLICATION_ID,
         Vec::new(),
-        &[operation_file],
+        &[callable_file],
         &[],
     )
     .unwrap()
@@ -89,15 +82,35 @@ fn operation_ref_requires_std_but_unused_and_std_self_do_not() {
 }
 
 #[test]
+fn package_callable_id_does_not_infer_std_requirement() {
+    let mut file = FileIrUnit::empty("main", "source");
+    file.external_refs
+        .package_callables
+        .push(PackageCallableRef {
+            package_ref: PackageRefIr::Dependency {
+                dependency_ref: "tools".to_string(),
+            },
+            package_callable_id: PackageCallableId::new("callable:std.task.run"),
+        });
+
+    assert!(
+        complete_package_requirement_closure("example.com/app", Vec::new(), &[file], &[],)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn used_std_fails_closed_without_one_valid_same_round_artifact() {
     let mut file = FileIrUnit::empty("main", "source");
-    file.external_refs.package_symbols.push(PackageSymbolRef {
-        package: PackageRefIr::PackageId {
-            package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
-        },
-        symbol_path: "std.time.Date".to_string(),
-        abi_expectation: None,
-    });
+    file.external_refs
+        .package_callables
+        .push(PackageCallableRef {
+            package_ref: PackageRefIr::PackageId {
+                package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+            },
+            package_callable_id: PackageCallableId::new("callable:clock.now"),
+        });
     let missing = complete_package_requirement_closure(
         "example.com/app",
         Vec::new(),
