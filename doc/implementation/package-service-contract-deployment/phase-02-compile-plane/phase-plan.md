@@ -153,7 +153,13 @@ R10A
   ├── R10D contract/disposition fixtures
   └── R10E std/prelude schema fixtures
 
-R03 + R04 + R06 + R10B + R10C + R10D + R10E + R11 + R13
+R10B + R10C + R10E checkpoint review
+  └── R10G shared fixture file-write owner
+
+R10G
+  └── R10F std package imports fixture
+
+R03 + R04 + R06 + R10B + R10C + R10D + R10E + R10F + R10G + R11 + R13
   └── T07 phase integration gate -> A01 independent acceptance
 ```
 
@@ -169,6 +175,8 @@ R03 + R04 + R06 + R10B + R10C + R10D + R10E + R11 + R13
 | 5a | R10 | production cleanup合流后先冻结共享 canonical fixture API |
 | 5b | R10A | 三条 consumer lane 的 representative compile-only probe，最后收敛 shared API |
 | 5c | R10B、R10C、R10D、R10E | consumer 批次按可用三个 worker 槽动态扇出，文件 ownership 互斥 |
+| 5d | R10G | independent review 暴露的共享 fixture file-write 抽象前置 |
+| 5e | R10F | 修复遗漏的 std_package_imports terminal target |
 | 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
@@ -223,9 +231,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10C | [Artifact/config/DB/resource fixtures](tasks/P2-R10C-artifact-config-db-resource-fixtures.md) | R10A | 中；consumer batch 2 |
 | R10D | [Contract/disposition fixtures](tasks/P2-R10D-contract-disposition-fixtures.md) | R10A | 中；consumer batch 3 |
 | R10E | [Std/prelude schema fixtures](tasks/P2-R10E-std-schema-fixtures.md) | R10A | 中；从 R10B 独立出的 consumer batch 4 |
+| R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
+| R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10B、R10C、R10D、R10E、R11、R13 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
@@ -291,6 +301,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   三者都不修改 production 或 `compiler/driver/service_publication_tests.rs`。只有真正验证 service protocol/
   conformance 的测试才构造显式 ServiceContract；禁止空/fake contract、provider 反推、万能聚合 builder。
 - R10E 独占 `package_std_schema.rs` 与 `prelude_std_schema.rs`；它从 R10B 动态拆出，二者不得再修改对方文件。
+- R10G 独占 `common/test_dir.rs` 与 review 列出的重复 file-write call sites，只做单一 IO abstraction 与机械
+  consumer migration；R10F 随后独占 `std_package_imports.rs`，不得恢复 test-support/service aggregate。
 - R11 独占 canonical ServiceContract schema grammar、normalization、validation 与 identity。
   discriminator/branch tag、map key identity 和当前 recursion policy 必须进入 typed contract；旧
   JSON-schema/serviceAssembly presentation 不进入 R11，也不得从 provider source 推导 contract。

@@ -2,14 +2,14 @@
 
 ## 目标
 
-在 R03、R04、R06、R10B、R10C、R10D、R10E、R11、R13 合入，且旧 integration tail 从未进入新 branch ancestry 后，运行一次
+在 R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 合入，且旧 integration tail 从未进入新 branch ancestry 后，运行一次
 阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖 R03、R04、R06、R10B、R10C、R10D、R10E、R11、R13 和所有高风险任务证据。
+- 依赖 R03、R04、R06、R10B、R10C、R10D、R10E、R10F、R10G、R11、R13 和所有高风险任务证据。
 
 ## 完成态
 
