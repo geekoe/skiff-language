@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::OperationAbiRef;
-use skiff_compiler_source::{
-    DependencyPackageOperationFacts, PackageSourceModel, ResolvedDependencies,
-    SourceCompileError as PublicationError,
-};
+use skiff_compiler_source::{PackageSourceModel, SourceCompileError as PublicationError};
 use skiff_syntax::error::{CompileError, Result};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -138,47 +135,14 @@ impl LoweringDependencyOperationIndexes {
         &self.service_dependency_operations
     }
 
-    /// Builds the operation indexes used by the contract-only service-call
-    /// path. Package direct calls retain their existing ABI lookup, while
-    /// service calls must resolve through the typed contract carrier and never
-    /// read a provider PublicationAbi.
+    /// Legacy operation-ABI indexes stay empty on the canonical package path.
+    /// Contract calls are materialized separately from typed contract facts.
     pub(crate) fn build_for_contract_service_calls(
-        model: &PackageSourceModel,
+        _model: &PackageSourceModel,
     ) -> std::result::Result<Self, PublicationError> {
-        let dependencies = model.dependencies();
         Ok(Self::new(
-            package_operation_index(
-                dependencies,
-                dependencies.dependency_package_operation_facts(),
-            )?,
+            PackageOperationIndex::default(),
             ServiceDependencyOperationIndex::default(),
         ))
     }
-}
-
-fn package_operation_index(
-    dependencies: &ResolvedDependencies,
-    package_operation_facts: &[DependencyPackageOperationFacts],
-) -> std::result::Result<PackageOperationIndex, PublicationError> {
-    let mut index = PackageOperationIndex::default();
-    for package in package_operation_facts {
-        let package_refs = package_dependency_refs_for_operation_index(package, dependencies);
-        for source_call in package.source_call_operations() {
-            for package_ref in &package_refs {
-                index.insert_operation(
-                    package_ref.clone(),
-                    source_call.source_call_path.clone(),
-                    source_call.operation.clone(),
-                );
-            }
-        }
-    }
-    Ok(index)
-}
-
-fn package_dependency_refs_for_operation_index(
-    package: &DependencyPackageOperationFacts,
-    dependencies: &ResolvedDependencies,
-) -> Vec<String> {
-    dependencies.package_operation_refs(package.package_id(), package.version())
 }

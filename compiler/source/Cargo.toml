@@ -15,7 +15,6 @@ test-support = []
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-compiler-core = { path = "../core" }
-skiff-compiler-publication-abi = { path = "../publication-abi" }
 compiler-input-model = { package = "skiff-compiler-input-model", path = "../input-model" }
 skiff-syntax = { path = "../../syntax" }
 hex = "0.4"

@@ -1764,7 +1764,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        semantic::{SemanticPublication, SemanticSource, SourceOrigin},
+        semantic::{SemanticPublication, SemanticSource},
         shared::parser::parse_source,
     };
 
@@ -1776,7 +1776,6 @@ mod tests {
         let publication = SemanticPublication::new(vec![SemanticSource::new(
             "test.skiff",
             "test",
-            SourceOrigin::Service,
             &ast,
             &aliases,
         )]);

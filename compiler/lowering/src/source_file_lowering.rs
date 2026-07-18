@@ -9,7 +9,7 @@ use skiff_compiler_source::{
     publication_db_metadata_index,
     semantic::{
         DbAttachmentIndex, PublicationSemanticContext, SemanticPublication, SemanticSource,
-        SourceOrigin, SourceSemanticContext,
+        SourceSemanticContext,
     },
     source_graph::CompilerSourceFile,
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
@@ -191,7 +191,6 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
     let semantic_source = SemanticSource::new(
         parsed.relative_path().display().to_string(),
         &module_path,
-        SourceOrigin::Service,
         parsed.ast(),
         parsed.alias_targets(),
     );

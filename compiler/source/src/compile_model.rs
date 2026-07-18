@@ -25,10 +25,9 @@ use super::SourceSymbolKey;
 use super::{
     api::{PublicCallableKind, PublicModuleExport, PublicSymbolKind, PublicTypeKind},
     publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementScope,
-    ConfigRequirementSet, DependencyPackageOperationFacts, ExpressionSourceMap,
-    ExpressionTypeModel, NameResolutionModel, PackageCompilePlan, PublicationApiSeed,
-    PublicationTypeSymbolIndex, ResolvedCallTargetFacts, TypeResolutionContext,
-    TypeResolutionModel, TypeResolutionPackageFacts,
+    ConfigRequirementSet, ExpressionSourceMap, ExpressionTypeModel, NameResolutionModel,
+    PackageCompilePlan, PublicationApiSeed, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
+    TypeResolutionContext, TypeResolutionModel, TypeResolutionPackageFacts,
 };
 use crate::shared::publication_error::PublicationError;
 
@@ -52,8 +51,6 @@ pub struct ResolutionModels {
 #[derive(Debug)]
 pub struct ResolvedDependencies {
     package_aliases: BTreeMap<String, Vec<String>>,
-    package_dependencies: Vec<PackageDependency>,
-    dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
 }
 
 #[derive(Debug)]
@@ -148,7 +145,6 @@ pub struct PackageSourceModelInput<'a> {
     pub package_dependencies: &'a [PackageDependency],
     pub package_db_metadata_index: Option<PublicationDbMetadataIndex>,
     pub type_resolution_package_facts: Option<&'a [TypeResolutionPackageFacts<'a>]>,
-    pub dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
     pub entity_model: PublicationEntityModel,
     pub name_resolution: NameResolutionModel,
     pub policy: PackageCompilePolicy<'a>,
@@ -206,11 +202,7 @@ impl PackageSourceModel {
             })?;
         let publication_api = PublicationApiModel::new(input.publication_api_seed);
         let export_bindings = ExportBindingModel::from_publication_api(publication_api.seed());
-        let dependencies = ResolvedDependencies::new(
-            input.package_aliases.clone(),
-            input.package_dependencies.to_vec(),
-            input.dependency_package_operation_facts,
-        );
+        let dependencies = ResolvedDependencies::new(input.package_aliases.clone());
         let expression_types = ExpressionTypeModel::build(
             &input.parsed_sources,
             &expression_sources,
@@ -750,43 +742,12 @@ impl ResolutionModels {
 }
 
 impl ResolvedDependencies {
-    fn new(
-        package_aliases: BTreeMap<String, Vec<String>>,
-        package_dependencies: Vec<PackageDependency>,
-        dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
-    ) -> Self {
-        Self {
-            package_aliases,
-            package_dependencies,
-            dependency_package_operation_facts,
-        }
+    fn new(package_aliases: BTreeMap<String, Vec<String>>) -> Self {
+        Self { package_aliases }
     }
 
     pub fn package_aliases(&self) -> &BTreeMap<String, Vec<String>> {
         &self.package_aliases
-    }
-
-    pub fn package_dependencies(&self) -> &[PackageDependency] {
-        &self.package_dependencies
-    }
-
-    pub fn package_operation_refs(&self, package_id: &str, version: &str) -> Vec<String> {
-        let mut refs = vec![package_id.to_string()];
-        if package_id == crate::shared::id::SKIFF_STD_PUBLICATION_ID {
-            refs.push("std".to_string());
-        }
-        for dependency in &self.package_dependencies {
-            if dependency.id == package_id && dependency.version == version {
-                refs.push(dependency.effective_alias().to_string());
-            }
-        }
-        refs.sort();
-        refs.dedup();
-        refs
-    }
-
-    pub fn dependency_package_operation_facts(&self) -> &[DependencyPackageOperationFacts] {
-        &self.dependency_package_operation_facts
     }
 }
 

@@ -24,9 +24,8 @@ use crate::file_ir::{
     AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
     ExprRefIr, FunctionTypeParamIr, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
     InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue,
-    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, RemoteOperationSlotPlanIr,
-    RemoteOperationTablePlanIr, ServiceDependencySymbolRef, ServiceSymbolRef, SlotIr, SlotKind,
-    StmtIr, StmtRefIr, TypeRefIr, UnaryOpIr,
+    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, ServiceDependencySymbolRef,
+    ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
@@ -894,69 +893,6 @@ impl<'a> FunctionLowerer<'a> {
                     type_ref_ir_type_text(&other)
                 )));
             }
-        }
-
-        if let Expr::RemotePublicInstanceSource(source) = value {
-            let expected_value_key =
-                expression_key_offset(box_key, 1, "remote interface box source")?;
-            let actual_value_key = self.next_expression_key().ok_or_else(|| {
-                CompileError::Semantic(
-                    "remote interface boxing lowering requires an ExpressionKey for the source expression"
-                        .to_string(),
-                )
-            })?;
-            if actual_value_key != expected_value_key {
-                return Err(CompileError::Semantic(format!(
-                    "remote interface boxing source expected ExpressionKey {:?}, but lowering reached {:?}",
-                    expected_value_key, actual_value_key
-                )));
-            }
-            let projection = self
-                .expression_types
-                .and_then(|expression_types| expression_types.remote_interface_box(box_key))
-                .ok_or_else(|| {
-                    CompileError::Semantic(format!(
-                        "missing remote interface boxing resolution fact for ExpressionKey {:?}",
-                        box_key
-                    ))
-                })?;
-            if projection.dependency_ref != source.dependency_ref
-                || projection.public_instance_key != source.public_instance_key
-                || projection.interface != selector.instantiation_ref
-            {
-                return Err(CompileError::Semantic(format!(
-                    "remote interface boxing resolution for ExpressionKey {:?} does not match source `{}/{}` as `{}`",
-                    box_key, source.dependency_ref, source.public_instance_key, selector.source_text
-                )));
-            }
-            let value = self.push_expr(ExprIr::Literal {
-                value: LiteralIr::Null,
-            });
-            return Ok(ExprIr::InterfaceBox {
-                value,
-                interface: selector.instantiation_ref,
-                source: BoxSourceIr::Remote {
-                    dependency_ref: source.dependency_ref.clone(),
-                    public_instance_key: source.public_instance_key.clone(),
-                    operations: RemoteOperationTablePlanIr {
-                        interface: projection.interface.clone(),
-                        slots: projection
-                            .slots
-                            .iter()
-                            .map(|slot| RemoteOperationSlotPlanIr {
-                                slot: slot.slot,
-                                method_abi_id: slot.method_abi_id.clone(),
-                                signature: InterfaceMethodSlotSignatureIr {
-                                    params: slot.params.clone(),
-                                    return_type: slot.return_type.clone(),
-                                },
-                                operation_abi_id: slot.operation.operation_abi_id.clone(),
-                            })
-                            .collect(),
-                    },
-                    callee_protocol_identity: projection.callee_protocol_identity.clone(),
-                },
-            });
         }
 
         let value_key = expression_key_offset(box_key, 1, "interface boxing value")?;

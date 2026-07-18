@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     root_refs::{validate_source_root_refs, RootRefValidationPolicy},
-    semantic::{SemanticPublication, SemanticSource, SourceOrigin},
+    semantic::{SemanticPublication, SemanticSource},
     shared::publication_error::PublicationError,
     shared::{ast::SourceFile, source_role::PublicationSourceRole},
     source_graph::CompilerSourceFile,
@@ -109,27 +109,8 @@ fn build_parsed_sources(
         .collect())
 }
 
-pub fn service_semantic_publication<'a>(
-    parsed_sources: &'a [ParsedCompilerSource],
-) -> SemanticPublication<'a> {
-    SemanticPublication::new(
-        parsed_sources
-            .iter()
-            .map(|parsed| {
-                SemanticSource::new(
-                    parsed.source.relative_path.display().to_string(),
-                    &parsed.source.module_path,
-                    SourceOrigin::Service,
-                    parsed.ast(),
-                    parsed.alias_targets(),
-                )
-            })
-            .collect(),
-    )
-}
-
 pub fn package_semantic_publication<'a>(
-    package_id: &'a str,
+    _package_id: &'a str,
     parsed_sources: &'a [ParsedCompilerSource],
 ) -> SemanticPublication<'a> {
     SemanticPublication::new(
@@ -139,7 +120,6 @@ pub fn package_semantic_publication<'a>(
                 SemanticSource::new(
                     parsed.source.relative_path.display().to_string(),
                     &parsed.source.module_path,
-                    SourceOrigin::Package { package_id },
                     parsed.ast(),
                     parsed.alias_targets(),
                 )

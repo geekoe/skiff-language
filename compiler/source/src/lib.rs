@@ -8,7 +8,6 @@ mod config_metadata;
 pub(crate) mod config_requirements;
 pub(crate) mod config_usage;
 mod dependency_analysis;
-mod dependency_operation_facts;
 pub mod entity;
 pub(crate) mod expression_model;
 pub(crate) mod expression_type_model;
@@ -22,7 +21,6 @@ pub mod package_rules;
 pub mod parsed_sources;
 pub mod prelude_registry;
 pub mod provider_rules;
-mod remote_public_instance;
 pub mod reserved_names;
 pub mod resolved_call_targets;
 pub mod root_projection_validation;
@@ -30,9 +28,6 @@ pub mod root_refs;
 pub(crate) mod runtime_type_projection;
 pub mod semantic;
 mod semantics;
-pub mod service_ingress;
-pub mod service_package_facts;
-pub(crate) mod service_rules;
 pub(crate) mod shared;
 mod source_file_facts;
 pub mod source_graph;
@@ -76,7 +71,6 @@ pub use dependency_analysis::{
     ContractDependencyAnalysisFacts, PackageDependencyAnalysisFacts,
     PackageDependencyCallableAnalysis, SourceDependencyAnalysisInput,
 };
-pub use dependency_operation_facts::DependencyPackageOperationFacts;
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
@@ -90,19 +84,10 @@ pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
-pub use remote_public_instance::{
-    RemotePublicInstanceDirectOperation, RemotePublicInstanceOperationProjection,
-    RemotePublicInstanceOperationResolver, RemotePublicInstanceOperationSlot,
-};
 pub use resolved_call_targets::{
     ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
 pub use semantics::PackageCompilePlan;
-pub use service_ingress::{
-    ServiceHttpIngressInput, ServiceHttpRouteIngress, ServiceHttpRouteIngressInput,
-    ServiceIngressHandler, ServiceIngressInput, ServiceIngressModel, ServiceWebSocketIngress,
-    ServiceWebSocketIngressInput,
-};
 pub use shared::publication_error::PublicationError as SourceCompileError;
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
@@ -126,10 +111,8 @@ pub fn build_package_from_parsed_sources(
     )
 }
 
-/// T05 facade entrypoint for verified PackageArtifact/ServiceContract facts.
-/// Existing legacy callers deliberately receive an empty canonical dependency
-/// input and therefore resolve dependency calls to Unknown rather than deriving
-/// new identities from legacy publication ABI.
+/// Package compilation entrypoint for validated PackageArtifact and
+/// ServiceContract dependency facts.
 pub fn build_package_from_parsed_sources_with_dependency_analysis(
     input: CompileParsedPackageSourcesInput<'_, '_>,
     dependency_analysis: &SourceDependencyAnalysisInput,
@@ -158,8 +141,6 @@ fn build_from_linked(
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
     let package_db_metadata_index =
         package_db_metadata_index(linked.package_facts, linked.package_dependencies);
-    let dependency_package_operation_facts =
-        DependencyPackageOperationFacts::from_package_facts(linked.package_facts)?;
     let source_identity = source_identity::source_identity(&parsed_sources);
     let declaration_anchors = source_identity::PublicationDeclarationAnchors::build(
         &parsed_sources,
@@ -203,7 +184,6 @@ fn build_from_linked(
         package_dependencies: linked.package_dependencies,
         package_db_metadata_index,
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
-        dependency_package_operation_facts,
         entity_model,
         name_resolution,
         policy: linked.policy,

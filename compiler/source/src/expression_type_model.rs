@@ -20,7 +20,6 @@ use crate::{
 
 use super::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, PublicationDbMetadataIndex,
-    RemotePublicInstanceOperationProjection, RemotePublicInstanceOperationResolver,
     ResolvedDependencies, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 
@@ -33,7 +32,6 @@ use expression_assignability::{record_type_fields, ExpressionAssignability};
 #[derive(Clone, Debug, Default)]
 pub struct ExpressionTypeModel {
     facts: BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
@@ -196,14 +194,11 @@ struct OwnerChecker<'a> {
     publication_db_metadata: &'a PublicationDbMetadataIndex,
     expression_sources: &'a ExpressionSourceMap,
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
     return_type: Option<TypeRef>,
     type_context: TypeResolutionContext<'a>,
     env: BTreeMap<String, ResolvedTypeRef>,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes:
-        &'a mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         &'a mut BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
@@ -216,18 +211,13 @@ impl ExpressionTypeModel {
         expression_sources: &ExpressionSourceMap,
         type_resolution: &TypeResolutionModel,
         publication_db_metadata: &PublicationDbMetadataIndex,
-        dependencies: Option<&ResolvedDependencies>,
+        _dependencies: Option<&ResolvedDependencies>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
         let mut facts = BTreeMap::new();
-        let mut remote_interface_boxes = BTreeMap::new();
         let mut constructor_validations = BTreeMap::new();
         let mut representation_constructor_validations = BTreeMap::new();
         let mut diagnostics = Vec::new();
-        let remote_public_instances = dependencies.map(|dependencies| {
-            RemotePublicInstanceOperationResolver::new(dependencies, type_resolution)
-        });
-
         for parsed in parsed_sources {
             check_source(
                 parsed.source().module_path.as_str(),
@@ -236,9 +226,7 @@ impl ExpressionTypeModel {
                 type_resolution,
                 publication_db_metadata,
                 &callable_signatures,
-                remote_public_instances.clone(),
                 &mut facts,
-                &mut remote_interface_boxes,
                 &mut constructor_validations,
                 &mut representation_constructor_validations,
                 &mut diagnostics,
@@ -247,7 +235,6 @@ impl ExpressionTypeModel {
 
         let model = Self {
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
         };
@@ -260,13 +247,6 @@ impl ExpressionTypeModel {
 
     pub fn fact(&self, key: &ExpressionKey) -> Option<&ExpressionTypeFact> {
         self.facts.get(key)
-    }
-
-    pub fn remote_interface_box(
-        &self,
-        key: &ExpressionKey,
-    ) -> Option<&RemotePublicInstanceOperationProjection> {
-        self.remote_interface_boxes.get(key)
     }
 
     pub fn constructor_validation(&self, key: &ExpressionKey) -> Option<&ConstructorValidation> {
@@ -328,9 +308,7 @@ fn check_source(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: &mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations: &mut BTreeMap<
         ExpressionKey,
@@ -356,10 +334,8 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
             &const_env,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -384,10 +360,8 @@ fn check_source(
                 type_resolution,
                 publication_db_metadata,
                 callable_signatures,
-                remote_public_instances,
                 &const_env,
                 facts,
-                remote_interface_boxes,
                 constructor_validations,
                 representation_constructor_validations,
                 diagnostics,
@@ -405,10 +379,8 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
             None,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -436,10 +408,8 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
             None,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -464,10 +434,8 @@ fn check_source(
                     type_resolution,
                     publication_db_metadata,
                     callable_signatures,
-                    remote_public_instances,
                     None,
                     facts,
-                    remote_interface_boxes,
                     constructor_validations,
                     representation_constructor_validations,
                     diagnostics,
@@ -516,10 +484,8 @@ fn check_function_owner(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
     const_env: &BTreeMap<String, ResolvedTypeRef>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: &mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations: &mut BTreeMap<
         ExpressionKey,
@@ -553,10 +519,8 @@ fn check_function_owner(
         type_resolution,
         publication_db_metadata,
         callable_signatures,
-        remote_public_instances,
         Some(function.return_type.clone()),
         facts,
-        remote_interface_boxes,
         constructor_validations,
         representation_constructor_validations,
         diagnostics,
@@ -576,13 +540,8 @@ impl<'a> OwnerChecker<'a> {
         type_resolution: &'a TypeResolutionModel,
         publication_db_metadata: &'a PublicationDbMetadataIndex,
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
-        remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
         return_type: Option<TypeRef>,
         facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-        remote_interface_boxes: &'a mut BTreeMap<
-            ExpressionKey,
-            RemotePublicInstanceOperationProjection,
-        >,
         constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
         representation_constructor_validations: &'a mut BTreeMap<
             ExpressionKey,
@@ -598,13 +557,11 @@ impl<'a> OwnerChecker<'a> {
             publication_db_metadata,
             expression_sources,
             callable_signatures,
-            remote_public_instances,
             return_type,
             type_context,
             env,
             path_refinements: BTreeMap::new(),
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -1098,7 +1055,7 @@ impl<'a> OwnerChecker<'a> {
             Expr::Identifier(name) => refined_ty.clone().or_else(|| self.env.get(name).cloned()),
             Expr::RemotePublicInstanceSource(source) => {
                 if diagnose_unknown_field {
-                    let mut message = format!(
+                    let message = format!(
                         "{}: remote public instance source `{}/{}` is not a value at {}; use `{}/{} as I` to box it or `{}/{}.method(...)` to call it directly",
                         self.module_path,
                         source.dependency_ref,
@@ -1109,22 +1066,6 @@ impl<'a> OwnerChecker<'a> {
                         source.dependency_ref,
                         source.public_instance_key
                     );
-                    if let Some(resolver) = self.remote_public_instances {
-                        if let Ok(interface_count) = resolver.public_instance_interface_count(
-                            &source.dependency_ref,
-                            &source.public_instance_key,
-                        ) {
-                            if interface_count > 1 {
-                                message.push_str(&format!(
-                                    "; public instance exports {interface_count} interfaces, so the interface projection cannot be inferred without `as I`"
-                                ));
-                            } else if interface_count == 1 {
-                                message.push_str(
-                                    "; `as I` is required even though the public instance exports one interface",
-                                );
-                            }
-                        }
-                    }
                     self.diagnostics.push(message);
                 }
                 None
@@ -1199,9 +1140,6 @@ impl<'a> OwnerChecker<'a> {
                 }
             }
             Expr::InterfaceBox { value, interface } => {
-                if let Expr::RemotePublicInstanceSource(source) = value.as_ref() {
-                    return self.check_remote_interface_box(&key, source, interface);
-                }
                 let value_ty = self.check_expr(value);
                 let selector = match self
                     .type_resolution
@@ -1418,80 +1356,6 @@ impl<'a> OwnerChecker<'a> {
             ExpressionTypeFact {
                 ty: ty.clone(),
                 span,
-            },
-        );
-        ty
-    }
-
-    fn check_remote_interface_box(
-        &mut self,
-        box_key: &ExpressionKey,
-        source: &crate::shared::ast::RemotePublicInstanceSource,
-        interface: &TypeRef,
-    ) -> Option<ResolvedTypeRef> {
-        let source_key = self.next_key();
-        self.facts.insert(
-            source_key.clone(),
-            ExpressionTypeFact {
-                ty: None,
-                span: self.expression_span(&source_key),
-            },
-        );
-        let selector = match self
-            .type_resolution
-            .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
-        {
-            Ok(selector) => selector,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote interface boxing selector `{}` failed at {}: {error}",
-                    self.module_path,
-                    interface.name,
-                    self.expression_span_label(box_key)
-                ));
-                return None;
-            }
-        };
-        let Some(resolver) = self.remote_public_instances else {
-            self.diagnostics.push(format!(
-                "{}: remote public instance source `{}/{}` cannot be boxed at {} because service dependency metadata is unavailable",
-                self.module_path,
-                source.dependency_ref,
-                source.public_instance_key,
-                self.expression_span_label(box_key)
-            ));
-            return None;
-        };
-        let projection = match resolver.resolve_projection(
-            &source.dependency_ref,
-            &source.public_instance_key,
-            &selector.instantiation_ref,
-        ) {
-            Ok(projection) => projection,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote public instance source `{}/{}` failed interface boxing at {}: {error}",
-                    self.module_path,
-                    source.dependency_ref,
-                    source.public_instance_key,
-                    self.expression_span_label(box_key)
-                ));
-                return None;
-            }
-        };
-        self.remote_interface_boxes
-            .insert(box_key.clone(), projection);
-        let ty = Some(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
-                interface: selector.instantiation_ref,
-            },
-        });
-        self.facts.insert(
-            box_key.clone(),
-            ExpressionTypeFact {
-                ty: ty.clone(),
-                span: self.expression_span(box_key),
             },
         );
         ty
@@ -2034,11 +1898,6 @@ impl<'a> OwnerChecker<'a> {
             Expr::Generic { callee, type_args } => (callee.as_ref(), type_args.as_slice()),
             _ => (callee, &[][..]),
         };
-        if let Some(return_type) =
-            self.remote_public_instance_direct_call_type(callee, type_args, args, arg_types)
-        {
-            return Some(return_type);
-        }
         if let Some(return_type) = self.runtime_receiver_call_type(key, callee) {
             return Some(return_type);
         }
@@ -2242,75 +2101,6 @@ impl<'a> OwnerChecker<'a> {
         }
     }
 
-    fn remote_public_instance_direct_call_type(
-        &mut self,
-        callee: &Expr,
-        type_args: &[TypeRef],
-        args: &[Expr],
-        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
-    ) -> Option<ResolvedTypeRef> {
-        let Expr::Field { object, field } = callee else {
-            return None;
-        };
-        let Expr::RemotePublicInstanceSource(source) = object.as_ref() else {
-            return None;
-        };
-        let Some(resolver) = self.remote_public_instances else {
-            self.diagnostics.push(format!(
-                "{}: remote public instance direct call `{}/{}` cannot resolve method `{field}` because service dependency metadata is unavailable",
-                self.module_path, source.dependency_ref, source.public_instance_key
-            ));
-            return None;
-        };
-        if !type_args.is_empty() {
-            self.diagnostics.push(format!(
-                "{}: remote public instance direct call `{}/{}.{field}` does not accept method type arguments",
-                self.module_path, source.dependency_ref, source.public_instance_key
-            ));
-        }
-        let operation = match resolver.resolve_direct_method(
-            &source.dependency_ref,
-            &source.public_instance_key,
-            field,
-        ) {
-            Ok(operation) => operation,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote public instance direct call `{}/{}.{field}` failed: {error}",
-                    self.module_path, source.dependency_ref, source.public_instance_key
-                ));
-                return None;
-            }
-        };
-        let expected = operation
-            .public_signature
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                (
-                    format!("arg{index}"),
-                    ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
-                        ir: param.ty.clone(),
-                    },
-                )
-            })
-            .collect();
-        self.validate_resolved_call_params(
-            &format!(
-                "{}/{}.{}",
-                source.dependency_ref, source.public_instance_key, field
-            ),
-            expected,
-            args,
-            arg_types,
-        );
-        Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&operation.public_signature.return_type),
-            ir: operation.public_signature.return_type,
-        })
-    }
     fn local_callable_signature(&self, path: &str) -> Option<&CallableSignature> {
         if !path.contains('.') {
             let module_qualified = format!("{}.{}", self.module_path, path);

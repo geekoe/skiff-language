@@ -14,7 +14,7 @@ use crate::{
             object_safety_diagnostics_display, InterfaceInstantiation, InterfaceMethodSlotFact,
             InterfaceObjectSafetyDiagnostic, TypeInstantiationPattern,
         },
-        InterfaceSemantics, SemanticPublication, SemanticSource, SourceOrigin,
+        InterfaceSemantics, SemanticPublication, SemanticSource,
     },
     shared::{
         ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
@@ -3231,7 +3231,6 @@ fn type_resolution_semantic_publication<'a>(
                 SemanticSource::new(
                     parsed.relative_path().display().to_string(),
                     parsed.module_path(),
-                    SourceOrigin::Service,
                     parsed.ast(),
                     parsed.alias_targets(),
                 )

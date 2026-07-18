@@ -20,8 +20,8 @@ use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
 use skiff_compiler_source::PackageSourceModel;
+use skiff_compiler_source::PublicationApiSeed;
 use skiff_compiler_source::SourceCompileError as PublicationError;
-use skiff_compiler_source::{PublicationApiSeed, ServiceIngressHandler, ServiceIngressModel};
 
 #[derive(Debug)]
 pub struct LoweredPackage {
@@ -147,7 +147,7 @@ impl LoweredPackage {
         // the ABI/schema closure of those re-exported symbols. See doc §5: a type
         // reachable from a re-exported symbol's signature must be LINKABLE even if
         // it is not itself a public writable name.
-        derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed(), None);
+        derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed());
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(
@@ -597,11 +597,7 @@ impl PublicationDeclarationIndex {
 ///   (re-exported symbols in that unit)
 ///   ∪ (types in that unit reachable from any re-exported symbol's signature
 ///      anywhere in the publication, transitively).
-fn derive_file_ir_link_targets(
-    units: &mut [FileIrUnit],
-    seed: &PublicationApiSeed,
-    service_ingress: Option<&ServiceIngressModel>,
-) {
+fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSeed) {
     let index = PublicationDeclarationIndex::build(units);
 
     // Seed: re-exported callables (functions / impl methods) become executable
@@ -632,7 +628,6 @@ fn derive_file_ir_link_targets(
             executable_seeds.push((unit_index, declaration.executable_index));
         }
     }
-    collect_service_ingress_executable_seeds(units, service_ingress, &mut executable_seeds);
     collect_spawn_executable_seeds(units, &mut executable_seeds);
 
     // Re-exported constants live in the seed's `public_symbols` map keyed by kind
@@ -805,43 +800,6 @@ fn derive_file_ir_link_targets(
     }
 }
 
-fn collect_service_ingress_executable_seeds(
-    units: &[FileIrUnit],
-    service_ingress: Option<&ServiceIngressModel>,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some(service_ingress) = service_ingress else {
-        return;
-    };
-    if let Some(http) = service_ingress.http() {
-        if let Some(target) = http.entry_target.as_deref() {
-            push_entry_target_method_seed(units, target, "handle", executable_seeds);
-        }
-        if let Some(handler) = http.guard.as_ref() {
-            push_service_ingress_handler_seed(units, handler, executable_seeds);
-        }
-        if let Some(handler) = http.pre.as_ref() {
-            push_service_ingress_handler_seed(units, handler, executable_seeds);
-        }
-        for route in &http.routes {
-            push_service_ingress_handler_seed(units, &route.handler, executable_seeds);
-        }
-    }
-    if let Some(websocket) = service_ingress.websocket() {
-        if let Some(target) = websocket.target.as_deref() {
-            push_entry_target_method_seed(units, target, "connect", executable_seeds);
-            push_entry_target_method_seed(units, target, "receive", executable_seeds);
-        } else {
-            if let Some(handler) = websocket.connect.as_ref() {
-                push_service_ingress_handler_seed(units, handler, executable_seeds);
-            }
-            if let Some(handler) = websocket.receive.as_ref() {
-                push_service_ingress_handler_seed(units, handler, executable_seeds);
-            }
-        }
-    }
-}
-
 fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
     for (unit_index, unit) in units.iter().enumerate() {
         for executable in &unit.executables {
@@ -905,57 +863,6 @@ fn spawn_submit_metadata_is_function(metadata: &MetadataValue) -> bool {
                 Some(MetadataValue::String(target_kind)) if target_kind == "function"
             )
     )
-}
-
-fn push_entry_target_method_seed(
-    units: &[FileIrUnit],
-    target: &str,
-    method: &str,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some((module_path, type_name)) = target.rsplit_once('.') else {
-        return;
-    };
-    push_executable_seed(
-        units,
-        module_path,
-        &format!("{type_name}.{method}"),
-        executable_seeds,
-    );
-}
-
-fn push_service_ingress_handler_seed(
-    units: &[FileIrUnit],
-    handler: &ServiceIngressHandler,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let ServiceIngressHandler::ServiceFunction {
-        module_path,
-        symbol,
-        ..
-    } = handler
-    else {
-        return;
-    };
-    push_executable_seed(units, module_path, symbol, executable_seeds);
-}
-
-fn push_executable_seed(
-    units: &[FileIrUnit],
-    module_path: &str,
-    symbol: &str,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some(unit_index) = units
-        .iter()
-        .position(|unit| unit.module_path == module_path)
-    else {
-        return;
-    };
-    let Some(declaration) = units[unit_index].declarations.executables.get(symbol) else {
-        return;
-    };
-    executable_seeds.push((unit_index, declaration.executable_index));
 }
 
 /// Append the publication-local declaration locations of every named type
