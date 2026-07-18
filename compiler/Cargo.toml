@@ -91,6 +91,10 @@ name = "service_conformance"
 path = "tests/service_conformance.rs"
 
 [[test]]
+name = "shared_fixture_lane_probes"
+path = "tests/shared_fixture_lane_probes.rs"
+
+[[test]]
 name = "std_package_imports"
 path = "tests/std_package_imports.rs"
 
