@@ -221,7 +221,7 @@ fn package_export_error(
     public_symbol: &str,
     message: impl Into<String>,
 ) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!(
             "package {} export {}: {}",
             package.package_id,

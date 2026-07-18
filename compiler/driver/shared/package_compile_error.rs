@@ -39,15 +39,7 @@ impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {
 impl From<skiff_compiler_projection::error::ProjectionError> for PackageCompileError {
     fn from(error: skiff_compiler_projection::error::ProjectionError) -> Self {
         match error {
-            skiff_compiler_projection::error::ProjectionError::NoExportedInterfaces => {
-                Self::ContractValidation {
-                    message: "projection exported no interfaces".to_string(),
-                }
-            }
-            skiff_compiler_projection::error::ProjectionError::ContractValidation { message } => {
-                Self::ContractValidation { message }
-            }
-            skiff_compiler_projection::error::ProjectionError::ImplementationConformance {
+            skiff_compiler_projection::error::ProjectionError::InvalidPackageArtifact {
                 message,
             } => Self::ContractValidation { message },
         }

@@ -106,7 +106,7 @@ pub(super) fn project_package_exports(
 
     for symbol in input.source().export_bindings().public_symbols().values() {
         let Some(unit) = sources_by_module.get(symbol.source_module.as_str()) else {
-            return Err(ProjectionError::ContractValidation {
+            return Err(ProjectionError::InvalidPackageArtifact {
                 message: format!(
                     "package {} api {} has no matching source module {}",
                     package_id, symbol.public_path, symbol.source_module
@@ -133,7 +133,7 @@ pub(super) fn project_package_exports(
     }
     for callable in input.source().export_bindings().public_callables().values() {
         let Some(unit) = sources_by_module.get(callable.source_module.as_str()) else {
-            return Err(ProjectionError::ContractValidation {
+            return Err(ProjectionError::InvalidPackageArtifact {
                 message: format!(
                     "package {} api {} has no matching source module {}",
                     package_id, callable.public_path, callable.source_module
@@ -157,7 +157,7 @@ pub(super) fn project_package_exports(
         );
     }
     if !abi_violations.is_empty() {
-        return Err(ProjectionError::ContractValidation {
+        return Err(ProjectionError::InvalidPackageArtifact {
             message: abi_violations
                 .into_iter()
                 .map(|violation| format!("- {violation}"))
@@ -250,7 +250,7 @@ fn package_export_type_symbol_index(
             continue;
         };
         let Some(type_decl) = unit.type_table.get(target.type_index as usize) else {
-            return Err(ProjectionError::ContractValidation {
+            return Err(ProjectionError::InvalidPackageArtifact {
                 message: format!(
                     "package {} export {} type index {} is out of bounds for module {} type table",
                     manifest.package_id, public_symbol, target.type_index, export.module
@@ -410,7 +410,7 @@ fn package_public_instance_projection_error(
     public_instance: &str,
     message: impl Into<String>,
 ) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!(
             "package {} public instance {}: {}",
             manifest.package_id,
@@ -517,7 +517,7 @@ impl<'a> PackageApiTypeIndex<'a> {
             for (name, declaration) in &unit.declarations.types {
                 let ty = type_decl_by_index(unit, declaration.type_index)?;
                 if ty.name != *name {
-                    return Err(ProjectionError::ContractValidation {
+                    return Err(ProjectionError::InvalidPackageArtifact {
                         message: format!(
                             "package exports projection found mismatched type declaration {}.{} at File IR type index {} (table name {})",
                             unit.module_path, name, declaration.type_index, ty.name
@@ -1321,14 +1321,14 @@ fn collect_package_type_descriptor_abi_violations(
 }
 
 fn type_decl_by_index(unit: &FileIrUnit, type_index: u32) -> Result<&TypeDeclIr, ProjectionError> {
-    unit.type_table
-        .get(type_index as usize)
-        .ok_or_else(|| ProjectionError::ContractValidation {
+    unit.type_table.get(type_index as usize).ok_or_else(|| {
+        ProjectionError::InvalidPackageArtifact {
             message: format!(
                 "package exports projection found missing type index {type_index} in module {}",
                 unit.module_path
             ),
-        })
+        }
+    })
 }
 
 fn type_declaration_is_alias(

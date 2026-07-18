@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
     AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts, DbMetadataIr,
-    FileIrUnit, InterfaceMethodSignature, ServiceDependencyConstraint, TypeRefIr,
+    FileIrUnit, InterfaceMethodSignature, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -440,29 +440,6 @@ impl ProjectionSourceFacts {
         &self,
     ) -> &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts> {
         &self.callable_semantic_facts
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LegacyServiceDependencyProjectionFacts {
-    constraints: Vec<ServiceDependencyConstraint>,
-    dependency_lock: Vec<Value>,
-}
-
-impl LegacyServiceDependencyProjectionFacts {
-    pub fn new(constraints: Vec<ServiceDependencyConstraint>, dependency_lock: Vec<Value>) -> Self {
-        Self {
-            constraints,
-            dependency_lock,
-        }
-    }
-
-    pub fn constraints(&self) -> &[ServiceDependencyConstraint] {
-        &self.constraints
-    }
-
-    pub fn dependency_lock(&self) -> &[Value] {
-        &self.dependency_lock
     }
 }
 
@@ -1083,68 +1060,6 @@ impl ConfigRequirementDependencyStepProjection {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ServiceIngressProjection {
-    pub package_aliases: BTreeMap<String, String>,
-    pub http: Option<ServiceHttpIngressProjection>,
-    pub websocket: Option<ServiceWebSocketIngressProjection>,
-}
-
-impl ServiceIngressProjection {
-    pub fn http(&self) -> Option<&ServiceHttpIngressProjection> {
-        self.http.as_ref()
-    }
-
-    pub fn websocket(&self) -> Option<&ServiceWebSocketIngressProjection> {
-        self.websocket.as_ref()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceHttpIngressProjection {
-    pub entry_target: Option<String>,
-    pub guard: Option<ServiceIngressHandlerProjection>,
-    pub pre: Option<ServiceIngressHandlerProjection>,
-    pub routes: Vec<ServiceHttpRouteIngressProjection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceHttpRouteIngressProjection {
-    pub method: Option<String>,
-    pub path: String,
-    pub handler: ServiceIngressHandlerProjection,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceWebSocketIngressProjection {
-    pub target: Option<String>,
-    pub connect: Option<ServiceIngressHandlerProjection>,
-    pub receive: Option<ServiceIngressHandlerProjection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServiceIngressHandlerProjection {
-    ServiceFunction {
-        source: String,
-        module_path: String,
-        symbol: String,
-    },
-    PackageFunction {
-        source: String,
-        package_id: String,
-        alias: String,
-        symbol_path: String,
-    },
-}
-
-impl ServiceIngressHandlerProjection {
-    pub fn source(&self) -> &str {
-        match self {
-            Self::ServiceFunction { source, .. } | Self::PackageFunction { source, .. } => source,
-        }
     }
 }
 

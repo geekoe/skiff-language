@@ -53,7 +53,7 @@ fn project_non_callable_symbols(
             export
                 .descriptor
                 .clone()
-                .ok_or_else(|| ProjectionError::ContractValidation {
+                .ok_or_else(|| ProjectionError::InvalidPackageArtifact {
                     message: format!("package type export {public_path} has no typed descriptor"),
                 })?;
         insert_public_symbol(
@@ -101,7 +101,7 @@ fn add_public_instance_symbols(
                     .unwrap_or(public_path)
                     .to_string();
                 let callable_id = callable_ids.get(public_path).cloned().ok_or_else(|| {
-                    ProjectionError::ContractValidation {
+                    ProjectionError::InvalidPackageArtifact {
                         message: format!(
                             "public instance {} method {public_path} has no Local ABI callable",
                             instance.name
@@ -131,7 +131,7 @@ pub(super) fn insert_public_symbol(
     symbol: PackageLocalAbiSymbol,
 ) -> Result<(), ProjectionError> {
     if symbols.insert(public_path.clone(), symbol).is_some() {
-        return Err(ProjectionError::ContractValidation {
+        return Err(ProjectionError::InvalidPackageArtifact {
             message: format!("duplicate PackageLocalAbi public path {public_path}"),
         });
     }

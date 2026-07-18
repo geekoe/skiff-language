@@ -122,7 +122,7 @@ fn insert_callable_entry<T>(
 }
 
 pub(super) fn projection_error(package_id: &str, message: impl Into<String>) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!(
             "package {package_id} artifact projection: {}",
             message.into()

@@ -7,7 +7,6 @@ members = [
   "syntax",
   "compiler/core",
   "compiler/contract",
-  "compiler/publication-abi",
   "compiler/input-model",
   "compiler/input",
   "compiler/source",

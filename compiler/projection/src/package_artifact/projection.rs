@@ -124,7 +124,7 @@ pub(super) fn project_package_artifact_facts(
     };
     normalize_artifact_lists(&mut artifact);
     assign_package_artifact_identities(&mut artifact).map_err(|error| {
-        ProjectionError::ContractValidation {
+        ProjectionError::InvalidPackageArtifact {
             message: format!(
                 "package {}@{} identity projection failed: {error}",
                 input.package_id, input.package_version

@@ -168,7 +168,7 @@ fn public_instance_error(
     public_instance: &str,
     message: impl Into<String>,
 ) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!(
             "package {} public instance {}: {}",
             package.package_id,

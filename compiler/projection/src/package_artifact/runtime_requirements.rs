@@ -24,7 +24,7 @@ pub(super) fn project_runtime_requirements(
         match config_by_path.get(&projected.path) {
             Some(existing) if existing == &projected => {}
             Some(existing) => {
-                return Err(ProjectionError::ContractValidation {
+                return Err(ProjectionError::InvalidPackageArtifact {
                     message: format!(
                         "package {package_id} config requirement {} conflicts: {:?} vs {:?}",
                         projected.path, existing, projected

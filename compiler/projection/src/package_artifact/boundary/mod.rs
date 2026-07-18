@@ -28,7 +28,7 @@ pub fn project_boundary_callable(
     let effects = match &facts.effects {
         CallableEffectSummary::Analyzed { effects } => *effects,
         CallableEffectSummary::Unknown { .. } => {
-            return Err(ProjectionError::ContractValidation {
+            return Err(ProjectionError::InvalidPackageArtifact {
                 message: format!(
                     "boundary callable in module {owner_module} reached Available with unknown effect facts"
                 ),
@@ -36,7 +36,7 @@ pub fn project_boundary_callable(
         }
     };
     let Some(operation_contract) = operation_contract else {
-        return Err(ProjectionError::ContractValidation {
+        return Err(ProjectionError::InvalidPackageArtifact {
             message: format!(
                 "boundary callable in module {owner_module} reached Available without a complete operation contract"
             ),

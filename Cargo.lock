@@ -2173,7 +2173,6 @@ dependencies = [
  "skiff-compiler-lowering",
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
- "skiff-compiler-publication-abi",
  "skiff-compiler-source",
  "skiff-syntax",
  "thiserror",
@@ -2242,7 +2241,6 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-input-model",
- "skiff-syntax",
  "thiserror",
 ]
 
@@ -2281,7 +2279,6 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection-input",
- "skiff-compiler-publication-abi",
  "thiserror",
 ]
 

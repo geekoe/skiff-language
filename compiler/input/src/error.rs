@@ -12,8 +12,6 @@ pub enum InputAssemblyError {
     },
     #[error("input validation failed:\n{message}")]
     Validation { message: String },
-    #[error("service id {service_id} is invalid: {message}")]
-    InvalidServiceId { service_id: String, message: String },
     #[error("{source}")]
     PackageConfig {
         #[from]

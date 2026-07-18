@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::{
+    canonical_interface_method_abi_id, public_instance_method_operation_abi_id,
+};
 use skiff_artifact_model::{
-    ExecutableExport, FileIrRef, LocalReceiverExecutableRef, OperationCallableKind,
-    OperationConstReceiverRef, OperationTargetRef, PackageExportIndex, PublicInstanceOperation,
-    ReceiverCallAbi,
+    CanonicalPublicCallableSignature, ExecutableExport, ExecutableSignatureIr, FileIrRef,
+    InterfaceInstantiationRef, InterfaceMethodSignature, LocalReceiverExecutableRef,
+    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
+    PackageExportIndex, PublicInstanceOperation, PublicationOperationKind, ReceiverCallAbi,
+    TypeRefIr,
 };
 use skiff_compiler_core::naming::impl_method_declaration_name;
-use skiff_compiler_publication_abi::{
-    package_public_instance_method_operation, public_signature_from_interface_method_signature,
-    public_signature_from_receiver_executable_signature,
-};
 
 use crate::{
     error::ProjectionError,
@@ -161,4 +162,65 @@ fn impl_method_executable_index(
                 .get(target_symbol)
                 .map(|target| target.executable_index)
         })
+}
+
+fn public_signature_from_receiver_executable_signature(
+    signature: ExecutableSignatureIr,
+) -> CanonicalPublicCallableSignature {
+    let mut public_signature = CanonicalPublicCallableSignature::from(signature.clone());
+    let strip_self = match &signature.self_type {
+        Some(self_type) => public_signature
+            .params
+            .first()
+            .is_some_and(|param| &param.ty == self_type),
+        None => public_signature
+            .params
+            .first()
+            .is_some_and(|param| param.name == "self"),
+    };
+    if strip_self {
+        public_signature.params.remove(0);
+    }
+    public_signature
+}
+
+fn public_signature_from_interface_method_signature(
+    method: &InterfaceMethodSignature,
+) -> CanonicalPublicCallableSignature {
+    CanonicalPublicCallableSignature {
+        params: method.params.clone(),
+        return_type: method.return_type.clone(),
+        may_suspend: matches!(
+            &method.return_type,
+            TypeRefIr::Native { name, .. } if name == "Stream"
+        ),
+    }
+}
+
+fn package_public_instance_method_operation(
+    public_instance_key: &str,
+    interface: &InterfaceInstantiationRef,
+    method_name: &str,
+    public_signature: &CanonicalPublicCallableSignature,
+) -> OperationAbiRef {
+    let public_path = format!("{public_instance_key}.{method_name}");
+    let method_abi_id = canonical_interface_method_abi_id(interface, method_name);
+    OperationAbiRef {
+        operation_abi_id: public_instance_method_operation_abi_id(
+            &public_path,
+            public_instance_key,
+            interface,
+            &method_abi_id,
+            public_signature,
+            &[],
+            &BTreeMap::new(),
+        )
+        .expect("public instance method operation ABI id must be derived from typed projection"),
+        kind: PublicationOperationKind::PublicInstanceMethod,
+        public_path: public_path.clone(),
+        public_instance_key: Some(public_instance_key.to_string()),
+        interface: Some(interface.clone()),
+        method_abi_id: Some(method_abi_id),
+        display_name: public_path,
+    }
 }

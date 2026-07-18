@@ -5,21 +5,13 @@ pub mod contract_dependencies;
 pub mod dependencies;
 pub mod error;
 pub mod export_config;
-pub mod input;
 pub mod manifest;
 pub mod package_config;
-pub mod package_job;
 pub mod package_source_helpers;
 pub mod package_sources;
-pub mod publication;
 pub mod raw_sources;
 pub mod registry_helpers;
 pub mod resources;
-pub mod service_config;
-pub mod service_dependencies;
-pub mod service_ingress;
-pub mod service_job;
-pub mod service_packages;
 pub mod source_tree;
 pub mod test_rules;
 
@@ -38,32 +30,18 @@ pub use dependencies::{
     is_publication_dependency_id, is_reserved_source_import_alias,
     is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
     is_standard_package_id, is_valid_source_import_alias, PackageDependency, ResolvedPackage,
-    ResolvedPackageGraph, ResolvedServiceDependencies, ServiceDependency,
-    ServiceDependencyLockEntry, ServiceDependencyRemoteBoxProvenance,
+    ResolvedPackageGraph,
 };
 pub use error::InputAssemblyError;
-pub use input::{
-    classify_publication_root, PublicationInputError, PublicationInputKind, PublicationRootManifest,
-};
 pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
     ManifestProvenance, PublicationManifest,
 };
-pub use package_job::{build_package_jobs, RawPackagePublicationJob};
-pub use publication::{assemble_publication, assemble_publication_with_resources, RawPublication};
 pub use raw_sources::read_publication_sources;
 pub use resources::{
     collect_publication_resource_spec_violations, read_publication_resources,
     validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,
     MAX_PUBLICATION_RESOURCE_BYTE_LEN, MAX_PUBLICATION_RESOURCE_TOTAL_BYTE_LEN,
-};
-pub use service_ingress::{
-    ServiceHttpIngressSeed, ServiceHttpRouteIngressSeed, ServiceIngressSeed,
-    ServiceWebSocketIngressSeed,
-};
-pub use service_job::{build_service_job, RawServicePublicationJob, ServiceJobSeeds};
-pub use service_packages::{
-    PackageManifestDiscoveryResult, ResolvedServicePackages, ServiceSourcePackageFacts,
 };
 pub use skiff_compiler_input_model::{
     CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,

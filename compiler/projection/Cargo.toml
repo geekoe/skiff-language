@@ -11,7 +11,6 @@ too_many_lines = "warn"
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-compiler-core = { path = "../core" }
-skiff-compiler-publication-abi = { path = "../publication-abi" }
 skiff-compiler-projection-input = { path = "../projection-input" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }

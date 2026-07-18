@@ -125,7 +125,7 @@ fn scoped_public_path(package_id: &str, public_path: &str) -> String {
 }
 
 fn projection_error(package_id: &str, message: String) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!("package {package_id} callable signature projection: {message}"),
     }
 }
