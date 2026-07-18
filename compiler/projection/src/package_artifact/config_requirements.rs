@@ -88,7 +88,7 @@ fn validate_boundary_config_requirements(
 }
 
 fn projection_error(package_id: &str, message: impl Into<String>) -> ProjectionError {
-    ProjectionError::ContractValidation {
+    ProjectionError::InvalidPackageArtifact {
         message: format!(
             "package {package_id} artifact projection: {}",
             message.into()
@@ -143,6 +143,19 @@ mod tests {
             &package_requirements,
         )
         .unwrap();
+
+        let error = validate_boundary_config_requirements(
+            "example.pkg",
+            &callable_id,
+            &[config_requirement("app.missing", "string", true)],
+            &package_requirements,
+        )
+        .unwrap_err();
+        let ProjectionError::InvalidPackageArtifact { message } = error;
+        assert!(
+            message.starts_with("package example.pkg artifact projection:"),
+            "package context must remain attached to the projection error: {message}"
+        );
 
         for boundary_requirements in [
             vec![config_requirement("app.missing", "string", true)],

@@ -9,7 +9,6 @@ pub mod manifest;
 pub mod package_config;
 pub mod package_source_helpers;
 pub mod package_sources;
-pub mod raw_sources;
 pub mod registry_helpers;
 pub mod resources;
 pub mod source_tree;
@@ -37,7 +36,6 @@ pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
     ManifestProvenance, PublicationManifest,
 };
-pub use raw_sources::read_publication_sources;
 pub use resources::{
     collect_publication_resource_spec_violations, read_publication_resources,
     validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,
@@ -45,8 +43,7 @@ pub use resources::{
 };
 pub use skiff_compiler_input_model::{
     CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,
-    RawPublicationSourceGraph, RawSourceFileMeta, RawSourceOrigin, RawSourceTree,
-    RawSourceTreeFile,
+    RawPublicationSourceGraph, RawSourceFileMeta, RawSourceTree, RawSourceTreeFile,
 };
 
 pub use api_yml::read_publication_api_yml;
