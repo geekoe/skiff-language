@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
+    normalize_contract_definition_surface,
 };
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, ContractDiagnosticText, ContractOperationId, ContractSchemaType,
@@ -15,9 +16,10 @@ use crate::{
 };
 
 pub fn compile_service_contract_definition(
-    definition: ServiceContractDefinition,
+    mut definition: ServiceContractDefinition,
 ) -> Result<ServiceContract> {
     validate_definition_keys(&definition)?;
+    normalize_definition(&mut definition)?;
     let type_ids = definition
         .boundary_schema
         .keys()
@@ -90,6 +92,18 @@ pub fn compile_service_contract_definition(
     };
     assign_service_contract_identities(&mut contract)?;
     Ok(contract)
+}
+
+fn normalize_definition(definition: &mut ServiceContractDefinition) -> Result<()> {
+    let service_id = definition.service_id.clone();
+    let contract_version = definition.contract_version.clone();
+    normalize_contract_definition_surface(
+        &service_id,
+        &contract_version,
+        &mut definition.operations,
+        &mut definition.boundary_schema,
+    )?;
+    Ok(())
 }
 
 /// Identity helper for typed definition producers that need to reference a

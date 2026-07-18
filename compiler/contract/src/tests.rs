@@ -12,6 +12,8 @@ use skiff_artifact_model::{
 
 use super::*;
 
+mod schema_fidelity;
+
 #[test]
 fn definition_compiles_without_any_provider_code_or_artifact() {
     let definition = definition_fixture();

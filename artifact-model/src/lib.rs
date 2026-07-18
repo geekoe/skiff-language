@@ -67,8 +67,9 @@ pub use config::{
     ConfigShapeValueTypeParseError, CONFIG_SHAPE_SCHEMA_VERSION,
 };
 pub use contract_types::{
-    BoundaryCallbackOperation, ContractSchemaType, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, PackageTypeRef,
+    BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractLiteral,
+    ContractSchemaType, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
+    ContractTypeShape, PackageTypeRef,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
