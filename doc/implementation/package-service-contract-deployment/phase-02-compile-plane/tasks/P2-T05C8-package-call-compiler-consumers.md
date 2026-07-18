@@ -16,8 +16,9 @@
 
 ## 完成态
 
-1. driver 的 requirement/used-std判断读取`external_refs.package_callables.package_ref`，不读取callable id
-   推导新的dependency closure，也不恢复operation symbol表。
+1. driver 的 requirement/used-std判断同时读取 type-only `external_refs.package_symbols.package` 与 callable
+   `external_refs.package_callables.package_ref`，不读取callable id推导新的dependency closure，也不恢复
+   operation symbol表。
 2. core spawn-target traversal准确处理`PackageCallable` target，仅按现有语义判断外部package call；不查
    OperationAbiRef或dependency artifact target。
 3. 本写域旧 target/ref/table零命中，直接tests使用PackageCallableId。

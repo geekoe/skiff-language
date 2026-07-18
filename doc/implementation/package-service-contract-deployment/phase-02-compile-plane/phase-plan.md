@@ -126,7 +126,19 @@ T05C6
   ├── T05C8 package-call compiler consumers
   └── T05C9 File IR identity version
 
-R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9
+T05C4 + T05C8 + T05C9 checkpoint review
+  ├── T05C10A type-only package requirement coverage
+  ├── T05C10B package-call lowering fail-closed
+  └── T05C10C canonical package-call reference validator checkpoint
+
+T05C10C
+  ├── T05C10D identity validator consumer
+  └── T05C10E materialization validator consumer
+
+T05C9 + terminal compiler cleanup
+  └── T05C10F identity checker terminal-owner repair
+
+R04 + R06 + R13 + T05C + T05C3 + T05C4 + T05C5 + T05C6 + T05C7 + T05C8 + T05C9 + T05C10A + T05C10B + T05C10D + T05C10E + T05C10F
   └── R10 canonical compiler integration fixtures
 
 R03 + R04 + R06 + R10 + R11 + R13
@@ -139,8 +151,10 @@ R03 + R04 + R06 + R10 + R11 + R13
 | 1 | R04、R06、R13、T05C1、T05C2 | canonical wave 与 facade/input/model checkpoint cleanup |
 | 2 | T05C、T05C3、T05C5、T05C6 | production cleanup后冻结canonical package-call schema checkpoint |
 | 3 | T05C4、T05C7、T05C8、T05C9 | lowering、emission、driver/core、identity consumers并行迁移 |
-| 4 | R10 | production cleanup合流并通过结构探针后，只迁移canonical test fixtures |
-| 5 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
+| 4a | T05C10A、T05C10B、T05C10C | checkpoint review 暴露的 requirement、fail-closed、共享 validator 前置修复 |
+| 4b | T05C10D、T05C10E、T05C10F | validator consumers 与 terminal identity checker 并行收敛 |
+| 5 | R10 | production cleanup合流并通过结构探针后，只迁移canonical test fixtures |
+| 6 | T07 | 唯一最终compiler/foundation gate、结构审计和结果记录 |
 
 T06/R02/R05/R07/R08/R09 与旧 R10B/R10C 位于被放弃的 integration tail，不进入新分支 ancestry；
 对应终态能力在 Phase 03–05 直接实现，canonical fixture 部分由 R10 重建。R12 的“在污染 tree 上清理”
@@ -172,6 +186,12 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05C7 | [Canonical package-call coverage](tasks/P2-T05C7-package-call-coverage.md) | T05C6 | 中；emission consumer migration |
 | T05C8 | [Package call compiler consumers](tasks/P2-T05C8-package-call-compiler-consumers.md) | T05C6 | 中；driver/core consumer migration |
 | T05C9 | [File IR identity version](tasks/P2-T05C9-file-ir-identity-version.md) | T05C6 | 高；identity consumer migration |
+| T05C10A | [Type-only package requirement coverage](tasks/P2-T05C10A-type-only-package-requirement-coverage.md) | T05C8 | 高；driver requirement closure repair |
+| T05C10B | [Package-call lowering fail-closed](tasks/P2-T05C10B-package-call-lowering-fail-closed.md) | T05C4、T05C9 | 高；lowering semantic repair |
+| T05C10C | [Canonical package-call reference validator](tasks/P2-T05C10C-package-call-reference-validator.md) | T05C6 | 高；artifact-model shared validation checkpoint |
+| T05C10D | [Identity package-call validation](tasks/P2-T05C10D-identity-package-call-validation.md) | T05C10C、T05C9 | 高；identity consumer |
+| T05C10E | [Materialization package-call validation](tasks/P2-T05C10E-materialization-package-call-validation.md) | T05C10C、T05C7 | 高；emission consumer |
+| T05C10F | [Identity checker terminal owners](tasks/P2-T05C10F-identity-checker-terminal-owners.md) | T05C9、terminal cleanup | 中；T07 checker repair |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -230,6 +250,14 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 - R06 独占 canonical `PackageRequirement` 闭包与 File IR package ref 覆盖校验；编译器
   内建 std 只能从同一 canonical package graph 的 std `PackageArtifact` 获得精确 version/local ABI，
   不允许 adapter 特例、硬编码 identity 或第二次 compile。
+- T05C10A 独占 driver used-std/package requirement detection 与直接测试；type-only `package_symbols` 和 callable
+  `package_callables` 都必须进入同一 dependency coverage，不从 callable id 猜 dependency。
+- T05C10B 独占 lowering dependency-call fail-closed 与 File IR v5 lowering direct golden；不得修改 source fact
+  shape 或恢复 symbol fallback。
+- T05C10C 独占 artifact-model package-call reference validator 与直接测试；T05C10D/T05C10E 只消费该 API，
+  不复制遍历或集合一致性规则。
+- T05C10D 独占 artifact-identity validator 接入与 mutation tests；T05C10E 独占 emission/materialization 接入
+  与 direct tests；T05C10F 独占 identity single-source checker 的 terminal owner graph 与 self-test。
 - R10 独占 compiler test-support 与 `compiler/tests/**` 中的旧 service publication fixture 退役；
   不修改 `compiler/driver/service_publication_tests.rs`。源码、
   effect、logical DB schema 及 compile 语义测试改用 canonical package/test-support API；只有真正验证
