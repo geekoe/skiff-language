@@ -1,188 +1,76 @@
 use std::fs;
 
 mod common;
-use common::artifacts::{build_temp_service_publication, write_test_artifact_root};
-use skiff_compiler::test_support::project_fixtures::{
-    write_package_api_yml, write_package_manifest, write_package_source, ServiceProjectBuilder,
+use common::{
+    artifacts::{resource_blob, write_resource_blobs},
+    package_project::compile_package_project,
+    TestDir,
 };
-use skiff_compiler_core::json_utils::sha256_hex;
 
 #[test]
-fn publication_resources_emit_unit_refs_and_raw_blobs() {
-    let project = resource_project("emit-unit-refs", "service prompt\n", "package prompt\n");
-    let published = build_temp_service_publication(project.root());
-    let artifact_root = project.temp_path().join("artifact-root");
+fn package_static_resources_emit_refs_and_raw_blobs() {
+    let temp = package_resource_project("emit-package-resource", "package prompt\n");
+    let project = compile_package_project(temp.path()).expect("package project should compile");
+    let resource = project
+        .package
+        .artifact
+        .static_resources
+        .first()
+        .expect("package artifact should reference its static resource");
+    let artifact_path = resource
+        .artifact_path
+        .as_deref()
+        .expect("materialized resource should carry an artifact path");
 
-    write_test_artifact_root(&artifact_root, &published);
+    assert_eq!(resource.path, "prompts/pkg.md");
+    assert_eq!(
+        resource_blob(&project.package, artifact_path).bytes,
+        b"package prompt\n"
+    );
 
-    let service_sha = sha256_hex(b"service prompt\n");
-    let package_sha = sha256_hex(b"package prompt\n");
+    let artifact_root = temp.path().join("artifact-root");
+    write_resource_blobs(&artifact_root, &project.package);
     assert_eq!(
-        published.artifacts.service_unit.value["resources"][0]["artifactPath"],
-        format!("resources/sha256/{service_sha}")
-    );
-    assert!(
-        published.artifacts.service_unit.value["resources"][0]
-            .get("bytes")
-            .is_none(),
-        "resource bytes must not be embedded in service unit JSON"
-    );
-    let package_unit = published
-        .artifacts
-        .package_units
-        .iter()
-        .find(|unit| unit.value["packageId"] == "example.com/agent")
-        .expect("dependency package unit should be emitted");
-    assert_eq!(
-        package_unit.value["resources"][0]["artifactPath"],
-        format!("resources/sha256/{package_sha}")
-    );
-    assert_eq!(
-        fs::read(artifact_root.join(format!("resources/sha256/{service_sha}"))).unwrap(),
-        b"service prompt\n"
-    );
-    assert_eq!(
-        fs::read(artifact_root.join(format!("resources/sha256/{package_sha}"))).unwrap(),
+        fs::read(artifact_root.join(artifact_path)).unwrap(),
         b"package prompt\n"
     );
 }
 
 #[test]
-fn resource_content_changes_build_identity_not_abi_or_protocol_identity() {
-    let project = resource_project("identity", "service prompt\n", "package prompt\n");
-    let first = build_temp_service_publication(project.root());
-    let first_package = package_unit(&first, "example.com/agent");
+fn package_resource_content_changes_build_identity_not_local_abi() {
+    let left = package_resource_project("resource-identity-left", "package prompt\n");
+    let right = package_resource_project("resource-identity-right", "changed prompt\n");
+    let left = compile_package_project(left.path()).expect("left package should compile");
+    let right = compile_package_project(right.path()).expect("right package should compile");
 
-    fs::write(
-        project
-            .root()
-            .join(".skiff-packages/example~com~~agent/0.1.0/prompts/pkg.md"),
-        "package prompt changed\n",
-    )
-    .unwrap();
-    let package_changed = build_temp_service_publication(project.root());
-    let changed_package = package_unit(&package_changed, "example.com/agent");
     assert_ne!(
-        first_package["buildIdentity"],
-        changed_package["buildIdentity"]
-    );
-    assert_eq!(first_package["abiIdentity"], changed_package["abiIdentity"]);
-    assert_eq!(
-        first.manifest.service.protocol_identity,
-        package_changed.manifest.service.protocol_identity
-    );
-
-    fs::write(
-        project.root().join("prompts/service.md"),
-        "service prompt changed\n",
-    )
-    .unwrap();
-    let service_changed = build_temp_service_publication(project.root());
-    assert_ne!(
-        first.artifacts.service_unit.identity,
-        service_changed.artifacts.service_unit.identity
+        left.package.artifact.package_build_id,
+        right.package.artifact.package_build_id
     );
     assert_eq!(
-        first.manifest.service.protocol_identity,
-        service_changed.manifest.service.protocol_identity
+        left.package.artifact.package_local_abi.local_abi_identity,
+        right.package.artifact.package_local_abi.local_abi_identity
     );
 }
 
-fn resource_project(
-    name: &str,
-    service_resource: &str,
-    package_resource: &str,
-) -> ServiceProjectBuilder {
-    let project = ServiceProjectBuilder::new(name)
-        .write_root_file(
-            "service.yml",
-            r#"
-id: example.com/example
-version: 1.0.0
-resources:
-  - prompts/service.md
-packages:
-  - id: example.com/agent
-    version: 0.1.0
-    alias: agent
-"#,
-        )
-        .write_root_file(
-            "api.yml",
-            r#"
-ExampleService: internal.example.ExampleService
-api:
-  example:
-    Input: api.example.Input
-    Output: api.example.Output
-    ExampleService: api.example.ExampleService
-"#,
-        )
-        .write_source(
-            "api/example.skiff",
-            r#"
-type Input {}
-type Output {}
-interface ExampleService {
-  function run(input: Input) -> Output
-}
-"#,
-        )
-        .write_source(
-            "internal/example.skiff",
-            r#"
-import agent
-
-type ExampleService {}
-
-impl ExampleService {
-  function run(self: ExampleService, input: root.api.example.Input) -> root.api.example.Output {
-    const value = agent.label()
-    return root.api.example.Output {}
-  }
-}
-"#,
-        )
-        .write_root_file("prompts/service.md", service_resource);
-
-    write_package_manifest(
-        project.root(),
-        "example.com/agent",
-        r#"
-id: example.com/agent
-version: 0.1.0
-resources:
-  - prompts/pkg.md
-"#,
+fn package_resource_project(name: &str, resource: &str) -> TestDir {
+    let temp = TestDir::new("skiff-compiler", name);
+    write(
+        &temp.path().join("package.yml"),
+        "id: example.com/resource-package\nversion: 1.0.0\nresources:\n  - prompts/pkg.md\n",
     );
-    write_package_api_yml(project.root(), "example.com/agent", "label: agent.label\n");
-    write_package_source(
-        project.root(),
-        "example.com/agent",
-        "agent.skiff",
-        r#"
-function label() -> string {
-  return "agent"
-}
-"#,
+    write(&temp.path().join("api.yml"), "label: main.label\n");
+    write(
+        &temp.path().join("main.skiff"),
+        "function label() -> string {\n  return \"resource\"\n}\n",
     );
-    let package_resource_path = project
-        .root()
-        .join(".skiff-packages/example~com~~agent/0.1.0/prompts/pkg.md");
-    fs::create_dir_all(package_resource_path.parent().unwrap()).unwrap();
-    fs::write(package_resource_path, package_resource).unwrap();
-    project
+    write(&temp.path().join("prompts/pkg.md"), resource);
+    temp
 }
 
-fn package_unit<'a>(
-    published: &'a skiff_compiler::BuiltServicePublication,
-    package_id: &str,
-) -> &'a serde_json::Value {
-    &published
-        .artifacts
-        .package_units
-        .iter()
-        .find(|unit| unit.value["packageId"] == package_id)
-        .expect("package unit should be emitted")
-        .value
+fn write(path: &std::path::Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(path, contents).unwrap();
 }
