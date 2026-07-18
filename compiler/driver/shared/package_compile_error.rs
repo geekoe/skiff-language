@@ -36,12 +36,12 @@ impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {
     }
 }
 
-impl From<skiff_compiler_projection::error::ProjectionError> for PackageCompileError {
-    fn from(error: skiff_compiler_projection::error::ProjectionError) -> Self {
-        match error {
-            skiff_compiler_projection::error::ProjectionError::InvalidPackageArtifact {
-                message,
-            } => Self::ContractValidation { message },
+pub(crate) fn package_projection_error(
+    error: skiff_compiler_projection::error::ProjectionError,
+) -> PackageCompileError {
+    match error {
+        skiff_compiler_projection::error::ProjectionError::InvalidPackageArtifact { message } => {
+            PackageCompileError::ContractValidation { message }
         }
     }
 }

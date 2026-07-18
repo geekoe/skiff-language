@@ -197,7 +197,7 @@ fn public_signature_from_interface_method_signature(
     }
 }
 
-fn package_public_instance_method_operation(
+pub(in crate::package_artifact) fn package_public_instance_method_operation(
     public_instance_key: &str,
     interface: &InterfaceInstantiationRef,
     method_name: &str,

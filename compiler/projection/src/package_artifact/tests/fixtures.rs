@@ -17,6 +17,7 @@ use skiff_compiler_projection_input::{
 
 use crate::package_artifact::{
     api_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
+    export_links::package_public_instance_method_operation,
     projection::{project_package_artifact_facts, ProjectedPackageFacts},
 };
 
@@ -170,12 +171,8 @@ fn public_instance(file: &FileIrRef) -> PublicInstanceExport {
         return_type: TypeRefIr::native("string"),
         may_suspend: false,
     };
-    let operation = skiff_compiler_publication_abi::package_public_instance_method_operation(
-        "worker",
-        &interface,
-        "handle",
-        &public_signature,
-    );
+    let operation =
+        package_public_instance_method_operation("worker", &interface, "handle", &public_signature);
     PublicInstanceExport {
         name: "worker".to_string(),
         module_path: "api".to_string(),

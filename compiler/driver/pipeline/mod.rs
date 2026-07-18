@@ -18,7 +18,7 @@ use skiff_compiler_projection_input::PublicationResourceProjectionInput;
 
 use crate::{
     input::{PackageCompileInput, PackageDependency, PublicationResourceInput},
-    shared::package_compile_error::PackageCompileError,
+    shared::package_compile_error::{package_projection_error, PackageCompileError},
     source_compile,
 };
 
@@ -63,7 +63,8 @@ pub fn compile_package(
         contract_requirements,
         service_requirements,
         service_call_refs,
-    })?;
+    })
+    .map_err(package_projection_error)?;
     let file_ir_units = publish_file_ir_artifacts(projection.view())?;
     Ok(publish_projected_package_artifact(
         &projected,

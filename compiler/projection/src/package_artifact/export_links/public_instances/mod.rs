@@ -1,6 +1,9 @@
 mod interfaces;
 mod operations;
 
+#[cfg(test)]
+pub(in crate::package_artifact) use operations::package_public_instance_method_operation;
+
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::type_ref_abi_key;

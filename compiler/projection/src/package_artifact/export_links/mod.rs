@@ -1,6 +1,9 @@
 mod public_instances;
 
 #[cfg(test)]
+pub(super) use public_instances::package_public_instance_method_operation;
+
+#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
