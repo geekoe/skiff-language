@@ -24,7 +24,7 @@ use skiff_syntax::{
 
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
-    db_lowering::{lower_db_declarations, LoweredPublicationDbMetadataIndex},
+    db_lowering::{lower_db_declarations, LoweredPackageDbMetadataIndex},
     declaration_lowering::{local_type_field_index, lower_type_declarations},
     dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     executable_declaration_lowering::{
@@ -339,7 +339,7 @@ fn lower_source_file_ir_unit(
     extend_callable_return_types_for_source(&mut callable_return_types, module_path, ast);
     let db_attachments = DbAttachmentIndex::build(module_path, ast)?;
     let local_db_objects = LocalDbObjectIndex::from_attachments(&db_attachments);
-    let lowered_publication_db_metadata = LoweredPublicationDbMetadataIndex::from_source_index(
+    let lowered_publication_db_metadata = LoweredPackageDbMetadataIndex::from_source_index(
         publication_db_metadata,
         package_aliases,
         external_type_symbols,
@@ -543,10 +543,10 @@ mod tests {
         ContractOperationId, ContractRequirement, ReceiverCallAbi, ServiceProtocolIdentity,
     };
     use skiff_compiler_source::{
-        api::PublicTypeKind, build_from_parsed_sources, parsed_sources::parse_publication_sources,
-        source_graph::CompilerSourceFile, CompileParsedPublicationSourcesInput, PackageDependency,
-        PublicationApiEntry, PublicationApiSpec, PublicationCompilePolicy,
-        ResolvedServiceDependencies, SourceCompilePackageFacts,
+        api::PublicTypeKind, build_package_from_parsed_sources,
+        parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+        CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependency,
+        PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
     };
 
     use super::*;
@@ -642,7 +642,7 @@ mod tests {
             .expect("test source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -650,11 +650,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: "example.com/any-lowering",
-            },
+            policy: PackageCompilePolicy::new("example.com/any-lowering"),
         })
         .expect("source model should build");
         let lowered = crate::lower(&model).expect("publication should lower");
@@ -692,7 +688,7 @@ mod tests {
             .expect("test source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -700,9 +696,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package { package_id },
+            policy: PackageCompilePolicy::new(package_id),
         })
         .expect("source model should build");
         crate::lower(&model)
@@ -733,7 +727,7 @@ mod tests {
                 .expect("package source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let package_model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let package_model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources: package_parsed_sources,
             production_sources: package_production_sources,
             diagnostic_root: &package_root,
@@ -741,11 +735,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: PACKAGE_ID,
-            },
+            policy: PackageCompilePolicy::new(PACKAGE_ID),
         })
         .expect("package source model should build");
         assert_eq!(
@@ -784,7 +774,7 @@ mod tests {
         let mut dependency = PackageDependency::id(PACKAGE_ID);
         dependency.alias = Some("pkg".to_string());
         let package_dependencies = vec![dependency];
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -792,11 +782,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: Some(&package_facts),
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: "example.com/any-lowering",
-            },
+            policy: PackageCompilePolicy::new("example.com/any-lowering"),
         })
         .expect("source model with package facts should build");
         let lowered = crate::lower(&model).expect("publication should lower");

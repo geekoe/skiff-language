@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use compiler_input_model::{PackageDependency, PublicationApiSpec, PublicationCompilePolicy};
+use compiler_input_model::{PackageCompilePolicy, PackageDependency, PublicationApiSpec};
 
 use crate::{
     config_requirements::DependencyPackageConfigFacts, parsed_sources::ParsedCompilerSource,
@@ -22,7 +22,7 @@ pub struct SourceConfigMetadataInput<'a, 'source> {
     pub production_sources: &'source [CompilerSourceFile],
     pub package_dependencies: &'a [PackageDependency],
     pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
-    pub policy: PublicationCompilePolicy<'a>,
+    pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
 }
 
@@ -32,7 +32,7 @@ pub struct SourceConfigMetadataBatchInput<'a, 'source> {
     pub production_sources: &'source [CompilerSourceFile],
     pub package_dependencies: &'a [PackageDependency],
     pub dependency_package_config_facts: Option<&'a [DependencyPackageConfigFacts<'a>]>,
-    pub policy: PublicationCompilePolicy<'a>,
+    pub policy: PackageCompilePolicy<'a>,
     pub publication_api: Option<&'a PublicationApiSpec>,
     pub entrypoint_function_names: &'a [String],
 }
@@ -106,28 +106,19 @@ fn validate_source_config_metadata_input(
     diagnostic_root: &Path,
     parsed_sources: &[ParsedCompilerSource],
     production_sources: &[CompilerSourceFile],
-    policy: PublicationCompilePolicy<'_>,
+    policy: PackageCompilePolicy<'_>,
 ) -> Result<(), PublicationError> {
-    let root_ref_policy = match policy {
-        PublicationCompilePolicy::Package { .. } => {
-            root_refs::RootRefValidationPolicy::parsed_publication_sources()
-        }
-        PublicationCompilePolicy::Service { .. } => {
-            root_refs::RootRefValidationPolicy::service_sources()
-        }
-    };
+    let root_ref_policy = root_refs::RootRefValidationPolicy::parsed_publication_sources();
     root_refs::validate_source_root_refs(diagnostic_root, production_sources, root_ref_policy)?;
     crate::service_storage_rules::validate_db_storage_sources(parsed_sources)?;
-    if matches!(policy, PublicationCompilePolicy::Service { .. }) {
-        crate::service_storage_rules::validate_service_storage_sources(parsed_sources)?;
-    }
+    let _ = policy;
     Ok(())
 }
 
 fn source_config_metadata_from_config_usage_seed(
     config_usage_seed: &crate::config_usage::ConfigUsageSeed,
     dependency_config_requirements: &ConfigRequirementSet,
-    policy: PublicationCompilePolicy<'_>,
+    policy: PackageCompilePolicy<'_>,
 ) -> Result<SourceConfigMetadata, PublicationError> {
     let scope = ConfigRequirementScope::from_publication_policy(policy);
     let own_config_requirements =

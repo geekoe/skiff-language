@@ -20,7 +20,7 @@ use skiff_syntax::{
 
 use super::{
     callable_return_types::CallableReturnType,
-    db_lowering::{DbMetadataIr, LoweredPublicationDbMetadataIndex},
+    db_lowering::{DbMetadataIr, LoweredPackageDbMetadataIndex},
     dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     function_lowering::{
         native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, LocalTypeFieldIndex,
@@ -64,7 +64,7 @@ pub(super) fn lower_const_declarations(
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     type_indices: &BTreeMap<String, u32>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
@@ -152,7 +152,7 @@ pub(super) fn lower_const_declarations(
                 source_span: Some(source_span),
             },
         );
-        // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+        // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,
@@ -171,7 +171,7 @@ fn lower_const_initializer_body(
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     type_indices: &BTreeMap<String, u32>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
@@ -370,7 +370,7 @@ pub(super) fn lower_executables(
     impls: &[ImplDecl],
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     suspend_index: &SuspendIndex,
     executable_index: &ExecutableIndex,
     const_indices: &BTreeMap<String, u32>,
@@ -559,7 +559,7 @@ fn push_executable(
     owner: ExpressionOwnerKey,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     may_suspend: bool,
     executable_indices: &BTreeMap<String, u32>,
     const_indices: &BTreeMap<String, u32>,
@@ -623,7 +623,7 @@ fn push_executable(
             source_span: Some(source_span),
         },
     );
-    // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+    // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
     unit.executables.push(executable);
     push_source_span(
         &mut unit.source_map.spans,
@@ -646,7 +646,7 @@ fn lower_function_with_params(
     owner: ExpressionOwnerKey,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     executable_indices: &BTreeMap<String, u32>,
     const_indices: &BTreeMap<String, u32>,
     type_indices: &BTreeMap<String, u32>,

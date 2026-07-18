@@ -6,8 +6,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skiff_artifact_model::{
-    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, DbMetadataIr, FileIrUnit,
-    InterfaceMethodSignature, ServiceDependencyConstraint, TypeRefIr,
+    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts, DbMetadataIr,
+    FileIrUnit, InterfaceMethodSignature, ServiceDependencyConstraint, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -95,10 +95,6 @@ impl<'a> ProjectionView<'a> {
 
     pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
         &self.input.resources
-    }
-
-    pub fn service_ingress(&self) -> Option<&'a ServiceIngressProjection> {
-        self.source().service_ingress()
     }
 }
 
@@ -394,9 +390,8 @@ pub struct ProjectionSourceFacts {
     export_bindings: ExportBindingProjection,
     config_requirements: ConfigRequirementsSeed,
     abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
-    service_ingress: Option<ServiceIngressProjection>,
-    service_dependencies: ServiceDependencyProjectionFacts,
     callable_effects: ProjectionCallableEffectFacts,
+    callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
 }
 
 #[derive(Debug, Clone)]
@@ -405,9 +400,8 @@ pub struct ProjectionSourceFactsParts {
     pub export_bindings: ExportBindingProjection,
     pub config_requirements: ConfigRequirementsSeed,
     pub abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
-    pub service_ingress: Option<ServiceIngressProjection>,
-    pub service_dependencies: ServiceDependencyProjectionFacts,
     pub callable_effects: ProjectionCallableEffectFacts,
+    pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
 }
 
 impl ProjectionSourceFacts {
@@ -417,9 +411,8 @@ impl ProjectionSourceFacts {
             export_bindings: parts.export_bindings,
             config_requirements: parts.config_requirements,
             abi_ids: parts.abi_ids,
-            service_ingress: parts.service_ingress,
-            service_dependencies: parts.service_dependencies,
             callable_effects: parts.callable_effects,
+            callable_semantic_facts: parts.callable_semantic_facts,
         }
     }
 
@@ -435,14 +428,6 @@ impl ProjectionSourceFacts {
         &self.config_requirements
     }
 
-    pub fn service_ingress(&self) -> Option<&ServiceIngressProjection> {
-        self.service_ingress.as_ref()
-    }
-
-    pub fn service_dependencies(&self) -> &ServiceDependencyProjectionFacts {
-        &self.service_dependencies
-    }
-
     pub fn abi_ids(&self) -> &BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds> {
         &self.abi_ids
     }
@@ -450,15 +435,21 @@ impl ProjectionSourceFacts {
     pub fn callable_effects(&self) -> &ProjectionCallableEffectFacts {
         &self.callable_effects
     }
+
+    pub fn callable_semantic_facts(
+        &self,
+    ) -> &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts> {
+        &self.callable_semantic_facts
+    }
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ServiceDependencyProjectionFacts {
+pub struct LegacyServiceDependencyProjectionFacts {
     constraints: Vec<ServiceDependencyConstraint>,
     dependency_lock: Vec<Value>,
 }
 
-impl ServiceDependencyProjectionFacts {
+impl LegacyServiceDependencyProjectionFacts {
     pub fn new(constraints: Vec<ServiceDependencyConstraint>, dependency_lock: Vec<Value>) -> Self {
         Self {
             constraints,

@@ -95,7 +95,7 @@ pub(super) fn lower_type_declarations(
         // link_targets are no longer derived from the per-declaration `exported`
         // modifier; they are recomputed in a post-lowering pass from the
         // re-export set plus the ABI/schema closure (see
-        // `LoweredPublication::lower`).
+        // `LoweredPackage::lower`).
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,
@@ -135,7 +135,7 @@ pub(super) fn lower_type_declarations(
                 source_span: Some(source_span.clone()),
             },
         );
-        // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+        // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,
@@ -178,7 +178,7 @@ pub(super) fn lower_type_declarations(
                 source_alias_targets,
             )?,
         );
-        // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+        // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,

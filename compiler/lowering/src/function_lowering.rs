@@ -31,9 +31,7 @@ use crate::file_ir::{
 
 use super::{
     callable_return_types::CallableReturnType,
-    db_lowering::{
-        is_db_readonly_result_operation, DbMetadataIr, LoweredPublicationDbMetadataIndex,
-    },
+    db_lowering::{is_db_readonly_result_operation, DbMetadataIr, LoweredPackageDbMetadataIndex},
     dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     service_call_lowering::LoweredServiceCalls,
     type_lowering::{
@@ -88,7 +86,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub(super) db_metadata: &'a BTreeMap<String, DbMetadataIr>,
     pub(super) publication_db_metadata: &'a PublicationDbMetadataIndex,
-    pub(super) lowered_publication_db_metadata: &'a LoweredPublicationDbMetadataIndex,
+    pub(super) lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
     pub(super) executable_indices: &'a BTreeMap<String, u32>,
     pub(super) const_indices: &'a BTreeMap<String, u32>,
     pub(super) external_type_symbols: &'a PublicationTypeSymbolIndex,
@@ -133,7 +131,7 @@ impl<'a> FunctionLowerer<'a> {
         package_aliases: &'a BTreeMap<String, Vec<String>>,
         db_metadata: &'a BTreeMap<String, DbMetadataIr>,
         publication_db_metadata: &'a PublicationDbMetadataIndex,
-        lowered_publication_db_metadata: &'a LoweredPublicationDbMetadataIndex,
+        lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
         executable_indices: &'a BTreeMap<String, u32>,
         const_indices: &'a BTreeMap<String, u32>,
         external_type_symbols: &'a PublicationTypeSymbolIndex,

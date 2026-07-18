@@ -34,31 +34,29 @@ pub use entrypoint_abi_model::{
     EntryTypeSpec, PackageAbiType, PackageAbiTypeDescriptor,
 };
 pub use lowered::{
-    LoweredPublication, SyntheticEntrypointExecutableKind, SyntheticEntrypointIndex,
+    LoweredPackage, SyntheticEntrypointExecutableKind, SyntheticEntrypointIndex,
     SyntheticEntrypointModule, SyntheticOperationIndex,
 };
 pub use service_call_error::ServiceCallLoweringError;
 pub use service_call_lowering::{lower_service_calls, LoweredServiceCallSite, LoweredServiceCalls};
-pub use source_metadata::CompiledPublicationSource;
+pub use source_metadata::CompiledPackageSource;
 pub use storage_projection::{
-    service_spawn_targets_with_packages, CompiledPublicationStorageProjection,
-    PackageSpawnTargetSource,
+    service_spawn_targets_with_packages, CompiledPackageStorageProjection, PackageSpawnTargetSource,
 };
 
-use skiff_compiler_source::{PublicationKind, SourceCompileError, SourceCompileModel};
+use skiff_compiler_source::{PackageSourceModel, SourceCompileError};
 
-pub fn lower(model: &SourceCompileModel) -> Result<LoweredPublication, SourceCompileError> {
-    let operation_indexes = LoweringDependencyOperationIndexes::build(model)?;
-    lower_with_service_calls(model, &operation_indexes, LoweredServiceCalls::default())
+pub fn lower(model: &PackageSourceModel) -> Result<LoweredPackage, SourceCompileError> {
+    lower_with_contract_operations(model, &ContractDependencyOperationIndex::default())
 }
 
 /// T05 facade entry for canonical package compilation. Contract operations
 /// come from compiler/input's validated ServiceContract-only index; no provider
 /// artifact is accepted by this boundary.
 pub fn lower_with_contract_operations(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     contract_operations: &ContractDependencyOperationIndex,
-) -> Result<LoweredPublication, SourceCompileError> {
+) -> Result<LoweredPackage, SourceCompileError> {
     let service_calls = lower_service_calls(model.resolved_call_targets(), contract_operations)
         .map_err(|error| SourceCompileError::ContractValidation {
             message: format!("service call lowering failed: {error}"),
@@ -69,15 +67,13 @@ pub fn lower_with_contract_operations(
 }
 
 fn lower_with_service_calls(
-    model: &SourceCompileModel,
+    model: &PackageSourceModel,
     operation_indexes: &LoweringDependencyOperationIndexes,
     service_calls: LoweredServiceCalls,
-) -> Result<LoweredPublication, SourceCompileError> {
-    let mut lowered = LoweredPublication::lower(model, operation_indexes, service_calls)?;
-    if matches!(model.publication_kind(), PublicationKind::Service) {
-        let storage_projection =
-            storage_projection::project_service_storage_projection(model, &lowered)?;
-        lowered.set_service_storage_projection(storage_projection);
-    }
+) -> Result<LoweredPackage, SourceCompileError> {
+    let mut lowered = LoweredPackage::lower(model, operation_indexes, service_calls)?;
+    let storage_projection =
+        storage_projection::project_service_storage_projection(model, &lowered)?;
+    lowered.set_service_storage_projection(storage_projection);
     Ok(lowered)
 }

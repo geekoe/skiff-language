@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{OperationAbiRef, ServiceDependencyConstraint};
+use skiff_artifact_model::OperationAbiRef;
 use skiff_compiler_source::{
-    DependencyPackageOperationFacts, ResolvedDependencies, SourceCompileError as PublicationError,
-    SourceCompileModel,
+    DependencyPackageOperationFacts, PackageSourceModel, ResolvedDependencies,
+    SourceCompileError as PublicationError,
 };
 use skiff_syntax::error::{CompileError, Result};
 
@@ -138,23 +138,12 @@ impl LoweringDependencyOperationIndexes {
         &self.service_dependency_operations
     }
 
-    pub(crate) fn build(model: &SourceCompileModel) -> std::result::Result<Self, PublicationError> {
-        let dependencies = model.dependencies();
-        Ok(Self::new(
-            package_operation_index(
-                dependencies,
-                dependencies.dependency_package_operation_facts(),
-            )?,
-            service_dependency_operation_index(dependencies.service_dependencies().constraints()),
-        ))
-    }
-
     /// Builds the operation indexes used by the contract-only service-call
     /// path. Package direct calls retain their existing ABI lookup, while
     /// service calls must resolve through the typed contract carrier and never
     /// read a provider PublicationAbi.
     pub(crate) fn build_for_contract_service_calls(
-        model: &SourceCompileModel,
+        model: &PackageSourceModel,
     ) -> std::result::Result<Self, PublicationError> {
         let dependencies = model.dependencies();
         Ok(Self::new(
@@ -185,22 +174,6 @@ fn package_operation_index(
         }
     }
     Ok(index)
-}
-
-fn service_dependency_operation_index(
-    dependencies: &[ServiceDependencyConstraint],
-) -> ServiceDependencyOperationIndex {
-    let mut index = ServiceDependencyOperationIndex::default();
-    for dependency in dependencies {
-        for source_call in &dependency.publication_abi.source_call_operation_index {
-            index.insert_operation(
-                dependency.alias.clone(),
-                source_call.source_call_path.clone(),
-                source_call.operation.clone(),
-            );
-        }
-    }
-    index
 }
 
 fn package_dependency_refs_for_operation_index(

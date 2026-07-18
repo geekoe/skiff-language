@@ -209,12 +209,10 @@ impl<'a> RemotePublicInstanceOperationResolver<'a> {
         &self,
         dependency_ref: &str,
     ) -> Result<&'a skiff_artifact_model::ServiceDependencyConstraint, String> {
-        self.dependencies
-            .service_dependencies()
-            .constraints()
-            .iter()
-            .find(|dependency| dependency.alias == dependency_ref)
-            .ok_or_else(|| format!("service dependency `{dependency_ref}` is not declared"))
+        let _ = self.dependencies;
+        Err(format!(
+            "service dependency `{dependency_ref}` provider metadata is unavailable in package compilation"
+        ))
     }
 }
 

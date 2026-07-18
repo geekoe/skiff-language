@@ -102,7 +102,7 @@ fn build_package_artifact_from_sources(
             &compiled_packages,
         );
     let prelude_projection = crate::shared::prelude_registry::projection_prelude_context();
-    let package_projections = skiff_compiler_projection::project_package_publications(
+    let package_projections = skiff_compiler_projection::project_packages(
         &package_projection_inputs,
         &prelude_projection,
     )?;

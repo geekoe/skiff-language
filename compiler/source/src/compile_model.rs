@@ -14,29 +14,26 @@ use crate::{
         source_role::PublicationSourceRole,
     },
 };
-use compiler_input_model::{
-    PackageDependency, PublicationCompilePolicy, ResolvedServiceDependencies, ServiceIngressSeed,
-};
+use compiler_input_model::{PackageCompilePolicy, PackageDependency};
 
 use super::config_usage::ConfigUsageSeed;
 use super::entity::PublicationEntityModel;
 use super::source_file_facts::{publication_db_metadata_index, PublicationDbMetadataIndex};
 use super::source_identity::PublicationDeclarationAnchors;
-use super::source_rules::collect_stream_emit_type_violations;
 #[cfg(any(test, feature = "test-support"))]
 use super::SourceSymbolKey;
 use super::{
     api::{PublicCallableKind, PublicModuleExport, PublicSymbolKind, PublicTypeKind},
     publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementScope,
     ConfigRequirementSet, DependencyPackageOperationFacts, ExpressionSourceMap,
-    ExpressionTypeModel, NameResolutionModel, PublicationApiSeed, PublicationCompilePlan,
-    PublicationKind, PublicationTypeSymbolIndex, ResolvedCallTargetFacts, ServiceIngressModel,
-    TypeResolutionContext, TypeResolutionModel, TypeResolutionPackageFacts,
+    ExpressionTypeModel, NameResolutionModel, PackageCompilePlan, PublicationApiSeed,
+    PublicationTypeSymbolIndex, ResolvedCallTargetFacts, TypeResolutionContext,
+    TypeResolutionModel, TypeResolutionPackageFacts,
 };
 use crate::shared::publication_error::PublicationError;
 
 #[derive(Debug)]
-pub struct PublicationSourceSet {
+pub struct PackageSourceSet {
     parsed_sources: Vec<ParsedCompilerSource>,
     policy: SourceCompilePolicy,
 }
@@ -57,8 +54,6 @@ pub struct ResolvedDependencies {
     package_aliases: BTreeMap<String, Vec<String>>,
     package_dependencies: Vec<PackageDependency>,
     dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
-    service_dependency_aliases: BTreeSet<String>,
-    service_dependencies: ResolvedServiceDependencies,
 }
 
 #[derive(Debug)]
@@ -114,11 +109,10 @@ pub struct ExportPublicInstanceInterfaceBinding {
 }
 
 #[derive(Debug)]
-pub struct SourceCompileModel {
-    sources: PublicationSourceSet,
+pub struct PackageSourceModel {
+    sources: PackageSourceSet,
     indexes: SourceIndexes,
     dependencies: ResolvedDependencies,
-    service_ingress: Option<ServiceIngressModel>,
     resolutions: ResolutionModels,
     /// 当前 publication 的 owner-local entity model。`root.<module>.<symbol>` typed
     /// resolution 必须通过这里的 top-level table 落到 `EntityId::TopLevel`。
@@ -147,7 +141,7 @@ pub struct SourceCompileModel {
     effective_config_requirements: ConfigRequirementSet,
 }
 
-pub struct SourceCompileModelInput<'a> {
+pub struct PackageSourceModelInput<'a> {
     pub parsed_sources: Vec<ParsedCompilerSource>,
     pub diagnostic_root: &'a Path,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
@@ -155,11 +149,9 @@ pub struct SourceCompileModelInput<'a> {
     pub package_db_metadata_index: Option<PublicationDbMetadataIndex>,
     pub type_resolution_package_facts: Option<&'a [TypeResolutionPackageFacts<'a>]>,
     pub dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
-    pub service_dependencies: ResolvedServiceDependencies,
-    pub service_ingress: Option<ServiceIngressSeed>,
     pub entity_model: PublicationEntityModel,
     pub name_resolution: NameResolutionModel,
-    pub policy: PublicationCompilePolicy<'a>,
+    pub policy: PackageCompilePolicy<'a>,
     pub publication_api_seed: PublicationApiSeed,
     pub source_identity: String,
     pub declaration_anchors: PublicationDeclarationAnchors,
@@ -169,15 +161,14 @@ pub struct SourceCompileModelInput<'a> {
 }
 
 #[derive(Clone, Debug)]
-enum SourceCompilePolicy {
-    Package { package_id: String },
-    Service { service_id: String },
+struct SourceCompilePolicy {
+    package_id: String,
 }
 
-impl SourceCompileModel {
-    pub fn build(input: SourceCompileModelInput<'_>) -> Result<Self, PublicationError> {
+impl PackageSourceModel {
+    pub fn build(input: PackageSourceModelInput<'_>) -> Result<Self, PublicationError> {
         let policy = SourceCompilePolicy::from_borrowed(input.policy);
-        let plan = PublicationCompilePlan::from_policy(policy.as_borrowed());
+        let plan = PackageCompilePlan::from_policy(policy.as_borrowed());
         let indexes = SourceIndexes::build(
             &input.parsed_sources,
             input.package_aliases,
@@ -192,14 +183,6 @@ impl SourceCompileModel {
             &input.parsed_sources,
             &name_resolution,
         )?;
-        if matches!(&policy, SourceCompilePolicy::Service { .. }) {
-            super::service_rules::validate_service_publication_sources_with_name_resolution(
-                input.diagnostic_root,
-                &input.parsed_sources,
-                &name_resolution,
-            )?;
-        }
-        let service_ingress = service_ingress_from_seed(&policy, input.service_ingress)?;
         let type_resolution = TypeResolutionModel::build(
             &input.parsed_sources,
             input.package_aliases,
@@ -227,14 +210,13 @@ impl SourceCompileModel {
             input.package_aliases.clone(),
             input.package_dependencies.to_vec(),
             input.dependency_package_operation_facts,
-            input.service_dependencies,
         );
         let expression_types = ExpressionTypeModel::build(
             &input.parsed_sources,
             &expression_sources,
             &type_resolution,
             indexes.publication_db_metadata_index(),
-            Some(&dependencies),
+            None,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("expression type model failed:\n- {}", error.message()),
@@ -254,26 +236,6 @@ impl SourceCompileModel {
         );
         let callable_effects = callable_analysis.effects;
         let callable_provenance = callable_analysis.provenance;
-        if matches!(&policy, SourceCompilePolicy::Service { .. }) {
-            let mut violations = Vec::new();
-            collect_stream_emit_type_violations(
-                input.diagnostic_root,
-                &input.parsed_sources,
-                &expression_sources,
-                &expression_types,
-                &type_resolution,
-                &mut violations,
-            );
-            if !violations.is_empty() {
-                return Err(PublicationError::ContractValidation {
-                    message: violations
-                        .into_iter()
-                        .map(|violation| format!("- {violation}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                });
-            }
-        }
         let own_config_requirements = ConfigRequirementSet::from_usage_seed(
             &input.config_usage_seed,
             ConfigRequirementScope::from_publication_policy(policy.as_borrowed()),
@@ -284,10 +246,9 @@ impl SourceCompileModel {
             &dependency_config_requirements,
         )?;
         Ok(Self {
-            sources: PublicationSourceSet::new(input.parsed_sources, policy),
+            sources: PackageSourceSet::new(input.parsed_sources, policy),
             indexes,
             dependencies,
-            service_ingress,
             resolutions,
             entity_model,
             name_resolution,
@@ -307,7 +268,7 @@ impl SourceCompileModel {
         })
     }
 
-    pub fn sources(&self) -> &PublicationSourceSet {
+    pub fn sources(&self) -> &PackageSourceSet {
         &self.sources
     }
 
@@ -317,10 +278,6 @@ impl SourceCompileModel {
 
     pub fn dependencies(&self) -> &ResolvedDependencies {
         &self.dependencies
-    }
-
-    pub fn service_ingress(&self) -> Option<&ServiceIngressModel> {
-        self.service_ingress.as_ref()
     }
 
     pub fn resolutions(&self) -> &ResolutionModels {
@@ -427,32 +384,12 @@ impl SourceCompileModel {
         f(&semantic_context)
     }
 
-    pub fn plan(&self) -> PublicationCompilePlan<'_> {
-        PublicationCompilePlan::from_policy(self.sources.policy.as_borrowed())
+    pub fn plan(&self) -> PackageCompilePlan<'_> {
+        PackageCompilePlan::from_policy(self.sources.policy.as_borrowed())
     }
 
-    pub fn publication_kind(&self) -> PublicationKind {
-        self.sources.policy.publication_kind()
-    }
-
-    pub fn is_service_publication(&self) -> bool {
-        matches!(self.publication_kind(), PublicationKind::Service)
-    }
-
-    pub fn policy(&self) -> PublicationCompilePolicy<'_> {
+    pub fn policy(&self) -> PackageCompilePolicy<'_> {
         self.sources.policy.as_borrowed()
-    }
-}
-
-fn service_ingress_from_seed(
-    policy: &SourceCompilePolicy,
-    service_ingress: Option<ServiceIngressSeed>,
-) -> Result<Option<ServiceIngressModel>, PublicationError> {
-    match policy {
-        SourceCompilePolicy::Service { .. } => {
-            ServiceIngressModel::build_from_seed(service_ingress.unwrap_or_default()).map(Some)
-        }
-        SourceCompilePolicy::Package { .. } => Ok(None),
     }
 }
 
@@ -724,7 +661,7 @@ fn collect_type_ref_interface_value_signature_violations(
     }
 }
 
-impl PublicationSourceSet {
+impl PackageSourceSet {
     fn new(parsed_sources: Vec<ParsedCompilerSource>, policy: SourceCompilePolicy) -> Self {
         Self {
             parsed_sources,
@@ -737,36 +674,21 @@ impl PublicationSourceSet {
     }
 
     pub fn role_for(&self, source: &ParsedCompilerSource) -> PublicationSourceRole {
-        PublicationCompilePlan::from_policy(self.policy.as_borrowed())
+        PackageCompilePlan::from_policy(self.policy.as_borrowed())
             .file_role_policy
             .file_role(source)
     }
 }
 
 impl SourceCompilePolicy {
-    fn from_borrowed(policy: PublicationCompilePolicy<'_>) -> Self {
-        match policy {
-            PublicationCompilePolicy::Package { package_id } => Self::Package {
-                package_id: package_id.to_string(),
-            },
-            PublicationCompilePolicy::Service { service_id } => Self::Service {
-                service_id: service_id.to_string(),
-            },
+    fn from_borrowed(policy: PackageCompilePolicy<'_>) -> Self {
+        Self {
+            package_id: policy.package_id().to_string(),
         }
     }
 
-    fn as_borrowed(&self) -> PublicationCompilePolicy<'_> {
-        match self {
-            Self::Package { package_id } => PublicationCompilePolicy::Package { package_id },
-            Self::Service { service_id } => PublicationCompilePolicy::Service { service_id },
-        }
-    }
-
-    fn publication_kind(&self) -> PublicationKind {
-        match self {
-            Self::Package { .. } => PublicationKind::Package,
-            Self::Service { .. } => PublicationKind::Service,
-        }
+    fn as_borrowed(&self) -> PackageCompilePolicy<'_> {
+        PackageCompilePolicy::new(&self.package_id)
     }
 }
 
@@ -775,7 +697,7 @@ impl SourceIndexes {
         parsed_sources: &[ParsedCompilerSource],
         package_aliases: &BTreeMap<String, Vec<String>>,
         package_db_metadata_index: Option<PublicationDbMetadataIndex>,
-        plan: PublicationCompilePlan<'_>,
+        plan: PackageCompilePlan<'_>,
     ) -> Result<Self, PublicationError> {
         let publication_type_symbols = publication_type_symbols(parsed_sources);
         let mut publication_db_metadata_index = publication_db_metadata_index(
@@ -832,15 +754,11 @@ impl ResolvedDependencies {
         package_aliases: BTreeMap<String, Vec<String>>,
         package_dependencies: Vec<PackageDependency>,
         dependency_package_operation_facts: Vec<DependencyPackageOperationFacts>,
-        service_dependencies: ResolvedServiceDependencies,
     ) -> Self {
-        let service_dependency_aliases = service_dependencies.aliases();
         Self {
             package_aliases,
             package_dependencies,
             dependency_package_operation_facts,
-            service_dependency_aliases,
-            service_dependencies,
         }
     }
 
@@ -869,14 +787,6 @@ impl ResolvedDependencies {
 
     pub fn dependency_package_operation_facts(&self) -> &[DependencyPackageOperationFacts] {
         &self.dependency_package_operation_facts
-    }
-
-    fn service_dependency_aliases(&self) -> &BTreeSet<String> {
-        &self.service_dependency_aliases
-    }
-
-    pub fn service_dependencies(&self) -> &ResolvedServiceDependencies {
-        &self.service_dependencies
     }
 }
 

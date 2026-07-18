@@ -7,10 +7,9 @@ pub mod resources;
 pub mod service_ingress;
 
 pub use compile_input::{
-    PackagePublicationInput, PublicationInput, PublicationInputCore, PublicationInputMetadata,
-    ServicePublicationInput,
+    PackageCompileInput, PackageCompileInputMetadata, PackageContractCompileDependency,
 };
-pub use compile_policy::PublicationCompilePolicy;
+pub use compile_policy::PackageCompilePolicy;
 pub use dependencies::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
     dependency_config_is_empty, empty_dependency_config, is_complex_package_dependency_id,

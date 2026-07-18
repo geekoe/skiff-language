@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::storage_projection::CompiledPublicationStorageProjection;
+use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     publication_local_refs::rewrite_publication_local_refs,
     source_file_lowering::{
         compile_publication_source_file_ir_unit, PublicationSourceLoweringInput,
     },
-    type_ref_ir_source_text_with_local_types, CompiledPublicationSource, EntryFunctionSignature,
+    type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
     EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex, LoweringDependencyOperationIndexes,
 };
 use crate::file_ir::{
@@ -19,17 +19,15 @@ use skiff_artifact_identity::type_ref_abi_key;
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
+use skiff_compiler_source::PackageSourceModel;
 use skiff_compiler_source::SourceCompileError as PublicationError;
-use skiff_compiler_source::SourceCompileModel;
-use skiff_compiler_source::{
-    PublicationApiSeed, PublicationCompilePolicy, ServiceIngressHandler, ServiceIngressModel,
-};
+use skiff_compiler_source::{PublicationApiSeed, ServiceIngressHandler, ServiceIngressModel};
 
 #[derive(Debug)]
-pub struct LoweredPublication {
+pub struct LoweredPackage {
     file_ir_units: Vec<FileIrUnit>,
-    sources: Vec<CompiledPublicationSource>,
-    service_storage_projection: CompiledPublicationStorageProjection,
+    sources: Vec<CompiledPackageSource>,
+    service_storage_projection: CompiledPackageStorageProjection,
     diagnostics: LoweringDiagnostics,
     metadata: LoweringMetadata,
     entrypoint_abi: EntrypointAbiIndex,
@@ -73,9 +71,9 @@ pub enum SyntheticEntrypointExecutableKind {
     ImplMethod,
 }
 
-impl LoweredPublication {
+impl LoweredPackage {
     pub(crate) fn lower(
-        model: &SourceCompileModel,
+        model: &PackageSourceModel,
         operation_indexes: &LoweringDependencyOperationIndexes,
         service_calls: crate::LoweredServiceCalls,
     ) -> Result<Self, PublicationError> {
@@ -138,15 +136,10 @@ impl LoweredPublication {
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
-        let current_package_id = match model.policy() {
-            PublicationCompilePolicy::Package { package_id } => Some(package_id),
-            PublicationCompilePolicy::Service { .. } => None,
-        };
-        rewrite_publication_local_refs(&mut file_ir_units, current_package_id).map_err(
-            |error| PublicationError::ContractValidation {
+        rewrite_publication_local_refs(&mut file_ir_units, Some(model.policy().package_id()))
+            .map_err(|error| PublicationError::ContractValidation {
                 message: format!("File IR external ref rebuild failed: {error}"),
-            },
-        )?;
+            })?;
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration
@@ -154,11 +147,7 @@ impl LoweredPublication {
         // the ABI/schema closure of those re-exported symbols. See doc §5: a type
         // reachable from a re-exported symbol's signature must be LINKABLE even if
         // it is not itself a public writable name.
-        derive_file_ir_link_targets(
-            &mut file_ir_units,
-            model.publication_api().seed(),
-            model.service_ingress(),
-        );
+        derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed(), None);
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(
@@ -172,7 +161,7 @@ impl LoweredPublication {
         Ok(Self {
             file_ir_units,
             sources,
-            service_storage_projection: CompiledPublicationStorageProjection::default(),
+            service_storage_projection: CompiledPackageStorageProjection::default(),
             diagnostics: LoweringDiagnostics,
             metadata: LoweringMetadata {
                 synthetic_operations,
@@ -190,13 +179,13 @@ impl LoweredPublication {
         &mut self.file_ir_units
     }
 
-    pub fn sources(&self) -> &[CompiledPublicationSource] {
+    pub fn sources(&self) -> &[CompiledPackageSource] {
         &self.sources
     }
 
     pub fn set_service_storage_projection(
         &mut self,
-        service_storage_projection: CompiledPublicationStorageProjection,
+        service_storage_projection: CompiledPackageStorageProjection,
     ) {
         self.service_storage_projection = service_storage_projection;
     }
@@ -1043,9 +1032,9 @@ fn compiled_publication_source(
     source: &ParsedCompilerSource,
     role: PublicationSourceRole,
     unit: &FileIrUnit,
-) -> CompiledPublicationSource {
+) -> CompiledPackageSource {
     let source_map_source = unit.source_map.sources.first();
-    CompiledPublicationSource {
+    CompiledPackageSource {
         source_path: source.relative_path().display().to_string(),
         module_path: source.module_path().to_string(),
         role,

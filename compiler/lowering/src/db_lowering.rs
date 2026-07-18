@@ -96,12 +96,12 @@ impl DbMetadataIr {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct LoweredPublicationDbMetadataIndex {
+pub(super) struct LoweredPackageDbMetadataIndex {
     by_source_key: BTreeMap<SourceSymbolKey, DbMetadataIr>,
     by_bare_name: BTreeMap<String, BTreeSet<SourceSymbolKey>>,
 }
 
-impl LoweredPublicationDbMetadataIndex {
+impl LoweredPackageDbMetadataIndex {
     pub(super) fn from_source_index(
         index: &PublicationDbMetadataIndex,
         package_aliases: &BTreeMap<String, Vec<String>>,

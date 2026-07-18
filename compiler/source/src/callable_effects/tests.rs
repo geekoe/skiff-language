@@ -8,11 +8,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    build_from_parsed_sources_with_dependency_analysis, parsed_sources::parse_publication_sources,
-    source_graph::CompilerSourceFile, CompileParsedPublicationSourcesInput,
-    ContractDependencyAnalysisFacts, PackageDependencyAnalysisFacts,
-    PackageDependencyCallableAnalysis, PublicationCompilePolicy, ResolvedCallTarget,
-    SourceCompileModel, SourceDependencyAnalysisInput, SourceSymbolKey,
+    build_package_from_parsed_sources_with_dependency_analysis,
+    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+    CompileParsedPackageSourcesInput, ContractDependencyAnalysisFacts, PackageCompilePolicy,
+    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis, PackageSourceModel,
+    ResolvedCallTarget, SourceDependencyAnalysisInput, SourceSymbolKey,
 };
 
 #[test]
@@ -456,7 +456,7 @@ fn contract_target_is_typed_but_effects_fail_closed_without_descriptor_facts() {
     }));
 }
 
-fn analyze(source: &str, dependency_analysis: SourceDependencyAnalysisInput) -> SourceCompileModel {
+fn analyze(source: &str, dependency_analysis: SourceDependencyAnalysisInput) -> PackageSourceModel {
     analyze_named(
         source,
         dependency_analysis,
@@ -470,7 +470,7 @@ fn analyze_named(
     dependency_analysis: SourceDependencyAnalysisInput,
     module_path: &str,
     package_id: &str,
-) -> SourceCompileModel {
+) -> PackageSourceModel {
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         module_path.to_string(),
@@ -486,8 +486,8 @@ fn analyze_named(
             .expect("fixture source facts build");
     let package_aliases = BTreeMap::new();
     let package_dependencies = Vec::new();
-    build_from_parsed_sources_with_dependency_analysis(
-        CompileParsedPublicationSourcesInput {
+    build_package_from_parsed_sources_with_dependency_analysis(
+        CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources,
             diagnostic_root: Path::new("/tmp/effect-provenance"),
@@ -495,20 +495,18 @@ fn analyze_named(
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: Default::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package { package_id },
+            policy: PackageCompilePolicy::new(package_id),
         },
         &dependency_analysis,
     )
     .expect("source model builds")
 }
 
-fn effects(model: &SourceCompileModel, symbol: &str) -> CallableMayEffects {
+fn effects(model: &PackageSourceModel, symbol: &str) -> CallableMayEffects {
     effects_in(model, "api", symbol)
 }
 
-fn effects_in(model: &SourceCompileModel, module: &str, symbol: &str) -> CallableMayEffects {
+fn effects_in(model: &PackageSourceModel, module: &str, symbol: &str) -> CallableMayEffects {
     match model
         .callable_effects()
         .operations()
@@ -522,12 +520,12 @@ fn effects_in(model: &SourceCompileModel, module: &str, symbol: &str) -> Callabl
     }
 }
 
-fn provenance<'a>(model: &'a SourceCompileModel, symbol: &str) -> &'a CallableProvenanceSummary {
+fn provenance<'a>(model: &'a PackageSourceModel, symbol: &str) -> &'a CallableProvenanceSummary {
     provenance_in(model, "api", symbol)
 }
 
 fn provenance_in<'a>(
-    model: &'a SourceCompileModel,
+    model: &'a PackageSourceModel,
     module: &str,
     symbol: &str,
 ) -> &'a CallableProvenanceSummary {
@@ -538,7 +536,7 @@ fn provenance_in<'a>(
         .unwrap_or_else(|| panic!("missing provenance for {symbol}"))
 }
 
-fn assert_escape_lane(model: &SourceCompileModel, symbol: &str, expected: ValueEscapeLane) {
+fn assert_escape_lane(model: &PackageSourceModel, symbol: &str, expected: ValueEscapeLane) {
     assert!(effects(model, symbol).escapes_caller_value, "{symbol}");
     match provenance(model, symbol) {
         CallableProvenanceSummary::Analyzed { escape_lanes, .. } => {
@@ -551,7 +549,7 @@ fn assert_escape_lane(model: &SourceCompileModel, symbol: &str, expected: ValueE
     }
 }
 
-fn assert_heap_store_fail_closed(model: &SourceCompileModel, symbol: &str) {
+fn assert_heap_store_fail_closed(model: &PackageSourceModel, symbol: &str) {
     assert_eq!(effects(model, symbol), all_effects(), "{symbol}");
     assert_eq!(
         provenance(model, symbol),

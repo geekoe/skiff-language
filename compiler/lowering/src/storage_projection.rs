@@ -10,21 +10,21 @@ use crate::file_ir::{ExecutableKind, FileIrRef, FileIrUnit, ServiceSymbolRef};
 use skiff_compiler_source::{
     parsed_sources::ParsedCompilerSource,
     semantic::{impl_method_declaration_name, InterfaceSemantics},
-    SourceCompileError as PublicationError, SourceCompileModel,
+    PackageSourceModel, SourceCompileError as PublicationError,
 };
 
-use super::{CompiledPublicationSource, LoweredPublication};
+use super::{CompiledPackageSource, LoweredPackage};
 
 #[derive(Clone, Debug, Default)]
-pub struct CompiledPublicationStorageProjection {
+pub struct CompiledPackageStorageProjection {
     pub db: Vec<DbMetadataIr>,
     pub actors: Vec<ActorMetadataIr>,
 }
 
 pub fn project_service_storage_projection(
-    source_model: &SourceCompileModel,
-    lowered: &LoweredPublication,
-) -> Result<CompiledPublicationStorageProjection, PublicationError> {
+    source_model: &PackageSourceModel,
+    lowered: &LoweredPackage,
+) -> Result<CompiledPackageStorageProjection, PublicationError> {
     source_model.with_semantic_context(|semantic_context| {
         service_storage_projection(
             source_model.sources().parsed_sources(),
@@ -38,10 +38,10 @@ pub fn project_service_storage_projection(
 pub fn service_storage_projection(
     parsed_sources: &[ParsedCompilerSource],
     file_ir_units: &[FileIrUnit],
-    sources: &[CompiledPublicationSource],
+    sources: &[CompiledPackageSource],
     interface_semantics: &InterfaceSemantics,
-) -> Result<CompiledPublicationStorageProjection, PublicationError> {
-    Ok(CompiledPublicationStorageProjection {
+) -> Result<CompiledPackageStorageProjection, PublicationError> {
+    Ok(CompiledPackageStorageProjection {
         db: service_db_metadata(parsed_sources, file_ir_units, sources),
         actors: service_actor_metadata(file_ir_units, interface_semantics)?,
     })
@@ -225,7 +225,7 @@ fn actor_method_return_type(ty: &TypeRefIr) -> Option<TypeRefIr> {
 fn service_db_metadata(
     parsed_sources: &[ParsedCompilerSource],
     file_ir_units: &[FileIrUnit],
-    sources: &[CompiledPublicationSource],
+    sources: &[CompiledPackageSource],
 ) -> Vec<DbMetadataIr> {
     let units_by_module = file_ir_units
         .iter()

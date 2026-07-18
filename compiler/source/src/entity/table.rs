@@ -18,18 +18,9 @@ use super::id::{
 use super::kind::{EntityKind, EntityNamespace};
 use super::resolution::ResolverRoot;
 
-/// package vs service 在 source compile 阶段共享同一种 entity table;差异在 projection /
-/// linkage policy,不在 table(架构 L228-243)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicationKind {
-    Package,
-    Service,
-}
-
 /// 一个 publication 的 entity model 顶层容器(架构 L237-243)。
 #[derive(Debug)]
 pub struct PublicationEntityModel {
-    kind: PublicationKind,
     top_level: PublicationEntityTable,
     module_index: ModulePathIndex,
     resolver_roots: ResolverRootTable,
@@ -37,9 +28,8 @@ pub struct PublicationEntityModel {
 }
 
 impl PublicationEntityModel {
-    pub fn new(kind: PublicationKind) -> Self {
+    pub fn new() -> Self {
         Self {
-            kind,
             top_level: PublicationEntityTable::new(),
             module_index: ModulePathIndex::new(),
             resolver_roots: ResolverRootTable::new(),
@@ -47,11 +37,8 @@ impl PublicationEntityModel {
         }
     }
 
-    pub fn from_declaration_anchors(
-        kind: PublicationKind,
-        anchors: &[SourceDeclarationAnchor],
-    ) -> Self {
-        let mut model = Self::new(kind);
+    pub fn from_declaration_anchors(anchors: &[SourceDeclarationAnchor]) -> Self {
+        let mut model = Self::new();
         for anchor in anchors {
             model.top_level.push(TopLevelEntity::with_anchor(
                 entity_kind_for_source_declaration_kind(anchor.kind()),
@@ -59,10 +46,6 @@ impl PublicationEntityModel {
             ));
         }
         model
-    }
-
-    pub fn kind(&self) -> PublicationKind {
-        self.kind
     }
 
     pub fn top_level(&self) -> &PublicationEntityTable {

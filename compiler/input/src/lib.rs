@@ -27,7 +27,7 @@ pub use api_spec::{
     PublicationApiEntry, PublicationApiPublicInstanceEntry, PublicationApiSource,
     PublicationApiSpec, PublicationApiSpecEntry, SourceSymbolSelector,
 };
-pub use compile_policy::PublicationCompilePolicy;
+pub use compile_policy::PackageCompilePolicy;
 pub use contract_dependencies::{
     read_contract_dependency, read_contract_dependency_json, ContractDependencyError,
     ContractDependencyIndex, ResolvedContractDependency,

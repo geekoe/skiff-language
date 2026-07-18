@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::config_usage::{ConfigPresenceUse, ConfigSourceSpan, ConfigUsageSeed, ConfigUse};
 use super::SourceCompilePackageDependencyFact;
 use crate::shared::publication_error::PublicationError;
-use compiler_input_model::{PackageDependency, PublicationCompilePolicy};
+use compiler_input_model::{PackageCompilePolicy, PackageDependency};
 
 type PackageDependencyPath = Vec<ConfigRequirementDependencyStep>;
 type PackageDependencyPathsByKey = BTreeMap<(String, String), Vec<PackageDependencyPath>>;
@@ -36,12 +36,9 @@ pub enum ConfigRequirementScope {
 }
 
 impl ConfigRequirementScope {
-    pub(crate) fn from_publication_policy(policy: PublicationCompilePolicy<'_>) -> Self {
-        match policy {
-            PublicationCompilePolicy::Service { .. } => Self::Service,
-            PublicationCompilePolicy::Package { package_id } => Self::Package {
-                package_id: package_id.to_string(),
-            },
+    pub(crate) fn from_publication_policy(policy: PackageCompilePolicy<'_>) -> Self {
+        Self::Package {
+            package_id: policy.package_id().to_string(),
         }
     }
 }
