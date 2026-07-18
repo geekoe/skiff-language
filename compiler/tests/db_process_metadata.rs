@@ -1,5 +1,3 @@
-use std::fs;
-
 mod common;
 use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
 
@@ -277,12 +275,12 @@ function write(value: string) -> bool {
 
 fn package_with_source(name: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/db-fixture\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "");
-    write(&temp.path().join("main.skiff"), source);
+    temp.write("api.yml", "");
+    temp.write("main.skiff", source);
     temp
 }
 
@@ -295,11 +293,4 @@ fn assert_compile_error_contains(name: &str, source: &str, expected: &str) {
         error.contains(expected),
         "expected {expected:?} in compile error: {error}"
     );
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

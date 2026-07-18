@@ -55,22 +55,15 @@ fn package_resource_content_changes_build_identity_not_local_abi() {
 
 fn package_resource_project(name: &str, resource: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/resource-package\nversion: 1.0.0\nresources:\n  - prompts/pkg.md\n",
     );
-    write(&temp.path().join("api.yml"), "label: main.label\n");
-    write(
-        &temp.path().join("main.skiff"),
+    temp.write("api.yml", "label: main.label\n");
+    temp.write(
+        "main.skiff",
         "function label() -> string {\n  return \"resource\"\n}\n",
     );
-    write(&temp.path().join("prompts/pkg.md"), resource);
+    temp.write("prompts/pkg.md", resource);
     temp
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

@@ -1,5 +1,3 @@
-use std::fs;
-
 mod common;
 use common::{package_project::compile_package_project, TestDir};
 
@@ -41,8 +39,8 @@ fn package_test_sources_do_not_enter_runtime_config_requirements() {
         "config-test-source",
         "function configured() -> string { return config.require<string>(\"prod.token\") }\n",
     );
-    write(
-        &temp.path().join("main.test.skiff"),
+    temp.write(
+        "main.test.skiff",
         r#"
 const testToken = config.require<string>("test.token")
 test "config helper" { assert testToken == testToken, "same token" }
@@ -104,8 +102,8 @@ fn config_values_are_not_package_manifest_data() {
         "package-config-values-rejected",
         "function configured() -> string { return \"ok\" }\n",
     );
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/config-fixture\nversion: 1.0.0\nconfig:\n  app.token: secret\n",
     );
     let error = compile_error(temp);
@@ -142,15 +140,12 @@ function configured() -> string {
 
 fn package_with_source(name: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/config-fixture\nversion: 1.0.0\n",
     );
-    write(
-        &temp.path().join("api.yml"),
-        "configured: main.configured\n",
-    );
-    write(&temp.path().join("main.skiff"), source);
+    temp.write("api.yml", "configured: main.configured\n");
+    temp.write("main.skiff", source);
     temp
 }
 
@@ -158,11 +153,4 @@ fn compile_error(temp: TestDir) -> String {
     compile_package_project(temp.path())
         .expect_err("package compile should fail")
         .to_string()
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

@@ -1,5 +1,3 @@
-use std::{fs, path::Path};
-
 use skiff_artifact_model::{PackageLocalAbiSymbol, PackageRefIr};
 
 mod common;
@@ -46,12 +44,9 @@ type CallbackBag { callbacks: Array<fn(input: models.ModelRequest) -> void> }
         ),
     ] {
         let temp = TestDir::new("skiff-compiler", &format!("std-schema-{fixture}"));
-        write(
-            &temp.path().join("package.yml"),
-            "id: example.com/schema\nversion: 1.0.0\n",
-        );
-        write(&temp.path().join("api.yml"), api);
-        write(&temp.path().join("schema.skiff"), source);
+        temp.write("package.yml", "id: example.com/schema\nversion: 1.0.0\n");
+        temp.write("api.yml", api);
+        temp.write("schema.skiff", source);
 
         let error = compile_package_project(temp.path())
             .expect_err("an undeclared package schema dependency must fail")
@@ -64,16 +59,13 @@ type CallbackBag { callbacks: Array<fn(input: models.ModelRequest) -> void> }
 #[test]
 fn platform_std_schema_types_are_available_without_a_manifest_requirement() {
     let temp = TestDir::new("skiff-compiler", "implicit-platform-std-schema");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/http-schema\nversion: 1.0.0\n",
     );
-    write(
-        &temp.path().join("api.yml"),
-        "RequestEnvelope: schema.RequestEnvelope\n",
-    );
-    write(
-        &temp.path().join("schema.skiff"),
+    temp.write("api.yml", "RequestEnvelope: schema.RequestEnvelope\n");
+    temp.write(
+        "schema.skiff",
         r#"type RequestEnvelope { request: std.http.HttpClientRequest }
 "#,
     );
@@ -86,8 +78,8 @@ fn platform_std_schema_types_are_available_without_a_manifest_requirement() {
 #[test]
 fn platform_std_rejects_a_user_dependency_alias() {
     let temp = TestDir::new("skiff-compiler", "explicit-platform-std-alias");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         r#"id: example.com/schema
 version: 1.0.0
 packages:
@@ -96,9 +88,9 @@ packages:
     alias: corelib
 "#,
     );
-    write(&temp.path().join("api.yml"), "Envelope: schema.Envelope\n");
-    write(
-        &temp.path().join("schema.skiff"),
+    temp.write("api.yml", "Envelope: schema.Envelope\n");
+    temp.write(
+        "schema.skiff",
         r#"import corelib
 
 type Envelope { request: corelib.http.HttpClientRequest }
@@ -117,8 +109,8 @@ type Envelope { request: corelib.http.HttpClientRequest }
 #[test]
 fn package_schema_dependencies_reach_file_ir_artifact_and_closure() {
     let temp = TestDir::new("skiff-compiler", "canonical-package-schema");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         r#"id: example.com/schema
 version: 1.0.0
 packages:
@@ -127,9 +119,9 @@ packages:
     alias: models
 "#,
     );
-    write(&temp.path().join("api.yml"), "Envelope: schema.Envelope\n");
-    write(
-        &temp.path().join("schema.skiff"),
+    temp.write("api.yml", "Envelope: schema.Envelope\n");
+    temp.write(
+        "schema.skiff",
         r#"import models
 import std
 
@@ -140,7 +132,7 @@ type Envelope {
 }
 "#,
     );
-    write_models_package(temp.path());
+    write_models_package(&temp);
 
     let project =
         compile_package_project(temp.path()).expect("package schema graph should compile");
@@ -179,22 +171,19 @@ type Envelope {
 #[test]
 fn sibling_type_refs_are_canonical_in_package_local_abi() {
     let temp = TestDir::new("skiff-compiler", "canonical-sibling-type-ref");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/direct-ref\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "echo: api.echo\n");
-    write(
-        &temp.path().join("api.skiff"),
+    temp.write("api.yml", "echo: api.echo\n");
+    temp.write(
+        "api.skiff",
         r#"function echo(input: root.models.Payload) -> root.models.Payload {
   return input
 }
 "#,
     );
-    write(
-        &temp.path().join("models.skiff"),
-        "type Payload { value: string }\n",
-    );
+    temp.write("models.skiff", "type Payload { value: string }\n");
 
     let project = compile_package_project(temp.path()).expect("sibling type refs should compile");
     let api_file = module_artifact(&project.package, "api").value();
@@ -225,16 +214,10 @@ fn sibling_type_refs_are_canonical_in_package_local_abi() {
 #[test]
 fn std_discriminator_union_field_access_compiles_in_file_ir() {
     let temp = TestDir::new("skiff-compiler", "std-discriminator-field-access");
-    write(
-        &temp.path().join("package.yml"),
-        "id: example.com/http-sse\nversion: 1.0.0\n",
-    );
-    write(
-        &temp.path().join("api.yml"),
-        "eventStatus: sse.eventStatus\n",
-    );
-    write(
-        &temp.path().join("sse.skiff"),
+    temp.write("package.yml", "id: example.com/http-sse\nversion: 1.0.0\n");
+    temp.write("api.yml", "eventStatus: sse.eventStatus\n");
+    temp.write(
+        "sse.skiff",
         r#"import std
 
 function eventStatus(event: std.http.HttpSseEvent) -> integer? {
@@ -266,16 +249,13 @@ function eventStatus(event: std.http.HttpSseEvent) -> integer? {
 #[test]
 fn bare_http_envelopes_remain_prelude_schema_types() {
     let temp = TestDir::new("skiff-compiler", "bare-http-envelope");
-    write(
-        &temp.path().join("package.yml"),
-        "id: example.com/raw\nversion: 1.0.0\n",
-    );
-    write(
-        &temp.path().join("api.yml"),
+    temp.write("package.yml", "id: example.com/raw\nversion: 1.0.0\n");
+    temp.write(
+        "api.yml",
         "rawRequest: raw.rawRequest\nRawEnvelope: raw.RawEnvelope\n",
     );
-    write(
-        &temp.path().join("raw.skiff"),
+    temp.write(
+        "raw.skiff",
         r#"const rawRequest: HttpRequest = {
   method: "GET",
   url: "https://example.com",
@@ -299,21 +279,17 @@ type RawEnvelope {
     assert!(project.dependency("skiff.run/std", "1.0.0").is_some());
 }
 
-fn write_models_package(root: &Path) {
-    let models = root
-        .join(".skiff-packages")
-        .join("example~com~~models")
-        .join("0.1.0");
-    write(
-        &models.join("package.yml"),
+fn write_models_package(temp: &TestDir) {
+    temp.write(
+        ".skiff-packages/example~com~~models/0.1.0/package.yml",
         "id: example.com/models\nversion: 0.1.0\n",
     );
-    write(
-        &models.join("api.yml"),
+    temp.write(
+        ".skiff-packages/example~com~~models/0.1.0/api.yml",
         "ModelRequest: models.ModelRequest\nmake: models.make\n",
     );
-    write(
-        &models.join("models.skiff"),
+    temp.write(
+        ".skiff-packages/example~com~~models/0.1.0/models.skiff",
         r#"type ModelRequest {}
 
 function make() -> ModelRequest {
@@ -343,11 +319,4 @@ fn assert_std_file_ir_symbol(
             }),
         "File IR module {module_path} should reference canonical std symbol {symbol_path}"
     );
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("fixture directory should be created");
-    }
-    fs::write(path, contents).expect("fixture file should be written");
 }

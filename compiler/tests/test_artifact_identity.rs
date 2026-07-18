@@ -1,5 +1,3 @@
-use std::fs;
-
 mod common;
 use common::{package_project::compile_package_project, TestDir};
 use skiff_artifact_identity::{
@@ -95,12 +93,12 @@ fn package_test_sources_do_not_change_production_artifact_identity() {
         "run: main.run\n",
         "function run() -> string { return \"ok\" }\n",
     );
-    write(
-        &left.path().join("main.test.skiff"),
+    left.write(
+        "main.test.skiff",
         "test \"left\" { assert true, \"left\" }\n",
     );
-    write(
-        &right.path().join("main.test.skiff"),
+    right.write(
+        "main.test.skiff",
         "test \"right\" { assert false == false, \"right\" }\n",
     );
     let left = compile_package_project(left.path()).expect("left package should compile");
@@ -119,18 +117,11 @@ fn package_test_sources_do_not_change_production_artifact_identity() {
 
 fn package_project(name: &str, api: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/identity-fixture\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), api);
-    write(&temp.path().join("main.skiff"), source);
+    temp.write("api.yml", api);
+    temp.write("main.skiff", source);
     temp
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

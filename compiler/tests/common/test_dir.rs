@@ -32,6 +32,28 @@ impl TestDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn write(&self, relative_path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
+        let relative_path = relative_path.as_ref();
+        assert!(
+            relative_path.is_relative(),
+            "fixture file path must be relative: {}",
+            relative_path.display()
+        );
+        let path = self.path.join(relative_path);
+        let parent = path
+            .parent()
+            .expect("fixture file path should have a parent directory");
+        fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!(
+                "failed to create fixture parent directory {}: {error}",
+                parent.display()
+            )
+        });
+        fs::write(&path, contents).unwrap_or_else(|error| {
+            panic!("failed to write fixture file {}: {error}", path.display())
+        });
+    }
 }
 
 impl Drop for TestDir {

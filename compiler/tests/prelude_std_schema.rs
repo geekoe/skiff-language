@@ -1,5 +1,3 @@
-use std::{fs, path::Path};
-
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryUnavailableReason, ContractTypeRef, PackageLocalAbiSymbol,
     PackageRefIr, TypeDescriptorIr, TypeRefIr,
@@ -11,13 +9,13 @@ use common::{artifacts::module_artifact, package_project::compile_package_projec
 #[test]
 fn prelude_types_compile_on_the_canonical_package_owner() {
     let temp = TestDir::new("skiff-compiler", "prelude-package-owner");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/prelude-owner\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "inspect: prelude.inspect\n");
-    write(
-        &temp.path().join("prelude.skiff"),
+    temp.write("api.yml", "inspect: prelude.inspect\n");
+    temp.write(
+        "prelude.skiff",
         r#"function inspect(
   flag: bool,
   count: integer,
@@ -46,16 +44,13 @@ fn prelude_types_compile_on_the_canonical_package_owner() {
 #[test]
 fn explicit_std_import_materializes_a_canonical_dependency() {
     let temp = TestDir::new("skiff-compiler", "explicit-std-package");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/std-consumer\nversion: 1.0.0\n",
     );
-    write(
-        &temp.path().join("api.yml"),
-        "RequestBox: main.RequestBox\n",
-    );
-    write(
-        &temp.path().join("main.skiff"),
+    temp.write("api.yml", "RequestBox: main.RequestBox\n");
+    temp.write(
+        "main.skiff",
         r#"import std
 
 type RequestBox { request: std.http.HttpClientRequest }
@@ -84,13 +79,13 @@ type RequestBox { request: std.http.HttpClientRequest }
 #[test]
 fn builtin_types_reach_the_package_boundary_projection() {
     let temp = TestDir::new("skiff-compiler", "prelude-boundary-builtins");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/prelude-builtins\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "check: builtins.check\n");
-    write(
-        &temp.path().join("builtins.skiff"),
+    temp.write("api.yml", "check: builtins.check\n");
+    temp.write(
+        "builtins.skiff",
         r#"function check(flag: bool, count: integer) -> integer {
   return 1
 }
@@ -142,13 +137,10 @@ fn builtin_types_reach_the_package_boundary_projection() {
 #[test]
 fn callback_type_is_explicitly_boundary_unavailable() {
     let temp = TestDir::new("skiff-compiler", "callback-boundary-package");
-    write(
-        &temp.path().join("package.yml"),
-        "id: example.com/callbacks\nversion: 1.0.0\n",
-    );
-    write(&temp.path().join("api.yml"), "run: callback.run\n");
-    write(
-        &temp.path().join("callback.skiff"),
+    temp.write("package.yml", "id: example.com/callbacks\nversion: 1.0.0\n");
+    temp.write("api.yml", "run: callback.run\n");
+    temp.write(
+        "callback.skiff",
         r#"function run(callback: fn(value: string) -> string) -> void {
   return
 }
@@ -173,13 +165,10 @@ fn callback_type_is_explicitly_boundary_unavailable() {
 #[test]
 fn stream_type_is_explicitly_boundary_unavailable() {
     let temp = TestDir::new("skiff-compiler", "stream-boundary-package");
-    write(
-        &temp.path().join("package.yml"),
-        "id: example.com/stream\nversion: 1.0.0\n",
-    );
-    write(&temp.path().join("api.yml"), "events: stream.events\n");
-    write(
-        &temp.path().join("stream.skiff"),
+    temp.write("package.yml", "id: example.com/stream\nversion: 1.0.0\n");
+    temp.write("api.yml", "events: stream.events\n");
+    temp.write(
+        "stream.skiff",
         "function events() -> Stream<string> { return }\n",
     );
 
@@ -202,16 +191,16 @@ fn stream_type_is_explicitly_boundary_unavailable() {
 fn package_local_transport_names_remain_ordinary_types() {
     for reserved in ["HttpRequest", "ConnectionMessage"] {
         let temp = TestDir::new("skiff-compiler", &format!("package-local-{reserved}"));
-        write(
-            &temp.path().join("package.yml"),
+        temp.write(
+            "package.yml",
             "id: example.com/local-types\nversion: 1.0.0\n",
         );
-        write(
-            &temp.path().join("api.yml"),
+        temp.write(
+            "api.yml",
             &format!("run: main.run\n{reserved}: main.{reserved}\n"),
         );
-        write(
-            &temp.path().join("main.skiff"),
+        temp.write(
+            "main.skiff",
             &format!("type {reserved} {{}}\nfunction run() -> void {{}}\n"),
         );
 
@@ -232,19 +221,16 @@ fn package_local_transport_names_remain_ordinary_types() {
 #[test]
 fn configured_api_yml_is_the_only_package_schema_surface() {
     let temp = TestDir::new("skiff-compiler", "configured-api-surface");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/configured-api\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "run: internal.handler.run\n");
-    write(
-        &temp.path().join("api/ignored.skiff"),
+    temp.write("api.yml", "run: internal.handler.run\n");
+    temp.write(
+        "api/ignored.skiff",
         "type UnconfiguredType { value: string }\n",
     );
-    write(
-        &temp.path().join("internal/handler.skiff"),
-        "function run() -> void {}\n",
-    );
+    temp.write("internal/handler.skiff", "function run() -> void {}\n");
 
     let project = compile_package_project(temp.path()).expect("configured API should compile");
     let public_symbols = &project.package.artifact.package_local_abi.public_symbols;
@@ -256,13 +242,13 @@ fn configured_api_yml_is_the_only_package_schema_surface() {
 #[test]
 fn prelude_builtin_schema_is_typed_in_file_ir() {
     let temp = TestDir::new("skiff-compiler", "prelude-file-ir-schema");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/prelude-schema\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "Builtins: schema.Builtins\n");
-    write(
-        &temp.path().join("schema.skiff"),
+    temp.write("api.yml", "Builtins: schema.Builtins\n");
+    temp.write(
+        "schema.skiff",
         "type Builtins { flag: bool, count: integer }\n",
     );
 
@@ -284,13 +270,13 @@ fn prelude_builtin_schema_is_typed_in_file_ir() {
 #[test]
 fn qualified_std_schema_refs_reach_file_ir_and_dependency_closure() {
     let temp = TestDir::new("skiff-compiler", "qualified-std-file-ir-schema");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/http-client-schema\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "Exchange: schema.Exchange\n");
-    write(
-        &temp.path().join("schema.skiff"),
+    temp.write("api.yml", "Exchange: schema.Exchange\n");
+    temp.write(
+        "schema.skiff",
         r#"import std
 
 type Exchange {
@@ -321,11 +307,4 @@ type Exchange {
         );
     }
     assert!(project.dependency("skiff.run/std", "1.0.0").is_some());
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("fixture directory should be created");
-    }
-    fs::write(path, contents).expect("fixture file should be written");
 }

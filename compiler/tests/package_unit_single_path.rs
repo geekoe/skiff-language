@@ -1,5 +1,3 @@
-use std::fs;
-
 mod common;
 use common::{artifacts::resource_blob, package_project::compile_package_project, TestDir};
 use skiff_artifact_model::PackageArtifact;
@@ -46,8 +44,8 @@ fn package_compile_has_one_terminal_package_artifact_path() {
 
 fn rich_package_project() -> TestDir {
     let temp = TestDir::new("skiff-compiler", "package-artifact-single-path");
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         r#"id: example.com/agent
 version: 1.0.0
 packages:
@@ -58,12 +56,9 @@ resources:
   - prompts/agent.md
 "#,
     );
-    write(
-        &temp.path().join("api.yml"),
-        "Agent: main.Agent\nrun: main.run\n",
-    );
-    write(
-        &temp.path().join("main.skiff"),
+    temp.write("api.yml", "Agent: main.Agent\nrun: main.run\n");
+    temp.write(
+        "main.skiff",
         r#"import base
 
 type Agent { label: string }
@@ -74,24 +69,19 @@ function run(input: base.Input) -> Agent {
 }
 "#,
     );
-    write(&temp.path().join("prompts/agent.md"), "agent prompt\n");
+    temp.write("prompts/agent.md", "agent prompt\n");
 
-    let dependency = temp.path().join(".skiff-packages/example~com~~base/1.0.0");
-    write(
-        &dependency.join("package.yml"),
+    temp.write(
+        ".skiff-packages/example~com~~base/1.0.0/package.yml",
         "id: example.com/base\nversion: 1.0.0\n",
     );
-    write(&dependency.join("api.yml"), "Input: base.Input\n");
-    write(
-        &dependency.join("base.skiff"),
+    temp.write(
+        ".skiff-packages/example~com~~base/1.0.0/api.yml",
+        "Input: base.Input\n",
+    );
+    temp.write(
+        ".skiff-packages/example~com~~base/1.0.0/base.skiff",
         "type Input { label: string }\n",
     );
     temp
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

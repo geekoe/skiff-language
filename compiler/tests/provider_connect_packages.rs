@@ -1,5 +1,3 @@
-use std::fs;
-
 mod common;
 use common::{package_project::compile_package_project, TestDir};
 
@@ -44,8 +42,8 @@ fn deployment_provider_fields_are_not_package_manifest_surface() {
         ),
     ] {
         let temp = package_with_source(name, "function run() -> string { return \"ok\" }\n");
-        write(
-            &temp.path().join("package.yml"),
+        temp.write(
+            "package.yml",
             &format!("id: example.com/provider-fixture\nversion: 1.0.0\n{field}"),
         );
         let error = compile_package_project(temp.path())
@@ -100,8 +98,8 @@ import tools
 function run() -> string { return tools.label() }
 "#,
     );
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         r#"id: example.com/provider-fixture
 version: 1.0.0
 packages:
@@ -110,14 +108,16 @@ packages:
     alias: tools
 "#,
     );
-    let dependency = temp.path().join(".skiff-packages/example~com~~tools/1.0.0");
-    write(
-        &dependency.join("package.yml"),
+    temp.write(
+        ".skiff-packages/example~com~~tools/1.0.0/package.yml",
         "id: example.com/tools\nversion: 1.0.0\n",
     );
-    write(&dependency.join("api.yml"), "label: tools.label\n");
-    write(
-        &dependency.join("tools.skiff"),
+    temp.write(
+        ".skiff-packages/example~com~~tools/1.0.0/api.yml",
+        "label: tools.label\n",
+    );
+    temp.write(
+        ".skiff-packages/example~com~~tools/1.0.0/tools.skiff",
         "function label() -> string { return \"tools\" }\n",
     );
     temp
@@ -125,18 +125,11 @@ packages:
 
 fn package_with_source(name: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
-    write(
-        &temp.path().join("package.yml"),
+    temp.write(
+        "package.yml",
         "id: example.com/provider-fixture\nversion: 1.0.0\n",
     );
-    write(&temp.path().join("api.yml"), "run: main.run\n");
-    write(&temp.path().join("main.skiff"), source);
+    temp.write("api.yml", "run: main.run\n");
+    temp.write("main.skiff", source);
     temp
-}
-
-fn write(path: &std::path::Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, contents).unwrap();
 }

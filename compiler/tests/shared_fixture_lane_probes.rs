@@ -1,6 +1,6 @@
 mod common;
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
@@ -20,7 +20,7 @@ use common::{
 #[test]
 fn type_import_file_ir_lane_exposes_compiled_types_and_effects() {
     let temp = TestDir::new("skiff-compiler", "shared-fixture-type-lane");
-    write_representative_package_project(temp.path());
+    write_representative_package_project(&temp);
 
     let project = compile_package_project(temp.path()).expect("package project should compile");
     let main = module_artifact(&project.package, "main");
@@ -53,7 +53,7 @@ fn type_import_file_ir_lane_exposes_compiled_types_and_effects() {
 #[test]
 fn config_db_resource_lane_exposes_package_artifact_projection() {
     let temp = TestDir::new("skiff-compiler", "shared-fixture-runtime-lane");
-    write_representative_package_project(temp.path());
+    write_representative_package_project(&temp);
 
     let project = compile_package_project(temp.path()).expect("package project should compile");
     let artifact = &project.package.artifact;
@@ -143,9 +143,9 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
     }
 }
 
-fn write_representative_package_project(root: &Path) {
-    write(
-        &root.join("package.yml"),
+fn write_representative_package_project(temp: &TestDir) {
+    temp.write(
+        "package.yml",
         r#"id: example.com/probe-app
 version: 1.0.0
 packages:
@@ -156,12 +156,12 @@ resources:
   - prompts/probe.txt
 "#,
     );
-    write(
-        &root.join("api.yml"),
+    temp.write(
+        "api.yml",
         "Result: main.Result\nrun: main.run\nconfigured: main.configured\n",
     );
-    write(
-        &root.join("main.skiff"),
+    temp.write(
+        "main.skiff",
         r#"import dep
 
 type Result { message: dep.Message }
@@ -180,26 +180,18 @@ function configured() -> string {
 }
 "#,
     );
-    write(&root.join("prompts/probe.txt"), "probe resource\n");
+    temp.write("prompts/probe.txt", "probe resource\n");
 
-    let dependency = root
-        .join(".skiff-packages")
-        .join("example~com~~probe-dependency")
-        .join("1.0.0");
-    write(
-        &dependency.join("package.yml"),
+    temp.write(
+        ".skiff-packages/example~com~~probe-dependency/1.0.0/package.yml",
         "id: example.com/probe-dependency\nversion: 1.0.0\n",
     );
-    write(&dependency.join("api.yml"), "Message: dep.Message\n");
-    write(
-        &dependency.join("dep.skiff"),
+    temp.write(
+        ".skiff-packages/example~com~~probe-dependency/1.0.0/api.yml",
+        "Message: dep.Message\n",
+    );
+    temp.write(
+        ".skiff-packages/example~com~~probe-dependency/1.0.0/dep.skiff",
         "type Message { text: string }\n",
     );
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("fixture directory should be created");
-    }
-    fs::write(path, contents).expect("fixture file should be written");
 }
