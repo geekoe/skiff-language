@@ -92,9 +92,12 @@ service config 或 runtime projection 的 aggregate 不得成为 ServiceContract
 9ca2547 = T01 + T02 + T03 + T04 clean checkpoint
   ├── R03 exact canonical payload symbols（只移植 canonical patch）
   ├── R11 canonical contract schema fidelity（移植已验收 commit）
-  └── T05 package-only compiler terminal cutover（从干净基线重做）
+  └── T05 package-only central compiler terminal cutover（从干净基线重做）
 
-R03 + R11 + T05 checkpoint
+R03 + R11
+  └── T05A terminal PackageArtifact projection/emission handoff
+
+R03 + R11 + T05 + T05A checkpoint
   ├── R04 canonical package config shape
   ├── R06 complete canonical package requirement closure
   └── R13 canonical package DB schema validation
@@ -108,7 +111,7 @@ R03 + R04 + R06 + R10 + R11 + R13
 
 | 波次 | 并行任务 | 说明 |
 | --- | --- | --- |
-| checkpoint | R03、R11、T05 | 三者从同一干净基线并行；R03/R11 不写 driver，T05 不写其 schema/projection leaf |
+| checkpoint | R03、R11、T05、T05A | R03/R11 先快速移植；T05 与 T05A 按 central compiler 和 projection/emission 两域并行 |
 | 1 | R04、R06、R13 | config、package requirement graph、DB schema 三个非重叠 owner 并行 |
 | 2 | R10 | 只迁移 canonical compiler test-support/integration fixtures |
 | 3 | T07 | 唯一最终 compiler/foundation gate、结构审计和结果记录 |
@@ -131,6 +134,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T03 | [Contract requirement 与 ServiceCallRef lowering](tasks/P2-T03-service-call-lowering.md) | T01 | 高；dependency group |
 | T04 | [PackageArtifact 与 boundary projection](tasks/P2-T04-package-artifact.md) | T01 | 高；artifact group |
 | T05 | [Package-only compiler terminal cutover](tasks/P2-T05-compiler-cutover.md) | `9ca2547` | 高；从干净基线重做 central compiler |
+| T05A | [Terminal PackageArtifact projection/emission handoff](tasks/P2-T05A-terminal-package-artifact-handoff.md) | R03、R11 | 高；projection/emission 独占 owner |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -160,10 +164,12 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   回报 checkpoint owner，不在自己的分支扩展 source model。
 - T04 独占新的 PackageArtifact projection/materialization、boundary projection 与直接 emission tests；不修改
   source/lowering/driver。
-- T05 独占 `compiler/driver/pipeline`、input-model compile input、compiled/lowering/source 根类型、projection
-  facade、compiler facade、旧 `service_publication_tests.rs` disposition，以及**全部** compiler structure
+- T05 独占 `compiler/driver/pipeline`、input-model compile input、compiled/lowering/source 根类型、
+  projection-input、compiler facade、旧 `service_publication_tests.rs` disposition，以及**全部** compiler structure
   checker 与 checker self-test。T05 只消费 `9ca2547` 的 T01–T04 API；禁止整体 cherry-pick 旧 T05
-  `9adfd64` 或其后 integration tail。
+  `9adfd64` 或其后 integration tail；不得修改 `compiler/projection/**`、`compiler/emission/**`。
+- T05A 独占 `compiler/projection/**`、`compiler/emission/**` terminal cutover与直接 tests；保留 R03 export
+  payload 语义和 R11 schema leaf，不修改 T05 central 目录或 foundation artifact crates。
 - R03 独占 canonical package export link 中 payload symbol 的精确投影与直接测试；map key
   继续表达 public path，link `symbol` 只能表达 file/index 指向的真实 payload declaration。
 - R04 独占 canonical package config requirements 与 `ConfigShape` 的唯一 typed 表达；不为旧
