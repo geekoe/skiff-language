@@ -100,7 +100,7 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
         publication_abi_identity(&publication).expect("publication identity");
 
     let file = FileIrRef {
-            file_ir_identity: "skiff-file-ir-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            file_ir_identity: "skiff-file-ir-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             module_path: "pkg.main".to_string(),
             artifact_path: Some("units/files/pkg.json".to_string()),
             source_ast_hash: Some("source-hash".to_string()),
@@ -166,9 +166,9 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
                 "skiff-operation-abi-v1:sha256:9892d2509d863917a3e61934a7b3b86600e2bc0283a1055c6c11c1cae9bf1561".to_string(),
                 "skiff-operation-abi-v1:sha256:53c0d16e4d2cf8a8060438bd1c194e3e9da67b08612ec48ba138dcff0fb79c91".to_string(),
                 "skiff-publication-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
-                "skiff-package-build-v2:sha256:5c0c40076584e3e2ae411f7e934255fb1188ffd95359aa313299f2bc9e33ff6f".to_string(),
+                "skiff-package-build-v2:sha256:2658fe2eec17aaf96575033304ce4c519d8b6846bca49b4d20a7c93105e9ae5d".to_string(),
                 "skiff-package-local-abi-v2:sha256:79b65afcf856048977eb82178be147f1a24269274a838827af0cca4859ae64b5".to_string(),
-                "skiff-service-unit-v1:sha256:e7240cb02ec46db9341096716bae4ee664ad406720a9b19e882789924255e3c7".to_string(),
+                "skiff-service-unit-v1:sha256:fc2e8c19ca5e801761dfc4ca90d24f6eec7a1f93b1c1be88bbfdef34ec4875b8".to_string(),
             ],
         );
 }
@@ -204,9 +204,9 @@ fn module_split_file_runtime_and_package_test_outputs_match_exact_golden() {
     assert_eq!(
             actual,
             [
-                "skiff-file-ir-v4:sha256:8f309e65831591081fd2f6a9f01f69a5138b6700676cbc8a86808504248112bf".to_string(),
+                "skiff-file-ir-v5:sha256:169bb596650c54bbc889d0ca8934d88ab8ffa29185d7270242de4107d95c6777".to_string(),
                 "skiff-service-build-v1:sha256:83bf8245066adbd9286bb319289a5c8f22e28864f0bf1b0f34895416eff2ba03".to_string(),
-                "skiff-package-test-build-v1:sha256:dc748e5961e2f39b8934768e34d9c999eba404e5133217308752cb3ef298fb0b".to_string(),
+                "skiff-package-test-build-v1:sha256:bf9a555e5cb9b57c6c5d74a4c962fd143d72946bf71240e324a888acd806c605".to_string(),
             ],
         );
 }

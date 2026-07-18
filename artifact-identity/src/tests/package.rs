@@ -33,8 +33,8 @@ fn package_implementation_links_identity_preserves_v1_wire_golden() {
     assert_eq!(
         package_implementation_links_identity(&unit.implementation_links)
             .expect("implementation links identity"),
-        // Canonical implementation-link wire with File IR v4 target identity.
-        "skiff-package-implementation-links-v1:sha256:7193c4ae3d90ca46e1a0772d01e76ee0655dbd175345db9483e5d0f812308f5e"
+        // Canonical implementation-link wire with File IR v5 target identity.
+        "skiff-package-implementation-links-v1:sha256:4fb0ad52def218e2c4e8433639758e77466e43cf88cb15e9051a918300ddcf90"
     );
 }
 

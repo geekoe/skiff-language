@@ -157,7 +157,7 @@ pub(super) fn package_artifact_fixture() -> PackageArtifact {
         .clone();
     let callable_id = PackageCallableId::new("pkg-callable:handle");
     let file = FileIrRef {
-        file_ir_identity: "skiff-file-ir-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        file_ir_identity: "skiff-file-ir-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         module_path: "pkg.main".to_string(),
         artifact_path: Some("units/files/pkg.json".to_string()),
         source_ast_hash: Some("source-only".to_string()),

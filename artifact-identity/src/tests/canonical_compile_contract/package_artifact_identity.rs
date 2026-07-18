@@ -11,7 +11,7 @@ fn package_artifact_assign_validate_and_golden_identities() {
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(
         artifact.package_build_id.as_str(),
-        "skiff-package-build-v4:sha256:231d54d3994360645871b1e179d327847b052ca1d37be4992c729093f32dd27d"
+        "skiff-package-build-v4:sha256:5405b0e5e9d77172d4bb0461622c314743c138dddfed4d7b3740ad664a00eb2d"
     );
     assert_eq!(
         artifact.package_local_abi.local_abi_identity.as_str(),

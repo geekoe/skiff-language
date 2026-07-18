@@ -85,7 +85,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v4:sha256:4b361e3f2a72ce1afe32eab0524070d616957b41bac4c437a0a3423667d85d5f"
+        "skiff-file-ir-v5:sha256:173750cd47164b1509d4e237bdc49dbc6382d6ebe6826c46aaf945b838ff37b6"
     );
 
     let mut changed_ref = base.clone();
@@ -107,6 +107,54 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
         };
     }
     assert_ne!(file_ir_identity(&changed_indices).unwrap(), baseline);
+}
+
+#[test]
+fn package_call_target_and_ref_fields_participate_in_file_ir_identity() {
+    let base = package_call_file_ir_fixture();
+    let baseline = file_ir_identity(&base).expect("valid package-call File IR identity");
+
+    let mut changed_target_ref = base.clone();
+    let ExprIr::Call { call } = &mut changed_target_ref.constants[0].body.expressions[0] else {
+        panic!("fixture call expression")
+    };
+    let CallTargetIr::PackageCallable { package_ref, .. } = &mut call.target else {
+        panic!("fixture package-call target")
+    };
+    *package_ref = PackageRefIr::Dependency {
+        dependency_ref: "tools-v2".to_string(),
+    };
+    assert_ne!(file_ir_identity(&changed_target_ref).unwrap(), baseline);
+
+    let mut changed_target_callable = base.clone();
+    let ExprIr::Call { call } = &mut changed_target_callable.constants[0].body.expressions[0]
+    else {
+        panic!("fixture call expression")
+    };
+    let CallTargetIr::PackageCallable {
+        package_callable_id,
+        ..
+    } = &mut call.target
+    else {
+        panic!("fixture package-call target")
+    };
+    *package_callable_id = PackageCallableId::new("callable:other.echo");
+    assert_ne!(
+        file_ir_identity(&changed_target_callable).unwrap(),
+        baseline,
+        "owner-qualified callable identities must not collapse on the shared display suffix"
+    );
+
+    let mut changed_ref_package = base.clone();
+    changed_ref_package.external_refs.package_callables[0].package_ref = PackageRefIr::PackageId {
+        package_id: "example.com/tools".to_string(),
+    };
+    assert_ne!(file_ir_identity(&changed_ref_package).unwrap(), baseline);
+
+    let mut changed_ref_callable = base.clone();
+    changed_ref_callable.external_refs.package_callables[0].package_callable_id =
+        PackageCallableId::new("callable:other.echo");
+    assert_ne!(file_ir_identity(&changed_ref_callable).unwrap(), baseline);
 }
 
 #[test]
@@ -155,6 +203,39 @@ fn service_call_file_ir_fixture() -> FileIrUnit {
                     },
                 })
                 .collect(),
+        },
+        source_span: None,
+    });
+    unit
+}
+
+fn package_call_file_ir_fixture() -> FileIrUnit {
+    let package_ref = PackageRefIr::Dependency {
+        dependency_ref: "tools".to_string(),
+    };
+    let package_callable_id = PackageCallableId::new("callable:tools.echo");
+    let mut unit = FileIrUnit::empty("consumer.main", "source-ast-hash");
+    unit.external_refs.package_callables = vec![PackageCallableRef {
+        package_ref: package_ref.clone(),
+        package_callable_id: package_callable_id.clone(),
+    }];
+    unit.constants.push(skiff_artifact_model::ConstIr {
+        name: "package-call".to_string(),
+        ty: TypeRefIr::native("void"),
+        body: skiff_artifact_model::ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: vec![ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::PackageCallable {
+                        package_ref,
+                        package_callable_id,
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            }],
         },
         source_span: None,
     });

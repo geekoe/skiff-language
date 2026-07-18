@@ -8,7 +8,7 @@ fn service_unit_storage_identity_wraps_canonical_service_unit() {
     let mut unit = ServiceUnit::empty("example.com/svc", "1.0.0", "protocol");
     unit.publication_abi = publication_abi;
     unit.files.push(FileIrRef {
-            file_ir_identity: "skiff-file-ir-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            file_ir_identity: "skiff-file-ir-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             module_path: "svc.main".to_string(),
             artifact_path: Some("units/files/svc.json".to_string()),
             source_ast_hash: Some("source".to_string()),
@@ -25,7 +25,7 @@ fn service_unit_storage_identity_wraps_canonical_service_unit() {
     );
     assert_eq!(
             value.pointer("/unit/files/0/fileIrIdentity"),
-            Some(&json!("skiff-file-ir-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+            Some(&json!("skiff-file-ir-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
         );
 
     let hash = service_unit_hash(&unit).expect("service unit hash");

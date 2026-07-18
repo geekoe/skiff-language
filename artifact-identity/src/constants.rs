@@ -1,6 +1,6 @@
 pub const RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER: &str = "skiff-runtime-program-link-v1";
 pub const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1";
-pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v4:sha256";
+pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v5:sha256";
 pub const SERVICE_UNIT_IDENTITY_PREFIX: &str = "skiff-service-unit-v1:sha256";
 pub const PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-build-identity-v2";
 pub const PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-local-abi-identity-v2";
