@@ -124,6 +124,7 @@ pub struct PackageSourceModel {
     export_bindings: ExportBindingModel,
     callable_effects: SourceCallableEffectFacts,
     callable_provenance: SourceCallableProvenanceFacts,
+    callable_signatures: super::SourceCallableSignatureFacts,
     resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
     // input in runtime_manifest.rs.  P2 will introduce AbiTypeId consuming declaration_anchors.
@@ -189,6 +190,13 @@ impl PackageSourceModel {
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("type resolution model failed:\n- {message}"),
         })?;
+        super::contract_type_resolution::validate_contract_type_uses(
+            &input.parsed_sources,
+            input.dependency_analysis,
+        )
+        .map_err(|message| PublicationError::ContractValidation {
+            message: format!("contract type resolution failed:\n- {message}"),
+        })?;
         validate_no_plain_interface_value_types(
             input.diagnostic_root,
             &input.parsed_sources,
@@ -229,6 +237,16 @@ impl PackageSourceModel {
         );
         let callable_effects = callable_analysis.effects;
         let callable_provenance = callable_analysis.provenance;
+        let callable_signatures = super::SourceCallableSignatureFacts::build(
+            &input.parsed_sources,
+            &export_bindings,
+            &type_resolution,
+            input.dependency_analysis,
+            &callable_effects,
+        )
+        .map_err(|message| PublicationError::ContractValidation {
+            message: format!("source callable signature resolution failed:\n- {message}"),
+        })?;
         let own_config_requirements = ConfigRequirementSet::from_usage_seed(
             &input.config_usage_seed,
             ConfigRequirementScope::from_publication_policy(policy.as_borrowed()),
@@ -252,6 +270,7 @@ impl PackageSourceModel {
             export_bindings,
             callable_effects,
             callable_provenance,
+            callable_signatures,
             resolved_call_targets,
             source_identity: input.source_identity,
             declaration_anchors: input.declaration_anchors,
@@ -321,6 +340,10 @@ impl PackageSourceModel {
 
     pub fn callable_provenance(&self) -> &SourceCallableProvenanceFacts {
         &self.callable_provenance
+    }
+
+    pub fn callable_signatures(&self) -> &super::SourceCallableSignatureFacts {
+        &self.callable_signatures
     }
 
     pub fn resolved_call_targets(&self) -> &ResolvedCallTargetFacts {

@@ -7,6 +7,9 @@ mod compile_model;
 mod config_metadata;
 pub(crate) mod config_requirements;
 pub(crate) mod config_usage;
+#[cfg(test)]
+mod contract_dependency_test_fixture;
+mod contract_type_resolution;
 mod dependency_analysis;
 pub mod entity;
 pub(crate) mod expression_model;
@@ -67,6 +70,7 @@ pub use config_requirements::{
     ConfigRequirementScope, ConfigRequirementSet, DependencyPackageConfigFacts,
 };
 pub use config_usage::ConfigSourceSpan;
+pub use contract_type_resolution::SourceCallableSignatureFacts;
 pub use dependency_analysis::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
     SourceDependencyAnalysisError, SourceDependencyAnalysisInput,
@@ -151,7 +155,17 @@ fn build_from_linked(
     let service_alias_set = dependency_analysis
         .contract_aliases()
         .map(str::to_string)
-        .collect();
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(alias) = service_alias_set
+        .iter()
+        .find(|alias| package_aliases.contains_key(alias.as_str()))
+    {
+        return Err(PublicationError::ContractValidation {
+            message: format!(
+                "dependency alias `{alias}` is declared by both a package and a contract"
+            ),
+        });
+    }
     let name_resolution = NameResolutionModel::build_with(
         &parsed_sources,
         &package_aliases,
