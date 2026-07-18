@@ -11,8 +11,6 @@
 
 - `connect_mongo_package.rs`
 - `package_imports.rs`
-- `package_std_schema.rs`
-- `prelude_std_schema.rs`
 - `root_path_references.rs`
 - `runtime_slots.rs`
 - `streams_emit.rs`
