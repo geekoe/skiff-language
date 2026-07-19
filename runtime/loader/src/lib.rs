@@ -4,6 +4,7 @@ mod identity;
 mod paths;
 mod pointer_files;
 mod pointer_parse;
+mod runtime_assembly;
 mod types;
 mod utils;
 
@@ -18,6 +19,10 @@ pub use graph::{
 pub use paths::{resolve_index_artifact_path, service_id_artifact_path, ArtifactRootRelativePath};
 pub use pointer_files::{
     load_dev_reload_pointers_from_roots, load_service_version_build_pointers_from_roots,
+};
+pub use runtime_assembly::{
+    HydratedPackageCodeSlot, HydratedRuntimeAssembly, HydratedStaticResource,
+    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, ServiceContractStore,
 };
 pub use types::{
     ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile, ServiceAssemblyPointer,
