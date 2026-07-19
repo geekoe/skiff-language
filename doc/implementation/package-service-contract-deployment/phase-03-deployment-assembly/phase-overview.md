@@ -1,29 +1,73 @@
 # Phase 03：Deployment And Assembly Plane
 
-状态：outline-only；Phase 02 验收后细化
+状态：active；Phase 02 已验收，决策缺口审计完成，详细 DAG 见 `phase-plan.md`
 
-## 输入
+## 架构边界
 
-- ServiceContract、PackageArtifact、BoundaryCallableProjection、ContractRequirement 与 ServiceRequirement。
+- 权威条款：设计 §2、§5、§9、§10、§12、§14。
+- 本阶段完成两条 source-free typed pipeline，并把结果接入 whole-assembly runtime admission：
+
+  ```text
+  ServiceDeploymentInput + ServiceContract + PackageArtifact closure
+    -> ServiceDeployment
+
+  roots + ServiceDeployments + ServiceContracts + PackageArtifact closure
+    -> RuntimeAssembly
+    -> load/link/admit
+  ```
+
+- runtime 数据流严格按 deployment、assembly、admission 排序；实现任务可在 canonical schema/validator
+  checkpoint 后使用真实 typed fixtures 并行，不得复制 schema 或构造 adapter。
+- 文件/YAML/CLI authoring、registry pointer、router reload/control、service boundary execution不在本阶段；
+  Phase 05 consumer 可以暂时不可用。
+
+## 已闭合的 V1 实现选择
+
+- service dependency selector 只使用 requirement 已有的
+  `serviceId + contractVersion + expectedProtocolIdentity`；具体 deployment 由 assembly 在当前 root/candidate
+  set 中唯一解析，不把 deployment revision 写回 consumer requirement。
+- package direct-link binding 以 `(callerPackageBuildId, requirementAlias)` 选择 exact
+  `PackageBuildId`；同一 key 不得因 ActivationContext 不同而变化。
+- secret 只保存 opaque binding reference；resolved secret bytes 属于 activation input，不进入 artifact 或
+  identity。普通 config value 和 secret reference 是 deployment identity 输入。
+- canonical 空 assembly 合法：零 roots、零 closure/image/templates/routes、稳定 identity；admission 后任何
+  service/ingress lookup 仍 fail closed。
+- artifact 中保存 deterministic canonical link plan；runtime loader/linker hydrate 成共享只读内存 image，
+  不把 `Arc`、打开的资源或 host handle 固化为 artifact wire。
 
 ## 完成态
 
-- 仅凭 typed artifacts 生成并校验无源码 `ServiceDeployment`。
-- 从 root deployments 解析唯一 provider、完整 package/service requirement 闭包并生成 `RuntimeAssembly`。
-- replica 内 package code 只链接一次，生成 per-ActivationContext binding templates 和独立 AssemblyIdentity。
-- runtime 能 load/link/admit assembly；零或多 provider、identity mismatch、remote-only closure fail closed。
-- 不读取或生成 ServiceUnit、serviceAssembly 或 adapter shape；Phase 02 与本阶段之间的 service
-  不可用状态被直接终态实现取代。
+- `ServiceDeployment`、`RuntimeAssembly`、semantic refs、distinct identity、strict wire、canonical
+  assign/validate 与 mutation matrix 只有一个 owner。
+- deployment 显式把每个 `ContractOperationId` 映射到稳定 `PackageCallableId`；ingress 只绑定 contract
+  operation；boundary descriptor/effect 与全部 implementation requirement 在 projection 时校验。
+- assembly 解析 service/package cycle closure；每个 service requirement 恰好一个本地 provider；同一
+  `PackageBuildId` code 每 replica 只链接一次，而每个 activation 的 service/config/state binding template
+  保持独立。
+- runtime 以整个 `RuntimeAssembly` 建立候选、load/link/admit 并原子替换；请求路径不再 lazy-load artifact。
+- runtime production loader/linker/admission 不读取 `ServiceUnit`、`PackageUnit`、raw `serviceAssembly`、
+  display name、source path 或 provider executable guess；不生成 dual path、fallback 或 compatibility adapter。
+- 本阶段只形成 ActivationContext template 与 `InProcessBoundary` binding plan，不实例化/执行 boundary；
+  async/stream/callback/cancel 传播和 dispatcher 属于 Phase 04。
 
-## 预期波次
+## 三个实现波次
 
-1. deployment/assembly schema、identity、reference 和 binding template checkpoint。
-2. deployment projection、assembly resolver、runtime loader/linker 三域并行。
-3. terminal loader/linker admission、批次 gate 与独立验收；不建过渡 adapter。
+1. canonical deployment/assembly schema、identity、reference、validator 与新 crate shell checkpoint。
+2. source-free deployment projection、typed RuntimeAssembly loader、shared package image三个非重叠 owner并行；
+   projection合流后由释放的 worker继续 assembly resolver。
+3. linker checkpoint 后，host whole-assembly admission 与下游 compile seam/结构 gate 收敛；建立稳定候选、
+   运行唯一阶段 gate 和独立验收。
 
 ## 阶段验收
 
-- deployment projection 不读取 AST、source text 或 lowering helper。
-- service requirement cycle 可以闭合；缺失、多 provider 或隐式 display-name linking 拒绝。
-- 新 assembly load path 不需要 runtime 猜 raw JSON、source path 或 provider executable。
-- 本阶段不要求执行 service boundary；Phase 04 负责 dispatcher 与 materialization。
+- 真实 `contract + provider/consumer PackageArtifact -> deployment -> assembly -> load/link/admit` 路径通过，
+  不读取 AST、source text、lowering helper 或旧 runtime DTO。
+- missing/duplicate/extra operation、Unavailable callable、descriptor/effect/ContractTypeId mismatch、缺失
+  config/state/resource/capability binding、package build/version/local-ABI mismatch 全部 fail closed。
+- A↔B service cycle 可闭合；零/多 provider、remote-only closure、binding slot 越界/重复、ingress collision、
+  tampered artifact/ref/link plan 全部在 admission 前失败。
+- 两个 activation 可复用同一 package code，并为相同 `(callerPackageBuildId, slot)` 绑定不同本地 provider；
+  config/state/callback mutable owner 不因共享 code 而共享。
+- 空 assembly admission 成功但没有任何 dispatch target；admission 失败不改变当前 active assembly。
+- 结构反向搜索与 checker self-test 证明 runtime production 新路径没有旧 DTO、raw JSON linking、
+  request-time lazy load 或第二 identity/schema owner。
