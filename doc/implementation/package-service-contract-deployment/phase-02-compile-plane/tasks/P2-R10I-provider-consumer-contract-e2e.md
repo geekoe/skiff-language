@@ -39,8 +39,9 @@ types”“调用模型”与“Package编译”章节。
 
 - DAG：波次9g evidence refresh节点；与production复验共同通过后解除T07/A01。风险：高；动态证据由本任务
   唯一拥有，A01只读复核。
-- worktree：`/Users/geek/workspace/skiff-p2-r10i-contract-e2e`；分支：`codex/p2-r10i-contract-e2e`；
-  复验从含T03H1/T03I/T04C的integration HEAD创建，只复用已合入的同一fixture，不另建第二套fixture。
-- 启动后5分钟内完成第一次实际测试代码修改；否则回报`TASK_NOT_EXECUTABLE`，修改前不跑测试。
-- 提交一个聚焦commit和自验收矩阵。证据只对该commit有效；任一typed contract production owner、common
+- worktree：`/Users/geek/workspace/skiff-p2-r10i-contract-e2e`；从含T03H1/T03I/T04C的integration HEAD以
+  detached HEAD创建，只复用已合入的同一fixture，不另建第二套fixture。
+- 本节点只刷新动态证据，不修改测试或production code，不创建提交。若现有fixture失败，直接回报精确FAIL，
+  不在验收节点内修复或为通过测试改写断言。
+- 返回精确commit、命令、结果和自验收矩阵。证据只对该commit有效；任一typed contract production owner、common
   fixture、ServiceContract/PackageArtifact schema或compiler pipeline变化即失效。

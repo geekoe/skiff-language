@@ -222,7 +222,7 @@ F09C（只作为证据，不是活动DAG节点）
   └── source exact owner误接管external package interface -> T03H1 package-interface regression repair
 
 T03H1
-  └── R10I evidence refresh + production re-acceptance
+  └── R10I evidence refresh + F09D production re-acceptance
       └── T07 evidence refresh -> A01 independent re-acceptance
 ```
 
@@ -254,7 +254,7 @@ T03H1
 | 9d | T03H | 先冻结source exact interface/conformance query checkpoint |
 | 9e | T03I、T04C | interface execution projection与compiled→projection public-instance cutover并行收敛 |
 | 9f | T03H1 | 修复exact source owner误接管external package interface的窄回归 |
-| 9g | R10I evidence refresh、production复验 | 只重跑被T03H/T03I/T04C/T03H1失效的真实source与production证据 |
+| 9g | R10I evidence refresh、F09D production复验 | 只重跑被T03H/T03I/T04C/T03H1失效的真实source与production证据 |
 | 9h | T07 → A01 | 唯一最终gate后独立阶段验收 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
