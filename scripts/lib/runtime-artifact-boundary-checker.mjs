@@ -11,6 +11,7 @@ import {
 } from './runtime-artifact-boundary-rust-source.mjs';
 
 import {
+  REQUIRED_RUNTIME_ARTIFACT_BOUNDARY_OWNED_ROOTS,
   REQUIRED_RUNTIME_ARTIFACT_BOUNDARY_SUBJECT_IDS,
   RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS,
 } from './runtime-artifact-boundary-subjects.mjs';
@@ -270,6 +271,19 @@ function validateSubjectRegistry(subjects) {
           id: 'subject-registry-omission',
           subject: required,
           detail: `required production owner subject ${required} is absent`,
+        }),
+      );
+    }
+  }
+  for (const { subjectId, ownedRoot } of REQUIRED_RUNTIME_ARTIFACT_BOUNDARY_OWNED_ROOTS) {
+    const subject = subjects.find((entry) => entry?.id === subjectId);
+    if (subject && !subject.ownedRoots?.includes(ownedRoot)) {
+      violations.push(
+        violation({
+          id: 'subject-registry-omission',
+          subject: subjectId,
+          relPath: ownedRoot,
+          detail: `required production owner root ${ownedRoot} is absent from ${subjectId}`,
         }),
       );
     }
