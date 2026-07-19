@@ -44,4 +44,3 @@ git diff --check
 ## 回报
 
 提交一个 commit，回报 commit、subject索引、真实 request-entry mutation与 omission负例、全部自测矩阵和命令结果。
-

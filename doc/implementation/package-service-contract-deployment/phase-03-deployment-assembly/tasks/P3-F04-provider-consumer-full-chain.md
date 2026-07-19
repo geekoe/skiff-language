@@ -46,4 +46,3 @@ git diff --check
 
 提交一个 commit，回报 commit、fixture中的 provider/consumer/service edge、真实 producer调用链、active
 activation-relative lookup断言、resolver I/O计数、failed reload断言与命令结果。
-
