@@ -57,12 +57,15 @@ pub(super) fn build_conformances(
                 &context,
             )?;
             for implemented in &ty.implements {
-                let (interface_key, interface_arguments) = resolve_interface_instantiation(
+                let Some((interface_key, interface_arguments)) = resolve_interface_instantiation(
                     implemented,
                     &context,
                     input.type_resolution,
                     input.resolver,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 let interface = input.interfaces.get(&interface_key).ok_or_else(|| {
                     format!(
                         "type `{receiver}` implements `{}`, which has no source-owned exact interface fact",
@@ -111,7 +114,7 @@ fn resolve_interface_instantiation(
     context: &TypeResolutionContext<'_>,
     type_resolution: &TypeResolutionModel,
     resolver: &ContractAwareTypeResolver<'_>,
-) -> Result<(SourceSymbolKey, Vec<PackageTypeRef>), String> {
+) -> Result<Option<(SourceSymbolKey, Vec<PackageTypeRef>)>, String> {
     let (identity, _) = type_resolution
         .resolve_interface_instantiation_parts_text(&implemented.name, context)?
         .ok_or_else(|| {
@@ -120,11 +123,15 @@ fn resolve_interface_instantiation(
                 implemented.name
             )
         })?;
-    let TypeRefIr::ServiceSymbol { symbol } = identity else {
-        return Err(format!(
-            "implements entry `{}` has no source-owned exact interface identity",
-            implemented.name
-        ));
+    let symbol = match identity {
+        TypeRefIr::ServiceSymbol { symbol } => symbol,
+        TypeRefIr::PackageSymbol { .. } => return Ok(None),
+        _ => {
+            return Err(format!(
+                "implements entry `{}` has no source-owned exact interface identity",
+                implemented.name
+            ));
+        }
     };
     let interface = SourceSymbolKey::new(
         symbol
@@ -150,7 +157,7 @@ fn resolve_interface_instantiation(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((interface, arguments))
+    Ok(Some((interface, arguments)))
 }
 
 fn validate_conformance(

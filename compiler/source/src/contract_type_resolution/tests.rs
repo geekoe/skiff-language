@@ -5,13 +5,17 @@ use compiler_input_model::{
     PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
 use skiff_artifact_identity::contract_type_id;
-use skiff_artifact_model::{ContractLiteral, ContractTypeRef, PackageTypeRef, TypeRefIr};
+use skiff_artifact_model::{
+    ContractLiteral, ContractTypeRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
+    InterfaceOperationIr, PackageTypeRef, TypeRefIr,
+};
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
     contract_dependency_test_fixture::resolved_contract_fixture,
     parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, PackageSourceModel, SourceCompileError,
+    SourceCompilePackageFacts,
 };
 
 use super::*;
@@ -312,6 +316,24 @@ fn build_model_with_publication_api(
     package_dependencies: &[PackageDependency],
     publication_api: &PublicationApiSpec,
 ) -> Result<PackageSourceModel, SourceCompileError> {
+    build_model_with_publication_api_and_package_facts(
+        source,
+        dependency_analysis,
+        package_aliases,
+        package_dependencies,
+        None,
+        publication_api,
+    )
+}
+
+fn build_model_with_publication_api_and_package_facts(
+    source: &str,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    package_dependencies: &[PackageDependency],
+    package_facts: Option<&[SourceCompilePackageFacts<'_>]>,
+    publication_api: &PublicationApiSpec,
+) -> Result<PackageSourceModel, SourceCompileError> {
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         "api".to_string(),
@@ -335,7 +357,7 @@ fn build_model_with_publication_api(
             publication_api: Some(publication_api),
             package_aliases,
             package_dependencies,
-            package_facts: None,
+            package_facts,
             policy: PackageCompilePolicy::new("example.com/contract-type-resolution"),
         },
         dependency_analysis,
