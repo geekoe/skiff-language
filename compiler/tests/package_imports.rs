@@ -86,8 +86,8 @@ packages:
         r#"
 import gcloud
 function run() -> string {
-  const stored = gcloud.storage.upload()
-  return gcloud.compute.start()
+  const stored = gcloud/storage.upload()
+  return gcloud/compute.start()
 }
 "#,
     )
@@ -143,7 +143,7 @@ packages:
     .unwrap();
     fs::write(
         nested.path().join("main.skiff"),
-        "import llm\nfunction run() -> string { return llm.llm.chat() }\n",
+        "import llm\nfunction run() -> string { return llm/llm.chat() }\n",
     )
     .unwrap();
     write_llm_dependency(nested.path(), "llm:\n  chat: llm_impl.chat\n");
@@ -171,7 +171,7 @@ packages:
     .unwrap();
     fs::write(
         folded.path().join("main.skiff"),
-        "import llm\nfunction run() -> string { return llm.chat() }\n",
+        "import llm\nfunction run() -> string { return llm/chat() }\n",
     )
     .unwrap();
     write_llm_dependency(folded.path(), "llm:\n  chat: llm_impl.chat\n");
@@ -179,11 +179,7 @@ packages:
         .expect_err("folded shorthand should stay invalid")
         .to_string();
     assert!(
-        error.contains("package dependency call `llm.chat`"),
-        "unexpected error: {error}"
-    );
-    assert!(
-        error.contains("cannot be lowered"),
+        error.contains("package dependency `llm` has no callable public path `chat`"),
         "unexpected error: {error}"
     );
 
@@ -201,7 +197,7 @@ packages:
     .unwrap();
     fs::write(
         flat.path().join("main.skiff"),
-        "import llm\nfunction run() -> string { return llm.chat() }\n",
+        "import llm\nfunction run() -> string { return llm/chat() }\n",
     )
     .unwrap();
     write_llm_dependency(flat.path(), "chat: llm_impl.chat\n");
@@ -231,7 +227,7 @@ packages:
     .unwrap();
     fs::write(
         temp.path().join("main.skiff"),
-        "import app\nfunction run() -> string { return app.facade() }\n",
+        "import app\nfunction run() -> string { return app/facade() }\n",
     )
     .unwrap();
     write_cloud_dependency(temp.path());
@@ -254,7 +250,7 @@ packages:
     fs::write(facade.join("api.yml"), "facade: facade_impl.facade\n").unwrap();
     fs::write(
         facade.join("facade_impl.skiff"),
-        "import platform\nfunction facade() -> string { return platform.storage.upload() }\n",
+        "import platform\nfunction facade() -> string { return platform/storage.upload() }\n",
     )
     .unwrap();
 
@@ -299,7 +295,7 @@ fn dependency_alias_participates_in_package_build_identity() {
         fs::write(
             temp.path().join("main.skiff"),
             format!(
-                "import {alias}\nfunction run() -> string {{ return {alias}.storage.upload() }}\n"
+                "import {alias}\nfunction run() -> string {{ return {alias}/storage.upload() }}\n"
             ),
         )
         .unwrap();

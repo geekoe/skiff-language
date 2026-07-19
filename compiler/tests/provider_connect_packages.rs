@@ -95,7 +95,7 @@ fn package_graph() -> TestDir {
         "canonical-package-dependency",
         r#"
 import tools
-function run() -> string { return tools.label() }
+function run() -> string { return tools/label() }
 "#,
     );
     temp.write(
