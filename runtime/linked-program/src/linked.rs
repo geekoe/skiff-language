@@ -4,9 +4,8 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 pub use skiff_artifact_model::{
     BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue, NativeTarget, OperationAbiRef,
-    PackageOperationSymbolRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
-    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
-    RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
+    SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
 use super::addr::{ConstAddr, ExecutableAddr, ExecutableIndex, TypeAddr, TypeIndex};
@@ -274,8 +273,6 @@ pub struct ExternalRefTable {
     pub service_dependency_symbols: Vec<ServiceDependencySymbolRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_symbols: Vec<PackageSymbolRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub package_operation_symbols: Vec<PackageOperationSymbolRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_targets: Vec<NativeTarget>,
     #[serde(default)]
