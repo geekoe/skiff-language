@@ -1,22 +1,29 @@
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
+    file_ir_service_call_sites, validate_file_ir_service_calls, BoundaryCallableProjection,
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
     BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape,
+    BoundaryValueOwner, BoundaryValuePlan, ContractRequirement, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol,
+    PackageTypeRef, ServiceCallRef, ServiceRequirement,
 };
 use skiff_compiler::{
     definition_contract_operation_id, definition_contract_type_id, definition_contract_type_ref,
     ContractDefinitionError, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
 
-use common::contracts::compile_service_contract;
+use common::{
+    artifacts::module_artifact,
+    contracts::{compile_service_contract, package_contract_dependency},
+    package_project::compile_package_project_with_contract_dependencies,
+    TestDir,
+};
 
 const SERVICE_ID: &str = "example.echo";
 const CONTRACT_VERSION: &str = "1.0.0";
@@ -25,14 +32,14 @@ const CONTRACT_VERSION: &str = "1.0.0";
 fn explicit_definition_compiles_to_a_code_free_service_contract() {
     let definition = contract_definition();
     let expected_operation = definition.operations["echo"].clone();
-    let expected_schema = definition.boundary_schema["request"].clone();
+    let expected_schema = definition.boundary_schema["Request"].clone();
 
     let contract = compile_service_contract(definition).expect("explicit contract should compile");
     validate_service_contract_identities(&contract).expect("contract identities should be valid");
 
     let operation_id =
         definition_contract_operation_id(SERVICE_ID, CONTRACT_VERSION, "echo").unwrap();
-    let type_id = definition_contract_type_id(SERVICE_ID, CONTRACT_VERSION, "request").unwrap();
+    let type_id = definition_contract_type_id(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
     let operation = contract
         .operations
         .get(&operation_id)
@@ -48,7 +55,7 @@ fn explicit_definition_compiles_to_a_code_free_service_contract() {
     assert_eq!(operation.stable_key, "echo");
     assert_eq!(operation.contract, expected_operation);
     assert_eq!(schema.contract_type_id, type_id);
-    assert_eq!(schema.stable_key, "request");
+    assert_eq!(schema.stable_key, "Request");
     assert_eq!(schema.shape, expected_schema);
     assert_eq!(contract.diagnostic_text.operations[&operation_id], "Echo");
     assert_eq!(contract.diagnostic_text.types[&type_id], "Echo request");
@@ -106,7 +113,7 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
     renamed
         .diagnostic_text
         .types
-        .insert("request".to_string(), "Renamed type".to_string());
+        .insert("Request".to_string(), "Renamed type".to_string());
     let renamed = compile_service_contract(renamed).unwrap();
     assert_eq!(
         baseline.service_protocol_identity,
@@ -114,7 +121,7 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
     );
 
     let mut changed = contract_definition();
-    changed.operations.get_mut("echo").unwrap().may_suspend = false;
+    changed.operations.get_mut("echo").unwrap().may_suspend = true;
     let changed = compile_service_contract(changed).unwrap();
     assert_ne!(
         baseline.service_protocol_identity,
@@ -122,8 +129,280 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
     );
 }
 
+#[test]
+fn provider_and_consumer_compile_against_the_same_contract_without_provider_binding() {
+    let contract = compile_service_contract(contract_definition()).unwrap();
+    let operation_id =
+        definition_contract_operation_id(SERVICE_ID, CONTRACT_VERSION, "echo").unwrap();
+    let request_type_id =
+        definition_contract_type_id(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
+    let operation_body = contract.operations[&operation_id].contract.clone();
+    let expected_requirement = ContractRequirement {
+        alias: "payments".to_string(),
+        service_id: SERVICE_ID.to_string(),
+        contract_version: CONTRACT_VERSION.to_string(),
+        expected_protocol_identity: contract.service_protocol_identity.clone(),
+    };
+
+    let provider = TestDir::new("skiff-compiler", "service-contract-provider-wrapper");
+    write_package(
+        &provider,
+        "example.com/payments-provider",
+        "handle: main.handle\n",
+        r#"function handle(request: payments.Request) -> string {
+  return "accepted"
+}
+"#,
+    );
+    let provider_dependencies = BTreeMap::from([(
+        (
+            "example.com/payments-provider".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("payments", contract.clone())],
+    )]);
+    let provider_project =
+        compile_package_project_with_contract_dependencies(provider.path(), &provider_dependencies)
+            .expect("provider wrapper should compile from package source and contract only");
+    assert_eq!(
+        provider_project.package.artifact.contract_requirements,
+        vec![expected_requirement.clone()]
+    );
+    assert!(provider_project
+        .package
+        .artifact
+        .package_requirements
+        .is_empty());
+    assert!(provider_project
+        .package
+        .artifact
+        .service_requirements
+        .is_empty());
+    assert!(provider_project
+        .package
+        .artifact
+        .service_call_refs
+        .is_empty());
+
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &provider_project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols["handle"]
+    else {
+        panic!("provider wrapper must be a Local ABI callable");
+    };
+    assert_eq!(signature.parameters.len(), 1);
+    assert_eq!(signature.parameters[0].name, "request");
+    assert_eq!(
+        signature.parameters[0].ty,
+        PackageTypeRef::Contract {
+            contract_type_id: request_type_id.clone(),
+        }
+    );
+    assert_eq!(
+        signature.return_type,
+        PackageTypeRef::Container {
+            name: "string".to_string(),
+            arguments: Vec::new(),
+        }
+    );
+    let BoundaryCallableProjection::Available {
+        operation_contract,
+        implementation_requirements: _,
+    } = &provider_project.package.artifact.boundary_projections[callable_id]
+    else {
+        panic!("provider wrapper must have an Available boundary projection");
+    };
+    assert_eq!(operation_contract, &operation_body);
+    assert_no_provider_binding_wire(&provider_project.package.artifact);
+
+    let consumer = TestDir::new("skiff-compiler", "service-contract-consumer");
+    write_package(
+        &consumer,
+        "example.com/payments-consumer",
+        "run: main.run\n",
+r#"function run(input: payments.Request) -> string {
+  return payments/echo(input)
+}
+"#,
+    );
+    let consumer_dependencies = BTreeMap::from([(
+        (
+            "example.com/payments-consumer".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("payments", contract.clone())],
+    )]);
+    let consumer_project =
+        compile_package_project_with_contract_dependencies(consumer.path(), &consumer_dependencies)
+            .expect("consumer should compile from package source and ServiceContract only");
+    let expected_call_ref = ServiceCallRef {
+        service_requirement_slot: 0,
+        contract_operation_id: operation_id.clone(),
+        expected_protocol_identity: contract.service_protocol_identity.clone(),
+    };
+    assert!(consumer_project
+        .package
+        .artifact
+        .package_requirements
+        .is_empty());
+    assert_eq!(
+        consumer_project.package.artifact.contract_requirements,
+        vec![expected_requirement.clone()]
+    );
+    assert_eq!(
+        consumer_project.package.artifact.service_requirements,
+        vec![ServiceRequirement {
+            contract_requirement: expected_requirement,
+            service_binding_slot: 0,
+            used_operations: BTreeSet::from([operation_id]),
+        }]
+    );
+    assert_eq!(
+        consumer_project.package.artifact.service_call_refs,
+        vec![expected_call_ref.clone()]
+    );
+
+    let PackageLocalAbiSymbol::Callable { signature, .. } = &consumer_project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols["run"]
+    else {
+        panic!("consumer entry must be a Local ABI callable");
+    };
+    assert_eq!(
+        signature.parameters[0].ty,
+        PackageTypeRef::Contract {
+            contract_type_id: request_type_id,
+        }
+    );
+    assert_eq!(
+        signature.return_type,
+        PackageTypeRef::Container {
+            name: "string".to_string(),
+            arguments: Vec::new(),
+        }
+    );
+
+    let main = module_artifact(&consumer_project.package, "main");
+    validate_file_ir_service_calls(&main.unit)
+        .expect("consumer File IR service-call refs must be internally valid");
+    assert_eq!(
+        main.unit.external_refs.service_call_refs,
+        vec![expected_call_ref.clone()]
+    );
+    let call_sites = file_ir_service_call_sites(&main.unit).collect::<Vec<_>>();
+    assert_eq!(call_sites.len(), 1);
+    assert_eq!(
+        main.unit
+            .external_refs
+            .service_call_ref(call_sites[0].service_call_ref_index),
+        Some(&expected_call_ref)
+    );
+    assert_no_provider_binding_wire(&consumer_project.package.artifact);
+}
+
+#[test]
+fn invalid_contract_type_operation_and_call_uses_fail_package_compilation() {
+    let contract = compile_service_contract(contract_definition()).unwrap();
+    for (name, source, expected) in [
+        (
+            "unknown-type",
+            "function run(input: payments.Missing) -> string { return \"no\" }",
+            "no contract type stable key `Missing`",
+        ),
+        (
+            "unknown-operation",
+            r#"function run(input: payments.Request) -> string {
+  return payments/missing(input)
+}"#,
+            "no operation stable key `missing`",
+        ),
+        (
+            "wrong-argument",
+            r#"function run() -> string {
+  return payments/echo("not a request")
+}"#,
+            "argument 1 type mismatch",
+        ),
+        (
+            "wrong-return-use",
+            r#"function run(input: payments.Request) -> bool {
+  return payments/echo(input)
+}"#,
+            "return type mismatch",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", &format!("service-contract-{name}"));
+        let package_id = format!("example.com/service-contract-{name}");
+        write_package(&temp, &package_id, "run: main.run\n", source);
+        let dependencies = BTreeMap::from([(
+            (package_id, "1.0.0".to_string()),
+            vec![package_contract_dependency("payments", contract.clone())],
+        )]);
+        let error = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
+            .expect_err("invalid contract source must fail the package compile trust boundary")
+            .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
+fn package_and_contract_alias_conflict_fails_the_package_compile_trust_boundary() {
+    let temp = TestDir::new("skiff-compiler", "service-contract-alias-conflict");
+    write_package(
+        &temp,
+        "example.com/service-contract-alias-conflict",
+        "run: main.run\n",
+        "function run(input: payments.Request) -> string { return \"no\" }",
+    );
+    temp.write(
+        "package.yml",
+        r#"id: example.com/service-contract-alias-conflict
+version: 1.0.0
+packages:
+  - id: example.com/package-payments
+    version: 1.0.0
+    alias: payments
+"#,
+    );
+    temp.write(
+        ".skiff-packages/example~com~~package-payments/1.0.0/package.yml",
+        "id: example.com/package-payments\nversion: 1.0.0\n",
+    );
+    temp.write(
+        ".skiff-packages/example~com~~package-payments/1.0.0/api.yml",
+        "Request: dependency.Request\n",
+    );
+    temp.write(
+        ".skiff-packages/example~com~~package-payments/1.0.0/dependency.skiff",
+        "type Request { message: string }\n",
+    );
+
+    let contract = compile_service_contract(contract_definition()).unwrap();
+    let dependencies = BTreeMap::from([(
+        (
+            "example.com/service-contract-alias-conflict".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("payments", contract)],
+    )]);
+    let error = compile_package_project_with_contract_dependencies(temp.path(), &dependencies)
+        .expect_err("package/contract alias conflict must fail before source resolution")
+        .to_string();
+    assert!(
+        error.contains("dependency alias `payments` is declared by both a package and a contract"),
+        "unexpected alias conflict error: {error}"
+    );
+}
+
 fn contract_definition() -> ServiceContractDefinition {
-    let request = definition_contract_type_ref(SERVICE_ID, CONTRACT_VERSION, "request").unwrap();
+    let request = definition_contract_type_ref(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
     ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -141,9 +420,9 @@ fn contract_definition() -> ServiceContractDefinition {
                 },
                 errors: BoundaryErrorContract::None,
                 stream: BoundaryStreamContract::Unary,
-                cancellation: BoundaryCancellationContract::Cooperative,
+                cancellation: BoundaryCancellationContract::NotCancellable,
                 callbacks: BoundaryCallbackContract::None,
-                may_suspend: true,
+                may_suspend: false,
                 effect_guarantee: BoundaryEffectGuarantee {
                     detached_parameters: true,
                     detached_return: true,
@@ -155,7 +434,7 @@ fn contract_definition() -> ServiceContractDefinition {
             },
         )]),
         boundary_schema: BTreeMap::from([(
-            "request".to_string(),
+            "Request".to_string(),
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
                 descriptor: ContractTypeDescriptor::Record {
@@ -169,7 +448,7 @@ fn contract_definition() -> ServiceContractDefinition {
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Echo service".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),
-            types: BTreeMap::from([("request".to_string(), "Echo request".to_string())]),
+            types: BTreeMap::from([("Request".to_string(), "Echo request".to_string())]),
         },
     }
 }
@@ -180,5 +459,44 @@ fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
         lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
+    temp.write(
+        "package.yml",
+        &format!("id: {package_id}\nversion: 1.0.0\n"),
+    );
+    temp.write("api.yml", api);
+    temp.write("main.skiff", source);
+}
+
+fn assert_no_provider_binding_wire(artifact: &skiff_artifact_model::PackageArtifact) {
+    let value = serde_json::to_value(artifact).unwrap();
+    for forbidden in [
+        "providerPackageId",
+        "providerBuildId",
+        "providerDeploymentId",
+        "deploymentId",
+        "deploymentRevision",
+        "route",
+        "executableTarget",
+    ] {
+        assert!(
+            !contains_object_key(&value, forbidden),
+            "PackageArtifact must not contain provider/deployment field `{forbidden}`"
+        );
+    }
+}
+
+fn contains_object_key(value: &serde_json::Value, key: &str) -> bool {
+    match value {
+        serde_json::Value::Array(values) => {
+            values.iter().any(|value| contains_object_key(value, key))
+        }
+        serde_json::Value::Object(object) => {
+            object.contains_key(key) || object.values().any(|value| contains_object_key(value, key))
+        }
+        _ => false,
     }
 }
