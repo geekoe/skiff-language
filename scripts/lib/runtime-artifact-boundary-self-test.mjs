@@ -15,7 +15,10 @@ import {
   collectRuntimeArtifactBoundaryViolations,
   formatRuntimeArtifactBoundaryViolation,
 } from './runtime-artifact-boundary-checker.mjs';
-import { RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS } from './runtime-artifact-boundary-subjects.mjs';
+import {
+  RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS,
+  RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
+} from './runtime-artifact-boundary-subjects.mjs';
 
 export async function runRuntimeArtifactBoundarySelfTest() {
   const matrix = [
@@ -77,12 +80,31 @@ export async function runRuntimeArtifactBoundarySelfTest() {
       ),
     ),
     mutation(
-      'subject registry omission',
+      'required subject registry omission',
       'subject-registry-omission',
       undefined,
       RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS.filter(
         ({ id }) => id !== 'runtime-assembly-linker',
       ),
+    ),
+    mutation(
+      'request-entry subject registry omission',
+      'subject-registry-omission',
+      undefined,
+      RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS.map((subject) =>
+        subject.id === 'whole-assembly-host'
+          ? {
+              ...subject,
+              ownedRoots: subject.ownedRoots.filter(
+                (root) => root !== RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
+              ),
+            }
+          : subject),
+    ),
+    mutation(
+      'request-entry production file omission',
+      'subject-root-missing',
+      async (root) => rm(join(root, RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT)),
     ),
     mutation(
       'broad allowlist registry escape',
@@ -123,7 +145,7 @@ export async function runRuntimeArtifactBoundarySelfTest() {
       'request-time-lazy-load',
       async (root) => append(
         root,
-        'runtime/host/src/loader/assembly_admission.rs',
+        RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
         '\nfn lazy_load_request_service() {}\n',
       ),
     ),
@@ -234,6 +256,11 @@ async function writeSafeFixture(root) {
         '}',
         '',
       ].join('\n'),
+    ),
+    write(
+      root,
+      RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
+      'impl RuntimeHost { async fn spawn_request(&self) {} }\n',
     ),
     write(
       root,

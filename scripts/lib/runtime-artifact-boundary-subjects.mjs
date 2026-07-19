@@ -1,9 +1,19 @@
+export const RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT =
+  'runtime/host/src/host/request_entry.rs';
+
 export const REQUIRED_RUNTIME_ARTIFACT_BOUNDARY_SUBJECT_IDS = Object.freeze([
   'typed-runtime-assembly-loader',
   'shared-package-linked-image',
   'runtime-assembly-linker',
   'whole-assembly-host',
   'terminal-runtime-consumers',
+]);
+
+export const REQUIRED_RUNTIME_ARTIFACT_BOUNDARY_OWNED_ROOTS = Object.freeze([
+  Object.freeze({
+    subjectId: 'whole-assembly-host',
+    ownedRoot: RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
+  }),
 ]);
 
 export const RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS = Object.freeze([
@@ -36,10 +46,9 @@ export const RUNTIME_ARTIFACT_BOUNDARY_SUBJECTS = Object.freeze([
     kind: 'canonical',
     ownedRoots: [
       'runtime/host/src/loader/assembly_admission.rs',
-      'runtime/host/src/loader/assembly_admission',
+      RUNTIME_REQUEST_ENTRY_BOUNDARY_ROOT,
     ],
     discoveryRoots: ['runtime/host/src'],
-    allowMissingOwnedRoots: true,
   }),
   subject({
     id: 'terminal-runtime-consumers',
