@@ -20,7 +20,6 @@ pub enum PackageCompileError {
     RootPathReference { path: String, message: String },
     #[error("compiled projection input is invalid: {source}")]
     ProjectionInput {
-        #[from]
         source: skiff_compiler_compiled::ProjectionInputBuildError,
     },
 }
@@ -49,6 +48,12 @@ pub(crate) fn package_projection_error(
             PackageCompileError::ContractValidation { message }
         }
     }
+}
+
+pub(crate) fn projection_input_error(
+    source: skiff_compiler_compiled::ProjectionInputBuildError,
+) -> PackageCompileError {
+    PackageCompileError::ProjectionInput { source }
 }
 
 impl From<skiff_compiler_emission::error::EmissionError> for PackageCompileError {

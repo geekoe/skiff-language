@@ -18,7 +18,9 @@ use skiff_compiler_projection_input::PublicationResourceProjectionInput;
 
 use crate::{
     input::{PackageCompileInput, PackageDependency, PublicationResourceInput},
-    shared::package_compile_error::{package_projection_error, PackageCompileError},
+    shared::package_compile_error::{
+        package_projection_error, projection_input_error, PackageCompileError,
+    },
     source_compile,
 };
 
@@ -48,7 +50,8 @@ pub fn compile_package(
         .service_call_ref_closure()
         .into_iter()
         .collect::<Vec<_>>();
-    let projection = skiff_compiler_compiled::projection_input::build_projection_input(&compiled)?
+    let projection = skiff_compiler_compiled::projection_input::build_projection_input(&compiled)
+        .map_err(projection_input_error)?
         .with_resources(resource_projection_inputs(&input.package.resources));
     let package_requirements = complete_package_requirement_closure(
         &package_id,

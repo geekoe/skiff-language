@@ -225,7 +225,7 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
         &consumer,
         "example.com/payments-consumer",
         "run: main.run\n",
-r#"function run(input: payments.Request) -> string {
+        r#"function run(input: payments.Request) -> string {
   return payments/echo(input)
 }
 "#,
