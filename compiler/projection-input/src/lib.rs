@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts, DbMetadataIr,
-    FileIrUnit, InterfaceMethodSignature, TypeRefIr,
+    FileIrUnit, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -535,18 +535,20 @@ pub struct ExportPublicInstanceProjection {
     pub public_path: String,
     pub source_module: String,
     pub source_symbol: String,
+    pub receiver: ProjectionSourceSymbolKey,
     pub interfaces: Vec<ExportPublicInstanceInterfaceProjection>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExportPublicInstanceInterfaceProjection {
-    pub source_module: String,
-    pub source_symbol: String,
-    pub implements_interface: bool,
-    pub canonical_type_args: Vec<TypeRefIr>,
-    pub package_interface_identity: Option<TypeRefIr>,
-    pub package_interface_methods: Vec<InterfaceMethodSignature>,
-    pub receiver_implements_package_interface: bool,
+    pub interface: ProjectionSourceSymbolKey,
+    pub methods: Vec<ExportPublicInstanceMethodProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportPublicInstanceMethodProjection {
+    pub method: String,
+    pub executable: ProjectionSourceSymbolKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

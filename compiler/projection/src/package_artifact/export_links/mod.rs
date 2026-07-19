@@ -1,9 +1,6 @@
 mod public_instances;
 
 #[cfg(test)]
-pub(super) use public_instances::package_public_instance_method_operation;
-
-#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
@@ -28,10 +25,20 @@ use crate::{
 
 use super::{assets::file_ir_refs_from_units, model::PackageExportLinkProjectionInput};
 
-pub(super) fn project_package_export_index(
+pub(super) use public_instances::PackagePublicInstanceExecutionLink;
+#[cfg(test)]
+pub(super) use public_instances::PackagePublicInstanceMethodExecutionLink;
+
+#[derive(Debug)]
+pub(super) struct ProjectedPackageExportLinks {
+    pub exports: PackageExportIndex,
+    pub public_instances: Vec<PackagePublicInstanceExecutionLink>,
+}
+
+pub(super) fn project_package_export_links(
     package: &PackageExportLinkProjectionInput<'_>,
     dependencies: &[PackageRequirement],
-) -> Result<PackageExportIndex, ProjectionError> {
+) -> Result<ProjectedPackageExportLinks, ProjectionError> {
     let files_by_module = file_ir_refs_from_units(package.file_ir_units)
         .into_iter()
         .map(|file_ref| (file_ref.module_path.clone(), file_ref))
@@ -158,16 +165,18 @@ pub(super) fn project_package_export_index(
         ));
     }
 
-    public_instances::project_package_public_instances(
+    let public_instances = public_instances::project_package_public_instances(
         package,
         &files_by_module,
         &file_units_by_module,
-        &type_symbols,
         &package_type_names,
         &mut exports,
     )?;
 
-    Ok(exports)
+    Ok(ProjectedPackageExportLinks {
+        exports,
+        public_instances,
+    })
 }
 
 pub(super) fn package_scoped_export_symbol(

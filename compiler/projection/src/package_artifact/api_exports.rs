@@ -3,15 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use skiff_artifact_model::{
     ConstDeclarationIr, DbDeclarationIr, ExecutableIr, ExecutableKind, FileIrUnit,
-    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, PackageRefIr, PackageRequirement,
-    PackageSymbolRef, ServiceSymbolRef, SourceSpanRef, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
-};
-use skiff_compiler_core::package_interface_methods::{
-    normalize_package_interface_type_ref, PackageTypeSymbolIndex,
+    FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, PackageRefIr, PackageSymbolRef,
+    ServiceSymbolRef, SourceSpanRef, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_projection_input::{
-    ExportPublicInstanceInterfaceProjection, ProjectionSourceSymbolKey, ProjectionView,
-    PublicSymbolKindProjection, PublicationApiProjectionSeed,
+    ProjectionSourceSymbolKey, ProjectionView, PublicSymbolKindProjection,
+    PublicationApiProjectionSeed,
 };
 
 use crate::error::ProjectionError;
@@ -47,6 +44,8 @@ pub struct PackageExportPublicInstance {
     pub public_path: String,
     pub module: String,
     pub const_symbol: String,
+    pub receiver_module: String,
+    pub receiver_symbol: String,
     pub interfaces: Vec<PackageExportPublicInstanceInterface>,
 }
 
@@ -55,13 +54,19 @@ pub struct PackageExportPublicInstance {
 pub struct PackageExportPublicInstanceInterface {
     pub module: String,
     pub symbol: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub canonical_type_args: Vec<TypeRefIr>,
+    pub methods: Vec<PackageExportPublicInstanceMethod>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageExportPublicInstanceMethod {
+    pub name: String,
+    pub executable_module: String,
+    pub executable_symbol: String,
 }
 
 struct PackageArtifactProjectionContext<'a> {
     package_id: &'a str,
-    package_requirements: &'a [PackageRequirement],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,12 +93,8 @@ impl PackageBoundaryKind {
 pub(super) fn project_package_exports(
     input: ProjectionView<'_>,
     package_id: &str,
-    package_requirements: &[PackageRequirement],
 ) -> Result<PackageExportsProjection, ProjectionError> {
-    let manifest = PackageArtifactProjectionContext {
-        package_id,
-        package_requirements,
-    };
+    let manifest = PackageArtifactProjectionContext { package_id };
     let sources_by_module = input
         .file_ir_units()
         .iter()
@@ -166,9 +167,6 @@ pub(super) fn project_package_exports(
         });
     }
 
-    let type_symbols =
-        package_export_type_symbol_index(&manifest, input.file_ir_units(), &symbols)?;
-
     let entries = input
         .source()
         .export_bindings()
@@ -186,36 +184,29 @@ pub(super) fn project_package_exports(
         .public_instances()
         .values()
         .map(|public_instance| {
-            let receiver = package_public_instance_receiver_symbol_for_export(
-                &manifest,
-                &sources_by_module,
-                &public_instance.public_path,
-                &public_instance.source_module,
-                &public_instance.source_symbol,
-            )?;
             let interfaces = public_instance
                 .interfaces
                 .iter()
-                .map(|interface| {
-                    let canonical_type_args =
-                        package_public_instance_interface_canonical_type_args(
-                            &manifest,
-                            &type_symbols,
-                            &receiver,
-                            &public_instance.public_path,
-                            interface,
-                        )?;
-                    Ok(PackageExportPublicInstanceInterface {
-                        module: interface.source_module.clone(),
-                        symbol: interface.source_symbol.clone(),
-                        canonical_type_args,
-                    })
+                .map(|interface| PackageExportPublicInstanceInterface {
+                    module: interface.interface.module_path().to_string(),
+                    symbol: interface.interface.symbol().to_string(),
+                    methods: interface
+                        .methods
+                        .iter()
+                        .map(|method| PackageExportPublicInstanceMethod {
+                            name: method.method.clone(),
+                            executable_module: method.executable.module_path().to_string(),
+                            executable_symbol: method.executable.symbol().to_string(),
+                        })
+                        .collect(),
                 })
-                .collect::<Result<Vec<_>, ProjectionError>>()?;
+                .collect();
             Ok(PackageExportPublicInstance {
                 public_path: public_instance.public_path.clone(),
                 module: public_instance.source_module.clone(),
                 const_symbol: public_instance.source_symbol.clone(),
+                receiver_module: public_instance.receiver.module_path().to_string(),
+                receiver_symbol: public_instance.receiver.symbol().to_string(),
                 interfaces,
             })
         })
@@ -226,198 +217,6 @@ pub(super) fn project_package_exports(
         symbols,
         public_instances,
     })
-}
-
-fn package_export_type_symbol_index(
-    manifest: &PackageArtifactProjectionContext<'_>,
-    file_ir_units: &[FileIrUnit],
-    symbols: &BTreeMap<String, PackageExportSymbol>,
-) -> Result<PackageTypeSymbolIndex, ProjectionError> {
-    let mut index = PackageTypeSymbolIndex::default();
-    for dependency in manifest.package_requirements {
-        index.insert_dependency(&dependency.alias, &dependency.package_id);
-        index.insert_dependency(&dependency.package_id, &dependency.package_id);
-    }
-    let file_units_by_module = file_ir_units
-        .iter()
-        .map(|unit| (unit.module_path.as_str(), unit))
-        .collect::<BTreeMap<_, _>>();
-    for (public_symbol, export) in symbols {
-        let Some(unit) = file_units_by_module.get(export.module.as_str()).copied() else {
-            continue;
-        };
-        let Some(target) = unit.link_targets.types.get(&export.symbol) else {
-            continue;
-        };
-        let Some(type_decl) = unit.type_table.get(target.type_index as usize) else {
-            return Err(ProjectionError::InvalidPackageArtifact {
-                message: format!(
-                    "package {} export {} type index {} is out of bounds for module {} type table",
-                    manifest.package_id, public_symbol, target.type_index, export.module
-                ),
-            });
-        };
-        index.insert_type(
-            export.module.clone(),
-            target.type_index,
-            type_decl.name.clone(),
-            package_scoped_public_symbol(manifest, public_symbol),
-        );
-    }
-    Ok(index)
-}
-
-fn package_public_instance_receiver_symbol_for_export(
-    manifest: &PackageArtifactProjectionContext<'_>,
-    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    public_path: &str,
-    const_module: &str,
-    const_symbol: &str,
-) -> Result<ServiceSymbolRef, ProjectionError> {
-    let unit = file_units_by_module
-        .get(const_module)
-        .copied()
-        .ok_or_else(|| {
-            package_public_instance_projection_error(
-                manifest,
-                public_path,
-                format!("const selector points to missing module {const_module}"),
-            )
-        })?;
-    let const_decl = unit
-        .declarations
-        .constants
-        .get(const_symbol)
-        .ok_or_else(|| {
-            package_public_instance_projection_error(
-                manifest,
-                public_path,
-                format!("const selector points to missing const {const_module}.{const_symbol}"),
-            )
-        })?;
-    let constant = unit
-        .constants
-        .get(const_decl.const_index as usize)
-        .ok_or_else(|| {
-            package_public_instance_projection_error(
-                manifest,
-                public_path,
-                format!(
-                    "const selector {const_module}.{const_symbol} points to missing const index {}",
-                    const_decl.const_index
-                ),
-            )
-        })?;
-    package_nominal_service_symbol_for_export(file_units_by_module, const_module, &constant.ty)
-        .ok_or_else(|| {
-            package_public_instance_projection_error(
-                manifest,
-                public_path,
-                "const must have an explicit nominal receiver type",
-            )
-        })
-}
-
-fn package_nominal_service_symbol_for_export(
-    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    module_path: &str,
-    ty: &TypeRefIr,
-) -> Option<ServiceSymbolRef> {
-    match ty {
-        TypeRefIr::LocalType { type_index } => {
-            let unit = file_units_by_module.get(module_path).copied()?;
-            let decl = unit.type_table.get(*type_index as usize)?;
-            Some(ServiceSymbolRef {
-                module_path: module_path.to_string(),
-                symbol: decl.name.clone(),
-            })
-        }
-        TypeRefIr::ServiceSymbol { symbol } => {
-            let unit = file_units_by_module
-                .get(symbol.module_path.as_str())
-                .copied()?;
-            unit.declarations.types.get(&symbol.symbol)?;
-            Some(symbol.clone())
-        }
-        _ => None,
-    }
-}
-
-fn package_public_instance_interface_canonical_type_args(
-    manifest: &PackageArtifactProjectionContext<'_>,
-    type_symbols: &PackageTypeSymbolIndex,
-    receiver: &ServiceSymbolRef,
-    public_instance_path: &str,
-    interface: &ExportPublicInstanceInterfaceProjection,
-) -> Result<Vec<TypeRefIr>, ProjectionError> {
-    if !interface.implements_interface {
-        return Err(package_public_instance_projection_error(
-            manifest,
-            public_instance_path,
-            format!(
-                "receiver {}.{} does not explicitly implement listed interface {}.{}",
-                receiver.module_path,
-                receiver.symbol,
-                interface.source_module,
-                interface.source_symbol
-            ),
-        ));
-    }
-    let context_name = format!(
-        "{}.{} implements {}.{}",
-        receiver.module_path, receiver.symbol, interface.source_module, interface.source_symbol
-    );
-    interface
-        .canonical_type_args
-        .iter()
-        .map(|arg| {
-            normalize_package_interface_type_ref(
-                manifest.package_id,
-                type_symbols,
-                &receiver.module_path,
-                arg,
-                &context_name,
-            )
-            .map_err(|message| {
-                package_public_instance_projection_error(
-                    manifest,
-                    public_instance_path,
-                    format!(
-                        "receiver {}.{} interface {}.{} type argument failed to normalize: {message}",
-                        receiver.module_path, receiver.symbol, interface.source_module, interface.source_symbol
-                    ),
-                )
-            })
-        })
-        .collect()
-}
-
-fn package_scoped_public_symbol(
-    manifest: &PackageArtifactProjectionContext<'_>,
-    public_symbol: &str,
-) -> String {
-    if manifest.package_id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID
-        && !public_symbol.starts_with("std.")
-    {
-        format!("std.{public_symbol}")
-    } else {
-        public_symbol.to_string()
-    }
-}
-
-fn package_public_instance_projection_error(
-    manifest: &PackageArtifactProjectionContext<'_>,
-    public_instance: &str,
-    message: impl Into<String>,
-) -> ProjectionError {
-    ProjectionError::InvalidPackageArtifact {
-        message: format!(
-            "package {} public instance {}: {}",
-            manifest.package_id,
-            public_instance,
-            message.into()
-        ),
-    }
 }
 
 fn insert_package_api_symbol(
@@ -1392,7 +1191,6 @@ mod tests {
     fn manifest_for_boundary_test() -> PackageArtifactProjectionContext<'static> {
         PackageArtifactProjectionContext {
             package_id: "example.com/package",
-            package_requirements: &[],
         }
     }
 

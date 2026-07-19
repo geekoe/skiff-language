@@ -21,6 +21,16 @@ pub enum ProjectionInputBuildError {
         source_symbol: String,
     },
     #[error(
+        "public instance `{public_path}` receiver {receiver_module}.{receiver_symbol} has no validated conformance to {interface_module}.{interface_symbol}"
+    )]
+    MissingValidatedPublicInstanceConformance {
+        public_path: String,
+        receiver_module: String,
+        receiver_symbol: String,
+        interface_module: String,
+        interface_symbol: String,
+    },
+    #[error(
         "source callable signature `{public_path}` targets missing File IR module `{module_path}`"
     )]
     MissingModule {

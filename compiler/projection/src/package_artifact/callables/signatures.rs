@@ -8,7 +8,10 @@ use skiff_compiler_projection_input::{
     ProjectionPackageCallableSignatureFacts,
 };
 
-use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
+use crate::{
+    error::ProjectionError,
+    package_artifact::{api_exports::PackageExports, export_links::ProjectedPackageExportLinks},
+};
 
 use super::{
     projection_error,
@@ -17,9 +20,10 @@ use super::{
 
 pub(super) fn package_callable_targets(
     package_id: &str,
-    exports: &PackageExportIndex,
+    exports: &ProjectedPackageExportLinks,
 ) -> Vec<CallableTarget> {
     let mut targets = exports
+        .exports
         .functions
         .iter()
         .map(|(public_path, export)| {
@@ -42,19 +46,19 @@ pub(super) fn package_callable_targets(
         exports
             .public_instances
             .iter()
-            .flat_map(|instance| &instance.operations)
-            .map(|operation| {
-                let target = &operation.receiver_executable.executable_target;
-                let public_path = operation.operation.public_path.clone();
+            .flat_map(|instance| &instance.methods)
+            .map(|method| {
+                let public_path = method.public_path.clone();
                 let callable_id = package_callable_id(package_id, &public_path);
-                let mut normalized_target = target.clone();
-                normalized_target.callable_abi_id = callable_id.to_string();
                 CallableTarget {
                     public_path,
-                    callable_id,
-                    owner_module: target.file_ref.module_path.clone(),
-                    executable_index: target.executable_index,
-                    target: normalized_target,
+                    callable_id: callable_id.clone(),
+                    owner_module: method.executable.file.module_path.clone(),
+                    executable_index: method.executable.executable_index,
+                    target: method.executable.operation_target_ref(
+                        callable_id.to_string(),
+                        OperationCallableKind::ImplMethod,
+                    ),
                 }
             }),
     );

@@ -2,14 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CanonicalPublicCallableSignature, ContractOperationId, ContractRequirement, ContractTypeId,
-    ExecutableExport, ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr,
-    LocalReceiverExecutableRef, OperationCallableKind, OperationConstReceiverRef,
-    OperationTargetRef, PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement, PackageResourceRequirement,
-    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageTypeRef,
-    PublicInstanceExport, PublicInstanceOperation, ReceiverCallAbi, ServiceCallRef,
-    ServiceProtocolIdentity, ServiceRequirement, TypeRefIr, ValueProvenance,
+    ConstExport, ContractOperationId, ContractRequirement, ContractTypeId, ExecutableExport,
+    ExecutableSignatureIr, FileIrRef, PackageCallableParameter, PackageCallableSignature,
+    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement,
+    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
+    PackageTypeRef, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr,
+    ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -17,7 +15,10 @@ use skiff_compiler_projection_input::{
 
 use crate::package_artifact::{
     api_exports::{PackageExportPublicInstance, PackageExportSymbol, PackageExports},
-    export_links::package_public_instance_method_operation,
+    export_links::{
+        PackagePublicInstanceExecutionLink, PackagePublicInstanceMethodExecutionLink,
+        ProjectedPackageExportLinks,
+    },
     projection::{project_package_artifact_facts, ProjectedPackageFacts},
 };
 
@@ -54,7 +55,6 @@ pub(super) fn project_fixture_with_runtime_requirements(
             ("run".to_string(), executable_export(&file_ref, 0, "run")),
         ]),
         impl_methods: BTreeMap::from([("Worker.handle".to_string(), receiver_export(&file_ref))]),
-        public_instances: vec![public_instance(&file_ref)],
         ..PackageExportIndex::default()
     };
     let api_exports = PackageExports {
@@ -79,6 +79,8 @@ pub(super) fn project_fixture_with_runtime_requirements(
             public_path: "worker".to_string(),
             module: "api".to_string(),
             const_symbol: "worker".to_string(),
+            receiver_module: "api".to_string(),
+            receiver_symbol: "Worker".to_string(),
             interfaces: Vec::new(),
         }],
     };
@@ -138,7 +140,10 @@ pub(super) fn project_fixture_with_runtime_requirements(
         package_id: "example.pkg",
         package_version: "1.0.0",
         api_exports: &api_exports,
-        export_index,
+        export_links: ProjectedPackageExportLinks {
+            exports: export_index,
+            public_instances: vec![public_instance(&file_ref)],
+        },
         file_ir_units: vec![file],
         resources: Vec::new(),
         package_requirements: vec![PackageRequirement {
@@ -165,43 +170,22 @@ pub(super) fn project_fixture_with_runtime_requirements(
     .artifact)
 }
 
-fn public_instance(file: &FileIrRef) -> PublicInstanceExport {
+fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
     let interface_type = TypeRefIr::native("WorkerInterface");
-    let interface =
-        skiff_artifact_identity::interface_instantiation_ref_for_type_ref(&interface_type);
-    let public_signature = CanonicalPublicCallableSignature {
-        params: vec![FunctionTypeParamIr {
-            name: "value".to_string(),
-            ty: TypeRefIr::native("string"),
-        }],
-        return_type: TypeRefIr::native("string"),
-        may_suspend: false,
-    };
-    let operation =
-        package_public_instance_method_operation("worker", &interface, "handle", &public_signature);
-    PublicInstanceExport {
-        name: "worker".to_string(),
-        module_path: "api".to_string(),
+    PackagePublicInstanceExecutionLink {
+        public_path: "worker".to_string(),
         declared_receiver_type: TypeRefIr::native("Worker"),
-        implemented_interfaces: vec![interface_type],
-        operations: vec![PublicInstanceOperation {
-            receiver_executable: LocalReceiverExecutableRef {
-                receiver: OperationConstReceiverRef {
-                    file_ref: file.clone(),
-                    const_index: 0,
-                    const_abi_id: "const:worker".to_string(),
-                    const_type_abi_id: "type:Worker".to_string(),
-                },
-                executable_target: OperationTargetRef {
-                    file_ref: file.clone(),
-                    executable_index: 2,
-                    callable_abi_id: "callable:Worker.handle".to_string(),
-                    callable_kind: OperationCallableKind::ImplMethod,
-                },
-                method_abi_id: operation.method_abi_id.clone().unwrap(),
-                receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
-            },
-            operation,
+        interfaces: vec![interface_type],
+        receiver: ConstExport {
+            file: file.clone(),
+            const_index: 0,
+            symbol: "worker".to_string(),
+            ty: TypeRefIr::native("Worker"),
+        },
+        methods: vec![PackagePublicInstanceMethodExecutionLink {
+            name: "handle".to_string(),
+            public_path: "worker.handle".to_string(),
+            executable: receiver_export(file),
         }],
     }
 }

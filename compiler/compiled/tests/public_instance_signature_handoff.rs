@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, ContractRequirement, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol, PackageTypeRef,
+    ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_compiled::{projection_input::build_projection_input, CompiledPackage};
 use skiff_compiler_contract::{
@@ -90,6 +90,17 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
     .unwrap();
     let lowered = skiff_compiler_lowering::lower(&model).unwrap();
     let compiled = CompiledPackage::new(model, lowered);
+    let execution = compiled
+        .file_ir_units()
+        .iter()
+        .flat_map(|unit| &unit.executables)
+        .find(|executable| executable.symbol.ends_with("Handler.submit"))
+        .expect("public-instance implementation executable");
+    assert!(matches!(
+        execution.params.iter().find(|param| param.name == "input"),
+        Some(param) if param.ty == TypeRefIr::native("unknown")
+    ));
+    assert_eq!(execution.return_type, TypeRefIr::native("unknown"));
     let projection = build_projection_input(&compiled).unwrap();
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: "example.com/public-instance",

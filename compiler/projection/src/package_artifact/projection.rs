@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     CallableSemanticFacts, ContractRequirement, FileIrUnit, PackageArtifact, PackageBuildId,
-    PackageExportIndex, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement,
-    PackageRuntimeRequirements, ServiceCallRef, ServiceRequirement,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement, PackageRuntimeRequirements,
+    ServiceCallRef, ServiceRequirement, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
@@ -18,7 +17,7 @@ use super::{
     assets::{file_ir_refs_from_units, project_package_resources, resource_refs_from_projected},
     callables::project_package_callable_surface,
     config_requirements::validate_canonical_config_projection,
-    export_links::project_package_export_index,
+    export_links::{project_package_export_links, ProjectedPackageExportLinks},
     model::{
         PackageArtifactProjectionInput, PackageExportLinkProjectionInput, ProjectedPackageArtifact,
         ProjectedPackageResource,
@@ -29,14 +28,10 @@ use super::{
 pub fn project_compiled_package_artifact(
     input: PackageArtifactProjectionInput<'_>,
 ) -> Result<ProjectedPackageArtifact, ProjectionError> {
-    let api_exports = project_package_exports(
-        input.projection,
-        input.package_id,
-        &input.package_requirements,
-    )?;
+    let api_exports = project_package_exports(input.projection, input.package_id)?;
     let file_ir_units = input.projection.file_ir_units().to_vec();
     let resources = project_package_resources(input.projection.resources());
-    let export_index = project_package_export_index(
+    let export_links = project_package_export_links(
         &PackageExportLinkProjectionInput {
             package_id: input.package_id,
             exports: &api_exports,
@@ -53,7 +48,7 @@ pub fn project_compiled_package_artifact(
         package_id: input.package_id,
         package_version: input.package_version,
         api_exports: &api_exports,
-        export_index,
+        export_links,
         file_ir_units,
         resources,
         package_requirements: input.package_requirements,
@@ -70,7 +65,7 @@ pub(super) struct ProjectedPackageFacts<'a> {
     pub package_id: &'a str,
     pub package_version: &'a str,
     pub api_exports: &'a super::api_exports::PackageExports,
-    pub export_index: PackageExportIndex,
+    pub export_links: ProjectedPackageExportLinks,
     pub file_ir_units: Vec<FileIrUnit>,
     pub resources: Vec<ProjectedPackageResource>,
     pub package_requirements: Vec<PackageRequirement>,
@@ -88,7 +83,7 @@ pub(super) fn project_package_artifact_facts(
     let callables = project_package_callable_surface(
         input.package_id,
         input.api_exports,
-        &input.export_index,
+        &input.export_links,
         &input.file_ir_units,
         &input.callable_semantic_facts,
         &input.callable_signatures,

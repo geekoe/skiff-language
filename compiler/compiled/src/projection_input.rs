@@ -12,12 +12,12 @@ use skiff_compiler_projection_input::{
     ConfigRequirementSetProjection, ConfigRequirementsSeed, ConfigSourcePositionProjection,
     ConfigSourceSpanProjection, EntryFunctionSignature, EntryParamSpec, EntryTypeSpec,
     ExportBindingProjection, ExportCallableProjection, ExportPublicInstanceInterfaceProjection,
-    ExportPublicInstanceProjection, ExportSchemaProjection, ExportSymbolProjection,
-    PackageEntrypointProjectionFacts, ProjectionAbiDeclarationIds, ProjectionCallableEffectFacts,
-    ProjectionDeclarationKey, ProjectionEntrypointAbiIndex, ProjectionExecutableKey,
-    ProjectionInput, ProjectionLoweringFacts, ProjectionSourceDeclarationKind,
-    ProjectionSourceFacts, ProjectionSourceFactsParts, ProjectionSourceMetadata,
-    ProjectionSourceSymbolKey, ProjectionSyntheticEntrypointExecutable,
+    ExportPublicInstanceMethodProjection, ExportPublicInstanceProjection, ExportSchemaProjection,
+    ExportSymbolProjection, PackageEntrypointProjectionFacts, ProjectionAbiDeclarationIds,
+    ProjectionCallableEffectFacts, ProjectionDeclarationKey, ProjectionEntrypointAbiIndex,
+    ProjectionExecutableKey, ProjectionInput, ProjectionLoweringFacts,
+    ProjectionSourceDeclarationKind, ProjectionSourceFacts, ProjectionSourceFactsParts,
+    ProjectionSourceMetadata, ProjectionSourceSymbolKey, ProjectionSyntheticEntrypointExecutable,
     ProjectionSyntheticEntrypointExecutableKind, ProjectionSyntheticEntrypointIndex,
     ProjectionSyntheticEntrypointModule, PublicCallableKindProjection, PublicCallableProjection,
     PublicInstanceInterfaceProjection, PublicInstanceProjection, PublicModuleExportProjection,
@@ -32,7 +32,7 @@ use skiff_compiler_source::{
     },
     ConfigRequirement, ConfigRequirementAccess, ConfigRequirementScope, ConfigRequirementSet,
     ConfigSourceSpan, ExpressionOwnerKey, PackageSourceModel, PublicationApiSeed,
-    ResolvedCallTarget, SourceSymbolKey,
+    ResolvedCallTarget, SourceInterfaceConformanceKey, SourceSymbolKey,
 };
 
 use crate::{package_callable_signatures, CompiledPackage, ProjectionInputBuildError};
@@ -52,9 +52,10 @@ pub fn build_projection_input(
             source_ast_hash: source.source_ast_hash.clone(),
         })
         .collect::<Vec<_>>();
+    let export_bindings = export_bindings_projection(model, compiled.file_ir_units())?;
     let source = ProjectionSourceFacts::new(ProjectionSourceFactsParts {
         publication_api_seed: publication_api_seed_projection(model.publication_api().seed()),
-        export_bindings: export_bindings_projection(model, compiled.file_ir_units()),
+        export_bindings,
         config_requirements: config_requirements_seed(model),
         abi_ids: abi_declaration_ids(model, compiled.file_ir_units()),
         callable_effects: callable_effect_facts(model, compiled.file_ir_units()),
@@ -260,13 +261,13 @@ fn publication_api_seed_projection(seed: &PublicationApiSeed) -> PublicationApiP
 fn export_bindings_projection(
     model: &PackageSourceModel,
     file_ir_units: &[FileIrUnit],
-) -> ExportBindingProjection {
+) -> Result<ExportBindingProjection, ProjectionInputBuildError> {
     let bindings = model.export_bindings();
     let file_units_by_module = file_ir_units
         .iter()
         .map(|unit| (unit.module_path.as_str(), unit))
         .collect::<BTreeMap<_, _>>();
-    ExportBindingProjection::new(
+    Ok(ExportBindingProjection::new(
         bindings
             .public_symbols()
             .iter()
@@ -320,66 +321,76 @@ fn export_bindings_projection(
                     &file_units_by_module,
                     &value.source_module,
                     &value.source_symbol,
-                );
-                (
+                )
+                .ok_or_else(|| ProjectionInputBuildError::MissingPublicInstanceReceiver {
+                    public_path: value.public_path.clone(),
+                    source_module: value.source_module.clone(),
+                    source_symbol: value.source_symbol.clone(),
+                })?;
+                let interfaces = value
+                    .interfaces
+                    .iter()
+                    .map(|interface| {
+                        let conformance_key = SourceInterfaceConformanceKey {
+                            receiver: SourceSymbolKey::new(
+                                &receiver.module_path,
+                                &receiver.symbol,
+                            ),
+                            interface: SourceSymbolKey::new(
+                                &interface.source_module,
+                                &interface.source_symbol,
+                            ),
+                        };
+                        let conformance = model
+                            .interface_signatures()
+                            .conformance(&conformance_key)
+                            .ok_or_else(|| {
+                                ProjectionInputBuildError::MissingValidatedPublicInstanceConformance {
+                                    public_path: value.public_path.clone(),
+                                    receiver_module: receiver.module_path.clone(),
+                                    receiver_symbol: receiver.symbol.clone(),
+                                    interface_module: interface.source_module.clone(),
+                                    interface_symbol: interface.source_symbol.clone(),
+                                }
+                            })?;
+                        Ok(ExportPublicInstanceInterfaceProjection {
+                            interface: source_symbol_key_projection(&conformance.key.interface),
+                            methods: conformance
+                                .methods
+                                .iter()
+                                .map(|(method, validated)| {
+                                    ExportPublicInstanceMethodProjection {
+                                        method: method.clone(),
+                                        executable: source_symbol_key_projection(
+                                            &validated.executable,
+                                        ),
+                                    }
+                                })
+                                .collect(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProjectionInputBuildError>>()?;
+                Ok((
                     key.clone(),
                     ExportPublicInstanceProjection {
                         public_path: value.public_path.clone(),
                         source_module: value.source_module.clone(),
                         source_symbol: value.source_symbol.clone(),
-                        interfaces: value
-                            .interfaces
-                            .iter()
-                            .map(|interface| {
-                                let conformance = receiver.as_ref().and_then(|receiver| {
-                                    model.type_resolution().source_interface_conformance(
-                                        &SourceSymbolKey::new(
-                                            &receiver.module_path,
-                                            &receiver.symbol,
-                                        ),
-                                        &ServiceSymbolRef {
-                                            module_path: interface.source_module.clone(),
-                                            symbol: interface.source_symbol.clone(),
-                                        },
-                                    )
-                                });
-                                let package_interface = receiver.as_ref().and_then(|receiver| {
-                                    public_instance_listed_package_interface_for_adapter(
-                                        model,
-                                        &file_units_by_module,
-                                        receiver,
-                                        interface,
-                                    )
-                                });
-                                ExportPublicInstanceInterfaceProjection {
-                                    source_module: interface.source_module.clone(),
-                                    source_symbol: interface.source_symbol.clone(),
-                                    implements_interface: conformance.is_some(),
-                                    canonical_type_args: conformance
-                                        .map(|conformance| conformance.interface_args.to_vec())
-                                        .unwrap_or_default(),
-                                    package_interface_identity: package_interface
-                                        .as_ref()
-                                        .map(|fact| fact.0.clone()),
-                                    package_interface_methods: package_interface
-                                        .as_ref()
-                                        .map(|fact| fact.1.clone())
-                                        .unwrap_or_default(),
-                                    receiver_implements_package_interface: package_interface
-                                        .is_some(),
-                                }
-                            })
-                            .collect(),
+                        receiver: ProjectionSourceSymbolKey::new(
+                            receiver.module_path,
+                            receiver.symbol,
+                        ),
+                        interfaces,
                     },
-                )
+                ))
             })
-            .collect(),
+            .collect::<Result<BTreeMap<_, _>, ProjectionInputBuildError>>()?,
         bindings
             .module_exports()
             .iter()
             .map(public_module_export_projection)
             .collect(),
-    )
+    ))
 }
 
 fn public_symbol_projection(
@@ -391,95 +402,6 @@ fn public_symbol_projection(
         source_symbol: symbol.source_symbol.clone(),
         kind: public_symbol_kind_projection(symbol.kind),
     }
-}
-
-fn public_instance_listed_package_interface_for_adapter(
-    model: &PackageSourceModel,
-    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    receiver: &ServiceSymbolRef,
-    listed_interface: &skiff_compiler_source::ExportPublicInstanceInterfaceBinding,
-) -> Option<(
-    TypeRefIr,
-    Vec<skiff_artifact_model::InterfaceMethodSignature>,
-)> {
-    let selector_path = format!(
-        "{}.{}",
-        listed_interface.source_module, listed_interface.source_symbol
-    );
-    let listed_package_interface = model
-        .type_resolution()
-        .resolve_package_interface(&selector_path)?;
-    let receiver_decl = file_units_by_module
-        .get(receiver.module_path.as_str())
-        .and_then(|unit| unit.declarations.types.get(&receiver.symbol))
-        .and_then(|declaration| {
-            file_units_by_module
-                .get(receiver.module_path.as_str())?
-                .type_table
-                .get(declaration.type_index as usize)
-        })?;
-    let receiver_implements_listed = receiver_decl.implements.iter().any(|implemented_ty| {
-        model
-            .type_resolution()
-            .package_interface_for_type_ref(implemented_ty)
-            .is_some_and(|implemented| {
-                package_interface_identities_match(
-                    &implemented.identity,
-                    &listed_package_interface.identity,
-                ) || public_instance_package_interface_matches_selector(
-                    &implemented.identity,
-                    &selector_path,
-                )
-            })
-    }) || {
-        let receiver_key = SourceSymbolKey::new(&receiver.module_path, &receiver.symbol);
-        model
-            .type_resolution()
-            .source_interface_conformance_matching(&receiver_key, |implemented_identity| {
-                package_interface_identities_match(
-                    implemented_identity,
-                    &listed_package_interface.identity,
-                ) || public_instance_package_interface_matches_selector(
-                    implemented_identity,
-                    &selector_path,
-                )
-            })
-            .is_some()
-    };
-    receiver_implements_listed.then_some((
-        listed_package_interface.identity,
-        listed_package_interface.methods,
-    ))
-}
-
-fn package_interface_identities_match(left: &TypeRefIr, right: &TypeRefIr) -> bool {
-    let (
-        TypeRefIr::PackageSymbol {
-            symbol: left_symbol,
-        },
-        TypeRefIr::PackageSymbol {
-            symbol: right_symbol,
-        },
-    ) = (left, right)
-    else {
-        return false;
-    };
-    left_symbol.package == right_symbol.package
-        && left_symbol.symbol_path == right_symbol.symbol_path
-}
-
-fn public_instance_package_interface_matches_selector(
-    identity: &TypeRefIr,
-    selector: &str,
-) -> bool {
-    let TypeRefIr::PackageSymbol { symbol } = identity else {
-        return false;
-    };
-    symbol.symbol_path == selector
-        || symbol
-            .symbol_path
-            .strip_prefix("root.")
-            .is_some_and(|stripped| stripped == selector)
 }
 
 fn public_callable_projection(

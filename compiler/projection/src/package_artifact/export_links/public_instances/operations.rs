@@ -1,14 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_identity::{
-    canonical_interface_method_abi_id, public_instance_method_operation_abi_id,
-};
 use skiff_artifact_model::{
-    CanonicalPublicCallableSignature, ExecutableExport, ExecutableSignatureIr, FileIrRef,
-    InterfaceInstantiationRef, InterfaceMethodSignature, LocalReceiverExecutableRef,
-    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
-    PackageExportIndex, PublicInstanceOperation, PublicationOperationKind, ReceiverCallAbi,
-    TypeRefIr,
+    ExecutableExport, ExecutableKind, FileIrRef, FileIrUnit, PackageExportIndex,
 };
 use skiff_compiler_core::naming::impl_method_declaration_name;
 
@@ -20,19 +13,22 @@ use crate::{
     },
 };
 
-use super::{public_instance_error, PackagePublicInstanceInterface, PackagePublicInstanceReceiver};
+use super::{
+    public_instance_error, PackagePublicInstanceInterface,
+    PackagePublicInstanceMethodExecutionLink, PackagePublicInstanceReceiver,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn project_operations(
     package: &PackageExportLinkProjectionInput<'_>,
     files_by_module: &BTreeMap<String, FileIrRef>,
+    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
     public_path: &str,
-    receiver: &PackagePublicInstanceReceiver<'_>,
-    receiver_const: &OperationConstReceiverRef,
+    receiver: &PackagePublicInstanceReceiver,
     interfaces: &[PackagePublicInstanceInterface],
     package_type_names: &PackageVisibleTypeNames,
     exports: &mut PackageExportIndex,
-) -> Result<Vec<PublicInstanceOperation>, ProjectionError> {
+) -> Result<Vec<PackagePublicInstanceMethodExecutionLink>, ProjectionError> {
     let mut operations = Vec::new();
     let mut method_names = BTreeSet::new();
     for interface in interfaces {
@@ -42,13 +38,42 @@ pub(super) fn project_operations(
                     package,
                     public_path,
                     format!(
-                        "derives conflicting operation `{}` from multiple interfaces",
+                        "derives conflicting method `{}` from multiple interfaces",
                         method.name
                     ),
                 ));
             }
             let target_symbol = impl_method_declaration_name(&receiver.symbol.symbol, &method.name);
-            let executable_index = impl_method_executable_index(receiver.unit, &target_symbol)
+            if method.executable_module != receiver.symbol.module_path
+                || method.executable_symbol != target_symbol
+            {
+                return Err(public_instance_error(
+                    package,
+                    public_path,
+                    format!(
+                        "source-validated method {} target {}.{} does not match receiver target {}.{}",
+                        method.name,
+                        method.executable_module,
+                        method.executable_symbol,
+                        receiver.symbol.module_path,
+                        target_symbol
+                    ),
+                ));
+            }
+            let target_unit = file_units_by_module
+                .get(method.executable_module.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    public_instance_error(
+                        package,
+                        public_path,
+                        format!(
+                            "method {} target module {} has no File IR unit",
+                            method.name, method.executable_module
+                        ),
+                    )
+                })?;
+            let executable_index = impl_method_executable_index(target_unit, &target_symbol)
                 .ok_or_else(|| {
                     public_instance_error(
                         package,
@@ -59,8 +84,7 @@ pub(super) fn project_operations(
                         ),
                     )
                 })?;
-            let executable = receiver
-                .unit
+            let executable = target_unit
                 .executables
                 .get(executable_index as usize)
                 .ok_or_else(|| {
@@ -76,82 +100,65 @@ pub(super) fn project_operations(
                         ),
                     )
                 })?;
-            let executable_signature = projection_visible_executable_signature(
-                &receiver.symbol.module_path,
-                executable,
-                package_type_names,
-            );
-            let public_signature =
-                public_signature_from_receiver_executable_signature(executable_signature.clone());
-            let interface_signature = public_signature_from_interface_method_signature(method);
-            if public_signature != interface_signature {
+            let executable_symbol_matches = executable.symbol == target_symbol
+                || executable
+                    .symbol
+                    .strip_prefix(&format!("{}.", method.executable_module))
+                    .is_some_and(|symbol| symbol == target_symbol);
+            if executable.kind != ExecutableKind::ImplMethod || !executable_symbol_matches {
                 return Err(public_instance_error(
                     package,
                     public_path,
                     format!(
-                        "receiver {}.{} method {} signature does not match listed interface method",
-                        receiver.symbol.module_path, receiver.symbol.symbol, method.name
+                        "receiver {}.{} method {} target index {} resolved to {:?} `{}` instead of impl method {}",
+                        receiver.symbol.module_path,
+                        receiver.symbol.symbol,
+                        method.name,
+                        executable_index,
+                        executable.kind,
+                        executable.symbol,
+                        target_symbol
                     ),
                 ));
             }
-            let operation = package_public_instance_method_operation(
-                public_path,
-                &interface.instantiation,
-                &method.name,
-                &interface_signature,
-            );
             let target_file = files_by_module
-                .get(&receiver.unit.module_path)
+                .get(&method.executable_module)
                 .cloned()
                 .ok_or_else(|| {
                     public_instance_error(
                         package,
                         public_path,
                         format!(
-                            "receiver module {} has no File IR ref",
-                            receiver.unit.module_path
+                            "method {} target module {} has no File IR ref",
+                            method.name, method.executable_module
                         ),
                     )
                 })?;
+            let executable = ExecutableExport {
+                file: target_file,
+                executable_index,
+                symbol: target_symbol.clone(),
+                signature: projection_visible_executable_signature(
+                    &method.executable_module,
+                    executable,
+                    package_type_names,
+                ),
+            };
             exports
                 .impl_methods
-                .entry(target_symbol.clone())
-                .or_insert(ExecutableExport {
-                    file: target_file.clone(),
-                    executable_index,
-                    symbol: target_symbol.clone(),
-                    signature: executable_signature,
-                });
-            let method_abi_id = operation
-                .method_abi_id
-                .clone()
-                .unwrap_or_else(|| operation.operation_abi_id.clone());
-            operations.push(PublicInstanceOperation {
-                operation,
-                receiver_executable: LocalReceiverExecutableRef {
-                    receiver: receiver_const.clone(),
-                    executable_target: OperationTargetRef {
-                        file_ref: target_file,
-                        executable_index,
-                        callable_abi_id: format!(
-                            "callable:{}.{}",
-                            receiver.unit.module_path, target_symbol
-                        ),
-                        callable_kind: OperationCallableKind::ImplMethod,
-                    },
-                    method_abi_id,
-                    receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
-                },
+                .entry(target_symbol)
+                .or_insert_with(|| executable.clone());
+            operations.push(PackagePublicInstanceMethodExecutionLink {
+                name: method.name.clone(),
+                public_path: format!("{public_path}.{}", method.name),
+                executable,
             });
         }
     }
     Ok(operations)
 }
 
-fn impl_method_executable_index(
-    unit: &skiff_artifact_model::FileIrUnit,
-    target_symbol: &str,
-) -> Option<u32> {
+fn impl_method_executable_index(unit: &FileIrUnit, target_symbol: &str) -> Option<u32> {
     unit.link_targets
         .executables
         .get(target_symbol)
@@ -162,65 +169,4 @@ fn impl_method_executable_index(
                 .get(target_symbol)
                 .map(|target| target.executable_index)
         })
-}
-
-fn public_signature_from_receiver_executable_signature(
-    signature: ExecutableSignatureIr,
-) -> CanonicalPublicCallableSignature {
-    let mut public_signature = CanonicalPublicCallableSignature::from(signature.clone());
-    let strip_self = match &signature.self_type {
-        Some(self_type) => public_signature
-            .params
-            .first()
-            .is_some_and(|param| &param.ty == self_type),
-        None => public_signature
-            .params
-            .first()
-            .is_some_and(|param| param.name == "self"),
-    };
-    if strip_self {
-        public_signature.params.remove(0);
-    }
-    public_signature
-}
-
-fn public_signature_from_interface_method_signature(
-    method: &InterfaceMethodSignature,
-) -> CanonicalPublicCallableSignature {
-    CanonicalPublicCallableSignature {
-        params: method.params.clone(),
-        return_type: method.return_type.clone(),
-        may_suspend: matches!(
-            &method.return_type,
-            TypeRefIr::Native { name, .. } if name == "Stream"
-        ),
-    }
-}
-
-pub(in crate::package_artifact) fn package_public_instance_method_operation(
-    public_instance_key: &str,
-    interface: &InterfaceInstantiationRef,
-    method_name: &str,
-    public_signature: &CanonicalPublicCallableSignature,
-) -> OperationAbiRef {
-    let public_path = format!("{public_instance_key}.{method_name}");
-    let method_abi_id = canonical_interface_method_abi_id(interface, method_name);
-    OperationAbiRef {
-        operation_abi_id: public_instance_method_operation_abi_id(
-            &public_path,
-            public_instance_key,
-            interface,
-            &method_abi_id,
-            public_signature,
-            &[],
-            &BTreeMap::new(),
-        )
-        .expect("public instance method operation ABI id must be derived from typed projection"),
-        kind: PublicationOperationKind::PublicInstanceMethod,
-        public_path: public_path.clone(),
-        public_instance_key: Some(public_instance_key.to_string()),
-        interface: Some(interface.clone()),
-        method_abi_id: Some(method_abi_id),
-        display_name: public_path,
-    }
 }

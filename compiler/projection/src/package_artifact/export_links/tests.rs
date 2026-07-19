@@ -1,6 +1,9 @@
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 
-use self::fixtures::{actor_file_ir, projected_exports, projected_exports_with_source_module};
+use self::fixtures::{
+    actor_file_ir, projected_exports, projected_exports_with_source_module,
+    projected_public_instance, public_instance_file_ir, public_instance_method,
+};
 
 mod fixtures;
 
@@ -117,6 +120,59 @@ fn invalid_file_index_and_symbol_targets_fail_closed() {
     )
     .expect_err("a suffix-only declaration match must fail closed");
     assert_error_contains(missing_symbol, "missing symbol ActorSuffix in module actor");
+}
+
+#[test]
+fn public_instance_projection_keeps_only_typed_execution_links() {
+    let links = projected_public_instance(
+        public_instance_file_ir(),
+        vec![public_instance_method("handle")],
+    )
+    .expect("public instance execution link must project");
+
+    assert!(links.exports.public_instances.is_empty());
+    assert!(links.exports.impl_methods.contains_key("Worker.handle"));
+    let instance = &links.public_instances[0];
+    assert_eq!(instance.public_path, "worker");
+    assert_eq!(instance.receiver.const_index, 0);
+    assert_eq!(instance.methods[0].name, "handle");
+    assert_eq!(instance.methods[0].public_path, "worker.handle");
+    assert_eq!(instance.methods[0].executable.executable_index, 0);
+}
+
+#[test]
+fn public_instance_missing_method_and_index_fail_closed() {
+    let mut missing_method = public_instance_file_ir();
+    missing_method
+        .link_targets
+        .executables
+        .remove("Worker.handle");
+    missing_method
+        .declarations
+        .executables
+        .remove("Worker.handle");
+    let error = projected_public_instance(missing_method, vec![public_instance_method("handle")])
+        .expect_err("missing implementation method must fail closed");
+    assert_error_contains(error, "missing implementation method handle");
+
+    let mut missing_index = public_instance_file_ir();
+    missing_index
+        .link_targets
+        .executables
+        .get_mut("Worker.handle")
+        .expect("method target")
+        .executable_index = 9;
+    let error = projected_public_instance(missing_index, vec![public_instance_method("handle")])
+        .expect_err("missing executable index must fail closed");
+    assert_error_contains(error, "points to missing executable index 9");
+}
+
+#[test]
+fn duplicate_source_validated_interface_method_fails_closed() {
+    let method = public_instance_method("handle");
+    let error = projected_public_instance(public_instance_file_ir(), vec![method.clone(), method])
+        .expect_err("duplicate validated interface method must fail closed");
+    assert_error_contains(error, "contains duplicate validated method handle");
 }
 
 fn assert_error_contains(error: crate::error::ProjectionError, expected: &str) {

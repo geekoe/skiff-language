@@ -6,14 +6,17 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, FileIrUnit, PackageCallableId,
-    PackageCallableLinkFact, PackageExportIndex, PackageImplementationLinks, PackageLocalAbiSymbol,
+    PackageCallableLinkFact, PackageImplementationLinks, PackageLocalAbiSymbol,
     PackageRuntimeRequirements,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
 };
 
-use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
+use crate::{
+    error::ProjectionError,
+    package_artifact::{api_exports::PackageExports, export_links::ProjectedPackageExportLinks},
+};
 
 use super::boundary::project_boundary_callable;
 
@@ -29,7 +32,7 @@ pub(super) struct ProjectedPackageCallableSurface {
 pub(super) fn project_package_callable_surface(
     package_id: &str,
     api_exports: &PackageExports,
-    exports: &PackageExportIndex,
+    exports: &ProjectedPackageExportLinks,
     file_ir_units: &[FileIrUnit],
     semantic_facts_by_executable: &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
     signatures: &ProjectionPackageCallableSignatureFacts,

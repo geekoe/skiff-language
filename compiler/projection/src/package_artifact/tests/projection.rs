@@ -60,6 +60,17 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         .implementation_links
         .functions
         .contains_key("mutate"));
+    assert_eq!(
+        artifact.implementation_links.constants["worker"].const_index,
+        0
+    );
+    let worker_handle_id = callable_id(&artifact, "worker.handle");
+    assert_eq!(
+        artifact.callable_links[&worker_handle_id]
+            .target
+            .executable_index,
+        2
+    );
     assert!(artifact.callable_links.contains_key(&mutate_id));
 
     let wire = serde_json::to_string(&artifact).unwrap();
@@ -70,6 +81,8 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
         "providerBuildId",
         "deploymentRevision",
         "route",
+        "operationAbiId",
+        "methodAbiId",
     ] {
         assert!(!wire.contains(forbidden), "forbidden field {forbidden}");
     }

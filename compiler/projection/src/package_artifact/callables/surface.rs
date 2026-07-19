@@ -6,7 +6,10 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_projection_input::ProjectionPackageCallableSignatureFacts;
 
-use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
+use crate::{
+    error::ProjectionError,
+    package_artifact::{api_exports::PackageExports, export_links::ProjectedPackageExportLinks},
+};
 
 use super::signatures;
 
@@ -36,16 +39,30 @@ pub(super) struct CallableTarget {
 pub(super) fn project_local_surface(
     package_id: &str,
     api_exports: &PackageExports,
-    exports: &PackageExportIndex,
+    exports: &ProjectedPackageExportLinks,
     signatures: &ProjectionPackageCallableSignatureFacts,
 ) -> Result<LocalCallableSurface, ProjectionError> {
-    let implementation_links = PackageImplementationLinks::from_exports(exports);
-    let mut public_symbols = project_non_callable_symbols(exports)?;
+    let mut implementation_links = PackageImplementationLinks::from_exports(&exports.exports);
+    for instance in &exports.public_instances {
+        if implementation_links
+            .constants
+            .insert(instance.public_path.clone(), instance.receiver.clone())
+            .is_some()
+        {
+            return Err(ProjectionError::InvalidPackageArtifact {
+                message: format!(
+                    "public instance {} receiver link conflicts with an exported constant",
+                    instance.public_path
+                ),
+            });
+        }
+    }
+    let mut public_symbols = project_non_callable_symbols(&exports.exports)?;
     let mut callable_targets = signatures::package_callable_targets(package_id, exports);
     signatures::add_direct_impl_method_targets(
         package_id,
         api_exports,
-        exports,
+        &exports.exports,
         &mut callable_targets,
     );
     let callables =
@@ -95,7 +112,7 @@ fn project_non_callable_symbols(
 }
 
 fn add_public_instance_symbols(
-    exports: &PackageExportIndex,
+    exports: &ProjectedPackageExportLinks,
     callables: &[CanonicalCallable],
     public_symbols: &mut BTreeMap<String, PackageLocalAbiSymbol>,
 ) -> Result<(), ProjectionError> {
@@ -105,33 +122,28 @@ fn add_public_instance_symbols(
         .collect::<BTreeMap<_, _>>();
     for instance in &exports.public_instances {
         let methods = instance
-            .operations
+            .methods
             .iter()
-            .map(|operation| {
-                let public_path = operation.operation.public_path.as_str();
-                let method_name = public_path
-                    .strip_prefix(instance.name.as_str())
-                    .and_then(|suffix| suffix.strip_prefix('.'))
-                    .unwrap_or(public_path)
-                    .to_string();
-                let callable_id = callable_ids.get(public_path).cloned().ok_or_else(|| {
-                    ProjectionError::InvalidPackageArtifact {
+            .map(|method| {
+                let callable_id = callable_ids
+                    .get(method.public_path.as_str())
+                    .cloned()
+                    .ok_or_else(|| ProjectionError::InvalidPackageArtifact {
                         message: format!(
-                            "public instance {} method {public_path} has no Local ABI callable",
-                            instance.name
+                            "public instance {} method {} has no Local ABI callable",
+                            instance.public_path, method.public_path
                         ),
-                    }
-                })?;
-                Ok((method_name, callable_id))
+                    })?;
+                Ok((method.name.clone(), callable_id))
             })
             .collect::<Result<BTreeMap<_, _>, ProjectionError>>()?;
         insert_public_symbol(
             public_symbols,
-            instance.name.clone(),
+            instance.public_path.clone(),
             PackageLocalAbiSymbol::PublicInstance {
-                instance_id: instance.name.clone(),
+                instance_id: instance.public_path.clone(),
                 declared_receiver_type: instance.declared_receiver_type.clone(),
-                interfaces: instance.implemented_interfaces.clone(),
+                interfaces: instance.interfaces.clone(),
                 methods,
             },
         )?;
