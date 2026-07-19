@@ -1,3 +1,4 @@
+pub(crate) mod assembly_admission;
 mod fingerprint;
 pub(crate) mod identity;
 pub(crate) mod linker;
@@ -16,9 +17,9 @@ mod utils;
 pub(crate) use fingerprint::artifact_roots_control_fingerprint;
 #[allow(unused_imports)]
 pub(crate) use load::{
-    load_service_build_from_artifact_roots_with_caches, load_services_from_artifact_index,
-    load_services_from_artifact_index_with_default, load_services_from_artifact_root,
-    load_services_from_artifact_root_with_default, load_services_from_artifact_roots_with_default,
+    load_services_from_artifact_index, load_services_from_artifact_index_with_default,
+    load_services_from_artifact_root, load_services_from_artifact_root_with_default,
+    load_services_from_artifact_roots_with_default,
 };
 #[allow(unused_imports)]
 pub(crate) use options::ArtifactLoadOptions;

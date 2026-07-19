@@ -1047,7 +1047,6 @@ mod tests {
     use crate::{
         host::{RouterWriterMessage, RuntimeConfig, RuntimeHost},
         loader::{
-            identity::identity_hash_with_label,
             load_services_from_artifact_roots_with_default,
             test_artifacts::{
                 read_json, service_assembly_path, write_package_unit_ref,
@@ -1194,32 +1193,11 @@ mod tests {
         assert_eq!(services[0].artifact_identity, override_assembly_identity);
     }
 
-    #[tokio::test]
-    async fn runtime_host_lazy_loads_service_from_configured_artifact_roots() {
-        let temp = TempDir::new("runtime-config-lazy-load");
-        let root = temp.path().join("artifacts");
-        write_file_ir(&root, "units/files/service.json");
-        write_service_unit(&root, "units/services/account.json");
-        let assembly_identity = write_service_assembly(&root, "local/assembly.json");
-        write_release_pointer(&root, &assembly_identity);
-
-        let services = load_services_from_artifact_roots_with_default(
-            std::slice::from_ref(&root),
-            "runtime-base",
-            crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-            &ArtifactLoadOptions::release(),
-        )
-        .await
-        .expect("fixture service should load");
-        let service = services.first().expect("fixture service should exist");
-        let build_id = service.runtime_program_identity.dynamic_build_id.clone();
-        let target = service
-            .linked_image
-            .routes
-            .keys()
-            .next()
-            .expect("fixture service should expose a route")
-            .clone();
+    #[test]
+    fn request_entry_does_not_load_service_from_configured_artifact_roots() {
+        let temp = TempDir::new("runtime-config-request-entry-no-load");
+        let root = temp.path().join("must-not-be-read");
+        assert!(!root.exists());
 
         let host = RuntimeHost::new(RuntimeConfig {
             db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
@@ -1227,20 +1205,19 @@ mod tests {
             router_url: "ws://127.0.0.1:4001/runtime".to_string(),
             base_runtime_id: "runtime-base".to_string(),
             runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
-            artifact_roots: vec![root],
+            artifact_roots: vec![root.clone()],
             http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
             http_egress_proxy: None,
         })
         .expect("runtime host should build with artifact roots");
-        let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
         let request = RequestEnvelope {
-            request_id: "lazy-request-1".to_string(),
+            request_id: "request-entry-no-load-1".to_string(),
             mode: "unary".to_string(),
-            target,
+            target: "svc.main.run".to_string(),
             operation_abi_id: Some(SERVICE_RUN_OPERATION_ABI_ID.to_string()),
-            selector: Some(format!("operation:{SERVICE_RUN_OPERATION_ABI_ID}")),
+            selector: None,
             service_id: Some("skiff.run/account".to_string()),
-            build_id: build_id.clone(),
+            build_id: POINTER_BUILD_ID.to_string(),
             service_protocol_identity: PROTOCOL_IDENTITY.to_string(),
             contract_identity: None,
             activation_identity: None,
@@ -1250,25 +1227,19 @@ mod tests {
             test_effects_enabled: false,
             test_effect_doubles: HashMap::new(),
             payload_bytes: Vec::new(),
-            extra: serde_json::Map::new(),
+            extra: serde_json::Map::from_iter([(
+                "caller".to_string(),
+                json!({ "kind": "service" }),
+            )]),
         };
 
-        let _operation = host
-            .lookup_or_load_operation(&request, sender)
-            .await
-            .expect("runtime should lazy load service for request");
-
-        let frame = expect_binary_router_message(
-            receiver
-                .recv()
-                .await
-                .expect("lazy load should queue runtime.register"),
-        );
-        let (register, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("register frame should decode");
-        assert!(payload.is_empty());
-        assert_eq!(register.service_id, "skiff.run/account");
-        assert_eq!(register.build_id, build_id);
+        let error = match host.lookup_request_operation(&request) {
+            Ok(_) => panic!("request entry must not load a missing route from artifact storage"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("no registered route supports"));
+        assert!(host.service_snapshot().is_empty());
+        assert!(!root.exists());
     }
 
     #[tokio::test]
@@ -1899,10 +1870,6 @@ mod tests {
         }
     }
 
-    fn write_service_assembly(root: &Path, relative_path: &str) -> String {
-        write_service_assembly_with_revision(root, relative_path, SERVICE_REVISION_ID)
-    }
-
     const PACKAGE_TEST_ACTIVATION_ID: &str = "skiff-package-test-run-v1:example~com~~pkg:run:1";
 
     fn package_test_runtime_layers(
@@ -2030,46 +1997,6 @@ mod tests {
                 "protocolIdentity": PROTOCOL_IDENTITY,
                 "contractHash": format!("sha256:{protocol_hash}"),
                 "buildId": format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{assembly_hash}"),
-                "serviceAssembly": {
-                    "assemblyIdentity": assembly_identity,
-                    "assemblyPath": assembly_path
-                },
-                "serviceUnit": service_unit,
-                "packageUnits": []
-            }),
-        );
-    }
-
-    fn write_release_pointer(root: &Path, assembly_identity: &str) {
-        let assembly_hash = assembly_identity
-            .rsplit_once(":sha256:")
-            .expect("assembly identity should contain sha256")
-            .1;
-        let build_id = format!("{SERVICE_BUILD_IDENTITY_PREFIX}:sha256:{assembly_hash}");
-        let build_hash =
-            identity_hash_with_label(&build_id, "buildId").expect("build id hash should compute");
-        let assembly_path = service_assembly_path("skiff.run/account", assembly_identity);
-        let assembly = read_json(root, &assembly_path);
-        let service_unit = assembly["serviceUnit"].clone();
-        write_json(
-            root,
-            "versions/services/skiff~run~~account/v1.json",
-            json!({
-                "schemaVersion": "skiff-service-version-pointer-v1",
-                "serviceId": "skiff.run/account",
-                "version": "v1",
-                "buildId": build_id
-            }),
-        );
-        write_json(
-            root,
-            &format!("builds/services/skiff~run~~account/{build_hash}.json"),
-            json!({
-                "schemaVersion": "skiff-service-build-v1",
-                "serviceId": "skiff.run/account",
-                "serviceVersion": "v1",
-                "buildId": build_id,
-                "contractIdentity": PROTOCOL_IDENTITY,
                 "serviceAssembly": {
                     "assemblyIdentity": assembly_identity,
                     "assemblyPath": assembly_path
