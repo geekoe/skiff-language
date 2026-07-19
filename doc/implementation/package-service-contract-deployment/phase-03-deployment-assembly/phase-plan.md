@@ -121,6 +121,7 @@ worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖�
 | --- | --- | --- | --- |
 | D01 | [Independent phase-plan review](tasks/P3-D01-phase-plan-review.md) | Phase 03 文档 checkpoint | 只读；执行前 gate |
 | T01 | [Canonical deployment/assembly contract](tasks/P3-T01-canonical-deployment-assembly-contract.md) | 文档评审 PASS | 高；独立 schema/identity checkpoint |
+| F01 | [R01 checkpoint repair](tasks/P3-F01-r01-checkpoint-repair.md) | R01 FAIL at `667c0622` | 中高；只修失效 checker/tooling证据 |
 | R01 | [Canonical checkpoint acceptance](tasks/P3-R01-canonical-contract-acceptance.md) | T01 exact integration commit | 高风险只读 gate；PASS解锁 Wave 2 |
 | T02 | [Source-free ServiceDeployment projection](tasks/P3-T02-service-deployment-projection.md) | R01 PASS | 高；deployment verdict |
 | T03 | [RuntimeAssembly resolver](tasks/P3-T03-runtime-assembly-resolver.md) | R01 PASS | 高；assembly verdict；不依赖 T02函数 |
