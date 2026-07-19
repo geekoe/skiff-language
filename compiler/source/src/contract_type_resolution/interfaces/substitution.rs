@@ -38,7 +38,7 @@ pub(super) fn substitute_requirement(
     })
 }
 
-fn substitute_package_type(
+pub(crate) fn substitute_package_type(
     ty: &PackageTypeRef,
     substitutions: &BTreeMap<String, PackageTypeRef>,
 ) -> Result<PackageTypeRef, String> {

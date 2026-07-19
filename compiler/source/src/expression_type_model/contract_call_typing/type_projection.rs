@@ -28,19 +28,23 @@ impl<'a, 'ctx> ContractCallTypeProjection<'a, 'ctx> {
         }
     }
 
-    pub(super) fn try_source_package_type(
+    pub(super) fn try_source_package_type_ref(
         &self,
-        ty: &ResolvedTypeRef,
+        ty: &TypeRef,
     ) -> Result<PackageTypeRef, String> {
-        let source = TypeRef {
-            name: ty.source_text.clone(),
-        };
         package_type_ref_from_source_type(
-            &source,
+            ty,
             self.type_context,
             self.type_resolution,
             self.dependency_analysis,
         )
+    }
+
+    pub(super) fn try_resolved_package_type(
+        &self,
+        ty: &ResolvedTypeRef,
+    ) -> Result<PackageTypeRef, String> {
+        package_type_ref_from_resolved_ir(&ty.ir, self.dependency_analysis)
     }
 }
 
@@ -59,13 +63,124 @@ pub(crate) fn contract_source_assignability(
         ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
     let actual = match actual_projected {
         Some(actual) => actual.clone(),
-        None => projection.try_source_package_type(actual)?,
+        None => projection.try_resolved_package_type(actual)?,
     };
-    let expected = projection.try_source_package_type(expected)?;
+    let expected = projection.try_resolved_package_type(expected)?;
     Ok(
         (package_type_contains_contract(&actual) || package_type_contains_contract(&expected))
             .then(|| package_type_assignable(&actual, &expected)),
     )
+}
+
+pub(crate) fn contract_source_assignability_with_projections(
+    actual: &ResolvedTypeRef,
+    actual_projected: Option<&PackageTypeRef>,
+    expected: &ResolvedTypeRef,
+    expected_projected: Option<&PackageTypeRef>,
+    type_resolution: &TypeResolutionModel,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
+    type_context: &TypeResolutionContext<'_>,
+) -> Result<Option<bool>, String> {
+    let Some(dependency_analysis) = dependency_analysis else {
+        return Ok(None);
+    };
+    let projection =
+        ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
+    let actual = match actual_projected {
+        Some(actual) => actual.clone(),
+        None => projection.try_resolved_package_type(actual)?,
+    };
+    let expected = match expected_projected {
+        Some(expected) => expected.clone(),
+        None => projection.try_resolved_package_type(expected)?,
+    };
+    Ok(
+        (package_type_contains_contract(&actual) || package_type_contains_contract(&expected))
+            .then(|| package_type_assignable(&actual, &expected)),
+    )
+}
+
+fn package_type_ref_from_resolved_ir(
+    ty: &TypeRefIr,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<PackageTypeRef, String> {
+    match ty {
+        TypeRefIr::Native { name, args } => Ok(PackageTypeRef::Container {
+            name: name.clone(),
+            arguments: args
+                .iter()
+                .map(|argument| {
+                    package_type_ref_from_resolved_ir(argument, dependency_analysis)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        TypeRefIr::Nullable { inner } => Ok(PackageTypeRef::Nullable {
+            inner: Box::new(package_type_ref_from_resolved_ir(
+                inner,
+                dependency_analysis,
+            )?),
+        }),
+        TypeRefIr::ServiceSymbol { symbol }
+            if dependency_analysis
+                .contract_requirement(&symbol.module_path)
+                .is_ok() =>
+        {
+            Err(format!(
+                "resolved contract symbol `{}.{}` has no source-origin exact projection",
+                symbol.module_path, symbol.symbol
+            ))
+        }
+        TypeRefIr::Record { .. }
+        | TypeRefIr::Union { .. }
+        | TypeRefIr::AnyInterface { .. }
+        | TypeRefIr::Function { .. }
+            if resolved_ir_contains_contract_symbol(ty, dependency_analysis) =>
+        {
+            Err("resolved inline type embeds a contract nominal but has no exact PackageTypeRef representation"
+                .to_string())
+        }
+        _ => Ok(PackageTypeRef::Local {
+            local_type: ty.clone(),
+        }),
+    }
+}
+
+fn resolved_ir_contains_contract_symbol(
+    ty: &TypeRefIr,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> bool {
+    match ty {
+        TypeRefIr::ServiceSymbol { symbol } => dependency_analysis
+            .contract_requirement(&symbol.module_path)
+            .is_ok(),
+        TypeRefIr::Native { args, .. } | TypeRefIr::Union { items: args } => args
+            .iter()
+            .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),
+        TypeRefIr::Record { fields } => fields
+            .values()
+            .any(|field| resolved_ir_contains_contract_symbol(field, dependency_analysis)),
+        TypeRefIr::Nullable { inner } => {
+            resolved_ir_contains_contract_symbol(inner, dependency_analysis)
+        }
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params.iter().any(|parameter| {
+                resolved_ir_contains_contract_symbol(&parameter.ty, dependency_analysis)
+            }) || resolved_ir_contains_contract_symbol(return_type, dependency_analysis)
+        }
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(|argument| resolved_ir_contains_contract_symbol(argument, dependency_analysis)),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => false,
+    }
 }
 
 pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &PackageTypeRef) -> bool {

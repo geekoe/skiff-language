@@ -16,6 +16,7 @@ mod types;
 mod validation;
 
 use callables::public_instance_operation_exports;
+pub(crate) use interfaces::substitute_package_type;
 pub(crate) use types::package_type_contains_contract;
 use types::ContractAwareTypeResolver;
 pub(crate) use validation::validate_contract_type_uses;

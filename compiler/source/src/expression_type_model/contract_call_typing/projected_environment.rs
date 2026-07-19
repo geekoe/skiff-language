@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::PackageTypeRef;
 
 use crate::{
-    ExpressionKey, ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext,
-    TypeResolutionModel,
+    shared::ast::TypeRef, ExpressionKey, ResolvedTypeRef, SourceDependencyAnalysisInput,
+    TypeResolutionContext, TypeResolutionModel,
 };
 
-use super::{project_source_package_type, projected_type_contains_contract};
+use super::{project_resolved_package_type, project_source_package_type_ref};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ContractProjectionState {
@@ -18,6 +18,7 @@ pub(crate) struct ContractProjectionState {
 impl ContractProjectionState {
     pub(crate) fn new(
         env: &BTreeMap<String, ResolvedTypeRef>,
+        exact_bindings: &BTreeMap<String, Result<PackageTypeRef, String>>,
         type_resolution: &TypeResolutionModel,
         dependency_analysis: Option<&SourceDependencyAnalysisInput>,
         type_context: &TypeResolutionContext<'_>,
@@ -26,16 +27,17 @@ impl ContractProjectionState {
         let mut diagnostics = Vec::new();
         if let Some(dependency_analysis) = dependency_analysis {
             for (name, ty) in env {
-                match Self::project_contract_type(
-                    ty,
-                    type_resolution,
-                    dependency_analysis,
-                    type_context,
-                ) {
-                    Ok(Some(projected)) => {
+                match exact_bindings.get(name).cloned().unwrap_or_else(|| {
+                    Self::project_resolved_type(
+                        ty,
+                        type_resolution,
+                        dependency_analysis,
+                        type_context,
+                    )
+                }) {
+                    Ok(projected) => {
                         bindings.insert(name.clone(), projected);
                     }
-                    Ok(None) => {}
                     Err(error) => diagnostics.push(format!(
                         "initial binding `{name}` exact source type projection failed: {error}"
                     )),
@@ -51,15 +53,22 @@ impl ContractProjectionState {
         )
     }
 
-    pub(crate) fn project_contract_type(
+    pub(crate) fn project_resolved_type(
         ty: &ResolvedTypeRef,
         type_resolution: &TypeResolutionModel,
         dependency_analysis: &SourceDependencyAnalysisInput,
         type_context: &TypeResolutionContext<'_>,
-    ) -> Result<Option<PackageTypeRef>, String> {
-        let projected =
-            project_source_package_type(ty, type_resolution, dependency_analysis, type_context)?;
-        Ok(projected_type_contains_contract(&projected).then_some(projected))
+    ) -> Result<PackageTypeRef, String> {
+        project_resolved_package_type(ty, type_resolution, dependency_analysis, type_context)
+    }
+
+    pub(crate) fn project_source_type_ref(
+        ty: &TypeRef,
+        type_resolution: &TypeResolutionModel,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        type_context: &TypeResolutionContext<'_>,
+    ) -> Result<PackageTypeRef, String> {
+        project_source_package_type_ref(ty, type_resolution, dependency_analysis, type_context)
     }
 
     pub(crate) fn binding_snapshot(&self) -> BTreeMap<String, PackageTypeRef> {

@@ -5,7 +5,8 @@ use skiff_artifact_identity::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
 };
 use skiff_artifact_model::{
-    BoundaryCancellationContract, BoundaryStreamContract, ContractTypeRef, TypeRefIr,
+    BoundaryCancellationContract, BoundaryStreamContract, ContractTypeRef, PackageTypeRef,
+    ServiceSymbolRef, TypeRefIr,
 };
 use skiff_compiler_input::ResolvedContractDependency;
 
@@ -200,6 +201,63 @@ fn builtin_container_and_nullable_contract_types_compare_recursively() {
 }
 
 #[test]
+fn map_keys_and_for_bindings_preserve_contract_projection() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    build_model(
+        r#"
+            function entry(users: Map<payments.User, payments.User>) -> bool {
+                const keys: Array<payments.User> = users.keys()
+                for user in users {
+                    payments/submit(user)
+                }
+                for key, value in users {
+                    payments/submit(key)
+                    payments/submit(value)
+                }
+                return true
+            }
+        "#,
+        &dependencies,
+    )
+    .expect("Map keys and both for binding shapes should retain ContractTypeId");
+}
+
+#[test]
+fn local_generic_call_propagates_exact_contract_return() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    build_model(
+        r#"
+            function keep<T>(value: T) -> T {
+                return value
+            }
+
+            function entry(input: payments.User) -> payments.User {
+                return keep<payments.User>(input)
+            }
+        "#,
+        &dependencies,
+    )
+    .expect("local generic substitution should retain the exact contract projection");
+}
+
+#[test]
+fn nullable_narrowing_preserves_contract_projection() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    build_model(
+        r#"
+            function entry(input: payments.User?) -> bool {
+                if input != null {
+                    payments/submit(input)
+                }
+                return true
+            }
+        "#,
+        &dependencies,
+    )
+    .expect("non-null narrowing should unwrap the exact contract projection");
+}
+
+#[test]
 fn may_suspend_unary_contract_call_uses_the_ordinary_source_call_form() {
     let mut contract = callable_contract("example.payments");
     let operation = contract.operations.values_mut().next().unwrap();
@@ -384,6 +442,7 @@ fn projected_environment_reports_initial_binding_projection_failure() {
     let context = TypeResolutionContext::source("api");
     let (_, diagnostics) = ContractProjectionState::new(
         &BTreeMap::from([("input".to_string(), unprojectable_source_type())]),
+        &BTreeMap::new(),
         model.type_resolution(),
         Some(&dependencies),
         &context,
@@ -400,8 +459,13 @@ fn contract_assignability_does_not_swallow_projection_failure() {
     let model = build_model("function helper() -> void {}", &dependencies).unwrap();
     let context = TypeResolutionContext::source("api");
     let expected = ResolvedTypeRef {
-        source_text: "payments.User".to_string(),
-        ir: TypeRefIr::native("opaque-test-value"),
+        source_text: "diagnostic-only expected".to_string(),
+        ir: TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: "payments".to_string(),
+                symbol: "User".to_string(),
+            },
+        },
     };
     let error = contract_source_assignability(
         &unprojectable_source_type(),
@@ -418,9 +482,78 @@ fn contract_assignability_does_not_swallow_projection_failure() {
 
 fn unprojectable_source_type() -> ResolvedTypeRef {
     ResolvedTypeRef {
-        source_text: "payments.Missing".to_string(),
-        ir: TypeRefIr::native("opaque-test-value"),
+        source_text: "diagnostic-only actual".to_string(),
+        ir: TypeRefIr::ServiceSymbol {
+            symbol: ServiceSymbolRef {
+                module_path: "payments".to_string(),
+                symbol: "Missing".to_string(),
+            },
+        },
     }
+}
+
+#[test]
+fn resolved_local_types_project_from_ir_without_parsing_debug_text() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    let model = build_model("function helper() -> void {}", &dependencies).unwrap();
+    let context = TypeResolutionContext::source("api");
+    let local = ResolvedTypeRef {
+        source_text: "#0 is diagnostic text, not source syntax".to_string(),
+        ir: TypeRefIr::LocalType { type_index: 0 },
+    };
+    let array = ResolvedTypeRef {
+        source_text: "Array<#0> is also diagnostic-only".to_string(),
+        ir: TypeRefIr::Native {
+            name: "Array".to_string(),
+            args: vec![local.ir.clone()],
+        },
+    };
+
+    assert_eq!(
+        ContractProjectionState::project_resolved_type(
+            &local,
+            model.type_resolution(),
+            &dependencies,
+            &context,
+        )
+        .unwrap(),
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::LocalType { type_index: 0 },
+        }
+    );
+    assert_eq!(
+        ContractProjectionState::project_resolved_type(
+            &array,
+            model.type_resolution(),
+            &dependencies,
+            &context,
+        )
+        .unwrap(),
+        PackageTypeRef::Container {
+            name: "Array".to_string(),
+            arguments: vec![PackageTypeRef::Local {
+                local_type: TypeRefIr::LocalType { type_index: 0 },
+            }],
+        }
+    );
+
+    let (state, diagnostics) = ContractProjectionState::new(
+        &BTreeMap::from([("local".to_string(), local)]),
+        &BTreeMap::new(),
+        model.type_resolution(),
+        Some(&dependencies),
+        &context,
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected diagnostics: {diagnostics:?}"
+    );
+    assert!(matches!(
+        state.binding_snapshot().get("local"),
+        Some(PackageTypeRef::Local {
+            local_type: TypeRefIr::LocalType { type_index: 0 }
+        })
+    ));
 }
 
 fn build_model(

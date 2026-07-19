@@ -13,10 +13,11 @@ mod projected_environment;
 mod type_projection;
 
 pub(super) use projected_environment::ContractProjectionState;
-pub(super) use type_projection::contract_source_assignability;
+pub(super) use type_projection::{
+    contract_source_assignability, contract_source_assignability_with_projections,
+};
 use type_projection::{
-    package_type_assignable, package_type_contains_contract, resolved_contract_type,
-    ContractCallTypeProjection,
+    package_type_assignable, resolved_contract_type, ContractCallTypeProjection,
 };
 
 pub(super) enum ContractCallOutcome {
@@ -159,7 +160,7 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
             };
             let actual_projected = match projected_types.get(argument_key).cloned() {
                 Some(projected) => projected,
-                None => match self.type_projection.try_source_package_type(actual) {
+                None => match self.type_projection.try_resolved_package_type(actual) {
                     Ok(projected) => projected,
                     Err(error) => {
                         diagnostics.push(format!(
@@ -215,18 +216,24 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
     }
 }
 
-pub(super) fn project_source_package_type(
+pub(super) fn project_resolved_package_type(
     ty: &ResolvedTypeRef,
     type_resolution: &TypeResolutionModel,
     dependency_analysis: &SourceDependencyAnalysisInput,
     type_context: &TypeResolutionContext<'_>,
 ) -> Result<PackageTypeRef, String> {
     ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context)
-        .try_source_package_type(ty)
+        .try_resolved_package_type(ty)
 }
 
-pub(super) fn projected_type_contains_contract(ty: &PackageTypeRef) -> bool {
-    package_type_contains_contract(ty)
+pub(super) fn project_source_package_type_ref(
+    ty: &crate::shared::ast::TypeRef,
+    type_resolution: &TypeResolutionModel,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    type_context: &TypeResolutionContext<'_>,
+) -> Result<PackageTypeRef, String> {
+    ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context)
+        .try_source_package_type_ref(ty)
 }
 
 fn operation_shape_diagnostics(

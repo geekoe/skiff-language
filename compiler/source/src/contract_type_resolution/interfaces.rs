@@ -21,6 +21,7 @@ mod conformance;
 mod substitution;
 
 use conformance::{build_conformances, ConformanceInput};
+pub(crate) use substitution::substitute_package_type;
 
 pub(super) fn build_interface_signature_facts(
     parsed_sources: &[ParsedCompilerSource],
