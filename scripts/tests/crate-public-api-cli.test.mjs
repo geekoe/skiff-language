@@ -48,7 +48,9 @@ test('help text is policy-derived while remaining byte-for-byte stable', async (
   assert.equal(exitCode, 0);
   assert.equal(output.text, `${renderCratePublicApiUsage()}\n`);
   assert.deepEqual(
-    output.text.split('\n').filter((line) => line.startsWith('  skiff-compiler-')),
+    output.text
+      .split('\n')
+      .filter((line) => MANAGED_CRATE_HELP_NAMES.includes(line.trim())),
     MANAGED_CRATE_HELP_NAMES.map((name) => `  ${name}`),
   );
 });
@@ -56,7 +58,7 @@ test('help text is policy-derived while remaining byte-for-byte stable', async (
 test('CLI parser preserves aliases, normalized allow input, and current precedence', () => {
   assert.deepEqual(
     parseCratePublicApiArgs([
-      'crate',
+      '--crate', 'crate',
       '--allow', 'split',
       '--allow-crate=inline',
       '--allow-list=a,, b ',
@@ -75,6 +77,10 @@ test('CLI parser preserves aliases, normalized allow input, and current preceden
     /cannot be combined/,
   );
   assert.throws(() => parseCratePublicApiArgs(['--']), /unknown option/);
+  assert.throws(
+    () => parseCratePublicApiArgs(['--crate', 'one', '--crate=two']),
+    /specified more than once/,
+  );
 });
 
 test('CLI renders gate skip through injected streams and returns the gate classification', async () => {

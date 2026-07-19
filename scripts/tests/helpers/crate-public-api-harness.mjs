@@ -9,6 +9,20 @@ export const PUBLIC_API_CHECKER = join(REPO_ROOT, 'scripts', 'check-crate-public
 
 export const GATE_POLICY = Object.freeze([
   Object.freeze({
+    name: 'skiff-deployment',
+    allowedCrates: Object.freeze([
+      'skiff-deployment',
+      'skiff-artifact-model',
+      'skiff-artifact-identity',
+      'std',
+      'core',
+      'alloc',
+      'serde',
+      'serde_json',
+    ]),
+    note: 'deployment public API exposes only canonical artifact types and approved value crates',
+  }),
+  Object.freeze({
     name: 'skiff-compiler-contract',
     allowedCrates: Object.freeze([
       'skiff-compiler-contract',
@@ -44,6 +58,7 @@ export const GATE_POLICY = Object.freeze([
 ]);
 
 export const HELP_ORDER = Object.freeze([
+  'skiff-deployment',
   'skiff-compiler-contract',
   'skiff-compiler',
 ]);
