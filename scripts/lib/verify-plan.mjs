@@ -293,6 +293,9 @@ function rustSubjectPhaseBuilders(root) {
     RUST_IMPLEMENTATION_SUBJECTS.map((subject) => [
       subject.leafSelector,
       async () => [
+        ...(await checkerPhases(root, subject.selector, {
+          kind: `implementation:${subject.selector}`,
+        })),
         phase(
           root,
           subject.phaseId,

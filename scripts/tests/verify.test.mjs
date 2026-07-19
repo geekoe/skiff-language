@@ -145,6 +145,31 @@ test('compiler boundary selector is canonical and deduplicated across checks com
   );
 });
 
+test('runtime artifact boundary checker belongs to the runtime subject without duplicating Cargo', async () => {
+  const plan = await buildVerifyPlan({ root, selectors: ['runtime'] });
+  const boundaryPhases = plan.phases.filter((phase) =>
+    phase.args.includes('scripts/check-runtime-artifact-boundaries.mjs'));
+
+  assert.deepEqual(
+    boundaryPhases.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
+    [
+      {
+        id: 'implementation:runtime:artifact-boundaries:self-test',
+        command: 'node',
+        args: ['scripts/check-runtime-artifact-boundaries.mjs', '--self-test'],
+        kind: 'implementation:runtime',
+      },
+      {
+        id: 'implementation:runtime:artifact-boundaries',
+        command: 'node',
+        args: ['scripts/check-runtime-artifact-boundaries.mjs'],
+        kind: 'implementation:runtime',
+      },
+    ],
+  );
+  assert.equal(plan.phases.filter((phase) => phase.command === 'cargo').length, 1);
+});
+
 test('verify list shows compiler boundaries once without known-red wording', async () => {
   const result = await runProcess(
     process.execPath,
