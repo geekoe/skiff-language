@@ -222,6 +222,13 @@ F09C（只作为证据，不是活动DAG节点）
   └── source exact owner误接管external package interface -> T03H1 package-interface regression repair
 
 T03H1
+  └── R10I evidence refresh + F09D production re-acceptance（FAIL historical evidence）
+
+R10I/F09D findings
+  ├── compiler-known interface owner缺口 -> T03H2 canonical interface owner classification
+  └── std public-path normalization第二owner -> T04D canonical normalization consumer
+
+T03H2 + T04D
   └── R10I evidence refresh + F09D production re-acceptance
       └── T07 evidence refresh -> A01 independent re-acceptance
 ```
@@ -254,8 +261,10 @@ T03H1
 | 9d | T03H | 先冻结source exact interface/conformance query checkpoint |
 | 9e | T03I、T04C | interface execution projection与compiled→projection public-instance cutover并行收敛 |
 | 9f | T03H1 | 修复exact source owner误接管external package interface的窄回归 |
-| 9g | R10I evidence refresh、F09D production复验 | 只重跑被T03H/T03I/T04C/T03H1失效的真实source与production证据 |
-| 9h | T07 → A01 | 唯一最终gate后独立阶段验收 |
+| 9g | R10I evidence refresh、F09D production复验 | FAIL；发现compiler-known owner缺口与public-path normalization重复owner |
+| 9h | T03H2、T04D | source canonical owner checkpoint与projection normalization consumer并行修复 |
+| 9i | R10I evidence refresh、F09D production复验 | 只重跑被9h代码变化失效的真实source与production证据 |
+| 9j | T07 → A01 | 唯一最终gate后独立阶段验收 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -305,9 +314,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T03G | [File IR execution type representation](tasks/P2-T03G-file-ir-execution-carrier.md) | T03E、T03F | 高；lowering execution handoff |
 | T03H | [Exact interface signature facts](tasks/P2-T03H-exact-interface-signature-facts.md) | T03F | 高；source/interface semantic checkpoint |
 | T03H1 | [Package interface conformance regression](tasks/P2-T03H1-package-interface-conformance-regression.md) | T03H、T03I finding | 中；source ownership repair |
+| T03H2 | [Canonical interface owner classification](tasks/P2-T03H2-canonical-interface-owner-classification.md) | T03H、T03H1、F09D/R10I finding | 高；source owner checkpoint |
 | T03I | [Interface File IR execution projection](tasks/P2-T03I-interface-execution-projection.md) | T03G、T03H | 高；interface execution handoff |
 | T04B | [Signature handoff owner cleanup](tasks/P2-T04B-signature-handoff-owner-cleanup.md) | T03F、T04A | 中高；compiled/projection owner repair |
 | T04C | [Public-instance signature owner cutover](tasks/P2-T04C-public-instance-signature-owner-cutover.md) | T03H、T04B | 高；compiled/projection public-instance checkpoint |
+| T04D | [Canonical public-path normalization consumer](tasks/P2-T04D-canonical-public-path-normalization.md) | T04B、T04C、F09D finding | 中；projection owner cleanup |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -327,10 +338,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
-| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H1、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H2、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
+| F09D | [Terminal production re-acceptance](tasks/P2-F09D-production-reacceptance.md) | T03H2、T03I、T04C、T04D | 高；只读production owner验收 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T03H1、T04A–C、R10H、R10I及既有terminal任务 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T03H1–H2、T04A–D、R10H、R10I、F09D及既有terminal任务 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
