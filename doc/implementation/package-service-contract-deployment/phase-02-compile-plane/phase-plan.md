@@ -230,7 +230,15 @@ R10I/F09D findings
 
 T03H2 + T04D
   └── R10I evidence refresh + F09D production re-acceptance
-      └── T07 evidence refresh -> A01 independent re-acceptance
+      └── T07 attempt（foundation PASS；compiler FAIL historical evidence）
+
+T07 findings
+  ├── stale dot dependency fixtures -> e3cbffd canonical `/` fixture repair（completed）
+  └── resolved LocalType debug text被重新parse -> T03J resolved expression exact-type projection
+
+e3cbffd + T03J
+  └── R10I evidence refresh + F09D production re-acceptance
+      └── T07 remaining gate resume -> A01 independent re-acceptance
 ```
 
 | 波次 | 并行任务 | 说明 |
@@ -264,7 +272,10 @@ T03H2 + T04D
 | 9g | R10I evidence refresh、F09D production复验 | FAIL；发现compiler-known owner缺口与public-path normalization重复owner |
 | 9h | T03H2、T04D | source canonical owner checkpoint与projection normalization consumer并行修复 |
 | 9i | R10I evidence refresh、F09D production复验 | 只重跑被9h代码变化失效的真实source与production证据 |
-| 9j | T07 → A01 | 唯一最终gate后独立阶段验收 |
+| 9j | T07 attempt | foundation 281/0/1 PASS；compiler首次总gate暴露dot fixture与resolved expression projection blocker |
+| 9k | T03J | 修复resolved IR经debug text重解析和derived exact sidecar丢失 |
+| 9l | R10I evidence refresh、F09D production复验 | 只重跑被T03J source改动失效的真实source与production证据 |
+| 9m | T07 resume → A01 | 不重跑仍有效总gate，只闭环compiler repair probe并运行尚未执行的结构gate |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -316,6 +327,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T03H1 | [Package interface conformance regression](tasks/P2-T03H1-package-interface-conformance-regression.md) | T03H、T03I finding | 中；source ownership repair |
 | T03H2 | [Canonical interface owner classification](tasks/P2-T03H2-canonical-interface-owner-classification.md) | T03H、T03H1、F09D/R10I finding | 高；source owner checkpoint |
 | T03I | [Interface File IR execution projection](tasks/P2-T03I-interface-execution-projection.md) | T03G、T03H | 高；interface execution handoff |
+| T03J | [Resolved expression exact-type projection](tasks/P2-T03J-resolved-expression-type-projection.md) | T03B、T03F、T07 finding | 高；source exact-type checkpoint |
 | T04B | [Signature handoff owner cleanup](tasks/P2-T04B-signature-handoff-owner-cleanup.md) | T03F、T04A | 中高；compiled/projection owner repair |
 | T04C | [Public-instance signature owner cutover](tasks/P2-T04C-public-instance-signature-owner-cutover.md) | T03H、T04B | 高；compiled/projection public-instance checkpoint |
 | T04D | [Canonical public-path normalization consumer](tasks/P2-T04D-canonical-public-path-normalization.md) | T04B、T04C、F09D finding | 中；projection owner cleanup |
@@ -338,11 +350,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
-| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H2、T03I、T04C、T04D、R10H | 高；真实source验收恢复与证据刷新 |
-| F09D | [Terminal production re-acceptance](tasks/P2-F09D-production-reacceptance.md) | T03H2、T03I、T04C、T04D | 高；只读production owner验收 |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H2、T03I、T03J、T04C、T04D、R10H | 高；真实source验收恢复与证据刷新 |
+| F09D | [Terminal production re-acceptance](tasks/P2-F09D-production-reacceptance.md) | T03H2、T03I、T03J、T04C、T04D | 高；只读production owner验收 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T03H1–H2、T04A–D、R10H、R10I、F09D及既有terminal任务 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–J、T03H1–H2、T04A–D、R10H、R10I、F09D及既有terminal任务 | gate owner；9j后恢复 |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则

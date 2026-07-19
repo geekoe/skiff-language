@@ -5,7 +5,9 @@ Phase 02已按phase-plan波次8重新打开；波次9c的R10I为7/7，但独立p
 facts与public-instance projection仍有第二owner。T03H/T03I/T04C/T03H1合入后的波次9g候选`1da3545`
 在lowering、public-instance与projection聚焦链通过，但R10I因compiler-known `ErrorPayload` owner分类缺口
 仅4/7通过；独立F09D同时确认该blocker与std public-path normalization重复owner。T03H2/T04D及复验完成后
-才由T07整体刷新，本文旧命令只保留历史证据价值。
+候选`2bb5d3e`的R10I/F09D均PASS；波次9j T07的foundation 281/0/1 PASS，但compiler首次总gate暴露并已提交
+canonical `/` fixture修复`e3cbffd`，同时发现resolved LocalType debug文本被source exact projector重新parse的
+T03J blocker。T03J及R10I/F09D复验完成后恢复T07剩余gate，本文旧命令只保留历史证据价值。
 
 ## 1. 候选状态
 

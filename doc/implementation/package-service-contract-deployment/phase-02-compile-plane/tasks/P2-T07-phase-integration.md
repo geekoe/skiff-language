@@ -2,15 +2,18 @@
 
 ## 目标
 
-在既有terminal任务以及T03A–I、T03H1–H2、T04A–D、R10H全部合入，且同一候选上的R10I与F09D均PASS、
+在既有terminal任务以及T03A–J、T03H1–H2、T04A–D、R10H全部合入，且同一候选上的R10I与F09D均PASS、
 旧 integration tail 从未进入新 branch ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T03H1–H2、T04A–D、R10H，以及同一最终候选上
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–J、T03H1–H2、T04A–D、R10H，以及同一最终候选上
   PASS的R10I/F09D高风险证据。
+- 波次9j已在`2bb5d3e`唯一运行foundation与compiler总gate：foundation 281/0/1 PASS；compiler因canonical `/`
+  fixture和T03J source blocker FAIL。fixture修复已提交为`e3cbffd`；T03J不触及foundation范围，因此恢复时不得
+  重跑foundation或compiler总gate，只运行受影响的exact compiler repair probe与尚未执行的结构gate。
 
 ## 完成态
 
@@ -30,12 +33,16 @@
    semantic signature，compiled/projection-input也不从File IR/TypeResolutionModel重算interface conformance。
 10. source-declared、typed package、compiler-known与invalid interface使用单一owner分类，std public-path
     normalization只有一个production owner。
+11. expression exact projection直接消费resolved IR与完整PackageTypeRef sidecar；LocalType debug文本不再回流
+    source parser，Map keys/for-in派生类型与contract identity均保真。
 
 ## Gate
 
 ```bash
-node scripts/verify.mjs --only foundation
-node scripts/verify.mjs --only compiler
+# 9j已唯一运行，恢复时引用已有证据，不重跑：
+# node scripts/verify.mjs --only foundation
+# node scripts/verify.mjs --only compiler
+cargo test -p skiff-compiler --test runtime_slots map_keys_and_for_in_lower_to_typed_slots -- --exact --nocapture
 node scripts/check-artifact-identity-single-source.mjs --self-test
 node scripts/check-artifact-identity-single-source.mjs
 node scripts/check-compiler-boundaries.mjs
