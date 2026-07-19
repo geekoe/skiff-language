@@ -8,6 +8,7 @@ mod executable_type_projection;
 mod external_refs;
 pub mod file_ir;
 mod function_lowering;
+mod interface_declaration_lowering;
 pub mod lowered;
 mod publication_local_refs;
 mod service_call_error;

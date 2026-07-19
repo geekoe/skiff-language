@@ -116,6 +116,7 @@ impl LoweredPackage {
                     expression_types: Some(model.expression_types()),
                     callable_return_types: &callable_return_types,
                     executable_signatures: model.executable_signatures(),
+                    interface_signatures: Some(model.interface_signatures()),
                     service_calls: Some(&service_calls),
                 })
                 .map_err(|error| {

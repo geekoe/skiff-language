@@ -15,7 +15,7 @@ use skiff_compiler_source::{
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceExecutableSignatureFacts,
-    SourceSymbolKey, TypeResolutionModel,
+    SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, SourceFile},
@@ -52,6 +52,9 @@ pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub expression_types: Option<&'a ExpressionTypeModel>,
     pub callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub executable_signatures: &'a SourceExecutableSignatureFacts,
+    /// `None` is reserved for standalone helpers; an interface then fails
+    /// closed instead of rebuilding its signature from syntax.
+    pub interface_signatures: Option<&'a SourceInterfaceSignatureFacts>,
     pub service_calls: Option<&'a LoweredServiceCalls>,
 }
 
@@ -110,6 +113,7 @@ pub fn compile_package_source_file_ir_unit(
         input.expression_types,
         input.callable_return_types,
         input.executable_signatures,
+        input.interface_signatures,
         input.service_calls,
     )?;
     assign_file_ir_identity(&mut unit);
@@ -215,6 +219,7 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         expression_types: Some(&expression_types),
         callable_return_types: &callable_return_types,
         executable_signatures: &executable_signatures,
+        interface_signatures: None,
         service_calls: ctx.service_calls,
     })
 }
@@ -366,6 +371,7 @@ fn lower_source_file_ir_unit(
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     exact_executable_signatures: &SourceExecutableSignatureFacts,
+    exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
     service_calls: Option<&LoweredServiceCalls>,
 ) -> Result<FileIrUnit> {
     let source = semantic_context.source;
@@ -404,6 +410,7 @@ fn lower_source_file_ir_unit(
         &ast.types,
         &ast.aliases,
         &ast.interfaces,
+        exact_interface_signatures,
         &type_indices,
         module_path,
         &local_db_objects,
@@ -552,6 +559,9 @@ fn const_indices(constants: &[ConstDecl]) -> BTreeMap<String, u32> {
 fn unsupported(message: impl Into<String>) -> CompileError {
     CompileError::Semantic(message.into())
 }
+
+#[cfg(test)]
+mod interface_execution_tests;
 
 #[cfg(test)]
 mod tests {
