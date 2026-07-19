@@ -1,0 +1,721 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+use sha2::{Digest, Sha256};
+use skiff_artifact_model::{
+    ActivationPolicy, ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
+    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
+    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
+    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallIr, CallTargetIr,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    CanonicalPackageLinkPlan, ConfigLiteralBinding, ContractDiagnosticText, ContractOperationId,
+    ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
+    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit,
+    GlobalIngressBinding, IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind,
+    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
+    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
+    PackageRuntimeRequirements, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
+    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
+    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    SlotLayout, StateBinding, StateBindingKind, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+};
+use skiff_runtime_loader::RuntimeAssemblyContentResolver;
+
+pub(super) struct CycleFixture {
+    pub assembly: RuntimeAssembly,
+    pub resolver: FixtureResolver,
+    pub operation_id: ContractOperationId,
+    pub contract_ref: ServiceContractRef,
+    pub service_callable: PackageCallableId,
+    pub helper_callable: PackageCallableId,
+    pub shared_build: PackageBuildId,
+    pub helper_build: PackageBuildId,
+    pub shared_file_identity: String,
+    pub activation_a: ServiceDeploymentRef,
+    pub activation_b: ServiceDeploymentRef,
+    pub ingress_selector: IngressSelector,
+}
+
+impl CycleFixture {
+    pub fn new() -> Self {
+        let service_id = "example.cycle";
+        let contract_version = "1.0.0";
+        let operation_id =
+            skiff_artifact_identity::contract_operation_id(service_id, contract_version, "call")
+                .unwrap();
+        let operation_contract = operation_contract();
+        let mut contract = ServiceContract {
+            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+            service_id: service_id.to_string(),
+            contract_version: contract_version.to_string(),
+            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+            operations: BTreeMap::from([(
+                operation_id.clone(),
+                BoundaryOperationDescriptor {
+                    operation_id: operation_id.clone(),
+                    stable_key: "call".to_string(),
+                    contract: operation_contract.clone(),
+                },
+            )]),
+            boundary_schema: BTreeMap::new(),
+            diagnostic_text: ContractDiagnosticText {
+                service: "Cycle".to_string(),
+                operations: BTreeMap::from([(operation_id.clone(), "Call".to_string())]),
+                types: BTreeMap::new(),
+            },
+        };
+        skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+        let contract_ref = contract_ref(&contract);
+
+        let helper_callable = PackageCallableId::new("callable:helper");
+        let mut helper_file = file("helper.main");
+        skiff_artifact_identity::assign_file_ir_identity(&mut helper_file).unwrap();
+        let mut helper = package(
+            "example.helper",
+            &helper_file,
+            helper_callable.clone(),
+            operation_contract.clone(),
+        );
+        let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());
+        helper.static_resources.push(PublicationResourceRef {
+            path: "assets/helper.txt".to_string(),
+            sha256: hex::encode(Sha256::digest(helper_resource.as_ref())),
+            byte_len: helper_resource.len() as u64,
+            content_type: Some("text/plain".to_string()),
+            artifact_path: None,
+        });
+        skiff_artifact_identity::assign_package_artifact_identities(&mut helper).unwrap();
+        let helper_ref = package_ref(&helper);
+
+        let service_call = ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: operation_id.clone(),
+            expected_protocol_identity: contract_ref.service_protocol_identity.clone(),
+        };
+        let service_callable = PackageCallableId::new("callable:service");
+        let mut shared_file = file("shared.main");
+        shared_file
+            .external_refs
+            .service_call_refs
+            .push(service_call.clone());
+        shared_file
+            .external_refs
+            .package_callables
+            .push(PackageCallableRef {
+                package_ref: PackageRefIr::Dependency {
+                    dependency_ref: "helper".to_string(),
+                },
+                package_callable_id: helper_callable.clone(),
+            });
+        shared_file.executables[0]
+            .body
+            .expressions
+            .push(ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::PackageCallable {
+                        package_ref: PackageRefIr::Dependency {
+                            dependency_ref: "helper".to_string(),
+                        },
+                        package_callable_id: helper_callable.clone(),
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            });
+        shared_file.executables[0]
+            .body
+            .expressions
+            .push(ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::ServiceCall {
+                        service_call_ref_index: skiff_artifact_model::ServiceCallRefIndex::new(0),
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            });
+        skiff_artifact_identity::assign_file_ir_identity(&mut shared_file).unwrap();
+        let contract_requirement = ContractRequirement {
+            alias: "cycle".to_string(),
+            service_id: contract_ref.service_id.clone(),
+            contract_version: contract_ref.contract_version.clone(),
+            expected_protocol_identity: contract_ref.service_protocol_identity.clone(),
+        };
+        let mut shared = package(
+            "example.shared",
+            &shared_file,
+            service_callable.clone(),
+            operation_contract,
+        );
+        shared.package_requirements.push(PackageRequirement {
+            alias: "helper".to_string(),
+            package_id: helper_ref.package_id.clone(),
+            exact_version: helper_ref.package_version.clone(),
+            expected_local_abi: helper_ref.package_local_abi_identity.clone(),
+        });
+        shared
+            .contract_requirements
+            .push(contract_requirement.clone());
+        shared.service_requirements.push(ServiceRequirement {
+            contract_requirement,
+            service_binding_slot: 0,
+            used_operations: BTreeSet::from([operation_id.clone()]),
+        });
+        shared.service_call_refs.push(service_call);
+        skiff_artifact_identity::assign_package_artifact_identities(&mut shared).unwrap();
+        let shared_ref = package_ref(&shared);
+
+        let ingress_selector = IngressSelector {
+            protocol: IngressProtocol::Http,
+            host: "cycle.test".to_string(),
+            method: Some("POST".to_string()),
+            path: "/call".to_string(),
+        };
+        let mut deployment_a = deployment(
+            "revision-a",
+            "a",
+            &contract_ref,
+            &shared_ref,
+            &helper_ref,
+            &service_callable,
+            &operation_id,
+            Some(ingress_selector.clone()),
+        );
+        let mut deployment_b = deployment(
+            "revision-b",
+            "b",
+            &contract_ref,
+            &shared_ref,
+            &helper_ref,
+            &service_callable,
+            &operation_id,
+            None,
+        );
+        skiff_artifact_identity::assign_service_deployment_identity(&mut deployment_a).unwrap();
+        skiff_artifact_identity::assign_service_deployment_identity(&mut deployment_b).unwrap();
+        let activation_a = skiff_artifact_identity::service_deployment_ref(&deployment_a);
+        let activation_b = skiff_artifact_identity::service_deployment_ref(&deployment_b);
+        let service_key = ServiceRequirementKey {
+            caller_package_build_id: shared.package_build_id.clone(),
+            service_requirement_slot: 0,
+        };
+
+        let mut assembly = RuntimeAssembly {
+            schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+            assembly_identity: skiff_artifact_model::AssemblyIdentity::new("unassigned"),
+            roots: vec![activation_a.clone()],
+            resolved_deployments: vec![activation_a.clone(), activation_b.clone()],
+            resolved_contracts: vec![contract_ref.clone()],
+            resolved_packages: vec![shared_ref.clone(), helper_ref.clone()],
+            package_link_plan: CanonicalPackageLinkPlan {
+                code_slots: vec![
+                    PackageCodeSlot {
+                        package: shared_ref.clone(),
+                    },
+                    PackageCodeSlot {
+                        package: helper_ref.clone(),
+                    },
+                ],
+                package_links: vec![PackageBinding {
+                    key: PackageRequirementKey {
+                        caller_package_build_id: shared.package_build_id.clone(),
+                        package_requirement_alias: "helper".to_string(),
+                    },
+                    package: helper_ref.clone(),
+                }],
+            },
+            service_binding_templates: vec![
+                ServiceBindingTemplate {
+                    activation: activation_a.clone(),
+                    bindings: vec![ResolvedServiceBinding {
+                        key: service_key.clone(),
+                        contract: contract_ref.clone(),
+                        provider: activation_b.clone(),
+                        used_operations: vec![operation_id.clone()],
+                    }],
+                },
+                ServiceBindingTemplate {
+                    activation: activation_b.clone(),
+                    bindings: vec![ResolvedServiceBinding {
+                        key: service_key,
+                        contract: contract_ref.clone(),
+                        provider: activation_a.clone(),
+                        used_operations: vec![operation_id.clone()],
+                    }],
+                },
+            ],
+            activation_templates: vec![
+                activation_template(&activation_a, &deployment_a),
+                activation_template(&activation_b, &deployment_b),
+            ],
+            global_ingress: vec![GlobalIngressBinding::from((
+                &activation_a,
+                &contract_ref,
+                &deployment_a.ingress[0],
+            ))],
+        };
+        skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
+
+        let shared_build = shared.package_build_id.clone();
+        let helper_build = helper.package_build_id.clone();
+        let shared_file_identity = shared_file.file_ir_identity.clone();
+        let resolver = FixtureResolver {
+            deployments: BTreeMap::from([
+                (activation_a.clone(), Arc::new(deployment_a)),
+                (activation_b.clone(), Arc::new(deployment_b)),
+            ]),
+            contracts: BTreeMap::from([(contract_ref.clone(), Arc::new(contract))]),
+            packages: BTreeMap::from([
+                (shared_ref, Arc::new(shared)),
+                (helper_ref, Arc::new(helper)),
+            ]),
+            files: BTreeMap::from([
+                (
+                    (shared_build.clone(), shared_file_identity.clone()),
+                    Arc::new(shared_file),
+                ),
+                (
+                    (helper_build.clone(), helper_file.file_ir_identity.clone()),
+                    Arc::new(helper_file),
+                ),
+            ]),
+            resources: BTreeMap::from([(
+                (helper_build.clone(), "assets/helper.txt".to_string()),
+                helper_resource,
+            )]),
+        };
+
+        Self {
+            assembly,
+            resolver,
+            operation_id,
+            contract_ref,
+            service_callable,
+            helper_callable,
+            shared_build,
+            helper_build,
+            shared_file_identity,
+            activation_a,
+            activation_b,
+            ingress_selector,
+        }
+    }
+
+    pub fn tamper_deployment_callable(&mut self) {
+        let old_reference = self.activation_a.clone();
+        let mut deployment = self
+            .resolver
+            .deployments
+            .remove(&old_reference)
+            .unwrap()
+            .as_ref()
+            .clone();
+        deployment.operation_bindings[0].package_callable_id =
+            PackageCallableId::new("callable:missing");
+        skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
+        let new_reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+        for root in &mut self.assembly.roots {
+            if root == &old_reference {
+                *root = new_reference.clone();
+            }
+        }
+        for reference in &mut self.assembly.resolved_deployments {
+            if reference == &old_reference {
+                *reference = new_reference.clone();
+            }
+        }
+        for template in &mut self.assembly.service_binding_templates {
+            if template.activation == old_reference {
+                template.activation = new_reference.clone();
+            }
+            for binding in &mut template.bindings {
+                if binding.provider == old_reference {
+                    binding.provider = new_reference.clone();
+                }
+            }
+        }
+        for template in &mut self.assembly.activation_templates {
+            if template.deployment == old_reference {
+                template.deployment = new_reference.clone();
+            }
+        }
+        for ingress in &mut self.assembly.global_ingress {
+            if ingress.deployment == old_reference {
+                ingress.deployment = new_reference.clone();
+            }
+        }
+        self.resolver
+            .deployments
+            .insert(new_reference.clone(), Arc::new(deployment));
+        self.activation_a = new_reference;
+        skiff_artifact_identity::assign_runtime_assembly_identity(&mut self.assembly).unwrap();
+    }
+}
+
+pub(super) struct FixtureResolver {
+    deployments: BTreeMap<ServiceDeploymentRef, Arc<ServiceDeployment>>,
+    contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
+    packages: BTreeMap<PackageArtifactRef, Arc<PackageArtifact>>,
+    files: BTreeMap<(PackageBuildId, String), Arc<FileIrUnit>>,
+    resources: BTreeMap<(PackageBuildId, String), Arc<[u8]>>,
+}
+
+impl FixtureResolver {
+    pub fn file(&self, build_id: &PackageBuildId, identity: &str) -> &FileIrUnit {
+        self.files
+            .get(&(build_id.clone(), identity.to_string()))
+            .unwrap()
+    }
+}
+
+impl RuntimeAssemblyContentResolver for FixtureResolver {
+    fn resolve_deployment(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>> {
+        self.deployments
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing deployment"))
+    }
+
+    fn resolve_contract(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>> {
+        self.contracts
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing contract"))
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>> {
+        self.packages
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing package"))
+    }
+
+    fn resolve_file_ir(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+    ) -> anyhow::Result<Arc<FileIrUnit>> {
+        let artifact = self
+            .packages
+            .get(package)
+            .ok_or_else(|| anyhow::anyhow!("missing package"))?;
+        if !artifact.files.contains(reference) {
+            anyhow::bail!("File IR ref is outside package")
+        }
+        self.files
+            .get(&(
+                package.package_build_id.clone(),
+                reference.file_ir_identity.clone(),
+            ))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing File IR"))
+    }
+
+    fn resolve_static_resource(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &PublicationResourceRef,
+    ) -> anyhow::Result<Arc<[u8]>> {
+        let artifact = self
+            .packages
+            .get(package)
+            .ok_or_else(|| anyhow::anyhow!("missing package"))?;
+        if !artifact.static_resources.contains(reference) {
+            anyhow::bail!("resource ref is outside package")
+        }
+        self.resources
+            .get(&(package.package_build_id.clone(), reference.path.clone()))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing static resource"))
+    }
+}
+
+fn package(
+    package_id: &str,
+    file: &FileIrUnit,
+    callable_id: PackageCallableId,
+    operation_contract: BoundaryOperationContract,
+) -> PackageArtifact {
+    let reference = file_ref(file);
+    let effects = no_effects();
+    let provenance = CallableProvenanceSummary::Analyzed {
+        return_origins: Vec::new(),
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    };
+    PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: package_id.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("unassigned"),
+        files: vec![reference.clone()],
+        static_resources: Vec::new(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols: BTreeMap::from([(
+                "entry".to_string(),
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: callable_id.clone(),
+                    signature: PackageCallableSignature {
+                        parameters: Vec::new(),
+                        return_type: PackageTypeRef::Local {
+                            local_type: TypeRefIr::native("bool"),
+                        },
+                        throw_types: Vec::new(),
+                        may_suspend: false,
+                    },
+                },
+            )]),
+        },
+        implementation_links: PackageImplementationLinks::default(),
+        callable_links: BTreeMap::from([(
+            callable_id.clone(),
+            PackageCallableLinkFact {
+                callable_id: callable_id.clone(),
+                target: OperationTargetRef {
+                    file_ref: reference,
+                    executable_index: 0,
+                    callable_abi_id: callable_id.to_string(),
+                    callable_kind: OperationCallableKind::PublicFunction,
+                },
+            },
+        )]),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements {
+            config: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::from([(
+            callable_id.clone(),
+            CallableSemanticFacts {
+                effects: CallableEffectSummary::Analyzed {
+                    effects: effects.clone(),
+                },
+                provenance: provenance.clone(),
+                resolved_call_targets: BTreeMap::new(),
+            },
+        )]),
+        boundary_projections: BTreeMap::from([(
+            callable_id,
+            BoundaryCallableProjection::Available {
+                operation_contract,
+                implementation_requirements: BoundaryImplementationRequirements {
+                    config: Vec::new(),
+                    state: Vec::new(),
+                    native_capabilities: Vec::new(),
+                    runtime_capabilities: Vec::new(),
+                    complete_may_effects: effects,
+                    provenance,
+                },
+            },
+        )]),
+        service_call_refs: Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deployment(
+    revision: &str,
+    owner: &str,
+    contract: &ServiceContractRef,
+    implementation: &PackageArtifactRef,
+    helper: &PackageArtifactRef,
+    callable: &PackageCallableId,
+    operation: &ContractOperationId,
+    ingress: Option<IngressSelector>,
+) -> ServiceDeployment {
+    let package_key = PackageRequirementKey {
+        caller_package_build_id: implementation.package_build_id.clone(),
+        package_requirement_alias: "helper".to_string(),
+    };
+    let service_key = ServiceRequirementKey {
+        caller_package_build_id: implementation.package_build_id.clone(),
+        service_requirement_slot: 0,
+    };
+    ServiceDeployment {
+        schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+        contract: contract.clone(),
+        deployment_revision: DeploymentRevision::new(revision),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new("unassigned"),
+        implementation: implementation.clone(),
+        operation_bindings: vec![DeploymentOperationBinding {
+            contract_operation_id: operation.clone(),
+            package_callable_id: callable.clone(),
+        }],
+        package_bindings: vec![PackageBinding {
+            key: package_key,
+            package: helper.clone(),
+        }],
+        service_selectors: vec![ServiceSelectorBinding {
+            key: service_key,
+            contract: contract.clone(),
+        }],
+        ingress: ingress
+            .into_iter()
+            .map(|selector| DeploymentIngressBinding {
+                selector,
+                contract_operation_id: operation.clone(),
+            })
+            .collect(),
+        config_literals: vec![ConfigLiteralBinding {
+            path: "activation.owner".to_string(),
+            value: MetadataValue::String(owner.to_string()),
+        }],
+        secret_refs: vec![SecretRefBinding {
+            path: "activation.secret".to_string(),
+            secret_ref: format!("secret:{owner}"),
+        }],
+        state_bindings: vec![StateBinding {
+            requirement_key: "db".to_string(),
+            kind: StateBindingKind::Database,
+            namespace: format!("db:{owner}"),
+        }],
+        resource_bindings: vec![ResourceBinding {
+            requirement_key: "queue".to_string(),
+            capability: "queue".to_string(),
+            resource_ref: format!("queue:{owner}"),
+        }],
+        runtime_capability_bindings: Vec::new(),
+        policy: policy(owner),
+        diagnostic_text: DeploymentDiagnosticText {
+            display_name: format!("Cycle {owner}"),
+            notes: BTreeMap::new(),
+        },
+    }
+}
+
+fn activation_template(
+    reference: &ServiceDeploymentRef,
+    deployment: &ServiceDeployment,
+) -> ActivationTemplate {
+    ActivationTemplate {
+        deployment: reference.clone(),
+        implementation_package_build_id: deployment.implementation.package_build_id.clone(),
+        config_literals: deployment.config_literals.clone(),
+        secret_refs: deployment.secret_refs.clone(),
+        state_bindings: deployment.state_bindings.clone(),
+        resource_bindings: deployment.resource_bindings.clone(),
+        policy: deployment.policy.clone(),
+    }
+}
+
+fn file(module_path: &str) -> FileIrUnit {
+    let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    file.executables.push(ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "entry".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::native("bool"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    file
+}
+
+fn file_ref(file: &FileIrUnit) -> FileIrRef {
+    FileIrRef {
+        file_ir_identity: file.file_ir_identity.clone(),
+        module_path: file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(file.source_ast_hash.clone()),
+    }
+}
+
+fn package_ref(package: &PackageArtifact) -> PackageArtifactRef {
+    PackageArtifactRef {
+        package_id: package.package_id.clone(),
+        package_version: package.package_version.clone(),
+        package_build_id: package.package_build_id.clone(),
+        package_local_abi_identity: package.package_local_abi.local_abi_identity.clone(),
+    }
+}
+
+fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
+    ServiceContractRef {
+        service_id: contract.service_id.clone(),
+        contract_version: contract.contract_version.clone(),
+        service_protocol_identity: contract.service_protocol_identity.clone(),
+    }
+}
+
+fn operation_contract() -> BoundaryOperationContract {
+    BoundaryOperationContract {
+        parameters: Vec::new(),
+        return_value: BoundaryReturn {
+            ty: skiff_artifact_model::ContractTypeRef::builtin("bool"),
+            value_plan: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Provider,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+        },
+        errors: BoundaryErrorContract::None,
+        stream: BoundaryStreamContract::Unary,
+        cancellation: BoundaryCancellationContract::NotCancellable,
+        callbacks: BoundaryCallbackContract::None,
+        may_suspend: false,
+        effect_guarantee: BoundaryEffectGuarantee {
+            detached_parameters: true,
+            detached_return: true,
+            detached_error: true,
+            no_caller_reachable_mutation: true,
+            no_caller_value_escape: true,
+            no_same_heap_identity: true,
+        },
+    }
+}
+
+fn no_effects() -> CallableMayEffects {
+    CallableMayEffects {
+        writes_caller_reachable: false,
+        returns_caller_alias: false,
+        throws_caller_alias: false,
+        escapes_caller_value: false,
+        requires_same_heap_identity: false,
+        invokes_unknown_target: false,
+        may_suspend: false,
+    }
+}
+
+fn policy(owner: &str) -> DeploymentPolicy {
+    DeploymentPolicy {
+        timeout_ms: 1_000,
+        resources: ResourcePolicy {
+            cpu_millis: 100,
+            memory_bytes: 1_024,
+        },
+        activation: ActivationPolicy {
+            max_concurrency: 1,
+            idle_timeout_ms: None,
+        },
+        principal: format!("service:{owner}"),
+    }
+}
