@@ -124,6 +124,7 @@ worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖�
 | F01 | [R01 checkpoint repair](tasks/P3-F01-r01-checkpoint-repair.md) | R01 FAIL at `667c0622` | 中高；只修失效 checker/tooling证据 |
 | R01 | [Canonical checkpoint acceptance](tasks/P3-R01-canonical-contract-acceptance.md) | T01 exact integration commit | 高风险只读 gate；PASS解锁 Wave 2 |
 | T02 | [Source-free ServiceDeployment projection](tasks/P3-T02-service-deployment-projection.md) | R01 PASS | 高；deployment verdict |
+| F02 | [R02 deployment eligibility repair](tasks/P3-F02-r02-deployment-eligibility.md) | R02 DEPLOYMENT FAIL at `46d7b6f6` | 高；只修 typed eligibility失效面 |
 | T03 | [RuntimeAssembly resolver](tasks/P3-T03-runtime-assembly-resolver.md) | R01 PASS | 高；assembly verdict；不依赖 T02函数 |
 | T04 | [Typed RuntimeAssembly loader](tasks/P3-T04-typed-runtime-assembly-loader.md) | R01 PASS | 高；runtime-link batch |
 | T05 | [Shared PackageArtifact linked image](tasks/P3-T05-shared-package-linked-image.md) | R01 PASS | 高；runtime-link batch |
