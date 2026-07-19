@@ -27,7 +27,7 @@ pub struct InterfaceDeclFact {
     pub symbol: SourceSymbolKey,
     pub type_params: Vec<String>,
     pub requirements: Vec<InterfaceRequirementFact>,
-    source_kind: InterfaceSourceKind,
+    source_kind: InterfaceOwnerKind,
 }
 
 #[derive(Debug, Clone)]
@@ -98,8 +98,12 @@ pub struct InterfaceSemantics {
     actor_conformances_by_receiver: BTreeMap<SourceSymbolKey, usize>,
 }
 
+/// Validated declaration owner recorded by interface semantics.
+///
+/// `External` is only a candidate owner. Type resolution must still prove a
+/// typed package interface before handing conformance to the package owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InterfaceSourceKind {
+pub(crate) enum InterfaceOwnerKind {
     Source,
     CompilerKnown,
     External,
@@ -220,6 +224,13 @@ impl InterfaceSemantics {
 
     pub fn interface(&self, symbol: &SourceSymbolKey) -> Option<&InterfaceDeclFact> {
         self.interfaces.get(symbol)
+    }
+
+    pub(crate) fn interface_owner_kind(
+        &self,
+        symbol: &SourceSymbolKey,
+    ) -> Option<InterfaceOwnerKind> {
+        self.interfaces.get(symbol).map(|fact| fact.source_kind)
     }
 
     pub fn conformances(&self) -> &[InterfaceConformanceFact] {
@@ -574,7 +585,7 @@ impl InterfaceIndex {
                     symbol,
                     type_params: interface.type_params.clone(),
                     requirements,
-                    source_kind: InterfaceSourceKind::Source,
+                    source_kind: InterfaceOwnerKind::Source,
                 })?;
             }
         }
@@ -621,15 +632,15 @@ impl InterfaceIndex {
             symbol,
             type_params,
             requirements: Vec::new(),
-            source_kind: InterfaceSourceKind::CompilerKnown,
+            source_kind: InterfaceOwnerKind::CompilerKnown,
         })
     }
 
     fn insert_interface(&mut self, fact: InterfaceDeclFact) -> Result<()> {
         let symbol = fact.symbol.clone();
         if let Some(existing) = self.interfaces.get(&symbol) {
-            if existing.source_kind == InterfaceSourceKind::CompilerKnown
-                && fact.source_kind == InterfaceSourceKind::Source
+            if existing.source_kind == InterfaceOwnerKind::CompilerKnown
+                && fact.source_kind == InterfaceOwnerKind::Source
             {
                 if existing.type_params.len() != fact.type_params.len() {
                     return Err(CompileError::Semantic(format!(
@@ -673,7 +684,7 @@ impl InterfaceIndex {
         }
         let symbol = self.resolve_interface_symbol(module_path, name)?;
         if let Some(fact) = self.interfaces.get_mut(&symbol) {
-            if fact.source_kind == InterfaceSourceKind::External && fact.type_params.is_empty() {
+            if fact.source_kind == InterfaceOwnerKind::External && fact.type_params.is_empty() {
                 fact.type_params = (0..args.len()).map(|index| format!("T{index}")).collect();
             }
         }
@@ -778,7 +789,7 @@ impl InterfaceIndex {
             symbol,
             type_params: Vec::new(),
             requirements: Vec::new(),
-            source_kind: InterfaceSourceKind::External,
+            source_kind: InterfaceOwnerKind::External,
         })
     }
 }

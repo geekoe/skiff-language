@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{PackageTypeRef, TypeRefIr};
+use skiff_artifact_model::PackageTypeRef;
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
@@ -8,6 +8,7 @@ use crate::{
         ast::{FunctionDecl, InterfaceDecl, InterfaceOperation, TypeRef},
         type_expr::TypeExpr,
     },
+    type_resolution_model::CanonicalInterfaceOwnerResolution,
     SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 
@@ -115,31 +116,15 @@ fn resolve_interface_instantiation(
     type_resolution: &TypeResolutionModel,
     resolver: &ContractAwareTypeResolver<'_>,
 ) -> Result<Option<(SourceSymbolKey, Vec<PackageTypeRef>)>, String> {
-    let (identity, _) = type_resolution
-        .resolve_interface_instantiation_parts_text(&implemented.name, context)?
-        .ok_or_else(|| {
-            format!(
-                "implements entry `{}` is not an interface",
-                implemented.name
-            )
-        })?;
-    let symbol = match identity {
-        TypeRefIr::ServiceSymbol { symbol } => symbol,
-        TypeRefIr::PackageSymbol { .. } => return Ok(None),
-        _ => {
-            return Err(format!(
-                "implements entry `{}` has no source-owned exact interface identity",
-                implemented.name
-            ));
-        }
-    };
-    let interface = SourceSymbolKey::new(
-        symbol
-            .module_path
-            .strip_prefix("root.")
-            .unwrap_or(&symbol.module_path),
-        &symbol.symbol,
-    );
+    let interface =
+        match type_resolution.classify_canonical_interface_owner(&implemented.name, context) {
+            CanonicalInterfaceOwnerResolution::SourceDeclaredExact { interface, .. } => interface,
+            CanonicalInterfaceOwnerResolution::TypedPackage { .. }
+            | CanonicalInterfaceOwnerResolution::CompilerKnown { .. } => return Ok(None),
+            CanonicalInterfaceOwnerResolution::InvalidOrUnresolved { message } => {
+                return Err(message);
+            }
+        };
     let TypeExpr::Named { args, .. } = TypeExpr::parse(&implemented.name) else {
         return Err(format!(
             "implements entry `{}` is not a named interface",

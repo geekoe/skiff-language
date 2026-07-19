@@ -44,6 +44,13 @@ fn exact_interface_query_preserves_local_contract_and_nested_substitution() {
     let dependencies = contract_dependencies_with(&[("payments", "example.payments")]);
     let model = build_interface_model(&repository_source("payments.User"), &dependencies)
         .expect("exact interface conformance builds");
+    assert!(matches!(
+        model.type_resolution().classify_canonical_interface_owner(
+            "Repository<payments.User>",
+            &TypeResolutionContext::source("api"),
+        ),
+        crate::type_resolution_model::CanonicalInterfaceOwnerResolution::SourceDeclaredExact { .. }
+    ));
     let facts = model.interface_signatures();
     let method_key = SourceInterfaceMethodKey {
         interface: crate::SourceSymbolKey::new("api", "Repository"),
@@ -204,6 +211,68 @@ fn interface_conformance_fails_closed_for_missing_method_and_receiver_mismatch()
 }
 
 #[test]
+fn compiler_known_interfaces_stay_outside_source_exact_conformance_ownership() {
+    let model = build_interface_model(
+        r#"
+            type ShortActor implements Actor<string> {}
+            type ShortFailure implements ErrorPayload {}
+        "#,
+        &SourceDependencyAnalysisInput::default(),
+    )
+    .expect("compiler-known interface conformances keep their semantic owner");
+
+    assert!(model.interface_signatures().conformances().next().is_none());
+    let context = TypeResolutionContext::source("api");
+    for selector in [
+        "Actor<string>",
+        "std.actor.Actor<string>",
+        "ErrorPayload",
+        "std.error.ErrorPayload",
+    ] {
+        assert!(matches!(
+            model
+                .type_resolution()
+                .classify_canonical_interface_owner(selector, &context),
+            crate::type_resolution_model::CanonicalInterfaceOwnerResolution::CompilerKnown { .. }
+        ));
+    }
+    for selector in ["Missing", "ShortActor"] {
+        assert!(matches!(
+            model
+                .type_resolution()
+                .classify_canonical_interface_owner(selector, &context),
+            crate::type_resolution_model::CanonicalInterfaceOwnerResolution::InvalidOrUnresolved { .. }
+        ));
+    }
+}
+
+#[test]
+fn unknown_and_non_interface_implements_entries_fail_closed() {
+    let unknown = build_interface_model(
+        "type Handler implements Missing {}",
+        &SourceDependencyAnalysisInput::default(),
+    )
+    .expect_err("unknown interface must fail")
+    .to_string();
+    assert!(
+        unknown.contains("implements entry `Missing` does not resolve to an interface"),
+        "unexpected unknown interface error: {unknown}"
+    );
+
+    let non_interface = build_interface_model(
+        "type Payload {} type Handler implements Payload {}",
+        &SourceDependencyAnalysisInput::default(),
+    )
+    .expect_err("non-interface type must fail")
+    .to_string();
+    assert!(
+        non_interface.contains("implements entry `Payload` resolves to type")
+            && non_interface.contains("not an interface"),
+        "unexpected non-interface error: {non_interface}"
+    );
+}
+
+#[test]
 fn unrelated_contract_symbols_do_not_change_validated_interface_query() {
     let source = repository_source("billing.User");
     let base_dependencies = contract_dependencies_with(&[
@@ -319,6 +388,12 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
     assert!(model.interface_signatures().conformances().next().is_none());
 
     let context = TypeResolutionContext::source("api");
+    assert!(matches!(
+        model
+            .type_resolution()
+            .classify_canonical_interface_owner("pkg.Reader<string>", &context),
+        crate::type_resolution_model::CanonicalInterfaceOwnerResolution::TypedPackage { .. }
+    ));
     let actual = model
         .type_resolution()
         .resolve_type_text("Host", &context)
