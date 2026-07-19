@@ -133,6 +133,7 @@ worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖�
 | R03 | [Runtime-link acceptance](tasks/P3-R03-runtime-link-acceptance.md) | T04–T06 exact integration commit | 高风险只读 gate；PASS解锁 Wave 3 |
 | T07 | [Whole-assembly host admission](tasks/P3-T07-whole-assembly-admission.md) | R03 PASS | 高；admission batch |
 | T08A | [Terminal runtime consumer seams](tasks/P3-T08A-terminal-runtime-seams.md) | R03 PASS | 中；runtime consumer batch |
+| F03 | [Host test-support terminal seam](tasks/P3-F03-host-test-support-seam.md) | T07 compile after T08A | 低；机械 host test-support blocker |
 | T08B | [Runtime artifact boundary checker](tasks/P3-T08B-runtime-artifact-boundary-checker.md) | R03 PASS | 中高；structure gate |
 | T09 | [Phase integration gate](tasks/P3-T09-phase-integration.md) | T02–T07、T08A、T08B、R01–R03 | gate owner；唯一昂贵阶段 gate |
 | A01 | [Independent stage acceptance](tasks/P3-A01-stage-acceptance.md) | T09 | 独立只读验收 |
