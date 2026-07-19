@@ -3,6 +3,7 @@ mod artifact_path;
 mod artifact_reference;
 mod constants;
 mod contract;
+mod deployment;
 mod error;
 mod file_ir;
 mod framing;
@@ -14,6 +15,7 @@ pub mod package_resolver;
 mod package_test;
 mod publication;
 mod publication_validation;
+mod runtime_assembly;
 mod runtime_program;
 mod semantic;
 mod service_artifact_closure;
@@ -29,25 +31,34 @@ pub use artifact_reference::{
     ServiceAssemblyArtifactRef, ServiceUnitArtifactRef,
 };
 pub use constants::{
-    BUNDLE_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_PREFIX,
-    CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, CONTRACT_TYPE_IDENTITY_PREFIX,
-    CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
-    PACKAGE_ASSEMBLY_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_PREFIX,
-    PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX,
-    PACKAGE_LOCAL_ABI_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
-    PACKAGE_TEST_BUILD_IDENTITY_PREFIX, PACKAGE_TEST_ENTRYPOINT_ID_PREFIX,
-    PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX, PUBLICATION_ABI_IDENTITY_PREFIX,
-    RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER, SERVICE_ASSEMBLY_IDENTITY_PREFIX,
-    SERVICE_BUILD_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
-    SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER, SERVICE_UNIT_IDENTITY_PREFIX,
+    ASSEMBLY_IDENTITY_PREFIX, ASSEMBLY_IDENTITY_SCHEMA_MARKER, BUNDLE_IDENTITY_PREFIX,
+    CONTRACT_OPERATION_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
+    CONTRACT_TYPE_IDENTITY_PREFIX, CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER,
+    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER,
+    FILE_IR_IDENTITY_PREFIX, OPERATION_ABI_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_ASSEMBLY_IDENTITY_PREFIX,
+    PACKAGE_BUILD_IDENTITY_PREFIX, PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER,
+    PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX, PACKAGE_LOCAL_ABI_IDENTITY_PREFIX,
+    PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER, PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
+    PACKAGE_TEST_ENTRYPOINT_ID_PREFIX, PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX,
+    PUBLICATION_ABI_IDENTITY_PREFIX, RUNTIME_PROGRAM_BUILD_SCHEMA_MARKER,
+    SERVICE_ASSEMBLY_IDENTITY_PREFIX, SERVICE_BUILD_IDENTITY_PREFIX,
+    SERVICE_PROTOCOL_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
+    SERVICE_UNIT_IDENTITY_PREFIX,
 };
 pub use contract::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
     normalize_contract_definition_surface, normalize_contract_operation_contract,
     normalize_contract_type_shape, service_protocol_identity, service_protocol_identity_projection,
     validate_service_contract_identities, ServiceProtocolIdentityProjection,
+};
+pub use deployment::{
+    assign_service_deployment_identity, service_deployment_identity,
+    service_deployment_identity_projection, service_deployment_ref,
+    validate_service_deployment_identity, validate_service_deployment_input,
+    validate_service_deployment_ref, validate_service_deployment_surface,
+    DeploymentArtifactIdentityProjection,
 };
 pub use error::{ArtifactIdentityError, Result};
 pub use file_ir::{
@@ -93,6 +104,11 @@ pub use publication::{
 };
 pub use publication_validation::{
     validate_publication_abi_identity, validate_publication_abi_surface,
+};
+pub use runtime_assembly::{
+    assign_runtime_assembly_identity, runtime_assembly_identity,
+    runtime_assembly_identity_projection, validate_runtime_assembly_identity,
+    validate_runtime_assembly_surface, AssemblyIdentityProjection,
 };
 pub use runtime_program::{
     runtime_program_dynamic_build_id, runtime_program_service_unit_identity_bytes,
