@@ -13,15 +13,23 @@ use super::signatures;
 pub(super) struct LocalCallableSurface {
     pub public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
     pub implementation_links: PackageImplementationLinks,
-    pub callables: Vec<CallableSeed>,
+    pub callables: Vec<CanonicalCallable>,
 }
 
-pub(super) struct CallableSeed {
+pub(super) struct CanonicalCallable {
     pub public_path: String,
     pub callable_id: PackageCallableId,
     pub owner_module: String,
     pub executable_index: u32,
     pub signature: PackageCallableSignature,
+    pub target: OperationTargetRef,
+}
+
+pub(super) struct CallableTarget {
+    pub public_path: String,
+    pub callable_id: PackageCallableId,
+    pub owner_module: String,
+    pub executable_index: u32,
     pub target: OperationTargetRef,
 }
 
@@ -33,9 +41,15 @@ pub(super) fn project_local_surface(
 ) -> Result<LocalCallableSurface, ProjectionError> {
     let implementation_links = PackageImplementationLinks::from_exports(exports);
     let mut public_symbols = project_non_callable_symbols(exports)?;
-    let mut callables = signatures::package_callable_seeds(package_id, exports);
-    signatures::add_direct_impl_method_seeds(package_id, api_exports, exports, &mut callables);
-    signatures::attach_canonical_signatures(package_id, signatures, &mut callables)?;
+    let mut callable_targets = signatures::package_callable_targets(package_id, exports);
+    signatures::add_direct_impl_method_targets(
+        package_id,
+        api_exports,
+        exports,
+        &mut callable_targets,
+    );
+    let callables =
+        signatures::attach_canonical_signatures(package_id, signatures, callable_targets)?;
     add_public_instance_symbols(exports, &callables, &mut public_symbols)?;
     Ok(LocalCallableSurface {
         public_symbols,
@@ -82,12 +96,12 @@ fn project_non_callable_symbols(
 
 fn add_public_instance_symbols(
     exports: &PackageExportIndex,
-    seeds: &[CallableSeed],
+    callables: &[CanonicalCallable],
     public_symbols: &mut BTreeMap<String, PackageLocalAbiSymbol>,
 ) -> Result<(), ProjectionError> {
-    let callable_ids = seeds
+    let callable_ids = callables
         .iter()
-        .map(|seed| (seed.public_path.as_str(), seed.callable_id.clone()))
+        .map(|callable| (callable.public_path.as_str(), callable.callable_id.clone()))
         .collect::<BTreeMap<_, _>>();
     for instance in &exports.public_instances {
         let methods = instance

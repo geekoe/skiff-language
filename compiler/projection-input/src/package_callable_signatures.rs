@@ -113,7 +113,10 @@ impl ProjectionPackageCallableSignatureFacts {
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_model::{PackageCallableSignature, PackageTypeRef, TypeRefIr};
+    use skiff_artifact_model::{
+        ContractTypeId, PackageCallableParameter, PackageCallableSignature, PackageTypeRef,
+        TypeRefIr,
+    };
 
     use super::*;
 
@@ -134,5 +137,44 @@ mod tests {
         ])
         .expect_err("duplicate key must fail closed");
         assert_eq!(error.key(), &key);
+    }
+
+    #[test]
+    fn projection_input_preserves_exact_nested_contract_signature() {
+        let key = ProjectionPackageCallableKey::new("submit", "api", 4);
+        let contract = PackageTypeRef::Contract {
+            contract_type_id: ContractTypeId::new("contract-type:payments:User"),
+        };
+        let signature = PackageCallableSignature {
+            parameters: vec![PackageCallableParameter {
+                name: "users".to_string(),
+                ty: PackageTypeRef::Nullable {
+                    inner: Box::new(PackageTypeRef::Container {
+                        name: "Array".to_string(),
+                        arguments: vec![contract.clone()],
+                    }),
+                },
+            }],
+            return_type: contract,
+            throw_types: Vec::new(),
+            may_suspend: true,
+        };
+        let facts = ProjectionPackageCallableSignatureFacts::try_from_entries([(
+            key.clone(),
+            signature.clone(),
+        )])
+        .unwrap();
+        let input = crate::ProjectionInput::new(
+            Vec::new(),
+            Vec::new(),
+            crate::ProjectionSourceFacts::default(),
+            crate::ProjectionLoweringFacts::default(),
+            facts,
+        );
+
+        assert_eq!(
+            input.view().callable_signatures().signature(&key),
+            Some(&signature)
+        );
     }
 }

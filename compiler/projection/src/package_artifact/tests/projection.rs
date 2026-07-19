@@ -5,8 +5,8 @@ use skiff_artifact_model::{
 };
 
 use super::fixtures::{
-    callable_id, project_fixture, project_fixture_with_runtime_requirements, runtime_requirements,
-    SignatureSet,
+    callable_id, exact_typed_signature, project_fixture, project_fixture_with_runtime_requirements,
+    runtime_requirements, SignatureSet,
 };
 
 #[test]
@@ -76,6 +76,29 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 }
 
 #[test]
+fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimmed() {
+    let artifact = project_fixture(SignatureSet::ExactTyped, "async").unwrap();
+    let PackageLocalAbiSymbol::Callable {
+        signature: run_signature,
+        ..
+    } = &artifact.package_local_abi.public_symbols["run"]
+    else {
+        panic!("run must be a Local ABI callable");
+    };
+    assert_eq!(run_signature, &exact_typed_signature());
+
+    let PackageLocalAbiSymbol::Callable {
+        signature: instance_signature,
+        ..
+    } = &artifact.package_local_abi.public_symbols["worker.handle"]
+    else {
+        panic!("public-instance operation must be a Local ABI callable");
+    };
+    assert_eq!(instance_signature.parameters.len(), 1);
+    assert_eq!(instance_signature.parameters[0].name, "value");
+}
+
+#[test]
 fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
     let mut invalid_type = runtime_requirements("async");
     invalid_type.config[0].value_type = "bytes".to_string();
@@ -100,18 +123,29 @@ fn canonical_projection_rejects_invalid_or_duplicate_config_requirements() {
 }
 
 #[test]
-fn canonical_signature_set_rejects_missing_and_extra_api_entries() {
+fn missing_signature_is_not_reconstructed_from_executable_ir() {
     let missing = project_fixture(SignatureSet::Missing, "async")
         .unwrap_err()
         .to_string();
     assert!(missing.contains("missing="), "unexpected error: {missing}");
     assert!(missing.contains("mutate"), "unexpected error: {missing}");
+}
 
+#[test]
+fn canonical_signature_set_rejects_extra_and_target_mismatched_entries() {
     let extra = project_fixture(SignatureSet::Extra, "async")
         .unwrap_err()
         .to_string();
     assert!(extra.contains("extra="), "unexpected error: {extra}");
     assert!(extra.contains("internal"), "unexpected error: {extra}");
+
+    let target_mismatch = project_fixture(SignatureSet::TargetMismatch, "async")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        target_mismatch.contains("api#0") && target_mismatch.contains("api#9"),
+        "unexpected error: {target_mismatch}"
+    );
 }
 
 #[test]

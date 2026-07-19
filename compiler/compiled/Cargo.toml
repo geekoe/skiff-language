@@ -15,6 +15,12 @@ test-support = []
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-compiler-lowering = { path = "../lowering" }
+skiff-compiler-core = { path = "../core" }
 skiff-compiler-projection-input = { path = "../projection-input" }
 skiff-compiler-source = { path = "../source" }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[dev-dependencies]
+skiff-compiler-contract = { path = "../contract" }
+skiff-compiler-input = { path = "../input" }
+skiff-compiler-projection = { path = "../projection" }

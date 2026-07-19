@@ -26,8 +26,9 @@ use crate::{
 ///
 /// The driver supplies only coordinates, typed dependency requirements and the
 /// compiled ProjectionView. Export resolution, exact links, callable
-/// signatures, runtime requirements, File IR projection and resource
-/// projection remain owned by the PackageArtifact projection leaf.
+/// coverage validation, runtime requirements, File IR projection and resource
+/// projection remain owned by the PackageArtifact projection leaf. Exact
+/// callable signatures arrive through the compiled ProjectionView.
 pub fn compile_package(
     input: PackageCompileInput<'_>,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {

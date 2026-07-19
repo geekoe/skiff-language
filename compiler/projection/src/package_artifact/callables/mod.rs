@@ -40,17 +40,17 @@ pub(super) fn project_package_callable_surface(
     let mut callable_links = BTreeMap::new();
     let mut semantic_facts = BTreeMap::new();
     let mut boundary_projections = BTreeMap::new();
-    for seed in local_surface.callables {
+    for callable in local_surface.callables {
         surface::insert_public_symbol(
             &mut local_surface.public_symbols,
-            seed.public_path.clone(),
+            callable.public_path.clone(),
             PackageLocalAbiSymbol::Callable {
-                callable_id: seed.callable_id.clone(),
-                signature: seed.signature.clone(),
+                callable_id: callable.callable_id.clone(),
+                signature: callable.signature.clone(),
             },
         )?;
         let executable_key =
-            ProjectionExecutableKey::new(seed.owner_module.clone(), seed.executable_index);
+            ProjectionExecutableKey::new(callable.owner_module.clone(), callable.executable_index);
         let facts = semantic_facts_by_executable
             .get(&executable_key)
             .cloned()
@@ -59,38 +59,38 @@ pub(super) fn project_package_callable_surface(
                     package_id,
                     format!(
                         "public callable {} target {}#{} has no typed semantic facts",
-                        seed.public_path, seed.owner_module, seed.executable_index
+                        callable.public_path, callable.owner_module, callable.executable_index
                     ),
                 )
             })?;
         let facts = normalization::normalize_semantic_facts(facts);
         let projection = project_boundary_callable(
-            &seed.owner_module,
-            &seed.signature,
+            &callable.owner_module,
+            &callable.signature,
             &facts,
             runtime_requirements,
             file_ir_units,
         )?;
         insert_callable_entry(
             &mut callable_links,
-            seed.callable_id.clone(),
+            callable.callable_id.clone(),
             PackageCallableLinkFact {
-                callable_id: seed.callable_id.clone(),
-                target: seed.target,
+                callable_id: callable.callable_id.clone(),
+                target: callable.target,
             },
             package_id,
             "callable link",
         )?;
         insert_callable_entry(
             &mut semantic_facts,
-            seed.callable_id.clone(),
+            callable.callable_id.clone(),
             facts,
             package_id,
             "callable semantic facts",
         )?;
         insert_callable_entry(
             &mut boundary_projections,
-            seed.callable_id,
+            callable.callable_id,
             projection,
             package_id,
             "boundary projection",

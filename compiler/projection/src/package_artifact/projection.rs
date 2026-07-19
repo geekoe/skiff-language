@@ -23,7 +23,6 @@ use super::{
         PackageArtifactProjectionInput, PackageExportLinkProjectionInput, ProjectedPackageArtifact,
         ProjectedPackageResource,
     },
-    projection_signatures::project_callable_signatures,
     runtime_requirements::project_runtime_requirements,
 };
 
@@ -45,8 +44,7 @@ pub fn project_compiled_package_artifact(
         },
         &input.package_requirements,
     )?;
-    let callable_signatures =
-        project_callable_signatures(input.package_id, &api_exports, &export_index)?;
+    let callable_signatures = input.projection.callable_signatures().clone();
     let runtime_requirements = project_runtime_requirements(
         input.package_id,
         input.projection.source().config_requirements(),

@@ -25,6 +25,7 @@ pub struct ProjectionInput {
     source_metadata: Vec<ProjectionSourceMetadata>,
     source: ProjectionSourceFacts,
     lowering: ProjectionLoweringFacts,
+    callable_signatures: ProjectionPackageCallableSignatureFacts,
     resources: Vec<PublicationResourceProjectionInput>,
 }
 
@@ -39,12 +40,14 @@ impl ProjectionInput {
         source_metadata: Vec<ProjectionSourceMetadata>,
         source: ProjectionSourceFacts,
         lowering: ProjectionLoweringFacts,
+        callable_signatures: ProjectionPackageCallableSignatureFacts,
     ) -> Self {
         Self {
             file_ir_units,
             source_metadata,
             source,
             lowering,
+            callable_signatures,
             resources: Vec::new(),
         }
     }
@@ -54,6 +57,7 @@ impl ProjectionInput {
         source_metadata: Vec<ProjectionSourceMetadata>,
         source: ProjectionSourceFacts,
         lowering: ProjectionLoweringFacts,
+        callable_signatures: ProjectionPackageCallableSignatureFacts,
         resources: Vec<PublicationResourceProjectionInput>,
     ) -> Self {
         Self {
@@ -61,6 +65,7 @@ impl ProjectionInput {
             source_metadata,
             source,
             lowering,
+            callable_signatures,
             resources,
         }
     }
@@ -90,6 +95,10 @@ impl<'a> ProjectionView<'a> {
 
     pub fn lowering(&self) -> &'a ProjectionLoweringFacts {
         &self.input.lowering
+    }
+
+    pub fn callable_signatures(&self) -> &'a ProjectionPackageCallableSignatureFacts {
+        &self.input.callable_signatures
     }
 
     pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {

@@ -6,7 +6,6 @@ mod config_requirements;
 mod export_links;
 mod model;
 mod projection;
-mod projection_signatures;
 mod runtime_requirements;
 mod visible_types;
 

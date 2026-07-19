@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CanonicalPublicCallableSignature, ContractOperationId, ContractRequirement, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, LocalReceiverExecutableRef,
-    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableParameter,
-    PackageCallableSignature, PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRequirement, PackageResourceRequirement, PackageRuntimeCapabilityRequirement,
-    PackageRuntimeRequirements, PackageTypeRef, PublicInstanceExport, PublicInstanceOperation,
-    ReceiverCallAbi, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr,
-    ValueProvenance,
+    CanonicalPublicCallableSignature, ContractOperationId, ContractRequirement, ContractTypeId,
+    ExecutableExport, ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr,
+    LocalReceiverExecutableRef, OperationCallableKind, OperationConstReceiverRef,
+    OperationTargetRef, PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement, PackageResourceRequirement,
+    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageTypeRef,
+    PublicInstanceExport, PublicInstanceOperation, ReceiverCallAbi, ServiceCallRef,
+    ServiceProtocolIdentity, ServiceRequirement, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -24,8 +24,10 @@ use crate::package_artifact::{
 #[derive(Clone, Copy)]
 pub(super) enum SignatureSet {
     Complete,
+    ExactTyped,
     Missing,
     Extra,
+    TargetMismatch,
 }
 
 pub(super) fn project_fixture(
@@ -96,6 +98,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
     ];
     match signature_set {
         SignatureSet::Complete => {}
+        SignatureSet::ExactTyped => signature_entries[0].1 = exact_typed_signature(),
         SignatureSet::Missing => {
             signature_entries.retain(|(key, _)| key.public_path() != "mutate");
         }
@@ -103,6 +106,9 @@ pub(super) fn project_fixture_with_runtime_requirements(
             callable_key("internal", 9),
             signature(TypeRefIr::native("string")),
         )),
+        SignatureSet::TargetMismatch => {
+            signature_entries[0].0 = callable_key("run", 9);
+        }
     }
     let signatures =
         ProjectionPackageCallableSignatureFacts::try_from_entries(signature_entries).unwrap();
@@ -255,6 +261,28 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
         },
         throw_types: Vec::new(),
         may_suspend: false,
+    }
+}
+
+pub(super) fn exact_typed_signature() -> PackageCallableSignature {
+    let contract = PackageTypeRef::Contract {
+        contract_type_id: ContractTypeId::new("contract-type:example.payments:User"),
+    };
+    PackageCallableSignature {
+        parameters: vec![PackageCallableParameter {
+            name: "value".to_string(),
+            ty: PackageTypeRef::Nullable {
+                inner: Box::new(PackageTypeRef::Container {
+                    name: "Array".to_string(),
+                    arguments: vec![PackageTypeRef::Nullable {
+                        inner: Box::new(contract.clone()),
+                    }],
+                }),
+            },
+        }],
+        return_type: contract,
+        throw_types: Vec::new(),
+        may_suspend: true,
     }
 }
 

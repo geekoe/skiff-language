@@ -2185,7 +2185,11 @@ dependencies = [
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-compiler-contract",
+ "skiff-compiler-core",
+ "skiff-compiler-input",
  "skiff-compiler-lowering",
+ "skiff-compiler-projection",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
 ]
