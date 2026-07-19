@@ -37,6 +37,13 @@
 - 反向搜索证明旧AST名和dot dependency-call fixtures归零。
 - 运行syntax/source/lowering受影响的最小测试/check与`git diff --check`，不运行Phase gate。
 
+## 波次9a组合收尾
+
+T03F删除`ResolvedTypeRef.source_text -> File IR/local`静默fallback后，contract-call checker必须消费其
+fallible exact projection API：沿T03E拥有的checker/projected-environment调用链传播失败并形成显式source
+诊断，删除panic/invariant wrapper。不得恢复fallback，也不得把该失败吞成“无contract type”。该窄收尾在
+T03E与T03F均集成后执行，并复跑contract-call与projected-environment聚焦测试。
+
 ## 执行合同
 
 - DAG：波次9a共享语法检查点；可与T03F按文件ownership并行，完成后解除T03G/R10I。风险：高；进入
