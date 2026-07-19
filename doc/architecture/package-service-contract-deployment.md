@@ -80,22 +80,54 @@ ContractRequirement引入的`ContractTypeId`可以出现在PackageLocalAbi和pac
 它在package内部仍是普通local value type。只有call site进入ServiceBinding时才执行boundary
 materialization。
 
+File IR executable signature与PackageLocalAbi不是同一个type owner。File IR只保存本地执行需要的
+execution type representation，不重复保存contract nominal identity：
+
+- package-local type保留原有local execution type；container与nullable递归保留执行外形；
+- `PackageTypeRef::Contract` leaf统一投影为固定opaque `unknown` execution value；它不编码dependency alias、
+  stable key、`ContractTypeId`或schema；
+- source typecheck、package ABI、contract matching与boundary value plan只能读取source typed facts、
+  PackageArtifact和ServiceContract，不能从opaque File IR signature反推；
+- 这里的`unknown`不表示source类型未知。source已经按精确`ContractTypeId`完成检查；它也不能参与ABI相等、
+  boundary eligibility或protocol identity。
+
+因此File IR无需新增contract type wire variant。Lowering必须消费source-owned exact executable signature facts
+做上述唯一确定性投影，不能重新解析AST type text，也不能用`ServiceSymbol`或display string代替contract
+identity。interface operation同样先形成source-owned exact signature facts：impl/interface conformance在擦除前按
+`ContractTypeId`完成，随后interface与executable共同使用上述execution projection。contract来源的
+`ServiceSymbol`不能留在任何File IR callable/interface signature中。
+
+PackageArtifact的public-instance discovery只需要`publicPath + receiver execution target`。它不得把File IR
+execution signature转成public signature、执行conformance比较或生成`OperationAbiRef`/operation protocol
+identity；exact Local ABI继续只由source exact facts经compiled/projection-input handoff附着。若legacy runtime
+adapter仍需要旧operation DTO，只能在canonical PackageArtifact之外消费typed semantic input生成。
+
+当前runtime若仍从File IR signature推导service boundary materialization，可以在后续runtime阶段暂时fail
+closed；终态必须改读ServiceContract descriptor，不能据此反向扩张File IR语义。
+
 每个进入Package API、因而可能被deployment选择的callable还携带一个显式boundary状态：
 
 ```text
 BoundaryCallableProjection
   = Available {
-      descriptor: BoundaryOperationDescriptor
+      operationContract: BoundaryOperationContract
       implementationRequirements: BoundaryImplementationRequirements
     }
   | Unavailable([BoundaryUnavailableReason...])
 ```
 
+Package callable在compile时尚未绑定任何ServiceContract operation，因此PackageArtifact中的Available
+projection只保存contract-agnostic的`BoundaryOperationContract` body，不能携带或伪造
+`ContractOperationId`、contract stable key或完整`BoundaryOperationDescriptor`。同一个package callable可以
+被多个ServiceDeployment显式映射到不同contract operations；deployment只在映射后比较双方的operation
+contract body。
+
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
 
-`BoundaryOperationDescriptor`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
-公开effect保证。具体config/state/native capability requirement和完整may-effect属于
+`BoundaryOperationContract`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
+公开effect保证。`BoundaryOperationDescriptor`由ServiceContract在该body外增加真实
+`ContractOperationId`与stable key。具体config/state/native capability requirement和完整may-effect属于
 `BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
 
 同一个PackageArtifact可以同时：
@@ -167,6 +199,26 @@ ServiceContract的nominal boundary types使用独立`ContractTypeId`。Provider 
 compile dependency，不产生runtime service edge。Package自己的nominal type即使结构相同也不能充当
 contract type；需要转换时，开发者在package中编写显式wrapper。
 
+Package source中的contract dependency alias使用现有qualified namespace，不新增另一套type/import语法：
+
+- `payments.User`按`ContractRequirement(alias = payments)`解析到ServiceContract中stable key为`User`的
+  `ContractTypeId`；
+- `payments/charge(...)`按同一validated ServiceContract中的operation descriptor解析，并在source typed
+  analysis阶段检查参数与返回类型；
+- dependency source address复用现有`<dependencyAlias>/<publicPath>`语法。`/`分隔dependency resolver root与
+  public source-call path；`.`只用于type qualified path和address之后的成员访问，例如
+  `payments.User`、`payments/managed.charge(...)`；
+- package call与contract/service call都使用`/`地址；linkage kind来自validated dependency alias，不由
+  分隔符或物理local/remote binding猜测。`payments.charge(...)`不作为旧兼容拼写接受；
+- package dependency alias与contract dependency alias共享一个dependency alias namespace，任何冲突在
+  compile input trust boundary fail closed，不能靠type/call上下文猜测；
+- qualified alias只选择typed dependency，不进入ContractTypeId/ContractOperationId本体，也不能从provider
+  package、deployment或display name补事实。
+
+这里冻结的是typed compiler binding。contract dependency最终由YAML、IDL、CLI或其它authoring表面如何声明，
+仍留给后续阶段；未冻结authoring UX不允许compiler把contract operation signature降成无类型symbol，或把
+contract nominal type重写成package-local nominal type。
+
 `dependencyBindings`只表达当前deployment对implementation package requirements的provider selector/约束，
 不拥有全局解析结果。RuntimeAssembly projection负责在root set及闭包中解析唯一provider、验证闭包并生成
 每个ActivationContext的binding vector。
@@ -196,6 +248,33 @@ package dependency调用使用`PackageLocalAbi`和implementation links：
 - 可以原地修改caller传入对象；
 - 不经过service dispatcher，不切换activation owner；
 - 不要求linkable或recoverable。
+
+File IR 对 package direct call 使用唯一 canonical target，不携带 legacy publication operation ABI：
+
+```text
+CallTargetIr::PackageCallable {
+  packageRef: PackageRefIr
+  packageCallableId: PackageCallableId
+}
+```
+
+同一引用同时进入 owner-local `ExternalRefTable.packageCallables`，元素为
+`PackageCallableRef { packageRef, packageCallableId }`。`expectedLocalAbi` 只由对应
+`PackageRequirement` 拥有，不在每个 call site 或 external-ref table 重复。链接按以下链路 fail closed：
+
+```text
+PackageRefIr::Dependency(alias)
+  -> PackageRequirement(alias, expectedLocalAbi)
+  -> dependency PackageArtifact.packageLocalAbi.localAbiIdentity
+  -> dependency PackageArtifact.callableLinks[PackageCallableId]
+  -> OperationTargetRef
+```
+
+compiler source resolution必须先从已验证的dependency PackageArtifact取得`PackageCallableId`；lowering只
+保持该typed identity，不从symbol path重建target。File IR materialization校验package coordinate被
+`PackageRequirement`覆盖；assembly/linker再次校验local ABI并解析`callableLinks`。不得把
+`PackageCallableId`编码进`OperationAbiRef`，也不得恢复`PackageOperationIndex`、publication ABI builder或
+used-symbol closure作为bridge。
 
 ### 6.2 Service boundary call
 
@@ -326,7 +405,13 @@ ServiceDeploymentInput
 ```
 
 PackageSourceModel拥有name/type resolution、public API graph、effect/provenance与dependency facts。
-Lowering只消费typed source facts。Package projection不读deployment配置。
+它还为全部function/impl method拥有exact executable signature facts，并为全部interface operation拥有exact
+requirement facts；public callable signature只是executable事实表按public path产生的view。interface conformance
+只比较这两类exact facts。Lowering只消费typed source facts，把exact source type投影为File IR execution
+representation。package direct call降低为`PackageCallable` target；service call降低为`ServiceCallRef`。
+compiled/projection-input只转交source-validated interface binding/method key与execution target所需结构事实，
+不从File IR或`TypeResolutionModel`重算conformance。Package projection不读deployment配置，也不从File IR
+execution signature重做source conformance或ABI identity。
 
 Service call lowering只生成`ServiceCallRef`和contract value plan refs。Assembly linking为每个
 ActivationContext生成service binding vector / thunk；它不是stub package，也不让consumer依赖provider

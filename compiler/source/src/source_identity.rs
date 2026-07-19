@@ -11,7 +11,7 @@ use crate::shared::id::PublicationId;
 
 /// 源码文本拼接 identity(角色 b:revision 变更检测历史入口)。
 ///
-/// **注意**:这个字符串当前仍被 `SourceCompileModel` 保留以便向后兼容,但
+/// **注意**:这个字符串当前仍被 `PackageSourceModel` 保留以便向后兼容,但
 /// `runtime_manifest.rs` 的 revision_id 计算已切换到 descriptor-based revision,
 /// 不再直接使用它。见 P1b 任务说明。
 pub fn source_identity(parsed_sources: &[ParsedCompilerSource]) -> String {
@@ -40,18 +40,17 @@ pub fn source_identity(parsed_sources: &[ParsedCompilerSource]) -> String {
 /// - 加/删无关 sibling → 既有 anchor 不变;
 /// - 把 declaration 移到不同 module/file → anchor 改变(即使 descriptor 和 public path 不变)。
 ///
-/// `publication_id`:对 Package publication 传 package_id;对 Service publication 传
-/// 解析后的真实 service_id。生产 service 不允许使用 placeholder/sentinel,否则不同
-/// service 的同名 declaration 会得到相同 ABI owner identity。
+/// `package_id` 必须是当前 package publication 的真实 ID；不能使用 placeholder/sentinel，
+/// 否则不同 package 的同名 declaration 会得到相同 ABI owner identity。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationDeclarationAnchors {
     anchors: Vec<SourceDeclarationAnchor>,
 }
 
 impl PublicationDeclarationAnchors {
-    pub fn build(parsed_sources: &[ParsedCompilerSource], publication_id: &str) -> Self {
-        let pub_id = PublicationId::parse(publication_id)
-            .expect("declaration anchor publication_id must be a valid publication id");
+    pub fn build(parsed_sources: &[ParsedCompilerSource], package_id: &str) -> Self {
+        let pub_id = PublicationId::parse(package_id)
+            .expect("declaration anchor package_id must be a valid publication id");
         let publication = PublicationIdentity::with_default_epoch(pub_id);
 
         let mut anchors = Vec::new();

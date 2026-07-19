@@ -7,7 +7,6 @@ use std::{
 use skiff_compiler_core::id::{SKIFF_STD_PUBLICATION_ID, STD_SOURCE_ALIAS};
 use skiff_compiler_input_model::{
     CompilerRawSourceFile, CompilerSourceRole, RawPublicationSourceGraph, RawSourceFileMeta,
-    RawSourceOrigin,
 };
 
 use crate::{
@@ -180,9 +179,6 @@ fn read_package_sources_with_module_path_and_extra_sources(
                     module_path,
                     is_test_file: false,
                     is_generated: false,
-                    origin: RawSourceOrigin::Package {
-                        package_id: manifest.id.to_string(),
-                    },
                 },
                 text,
                 role: CompilerSourceRole::Package,
@@ -192,7 +188,6 @@ fn read_package_sources_with_module_path_and_extra_sources(
 
     RawPackagePublicationSources::with_visibility(
         package_root.to_path_buf(),
-        manifest.id.to_string(),
         files,
         visibility_by_path,
     )
@@ -213,7 +208,6 @@ pub enum PackageSourceVisibility {
 #[derive(Debug, Clone)]
 pub struct RawPackagePublicationSources {
     root: PathBuf,
-    package_id: String,
     files: Vec<CompilerRawSourceFile>,
     visibility_by_path: BTreeMap<PathBuf, PackageSourceVisibility>,
 }
@@ -221,15 +215,12 @@ pub struct RawPackagePublicationSources {
 impl RawPackagePublicationSources {
     pub fn with_visibility(
         root: PathBuf,
-        package_id: impl Into<String>,
         files: Vec<CompilerRawSourceFile>,
         visibility_by_path: BTreeMap<PathBuf, PackageSourceVisibility>,
     ) -> Result<Self, InputAssemblyError> {
-        let package_id = package_id.into();
-        validate_package_publication_sources(&package_id, &files, &visibility_by_path)?;
+        validate_package_publication_sources(&files, &visibility_by_path)?;
         Ok(Self {
             root,
-            package_id,
             files,
             visibility_by_path,
         })
@@ -238,7 +229,6 @@ impl RawPackagePublicationSources {
     pub fn into_source_graph(self) -> RawPublicationSourceGraph {
         let Self {
             root,
-            package_id: _package_id,
             files,
             visibility_by_path: _visibility_by_path,
         } = self;
@@ -267,7 +257,6 @@ impl RawPackagePublicationSources {
 }
 
 fn validate_package_publication_sources(
-    package_id: &str,
     files: &[CompilerRawSourceFile],
     visibility_by_path: &BTreeMap<PathBuf, PackageSourceVisibility>,
 ) -> Result<(), InputAssemblyError> {
@@ -278,21 +267,6 @@ fn validate_package_publication_sources(
     let mut violations = Vec::new();
 
     for source in files {
-        match &source.meta.origin {
-            RawSourceOrigin::Package {
-                package_id: source_package_id,
-            } if source_package_id == package_id => {}
-            RawSourceOrigin::Package {
-                package_id: source_package_id,
-            } => violations.push(format!(
-                "{} belongs to package {source_package_id}, expected {package_id}",
-                source.meta.relative_path.display()
-            )),
-            RawSourceOrigin::Service => violations.push(format!(
-                "{} is not a package source",
-                source.meta.relative_path.display()
-            )),
-        }
         if !visibility_by_path.contains_key(&source.meta.relative_path) {
             violations.push(format!(
                 "{} has no package visibility",
@@ -537,6 +511,49 @@ mod tests {
         assert_eq!(
             official_package_source_module_path("skiff.run/std", "std.__private.helper"),
             "std.__private.helper"
+        );
+    }
+
+    #[test]
+    fn package_source_validation_remains_fail_closed_without_origin_metadata() {
+        let source_path = PathBuf::from("source.skiff");
+        let files = vec![CompilerRawSourceFile {
+            meta: RawSourceFileMeta {
+                relative_path: source_path.clone(),
+                module_path: "source".to_string(),
+                is_test_file: false,
+                is_generated: false,
+            },
+            text: String::new(),
+            role: CompilerSourceRole::Package,
+        }];
+
+        let missing_visibility =
+            validate_package_publication_sources(&files, &BTreeMap::new()).unwrap_err();
+        assert!(
+            missing_visibility
+                .to_string()
+                .contains("source.skiff has no package visibility"),
+            "unexpected validation error: {missing_visibility}"
+        );
+
+        let missing_source_path = PathBuf::from("missing.skiff");
+        let visibility_by_path = BTreeMap::from([(
+            missing_source_path,
+            PackageSourceVisibility::Export {
+                public_module_path: String::new(),
+            },
+        )]);
+        let incomplete_sources =
+            validate_package_publication_sources(&[], &visibility_by_path).unwrap_err();
+        let incomplete_sources = incomplete_sources.to_string();
+        assert!(
+            incomplete_sources.contains("missing.skiff has package visibility but no raw source"),
+            "unexpected validation error: {incomplete_sources}"
+        );
+        assert!(
+            incomplete_sources.contains("missing.skiff has empty public module path"),
+            "unexpected validation error: {incomplete_sources}"
         );
     }
 

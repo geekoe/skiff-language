@@ -4,16 +4,20 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use skiff_artifact_model::{
-    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, DbMetadataIr, FileIrUnit,
-    InterfaceMethodSignature, ServiceDependencyConstraint, TypeRefIr,
+    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts, DbMetadataIr,
+    FileIrUnit, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
 mod callable_effects;
+mod package_callable_signatures;
 
 pub use callable_effects::{ProjectionCallableEffectFacts, ProjectionExecutableKey};
+pub use package_callable_signatures::{
+    canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
+    ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProjectionInput {
@@ -21,6 +25,7 @@ pub struct ProjectionInput {
     source_metadata: Vec<ProjectionSourceMetadata>,
     source: ProjectionSourceFacts,
     lowering: ProjectionLoweringFacts,
+    callable_signatures: ProjectionPackageCallableSignatureFacts,
     resources: Vec<PublicationResourceProjectionInput>,
 }
 
@@ -35,12 +40,14 @@ impl ProjectionInput {
         source_metadata: Vec<ProjectionSourceMetadata>,
         source: ProjectionSourceFacts,
         lowering: ProjectionLoweringFacts,
+        callable_signatures: ProjectionPackageCallableSignatureFacts,
     ) -> Self {
         Self {
             file_ir_units,
             source_metadata,
             source,
             lowering,
+            callable_signatures,
             resources: Vec::new(),
         }
     }
@@ -50,6 +57,7 @@ impl ProjectionInput {
         source_metadata: Vec<ProjectionSourceMetadata>,
         source: ProjectionSourceFacts,
         lowering: ProjectionLoweringFacts,
+        callable_signatures: ProjectionPackageCallableSignatureFacts,
         resources: Vec<PublicationResourceProjectionInput>,
     ) -> Self {
         Self {
@@ -57,6 +65,7 @@ impl ProjectionInput {
             source_metadata,
             source,
             lowering,
+            callable_signatures,
             resources,
         }
     }
@@ -88,12 +97,12 @@ impl<'a> ProjectionView<'a> {
         &self.input.lowering
     }
 
-    pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
-        &self.input.resources
+    pub fn callable_signatures(&self) -> &'a ProjectionPackageCallableSignatureFacts {
+        &self.input.callable_signatures
     }
 
-    pub fn service_ingress(&self) -> Option<&'a ServiceIngressProjection> {
-        self.source().service_ingress()
+    pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
+        &self.input.resources
     }
 }
 
@@ -144,237 +153,6 @@ impl PublicationResourceProjectionInput {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PackageProjectionInput {
-    info: PackagePublicationProjectionInfo,
-    compiled: ProjectionInput,
-    dependency_config: Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct PackageProjectionInputParts {
-    pub info: PackagePublicationProjectionInfo,
-    pub compiled: ProjectionInput,
-    pub dependency_config: Value,
-}
-
-impl PackageProjectionInput {
-    pub fn new(parts: PackageProjectionInputParts) -> Self {
-        Self {
-            info: parts.info,
-            compiled: parts.compiled,
-            dependency_config: parts.dependency_config,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        self.info.id()
-    }
-
-    pub fn version(&self) -> &str {
-        self.info.version()
-    }
-
-    pub fn dependencies(&self) -> &[PackageDependencyProjectionInfo] {
-        self.info.dependencies()
-    }
-
-    pub fn manifest(&self) -> &PackagePublicationProjectionInfo {
-        &self.info
-    }
-
-    pub fn source_root(&self) -> &Path {
-        self.info.source_root()
-    }
-
-    pub fn api_entries(&self) -> &[PackageApiEntryProjectionInfo] {
-        self.info.api_entries()
-    }
-
-    pub fn api_source(&self) -> Option<&PackageApiSourceProjectionInfo> {
-        self.info.api_source()
-    }
-
-    pub fn config(&self) -> &Value {
-        &self.dependency_config
-    }
-
-    pub fn compiled(&self) -> ProjectionView<'_> {
-        self.compiled.view()
-    }
-
-    pub fn with_resources(mut self, resources: Vec<PublicationResourceProjectionInput>) -> Self {
-        self.compiled = self.compiled.with_resources(resources);
-        self
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PackagePublicationProjectionInfo {
-    id: String,
-    version: String,
-    dependencies: Vec<PackageDependencyProjectionInfo>,
-    api_entries: Vec<PackageApiEntryProjectionInfo>,
-    api_source: Option<PackageApiSourceProjectionInfo>,
-    source_root: PathBuf,
-    provenance: PackagePublicationProjectionProvenance,
-}
-
-impl PackagePublicationProjectionInfo {
-    pub fn new(
-        id: String,
-        version: String,
-        dependencies: Vec<PackageDependencyProjectionInfo>,
-        api_entries: Vec<PackageApiEntryProjectionInfo>,
-        api_source: Option<PackageApiSourceProjectionInfo>,
-        source_root: PathBuf,
-        provenance: PackagePublicationProjectionProvenance,
-    ) -> Self {
-        Self {
-            id,
-            version,
-            dependencies,
-            api_entries,
-            api_source,
-            source_root,
-            provenance,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    pub fn dependencies(&self) -> &[PackageDependencyProjectionInfo] {
-        &self.dependencies
-    }
-
-    pub fn api_entries(&self) -> &[PackageApiEntryProjectionInfo] {
-        &self.api_entries
-    }
-
-    pub fn api_source(&self) -> Option<&PackageApiSourceProjectionInfo> {
-        self.api_source.as_ref()
-    }
-
-    pub fn source_root(&self) -> &Path {
-        &self.source_root
-    }
-
-    pub fn provenance(&self) -> &PackagePublicationProjectionProvenance {
-        &self.provenance
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PackagePublicationProjectionProvenance {
-    synthetic: bool,
-}
-
-impl PackagePublicationProjectionProvenance {
-    pub fn new(synthetic: bool) -> Self {
-        Self { synthetic }
-    }
-
-    pub fn synthetic(&self) -> bool {
-        self.synthetic
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackageDependencyProjectionInfo {
-    id: String,
-    version: String,
-    alias: Option<String>,
-    config: Value,
-    collection_name_mapping: BTreeMap<String, String>,
-}
-
-impl PackageDependencyProjectionInfo {
-    pub fn new(
-        id: String,
-        version: String,
-        alias: Option<String>,
-        config: Value,
-        collection_name_mapping: BTreeMap<String, String>,
-    ) -> Self {
-        Self {
-            id,
-            version,
-            alias,
-            config,
-            collection_name_mapping,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    pub fn alias(&self) -> Option<&str> {
-        self.alias.as_deref()
-    }
-
-    pub fn config(&self) -> &Value {
-        &self.config
-    }
-
-    pub fn collection_name_mapping(&self) -> &BTreeMap<String, String> {
-        &self.collection_name_mapping
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PackageApiEntryProjectionInfo {
-    path: String,
-    module: String,
-}
-
-impl PackageApiEntryProjectionInfo {
-    pub fn new(path: String, module: String) -> Self {
-        Self { path, module }
-    }
-
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
-    pub fn module(&self) -> &str {
-        &self.module
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PackageApiSourceProjectionInfo {
-    relative_path: PathBuf,
-    content_hash: String,
-}
-
-impl PackageApiSourceProjectionInfo {
-    pub fn new(relative_path: PathBuf, content_hash: String) -> Self {
-        Self {
-            relative_path,
-            content_hash,
-        }
-    }
-
-    pub fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    pub fn content_hash(&self) -> &str {
-        &self.content_hash
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSourceMetadata {
     pub source_path: String,
@@ -389,9 +167,8 @@ pub struct ProjectionSourceFacts {
     export_bindings: ExportBindingProjection,
     config_requirements: ConfigRequirementsSeed,
     abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
-    service_ingress: Option<ServiceIngressProjection>,
-    service_dependencies: ServiceDependencyProjectionFacts,
     callable_effects: ProjectionCallableEffectFacts,
+    callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
 }
 
 #[derive(Debug, Clone)]
@@ -400,9 +177,8 @@ pub struct ProjectionSourceFactsParts {
     pub export_bindings: ExportBindingProjection,
     pub config_requirements: ConfigRequirementsSeed,
     pub abi_ids: BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds>,
-    pub service_ingress: Option<ServiceIngressProjection>,
-    pub service_dependencies: ServiceDependencyProjectionFacts,
     pub callable_effects: ProjectionCallableEffectFacts,
+    pub callable_semantic_facts: BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
 }
 
 impl ProjectionSourceFacts {
@@ -412,9 +188,8 @@ impl ProjectionSourceFacts {
             export_bindings: parts.export_bindings,
             config_requirements: parts.config_requirements,
             abi_ids: parts.abi_ids,
-            service_ingress: parts.service_ingress,
-            service_dependencies: parts.service_dependencies,
             callable_effects: parts.callable_effects,
+            callable_semantic_facts: parts.callable_semantic_facts,
         }
     }
 
@@ -430,14 +205,6 @@ impl ProjectionSourceFacts {
         &self.config_requirements
     }
 
-    pub fn service_ingress(&self) -> Option<&ServiceIngressProjection> {
-        self.service_ingress.as_ref()
-    }
-
-    pub fn service_dependencies(&self) -> &ServiceDependencyProjectionFacts {
-        &self.service_dependencies
-    }
-
     pub fn abi_ids(&self) -> &BTreeMap<ProjectionDeclarationKey, ProjectionAbiDeclarationIds> {
         &self.abi_ids
     }
@@ -445,28 +212,11 @@ impl ProjectionSourceFacts {
     pub fn callable_effects(&self) -> &ProjectionCallableEffectFacts {
         &self.callable_effects
     }
-}
 
-#[derive(Debug, Clone, Default)]
-pub struct ServiceDependencyProjectionFacts {
-    constraints: Vec<ServiceDependencyConstraint>,
-    dependency_lock: Vec<Value>,
-}
-
-impl ServiceDependencyProjectionFacts {
-    pub fn new(constraints: Vec<ServiceDependencyConstraint>, dependency_lock: Vec<Value>) -> Self {
-        Self {
-            constraints,
-            dependency_lock,
-        }
-    }
-
-    pub fn constraints(&self) -> &[ServiceDependencyConstraint] {
-        &self.constraints
-    }
-
-    pub fn dependency_lock(&self) -> &[Value] {
-        &self.dependency_lock
+    pub fn callable_semantic_facts(
+        &self,
+    ) -> &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts> {
+        &self.callable_semantic_facts
     }
 }
 
@@ -785,18 +535,20 @@ pub struct ExportPublicInstanceProjection {
     pub public_path: String,
     pub source_module: String,
     pub source_symbol: String,
+    pub receiver: ProjectionSourceSymbolKey,
     pub interfaces: Vec<ExportPublicInstanceInterfaceProjection>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExportPublicInstanceInterfaceProjection {
-    pub source_module: String,
-    pub source_symbol: String,
-    pub implements_interface: bool,
-    pub canonical_type_args: Vec<TypeRefIr>,
-    pub package_interface_identity: Option<TypeRefIr>,
-    pub package_interface_methods: Vec<InterfaceMethodSignature>,
-    pub receiver_implements_package_interface: bool,
+    pub interface: ProjectionSourceSymbolKey,
+    pub methods: Vec<ExportPublicInstanceMethodProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportPublicInstanceMethodProjection {
+    pub method: String,
+    pub executable: ProjectionSourceSymbolKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1087,68 +839,6 @@ impl ConfigRequirementDependencyStepProjection {
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ServiceIngressProjection {
-    pub package_aliases: BTreeMap<String, String>,
-    pub http: Option<ServiceHttpIngressProjection>,
-    pub websocket: Option<ServiceWebSocketIngressProjection>,
-}
-
-impl ServiceIngressProjection {
-    pub fn http(&self) -> Option<&ServiceHttpIngressProjection> {
-        self.http.as_ref()
-    }
-
-    pub fn websocket(&self) -> Option<&ServiceWebSocketIngressProjection> {
-        self.websocket.as_ref()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceHttpIngressProjection {
-    pub entry_target: Option<String>,
-    pub guard: Option<ServiceIngressHandlerProjection>,
-    pub pre: Option<ServiceIngressHandlerProjection>,
-    pub routes: Vec<ServiceHttpRouteIngressProjection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceHttpRouteIngressProjection {
-    pub method: Option<String>,
-    pub path: String,
-    pub handler: ServiceIngressHandlerProjection,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServiceWebSocketIngressProjection {
-    pub target: Option<String>,
-    pub connect: Option<ServiceIngressHandlerProjection>,
-    pub receive: Option<ServiceIngressHandlerProjection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServiceIngressHandlerProjection {
-    ServiceFunction {
-        source: String,
-        module_path: String,
-        symbol: String,
-    },
-    PackageFunction {
-        source: String,
-        package_id: String,
-        alias: String,
-        symbol_path: String,
-    },
-}
-
-impl ServiceIngressHandlerProjection {
-    pub fn source(&self) -> &str {
-        match self {
-            Self::ServiceFunction { source, .. } | Self::PackageFunction { source, .. } => source,
-        }
     }
 }
 

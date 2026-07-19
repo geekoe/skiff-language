@@ -30,7 +30,7 @@ export function runCratePublicApiSelfTest({ stdout }) {
     'all-configured must fail closed when a managed crate is absent',
   );
 
-  const crateName = 'skiff-compiler-projection-input';
+  const crateName = 'skiff-compiler-contract';
   const config = {
     crateName,
     allowedCrates: managedCrateConfig(crateName).allowedCrates,

@@ -16,7 +16,7 @@ const rustImplementationSubjects = [
     phaseId: 'implementation:compiler:rust',
     packages: [
       rustPackage('compiler/core', 'skiff-compiler-core'),
-      rustPackage('compiler/publication-abi', 'skiff-compiler-publication-abi'),
+      rustPackage('compiler/contract', 'skiff-compiler-contract'),
       rustPackage('compiler/input-model', 'skiff-compiler-input-model'),
       rustPackage('compiler/input', 'skiff-compiler-input'),
       rustPackage('compiler/source', 'skiff-compiler-source'),

@@ -379,7 +379,7 @@ impl StreamEmitTypeChecker<'_> {
             .fact(&key)
             .and_then(|fact| fact.ty.clone());
         match expr {
-            Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+            Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
             Expr::Binary { left, right, .. } => {
                 self.check_expr(left);
                 self.check_expr(right);

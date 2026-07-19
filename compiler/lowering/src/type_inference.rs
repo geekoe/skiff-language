@@ -5,6 +5,7 @@ use skiff_artifact_model::{builtin_receiver_op_spec_by_name, BuiltinReceiverPubl
 use skiff_compiler_source::{type_text_with_args, ExpressionKey};
 use skiff_syntax::{
     ast::{DbBlockMode, Expr, Literal, TypeRef},
+    ast_utils::expr_path,
     type_expr::TypeExpr,
     type_syntax::generic_parts,
 };
@@ -14,7 +15,7 @@ use super::db_lowering::{
     db_lease_read_result_type_ir, db_lease_read_result_type_text, db_operation_result_type_ir,
     db_query_type_ref,
 };
-use super::function_lowering::{expr_path, FunctionLowerer};
+use super::function_lowering::FunctionLowerer;
 use super::type_lowering::{
     canonical_runtime_receiver_root, lower_type_ref, lower_type_text,
     runtime_receiver_root_from_type_ref, type_ref_ir_type_text,
@@ -252,7 +253,7 @@ impl<'a> FunctionLowerer<'a> {
                 .bindings
                 .get(name)
                 .and_then(|binding| binding.type_text.clone()),
-            Expr::RemotePublicInstanceSource(_) => None,
+            Expr::DependencySourceAddress(_) => None,
             Expr::Field { object, field } => {
                 let object_ty = self.infer_expr_type_ir(object)?;
                 self.field_type_for_receiver_type(&object_ty, field)

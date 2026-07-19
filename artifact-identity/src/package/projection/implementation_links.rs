@@ -13,7 +13,7 @@ use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct PackageImplementationLinksIdentityProjection {
+pub(crate) struct PackageImplementationLinksIdentityProjection {
     types: BTreeMap<String, TypeImplementationLinkIdentityProjection>,
     constants: BTreeMap<String, ConstImplementationLinkIdentityProjection>,
     functions: BTreeMap<String, ExecutableImplementationLinkIdentityProjection>,
@@ -22,7 +22,7 @@ pub(super) struct PackageImplementationLinksIdentityProjection {
 }
 
 impl PackageImplementationLinksIdentityProjection {
-    pub(super) fn from_links(links: &PackageImplementationLinks) -> Result<Self> {
+    pub(crate) fn from_links(links: &PackageImplementationLinks) -> Result<Self> {
         Ok(Self {
             types: links
                 .types
@@ -180,7 +180,7 @@ impl PackageOperationTargetIdentityProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OperationTargetIdentityProjection {
+pub(crate) struct OperationTargetIdentityProjection {
     file: FileIrOwnerIdentityProjection,
     executable_index: u32,
     callable_abi_id: String,
@@ -188,7 +188,7 @@ struct OperationTargetIdentityProjection {
 }
 
 impl OperationTargetIdentityProjection {
-    fn from_ref(target: &OperationTargetRef) -> Self {
+    pub(crate) fn from_ref(target: &OperationTargetRef) -> Self {
         Self {
             file: FileIrOwnerIdentityProjection::from_ref(&target.file_ref),
             executable_index: target.executable_index,

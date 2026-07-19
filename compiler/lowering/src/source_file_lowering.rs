@@ -8,13 +8,14 @@ use skiff_compiler_source::{
     parsed_sources::{parse_publication_sources, ParsedCompilerSource},
     publication_db_metadata_index,
     semantic::{
-        DbAttachmentIndex, PublicationSemanticContext, SemanticPublication, SemanticSource,
-        SourceOrigin, SourceSemanticContext,
+        impl_method_declaration_name, DbAttachmentIndex, PublicationSemanticContext,
+        SemanticPublication, SemanticSource, SourceSemanticContext,
     },
     source_graph::CompilerSourceFile,
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
-    TypeResolutionModel,
+    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceExecutableSignatureFacts,
+    SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, SourceFile},
@@ -24,52 +25,55 @@ use skiff_syntax::{
 
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
-    db_lowering::{lower_db_declarations, LoweredPublicationDbMetadataIndex},
+    db_lowering::{lower_db_declarations, LoweredPackageDbMetadataIndex},
     declaration_lowering::{local_type_field_index, lower_type_declarations},
-    dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
     executable_declaration_lowering::{
         lower_const_declarations, lower_executables, lowered_executable_signatures,
     },
-    external_refs::{external_refs_for_file_ir_unit, required_receiver_builtin_capability_version},
+    external_refs::{
+        rebuild_external_refs_for_file_ir_unit, required_receiver_builtin_capability_version,
+    },
+    service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_map_source, source_ast_hash},
     suspend_analysis::suspend_index_for_source,
 };
 
-pub struct PublicationSourceLoweringInput<'a, 'context, 'publication> {
+pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub source: &'a str,
     pub role: &'a str,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub package_interface_methods: &'a PackageInterfaceMethodIndex,
-    pub package_operations: &'a PackageOperationIndex,
-    pub service_dependency_operations: &'a ServiceDependencyOperationIndex,
+    pub resolved_call_targets: &'a ResolvedCallTargetFacts,
     pub external_type_symbols: &'a PublicationTypeSymbolIndex,
-    pub service_dependency_aliases: &'a BTreeSet<String>,
     pub publication_db_metadata: &'a PublicationDbMetadataIndex,
     pub semantic_context: &'a SourceSemanticContext<'context, 'publication>,
     pub source_alias_targets: &'a BTreeMap<String, String>,
     pub type_resolution: &'a TypeResolutionModel,
     pub expression_types: Option<&'a ExpressionTypeModel>,
     pub callable_return_types: &'a BTreeMap<String, CallableReturnType>,
+    pub executable_signatures: &'a SourceExecutableSignatureFacts,
+    /// `None` is reserved for standalone helpers; an interface then fails
+    /// closed instead of rebuilding its signature from syntax.
+    pub interface_signatures: Option<&'a SourceInterfaceSignatureFacts>,
+    pub service_calls: Option<&'a LoweredServiceCalls>,
 }
 
 struct SourceFileLoweringContext<'a> {
     package_aliases: &'a BTreeMap<String, Vec<String>>,
     package_interface_methods: &'a PackageInterfaceMethodIndex,
-    package_operations: &'a PackageOperationIndex,
-    service_dependency_operations: &'a ServiceDependencyOperationIndex,
+    resolved_call_targets: &'a ResolvedCallTargetFacts,
     external_type_symbols: &'a PublicationTypeSymbolIndex,
     service_dependency_aliases: &'a BTreeSet<String>,
     publication_db_metadata: &'a PublicationDbMetadataIndex,
+    service_calls: Option<&'a LoweredServiceCalls>,
 }
 
 static EMPTY_PACKAGE_ALIASES: std::sync::LazyLock<BTreeMap<String, Vec<String>>> =
     std::sync::LazyLock::new(BTreeMap::new);
 static EMPTY_PACKAGE_INTERFACE_METHODS: std::sync::LazyLock<PackageInterfaceMethodIndex> =
     std::sync::LazyLock::new(PackageInterfaceMethodIndex::default);
-static EMPTY_PACKAGE_OPERATIONS: std::sync::LazyLock<PackageOperationIndex> =
-    std::sync::LazyLock::new(PackageOperationIndex::default);
-static EMPTY_SERVICE_DEPENDENCY_OPERATIONS: std::sync::LazyLock<ServiceDependencyOperationIndex> =
-    std::sync::LazyLock::new(ServiceDependencyOperationIndex::default);
+static EMPTY_RESOLVED_CALL_TARGETS: std::sync::LazyLock<ResolvedCallTargetFacts> =
+    std::sync::LazyLock::new(ResolvedCallTargetFacts::empty);
 static EMPTY_EXTERNAL_TYPE_SYMBOLS: std::sync::LazyLock<PublicationTypeSymbolIndex> =
     std::sync::LazyLock::new(PublicationTypeSymbolIndex::default);
 static EMPTY_SERVICE_DEPENDENCY_ALIASES: std::sync::LazyLock<BTreeSet<String>> =
@@ -82,17 +86,17 @@ impl<'a> SourceFileLoweringContext<'a> {
         SourceFileLoweringContext {
             package_aliases: &EMPTY_PACKAGE_ALIASES,
             package_interface_methods: &EMPTY_PACKAGE_INTERFACE_METHODS,
-            package_operations: &EMPTY_PACKAGE_OPERATIONS,
-            service_dependency_operations: &EMPTY_SERVICE_DEPENDENCY_OPERATIONS,
+            resolved_call_targets: &EMPTY_RESOLVED_CALL_TARGETS,
             external_type_symbols: &EMPTY_EXTERNAL_TYPE_SYMBOLS,
             service_dependency_aliases: &EMPTY_SERVICE_DEPENDENCY_ALIASES,
             publication_db_metadata: &EMPTY_PUBLICATION_DB_METADATA,
+            service_calls: None,
         }
     }
 }
 
-pub fn compile_publication_source_file_ir_unit(
-    input: PublicationSourceLoweringInput<'_, '_, '_>,
+pub fn compile_package_source_file_ir_unit(
+    input: PackageSourceLoweringInput<'_, '_, '_>,
 ) -> Result<FileIrUnit> {
     validate_file_ir_unit_role(input.role)?;
     let source_ast_hash = source_ast_hash(input.source)?;
@@ -101,15 +105,16 @@ pub fn compile_publication_source_file_ir_unit(
         source_ast_hash,
         input.package_aliases,
         input.package_interface_methods,
-        input.package_operations,
-        input.service_dependency_operations,
+        input.resolved_call_targets,
         input.external_type_symbols,
-        input.service_dependency_aliases,
         input.publication_db_metadata,
         input.source_alias_targets,
         input.type_resolution,
         input.expression_types,
         input.callable_return_types,
+        input.executable_signatures,
+        input.interface_signatures,
+        input.service_calls,
     )?;
     assign_file_ir_identity(&mut unit);
     Ok(unit)
@@ -184,7 +189,6 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
     let semantic_source = SemanticSource::new(
         parsed.relative_path().display().to_string(),
         &module_path,
-        SourceOrigin::Service,
         parsed.ast(),
         parsed.alias_targets(),
     );
@@ -193,21 +197,76 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
     let source_semantic_context = publication_semantic_context.source_context(&module_path)?;
     let mut callable_return_types = BTreeMap::new();
     extend_callable_return_types_for_source(&mut callable_return_types, &module_path, parsed.ast());
-    compile_publication_source_file_ir_unit(PublicationSourceLoweringInput {
+    let executable_signatures = standalone_executable_signatures(
+        &parsed_sources,
+        &type_resolution,
+        parsed.ast(),
+        &module_path,
+        ctx,
+        &expression_types,
+    )?;
+    compile_package_source_file_ir_unit(PackageSourceLoweringInput {
         source,
         role: &role,
         package_aliases: ctx.package_aliases,
         package_interface_methods: ctx.package_interface_methods,
-        package_operations: ctx.package_operations,
-        service_dependency_operations: ctx.service_dependency_operations,
+        resolved_call_targets: ctx.resolved_call_targets,
         external_type_symbols: ctx.external_type_symbols,
-        service_dependency_aliases: ctx.service_dependency_aliases,
         publication_db_metadata: ctx.publication_db_metadata,
         semantic_context: &source_semantic_context,
         source_alias_targets: parsed.alias_targets(),
         type_resolution: &type_resolution,
         expression_types: Some(&expression_types),
         callable_return_types: &callable_return_types,
+        executable_signatures: &executable_signatures,
+        interface_signatures: None,
+        service_calls: ctx.service_calls,
+    })
+}
+
+fn standalone_executable_signatures(
+    parsed_sources: &[ParsedCompilerSource],
+    type_resolution: &TypeResolutionModel,
+    ast: &SourceFile,
+    module_path: &str,
+    ctx: &SourceFileLoweringContext<'_>,
+    expression_types: &ExpressionTypeModel,
+) -> Result<SourceExecutableSignatureFacts> {
+    let suspend_index = suspend_index_for_source(
+        ast,
+        module_path,
+        ctx.package_aliases,
+        ctx.service_dependency_aliases,
+        Some(expression_types),
+    );
+    let mut may_suspend = BTreeMap::new();
+    for function in &ast.functions {
+        may_suspend.insert(
+            SourceSymbolKey::new(module_path, &function.name),
+            suspend_index.function_may_suspend(&function.name),
+        );
+    }
+    for implementation in &ast.impls {
+        for method in &implementation.method_bodies {
+            may_suspend.insert(
+                SourceSymbolKey::new(
+                    module_path,
+                    impl_method_declaration_name(&implementation.target, &method.name),
+                ),
+                suspend_index.method_may_suspend(&implementation.target, &method.name),
+            );
+        }
+    }
+    SourceExecutableSignatureFacts::from_exact_may_suspend(
+        parsed_sources,
+        type_resolution,
+        &SourceDependencyAnalysisInput::default(),
+        &may_suspend,
+    )
+    .map_err(|message| {
+        CompileError::Semantic(format!(
+            "single-file exact executable signature model failed:\n- {message}"
+        ))
     })
 }
 
@@ -304,21 +363,24 @@ fn lower_source_file_ir_unit(
     source_ast_hash: String,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     publication_db_metadata: &PublicationDbMetadataIndex,
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
+    exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
+    service_calls: Option<&LoweredServiceCalls>,
 ) -> Result<FileIrUnit> {
     let source = semantic_context.source;
     let ast = source.ast;
     let source_path = source.source_path.as_ref().to_string();
     let module_path = source.module_path;
     let executable_index = semantic_context.executable_index;
+    let empty_service_calls = LoweredServiceCalls::default();
+    let service_calls = service_calls.unwrap_or(&empty_service_calls);
     validate_supported_top_level(ast)?;
 
     let type_indices = type_indices(ast);
@@ -328,7 +390,7 @@ fn lower_source_file_ir_unit(
     extend_callable_return_types_for_source(&mut callable_return_types, module_path, ast);
     let db_attachments = DbAttachmentIndex::build(module_path, ast)?;
     let local_db_objects = LocalDbObjectIndex::from_attachments(&db_attachments);
-    let lowered_publication_db_metadata = LoweredPublicationDbMetadataIndex::from_source_index(
+    let lowered_publication_db_metadata = LoweredPackageDbMetadataIndex::from_source_index(
         publication_db_metadata,
         package_aliases,
         external_type_symbols,
@@ -337,12 +399,8 @@ fn lower_source_file_ir_unit(
         &ast.functions,
         &ast.impls,
         executable_index,
-        &type_indices,
-        &local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
+        module_path,
+        exact_executable_signatures,
     )?;
     let mut unit = FileIrUnit::empty(module_path.to_string(), source_ast_hash.clone());
     push_source_map_source(&mut unit, source_path, module_path, source_ast_hash);
@@ -352,6 +410,7 @@ fn lower_source_file_ir_unit(
         &ast.types,
         &ast.aliases,
         &ast.interfaces,
+        exact_interface_signatures,
         &type_indices,
         module_path,
         &local_db_objects,
@@ -384,10 +443,8 @@ fn lower_source_file_ir_unit(
         &type_indices,
         package_aliases,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         external_type_symbols,
-        service_dependency_aliases,
         module_path,
         &local_db_objects,
         semantic_context.interface_semantics,
@@ -397,33 +454,24 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        service_calls,
         &mut unit,
         &mut next_span_id,
     )?;
-    let suspend_index = suspend_index_for_source(
-        ast,
-        module_path,
-        package_aliases,
-        service_dependency_aliases,
-        expression_types,
-    );
     lower_executables(
         &ast.functions,
         &ast.impls,
         &db_metadata,
         publication_db_metadata,
         &lowered_publication_db_metadata,
-        &suspend_index,
         executable_index,
         &const_indices,
         &type_indices,
         external_type_symbols,
-        service_dependency_aliases,
         module_path,
         package_aliases,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         &local_db_objects,
         semantic_context.interface_semantics,
         source_alias_targets,
@@ -432,12 +480,17 @@ fn lower_source_file_ir_unit(
         &callable_return_types,
         &local_type_fields,
         &executable_signatures,
+        service_calls,
         &mut unit,
         &mut next_span_id,
     )?;
     unit.required_receiver_builtin_capability_version =
         required_receiver_builtin_capability_version(&unit);
-    unit.external_refs = external_refs_for_file_ir_unit(&unit);
+    unit.external_refs.service_call_refs =
+        service_calls.file_service_call_refs(module_path).to_vec();
+    rebuild_external_refs_for_file_ir_unit(&mut unit).map_err(|error| {
+        CompileError::Semantic(format!("invalid service call File IR: {error}"))
+    })?;
     Ok(unit)
 }
 
@@ -508,19 +561,28 @@ fn unsupported(message: impl Into<String>) -> CompileError {
 }
 
 #[cfg(test)]
+mod interface_execution_tests;
+
+#[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        path::PathBuf,
+    };
 
     use crate::{
         file_ir::{BoxSourceIr, CallTargetIr, ExecutableIr, ExprIr, PackageRefIr, TypeRefIr},
         source_unit_lowering::symbol,
     };
-    use skiff_artifact_model::ReceiverCallAbi;
+    use skiff_artifact_model::{
+        validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
+        PackageCallableId, PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
+    };
     use skiff_compiler_source::{
-        api::PublicTypeKind, build_from_parsed_sources, parsed_sources::parse_publication_sources,
-        source_graph::CompilerSourceFile, CompileParsedPublicationSourcesInput, PackageDependency,
-        PublicationApiEntry, PublicationApiSpec, PublicationCompilePolicy,
-        ResolvedServiceDependencies, SourceCompilePackageFacts,
+        api::PublicTypeKind, build_package_from_parsed_sources,
+        parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+        CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependency,
+        PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
     };
 
     use super::*;
@@ -616,7 +678,7 @@ mod tests {
             .expect("test source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -624,11 +686,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: "example.com/any-lowering",
-            },
+            policy: PackageCompilePolicy::new("example.com/any-lowering"),
         })
         .expect("source model should build");
         let lowered = crate::lower(&model).expect("publication should lower");
@@ -637,6 +695,41 @@ mod tests {
             .first()
             .expect("one file IR unit should be emitted")
             .clone()
+    }
+
+    #[test]
+    fn validated_package_db_schema_lowers_to_typed_file_ir() {
+        let unit = lowered_unit(
+            r#"
+                type Owner { id: string }
+                type Thread { id: string, owner: Owner }
+                db object Thread {
+                  primary key(id)
+                  unique index byOwner(owner.id desc) where owner.id != ""
+                }
+            "#,
+        );
+
+        let db = unit
+            .declarations
+            .db
+            .get("Thread")
+            .expect("validated package DB declaration should lower");
+        assert_eq!(db.key.name, "id");
+        assert!(db.fields.iter().any(|field| field.name == "owner"));
+        assert_eq!(db.indexes.len(), 1);
+        assert_eq!(db.indexes[0].name, "byOwner");
+        assert!(db.indexes[0].unique);
+        assert_eq!(db.indexes[0].fields[0].field.text, "owner.id");
+        assert_eq!(
+            db.indexes[0].fields[0].field.segments,
+            ["owner".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            db.indexes[0].fields[0].direction,
+            skiff_artifact_model::DbIndexDirectionIr::Desc
+        );
+        assert!(db.indexes[0].where_expr.is_some());
     }
 
     fn lowered_units(sources: Vec<(&str, &str, &str)>) -> Vec<FileIrUnit> {
@@ -666,7 +759,7 @@ mod tests {
             .expect("test source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -674,9 +767,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package { package_id },
+            policy: PackageCompilePolicy::new(package_id),
         })
         .expect("source model should build");
         crate::lower(&model)
@@ -707,7 +798,7 @@ mod tests {
                 .expect("package source facts should build");
         let package_aliases = BTreeMap::new();
         let package_dependencies = Vec::<PackageDependency>::new();
-        let package_model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let package_model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources: package_parsed_sources,
             production_sources: package_production_sources,
             diagnostic_root: &package_root,
@@ -715,11 +806,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: PACKAGE_ID,
-            },
+            policy: PackageCompilePolicy::new(PACKAGE_ID),
         })
         .expect("package source model should build");
         assert_eq!(
@@ -758,7 +845,7 @@ mod tests {
         let mut dependency = PackageDependency::id(PACKAGE_ID);
         dependency.alias = Some("pkg".to_string());
         let package_dependencies = vec![dependency];
-        let model = build_from_parsed_sources(CompileParsedPublicationSourcesInput {
+        let model = build_package_from_parsed_sources(CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources: Vec::new(),
             diagnostic_root: &root,
@@ -766,11 +853,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: Some(&package_facts),
-            service_dependencies: ResolvedServiceDependencies::default(),
-            service_ingress: None,
-            policy: PublicationCompilePolicy::Package {
-                package_id: "example.com/any-lowering",
-            },
+            policy: PackageCompilePolicy::new("example.com/any-lowering"),
         })
         .expect("source model with package facts should build");
         let lowered = crate::lower(&model).expect("publication should lower");
@@ -1091,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_package_any_interface_function_param_to_package_symbol_selector() {
+    fn exact_package_any_interface_function_param_preserves_package_symbol_selector() {
         let unit = lowered_unit_with_package_facts(package_any_interface_signature_source());
         let accept = executable(&unit, "accept_package");
         let TypeRefIr::AnyInterface { interface } = &accept.params[0].ty else {
@@ -1105,7 +1188,7 @@ mod tests {
         assert_eq!(symbol.symbol_path, "Reader");
         assert!(matches!(
             symbol.package,
-            PackageRefIr::Dependency { ref dependency_ref } if dependency_ref == "pkg"
+            PackageRefIr::PackageId { ref package_id } if package_id == PACKAGE_ID
         ));
         assert_eq!(
             interface.canonical_type_args,
@@ -1157,5 +1240,216 @@ mod tests {
             matches!(receiver_arg, ExprIr::LoadSlot { .. }),
             "receiver arg should load the boxed local binding"
         );
+    }
+
+    #[test]
+    fn typed_contract_call_site_lowers_to_canonical_service_call_without_legacy_operation_abi() {
+        let source = r#"
+          function run() -> void {
+            echo/ping()
+          }
+        "#;
+        let operation_id = ContractOperationId::new("operation:ping");
+        let protocol = ServiceProtocolIdentity::new("protocol:echo");
+        let contract_requirement = ContractRequirement {
+            alias: "echo".to_string(),
+            service_id: "example.echo".to_string(),
+            contract_version: "1.0.0".to_string(),
+            expected_protocol_identity: protocol.clone(),
+        };
+        let expression = skiff_compiler_source::ExpressionKey::new(
+            MODULE,
+            skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
+            0,
+        );
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                expression,
+                skiff_compiler_source::ResolvedCallTarget::ContractOperation {
+                    contract_requirement,
+                    contract_operation_id: operation_id.clone(),
+                },
+            )]));
+        let service_calls = crate::lower_service_calls(&targets).unwrap();
+        let service_aliases = BTreeSet::from(["echo".to_string()]);
+        let ast = parse_source(source).unwrap();
+        let unit = compile_parsed_source_file_ir_unit_with_lowering_context(
+            ast,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                service_dependency_aliases: &service_aliases,
+                service_calls: Some(&service_calls),
+                ..SourceFileLoweringContext::none()
+            },
+        )
+        .unwrap();
+
+        validate_file_ir_service_calls(&unit).unwrap();
+        assert_eq!(unit.external_refs.service_call_refs.len(), 1);
+        assert_eq!(
+            unit.external_refs.service_call_refs[0].contract_operation_id,
+            operation_id
+        );
+        assert_eq!(
+            unit.external_refs.service_call_refs[0].expected_protocol_identity,
+            protocol
+        );
+        let run = executable(&unit, "run");
+        assert!(run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(call.target, CallTargetIr::ServiceCall { .. })
+        )));
+        assert!(!run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(call.target, CallTargetIr::ServiceDependencySymbol { .. })
+        )));
+        let wire = serde_json::to_string(&unit).unwrap();
+        assert!(!wire.contains("operationAbiId"));
+        assert!(!wire.contains("serviceDependencySymbols"));
+    }
+
+    fn package_call_source() -> &'static str {
+        r#"
+          function run() -> void {
+            utils/format()
+          }
+        "#
+    }
+
+    fn package_call_expression() -> skiff_compiler_source::ExpressionKey {
+        skiff_compiler_source::ExpressionKey::new(
+            MODULE,
+            skiff_compiler_source::ExpressionOwnerKey::Function("run".to_string()),
+            0,
+        )
+    }
+
+    fn lower_package_call(
+        package_aliases: &BTreeMap<String, Vec<String>>,
+        targets: &skiff_compiler_source::ResolvedCallTargetFacts,
+    ) -> skiff_syntax::error::Result<FileIrUnit> {
+        let source = package_call_source();
+        let ast = parse_source(source)?;
+        compile_parsed_source_file_ir_unit_with_lowering_context(
+            ast,
+            source,
+            "internal/any_lowering.skiff",
+            MODULE,
+            "package",
+            &SourceFileLoweringContext {
+                package_aliases,
+                resolved_call_targets: targets,
+                ..SourceFileLoweringContext::none()
+            },
+        )
+    }
+
+    #[test]
+    fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() {
+        let expression = package_call_expression();
+        let expected_local_abi = PackageLocalAbiIdentity::new("local-abi:must-not-enter-call-site");
+        let package_callable_id = PackageCallableId::new("callable:utils.format");
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                expression,
+                skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
+                    package_requirement_alias: "utils".to_string(),
+                    package_callable_id: package_callable_id.clone(),
+                    expected_local_abi: expected_local_abi.clone(),
+                },
+            )]));
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let unit = lower_package_call(&package_aliases, &targets).unwrap();
+
+        let run = executable(&unit, "run");
+        assert!(run.body.expressions.iter().any(|expression| matches!(
+            expression,
+            ExprIr::Call { call }
+                if matches!(
+                    &call.target,
+                    CallTargetIr::PackageCallable {
+                        package_ref: PackageRefIr::Dependency { dependency_ref },
+                        package_callable_id: target_callable_id,
+                    } if dependency_ref == "utils" && target_callable_id == &package_callable_id
+                )
+        )));
+        assert_eq!(unit.external_refs.package_callables.len(), 1);
+        assert_eq!(
+            unit.external_refs.package_callables[0].package_callable_id,
+            package_callable_id
+        );
+        assert_eq!(
+            unit.external_refs.package_callables[0].package_ref,
+            PackageRefIr::Dependency {
+                dependency_ref: "utils".to_string(),
+            }
+        );
+        let wire = serde_json::to_string(&unit).unwrap();
+        assert!(wire.contains("packageCallableId"));
+        assert!(!wire.contains(expected_local_abi.as_str()));
+        assert!(!wire.contains("operationAbiId"));
+        assert!(unit
+            .file_ir_identity
+            .starts_with("skiff-file-ir-v5:sha256:"));
+    }
+
+    #[test]
+    fn known_package_call_without_typed_target_fails_closed() {
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let error = lower_package_call(
+            &package_aliases,
+            &skiff_compiler_source::ResolvedCallTargetFacts::empty(),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("package dependency call `utils/format`"));
+        assert!(message.contains("missing ResolvedCallTargetFacts entry"));
+        assert!(!message.contains("ExternalServiceSymbol"));
+    }
+
+    #[test]
+    fn known_package_call_with_unknown_typed_target_fails_closed() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                package_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::Unknown {
+                    reason: skiff_compiler_source::UnknownCallTargetReason::UnresolvedName,
+                },
+            )]));
+        let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
+        let error = lower_package_call(&package_aliases, &targets).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("package dependency call `utils/format`"));
+        assert!(message.contains("Unknown(UnresolvedName)"));
+        assert!(!message.contains("ExternalServiceSymbol"));
+    }
+
+    #[test]
+    fn package_call_target_alias_must_match_callee_root() {
+        let targets =
+            skiff_compiler_source::ResolvedCallTargetFacts::from_targets(BTreeMap::from([(
+                package_call_expression(),
+                skiff_compiler_source::ResolvedCallTarget::DependencyPackageFunction {
+                    package_requirement_alias: "other".to_string(),
+                    package_callable_id: PackageCallableId::new("callable:other.format"),
+                    expected_local_abi: PackageLocalAbiIdentity::new("local-abi:other"),
+                },
+            )]));
+        let package_aliases = BTreeMap::from([
+            ("other".to_string(), vec![String::new()]),
+            ("utils".to_string(), vec![String::new()]),
+        ]);
+        let error = lower_package_call(&package_aliases, &targets).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("typed package target names dependency `other`"));
+        assert!(message.contains("callee root is `utils`"));
     }
 }

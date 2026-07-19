@@ -704,7 +704,7 @@ pub struct PatternField {
 pub enum Expr {
     Literal(Literal),
     Identifier(String),
-    RemotePublicInstanceSource(RemotePublicInstanceSource),
+    DependencySourceAddress(DependencySourceAddress),
     Binary {
         op: BinaryOp,
         left: Box<Expr>,
@@ -762,9 +762,9 @@ pub enum Expr {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemotePublicInstanceSource {
+pub struct DependencySourceAddress {
     pub dependency_ref: String,
-    pub public_instance_key: String,
+    pub public_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

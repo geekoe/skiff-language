@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageTypeRef,
+    TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
 use crate::{
+    contract_type_resolution::substitute_package_type,
     parsed_sources::ParsedCompilerSource,
     semantic::impl_method_declaration_name,
     shared::ast::{
@@ -20,20 +22,23 @@ use crate::{
 
 use super::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, PublicationDbMetadataIndex,
-    RemotePublicInstanceOperationProjection, RemotePublicInstanceOperationResolver,
-    ResolvedDependencies, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
+    ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
 };
 
+mod contract_call_typing;
 mod db_projection;
 mod expression_assignability;
 
+use contract_call_typing::{
+    contract_source_assignability_with_projections, ContractCallOutcome, ContractCallTyping,
+    ContractProjectionState,
+};
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
 
 #[derive(Clone, Debug, Default)]
 pub struct ExpressionTypeModel {
     facts: BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
@@ -169,6 +174,12 @@ struct ResolvedTypeArgSubstitutions {
 }
 
 #[derive(Clone, Debug, Default)]
+struct ExactTypeEnvironment {
+    resolved: BTreeMap<String, ResolvedTypeRef>,
+    projected: BTreeMap<String, Result<PackageTypeRef, String>>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct ConditionNarrowings {
     when_true: TypeNarrowing,
     when_false: TypeNarrowing,
@@ -196,14 +207,13 @@ struct OwnerChecker<'a> {
     publication_db_metadata: &'a PublicationDbMetadataIndex,
     expression_sources: &'a ExpressionSourceMap,
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
+    dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
     return_type: Option<TypeRef>,
     type_context: TypeResolutionContext<'a>,
     env: BTreeMap<String, ResolvedTypeRef>,
+    contract_projection: ContractProjectionState,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes:
-        &'a mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         &'a mut BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
@@ -216,18 +226,13 @@ impl ExpressionTypeModel {
         expression_sources: &ExpressionSourceMap,
         type_resolution: &TypeResolutionModel,
         publication_db_metadata: &PublicationDbMetadataIndex,
-        dependencies: Option<&ResolvedDependencies>,
+        dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
         let mut facts = BTreeMap::new();
-        let mut remote_interface_boxes = BTreeMap::new();
         let mut constructor_validations = BTreeMap::new();
         let mut representation_constructor_validations = BTreeMap::new();
         let mut diagnostics = Vec::new();
-        let remote_public_instances = dependencies.map(|dependencies| {
-            RemotePublicInstanceOperationResolver::new(dependencies, type_resolution)
-        });
-
         for parsed in parsed_sources {
             check_source(
                 parsed.source().module_path.as_str(),
@@ -236,9 +241,8 @@ impl ExpressionTypeModel {
                 type_resolution,
                 publication_db_metadata,
                 &callable_signatures,
-                remote_public_instances.clone(),
+                dependency_analysis,
                 &mut facts,
-                &mut remote_interface_boxes,
                 &mut constructor_validations,
                 &mut representation_constructor_validations,
                 &mut diagnostics,
@@ -247,7 +251,6 @@ impl ExpressionTypeModel {
 
         let model = Self {
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
         };
@@ -260,13 +263,6 @@ impl ExpressionTypeModel {
 
     pub fn fact(&self, key: &ExpressionKey) -> Option<&ExpressionTypeFact> {
         self.facts.get(key)
-    }
-
-    pub fn remote_interface_box(
-        &self,
-        key: &ExpressionKey,
-    ) -> Option<&RemotePublicInstanceOperationProjection> {
-        self.remote_interface_boxes.get(key)
     }
 
     pub fn constructor_validation(&self, key: &ExpressionKey) -> Option<&ConstructorValidation> {
@@ -291,8 +287,8 @@ impl ExpressionTypeModel {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
     ) -> bool {
-        ExpressionAssignability::new("", expression_sources, type_resolution, type_context)
-            .value_assignable_to_expected(annotation, value, actual, expected)
+        ExpressionAssignability::new("", expression_sources, type_resolution, type_context, None)
+            .value_assignable_without_contract_projection(annotation, value, actual, expected)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -314,6 +310,7 @@ impl ExpressionTypeModel {
             expression_sources,
             type_resolution,
             type_context,
+            None,
         )
         .object_literal_assignability_diagnostics(
             annotation, value, value_key, actual, expected, context,
@@ -328,9 +325,8 @@ fn check_source(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: &mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations: &mut BTreeMap<
         ExpressionKey,
@@ -341,6 +337,7 @@ fn check_source(
     let const_env = const_type_env(
         ast,
         type_resolution,
+        dependency_analysis,
         &TypeResolutionContext::source(module_path),
     );
     for function in &ast.functions {
@@ -356,10 +353,9 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
+            dependency_analysis,
             &const_env,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -384,10 +380,9 @@ fn check_source(
                 type_resolution,
                 publication_db_metadata,
                 callable_signatures,
-                remote_public_instances,
+                dependency_analysis,
                 &const_env,
                 facts,
-                remote_interface_boxes,
                 constructor_validations,
                 representation_constructor_validations,
                 diagnostics,
@@ -396,33 +391,50 @@ fn check_source(
     }
 
     for constant in &ast.consts {
+        let (projected_annotation, projection_failed) = match const_env
+            .projected
+            .get(&constant.name)
+        {
+            Some(Ok(projected)) => (Some(projected.clone()), false),
+            Some(Err(error)) => {
+                diagnostics.push(format!(
+                    "{module_path}: const `{}` annotation exact source type projection failed: {error}",
+                    constant.name
+                ));
+                (None, true)
+            }
+            None => (None, false),
+        };
         let mut checker = OwnerChecker::new(
             module_path,
             ExpressionOwnerKey::Const(constant.name.clone()),
             TypeResolutionContext::source(module_path),
             BTreeMap::new(),
+            BTreeMap::new(),
             expression_sources,
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
+            dependency_analysis,
             None,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
         );
         let value_key = checker.peek_key();
         let actual = checker.check_expr(&constant.value);
-        if let (Some(annotation), Some(actual)) = (&constant.ty, actual) {
-            checker.check_assignable(
-                annotation,
-                &actual,
-                constant.span,
-                "const initializer",
-                Some((&constant.value, &value_key)),
-            );
+        if !projection_failed {
+            if let (Some(annotation), Some(actual)) = (&constant.ty, actual) {
+                checker.check_assignable(
+                    annotation,
+                    &actual,
+                    projected_annotation.as_ref(),
+                    constant.span,
+                    "const initializer",
+                    Some((&constant.value, &value_key)),
+                );
+            }
         }
     }
 
@@ -431,15 +443,15 @@ fn check_source(
             module_path,
             ExpressionOwnerKey::Test(test.name.clone()),
             TypeResolutionContext::source(module_path),
-            const_env.clone(),
+            const_env.resolved.clone(),
+            const_env.projected.clone(),
             expression_sources,
             type_resolution,
             publication_db_metadata,
             callable_signatures,
-            remote_public_instances,
+            dependency_analysis,
             None,
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -460,14 +472,14 @@ fn check_source(
                     },
                     type_context,
                     env,
+                    BTreeMap::new(),
                     expression_sources,
                     type_resolution,
                     publication_db_metadata,
                     callable_signatures,
-                    remote_public_instances,
+                    dependency_analysis,
                     None,
                     facts,
-                    remote_interface_boxes,
                     constructor_validations,
                     representation_constructor_validations,
                     diagnostics,
@@ -481,18 +493,31 @@ fn check_source(
 fn const_type_env(
     ast: &SourceFile,
     type_resolution: &TypeResolutionModel,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     type_context: &TypeResolutionContext<'_>,
-) -> BTreeMap<String, ResolvedTypeRef> {
-    ast.consts
-        .iter()
-        .filter_map(|constant| {
-            let ty = constant.ty.as_ref()?;
-            type_resolution
-                .resolve_type_ref(ty, type_context)
-                .ok()
-                .map(|resolved| (constant.name.clone(), resolved))
-        })
-        .collect()
+) -> ExactTypeEnvironment {
+    let mut env = ExactTypeEnvironment::default();
+    for constant in &ast.consts {
+        let Some(ty) = constant.ty.as_ref() else {
+            continue;
+        };
+        let Ok(resolved) = type_resolution.resolve_type_ref(ty, type_context) else {
+            continue;
+        };
+        if let Some(dependency_analysis) = dependency_analysis {
+            env.projected.insert(
+                constant.name.clone(),
+                ContractProjectionState::project_source_type_ref(
+                    ty,
+                    type_resolution,
+                    dependency_analysis,
+                    type_context,
+                ),
+            );
+        }
+        env.resolved.insert(constant.name.clone(), resolved);
+    }
+    env
 }
 
 fn db_index_where_env(
@@ -516,10 +541,9 @@ fn check_function_owner(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
-    remote_public_instances: Option<RemotePublicInstanceOperationResolver<'_>>,
-    const_env: &BTreeMap<String, ResolvedTypeRef>,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
+    const_env: &ExactTypeEnvironment,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-    remote_interface_boxes: &mut BTreeMap<ExpressionKey, RemotePublicInstanceOperationProjection>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations: &mut BTreeMap<
         ExpressionKey,
@@ -533,14 +557,37 @@ fn check_function_owner(
         .cloned()
         .collect::<BTreeSet<_>>();
     let type_context = TypeResolutionContext::with_type_params(module_path, type_params);
-    let mut env = const_env.clone();
+    let mut env = const_env.resolved.clone();
+    let mut projected_env = const_env.projected.clone();
     if let Some(self_type) = &function.implicit_self {
         if let Ok(resolved) = type_resolution.resolve_type_ref(self_type, &type_context) {
+            if let Some(dependency_analysis) = dependency_analysis {
+                projected_env.insert(
+                    "self".to_string(),
+                    ContractProjectionState::project_source_type_ref(
+                        self_type,
+                        type_resolution,
+                        dependency_analysis,
+                        &type_context,
+                    ),
+                );
+            }
             env.insert("self".to_string(), resolved);
         }
     }
     for param in &function.params {
         if let Ok(resolved) = type_resolution.resolve_type_ref(&param.ty, &type_context) {
+            if let Some(dependency_analysis) = dependency_analysis {
+                projected_env.insert(
+                    param.name.clone(),
+                    ContractProjectionState::project_source_type_ref(
+                        &param.ty,
+                        type_resolution,
+                        dependency_analysis,
+                        &type_context,
+                    ),
+                );
+            }
             env.insert(param.name.clone(), resolved);
         }
     }
@@ -549,14 +596,14 @@ fn check_function_owner(
         owner,
         type_context,
         env,
+        projected_env,
         expression_sources,
         type_resolution,
         publication_db_metadata,
         callable_signatures,
-        remote_public_instances,
+        dependency_analysis,
         Some(function.return_type.clone()),
         facts,
-        remote_interface_boxes,
         constructor_validations,
         representation_constructor_validations,
         diagnostics,
@@ -572,17 +619,14 @@ impl<'a> OwnerChecker<'a> {
         owner: ExpressionOwnerKey,
         type_context: TypeResolutionContext<'a>,
         env: BTreeMap<String, ResolvedTypeRef>,
+        exact_bindings: BTreeMap<String, Result<PackageTypeRef, String>>,
         expression_sources: &'a ExpressionSourceMap,
         type_resolution: &'a TypeResolutionModel,
         publication_db_metadata: &'a PublicationDbMetadataIndex,
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
-        remote_public_instances: Option<RemotePublicInstanceOperationResolver<'a>>,
+        dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
         return_type: Option<TypeRef>,
         facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
-        remote_interface_boxes: &'a mut BTreeMap<
-            ExpressionKey,
-            RemotePublicInstanceOperationProjection,
-        >,
         constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
         representation_constructor_validations: &'a mut BTreeMap<
             ExpressionKey,
@@ -590,6 +634,18 @@ impl<'a> OwnerChecker<'a> {
         >,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
+        let (contract_projection, projection_diagnostics) = ContractProjectionState::new(
+            &env,
+            &exact_bindings,
+            type_resolution,
+            dependency_analysis,
+            &type_context,
+        );
+        diagnostics.extend(
+            projection_diagnostics
+                .into_iter()
+                .map(|diagnostic| format!("{module_path}: {diagnostic}")),
+        );
         Self {
             module_path,
             owner,
@@ -598,13 +654,13 @@ impl<'a> OwnerChecker<'a> {
             publication_db_metadata,
             expression_sources,
             callable_signatures,
-            remote_public_instances,
+            dependency_analysis,
             return_type,
             type_context,
             env,
+            contract_projection,
             path_refinements: BTreeMap::new(),
             facts,
-            remote_interface_boxes,
             constructor_validations,
             representation_constructor_validations,
             diagnostics,
@@ -619,6 +675,19 @@ impl<'a> OwnerChecker<'a> {
         exits
     }
 
+    fn project_source_binding_type(&self, ty: &TypeRef) -> Result<Option<PackageTypeRef>, String> {
+        let Some(dependency_analysis) = self.dependency_analysis else {
+            return Ok(None);
+        };
+        ContractProjectionState::project_source_type_ref(
+            ty,
+            self.type_resolution,
+            dependency_analysis,
+            &self.type_context,
+        )
+        .map(Some)
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
         match stmt {
             Stmt::Assert { condition, .. } => {
@@ -630,46 +699,72 @@ impl<'a> OwnerChecker<'a> {
             } => {
                 let value_key = self.peek_key();
                 let actual = self.check_expr(value);
-                let binding_ty = if let Some(annotation) = ty {
+                let projected_actual = self
+                    .contract_projection
+                    .expression_type(&value_key)
+                    .cloned();
+                let (binding_ty, projected_binding) = if let Some(annotation) = ty {
                     match self
                         .type_resolution
                         .resolve_type_ref(annotation, &self.type_context)
                     {
                         Ok(expected) => {
-                            if let Some(actual) = &actual {
-                                self.check_value_assignable_to_expected(
-                                    Some(annotation),
-                                    value,
-                                    &value_key,
-                                    actual,
-                                    &expected,
-                                    &format!("local binding {name} annotation"),
-                                    self.expression_span(&value_key),
-                                );
+                            let (projected_expected, projection_failed) = match self
+                                .project_source_binding_type(annotation)
+                            {
+                                Ok(projected) => (projected, false),
+                                Err(error) => {
+                                    self.diagnostics.push(format!(
+                                        "{}: local binding `{name}` annotation exact source type projection failed: {error}",
+                                        self.module_path
+                                    ));
+                                    (None, true)
+                                }
+                            };
+                            if !projection_failed {
+                                if let Some(actual) = &actual {
+                                    self.check_value_assignable_to_expected(
+                                        Some(annotation),
+                                        value,
+                                        &value_key,
+                                        actual,
+                                        &expected,
+                                        projected_expected.as_ref(),
+                                        &format!("local binding {name} annotation"),
+                                        self.expression_span(&value_key),
+                                    );
+                                }
                             }
-                            Some(expected)
+                            (Some(expected), projected_expected)
                         }
                         Err(error) => {
                             self.diagnostics.push(format!(
                                 "{}: failed to resolve local binding {name} annotation: {error}",
                                 self.module_path
                             ));
-                            actual
+                            (actual, projected_actual)
                         }
                     }
                 } else {
-                    actual
+                    (actual, projected_actual)
                 };
                 if let Some(binding_ty) = binding_ty {
                     self.env.insert(name.clone(), binding_ty);
                 }
+                self.contract_projection.bind(name, projected_binding);
                 false
             }
             Stmt::Assign { target, value } => {
                 self.check_expr(target);
+                let value_key = self.peek_key();
                 let actual = self.check_expr(value);
                 if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
                     self.env.insert(name.clone(), actual);
+                    let projected = self
+                        .contract_projection
+                        .expression_type(&value_key)
+                        .cloned();
+                    self.contract_projection.bind(name, projected);
                 }
                 false
             }
@@ -716,13 +811,27 @@ impl<'a> OwnerChecker<'a> {
             } => {
                 let iterable_key = self.peek_key();
                 let iterable_ty = self.check_expr(iterable);
+                let iterable_projection = self
+                    .contract_projection
+                    .expression_type(&iterable_key)
+                    .cloned();
+                let saved_projected_env = self.contract_projection.binding_snapshot();
                 let mut previous = Vec::new();
+                let mut previous_projected = Vec::new();
                 match binding {
                     ForBinding::Item { item } => {
                         match iterable_ty.as_ref().and_then(single_for_item_type) {
                             Some(item_ty) => {
                                 previous
                                     .push((item.clone(), self.env.insert(item.clone(), item_ty)));
+                                previous_projected
+                                    .push((item.clone(), saved_projected_env.get(item).cloned()));
+                                self.contract_projection.bind(
+                                    item,
+                                    iterable_projection
+                                        .as_ref()
+                                        .and_then(single_for_item_projection),
+                                );
                             }
                             None => self.diagnostics.push(format!(
                                 "{}: for iterable must be Array, Stream, or Map at {}",
@@ -739,6 +848,17 @@ impl<'a> OwnerChecker<'a> {
                             previous.push((key.clone(), self.env.insert(key.clone(), key_ty)));
                             previous
                                 .push((value.clone(), self.env.insert(value.clone(), value_ty)));
+                            previous_projected
+                                .push((key.clone(), saved_projected_env.get(key).cloned()));
+                            previous_projected
+                                .push((value.clone(), saved_projected_env.get(value).cloned()));
+                            let (key_projection, value_projection) = iterable_projection
+                                .as_ref()
+                                .and_then(map_entry_projections)
+                                .map(|(key, value)| (Some(key), Some(value)))
+                                .unwrap_or((None, None));
+                            self.contract_projection.bind(key, key_projection);
+                            self.contract_projection.bind(value, value_projection);
                         }
                         None => self.diagnostics.push(format!(
                             "{}: for entry binding requires Map at {}",
@@ -754,6 +874,9 @@ impl<'a> OwnerChecker<'a> {
                     } else {
                         self.env.remove(&name);
                     }
+                }
+                for (name, previous) in previous_projected {
+                    self.contract_projection.bind(&name, previous);
                 }
                 false
             }
@@ -804,10 +927,13 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_block_scoped(&mut self, block: &Block, narrowing: &TypeNarrowing) -> bool {
         let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
         let saved_path_refinements = self.path_refinements.clone();
         self.apply_narrowing(narrowing);
         let exits = self.check_block(block);
         self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
         self.path_refinements = saved_path_refinements;
         exits
     }
@@ -818,17 +944,41 @@ impl<'a> OwnerChecker<'a> {
         narrowing: &TypeNarrowing,
     ) -> Option<ResolvedTypeRef> {
         let saved_env = self.env.clone();
+        let saved_projected_env = self.contract_projection.binding_snapshot();
         let saved_path_refinements = self.path_refinements.clone();
         self.apply_narrowing(narrowing);
         let ty = self.check_expr(expr);
         self.env = saved_env;
+        self.contract_projection
+            .restore_bindings(saved_projected_env);
         self.path_refinements = saved_path_refinements;
         ty
     }
 
     fn apply_narrowing(&mut self, narrowing: &TypeNarrowing) {
+        let projected_bindings = self.contract_projection.binding_snapshot();
         for (name, ty) in &narrowing.env {
             self.env.insert(name.clone(), ty.clone());
+            let projected = match projected_bindings.get(name) {
+                Some(PackageTypeRef::Nullable { inner })
+                    if !matches!(ty.ir, TypeRefIr::Nullable { .. }) =>
+                {
+                    Some((**inner).clone())
+                }
+                _ => self
+                    .dependency_analysis
+                    .and_then(|dependency_analysis| {
+                        ContractProjectionState::project_resolved_type(
+                            ty,
+                            self.type_resolution,
+                            dependency_analysis,
+                            &self.type_context,
+                        )
+                        .ok()
+                    })
+                    .or_else(|| projected_bindings.get(name).cloned()),
+            };
+            self.contract_projection.bind(name, projected);
         }
         for (path, ty) in &narrowing.paths {
             self.path_refinements.insert(path.clone(), ty.clone());
@@ -1064,6 +1214,7 @@ impl<'a> OwnerChecker<'a> {
             &value_key,
             &actual,
             &expected,
+            None,
             "return",
             self.expression_span(&value_key),
         );
@@ -1096,35 +1247,17 @@ impl<'a> OwnerChecker<'a> {
         let ty = match expr {
             Expr::Literal(literal) => self.literal_type(literal),
             Expr::Identifier(name) => refined_ty.clone().or_else(|| self.env.get(name).cloned()),
-            Expr::RemotePublicInstanceSource(source) => {
+            Expr::DependencySourceAddress(source) => {
                 if diagnose_unknown_field {
-                    let mut message = format!(
-                        "{}: remote public instance source `{}/{}` is not a value at {}; use `{}/{} as I` to box it or `{}/{}.method(...)` to call it directly",
+                    let message = format!(
+                        "{}: dependency source address `{}/{}` is not a value at {}; use `{}/{} as I` to box a public instance or call an exported callable",
                         self.module_path,
                         source.dependency_ref,
-                        source.public_instance_key,
+                        source.public_path,
                         self.expression_span_label(&key),
                         source.dependency_ref,
-                        source.public_instance_key,
-                        source.dependency_ref,
-                        source.public_instance_key
+                        source.public_path
                     );
-                    if let Some(resolver) = self.remote_public_instances {
-                        if let Ok(interface_count) = resolver.public_instance_interface_count(
-                            &source.dependency_ref,
-                            &source.public_instance_key,
-                        ) {
-                            if interface_count > 1 {
-                                message.push_str(&format!(
-                                    "; public instance exports {interface_count} interfaces, so the interface projection cannot be inferred without `as I`"
-                                ));
-                            } else if interface_count == 1 {
-                                message.push_str(
-                                    "; `as I` is required even though the public instance exports one interface",
-                                );
-                            }
-                        }
-                    }
                     self.diagnostics.push(message);
                 }
                 None
@@ -1199,9 +1332,6 @@ impl<'a> OwnerChecker<'a> {
                 }
             }
             Expr::InterfaceBox { value, interface } => {
-                if let Expr::RemotePublicInstanceSource(source) = value.as_ref() {
-                    return self.check_remote_interface_box(&key, source, interface);
-                }
                 let value_ty = self.check_expr(value);
                 let selector = match self
                     .type_resolution
@@ -1408,6 +1538,28 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         let ty = refined_ty.or(ty);
+        if let Expr::Identifier(name) = expr {
+            self.contract_projection.inherit_identifier(&key, name);
+        }
+        if self.contract_projection.expression_type(&key).is_none() {
+            if let (Some(ty), Some(dependency_analysis)) = (&ty, self.dependency_analysis) {
+                match ContractProjectionState::project_resolved_type(
+                    ty,
+                    self.type_resolution,
+                    dependency_analysis,
+                    &self.type_context,
+                ) {
+                    Ok(projected) => self
+                        .contract_projection
+                        .record_expression_type(key.clone(), projected),
+                    Err(error) => self.diagnostics.push(format!(
+                        "{}: derived expression exact type projection failed at {}: {error}",
+                        self.module_path,
+                        self.expression_span_label(&key)
+                    )),
+                }
+            }
+        }
         let span = self
             .expression_sources
             .fact(&key)
@@ -1418,80 +1570,6 @@ impl<'a> OwnerChecker<'a> {
             ExpressionTypeFact {
                 ty: ty.clone(),
                 span,
-            },
-        );
-        ty
-    }
-
-    fn check_remote_interface_box(
-        &mut self,
-        box_key: &ExpressionKey,
-        source: &crate::shared::ast::RemotePublicInstanceSource,
-        interface: &TypeRef,
-    ) -> Option<ResolvedTypeRef> {
-        let source_key = self.next_key();
-        self.facts.insert(
-            source_key.clone(),
-            ExpressionTypeFact {
-                ty: None,
-                span: self.expression_span(&source_key),
-            },
-        );
-        let selector = match self
-            .type_resolution
-            .resolve_canonical_interface_selector_type_ref(interface, &self.type_context)
-        {
-            Ok(selector) => selector,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote interface boxing selector `{}` failed at {}: {error}",
-                    self.module_path,
-                    interface.name,
-                    self.expression_span_label(box_key)
-                ));
-                return None;
-            }
-        };
-        let Some(resolver) = self.remote_public_instances else {
-            self.diagnostics.push(format!(
-                "{}: remote public instance source `{}/{}` cannot be boxed at {} because service dependency metadata is unavailable",
-                self.module_path,
-                source.dependency_ref,
-                source.public_instance_key,
-                self.expression_span_label(box_key)
-            ));
-            return None;
-        };
-        let projection = match resolver.resolve_projection(
-            &source.dependency_ref,
-            &source.public_instance_key,
-            &selector.instantiation_ref,
-        ) {
-            Ok(projection) => projection,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote public instance source `{}/{}` failed interface boxing at {}: {error}",
-                    self.module_path,
-                    source.dependency_ref,
-                    source.public_instance_key,
-                    self.expression_span_label(box_key)
-                ));
-                return None;
-            }
-        };
-        self.remote_interface_boxes
-            .insert(box_key.clone(), projection);
-        let ty = Some(ResolvedTypeRef {
-            source_text: format!("any {}", selector.source_text),
-            ir: TypeRefIr::AnyInterface {
-                interface: selector.instantiation_ref,
-            },
-        });
-        self.facts.insert(
-            box_key.clone(),
-            ExpressionTypeFact {
-                ty: ty.clone(),
-                span: self.expression_span(box_key),
             },
         );
         ty
@@ -1591,6 +1669,7 @@ impl<'a> OwnerChecker<'a> {
                     value_key,
                     actual,
                     expected,
+                    None,
                     &context,
                     record_field_value_source_span(source_fact, index),
                 ) {
@@ -2034,11 +2113,6 @@ impl<'a> OwnerChecker<'a> {
             Expr::Generic { callee, type_args } => (callee.as_ref(), type_args.as_slice()),
             _ => (callee, &[][..]),
         };
-        if let Some(return_type) =
-            self.remote_public_instance_direct_call_type(callee, type_args, args, arg_types)
-        {
-            return Some(return_type);
-        }
         if let Some(return_type) = self.runtime_receiver_call_type(key, callee) {
             return Some(return_type);
         }
@@ -2053,6 +2127,43 @@ impl<'a> OwnerChecker<'a> {
             return Some(return_type);
         }
         let path = expr_path(callee)?;
+        if !path
+            .split('.')
+            .next()
+            .is_some_and(|root| self.env.contains_key(root))
+        {
+            if let Some(dependency_analysis) = self.dependency_analysis {
+                match ContractCallTyping::new(
+                    self.type_resolution,
+                    dependency_analysis,
+                    &self.type_context,
+                )
+                .check_call(
+                    &path,
+                    type_args.len(),
+                    arg_types,
+                    self.contract_projection.expression_types(),
+                ) {
+                    ContractCallOutcome::NotContract => {}
+                    ContractCallOutcome::Typed {
+                        return_type,
+                        projected_return_type,
+                    } => {
+                        self.contract_projection
+                            .record_expression_type(key.clone(), projected_return_type);
+                        return Some(return_type);
+                    }
+                    ContractCallOutcome::Invalid(diagnostics) => {
+                        let location = self.expression_span_label(key);
+                        self.diagnostics
+                            .extend(diagnostics.into_iter().map(|diagnostic| {
+                                format!("{}: {diagnostic} at {location}", self.module_path)
+                            }));
+                        return None;
+                    }
+                }
+            }
+        }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
         }
@@ -2131,6 +2242,27 @@ impl<'a> OwnerChecker<'a> {
             let params = signature.params.clone();
             let return_type = signature.return_type.clone();
             let declaration_name = signature.declaration_name.clone();
+            let projected_params = match params
+                .iter()
+                .map(|param| {
+                    self.project_callable_package_type(
+                        &param.ty,
+                        &signature_context,
+                        &type_params,
+                        type_args,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(projected) => projected,
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: call `{declaration_name}` exact parameter type projection failed: {error}",
+                        self.module_path
+                    ));
+                    return None;
+                }
+            };
             let mut expected = self.resolve_callable_param_types(
                 &declaration_name,
                 params.iter().map(|param| param.ty.name.as_str()),
@@ -2152,25 +2284,46 @@ impl<'a> OwnerChecker<'a> {
                     .collect();
             }
             if expected.complete {
-                self.validate_resolved_call_params(
+                self.validate_resolved_call_params_with_projections(
                     &declaration_name,
                     expected.params,
+                    &projected_params,
                     args,
                     arg_types,
                 );
             }
-            let return_type = self.resolve_callable_return_type(
+            let projected_return_type = match self.project_callable_package_type(
+                &return_type,
+                &signature_context,
+                &type_params,
+                type_args,
+            ) {
+                Ok(projected) => projected,
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: call `{declaration_name}` exact return type projection failed: {error}",
+                        self.module_path
+                    ));
+                    return None;
+                }
+            };
+            let resolved_return_type = self.resolve_callable_return_type(
                 &return_type.name,
                 &signature_context,
                 &type_params,
                 type_args,
             )?;
-            return Some(if signature.module_path == self.module_path {
-                return_type
+            let resolved_return_type = if signature.module_path == self.module_path {
+                resolved_return_type
             } else {
                 self.type_resolution
-                    .externalize_local_type_refs(&return_type, &signature.module_path)
-            });
+                    .externalize_local_type_refs(&resolved_return_type, &signature.module_path)
+            };
+            if let Some(projected_return_type) = projected_return_type {
+                self.contract_projection
+                    .record_expression_type(key.clone(), projected_return_type);
+            }
+            return Some(resolved_return_type);
         }
         if let Some(signature) = self
             .type_resolution
@@ -2242,75 +2395,6 @@ impl<'a> OwnerChecker<'a> {
         }
     }
 
-    fn remote_public_instance_direct_call_type(
-        &mut self,
-        callee: &Expr,
-        type_args: &[TypeRef],
-        args: &[Expr],
-        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
-    ) -> Option<ResolvedTypeRef> {
-        let Expr::Field { object, field } = callee else {
-            return None;
-        };
-        let Expr::RemotePublicInstanceSource(source) = object.as_ref() else {
-            return None;
-        };
-        let Some(resolver) = self.remote_public_instances else {
-            self.diagnostics.push(format!(
-                "{}: remote public instance direct call `{}/{}` cannot resolve method `{field}` because service dependency metadata is unavailable",
-                self.module_path, source.dependency_ref, source.public_instance_key
-            ));
-            return None;
-        };
-        if !type_args.is_empty() {
-            self.diagnostics.push(format!(
-                "{}: remote public instance direct call `{}/{}.{field}` does not accept method type arguments",
-                self.module_path, source.dependency_ref, source.public_instance_key
-            ));
-        }
-        let operation = match resolver.resolve_direct_method(
-            &source.dependency_ref,
-            &source.public_instance_key,
-            field,
-        ) {
-            Ok(operation) => operation,
-            Err(error) => {
-                self.diagnostics.push(format!(
-                    "{}: remote public instance direct call `{}/{}.{field}` failed: {error}",
-                    self.module_path, source.dependency_ref, source.public_instance_key
-                ));
-                return None;
-            }
-        };
-        let expected = operation
-            .public_signature
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                (
-                    format!("arg{index}"),
-                    ResolvedTypeRef {
-                        source_text: type_ref_debug_text(&param.ty),
-                        ir: param.ty.clone(),
-                    },
-                )
-            })
-            .collect();
-        self.validate_resolved_call_params(
-            &format!(
-                "{}/{}.{}",
-                source.dependency_ref, source.public_instance_key, field
-            ),
-            expected,
-            args,
-            arg_types,
-        );
-        Some(ResolvedTypeRef {
-            source_text: type_ref_debug_text(&operation.public_signature.return_type),
-            ir: operation.public_signature.return_type,
-        })
-    }
     fn local_callable_signature(&self, path: &str) -> Option<&CallableSignature> {
         if !path.contains('.') {
             let module_qualified = format!("{}.{}", self.module_path, path);
@@ -2385,6 +2469,40 @@ impl<'a> OwnerChecker<'a> {
             .ok()
     }
 
+    fn project_callable_package_type(
+        &self,
+        raw: &TypeRef,
+        context: &TypeResolutionContext<'_>,
+        type_params: &[String],
+        type_args: &[TypeRef],
+    ) -> Result<Option<PackageTypeRef>, String> {
+        let Some(dependency_analysis) = self.dependency_analysis else {
+            return Ok(None);
+        };
+        let projected = ContractProjectionState::project_source_type_ref(
+            raw,
+            self.type_resolution,
+            dependency_analysis,
+            context,
+        )?;
+        let substitutions = type_params
+            .iter()
+            .zip(type_args)
+            .map(|(param, argument)| {
+                Ok((
+                    param.clone(),
+                    ContractProjectionState::project_source_type_ref(
+                        argument,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    )?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        substitute_package_type(&projected, &substitutions).map(Some)
+    }
+
     fn resolve_type_arg_substitutions(
         &mut self,
         callable: &str,
@@ -2422,6 +2540,23 @@ impl<'a> OwnerChecker<'a> {
         args: &[Expr],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
+        self.validate_resolved_call_params_with_projections(
+            callable,
+            expected,
+            &[],
+            args,
+            arg_types,
+        );
+    }
+
+    fn validate_resolved_call_params_with_projections(
+        &mut self,
+        callable: &str,
+        expected: Vec<(String, ResolvedTypeRef)>,
+        exact_expected: &[Option<PackageTypeRef>],
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
         if expected.len() != args.len() {
             self.diagnostics.push(format!(
                 "{}: call `{callable}` arity mismatch: expected {} arguments, found {}",
@@ -2444,6 +2579,7 @@ impl<'a> OwnerChecker<'a> {
                 key,
                 actual,
                 expected,
+                exact_expected.get(index).and_then(Option::as_ref),
                 &context,
                 self.expression_span(key),
             );
@@ -2506,14 +2642,24 @@ impl<'a> OwnerChecker<'a> {
     }
 
     fn runtime_receiver_call_type(
-        &self,
+        &mut self,
         key: &ExpressionKey,
         callee: &Expr,
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
         let offset = 1 + receiver_object_offset_in_callee(callee)?;
         let receiver_ty = self.expression_type_at_offset(key, offset)?;
-        builtin_receiver_call_return_type(&receiver_ty, method_name)
+        let return_type = builtin_receiver_call_return_type(&receiver_ty, method_name)?;
+        if let Some(projected) =
+            self.expression_projection_at_offset(key, offset)
+                .and_then(|receiver| {
+                    builtin_receiver_call_return_projection(&receiver_ty, receiver, method_name)
+                })
+        {
+            self.contract_projection
+                .record_expression_type(key.clone(), projected);
+        }
+        Some(return_type)
     }
 
     fn any_interface_receiver_call_type(
@@ -2632,6 +2778,20 @@ impl<'a> OwnerChecker<'a> {
         self.facts.get(&key)?.ty.clone()
     }
 
+    fn expression_projection_at_offset(
+        &self,
+        key: &ExpressionKey,
+        offset: u32,
+    ) -> Option<&PackageTypeRef> {
+        let preorder_index = key.preorder_index().checked_add(offset)?;
+        let key = ExpressionKey::new(
+            key.module_path().to_string(),
+            key.owner().clone(),
+            preorder_index,
+        );
+        self.contract_projection.expression_type(&key)
+    }
+
     fn db_operation_type(
         &mut self,
         operation: &crate::shared::ast::DbOperation,
@@ -2708,6 +2868,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         annotation: &TypeRef,
         actual: &ResolvedTypeRef,
+        exact_expected: Option<&PackageTypeRef>,
         span: SourceSpan,
         context: &str,
         value: Option<(&Expr, &ExpressionKey)>,
@@ -2724,6 +2885,7 @@ impl<'a> OwnerChecker<'a> {
                         key,
                         actual,
                         &expected,
+                        exact_expected,
                         context,
                         span,
                     );
@@ -2750,6 +2912,7 @@ impl<'a> OwnerChecker<'a> {
         value_key: &ExpressionKey,
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
+        exact_expected: Option<&PackageTypeRef>,
         context: &str,
         fallback_span: SourceSpan,
     ) -> bool {
@@ -2758,8 +2921,75 @@ impl<'a> OwnerChecker<'a> {
             self.expression_sources,
             self.type_resolution,
             &self.type_context,
+            None,
         );
-        if assignability.value_assignable_to_expected(annotation, value, actual, expected) {
+        let expected_projected = match self.dependency_analysis {
+            Some(dependency_analysis) => Some(match exact_expected {
+                Some(expected) => Ok(expected.clone()),
+                None => match annotation {
+                    Some(annotation) => ContractProjectionState::project_source_type_ref(
+                        annotation,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    ),
+                    None => ContractProjectionState::project_resolved_type(
+                        expected,
+                        self.type_resolution,
+                        dependency_analysis,
+                        &self.type_context,
+                    ),
+                },
+            }),
+            None => None,
+        };
+        let expected_projected = match expected_projected.transpose() {
+            Ok(expected) => expected,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: {context} exact source type projection failed at {}: {error}",
+                    self.module_path,
+                    span_label(fallback_span)
+                ));
+                return false;
+            }
+        };
+        let contract_assignable = match contract_source_assignability_with_projections(
+            actual,
+            self.contract_projection.expression_type(value_key),
+            expected,
+            expected_projected.as_ref(),
+            self.type_resolution,
+            self.dependency_analysis,
+            &self.type_context,
+        ) {
+            Ok(assignable) => assignable,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: {context} exact source type projection failed at {}: {error}",
+                    self.module_path,
+                    span_label(fallback_span)
+                ));
+                return false;
+            }
+        };
+        let assignable = match contract_assignable {
+            Some(assignable) => assignable,
+            None => match assignability
+                .value_assignable_to_expected(annotation, value, actual, expected, None)
+            {
+                Ok(assignable) => assignable,
+                Err(error) => {
+                    self.diagnostics.push(format!(
+                        "{}: {context} exact source type projection failed at {}: {error}",
+                        self.module_path,
+                        span_label(fallback_span)
+                    ));
+                    return false;
+                }
+            },
+        };
+        if assignable {
             return true;
         }
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(
@@ -2985,6 +3215,29 @@ fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTyp
     ))
 }
 
+fn single_for_item_projection(ty: &PackageTypeRef) -> Option<PackageTypeRef> {
+    let PackageTypeRef::Container { name, arguments } = ty else {
+        return None;
+    };
+    match name.as_str() {
+        "Array" | "Stream" | "std.collection.Array" | "std.stream.Stream"
+            if arguments.len() == 1 =>
+        {
+            Some(arguments[0].clone())
+        }
+        "Map" | "std.collection.Map" if arguments.len() == 2 => Some(arguments[0].clone()),
+        _ => None,
+    }
+}
+
+fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, PackageTypeRef)> {
+    let PackageTypeRef::Container { name, arguments } = ty else {
+        return None;
+    };
+    (matches!(name.as_str(), "Map" | "std.collection.Map") && arguments.len() == 2)
+        .then(|| (arguments[0].clone(), arguments[1].clone()))
+}
+
 fn type_contains_type_param(ty: &TypeRefIr) -> bool {
     match ty {
         TypeRefIr::TypeParam { .. } => true,
@@ -3124,6 +3377,43 @@ fn builtin_receiver_call_return_type(
         },
     };
     Some(resolved_type_from_ir(&ty))
+}
+
+fn builtin_receiver_call_return_projection(
+    receiver_ty: &ResolvedTypeRef,
+    receiver_projection: &PackageTypeRef,
+    method_name: &str,
+) -> Option<PackageTypeRef> {
+    let root = runtime_receiver_root_from_type_ref(&receiver_ty.ir)?;
+    let spec = builtin_receiver_op_spec_by_name(&root, method_name)?;
+    match spec.public_return_type {
+        BuiltinReceiverPublicReturnType::Fixed(name) => Some(PackageTypeRef::Container {
+            name: name.to_string(),
+            arguments: Vec::new(),
+        }),
+        BuiltinReceiverPublicReturnType::Receiver => Some(receiver_projection.clone()),
+        BuiltinReceiverPublicReturnType::ArrayItem => {
+            let PackageTypeRef::Container { arguments, .. } = receiver_projection else {
+                return None;
+            };
+            (arguments.len() == 1).then(|| arguments[0].clone())
+        }
+        BuiltinReceiverPublicReturnType::MapValue => {
+            let PackageTypeRef::Container { arguments, .. } = receiver_projection else {
+                return None;
+            };
+            (arguments.len() == 2).then(|| arguments[1].clone())
+        }
+        BuiltinReceiverPublicReturnType::MapKeyArray => {
+            let PackageTypeRef::Container { arguments, .. } = receiver_projection else {
+                return None;
+            };
+            (arguments.len() == 2).then(|| PackageTypeRef::Container {
+                name: "Array".to_string(),
+                arguments: vec![arguments[0].clone()],
+            })
+        }
+    }
 }
 
 fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {

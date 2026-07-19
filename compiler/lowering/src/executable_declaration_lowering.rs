@@ -10,7 +10,9 @@ use skiff_compiler_source::{
         executable_symbol, impl_method_declaration_name, ExecutableIndex, InterfaceSemantics,
     },
     ExpressionOwnerKey, ExpressionTypeModel, LocalDbObjectIndex, PackageInterfaceMethodIndex,
-    PublicationDbMetadataIndex, PublicationTypeSymbolIndex, TypeResolutionModel,
+    PublicationDbMetadataIndex, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
+    SourceExecutableReceiver, SourceExecutableSignature, SourceExecutableSignatureFacts,
+    SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, FunctionDecl, ImplDecl, Stmt, TypeRef},
@@ -20,14 +22,14 @@ use skiff_syntax::{
 
 use super::{
     callable_return_types::CallableReturnType,
-    db_lowering::{DbMetadataIr, LoweredPublicationDbMetadataIndex},
-    dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
+    db_lowering::{DbMetadataIr, LoweredPackageDbMetadataIndex},
+    executable_type_projection::execution_type_ref,
     function_lowering::{
         native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, LocalTypeFieldIndex,
         LoweredExecutableSignature,
     },
+    service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_span, source_span_ref, symbol, type_param_scope},
-    suspend_analysis::SuspendIndex,
     type_lowering::{
         bare_type_name, is_file_ir_builtin_generic_type, is_file_ir_builtin_type, lower_type_ref,
         type_root, TypeLoweringContext,
@@ -63,14 +65,12 @@ pub(super) fn lower_const_declarations(
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     type_indices: &BTreeMap<String, u32>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     module_path: &str,
     local_db_objects: &LocalDbObjectIndex,
     interface_semantics: &InterfaceSemantics,
@@ -80,6 +80,7 @@ pub(super) fn lower_const_declarations(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -120,10 +121,8 @@ pub(super) fn lower_const_declarations(
             type_indices,
             package_aliases,
             package_interface_methods,
-            package_operations,
-            service_dependency_operations,
+            resolved_call_targets,
             external_type_symbols,
-            service_dependency_aliases,
             module_path,
             local_db_objects,
             interface_semantics,
@@ -133,6 +132,7 @@ pub(super) fn lower_const_declarations(
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
         )?;
         unit.constants.push(ConstIr {
             name: constant.name.clone(),
@@ -149,7 +149,7 @@ pub(super) fn lower_const_declarations(
                 source_span: Some(source_span),
             },
         );
-        // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+        // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
         push_source_span(
             &mut unit.source_map.spans,
             next_span_id,
@@ -168,14 +168,12 @@ fn lower_const_initializer_body(
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     type_indices: &BTreeMap<String, u32>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     module_path: &str,
     local_db_objects: &LocalDbObjectIndex,
     interface_semantics: &InterfaceSemantics,
@@ -185,6 +183,7 @@ fn lower_const_initializer_body(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableBody> {
     let mut lowerer = FunctionLowerer::new(
         type_indices,
@@ -195,11 +194,9 @@ fn lower_const_initializer_body(
         executable_indices,
         const_indices,
         external_type_symbols,
-        service_dependency_aliases,
         source_alias_targets,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         module_path,
         local_db_objects,
         BTreeSet::new(),
@@ -210,6 +207,7 @@ fn lower_const_initializer_body(
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     );
     let value = lowerer.lower_expr(&constant.value)?;
     let mut entry = BlockIr {
@@ -228,12 +226,8 @@ pub(super) fn lowered_executable_signatures(
     functions: &[FunctionDecl],
     impls: &[ImplDecl],
     executable_index: &ExecutableIndex,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    module_path: &str,
+    exact_signatures: &SourceExecutableSignatureFacts,
 ) -> Result<BTreeMap<u32, LoweredExecutableSignature>> {
     let mut signatures = BTreeMap::new();
     for function in functions {
@@ -246,24 +240,16 @@ pub(super) fn lowered_executable_signatures(
                 ))
             })?
             .executable_index;
-        signatures.insert(
+        insert_executable_signature(
+            &mut signatures,
             index,
-            lower_executable_signature(
-                function,
-                &function.params,
-                &[],
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-            )?,
-        );
+            module_path,
+            &function.name,
+            exact_signatures,
+        )?;
     }
 
     for implementation in impls {
-        let impl_type_params = generic_type_params(&implementation.target, type_indices);
         for method in &implementation.method_bodies {
             let name = impl_method_declaration_name(&implementation.target, &method.name);
             let index = executable_index
@@ -274,89 +260,62 @@ pub(super) fn lowered_executable_signatures(
                     ))
                 })?
                 .executable_index;
-            signatures.insert(
+            insert_executable_signature(
+                &mut signatures,
                 index,
-                lower_executable_signature(
-                    method,
-                    &method.params,
-                    &impl_type_params,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
-                )?,
-            );
+                module_path,
+                &name,
+                exact_signatures,
+            )?;
         }
     }
 
     Ok(signatures)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_executable_signature(
-    function: &FunctionDecl,
-    params_source: &[skiff_syntax::ast::Param],
-    inherited_type_params: &[String],
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
-) -> Result<LoweredExecutableSignature> {
-    let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
-    let type_context = TypeLoweringContext::value_with_type_params(&type_params);
-    let self_type = function
-        .implicit_self
-        .as_ref()
-        .map(|ty| {
-            lower_type_ref(
-                ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                type_context,
-            )
-        })
-        .transpose()?;
-    let params = params_source
+fn insert_executable_signature(
+    signatures: &mut BTreeMap<u32, LoweredExecutableSignature>,
+    index: u32,
+    module_path: &str,
+    declaration_name: &str,
+    exact_signatures: &SourceExecutableSignatureFacts,
+) -> Result<()> {
+    let source_key = SourceSymbolKey::new(module_path, declaration_name);
+    let exact = exact_signatures.signature(&source_key).ok_or_else(|| {
+        CompileError::Semantic(format!(
+            "missing exact source executable signature fact for `{source_key}`"
+        ))
+    })?;
+    if signatures
+        .insert(index, project_executable_signature(exact))
+        .is_some()
+    {
+        return Err(CompileError::Semantic(format!(
+            "more than one executable signature maps to File IR index {index} in module `{module_path}`"
+        )));
+    }
+    Ok(())
+}
+
+fn project_executable_signature(exact: &SourceExecutableSignature) -> LoweredExecutableSignature {
+    let params = exact
+        .parameters
         .iter()
-        .map(|param| {
-            Ok(FunctionTypeParamIr {
-                name: param.name.clone(),
-                ty: lower_type_ref(
-                    &param.ty,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
-                    type_context,
-                )?,
-            })
+        .map(|param| FunctionTypeParamIr {
+            name: param.name.clone(),
+            ty: execution_type_ref(&param.ty),
         })
-        .collect::<Result<Vec<_>>>()?;
-    let return_type = lower_type_ref(
-        &function.return_type,
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
-        type_context,
-    )?;
-    Ok(LoweredExecutableSignature {
+        .collect();
+    let self_type = match &exact.receiver {
+        SourceExecutableReceiver::None | SourceExecutableReceiver::ExplicitParameter { .. } => None,
+        SourceExecutableReceiver::Implicit { ty } => Some(execution_type_ref(ty)),
+    };
+    LoweredExecutableSignature {
         params,
-        return_type,
+        return_type: execution_type_ref(&exact.return_type),
         self_type,
-    })
+        may_suspend: exact.may_suspend,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -365,18 +324,15 @@ pub(super) fn lower_executables(
     impls: &[ImplDecl],
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
-    suspend_index: &SuspendIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     executable_index: &ExecutableIndex,
     const_indices: &BTreeMap<String, u32>,
     type_indices: &BTreeMap<String, u32>,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     module_path: &str,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     local_db_objects: &LocalDbObjectIndex,
     interface_semantics: &InterfaceSemantics,
     source_alias_targets: &BTreeMap<String, String>,
@@ -385,13 +341,13 @@ pub(super) fn lower_executables(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
     let executable_indices = executable_index.indices();
     for function in functions {
         let name = function.name.clone();
-        let may_suspend = suspend_index.function_may_suspend(&name);
         let symbol = executable_symbol(module_path, &name);
         let current_index = semantic_executable_index(executable_index, &name, module_path, unit)?;
         push_executable(
@@ -407,16 +363,13 @@ pub(super) fn lower_executables(
             db_metadata,
             publication_db_metadata,
             lowered_publication_db_metadata,
-            may_suspend,
             &executable_indices,
             const_indices,
             type_indices,
             external_type_symbols,
-            service_dependency_aliases,
             package_aliases,
             package_interface_methods,
-            package_operations,
-            service_dependency_operations,
+            resolved_call_targets,
             local_db_objects,
             interface_semantics,
             source_alias_targets,
@@ -425,6 +378,7 @@ pub(super) fn lower_executables(
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
             unit,
             next_span_id,
         )?;
@@ -472,16 +426,13 @@ pub(super) fn lower_executables(
                 db_metadata,
                 publication_db_metadata,
                 lowered_publication_db_metadata,
-                suspend_index.method_may_suspend(&implementation.target, &method.name),
                 &executable_indices,
                 const_indices,
                 type_indices,
                 external_type_symbols,
-                service_dependency_aliases,
                 package_aliases,
                 package_interface_methods,
-                package_operations,
-                service_dependency_operations,
+                resolved_call_targets,
                 local_db_objects,
                 interface_semantics,
                 source_alias_targets,
@@ -490,6 +441,7 @@ pub(super) fn lower_executables(
                 callable_return_types,
                 local_type_fields,
                 executable_signatures,
+                service_calls,
                 unit,
                 next_span_id,
             )?;
@@ -551,17 +503,14 @@ fn push_executable(
     owner: ExpressionOwnerKey,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
-    may_suspend: bool,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     executable_indices: &BTreeMap<String, u32>,
     const_indices: &BTreeMap<String, u32>,
     type_indices: &BTreeMap<String, u32>,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     local_db_objects: &LocalDbObjectIndex,
     interface_semantics: &InterfaceSemantics,
     source_alias_targets: &BTreeMap<String, String>,
@@ -570,6 +519,7 @@ fn push_executable(
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
@@ -578,6 +528,7 @@ fn push_executable(
         kind,
         executable_symbol.clone(),
         module_path,
+        current_index,
         &function.params,
         inherited_type_params,
         owner,
@@ -588,20 +539,18 @@ fn push_executable(
         const_indices,
         type_indices,
         external_type_symbols,
-        service_dependency_aliases,
         package_aliases,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         local_db_objects,
         interface_semantics,
         source_alias_targets,
-        may_suspend,
         type_resolution,
         expression_types,
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     )?;
     let source_span = source_span_ref(function.span);
 
@@ -613,7 +562,7 @@ fn push_executable(
             source_span: Some(source_span),
         },
     );
-    // link_targets recomputed post-lowering (see `LoweredPublication::lower`).
+    // link_targets recomputed post-lowering (see `LoweredPackage::lower`).
     unit.executables.push(executable);
     push_source_span(
         &mut unit.source_map.spans,
@@ -631,30 +580,29 @@ fn lower_function_with_params(
     kind: ExecutableKind,
     executable_symbol: String,
     module_path: &str,
+    current_index: u32,
     params_source: &[skiff_syntax::ast::Param],
     inherited_type_params: &[String],
     owner: ExpressionOwnerKey,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
     publication_db_metadata: &PublicationDbMetadataIndex,
-    lowered_publication_db_metadata: &LoweredPublicationDbMetadataIndex,
+    lowered_publication_db_metadata: &LoweredPackageDbMetadataIndex,
     executable_indices: &BTreeMap<String, u32>,
     const_indices: &BTreeMap<String, u32>,
     type_indices: &BTreeMap<String, u32>,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_interface_methods: &PackageInterfaceMethodIndex,
-    package_operations: &PackageOperationIndex,
-    service_dependency_operations: &ServiceDependencyOperationIndex,
+    resolved_call_targets: &ResolvedCallTargetFacts,
     local_db_objects: &LocalDbObjectIndex,
     interface_semantics: &InterfaceSemantics,
     source_alias_targets: &BTreeMap<String, String>,
-    may_suspend: bool,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &LoweredServiceCalls,
 ) -> Result<ExecutableIr> {
     validate_bare_return_statements(function, &executable_symbol)?;
     let type_params = type_param_scope(inherited_type_params.iter(), function.type_params.iter());
@@ -668,11 +616,9 @@ fn lower_function_with_params(
         executable_indices,
         const_indices,
         external_type_symbols,
-        service_dependency_aliases,
         source_alias_targets,
         package_interface_methods,
-        package_operations,
-        service_dependency_operations,
+        resolved_call_targets,
         module_path,
         local_db_objects,
         type_params.clone(),
@@ -683,23 +629,21 @@ fn lower_function_with_params(
         callable_return_types,
         local_type_fields,
         executable_signatures,
+        service_calls,
     );
-    let self_type = function
-        .implicit_self
-        .as_ref()
-        .map(|ty| {
-            lower_type_ref(
-                ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                type_context,
-            )
-        })
-        .transpose()?;
+    let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
+        CompileError::Semantic(format!(
+            "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
+        ))
+    })?;
+    if exact_signature.params.len() != params_source.len() {
+        return Err(CompileError::Semantic(format!(
+            "exact signature for `{executable_symbol}` has {} parameters, but its executable body declares {}",
+            exact_signature.params.len(),
+            params_source.len()
+        )));
+    }
+    let self_type = exact_signature.self_type.clone();
     if self_type.is_some() {
         let self_type_text = function.implicit_self.as_ref().map(|ty| ty.name.clone());
         lowerer.declare_slot_with_type(
@@ -712,27 +656,27 @@ fn lower_function_with_params(
     }
 
     let mut params = Vec::new();
-    for param in params_source {
+    for (param, source_param) in exact_signature.params.iter().zip(params_source) {
+        if param.name != source_param.name {
+            return Err(CompileError::Semantic(format!(
+                "exact signature parameter `{}` does not match executable body parameter `{}` in `{executable_symbol}`",
+                param.name, source_param.name
+            )));
+        }
+        // The body environment retains source spelling for expression
+        // resolution only. Emitted parameter identity and shape come solely
+        // from the exact signature projected above.
         let slot = lowerer.declare_slot_with_type(
             &param.name,
             SlotKind::Param,
             false,
             BindingReadonlyFlags::default(),
-            Some(param.ty.name.clone()),
+            Some(source_param.ty.name.clone()),
         )?;
         params.push(ParamIr {
             name: param.name.clone(),
             slot,
-            ty: lower_type_ref(
-                &param.ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                type_context,
-            )?,
+            ty: param.ty.clone(),
         });
     }
 
@@ -794,19 +738,10 @@ fn lower_function_with_params(
         symbol: executable_symbol,
         type_params: function.type_params.clone(),
         params,
-        return_type: lower_type_ref(
-            &function.return_type,
-            type_indices,
-            local_db_objects,
-            publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            source_alias_targets,
-            type_context,
-        )?,
+        return_type: exact_signature.return_type.clone(),
         self_type,
         slots,
-        may_suspend,
+        may_suspend: exact_signature.may_suspend,
         body: lowerer.body,
         source_span: Some(source_span_ref(function.span)),
     })

@@ -1,12 +1,12 @@
 use skiff_artifact_model::{
-    FileIrUnit, PackageRefIr, PackageSymbolRef, PackageUnit, TypeDeclIr, TypeRefIr,
+    FileIrUnit, PackageImplementationLinks, PackageRefIr, PackageSymbolRef, TypeDeclIr, TypeRefIr,
 };
 
 #[derive(Clone, Debug)]
 pub struct PackageTypeSource {
     pub package_id: String,
     pub dependency_refs: Vec<String>,
-    pub unit: PackageUnit,
+    pub implementation_links: PackageImplementationLinks,
     pub file_ir_units: Vec<FileIrUnit>,
 }
 
@@ -84,7 +84,6 @@ impl<'a> ArtifactNominalTypeSource<'a> {
         };
         self.package_sources.iter().find(|source| {
             source.package_id == *package_key
-                || source.unit.package_id == *package_key
                 || source
                     .dependency_refs
                     .iter()
@@ -108,7 +107,6 @@ impl<'a> ArtifactNominalTypeSource<'a> {
     ) -> Option<(&'a str, &'a TypeDeclIr)> {
         let package = self.package_source_for_ref(&symbol.package)?;
         let export = package
-            .unit
             .implementation_links
             .types
             .get(&symbol.symbol_path)?;

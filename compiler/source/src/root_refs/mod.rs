@@ -264,13 +264,6 @@ pub struct RootRefValidationPolicy {
 }
 
 impl RootRefValidationPolicy {
-    pub const fn service_sources() -> Self {
-        Self {
-            include_tests: false,
-            include_std_private_projection_roots: false,
-        }
-    }
-
     pub const fn parsed_publication_sources() -> Self {
         Self {
             include_tests: true,

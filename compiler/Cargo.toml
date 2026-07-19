@@ -8,23 +8,11 @@ autotests = false
 [lib]
 path = "driver/lib.rs"
 
-[[bin]]
-name = "skiff-compiler"
-path = "driver/main.rs"
-
 [lints.clippy]
 too_many_lines = "warn"
 
 [features]
 default = []
-
-[[test]]
-name = "artifact_output"
-path = "tests/artifact_output.rs"
-
-[[test]]
-name = "compiler_command"
-path = "tests/compiler_command.rs"
 
 [[test]]
 name = "config_shape"
@@ -39,8 +27,8 @@ name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
 
 [[test]]
-name = "http_routes"
-path = "tests/http_routes.rs"
+name = "file_ir_execution_type_representation"
+path = "tests/file_ir_execution_type_representation.rs"
 
 [[test]]
 name = "package_imports"
@@ -57,10 +45,6 @@ path = "tests/package_std_schema.rs"
 [[test]]
 name = "prelude_std_schema"
 path = "tests/prelude_std_schema.rs"
-
-[[test]]
-name = "profile_overlay"
-path = "tests/profile_overlay.rs"
 
 [[test]]
 name = "publication_resources"
@@ -87,12 +71,12 @@ name = "runtime_slots"
 path = "tests/runtime_slots.rs"
 
 [[test]]
-name = "service_config_overlay"
-path = "tests/service_config_overlay.rs"
-
-[[test]]
 name = "service_conformance"
 path = "tests/service_conformance.rs"
+
+[[test]]
+name = "shared_fixture_lane_probes"
+path = "tests/shared_fixture_lane_probes.rs"
 
 [[test]]
 name = "std_package_imports"
@@ -107,15 +91,17 @@ name = "test_artifact_identity"
 path = "tests/test_artifact_identity.rs"
 
 [dependencies]
+skiff-artifact-identity = { path = "../artifact-identity" }
+skiff-artifact-model = { path = "../artifact-model" }
 skiff-compiler-core = { path = "core" }
 skiff-compiler-input = { path = "input" }
 skiff-compiler-input-model = { path = "input-model" }
 skiff-compiler-lowering = { path = "lowering" }
 skiff-compiler-compiled = { path = "compiled" }
+skiff-compiler-contract = { path = "contract" }
 skiff-compiler-emission = { path = "emission" }
 skiff-compiler-projection = { path = "projection" }
 skiff-compiler-projection-input = { path = "projection-input" }
-skiff-compiler-publication-abi = { path = "publication-abi" }
 skiff-compiler-source = { path = "source" }
 skiff-syntax = { path = "../syntax" }
 serde = { version = "1.0", features = ["derive"] }

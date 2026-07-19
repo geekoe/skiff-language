@@ -1,4 +1,4 @@
 pub use skiff_artifact_model::{
-    FileIrRef, MetadataValue, NativeTarget, PackageOperationSymbolRef, PackageRefIr,
-    PackageSymbolRef, ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+    FileIrRef, MetadataValue, NativeTarget, PackageCallableRef, PackageRefIr, PackageSymbolRef,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
 };

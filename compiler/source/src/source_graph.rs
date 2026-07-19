@@ -8,9 +8,7 @@ use crate::{
     shared::ast::SourceFile, shared::parser::parse_source,
     shared::publication_error::PublicationError,
 };
-use compiler_input_model::{
-    CompilerRawSourceFile, RawPublicationSourceGraph, RawSourceFileMeta, RawSourceOrigin,
-};
+use compiler_input_model::{CompilerRawSourceFile, RawPublicationSourceGraph, RawSourceFileMeta};
 
 pub use skiff_compiler_core::source_role::PublicationSourceRole as CompilerSourceRole;
 
@@ -19,31 +17,15 @@ pub use skiff_compiler_core::source_role::PublicationSourceRole as CompilerSourc
 mod compiler_source_file_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceOrigin {
-    Service,
-    Package { package_id: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFileMeta {
     relative_path: PathBuf,
     module_path: String,
     is_test_file: bool,
-    pub origin: SourceOrigin,
 }
 
 impl SourceFileMeta {
-    pub fn service(relative_path: PathBuf, module_path: String, is_test_file: bool) -> Self {
-        Self {
-            relative_path,
-            module_path,
-            is_test_file,
-            origin: SourceOrigin::Service,
-        }
-    }
-
     pub fn package(
-        package_id: impl Into<String>,
+        _package_id: impl Into<String>,
         relative_path: PathBuf,
         module_path: String,
     ) -> Self {
@@ -51,24 +33,14 @@ impl SourceFileMeta {
             relative_path,
             module_path,
             is_test_file: false,
-            origin: SourceOrigin::Package {
-                package_id: package_id.into(),
-            },
         }
     }
 
     fn from_raw(raw: &RawSourceFileMeta) -> Self {
-        let origin = match &raw.origin {
-            RawSourceOrigin::Service => SourceOrigin::Service,
-            RawSourceOrigin::Package { package_id } => SourceOrigin::Package {
-                package_id: package_id.clone(),
-            },
-        };
         Self {
             relative_path: raw.relative_path.clone(),
             module_path: raw.module_path.clone(),
             is_test_file: raw.is_test_file,
-            origin,
         }
     }
 }
@@ -78,7 +50,6 @@ pub struct ParsedSourceFile {
     pub relative_path: PathBuf,
     pub module_path: String,
     pub is_test_file: bool,
-    origin: SourceOrigin,
     pub text: String,
     pub ast: SourceFile,
 }
@@ -99,7 +70,6 @@ impl ParsedSourceFile {
             relative_path: meta.relative_path,
             module_path: meta.module_path,
             is_test_file: meta.is_test_file,
-            origin: meta.origin,
             text,
             ast,
         }
@@ -107,10 +77,6 @@ impl ParsedSourceFile {
 
     pub fn diagnostic_path(&self, root: &Path) -> String {
         root.join(&self.relative_path).display().to_string()
-    }
-
-    pub fn origin(&self) -> &SourceOrigin {
-        &self.origin
     }
 }
 
@@ -159,7 +125,11 @@ impl CompilerSourceFile {
         diagnostic_path: impl Into<String>,
     ) -> Result<Self, PublicationError> {
         let parsed = ParsedSourceFile::parse(
-            SourceFileMeta::service(relative_path, module_path, is_test_file),
+            SourceFileMeta {
+                relative_path,
+                module_path,
+                is_test_file,
+            },
             text,
             diagnostic_path,
         )?;
@@ -182,7 +152,6 @@ impl CompilerSourceFile {
                 relative_path,
                 module_path,
                 is_test_file,
-                origin: SourceOrigin::Service,
             },
             text,
             ast,

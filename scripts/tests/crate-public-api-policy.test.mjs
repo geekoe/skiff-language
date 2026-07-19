@@ -9,28 +9,16 @@ import {
   uniqueCrates,
 } from '../lib/crate-public-api-policy.mjs';
 
-test('managed public API policy derives distinct gate and help orders from one source', () => {
+test('managed public API policy declares only the two terminal producer owners', () => {
   assert.deepEqual(MANAGED_CRATE_NAMES, [
-    'skiff-compiler-publication-abi',
-    'skiff-compiler-input-model',
-    'skiff-compiler-input',
-    'skiff-compiler-projection-input',
-    'skiff-compiler-source',
-    'skiff-compiler-lowering',
-    'skiff-compiler-compiled',
-    'skiff-compiler-projection',
+    'skiff-compiler-contract',
+    'skiff-compiler',
   ]);
   assert.deepEqual(MANAGED_CRATE_HELP_NAMES, [
-    'skiff-compiler-publication-abi',
-    'skiff-compiler-input-model',
-    'skiff-compiler-input',
-    'skiff-compiler-source',
-    'skiff-compiler-lowering',
-    'skiff-compiler-compiled',
-    'skiff-compiler-projection',
-    'skiff-compiler-projection-input',
+    'skiff-compiler-contract',
+    'skiff-compiler',
   ]);
-  assert.equal(new Set(MANAGED_CRATE_NAMES).size, 8);
+  assert.equal(new Set(MANAGED_CRATE_NAMES).size, 2);
   assert.deepEqual(new Set(MANAGED_CRATE_HELP_NAMES), new Set(MANAGED_CRATE_NAMES));
 });
 
@@ -39,16 +27,16 @@ test('policy snapshots and configs cannot mutate the canonical records', () => {
   assert.equal(Object.isFrozen(MANAGED_CRATE_HELP_NAMES), true);
   assert.throws(() => MANAGED_CRATE_NAMES.push('mutated'), TypeError);
 
-  const config = managedCrateConfig('skiff-compiler-projection-input');
+  const config = managedCrateConfig('skiff-compiler-contract');
   assert.equal(Object.isFrozen(config), true);
   assert.equal(Object.isFrozen(config.allowedCrates), true);
   assert.throws(() => config.allowedCrates.push('mutated'), TypeError);
   assert.deepEqual(
-    managedCrateConfig('skiff-compiler-projection-input').allowedCrates,
+    managedCrateConfig('skiff-compiler-contract').allowedCrates,
     [
-      'skiff-compiler-projection-input',
-      'skiff-compiler-core',
+      'skiff-compiler-contract',
       'skiff-artifact-model',
+      'skiff-artifact-identity',
       'std',
       'core',
       'alloc',
@@ -56,6 +44,32 @@ test('policy snapshots and configs cannot mutate the canonical records', () => {
       'serde_json',
     ],
   );
+
+  const facadeAllowed = managedCrateConfig('skiff-compiler').allowedCrates;
+  assert.deepEqual(facadeAllowed, [
+    'skiff-compiler',
+    'skiff-compiler-contract',
+    'skiff-compiler-input-model',
+    'skiff-compiler-input',
+    'skiff-compiler-source',
+    'skiff-compiler-emission',
+    'skiff-artifact-model',
+    'skiff-syntax',
+    'std',
+    'core',
+    'alloc',
+    'serde',
+    'serde_json',
+  ]);
+  for (const deletedOwner of [
+    'skiff-compiler-publication-abi',
+    'skiff-compiler-compiled',
+    'skiff-compiler-lowering',
+    'skiff-compiler-projection-input',
+    'skiff-compiler-projection',
+  ]) {
+    assert.equal(facadeAllowed.includes(deletedOwner), false);
+  }
 });
 
 test('normalized allow-list dedup preserves first spelling and insertion order', () => {

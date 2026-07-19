@@ -295,7 +295,7 @@ pub(super) fn collect_package_expr_std_type_violations(
                 violations,
             );
         }
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 

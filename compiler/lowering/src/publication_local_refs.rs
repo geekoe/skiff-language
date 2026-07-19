@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use crate::file_ir::{
     BoxSourceIr, CallTargetIr, DbBodyIr, DbChangeIr, DbLeaseClaimIr, DbLeaseReadIr, DbOperationIr,
     DbPredicateIr, DbQueryIr, DbQueryValueIr, DbSelectorIr, DbTransactionIr, ExprIr,
-    ExternalRefTable, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
+    FileIrServiceCallValidationError, FileIrUnit, InterfaceDeclIr, PackageRefIr, PatternIr, StmtIr,
     TypeDescriptorIr, TypeRefIr,
 };
 use skiff_artifact_identity::{canonical_interface_method_abi_id, type_ref_abi_key};
 use skiff_artifact_model::InterfaceInstantiationRef;
 
-use super::external_refs::external_refs_for_file_ir_unit;
+use super::external_refs::rebuild_external_refs_for_file_ir_unit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PublicationTypeRefLocation {
@@ -97,14 +97,14 @@ impl PublicationLocalRefIndex {
 pub(super) fn rewrite_publication_local_refs(
     units: &mut [FileIrUnit],
     current_package_id: Option<&str>,
-) {
+) -> Result<(), FileIrServiceCallValidationError> {
     let index = PublicationLocalRefIndex::build(units, current_package_id);
     for unit in units {
         let module_path = unit.module_path.clone();
         rewrite_unit(&index, &module_path, unit);
-        unit.external_refs = ExternalRefTable::default();
-        unit.external_refs = external_refs_for_file_ir_unit(unit);
+        rebuild_external_refs_for_file_ir_unit(unit)?;
     }
+    Ok(())
 }
 
 fn rewrite_unit(index: &PublicationLocalRefIndex, module_path: &str, unit: &mut FileIrUnit) {
@@ -323,7 +323,8 @@ fn rewrite_call_target(
         CallTargetIr::LocalExecutable { .. }
         | CallTargetIr::PublicationExecutable { .. }
         | CallTargetIr::ServiceDependencySymbol { .. }
-        | CallTargetIr::PackageSymbol { .. }
+        | CallTargetIr::ServiceCall { .. }
+        | CallTargetIr::PackageCallable { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
         | CallTargetIr::ReceiverBuiltin { .. } => {}
@@ -591,6 +592,10 @@ fn rewrite_type_ref_to_publication_location(
 mod tests {
     use super::*;
     use skiff_artifact_model::PackageSymbolRef;
+    use skiff_artifact_model::{
+        CallIr, ContractOperationId, ExecutableBody, ServiceCallRef, ServiceCallRefIndex,
+        ServiceProtocolIdentity,
+    };
 
     fn current_package_duration_ref(package_id: &str) -> TypeRefIr {
         TypeRefIr::PackageSymbol {
@@ -643,5 +648,47 @@ mod tests {
             &mut dependency
         ));
         assert!(matches!(dependency, TypeRefIr::PackageSymbol { .. }));
+    }
+
+    #[test]
+    fn service_call_target_and_ref_survive_publication_local_rewrite() {
+        let call_ref = ServiceCallRef {
+            service_requirement_slot: 2,
+            contract_operation_id: ContractOperationId::new("operation:echo"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+        };
+        let mut unit = FileIrUnit::empty("consumer.main", "source");
+        unit.external_refs.service_call_refs = vec![call_ref.clone()];
+        unit.constants.push(skiff_artifact_model::ConstIr {
+            name: "call".to_string(),
+            ty: TypeRefIr::native("void"),
+            body: ExecutableBody {
+                expressions: vec![ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::ServiceCall {
+                            service_call_ref_index: ServiceCallRefIndex::new(0),
+                        },
+                        args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                }],
+                ..ExecutableBody::default()
+            },
+            source_span: None,
+        });
+
+        rewrite_publication_local_refs(std::slice::from_mut(&mut unit), None).unwrap();
+
+        assert_eq!(unit.external_refs.service_call_refs, vec![call_ref]);
+        let ExprIr::Call { call } = &unit.constants[0].body.expressions[0] else {
+            panic!("service call expression")
+        };
+        assert!(matches!(
+            call.target,
+            CallTargetIr::ServiceCall {
+                service_call_ref_index
+            } if service_call_ref_index.index() == 0
+        ));
     }
 }

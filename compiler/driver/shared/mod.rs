@@ -1,2 +1,1 @@
-pub(crate) mod prelude_registry;
-pub(crate) mod publication_error;
+pub(crate) mod package_compile_error;

@@ -1,1007 +1,419 @@
-use skiff_compiler::{
-    test_support::compile_source_file_ir_artifact_for_test as compile_source_file_ir_artifact,
-    test_support::read_user_package_manifest, PublishedJsonArtifact,
-};
+mod common;
+
+use std::{fs, path::Path};
+
+use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
+use skiff_compiler_input::package_config::read_user_package_manifest;
 use skiff_syntax::parser::parse_source;
 
-mod common;
-use common::artifacts::{
-    assert_file_ir_contains_package_symbol, assert_publish_error_contains,
-    assert_service_package_id, build_temp_service_publication, package_assembly,
-};
-use skiff_compiler::test_support::project_fixtures::{
-    write_complex_cloud_package, write_package_api_yml, write_package_manifest,
-    write_package_manifest_in_dir, write_package_source, write_package_with_dependency_alias,
-    ServiceProjectBuilder,
-};
-
 #[test]
-fn source_import_alias_is_rejected() {
-    let error = parse_source(
-        r#"
-            import std as foo
-            function run() -> number { return 1 }
-        "#,
-    )
-    .unwrap_err();
+fn source_import_syntax_accepts_only_one_identifier() {
+    for source in [
+        "import std as foo\nfunction run() -> number { return 1 }",
+        "import google.com/cloud\nfunction run() -> number { return 1 }",
+        "import google.com/cloud as gcloud\nfunction run() -> number { return 1 }",
+        "import google/cloud\nfunction run() -> number { return 1 }",
+        "import 123\nfunction run() -> number { return 1 }",
+    ] {
+        let error = parse_source(source).unwrap_err().to_string();
+        assert!(
+            error.contains("import name must be a single ASCII identifier"),
+            "unexpected import error: {error}"
+        );
+    }
 
-    assert!(
-        error
-            .to_string()
-            .contains("import name must be a single ASCII identifier"),
-        "unexpected error: {error}"
-    );
+    let ast = parse_source("import billing\nfunction run() -> number { return 1 }")
+        .expect("simple import should parse");
+    assert_eq!(ast.imports[0].alias, None);
+    assert_eq!(ast.imports[0].local_binding.as_deref(), Some("billing"));
 }
 
 #[test]
-fn source_import_complex_package_is_rejected() {
-    let error = parse_source(
-        r#"
-            import google.com/cloud
-            function run() -> number { return 1 }
-        "#,
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("import name must be a single ASCII identifier"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn source_import_complex_package_with_alias_is_rejected() {
-    let error = parse_source(
-        r#"
-            import google.com/cloud as gcloud
-            function run() -> number { return 1 }
-        "#,
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("import name must be a single ASCII identifier"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn source_import_slash_package_is_rejected() {
-    let error = parse_source(
-        r#"
-            import google/cloud
-            function run() -> number { return 1 }
-        "#,
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("import name must be a single ASCII identifier"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn source_import_non_identifier_is_rejected_with_import_rule() {
-    let error = parse_source(
-        r#"
-            import 123
-            function run() -> number { return 1 }
-        "#,
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("import name must be a single ASCII identifier"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn import_simple_package_default_local_binding_is_name() {
-    let ast = parse_source(
-        r#"
-            import billing
-            function run() -> number { return 1 }
-        "#,
-    )
-    .expect("simple package id should parse");
-    let import = &ast.imports[0];
-    assert_eq!(import.alias, None);
-    assert_eq!(import.local_binding.as_deref(), Some("billing"));
-}
-
-#[test]
-fn package_manifest_rejects_removed_metadata_fields() {
+fn package_manifest_rejects_removed_fields_and_unsafe_ids() {
     for (field, yaml) in [
         ("transports", "transports: [legacy]"),
         ("providers", "providers: []"),
-        (
-            "effects",
-            r#"effects:
-  symbols: {}
-"#,
-        ),
+        ("effects", "effects:\n  symbols: {}"),
         (
             "publicEffects",
-            r#"publicEffects:
-  example.com/removed.run:
-    target: example.com/removed.run
-"#,
+            "publicEffects:\n  example.com/removed.run:\n    target: example.com/removed.run",
         ),
     ] {
-        let temp = ServiceProjectBuilder::package_model(
-            &format!("removed-package-field-{field}"),
-            "import app",
-            "return {}",
+        let temp = TestDir::new("skiff-compiler", field);
+        fs::write(
+            temp.path().join("package.yml"),
+            format!("id: example.com/removed\nversion: 0.1.0\n{yaml}\n"),
+        )
+        .unwrap();
+        let error = read_user_package_manifest(&temp.path().join("package.yml"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("unknown field `{field}`")),
+            "unexpected manifest error: {error}"
         );
-        temp.add_service_package_dependency("example.com/removed", Some("app"));
-        write_package_manifest(
-            temp.root(),
-            "example.com/removed",
-            &format!(
-                r#"
-id: example.com/removed
-version: 0.1.0
-{yaml}
-"#
-            ),
-        );
-        write_package_api_yml(
-            temp.root(),
-            "example.com/removed",
-            r#"
-run: removed.run
-"#,
-        );
-        write_package_source(
-            temp.root(),
-            "example.com/removed",
-            "removed.skiff",
-            r#"
-              function run() -> string { return "ok" }
-            "#,
-        );
-
-        let expected = format!("unknown field `{field}`");
-        assert_publish_error_contains(temp.root(), &[expected.as_str()]);
     }
-}
 
-#[test]
-fn service_dependency_package_alias_selects_complex_package_id() {
-    let temp = ServiceProjectBuilder::package_model(
-        "service-dependency-package-alias",
-        "import gcloud",
-        r#"
-          const result = gcloud.storage.upload()
-          return {}
-        "#,
-    );
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages(
-            r#"
-  - id: google.com/cloud
-    version: 0.1.0
-    alias: gcloud
-"#,
-        ),
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "google.com/cloud");
-    assert_file_ir_contains_package_symbol(
-        &published,
-        "internal.example",
-        "gcloud",
-        "storage.upload",
-    );
-    assert!(package_assembly(&published, "google.com/cloud")
-        .path
-        .starts_with("assemblies/packages/google~com~~cloud/"));
-}
-
-#[test]
-fn package_alias_resolves_each_exported_module_root() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-alias-multiple-export-roots",
-        "import gcloud",
-        r#"
-          const storage = gcloud.storage.upload()
-          const compute = gcloud.compute.start()
-          return {}
-        "#,
-    );
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages(
-            r#"
-  - id: google.com/cloud
-    version: 0.1.0
-    alias: gcloud
-"#,
-        ),
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-compute:
-  start: cloud.compute.start
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/compute.skiff",
-        r#"
-          function start() -> string { return "ok" }
-        "#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_file_ir_contains_package_symbol(
-        &published,
-        "internal.example",
-        "gcloud",
-        "storage.upload",
-    );
-    assert_file_ir_contains_package_symbol(
-        &published,
-        "internal.example",
-        "gcloud",
-        "compute.start",
-    );
-}
-
-#[test]
-fn package_alias_canonicalizes_simple_export_path_to_package_export_key() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-alias-simple-export-key",
-        "import app",
-        r#"
-          const secret = app.secrets.readProdSecret()
-          return {}
-        "#,
-    );
-    temp.add_service_package_dependency("example.com/pkg", Some("app"));
-    write_package_manifest(
-        temp.root(),
-        "example.com/pkg",
-        r#"
-id: example.com/pkg
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/pkg",
-        r#"
-secrets:
-  readProdSecret: secrets_impl.readProdSecret
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/pkg",
-        "secrets_impl.skiff",
-        r#"
-          function readProdSecret() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_file_ir_contains_package_symbol(
-        &published,
-        "internal.example",
-        "app",
-        "secrets.readProdSecret",
-    );
-}
-
-#[test]
-fn package_alias_empty_public_path_exposes_module_at_alias_root() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-alias-empty-public-path",
-        "import llm",
-        r#"
-          const result = llm.chat()
-          return {}
-        "#,
-    );
-    temp.add_service_package_dependency("skiff.run/llm", Some("llm"));
-    write_package_manifest_in_dir(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-id: skiff.run/llm
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-chat: llm_impl.chat
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "skiff.run/llm",
-        "llm_impl.skiff",
-        r#"
-          function chat() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_file_ir_contains_package_symbol(&published, "internal.example", "llm", "chat");
-}
-
-#[test]
-fn package_alias_matching_public_path_is_not_folded() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-alias-public-path-not-folded",
-        "import llm",
-        r#"
-          const result = llm.llm.chat()
-          return {}
-        "#,
-    );
-    temp.add_service_package_dependency("skiff.run/llm", Some("llm"));
-    write_package_manifest_in_dir(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-id: skiff.run/llm
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-llm:
-  chat: llm_impl.chat
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "skiff.run/llm",
-        "llm_impl.skiff",
-        r#"
-          function chat() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_file_ir_contains_package_symbol(&published, "internal.example", "llm", "llm.chat");
-}
-
-#[test]
-fn package_alias_matching_public_path_rejects_folded_shorthand() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-alias-public-path-shorthand-rejected",
-        "import llm",
-        r#"
-          const result = llm.chat()
-          return {}
-        "#,
-    );
-    temp.add_service_package_dependency("skiff.run/llm", Some("llm"));
-    write_package_manifest_in_dir(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-id: skiff.run/llm
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "skiff.run/llm",
-        r#"
-llm:
-  chat: llm_impl.chat
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "skiff.run/llm",
-        "llm_impl.skiff",
-        r#"
-          function chat() -> string { return "ok" }
-        "#,
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["package dependency `llm` does not export public operation `chat` for source call `llm.chat`"],
-    );
-}
-
-#[test]
-fn complex_package_dependency_requires_alias_for_source_import() {
-    let temp = ServiceProjectBuilder::package_model(
-        "service-complex-package-without-alias",
-        "import cloud",
-        "return {}",
-    );
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages(
-            r#"
-  - id: google.com/cloud
-    version: 0.1.0
-"#,
-        ),
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-    let error = skiff_compiler::read_service_config(temp.root())
+    let unsafe_id = TestDir::new("skiff-compiler", "unsafe-package-id");
+    fs::write(
+        unsafe_id.path().join("package.yml"),
+        "id: app/escape/extra\nversion: 0.1.0\n",
+    )
+    .unwrap();
+    let error = read_user_package_manifest(&unsafe_id.path().join("package.yml"))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("google.com/cloud requires alias"));
+    assert!(error.contains("id app/escape/extra"));
+    assert!(error.contains("publication id"));
 }
 
 #[test]
-fn package_dependency_alias_is_published_and_resolves_transitively() {
-    let temp =
-        ServiceProjectBuilder::package_model("package-dependency-alias", "import app", "return {}");
-    temp.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_manifest(
-        temp.root(),
-        "example.com/facade",
-        r#"
-id: example.com/facade
-version: 0.1.0
+fn dependency_alias_projects_each_public_operation_into_file_ir() {
+    let temp = TestDir::new("skiff-compiler", "complex-package-alias");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/import-app
+version: 1.0.0
 packages:
   - id: google.com/cloud
     version: 0.1.0
     alias: gcloud
 "#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/facade",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
         r#"
-facade: facade_impl.facade
+import gcloud
+function run() -> string {
+  const stored = gcloud/storage.upload()
+  return gcloud/compute.start()
+}
 "#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/facade",
-        "facade_impl.skiff",
-        r#"
-          import gcloud
+    )
+    .unwrap();
+    write_cloud_dependency(temp.path());
 
-          function facade() -> string { return gcloud.storage.upload() }
-        "#,
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/facade");
-    let cloud_assembly = package_assembly(&published, "google.com/cloud");
-    let facade_assembly = package_assembly(&published, "example.com/facade");
-    assert_package_lock_entry(
-        &facade_assembly.value["dependencies"][0],
-        "google.com/cloud",
-        "0.1.0",
-        "gcloud",
-        cloud_assembly,
-    );
-    let facade_artifact = published
-        .artifacts
-        .package_file_ir_units
+    let project = compile_package_project(temp.path()).expect("alias graph should compile");
+    let cloud = project
+        .dependency("google.com/cloud", "0.1.0")
+        .expect("cloud artifact should be in the dependency closure");
+    let requirement = project
+        .package
+        .artifact
+        .package_requirements
         .iter()
-        .find(|artifact| artifact.module_path == "facade_impl")
-        .expect("facade_impl package artifact");
-    let facade_value = facade_artifact.value();
-    assert!(
-        common::artifacts::json_contains_package_symbol(&facade_value, "gcloud", "storage.upload"),
-        "package alias should compile to exported dependency module path: {facade_value}",
+        .find(|requirement| requirement.package_id == "google.com/cloud")
+        .expect("root artifact should retain its canonical requirement");
+
+    assert_eq!(requirement.alias, "gcloud");
+    assert_eq!(
+        requirement.expected_local_abi,
+        cloud.artifact.package_local_abi.local_abi_identity
+    );
+    assert_file_ir_contains_package_callable(
+        &project.package,
+        "main",
+        "gcloud",
+        "google.com/cloud",
+        "storage.upload",
+    );
+    assert_file_ir_contains_package_callable(
+        &project.package,
+        "main",
+        "gcloud",
+        "google.com/cloud",
+        "compute.start",
     );
 }
+
 #[test]
-fn package_dependency_alias_platform_is_allowed() {
-    let temp =
-        ServiceProjectBuilder::package_model("package-platform-alias", "import app", "return {}");
-    temp.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_manifest(
-        temp.root(),
-        "example.com/facade",
-        r#"
-id: example.com/facade
+fn public_path_shape_is_preserved_under_dependency_alias() {
+    let nested = TestDir::new("skiff-compiler", "nested-public-path");
+    fs::write(
+        nested.path().join("package.yml"),
+        r#"id: example.com/nested-consumer
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
+    )
+    .unwrap();
+    fs::write(
+        nested.path().join("main.skiff"),
+        "import llm\nfunction run() -> string { return llm/llm.chat() }\n",
+    )
+    .unwrap();
+    write_llm_dependency(nested.path(), "llm:\n  chat: llm_impl.chat\n");
+
+    let project = compile_package_project(nested.path()).expect("nested export should compile");
+    assert_file_ir_contains_package_callable(
+        &project.package,
+        "main",
+        "llm",
+        "skiff.run/llm",
+        "llm.chat",
+    );
+
+    let folded = TestDir::new("skiff-compiler", "folded-public-path");
+    fs::write(
+        folded.path().join("package.yml"),
+        r#"id: example.com/folded-consumer
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
+    )
+    .unwrap();
+    fs::write(
+        folded.path().join("main.skiff"),
+        "import llm\nfunction run() -> string { return llm/chat() }\n",
+    )
+    .unwrap();
+    write_llm_dependency(folded.path(), "llm:\n  chat: llm_impl.chat\n");
+    let error = compile_package_project(folded.path())
+        .expect_err("folded shorthand should stay invalid")
+        .to_string();
+    assert!(
+        error.contains("package dependency `llm` has no callable public path `chat`"),
+        "unexpected error: {error}"
+    );
+
+    let flat = TestDir::new("skiff-compiler", "flat-public-path");
+    fs::write(
+        flat.path().join("package.yml"),
+        r#"id: example.com/flat-consumer
+version: 1.0.0
+packages:
+  - id: skiff.run/llm
+    version: 0.1.0
+    alias: llm
+"#,
+    )
+    .unwrap();
+    fs::write(
+        flat.path().join("main.skiff"),
+        "import llm\nfunction run() -> string { return llm/chat() }\n",
+    )
+    .unwrap();
+    write_llm_dependency(flat.path(), "chat: llm_impl.chat\n");
+    let project = compile_package_project(flat.path()).expect("flat export should compile");
+    assert_file_ir_contains_package_callable(
+        &project.package,
+        "main",
+        "llm",
+        "skiff.run/llm",
+        "chat",
+    );
+}
+
+#[test]
+fn transitive_aliases_are_owned_by_each_package_artifact() {
+    let temp = TestDir::new("skiff-compiler", "transitive-package-alias");
+    fs::write(
+        temp.path().join("package.yml"),
+        r#"id: example.com/transitive-app
+version: 1.0.0
+packages:
+  - id: example.com/facade
+    version: 0.1.0
+    alias: app
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("main.skiff"),
+        "import app\nfunction run() -> string { return app/facade() }\n",
+    )
+    .unwrap();
+    write_cloud_dependency(temp.path());
+
+    let facade = temp
+        .path()
+        .join(".skiff-packages/example~com~~facade/0.1.0");
+    fs::create_dir_all(&facade).unwrap();
+    fs::write(
+        facade.join("package.yml"),
+        r#"id: example.com/facade
 version: 0.1.0
 packages:
   - id: google.com/cloud
     version: 0.1.0
     alias: platform
 "#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/facade",
-        r#"
-facade: facade_impl.facade
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/facade",
-        "facade_impl.skiff",
-        r#"
-          import platform
+    )
+    .unwrap();
+    fs::write(facade.join("api.yml"), "facade: facade_impl.facade\n").unwrap();
+    fs::write(
+        facade.join("facade_impl.skiff"),
+        "import platform\nfunction facade() -> string { return platform/storage.upload() }\n",
+    )
+    .unwrap();
 
-          function facade() -> string { return platform.storage.upload() }
-        "#,
+    let project = compile_package_project(temp.path()).expect("transitive graph should compile");
+    let facade = project
+        .dependency("example.com/facade", "0.1.0")
+        .expect("facade artifact should be present");
+    assert!(project.dependency("google.com/cloud", "0.1.0").is_some());
+    assert_eq!(
+        project.package.artifact.package_requirements[0].alias,
+        "app"
     );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/facade");
-    let cloud_assembly = package_assembly(&published, "google.com/cloud");
-    let facade_assembly = package_assembly(&published, "example.com/facade");
-    assert_package_lock_entry(
-        &facade_assembly.value["dependencies"][0],
-        "google.com/cloud",
-        "0.1.0",
+    assert_eq!(facade.artifact.package_requirements[0].alias, "platform");
+    assert_file_ir_contains_package_callable(
+        facade,
+        "facade_impl",
         "platform",
-        cloud_assembly,
+        "google.com/cloud",
+        "storage.upload",
     );
-    let facade_artifact = published
-        .artifacts
-        .package_file_ir_units
-        .iter()
-        .find(|artifact| artifact.module_path == "facade_impl")
-        .expect("facade_impl package artifact");
-    let facade_value = facade_artifact.value();
-    assert!(
-        common::artifacts::json_contains_package_symbol(
-            &facade_value,
-            "platform",
-            "storage.upload"
-        ),
-        "package alias platform should compile to exported dependency module path: {facade_value}",
+    assert_file_ir_contains_package_callable(
+        &project.package,
+        "main",
+        "app",
+        "example.com/facade",
+        "facade",
     );
 }
 
 #[test]
-fn unknown_dotted_root_call_is_rejected_without_special_root_rules() {
-    let source = r#"
-        function run() -> string {
-          return unknown.root.call()
-        }
-    "#;
+fn dependency_alias_participates_in_package_build_identity() {
+    let mut identities = Vec::new();
+    for alias in ["left", "right"] {
+        let temp = TestDir::new("skiff-compiler", alias);
+        fs::write(
+            temp.path().join("package.yml"),
+            format!(
+                "id: example.com/identity-app\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: {alias}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("main.skiff"),
+            format!(
+                "import {alias}\nfunction run() -> string {{ return {alias}/storage.upload() }}\n"
+            ),
+        )
+        .unwrap();
+        write_cloud_dependency(temp.path());
+        identities.push(
+            compile_package_project(temp.path())
+                .expect("identity fixture should compile")
+                .package
+                .artifact
+                .package_build_id,
+        );
+    }
+    assert_ne!(identities[0], identities[1]);
+}
 
-    let error =
-        compile_source_file_ir_artifact(source, "internal/run.skiff", "internal.run", "service")
+#[test]
+fn invalid_dependency_aliases_and_unknown_roots_fail_closed() {
+    for (name, manifest, expected) in [
+        (
+            "complex-without-alias",
+            "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n",
+            "google.com/cloud requires alias",
+        ),
+        (
+            "duplicate-alias",
+            "id: example.com/invalid\nversion: 1.0.0\npackages:\n  - id: google.com/cloud\n    version: 0.1.0\n    alias: cloud\n  - id: example.org/cloud\n    version: 0.1.0\n    alias: cloud\n",
+            "packages alias cloud",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", name);
+        fs::write(temp.path().join("package.yml"), manifest).unwrap();
+        let error = read_user_package_manifest(&temp.path().join("package.yml"))
             .unwrap_err()
             .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
 
-    assert!(
-        error.contains("unresolved root unknown")
-            && error.contains("unknown.root.call")
-            && !error.contains("platform"),
-        "expected unresolved root error, got:\n{error}"
-    );
-}
-
-#[test]
-fn package_dependency_alias_changes_assembly_identity() {
-    let left = ServiceProjectBuilder::package_model(
-        "package-alias-identity-left",
-        "import app",
-        "return {}",
-    );
-    left.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_with_dependency_alias(left.root(), "left");
-    write_complex_cloud_package(left.root());
-    let left_published = build_temp_service_publication(left.root());
-    let left_assembly = package_assembly(&left_published, "example.com/facade");
-
-    let right = ServiceProjectBuilder::package_model(
-        "package-alias-identity-right",
-        "import app",
-        "return {}",
-    );
-    right.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_with_dependency_alias(right.root(), "right");
-    write_complex_cloud_package(right.root());
-    let right_published = build_temp_service_publication(right.root());
-    let right_assembly = package_assembly(&right_published, "example.com/facade");
-
-    assert_ne!(left_assembly.identity, right_assembly.identity);
-    assert_ne!(left_assembly.path, right_assembly.path);
-}
-
-#[test]
-fn transitive_package_version_conflicts_are_rejected_after_selection() {
-    let temp = ServiceProjectBuilder::package_model(
-        "transitive-version-conflict",
-        r#"
-          import left
-          import right
-        "#,
-        "return {}",
-    );
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages(
-            r#"
-  - id: example.com/left
-    version: 0.1.0
-    alias: left
-  - id: example.com/right
-    version: 0.1.0
-    alias: right
-"#,
-        ),
-    );
-    write_package_manifest(
-        temp.root(),
-        "example.com/left",
-        r#"
-id: example.com/left
-version: 0.1.0
-packages:
-  - id: example.com/shared
-    version: 1.0.0
-    alias: shared
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/left",
-        r#"
-left:
-  run: left.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/left",
-        "left.skiff",
-        r#"
-          function run() -> string { return "left" }
-        "#,
-    );
-    write_package_manifest(
-        temp.root(),
-        "example.com/right",
-        r#"
-id: example.com/right
-version: 0.1.0
-packages:
-  - id: example.com/shared
-    version: 2.0.0
-    alias: shared
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/right",
-        r#"
-right:
-  run: right.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/right",
-        "right.skiff",
-        r#"
-          function run() -> string { return "right" }
-        "#,
-    );
-    write_package_manifest(
-        temp.root(),
-        "example.com/shared",
-        r#"
-id: example.com/shared
-version: 1.0.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/shared",
-        r#"
-run: main.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/shared",
-        "main.skiff",
-        r#"
-          function run() -> string { return "example.com/shared" }
-        "#,
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "example.com/example.com/shared-2",
-        r#"
-id: example.com/shared
-version: 2.0.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/example.com/shared-2",
-        r#"
-run: main.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/example.com/shared-2",
-        "main.skiff",
-        r#"
-          function run() -> string { return "example.com/shared" }
-        "#,
-    );
-
-    assert_publish_error_contains(
-        temp.root(),
-        &[
-            "package dependency example.com/shared version 1.0.0",
-            "selected package.yml version 2.0.0",
-        ],
-    );
-}
-
-#[test]
-fn package_complex_dependency_requires_alias_for_source_import() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-complex-dependency-without-alias",
-        "import app",
-        "return {}",
-    );
-    temp.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_manifest(
-        temp.root(),
-        "example.com/facade",
-        r#"
-id: example.com/facade
-version: 0.1.0
-packages:
-  - id: google.com/cloud
-    version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/facade",
-        r#"
-facade: facade.facade
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/facade",
-        "facade.skiff",
-        r#"
-          import cloud
-
-          function facade() -> string { return "ok" }
-        "#,
-    );
-    write_package_manifest_in_dir(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-id: google.com/cloud
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "google.com/cloud",
-        r#"
-storage:
-  upload: cloud.storage.upload
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "google.com/cloud",
-        "cloud/storage.skiff",
-        r#"
-          function upload() -> string { return "ok" }
-        "#,
-    );
-    assert_publish_error_contains(temp.root(), &["google.com/cloud requires alias"]);
-}
-
-#[test]
-fn package_dependency_alias_must_be_unique() {
-    let temp = ServiceProjectBuilder::package_model(
-        "package-duplicate-dependency-alias",
-        "import app",
-        "return {}",
-    );
-    temp.add_service_package_dependency("example.com/facade", Some("app"));
-    write_package_manifest(
-        temp.root(),
-        "example.com/facade",
-        r#"
-id: example.com/facade
-version: 0.1.0
-packages:
-  - id: google.com/cloud
-    version: 0.1.0
-    alias: cloud
-  - id: example.org/cloud
-    version: 0.1.0
-    alias: cloud
-"#,
-    );
-
-    assert_publish_error_contains(
-        temp.root(),
-        &["packages alias cloud", "more than one package"],
-    );
-}
-
-#[test]
-fn unsafe_package_ids_are_rejected_before_artifact_paths_are_built() {
-    let temp = ServiceProjectBuilder::package_model("unsafe-package-id", "", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "bad-package",
-        r#"
-id: app/escape/extra
-version: 0.1.0
-"#,
-    );
-
-    let error = read_user_package_manifest(
-        &temp
-            .root()
-            .join(".skiff-packages")
-            .join("app~~escape~~extra")
-            .join("0.1.0")
-            .join("package.yml"),
+    let unknown = TestDir::new("skiff-compiler", "unknown-root-call");
+    fs::write(
+        unknown.path().join("package.yml"),
+        "id: example.com/unknown-root-call\nversion: 1.0.0\n",
     )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("id app/escape/extra"));
-    assert!(error.contains("publication id"));
+    .unwrap();
+    fs::write(
+        unknown.path().join("main.skiff"),
+        "function run() -> string { return unknown.root.call() }\n",
+    )
+    .unwrap();
+    let error = compile_package_project(unknown.path())
+        .expect_err("unknown root should fail")
+        .to_string();
+    assert!(error.contains("unresolved root unknown"));
+    assert!(error.contains("unknown.root.call"));
 }
 
-fn assert_package_lock_entry(
-    entry: &serde_json::Value,
-    id: &str,
-    version: &str,
-    alias: &str,
-    assembly: &PublishedJsonArtifact,
+fn assert_file_ir_contains_package_callable(
+    package: &skiff_compiler::PublishedPackageArtifact,
+    module_path: &str,
+    dependency_ref: &str,
+    package_id: &str,
+    public_path: &str,
 ) {
-    assert_eq!(entry["id"], id);
-    assert_eq!(entry["version"], version);
-    assert_eq!(entry["alias"], alias);
-    assert_eq!(entry["assemblyIdentity"], assembly.identity);
-    assert_eq!(entry["assemblyPath"], assembly.path);
+    let file = module_artifact(package, module_path);
+    let expected_id = format!("pkg-callable:{package_id}:{public_path}");
+    assert!(
+        file.unit
+            .external_refs
+            .package_callables
+            .iter()
+            .any(|callable| {
+                matches!(
+                    &callable.package_ref,
+                    skiff_artifact_model::PackageRefIr::Dependency { dependency_ref: actual }
+                        if actual == dependency_ref
+                ) && callable.package_callable_id.as_str() == expected_id
+            }),
+        "File IR module {module_path} should reference {dependency_ref}:{expected_id}: {}",
+        file.value()
+    );
 }
 
-fn service_config_with_packages(packages: &str) -> String {
-    format!(
-        r#"
-id: example.com/example
-version: 1.0.0
-packages:
-{packages}"#
+fn write_cloud_dependency(root: &Path) {
+    let cloud = root.join(".skiff-packages/google~com~~cloud/0.1.0");
+    fs::create_dir_all(cloud.join("cloud")).unwrap();
+    fs::write(
+        cloud.join("package.yml"),
+        "id: google.com/cloud\nversion: 0.1.0\n",
     )
+    .unwrap();
+    fs::write(
+        cloud.join("api.yml"),
+        "compute:\n  start: cloud.compute.start\nstorage:\n  upload: cloud.storage.upload\n",
+    )
+    .unwrap();
+    fs::write(
+        cloud.join("cloud/compute.skiff"),
+        "function start() -> string { return \"ok\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        cloud.join("cloud/storage.skiff"),
+        "function upload() -> string { return \"ok\" }\n",
+    )
+    .unwrap();
+}
+
+fn write_llm_dependency(root: &Path, api: &str) {
+    let llm = root.join(".skiff-packages/skiff~run~~llm/0.1.0");
+    fs::create_dir_all(&llm).unwrap();
+    fs::write(
+        llm.join("package.yml"),
+        "id: skiff.run/llm\nversion: 0.1.0\n",
+    )
+    .unwrap();
+    fs::write(llm.join("api.yml"), api).unwrap();
+    fs::write(
+        llm.join("llm_impl.skiff"),
+        "function chat() -> string { return \"ok\" }\n",
+    )
+    .unwrap();
 }

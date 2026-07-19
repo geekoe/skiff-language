@@ -1,17 +1,18 @@
 use std::fs;
 
 use serde_json::Value;
-use skiff_compiler::test_support::compile_source_file_ir_artifact_for_test as compile_source_file_ir_artifact;
+use skiff_compiler_emission::PublishedFileIrArtifact;
 
 mod common;
 use common::{
-    artifacts::{build_temp_service_publication, source_artifact},
+    artifacts::module_artifact,
+    package_project::{compile_package_project, PackageProjectCompileError},
     TestDir,
 };
 
 #[test]
 fn function_ir_emits_typed_slot_layout_and_refs() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run(input: number) -> number {
                 const total = input
@@ -24,7 +25,6 @@ fn function_ir_emits_typed_slot_layout_and_refs() {
         "#,
         "internal/slots.skiff",
         "internal.slots",
-        "service",
     )
     .expect("slot fixture should compile");
     let artifact_value = artifact.value();
@@ -63,7 +63,7 @@ fn function_ir_emits_typed_slot_layout_and_refs() {
 
 #[test]
 fn string_cursor_comparison_lowers_to_db_predicate_descriptor() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type Credential { id: string, label: string }
             db object Credential { primary key(id) }
@@ -78,7 +78,6 @@ fn string_cursor_comparison_lowers_to_db_predicate_descriptor() {
         "#,
         "internal/string_cursor.skiff",
         "internal.string_cursor",
-        "service",
     )
     .expect("string cursor DB comparison should compile");
     let artifact_value = artifact.value();
@@ -108,7 +107,7 @@ fn string_cursor_comparison_lowers_to_db_predicate_descriptor() {
 
 #[test]
 fn same_scope_duplicate_let_is_rejected_before_ir_emission() {
-    let error = compile_source_file_ir_artifact(
+    let error = compile_package_file_ir(
         r#"
             function run() -> number {
                 const value = 1
@@ -118,7 +117,6 @@ fn same_scope_duplicate_let_is_rejected_before_ir_emission() {
         "#,
         "internal/duplicate.skiff",
         "internal.duplicate",
-        "service",
     )
     .expect_err("same-scope duplicate let should be a compiler error")
     .to_string();
@@ -134,8 +132,8 @@ fn same_scope_duplicate_let_is_rejected_before_ir_emission() {
 }
 
 #[test]
-fn public_single_file_helper_lowers_interface_box_with_expression_type_facts() {
-    let artifact = compile_source_file_ir_artifact(
+fn package_file_ir_lowers_interface_box_with_expression_type_facts() {
+    let artifact = compile_package_file_ir(
         r#"
             interface Provider {
               function name(self: Self) -> string
@@ -156,9 +154,8 @@ fn public_single_file_helper_lowers_interface_box_with_expression_type_facts() {
         "#,
         "internal/interface_box_helper.skiff",
         "internal.interface_box_helper",
-        "service",
     )
-    .expect("single-file helper should lower interface boxing with expression facts");
+    .expect("package File IR should lower interface boxing with expression facts");
     let artifact_value = artifact.value();
     let run = executable_entry(&artifact_value, "run");
     let interface_boxes = run["body"]["expressions"]
@@ -175,13 +172,13 @@ fn public_single_file_helper_lowers_interface_box_with_expression_type_facts() {
     );
     assert_eq!(
         interface_boxes[0]["source"]["kind"], "local",
-        "single-file helper should produce a local interface method table"
+        "package File IR should produce a local interface method table"
     );
 }
 
 #[test]
 fn static_callees_are_typed_call_targets_while_receiver_roots_are_slots() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function addOne(value: number) -> number {
                 return value + 1
@@ -197,7 +194,6 @@ fn static_callees_are_typed_call_targets_while_receiver_roots_are_slots() {
         "#,
         "internal/callees.skiff",
         "internal.callees",
-        "service",
     )
     .expect("callee fixture should compile");
     let artifact_value = artifact.value();
@@ -228,7 +224,7 @@ fn static_callees_are_typed_call_targets_while_receiver_roots_are_slots() {
 
 #[test]
 fn shared_native_alias_callees_win_over_builtin_roots() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run() -> number {
                 const items: Array<string> = Array.empty<string>()
@@ -241,7 +237,6 @@ fn shared_native_alias_callees_win_over_builtin_roots() {
         "#,
         "internal/native_aliases.skiff",
         "internal.native_aliases",
-        "service",
     )
     .expect("native alias fixture should compile");
     let artifact_value = artifact.value();
@@ -270,7 +265,7 @@ fn shared_native_alias_callees_win_over_builtin_roots() {
 
 #[test]
 fn std_http_json_infers_native_type_arg_from_record_payload() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             import std
 
@@ -296,7 +291,6 @@ fn std_http_json_infers_native_type_arg_from_record_payload() {
         "#,
         "internal/http_json_type_args.skiff",
         "internal.http_json_type_args",
-        "service",
     )
     .expect("std.http JSON response helpers should infer native type args from record payloads");
     let artifact_value = artifact.value();
@@ -317,7 +311,7 @@ fn std_http_json_infers_native_type_arg_from_record_payload() {
 
 #[test]
 fn receiver_mutation_and_assignment_lower_to_typed_targets() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type Session {
               players: Array<string>,
@@ -332,7 +326,6 @@ fn receiver_mutation_and_assignment_lower_to_typed_targets() {
         "#,
         "internal/mutable_paths.skiff",
         "internal.mutable_paths",
-        "service",
     )
     .expect("mutable path fixture should compile");
     let artifact_value = artifact.value();
@@ -360,7 +353,7 @@ fn receiver_mutation_and_assignment_lower_to_typed_targets() {
 
 #[test]
 fn user_impl_receiver_call_lowers_to_static_executable() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type User {
               first: string,
@@ -379,7 +372,6 @@ fn user_impl_receiver_call_lowers_to_static_executable() {
         "#,
         "internal/user_receiver.skiff",
         "internal.user_receiver",
-        "service",
     )
     .expect("user impl receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -402,7 +394,7 @@ fn user_impl_receiver_call_lowers_to_static_executable() {
 
 #[test]
 fn generic_impl_receiver_call_lowers_to_static_executable() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type Box<T> {
               value: T
@@ -420,7 +412,6 @@ fn generic_impl_receiver_call_lowers_to_static_executable() {
         "#,
         "internal/generic_receiver.skiff",
         "internal.generic_receiver",
-        "service",
     )
     .expect("generic impl receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -442,7 +433,7 @@ fn generic_impl_receiver_call_lowers_to_static_executable() {
 
 #[test]
 fn ordinary_erased_object_receiver_call_is_rejected_before_dynamic_receiver() {
-    let error = compile_source_file_ir_artifact(
+    let error = compile_package_file_ir(
         r#"
             function run(item: {}) -> number {
                 return item.length()
@@ -450,7 +441,6 @@ fn ordinary_erased_object_receiver_call_is_rejected_before_dynamic_receiver() {
         "#,
         "internal/erased_receiver.skiff",
         "internal.erased_receiver",
-        "service",
     )
     .expect_err("ordinary erased object receiver should not lower dynamically")
     .to_string();
@@ -463,7 +453,7 @@ fn ordinary_erased_object_receiver_call_is_rejected_before_dynamic_receiver() {
 
 #[test]
 fn json_object_receiver_call_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run(item: JsonObject) -> Json {
                 return item.get("name")
@@ -471,7 +461,6 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
         "#,
         "internal/json_object_receiver.skiff",
         "internal.json_object_receiver",
-        "service",
     )
     .expect("JsonObject receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -489,7 +478,7 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
 
 #[test]
 fn chained_string_receiver_call_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type SessionConfig {
               cookieName: string
@@ -502,7 +491,6 @@ fn chained_string_receiver_call_lowers_to_receiver_builtin() {
         "#,
         "internal/chained_string_receiver.skiff",
         "internal.chained_string_receiver",
-        "package",
     )
     .expect("chained string receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -515,11 +503,11 @@ fn chained_string_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
-fn publication_string_receiver_facts_flow_through_config_and_db_body() {
+fn package_string_receiver_facts_flow_through_config_and_db_body() {
     let temp = TestDir::new("skiff-runtime-slots", "db-body-string-receiver");
     fs::create_dir_all(temp.path().join("internal")).unwrap();
     fs::write(
-        temp.path().join("service.yml"),
+        temp.path().join("package.yml"),
         r#"
 id: example.com/example
 version: 1.0.0
@@ -554,8 +542,8 @@ version: 1.0.0
     )
     .unwrap();
 
-    let published = build_temp_service_publication(temp.path());
-    let artifact = source_artifact(&published, "internal/db_receiver.skiff");
+    let project = compile_package_project(temp.path()).expect("package fixture should compile");
+    let artifact = module_artifact(&project.package, "internal.db_receiver");
     let artifact_value = artifact.value();
     let run = executable_entry(&artifact_value, "run");
     let concat_calls = call_exprs(run)
@@ -575,7 +563,7 @@ version: 1.0.0
 
 #[test]
 fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type Event {
               id: string
@@ -589,7 +577,6 @@ fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
         "#,
         "internal/array_empty_receiver.skiff",
         "internal.array_empty_receiver",
-        "package",
     )
     .expect("Array.empty receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -603,7 +590,7 @@ fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
 
 #[test]
 fn literal_string_binding_receiver_call_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run(delta: string) -> string {
                 let activeText = ""
@@ -613,7 +600,6 @@ fn literal_string_binding_receiver_call_lowers_to_receiver_builtin() {
         "#,
         "internal/literal_string_receiver.skiff",
         "internal.literal_string_receiver",
-        "package",
     )
     .expect("literal string receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -627,7 +613,7 @@ fn literal_string_binding_receiver_call_lowers_to_receiver_builtin() {
 
 #[test]
 fn string_replace_all_receiver_call_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run(value: string) -> string {
                 return value.replaceAll("-", "_")
@@ -635,7 +621,6 @@ fn string_replace_all_receiver_call_lowers_to_receiver_builtin() {
         "#,
         "internal/string_replace_all_receiver.skiff",
         "internal.string_replace_all_receiver",
-        "package",
     )
     .expect("string replaceAll receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -649,7 +634,7 @@ fn string_replace_all_receiver_call_lowers_to_receiver_builtin() {
 
 #[test]
 fn stream_item_bytes_to_string_contains_receiver_chain_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type Chunk {
               value: bytes
@@ -667,7 +652,6 @@ fn stream_item_bytes_to_string_contains_receiver_chain_lowers_to_receiver_builti
         "#,
         "internal/stream_contains_receiver.skiff",
         "internal.stream_contains_receiver",
-        "service",
     )
     .expect("stream item bytes-to-string contains receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -685,7 +669,7 @@ fn stream_item_bytes_to_string_contains_receiver_chain_lowers_to_receiver_builti
 
 #[test]
 fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             import std
 
@@ -699,7 +683,6 @@ fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
         "#,
         "internal/http_body_receiver.skiff",
         "internal.http_body_receiver",
-        "service",
     )
     .expect("std.http body bytes receiver fixture should compile");
     let artifact_value = artifact.value();
@@ -718,7 +701,7 @@ fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
 
 #[test]
 fn actor_ref_receiver_call_is_rejected() {
-    let error = compile_source_file_ir_artifact(
+    let error = compile_package_file_ir(
         r#"
             type ThreadActor {
               id: string
@@ -731,7 +714,6 @@ fn actor_ref_receiver_call_is_rejected() {
         "#,
         "internal/actor_receiver.skiff",
         "internal.actor_receiver",
-        "service",
     )
     .expect_err("ActorRef receiver calls should be rejected")
     .to_string();
@@ -744,7 +726,7 @@ fn actor_ref_receiver_call_is_rejected() {
 
 #[test]
 fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
-    let error = compile_source_file_ir_artifact(
+    let error = compile_package_file_ir(
         r#"
             type User {
               status: string
@@ -763,7 +745,6 @@ fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
         "#,
         "internal/nominal_pattern.skiff",
         "internal.nominal_pattern",
-        "service",
     )
     .expect_err("nominal match pattern should be rejected before File IR emits PatternIr::Type")
     .to_string();
@@ -776,7 +757,7 @@ fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
 
 #[test]
 fn record_literal_and_binding_patterns_do_not_emit_type_pattern_ir() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             function run(user: { status: string }) -> string {
                 match user {
@@ -794,7 +775,6 @@ fn record_literal_and_binding_patterns_do_not_emit_type_pattern_ir() {
         "#,
         "internal/structural_pattern.skiff",
         "internal.structural_pattern",
-        "service",
     )
     .expect("structural/literal/binding patterns should compile without PatternIr::Type");
 
@@ -807,7 +787,7 @@ fn record_literal_and_binding_patterns_do_not_emit_type_pattern_ir() {
 
 #[test]
 fn object_db_single_write_results_are_not_read_record_wrappers() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type User {
               id: string,
@@ -833,7 +813,6 @@ fn object_db_single_write_results_are_not_read_record_wrappers() {
         "#,
         "internal/db_write_results.skiff",
         "internal.db_write_results",
-        "service",
     )
     .expect("object db write result fixture should compile");
     let artifact_value = artifact.value();
@@ -872,7 +851,7 @@ fn object_db_single_write_results_are_not_read_record_wrappers() {
 
 #[test]
 fn object_db_projection_type_matches_source_access_and_runtime_descriptor() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             import std
 
@@ -912,7 +891,6 @@ fn object_db_projection_type_matches_source_access_and_runtime_descriptor() {
         "#,
         "internal/db_projection_result.skiff",
         "internal.db_projection_result",
-        "service",
     )
     .expect("projected fields should be accessible and JSON encodable");
     let value = artifact.value();
@@ -941,7 +919,7 @@ fn object_db_projection_type_matches_source_access_and_runtime_descriptor() {
 
 #[test]
 fn object_db_upsert_result_fields_lower_to_static_field_access() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type User {
               id: string,
@@ -967,7 +945,6 @@ fn object_db_upsert_result_fields_lower_to_static_field_access() {
         "#,
         "internal/db_upsert_result_fields.skiff",
         "internal.db_upsert_result_fields",
-        "service",
     )
     .expect("object db upsert result field fixture should compile");
     let artifact_value = artifact.value();
@@ -1089,11 +1066,10 @@ fn object_db_single_write_results_are_readonly() {
             "cannot assign to field of readonly binding `result`",
         ),
     ] {
-        let error = compile_source_file_ir_artifact(
+        let error = compile_package_file_ir(
             source,
             format!("internal/db_write_readonly_{name}.skiff"),
             format!("internal.db_write_readonly_{name}"),
-            "service",
         )
         .unwrap_err()
         .to_string();
@@ -1107,7 +1083,7 @@ fn object_db_single_write_results_are_readonly() {
 
 #[test]
 fn map_keys_and_for_in_lower_to_typed_slots() {
-    let artifact = compile_source_file_ir_artifact(
+    let artifact = compile_package_file_ir(
         r#"
             type UserId = string
             type User { name: string }
@@ -1134,7 +1110,6 @@ fn map_keys_and_for_in_lower_to_typed_slots() {
         "#,
         "internal/map_for.skiff",
         "internal.map_for",
-        "service",
     )
     .expect("map keys and for-in fixture should compile");
     let artifact_value = artifact.value();
@@ -1200,11 +1175,10 @@ fn entry_for_rejects_array_and_stream_iterables() {
             "for entry binding requires Map",
         ),
     ] {
-        let error = compile_source_file_ir_artifact(
+        let error = compile_package_file_ir(
             source,
             format!("internal/entry_for_{name}.skiff"),
             format!("internal.entry_for_{name}"),
-            "service",
         )
         .expect_err("non-map entry for should fail")
         .to_string();
@@ -1260,11 +1234,10 @@ fn map_for_bindings_are_immutable_and_non_duplicate() {
             "duplicate binding `key`",
         ),
     ] {
-        let error = compile_source_file_ir_artifact(
+        let error = compile_package_file_ir(
             source,
             format!("internal/map_for_{name}.skiff"),
             format!("internal.map_for_{name}"),
-            "service",
         )
         .expect_err("invalid map for binding should fail")
         .to_string();
@@ -1273,6 +1246,30 @@ fn map_for_bindings_are_immutable_and_non_duplicate() {
             "unexpected map for binding error for {name}: {error}"
         );
     }
+}
+
+fn compile_package_file_ir(
+    source: &str,
+    source_path: impl AsRef<str>,
+    module_path: impl AsRef<str>,
+) -> Result<PublishedFileIrArtifact, PackageProjectCompileError> {
+    let temp = TestDir::new("skiff-compiler", "runtime-slots-package");
+    fs::write(
+        temp.path().join("package.yml"),
+        "id: example.com/runtime-slots\nversion: 1.0.0\n",
+    )
+    .expect("package manifest should be written");
+    let source_file = temp.path().join(source_path.as_ref());
+    fs::create_dir_all(
+        source_file
+            .parent()
+            .expect("fixture source should have a parent directory"),
+    )
+    .expect("fixture source directory should be created");
+    fs::write(source_file, source).expect("fixture source should be written");
+
+    let project = compile_package_project(temp.path())?;
+    Ok(module_artifact(&project.package, module_path.as_ref()).clone())
 }
 
 fn executable_entry<'a>(artifact: &'a Value, name: &str) -> &'a Value {

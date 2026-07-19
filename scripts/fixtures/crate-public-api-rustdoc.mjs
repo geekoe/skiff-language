@@ -2,7 +2,7 @@ export function fakeAllowedRustdoc() {
   return fakeRustdoc({
     rootItems: ['0:1', '0:10', '0:20'],
     index: {
-      '0:1': publicItem('ProjectionDto', {
+      '0:1': publicItem('ContractDefinitionInput', {
         struct: {
           generics: emptyGenerics(),
           kind: { plain: { fields: ['0:2', '0:3'] } },
@@ -12,8 +12,8 @@ export function fakeAllowedRustdoc() {
       '0:2': publicItem('artifact', {
         struct_field: resolvedType('3:1', 'ArtifactPublicationId'),
       }),
-      '0:3': publicItem('spec', {
-        struct_field: resolvedType('2:1', 'ApiSpec'),
+      '0:3': publicItem('identity', {
+        struct_field: resolvedType('2:1', 'ContractIdentity'),
       }),
       '0:10': publicItem('JsonDoc', {
         type_alias: {
@@ -21,24 +21,24 @@ export function fakeAllowedRustdoc() {
           type: resolvedType('4:1', 'Value'),
         },
       }),
-      '0:20': publicItem('make_projection', {
+      '0:20': publicItem('compile_contract', {
         function: {
           generics: emptyGenerics(),
           sig: {
-            inputs: [['input', resolvedType('0:1', 'ProjectionDto')]],
+            inputs: [['input', resolvedType('0:1', 'ContractDefinitionInput')]],
             output: resolvedType('1:1', 'String'),
           },
         },
       }),
       '0:30': publicItem(null, {
         impl: {
-          for: resolvedType('0:1', 'ProjectionDto'),
+          for: resolvedType('0:1', 'ContractDefinitionInput'),
           generics: emptyGenerics(),
           items: ['0:31'],
           trait: null,
         },
       }),
-      '0:31': publicItem('artifact_id', {
+      '0:31': publicItem('contract_identity', {
         function: {
           generics: emptyGenerics(),
           sig: {
@@ -49,11 +49,11 @@ export function fakeAllowedRustdoc() {
       }),
     },
     paths: {
-      '0:1': localPath('ProjectionDto', 'struct'),
+      '0:1': localPath('ContractDefinitionInput', 'struct'),
       '0:10': localPath('JsonDoc', 'type_alias'),
-      '0:20': localPath('make_projection', 'function'),
+      '0:20': localPath('compile_contract', 'function'),
       '1:1': externalPath(1, ['alloc', 'string', 'String'], 'struct'),
-      '2:1': externalPath(2, ['skiff_compiler_core', 'ApiSpec'], 'struct'),
+      '2:1': externalPath(2, ['skiff_artifact_identity', 'ContractIdentity'], 'struct'),
       '3:1': externalPath(3, ['skiff_artifact_model', 'ArtifactPublicationId'], 'struct'),
       '4:1': externalPath(4, ['serde_json', 'Value'], 'enum'),
     },
@@ -64,7 +64,7 @@ export function fakeDeniedRustdoc() {
   return fakeRustdoc({
     rootItems: ['0:1', '0:10', '0:20', '0:40', '0:50'],
     index: {
-      '0:1': publicItem('ProjectionDto', {
+      '0:1': publicItem('ContractDefinitionInput', {
         struct: {
           generics: emptyGenerics(),
           kind: { plain: { fields: ['0:2'] } },
@@ -92,7 +92,7 @@ export function fakeDeniedRustdoc() {
       }),
       '0:30': publicItem(null, {
         impl: {
-          for: resolvedType('0:1', 'ProjectionDto'),
+          for: resolvedType('0:1', 'ContractDefinitionInput'),
           generics: emptyGenerics(),
           items: ['0:31', '0:32'],
           trait: null,
@@ -103,7 +103,7 @@ export function fakeDeniedRustdoc() {
           generics: emptyGenerics(),
           sig: {
             inputs: [['lowered', resolvedType('7:1', 'LoweringPrivateModel')]],
-            output: resolvedType('0:1', 'ProjectionDto'),
+            output: resolvedType('0:1', 'ContractDefinitionInput'),
           },
         },
       }),
@@ -139,7 +139,7 @@ export function fakeDeniedRustdoc() {
       }),
       '0:60': publicItem(null, {
         impl: {
-          for: resolvedType('0:1', 'ProjectionDto'),
+          for: resolvedType('0:1', 'ContractDefinitionInput'),
           generics: emptyGenerics(),
           items: ['0:61'],
           trait: {
@@ -160,7 +160,7 @@ export function fakeDeniedRustdoc() {
       }),
     },
     paths: {
-      '0:1': localPath('ProjectionDto', 'struct'),
+      '0:1': localPath('ContractDefinitionInput', 'struct'),
       '0:10': localPath('source_model', 'function'),
       '0:20': localPath('AstNode', 'use'),
       '0:40': localPath('BadAlias', 'type_alias'),
@@ -179,7 +179,7 @@ export function fakeRustdoc({ rootItems, index, paths }) {
     crate_version: '0.0.0',
     external_crates: {
       1: { name: 'alloc' },
-      2: { name: 'skiff_compiler_core' },
+      2: { name: 'skiff_artifact_identity' },
       3: { name: 'skiff_artifact_model' },
       4: { name: 'serde_json' },
       5: { name: 'skiff_compiler_compiled' },
@@ -189,7 +189,7 @@ export function fakeRustdoc({ rootItems, index, paths }) {
     },
     format_version: 0,
     index: {
-      '0:0': publicItem('skiff_compiler_projection_input', {
+      '0:0': publicItem('skiff_compiler_contract', {
         module: {
           is_crate: true,
           items: rootItems,
@@ -201,7 +201,7 @@ export function fakeRustdoc({ rootItems, index, paths }) {
       '0:0': {
         crate_id: 0,
         kind: 'module',
-        path: ['skiff_compiler_projection_input'],
+        path: ['skiff_compiler_contract'],
       },
       ...paths,
     },
@@ -249,7 +249,7 @@ export function localPath(name, kind) {
   return {
     crate_id: 0,
     kind,
-    path: ['skiff_compiler_projection_input', name],
+    path: ['skiff_compiler_contract', name],
   };
 }
 

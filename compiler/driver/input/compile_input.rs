@@ -1,18 +1,12 @@
-use skiff_compiler_input_model::PublicationInputMetadata;
+use skiff_compiler_input_model::PackageCompileInputMetadata;
 
-use crate::input::source_graph::Publication;
+use crate::input::source_graph::PackageSourceInput;
 
-impl PublicationInputMetadata for Publication {
+impl PackageCompileInputMetadata for PackageSourceInput {
     fn package_dependencies(&self) -> &[crate::input::PackageDependency] {
         &self.manifest.dependencies
     }
 }
 
-pub(crate) type PublicationInputCore<'a> =
-    skiff_compiler_input_model::PublicationInputCore<'a, Publication>;
-pub(crate) type PackagePublicationInput<'a> =
-    skiff_compiler_input_model::PackagePublicationInput<'a, Publication>;
-pub(crate) type ServicePublicationInput<'a> =
-    skiff_compiler_input_model::ServicePublicationInput<'a, Publication>;
-pub(crate) type PublicationInput<'a> =
-    skiff_compiler_input_model::PublicationInput<'a, Publication>;
+pub type PackageCompileInput<'a> =
+    skiff_compiler_input_model::PackageCompileInput<'a, PackageSourceInput>;

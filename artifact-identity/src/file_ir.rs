@@ -1,8 +1,9 @@
 use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{
-    ConstIr, ExecutableIr, ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets,
-    SourceMapSource, SourceMapSpan, TypeDeclIr,
+    validate_file_ir_package_calls, validate_file_ir_service_calls, ConstIr, ExecutableIr,
+    ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets, SourceMapSource,
+    SourceMapSpan, TypeDeclIr,
 };
 
 use crate::framing::{framed_identity, sha256_hex};
@@ -21,6 +22,8 @@ pub fn file_ir_identity(unit: &FileIrUnit) -> Result<String> {
 }
 
 pub fn canonical_file_ir_identity_value(unit: &FileIrUnit) -> Result<Value> {
+    validate_file_ir_service_calls(unit)?;
+    validate_file_ir_package_calls(unit)?;
     let value = serde_json::to_value(FileIrIdentityPayload::from_unit(unit))
         .map_err(ArtifactIdentityError::SerializeFileIrIdentity)?;
     Ok(canonical_json_value(&value))

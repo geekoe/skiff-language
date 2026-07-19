@@ -27,7 +27,7 @@ pub struct InterfaceDeclFact {
     pub symbol: SourceSymbolKey,
     pub type_params: Vec<String>,
     pub requirements: Vec<InterfaceRequirementFact>,
-    source_kind: InterfaceSourceKind,
+    source_kind: InterfaceOwnerKind,
 }
 
 #[derive(Debug, Clone)]
@@ -98,8 +98,12 @@ pub struct InterfaceSemantics {
     actor_conformances_by_receiver: BTreeMap<SourceSymbolKey, usize>,
 }
 
+/// Validated declaration owner recorded by interface semantics.
+///
+/// `External` is only a candidate owner. Type resolution must still prove a
+/// typed package interface before handing conformance to the package owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InterfaceSourceKind {
+pub(crate) enum InterfaceOwnerKind {
     Source,
     CompilerKnown,
     External,
@@ -220,6 +224,13 @@ impl InterfaceSemantics {
 
     pub fn interface(&self, symbol: &SourceSymbolKey) -> Option<&InterfaceDeclFact> {
         self.interfaces.get(symbol)
+    }
+
+    pub(crate) fn interface_owner_kind(
+        &self,
+        symbol: &SourceSymbolKey,
+    ) -> Option<InterfaceOwnerKind> {
+        self.interfaces.get(symbol).map(|fact| fact.source_kind)
     }
 
     pub fn conformances(&self) -> &[InterfaceConformanceFact] {
@@ -574,7 +585,7 @@ impl InterfaceIndex {
                     symbol,
                     type_params: interface.type_params.clone(),
                     requirements,
-                    source_kind: InterfaceSourceKind::Source,
+                    source_kind: InterfaceOwnerKind::Source,
                 })?;
             }
         }
@@ -621,15 +632,15 @@ impl InterfaceIndex {
             symbol,
             type_params,
             requirements: Vec::new(),
-            source_kind: InterfaceSourceKind::CompilerKnown,
+            source_kind: InterfaceOwnerKind::CompilerKnown,
         })
     }
 
     fn insert_interface(&mut self, fact: InterfaceDeclFact) -> Result<()> {
         let symbol = fact.symbol.clone();
         if let Some(existing) = self.interfaces.get(&symbol) {
-            if existing.source_kind == InterfaceSourceKind::CompilerKnown
-                && fact.source_kind == InterfaceSourceKind::Source
+            if existing.source_kind == InterfaceOwnerKind::CompilerKnown
+                && fact.source_kind == InterfaceOwnerKind::Source
             {
                 if existing.type_params.len() != fact.type_params.len() {
                     return Err(CompileError::Semantic(format!(
@@ -673,7 +684,7 @@ impl InterfaceIndex {
         }
         let symbol = self.resolve_interface_symbol(module_path, name)?;
         if let Some(fact) = self.interfaces.get_mut(&symbol) {
-            if fact.source_kind == InterfaceSourceKind::External && fact.type_params.is_empty() {
+            if fact.source_kind == InterfaceOwnerKind::External && fact.type_params.is_empty() {
                 fact.type_params = (0..args.len()).map(|index| format!("T{index}")).collect();
             }
         }
@@ -778,7 +789,7 @@ impl InterfaceIndex {
             symbol,
             type_params: Vec::new(),
             requirements: Vec::new(),
-            source_kind: InterfaceSourceKind::External,
+            source_kind: InterfaceOwnerKind::External,
         })
     }
 }
@@ -947,12 +958,19 @@ fn validate_conformance_requirements(
         }
         let actual_params =
             method_params_for_requirement_compare(method, conformance, explicit_self);
-        if actual_params.len() != expected_params.len()
-            || actual_params
-                .iter()
-                .zip(&expected_params)
-                .any(|(actual, expected)| actual.ty != expected.ty)
-            || method.return_type != expected_return
+        let exact_source_owner_required = actual_params
+            .iter()
+            .chain(&expected_params)
+            .any(|param| contains_external_nominal(&param.ty, index))
+            || contains_external_nominal(&method.return_type, index)
+            || contains_external_nominal(&expected_return, index);
+        if !exact_source_owner_required
+            && (actual_params.len() != expected_params.len()
+                || actual_params
+                    .iter()
+                    .zip(&expected_params)
+                    .any(|(actual, expected)| actual.ty != expected.ty)
+                || method.return_type != expected_return)
         {
             return Err(CompileError::Semantic(format!(
                 "type {} method {} signature does not match interface {}; expected params {:?} return {:?}, got params {:?} return {:?}",
@@ -973,6 +991,53 @@ fn validate_conformance_requirements(
         }
     }
     Ok(())
+}
+
+/// Contract-qualified names still arrive at the legacy structural interface
+/// index as alias-shaped service symbols. Their exact identity comparison is
+/// owned by `SourceInterfaceSignatureFacts`, which has validated contract
+/// dependencies and therefore must run before any execution erasure.
+fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
+    match ty {
+        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
+            let key = SourceSymbolKey::new(
+                symbol
+                    .module_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.module_path),
+                &symbol.symbol,
+            );
+            !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
+        }
+        TypeRefIr::Native { args, .. } => {
+            args.iter().any(|arg| contains_external_nominal(arg, index))
+        }
+        TypeRefIr::Record { fields } => fields
+            .values()
+            .any(|field| contains_external_nominal(field, index)),
+        TypeRefIr::Union { items } => items
+            .iter()
+            .any(|item| contains_external_nominal(item, index)),
+        TypeRefIr::Nullable { inner } => contains_external_nominal(inner, index),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| contains_external_nominal(&param.ty, index))
+                || contains_external_nominal(return_type, index)
+        }
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(|arg| contains_external_nominal(arg, index)),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => false,
+    }
 }
 
 fn validate_requirement_self_usage(
@@ -1764,7 +1829,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        semantic::{SemanticPublication, SemanticSource, SourceOrigin},
+        semantic::{SemanticPublication, SemanticSource},
         shared::parser::parse_source,
     };
 
@@ -1776,7 +1841,6 @@ mod tests {
         let publication = SemanticPublication::new(vec![SemanticSource::new(
             "test.skiff",
             "test",
-            SourceOrigin::Service,
             &ast,
             &aliases,
         )]);

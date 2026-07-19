@@ -2,20 +2,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
 use skiff_artifact_model::{builtin_receiver_op_by_name, BuiltinReceiverOp, ReceiverCallAbi};
-use skiff_compiler_core::package_export_resolver::PackageExportResolver;
 use skiff_compiler_source::{
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
-    PublicationTypeSymbolIndex, ResolvedTypeRef, SourceSymbolKey, TypeResolutionContext,
-    TypeResolutionModel,
+    PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
+    SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
         PatchOperation, Stmt, TypeRef, UnaryOp,
     },
+    ast_utils::{dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
     type_syntax::generic_parts,
 };
@@ -24,17 +24,14 @@ use crate::file_ir::{
     AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
     ExprRefIr, FunctionTypeParamIr, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
     InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue,
-    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, RemoteOperationSlotPlanIr,
-    RemoteOperationTablePlanIr, ServiceDependencySymbolRef, ServiceSymbolRef, SlotIr, SlotKind,
+    NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr, ServiceSymbolRef, SlotIr, SlotKind,
     StmtIr, StmtRefIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
     callable_return_types::CallableReturnType,
-    db_lowering::{
-        is_db_readonly_result_operation, DbMetadataIr, LoweredPublicationDbMetadataIndex,
-    },
-    dependency_operation_indexes::{PackageOperationIndex, ServiceDependencyOperationIndex},
+    db_lowering::{is_db_readonly_result_operation, DbMetadataIr, LoweredPackageDbMetadataIndex},
+    service_call_lowering::LoweredServiceCalls,
     type_lowering::{
         is_official_std_module_path, is_official_std_package_ref, is_unknown_type_ref,
         lower_named_type, lower_type_ref, lower_type_text, package_scoped_root_path,
@@ -87,15 +84,13 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub(super) db_metadata: &'a BTreeMap<String, DbMetadataIr>,
     pub(super) publication_db_metadata: &'a PublicationDbMetadataIndex,
-    pub(super) lowered_publication_db_metadata: &'a LoweredPublicationDbMetadataIndex,
+    pub(super) lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
     pub(super) executable_indices: &'a BTreeMap<String, u32>,
     pub(super) const_indices: &'a BTreeMap<String, u32>,
     pub(super) external_type_symbols: &'a PublicationTypeSymbolIndex,
-    pub(super) service_dependency_aliases: &'a BTreeSet<String>,
     pub(super) source_alias_targets: &'a BTreeMap<String, String>,
     pub(super) package_interface_methods: &'a PackageInterfaceMethodIndex,
-    pub(super) package_operations: &'a PackageOperationIndex,
-    pub(super) service_dependency_operations: &'a ServiceDependencyOperationIndex,
+    pub(super) resolved_call_targets: &'a ResolvedCallTargetFacts,
     pub(super) module_path: &'a str,
     pub(super) local_db_objects: &'a LocalDbObjectIndex,
     pub(super) type_param_scope: BTreeSet<String>,
@@ -106,6 +101,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+    service_calls: &'a LoweredServiceCalls,
     pub(super) next_expression_index: u32,
     pub(super) bindings: BTreeMap<String, Binding>,
     pub(super) scope_names: Vec<BTreeSet<String>>,
@@ -123,6 +119,7 @@ pub(super) struct LoweredExecutableSignature {
     pub(super) params: Vec<FunctionTypeParamIr>,
     pub(super) return_type: TypeRefIr,
     pub(super) self_type: Option<TypeRefIr>,
+    pub(super) may_suspend: bool,
 }
 
 impl<'a> FunctionLowerer<'a> {
@@ -131,15 +128,13 @@ impl<'a> FunctionLowerer<'a> {
         package_aliases: &'a BTreeMap<String, Vec<String>>,
         db_metadata: &'a BTreeMap<String, DbMetadataIr>,
         publication_db_metadata: &'a PublicationDbMetadataIndex,
-        lowered_publication_db_metadata: &'a LoweredPublicationDbMetadataIndex,
+        lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
         executable_indices: &'a BTreeMap<String, u32>,
         const_indices: &'a BTreeMap<String, u32>,
         external_type_symbols: &'a PublicationTypeSymbolIndex,
-        service_dependency_aliases: &'a BTreeSet<String>,
         source_alias_targets: &'a BTreeMap<String, String>,
         package_interface_methods: &'a PackageInterfaceMethodIndex,
-        package_operations: &'a PackageOperationIndex,
-        service_dependency_operations: &'a ServiceDependencyOperationIndex,
+        resolved_call_targets: &'a ResolvedCallTargetFacts,
         module_path: &'a str,
         local_db_objects: &'a LocalDbObjectIndex,
         type_param_scope: BTreeSet<String>,
@@ -150,6 +145,7 @@ impl<'a> FunctionLowerer<'a> {
         callable_return_types: &'a BTreeMap<String, CallableReturnType>,
         local_type_fields: &'a LocalTypeFieldIndex,
         executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+        service_calls: &'a LoweredServiceCalls,
     ) -> Self {
         Self {
             type_indices,
@@ -160,11 +156,9 @@ impl<'a> FunctionLowerer<'a> {
             executable_indices,
             const_indices,
             external_type_symbols,
-            service_dependency_aliases,
             source_alias_targets,
             package_interface_methods,
-            package_operations,
-            service_dependency_operations,
+            resolved_call_targets,
             module_path,
             local_db_objects,
             type_param_scope,
@@ -175,6 +169,7 @@ impl<'a> FunctionLowerer<'a> {
             callable_return_types,
             local_type_fields,
             executable_signatures,
+            service_calls,
             next_expression_index: 0,
             bindings: BTreeMap::new(),
             scope_names: vec![BTreeSet::new()],
@@ -527,9 +522,9 @@ impl<'a> FunctionLowerer<'a> {
                 "function",
                 format!("{SPAWN_FUNCTION_TARGET_PREFIX}{}", symbol.symbol_path()),
             ),
-            CallTargetIr::PackageSymbol {
+            CallTargetIr::PackageCallable {
                 package_ref,
-                operation,
+                package_callable_id,
             } => {
                 let mut metadata = BTreeMap::new();
                 metadata.insert(
@@ -538,7 +533,7 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 metadata.insert(
                     "target".to_string(),
-                    MetadataValue::String(format!("package:{}", operation.public_path)),
+                    MetadataValue::String(format!("package:{package_callable_id}")),
                 );
                 match package_ref {
                     PackageRefIr::Dependency { dependency_ref } => {
@@ -555,12 +550,8 @@ impl<'a> FunctionLowerer<'a> {
                     }
                 }
                 metadata.insert(
-                    "packageOperationAbiId".to_string(),
-                    MetadataValue::String(operation.operation_abi_id.clone()),
-                );
-                metadata.insert(
-                    "packageOperationPath".to_string(),
-                    MetadataValue::String(operation.public_path.clone()),
+                    "packageCallableId".to_string(),
+                    MetadataValue::String(package_callable_id.as_str().to_string()),
                 );
                 return Ok(MetadataValue::Object(metadata));
             }
@@ -894,69 +885,6 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        if let Expr::RemotePublicInstanceSource(source) = value {
-            let expected_value_key =
-                expression_key_offset(box_key, 1, "remote interface box source")?;
-            let actual_value_key = self.next_expression_key().ok_or_else(|| {
-                CompileError::Semantic(
-                    "remote interface boxing lowering requires an ExpressionKey for the source expression"
-                        .to_string(),
-                )
-            })?;
-            if actual_value_key != expected_value_key {
-                return Err(CompileError::Semantic(format!(
-                    "remote interface boxing source expected ExpressionKey {:?}, but lowering reached {:?}",
-                    expected_value_key, actual_value_key
-                )));
-            }
-            let projection = self
-                .expression_types
-                .and_then(|expression_types| expression_types.remote_interface_box(box_key))
-                .ok_or_else(|| {
-                    CompileError::Semantic(format!(
-                        "missing remote interface boxing resolution fact for ExpressionKey {:?}",
-                        box_key
-                    ))
-                })?;
-            if projection.dependency_ref != source.dependency_ref
-                || projection.public_instance_key != source.public_instance_key
-                || projection.interface != selector.instantiation_ref
-            {
-                return Err(CompileError::Semantic(format!(
-                    "remote interface boxing resolution for ExpressionKey {:?} does not match source `{}/{}` as `{}`",
-                    box_key, source.dependency_ref, source.public_instance_key, selector.source_text
-                )));
-            }
-            let value = self.push_expr(ExprIr::Literal {
-                value: LiteralIr::Null,
-            });
-            return Ok(ExprIr::InterfaceBox {
-                value,
-                interface: selector.instantiation_ref,
-                source: BoxSourceIr::Remote {
-                    dependency_ref: source.dependency_ref.clone(),
-                    public_instance_key: source.public_instance_key.clone(),
-                    operations: RemoteOperationTablePlanIr {
-                        interface: projection.interface.clone(),
-                        slots: projection
-                            .slots
-                            .iter()
-                            .map(|slot| RemoteOperationSlotPlanIr {
-                                slot: slot.slot,
-                                method_abi_id: slot.method_abi_id.clone(),
-                                signature: InterfaceMethodSlotSignatureIr {
-                                    params: slot.params.clone(),
-                                    return_type: slot.return_type.clone(),
-                                },
-                                operation_abi_id: slot.operation.operation_abi_id.clone(),
-                            })
-                            .collect(),
-                    },
-                    callee_protocol_identity: projection.callee_protocol_identity.clone(),
-                },
-            });
-        }
-
         let value_key = expression_key_offset(box_key, 1, "interface boxing value")?;
         let (value_source_text, concrete_type) =
             self.required_expression_type_fact(&value_key, "interface boxing value")?;
@@ -1066,7 +994,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.next_expression_key();
                 self.consume_static_callee_expression_keys(object)
             }
-            Expr::RemotePublicInstanceSource(_) => {
+            Expr::DependencySourceAddress(_) => {
                 self.next_expression_key();
                 Ok(())
             }
@@ -1136,7 +1064,7 @@ impl<'a> FunctionLowerer<'a> {
                 {
                     return Ok(payload);
                 }
-                self.lower_call(callee, args)?
+                self.lower_call(expression_key.as_ref(), callee, args)?
             }
             Expr::Generic { .. } => {
                 return Err(unsupported(
@@ -1146,10 +1074,10 @@ impl<'a> FunctionLowerer<'a> {
             Expr::InterfaceBox { value, interface } => {
                 self.lower_interface_box(expression_key.as_ref(), value, interface)?
             }
-            Expr::RemotePublicInstanceSource(source) => {
+            Expr::DependencySourceAddress(source) => {
                 return Err(CompileError::Semantic(format!(
-                    "remote public instance source `{}/{}` is not a value; use `as I` or call a method directly",
-                    source.dependency_ref, source.public_instance_key
+                    "dependency source address `{}/{}` is not a value; use `as I` to box a public instance or call an exported callable",
+                    source.dependency_ref, source.public_path
                 )));
             }
             Expr::Throw { value } => {
@@ -1239,7 +1167,12 @@ impl<'a> FunctionLowerer<'a> {
         Ok(ExprIr::MapLiteral { entries })
     }
 
-    fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> Result<ExprIr> {
+    fn lower_call(
+        &mut self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Result<ExprIr> {
         let (callee, type_arg_refs) = match callee {
             Expr::Generic { callee, type_args } => {
                 self.next_expression_key();
@@ -1248,11 +1181,18 @@ impl<'a> FunctionLowerer<'a> {
             _ => (callee, &[][..]),
         };
         let mut lowered_args = Vec::new();
-        let target = if let Expr::Field { object, field } = callee {
-            if let Some(target) = self.remote_public_instance_direct_call_target(object, field)? {
-                self.consume_static_callee_expression_keys(callee)?;
-                target
-            } else if let Some(target) = self.lower_receiver_call_target(object, field)? {
+        let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
+            self.consume_static_callee_expression_keys(callee)?;
+            target
+        } else if let Some(service_call_ref_index) = expression_key
+            .and_then(|expression| self.service_calls.service_call_ref_index(expression))
+        {
+            self.consume_static_callee_expression_keys(callee)?;
+            CallTargetIr::ServiceCall {
+                service_call_ref_index,
+            }
+        } else if let Expr::Field { object, field } = callee {
+            if let Some(target) = self.lower_receiver_call_target(object, field)? {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 target
@@ -1304,6 +1244,88 @@ impl<'a> FunctionLowerer<'a> {
                 metadata,
             },
         })
+    }
+
+    fn package_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        callee: &Expr,
+    ) -> Result<Option<CallTargetIr>> {
+        let path = expr_path(callee);
+        let target = expression_key.and_then(|key| self.resolved_call_targets.target(key));
+
+        if let Some(ResolvedCallTarget::DependencyPackageFunction {
+            package_requirement_alias,
+            package_callable_id,
+            expected_local_abi: _,
+        }) = target
+        {
+            let path = path.as_deref().ok_or_else(|| {
+                package_call_resolution_error(
+                    expression_key,
+                    "<complex callee>",
+                    "typed package target does not have a static symbol path",
+                )
+            })?;
+            let root = dependency_source_address_parts(path)
+                .map(|(dependency_ref, _)| dependency_ref)
+                .unwrap_or_else(|| path.split('.').next().unwrap_or(path));
+            if self.bindings.contains_key(root) {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names dependency `{package_requirement_alias}`, but root `{root}` is a local binding"
+                    ),
+                ));
+            }
+            if !self.package_aliases.contains_key(package_requirement_alias) {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names undeclared dependency `{package_requirement_alias}`"
+                    ),
+                ));
+            }
+            if root != package_requirement_alias {
+                return Err(package_call_resolution_error(
+                    expression_key,
+                    path,
+                    format!(
+                        "typed package target names dependency `{package_requirement_alias}`, but the callee root is `{root}`"
+                    ),
+                ));
+            }
+            return Ok(Some(CallTargetIr::PackageCallable {
+                package_ref: PackageRefIr::Dependency {
+                    dependency_ref: package_requirement_alias.clone(),
+                },
+                package_callable_id: package_callable_id.clone(),
+            }));
+        }
+
+        let Some(path) = path.as_deref() else {
+            return Ok(None);
+        };
+        let root = dependency_source_address_parts(path)
+            .map(|(dependency_ref, _)| dependency_ref)
+            .unwrap_or_else(|| path.split('.').next().unwrap_or(path));
+        if self.bindings.contains_key(root) || !self.package_aliases.contains_key(root) {
+            return Ok(None);
+        }
+
+        let detail = match target {
+            None => "missing ResolvedCallTargetFacts entry".to_string(),
+            Some(ResolvedCallTarget::Unknown { reason }) => {
+                format!("typed call target is Unknown({reason:?})")
+            }
+            Some(target) => format!(
+                "typed call target kind is `{}` instead of DependencyPackageFunction",
+                resolved_call_target_kind(target)
+            ),
+        };
+        Err(package_call_resolution_error(expression_key, path, detail))
     }
 
     fn infer_native_call_type_args(
@@ -1743,26 +1765,9 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 });
             }
-            let package_path = package_scoped_root_path(self.module_path, service_path);
-            if let Some((dependency_ref, symbol_path)) = self.package_symbol_path(&package_path) {
-                return self.package_operation_call_target(
-                    &package_path,
-                    dependency_ref,
-                    symbol_path,
-                );
-            }
             return Ok(CallTargetIr::ExternalServiceSymbol {
                 symbol: service_symbol_ref(self.module_path, service_path),
             });
-        }
-        if let Some((dependency_ref, source_call_path)) =
-            self.service_dependency_operation_path(&path)
-        {
-            return self.service_dependency_operation_call_target(
-                &path,
-                dependency_ref,
-                source_call_path,
-            );
         }
         if let Some(target) = shared_native_alias_target(&path) {
             return Ok(CallTargetIr::Native {
@@ -1794,107 +1799,12 @@ impl<'a> FunctionLowerer<'a> {
                 });
             }
         }
-        if let Some((dependency_ref, symbol_path)) = self.package_symbol_path(&path) {
-            return self.package_operation_call_target(&path, dependency_ref, symbol_path);
-        }
-        if let Some((dependency_ref, source_call_path)) =
-            self.service_dependency_operation_path(&path)
-        {
-            return self.service_dependency_operation_call_target(
-                &path,
-                dependency_ref,
-                source_call_path,
-            );
-        }
         if !path.contains('.') {
             return Err(unsupported_file_ir_callee(&path));
         }
         Ok(CallTargetIr::ExternalServiceSymbol {
             symbol: service_symbol_ref(self.module_path, &path),
         })
-    }
-
-    fn package_symbol_path(&self, path: &str) -> Option<(String, String)> {
-        let (root, _) = path.split_once('.')?;
-        if root == "root" {
-            return None;
-        }
-        PackageExportResolver::new(self.package_aliases)
-            .resolve_package_symbol_path(path)
-            .map(|symbol| (symbol.dependency_ref, symbol.symbol_path))
-    }
-
-    fn package_operation_call_target(
-        &self,
-        source_path: &str,
-        dependency_ref: String,
-        source_call_path: String,
-    ) -> Result<CallTargetIr> {
-        let operation = self
-            .package_operations
-            .resolve(&dependency_ref, &source_call_path)?
-            .ok_or_else(|| {
-                CompileError::Semantic(format!(
-                    "package dependency `{dependency_ref}` does not export public operation `{source_call_path}` for source call `{source_path}`"
-                ))
-            })?
-            .clone();
-        Ok(CallTargetIr::PackageSymbol {
-            package_ref: PackageRefIr::Dependency { dependency_ref },
-            operation,
-        })
-    }
-
-    fn service_dependency_operation_call_target(
-        &self,
-        source_path: &str,
-        dependency_ref: String,
-        source_call_path: String,
-    ) -> Result<CallTargetIr> {
-        let operation = self
-            .service_dependency_operations
-            .resolve(&dependency_ref, &source_call_path)?
-            .ok_or_else(|| {
-                CompileError::Semantic(format!(
-                    "service dependency `{dependency_ref}` does not export public operation `{source_call_path}` for source call `{source_path}`"
-                ))
-            })?
-            .clone();
-        Ok(CallTargetIr::ServiceDependencySymbol {
-            symbol: ServiceDependencySymbolRef {
-                dependency_ref,
-                operation,
-            },
-        })
-    }
-
-    fn remote_public_instance_direct_call_target(
-        &self,
-        object: &Expr,
-        method_name: &str,
-    ) -> Result<Option<CallTargetIr>> {
-        let Expr::RemotePublicInstanceSource(source) = object else {
-            return Ok(None);
-        };
-        let source_path = format!(
-            "{}/{}.{}",
-            source.dependency_ref, source.public_instance_key, method_name
-        );
-        let source_call_path = format!("{}.{}", source.public_instance_key, method_name);
-        self.service_dependency_operation_call_target(
-            &source_path,
-            source.dependency_ref.clone(),
-            source_call_path,
-        )
-        .map(Some)
-    }
-
-    fn service_dependency_operation_path(&self, path: &str) -> Option<(String, String)> {
-        let (root, operation) = path.split_once('.')?;
-        if operation.is_empty() || !self.service_dependency_aliases.contains(root) {
-            return None;
-        }
-        Some((root.to_string(), operation.to_string()))
     }
 
     fn is_receiver_call(&self, object: &Expr) -> bool {
@@ -2072,6 +1982,26 @@ fn unsupported_file_ir_callee(callee: &str) -> CompileError {
     ))
 }
 
+fn package_call_resolution_error(
+    expression_key: Option<&ExpressionKey>,
+    callee: &str,
+    detail: impl std::fmt::Display,
+) -> CompileError {
+    unsupported(format!(
+        "package dependency call `{callee}` at ExpressionKey {expression_key:?} cannot be lowered: {detail}"
+    ))
+}
+
+fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
+    match target {
+        ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
+        ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
+        ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
+        ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
+        ResolvedCallTarget::Unknown { .. } => "Unknown",
+    }
+}
+
 fn unsupported(message: impl Into<String>) -> CompileError {
     CompileError::Semantic(message.into())
 }
@@ -2102,7 +2032,7 @@ fn expr_preorder_node_count(expr: &Expr) -> u32 {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
-        | Expr::RemotePublicInstanceSource(_)
+        | Expr::DependencySourceAddress(_)
         | Expr::DbOperation(_)
         | Expr::DbQuery(_) => 1,
         Expr::Unary { expr, .. }
@@ -2197,19 +2127,6 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
             .map(expr_preorder_node_count)
             .unwrap_or_default(),
         Stmt::Break | Stmt::Continue => 0,
-    }
-}
-
-pub(super) fn expr_path(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Identifier(name) => Some(name.clone()),
-        Expr::RemotePublicInstanceSource(source) => Some(format!(
-            "{}/{}",
-            source.dependency_ref, source.public_instance_key
-        )),
-        Expr::Field { object, field } => Some(format!("{}.{}", expr_path(object)?, field)),
-        Expr::Generic { callee, .. } => expr_path(callee),
-        _ => None,
     }
 }
 

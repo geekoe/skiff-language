@@ -12,9 +12,9 @@ use crate::{
     semantic::{
         interface::{
             object_safety_diagnostics_display, InterfaceInstantiation, InterfaceMethodSlotFact,
-            InterfaceObjectSafetyDiagnostic, TypeInstantiationPattern,
+            InterfaceObjectSafetyDiagnostic, InterfaceOwnerKind, TypeInstantiationPattern,
         },
-        InterfaceSemantics, SemanticPublication, SemanticSource, SourceOrigin,
+        InterfaceSemantics, SemanticPublication, SemanticSource,
     },
     shared::{
         ast::{AliasDecl, FunctionDecl, InterfaceOperation, SourceFile, TypeDecl, TypeRef},
@@ -141,6 +141,29 @@ pub struct CanonicalInterfaceSelectorResolution {
     pub identity: TypeRefIr,
     pub args: Vec<TypeRefIr>,
     pub instantiation_ref: InterfaceInstantiationRef,
+}
+
+/// Canonical conformance owner selected from validated semantic and package facts.
+///
+/// Source exact conformance consumes only `SourceDeclaredExact`; the other
+/// variants remain with their existing owners or fail closed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CanonicalInterfaceOwnerResolution {
+    SourceDeclaredExact {
+        interface: SourceSymbolKey,
+        arguments: Vec<TypeRefIr>,
+    },
+    TypedPackage {
+        identity: TypeRefIr,
+        arguments: Vec<TypeRefIr>,
+    },
+    CompilerKnown {
+        interface: SourceSymbolKey,
+        arguments: Vec<TypeRefIr>,
+    },
+    InvalidOrUnresolved {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1813,7 +1836,7 @@ impl TypeResolutionModel {
         })
     }
 
-    fn resolve_source_type_key(
+    pub(crate) fn resolve_source_type_key(
         &self,
         name: &str,
         context: &TypeResolutionContext<'_>,
@@ -1948,10 +1971,30 @@ impl TypeResolutionModel {
                     ty.type_params.iter().cloned().collect(),
                 );
                 for implemented in &ty.implements {
-                    let Some(interface) = self
-                        .resolve_interface_instantiation_text(&implemented.name, &type_context)?
-                    else {
-                        continue;
+                    let interface = match self
+                        .classify_canonical_interface_owner(&implemented.name, &type_context)
+                    {
+                        CanonicalInterfaceOwnerResolution::SourceDeclaredExact {
+                            interface,
+                            arguments,
+                        }
+                        | CanonicalInterfaceOwnerResolution::CompilerKnown {
+                            interface,
+                            arguments,
+                        } => InterfaceInstantiationResolution {
+                            identity: interface_symbol_type_ref(&interface),
+                            args: arguments,
+                        },
+                        CanonicalInterfaceOwnerResolution::TypedPackage {
+                            identity,
+                            arguments,
+                        } => InterfaceInstantiationResolution {
+                            identity,
+                            args: arguments,
+                        },
+                        CanonicalInterfaceOwnerResolution::InvalidOrUnresolved { message } => {
+                            return Err(message);
+                        }
                     };
                     conformances.push(InterfaceConformanceResolution {
                         receiver: receiver.clone(),
@@ -2052,6 +2095,83 @@ impl TypeResolutionModel {
             .map(|resolved| resolved.ir)
     }
 
+    /// Classifies one validated `implements` selector without inferring owner
+    /// from display strings or retrying another owner after a failed handoff.
+    pub(crate) fn classify_canonical_interface_owner(
+        &self,
+        raw: &str,
+        context: &TypeResolutionContext<'_>,
+    ) -> CanonicalInterfaceOwnerResolution {
+        let semantic_interface = match self
+            .interface_semantics
+            .canonical_source_interface_instantiation_from_type_ref(
+                context.module_path,
+                &TypeRef {
+                    name: raw.to_string(),
+                },
+                &context.type_params,
+            ) {
+            Ok(interface) => interface,
+            Err(error) => {
+                return CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
+                    message: error.to_string(),
+                };
+            }
+        };
+        match self
+            .interface_semantics
+            .interface_owner_kind(&semantic_interface.symbol)
+        {
+            Some(InterfaceOwnerKind::Source) => {
+                let interface = match self.resolve_interface_instantiation_text(raw, context) {
+                    Ok(Some(interface)) => interface,
+                    Ok(None) => {
+                        return CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
+                            message: format!("implements entry `{raw}` is not an interface"),
+                        };
+                    }
+                    Err(message) => {
+                        return CanonicalInterfaceOwnerResolution::InvalidOrUnresolved { message };
+                    }
+                };
+                CanonicalInterfaceOwnerResolution::SourceDeclaredExact {
+                    interface: semantic_interface.symbol,
+                    arguments: interface.args,
+                }
+            }
+            Some(InterfaceOwnerKind::CompilerKnown) => {
+                CanonicalInterfaceOwnerResolution::CompilerKnown {
+                    interface: semantic_interface.symbol,
+                    arguments: semantic_interface.args,
+                }
+            }
+            Some(InterfaceOwnerKind::External) => {
+                let interface = match self.resolve_interface_instantiation_text(raw, context) {
+                    Ok(interface) => interface,
+                    Err(message) => {
+                        return CanonicalInterfaceOwnerResolution::InvalidOrUnresolved { message };
+                    }
+                };
+                match interface {
+                    Some(interface)
+                        if matches!(&interface.identity, TypeRefIr::PackageSymbol { .. }) =>
+                    {
+                        CanonicalInterfaceOwnerResolution::TypedPackage {
+                            identity: interface.identity,
+                            arguments: interface.args,
+                        }
+                    }
+                    _ => CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
+                        message: format!("implements entry `{raw}` is not an interface"),
+                    },
+                }
+            }
+            None => CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
+                message: format!("implements entry `{raw}` is not an interface"),
+            },
+        }
+    }
+
     fn resolve_interface_instantiation_text(
         &self,
         raw: &str,
@@ -2059,16 +2179,6 @@ impl TypeResolutionModel {
     ) -> Result<Option<InterfaceInstantiationResolution>, String> {
         let resolved = self.resolve_type_text(raw, context)?;
         self.interface_instantiation_from_resolved(&resolved, context)
-    }
-
-    pub fn resolve_interface_instantiation_parts_text(
-        &self,
-        raw: &str,
-        context: &TypeResolutionContext<'_>,
-    ) -> Result<Option<(TypeRefIr, Vec<TypeRefIr>)>, String> {
-        Ok(self
-            .resolve_interface_instantiation_text(raw, context)?
-            .map(|interface| (interface.identity, interface.args)))
     }
 
     fn interface_instantiation_from_resolved(
@@ -3231,7 +3341,6 @@ fn type_resolution_semantic_publication<'a>(
                 SemanticSource::new(
                     parsed.relative_path().display().to_string(),
                     parsed.module_path(),
-                    SourceOrigin::Service,
                     parsed.ast(),
                     parsed.alias_targets(),
                 )

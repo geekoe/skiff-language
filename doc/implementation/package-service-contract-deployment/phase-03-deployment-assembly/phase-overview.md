@@ -12,13 +12,14 @@
 - 从 root deployments 解析唯一 provider、完整 package/service requirement 闭包并生成 `RuntimeAssembly`。
 - replica 内 package code 只链接一次，生成 per-ActivationContext binding templates 和独立 AssemblyIdentity。
 - runtime 能 load/link/admit assembly；零或多 provider、identity mismatch、remote-only closure fail closed。
-- service source compile、code-owning ServiceUnit 与旧 serviceAssembly 的 closure/link 语义退出生产 owner。
+- 不读取或生成 ServiceUnit、serviceAssembly 或 adapter shape；Phase 02 与本阶段之间的 service
+  不可用状态被直接终态实现取代。
 
 ## 预期波次
 
 1. deployment/assembly schema、identity、reference 和 binding template checkpoint。
 2. deployment projection、assembly resolver、runtime loader/linker 三域并行。
-3. router/reload adapter、legacy semantic owner 删除、批次 gate 与独立验收。
+3. terminal loader/linker admission、批次 gate 与独立验收；不建过渡 adapter。
 
 ## 阶段验收
 

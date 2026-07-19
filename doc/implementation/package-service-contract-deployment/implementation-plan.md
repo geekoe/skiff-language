@@ -1,10 +1,11 @@
 # Package、Service Contract 与 Deployment 总体实现计划
 
-状态：active；Phase 01 已完成并合入 `main`，Phase 02 是下一执行阶段
+状态：active；Phase 01 已完成并合入 `main`，Phase 02 正从 terminal-only checkpoint 重建
 
 唯一权威架构输入是 `doc/architecture/package-service-contract-deployment.md`。本文不定义新语义，只把
 该设计转化为可逐阶段验收、尽量缩短关键路径的实现路线。每阶段只向 `main` 合并一次；上一阶段验收后
 才细化下一阶段，但阶段内部通过短共享检查点和最多三个并行 worker 扩大 DAG 宽度。
+阶段合并只保证本阶段负责的域已是终态；下游在后续阶段完成前可以暂时不可用。
 
 ## 1. 最终结果
 
@@ -32,19 +33,17 @@ ServiceDeployments + PackageArtifact closure ──► RuntimeAssembly
 - package direct call 使用 Local ABI，可共享 heap、alias 和 mutation；service call 始终执行 boundary
   materialization 与 ActivationContext owner 切换。
 
-## 2. 迁移约束与删除 ledger
+## 2. 终态切换约束
 
-阶段性 adapter 只允许消费新 canonical owner 的结果，不得保留第二套规则；新旧 artifact 不 dual-read、
-dual-write，fixture 直接重建。
+不建立迁移 adapter ledger。一个生产域在所属阶段一次性切到终态，旧 owner 直接退出；
+下游未完成时允许临时断链，不用兼容代码接回。
 
-| 临时对象或路径 | 允许保留到 | 约束 |
+| 阶段 | 当阶段必须落地的终态 | 允许的临时状态 |
 | --- | --- | --- |
-| `PublicationInput` / `CompiledPublication` / `LoweredPublication` | Phase 02 | Phase 02 后 compiler 只有 package compile pipeline |
-| `PublicationAbiUnit` | Phase 03 | Phase 02 后只能是旧 runtime 输入 adapter，不能进入新 PackageArtifact/ServiceContract |
-| code-owning `ServiceUnit` / service source compile | Phase 03 | 只能委托 Phase 02 compiler；Phase 03 后不再拥有代码或 deployment 语义 |
-| 当前 `serviceAssembly` | Phase 03 退出 semantic owner；Phase 05 物理删除 adapter | Phase 03 后只允许受 gate 约束的 tooling input adapter |
-| 当前 remote relay selection/fallback | Phase 04 | Phase 04 后 production 不可达，能同步删除的实现与 fixture 当阶段删除 |
-| 旧 registry、CLI、watch、test-runner 与跨仓库 consumer | Phase 05 | 不得形成新旧双写；Phase 05 完成后物理归零 |
+| Phase 02 | compiler 只产出 `PackageArtifact` / `ServiceContract` | service CLI/watch/runtime 可暂时无法消费；不输出 `PackageUnit` / `ServiceUnit` / `serviceAssembly` |
+| Phase 03 | 只用 `ServiceDeployment` / `RuntimeAssembly` 表达部署与闭包 | 尚未执行 service boundary；不保留旧 assembly/loader 兼容输入 |
+| Phase 04 | `ActivationContext` / `InProcessBoundary` 是唯一 service 执行路径 | 工具与业务服务尚未切换；不保留 remote relay fallback |
+| Phase 05 | CLI/watch/registry/router/test-runner/services 全部消费四对象 | 无旧 reader/writer、无 artifact 转换、无双轨 |
 
 ## 3. Phase 01 经验与后续约束
 
@@ -58,7 +57,8 @@ compiler/runtime/router/scripts”不是可接受任务边界。
 - checkpoint 后按写入域拆 consumer，最多同时运行三个开发 Agent。
 - 每阶段默认不超过三个实现波次；若超过，先检查是否遗漏可提前冻结的接口或错误制造了串行依赖。
 - 阶段边界选择可独立验收的控制面或执行面，不再机械地为每个 artifact 对象单设阶段。
-- legacy 在失去语义 owner 的阶段立即收缩；Phase 05 不接收本可提前删除的内部生产路径。
+- 不为维持阶段间可运行性建立 compatibility/legacy bridge；旧路径在其 owner 被终态
+  取代的阶段直接删除。
 
 Phase 01 的 `phase-plan.md` 与 `phase-result.md` 是当时执行记录，其中旧 Phase 02–07 编号只表示历史
 ledger；后续以本文当前划分为准。
@@ -87,14 +87,19 @@ typed effect leaf、PackageUnit builder 和跨层 artifact reference validation�
 同时建立最终 `PackageArtifact` 与独立 `ServiceContract`。先冻结二者共享的 boundary descriptor、
 ContractTypeId、requirements、identity 和 wire API，再并行实现 contract artifact、package/effect pipeline
 与 service dependency lowering。阶段完成后 provider 和 consumer 可只凭 contract 独立编译，consumer
-artifact 只保存 `ServiceCallRef`，compiler 不再有 publication/package/service 共同 source pipeline。
+artifact 只保存 `ServiceCallRef`，compiler 不再有 publication/package/service 共同 source pipeline，
+也不产出任何旧 runtime DTO。现有 service CLI/watch/runtime 在 Phase 03–05 完成前可暂时不可用。
+
+执行基线固定为 commit `9ca2547`：它包含 T01–T04 的 canonical contract、package artifact、effect 与
+service-call lowering，但尚未引入后续 runtime 兼容链。旧 Phase 02 integration 只作只读取证；不从其
+后半段整体 cherry-pick 或继续边删边修。后续终态实现按任务逐项移植或重做。
 
 ### Phase 03：Deployment and assembly plane
 
 同时建立无源码 `ServiceDeployment` 与完整 `RuntimeAssembly`。先冻结 deployment/assembly schema、identity
 和 binding template API，再并行实现 deployment projection、assembly closure/provider resolution 与 runtime
 loader/linker adoption。阶段完成后 typed artifacts 足以构建、校验、链接和 admission 一个 assembly；
-service source compile、code-owning ServiceUnit 和旧 serviceAssembly 的 closure/link 语义退出生产 owner。
+不读取 `ServiceUnit`、`serviceAssembly` 或其 adapter shape。
 
 ### Phase 04：In-process execution plane
 
@@ -105,8 +110,8 @@ ordinary/error、async/stream/cancel、callback/native capability 三类 lane。
 ### Phase 05：Ecosystem cutover
 
 并行迁移仓库 tooling、`skiff-packages` 和 `internals` consumer：registry/release、CLI/watch、router reload、
-test-runner、fixtures 与实际 services。删除剩余 Publication/ServiceUnit/serviceAssembly/relay adapter 和旧
-reader/writer，完成完整非 live verify、必要 live/smoke 与多 replica 验收。
+test-runner、fixtures 与实际 services。每个 consumer 直接切到四对象，不通过旧 artifact adapter；
+完成完整非 live verify、必要 live/smoke 与多 replica 验收。
 
 ## 5. Worktree 与提交协议
 

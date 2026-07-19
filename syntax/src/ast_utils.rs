@@ -11,12 +11,20 @@ pub fn expr_path(expr: &Expr) -> Option<String> {
         Expr::Identifier(name) => Some(name.clone()),
         Expr::Field { object, field } => Some(format!("{}.{}", expr_path(object)?, field)),
         Expr::Generic { callee, .. } => expr_path(callee),
-        Expr::RemotePublicInstanceSource(source) => Some(format!(
-            "{}/{}",
-            source.dependency_ref, source.public_instance_key
-        )),
+        Expr::DependencySourceAddress(source) => {
+            Some(format!("{}/{}", source.dependency_ref, source.public_path))
+        }
         _ => None,
     }
+}
+
+/// Splits the canonical source spelling produced for a dependency address.
+/// The parser owns `/`-to-public-path normalization; compiler consumers must
+/// not reconstruct the address from AST fields independently.
+pub fn dependency_source_address_parts(path: &str) -> Option<(&str, &str)> {
+    let (dependency_ref, public_path) = path.split_once('/')?;
+    (!dependency_ref.is_empty() && !public_path.is_empty() && !public_path.contains('/'))
+        .then_some((dependency_ref, public_path))
 }
 
 pub fn without_generic(expr: &Expr) -> &Expr {
@@ -147,7 +155,7 @@ pub fn walk_pattern(visitor: &mut (impl AstVisitor + ?Sized), pattern: &Pattern)
 
 pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
     match expr {
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
         Expr::Binary { left, right, .. } => {
             visitor.visit_expr(left);
             visitor.visit_expr(right);
@@ -485,7 +493,7 @@ pub fn walk_pattern_mut(visitor: &mut (impl AstVisitorMut + ?Sized), pattern: &m
 
 pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Expr) {
     match expr {
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
         Expr::Binary { left, right, .. } => {
             visitor.visit_expr(left);
             visitor.visit_expr(right);
@@ -674,7 +682,7 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
             expr_contains_with(&claim.key, predicate) || block_contains_expr(&claim.body, predicate)
         }
         Expr::DbLeaseRead(read) => expr_contains_with(&read.key, predicate),
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => false,
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => false,
     }
 }
 
@@ -1135,7 +1143,7 @@ fn collect_expr_type_ref_dotted_root_imports(
             collect_type_ref_dotted_root_imports(&read.target, root, imports);
             collect_expr_type_ref_dotted_root_imports(&read.key, root, imports);
         }
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 

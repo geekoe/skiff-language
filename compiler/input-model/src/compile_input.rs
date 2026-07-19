@@ -1,71 +1,76 @@
 use std::collections::BTreeMap;
 
-use crate::{PackageDependency, ResolvedServiceDependencies, ServiceIngressSeed};
+use skiff_artifact_model::{ContractRequirement, PackageArtifact, ServiceContract};
 
-pub trait PublicationInputMetadata {
+use crate::PackageDependency;
+
+pub trait PackageCompileInputMetadata {
     fn package_dependencies(&self) -> &[PackageDependency];
 }
 
-#[derive(Clone, Copy)]
-pub struct PublicationInputCore<'a, P: ?Sized> {
-    pub publication: &'a P,
+/// One validated contract dependency supplied to package compilation.
+///
+/// The requirement owns the source alias and expected identity; the contract
+/// is the independently published, code-free protocol artifact. No provider
+/// package, build, deployment, route, or executable fact crosses this input.
+#[derive(Debug, Clone)]
+pub struct PackageContractCompileDependency {
+    pub requirement: ContractRequirement,
+    pub contract: ServiceContract,
+}
+
+/// The only production input for user source compilation.
+///
+/// Declared package dependencies are canonical PackageArtifacts and service
+/// calls are compiled solely against ServiceContracts. Additional canonical
+/// artifacts from the same package graph may close compiler-owned requirements
+/// after File IR is produced, but never participate in source resolution.
+/// Legacy service configuration is adapted before this boundary and is never
+/// stored here.
+pub struct PackageCompileInput<'a, P: ?Sized> {
+    pub package: &'a P,
+    pub package_id: &'a str,
     pub package_aliases: &'a BTreeMap<String, Vec<String>>,
     pub package_dependencies: &'a [PackageDependency],
+    pub dependency_packages: &'a [PackageArtifact],
+    pub available_packages: &'a [PackageArtifact],
+    pub contract_dependencies: &'a [PackageContractCompileDependency],
 }
 
-pub struct PackagePublicationInput<'a, P: ?Sized> {
-    pub core: PublicationInputCore<'a, P>,
-    pub package_id: &'a str,
-}
-
-pub struct ServicePublicationInput<'a, P: ?Sized> {
-    pub core: PublicationInputCore<'a, P>,
-    pub service_id: &'a str,
-    pub service_dependencies: ResolvedServiceDependencies,
-    pub service_ingress: ServiceIngressSeed,
-}
-
-pub enum PublicationInput<'a, P: ?Sized> {
-    Package(PackagePublicationInput<'a, P>),
-    Service(ServicePublicationInput<'a, P>),
-}
-
-impl<'a, P: PublicationInputMetadata + ?Sized> PublicationInputCore<'a, P> {
-    pub fn new(publication: &'a P, package_aliases: &'a BTreeMap<String, Vec<String>>) -> Self {
-        Self {
-            publication,
-            package_aliases,
-            package_dependencies: publication.package_dependencies(),
-        }
-    }
-}
-
-impl<'a, P: PublicationInputMetadata + ?Sized> PackagePublicationInput<'a, P> {
+impl<'a, P: PackageCompileInputMetadata + ?Sized> PackageCompileInput<'a, P> {
     pub fn new(
-        publication: &'a P,
+        package: &'a P,
         package_aliases: &'a BTreeMap<String, Vec<String>>,
         package_id: &'a str,
     ) -> Self {
         Self {
-            core: PublicationInputCore::new(publication, package_aliases),
+            package,
             package_id,
+            package_aliases,
+            package_dependencies: package.package_dependencies(),
+            dependency_packages: &[],
+            available_packages: &[],
+            contract_dependencies: &[],
         }
     }
-}
 
-impl<'a, P: PublicationInputMetadata + ?Sized> ServicePublicationInput<'a, P> {
-    pub fn new_with_service_id(
-        publication: &'a P,
-        package_aliases: &'a BTreeMap<String, Vec<String>>,
-        service_id: &'a str,
-        service_dependencies: ResolvedServiceDependencies,
-        service_ingress: ServiceIngressSeed,
+    pub fn with_canonical_dependencies(
+        mut self,
+        dependency_packages: &'a [PackageArtifact],
+        contract_dependencies: &'a [PackageContractCompileDependency],
     ) -> Self {
-        Self {
-            core: PublicationInputCore::new(publication, package_aliases),
-            service_id,
-            service_dependencies,
-            service_ingress,
-        }
+        self.dependency_packages = dependency_packages;
+        self.contract_dependencies = contract_dependencies;
+        self
+    }
+
+    /// Supplies canonical artifacts already produced by this compile graph.
+    /// They are candidates only for post-File-IR requirement closure.
+    pub fn with_available_canonical_packages(
+        mut self,
+        available_packages: &'a [PackageArtifact],
+    ) -> Self {
+        self.available_packages = available_packages;
+        self
     }
 }

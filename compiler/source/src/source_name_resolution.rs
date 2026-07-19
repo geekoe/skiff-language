@@ -219,7 +219,7 @@ pub fn collect_unresolved_dotted_root_violations(
     );
 }
 
-/// Table-aware variant used by `SourceCompileModel`.
+/// Table-aware variant used by `PackageSourceModel`.
 ///
 /// Early source validation can run before declaration anchors exist and therefore calls the
 /// compatibility wrapper above with `None`. The source compile model production path has the

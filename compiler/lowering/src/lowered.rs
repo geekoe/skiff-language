@@ -1,14 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::storage_projection::CompiledPublicationStorageProjection;
+use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     publication_local_refs::rewrite_publication_local_refs,
-    source_file_lowering::{
-        compile_publication_source_file_ir_unit, PublicationSourceLoweringInput,
-    },
-    type_ref_ir_source_text_with_local_types, CompiledPublicationSource, EntryFunctionSignature,
-    EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex, LoweringDependencyOperationIndexes,
+    source_file_lowering::{compile_package_source_file_ir_unit, PackageSourceLoweringInput},
+    type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
+    EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex,
 };
 use crate::file_ir::{
     assign_file_ir_identity, CallTargetIr, ConstLinkTargetIr, ExecutableIr, ExecutableKind,
@@ -19,20 +17,19 @@ use skiff_artifact_identity::type_ref_abi_key;
 use skiff_compiler_core::source_role::PublicationSourceRole;
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
+use skiff_compiler_source::PackageSourceModel;
+use skiff_compiler_source::PublicationApiSeed;
 use skiff_compiler_source::SourceCompileError as PublicationError;
-use skiff_compiler_source::SourceCompileModel;
-use skiff_compiler_source::{
-    PublicationApiSeed, PublicationCompilePolicy, ServiceIngressHandler, ServiceIngressModel,
-};
 
 #[derive(Debug)]
-pub struct LoweredPublication {
+pub struct LoweredPackage {
     file_ir_units: Vec<FileIrUnit>,
-    sources: Vec<CompiledPublicationSource>,
-    service_storage_projection: CompiledPublicationStorageProjection,
+    sources: Vec<CompiledPackageSource>,
+    service_storage_projection: CompiledPackageStorageProjection,
     diagnostics: LoweringDiagnostics,
     metadata: LoweringMetadata,
     entrypoint_abi: EntrypointAbiIndex,
+    service_calls: crate::LoweredServiceCalls,
 }
 
 #[derive(Debug, Default)]
@@ -72,10 +69,10 @@ pub enum SyntheticEntrypointExecutableKind {
     ImplMethod,
 }
 
-impl LoweredPublication {
+impl LoweredPackage {
     pub(crate) fn lower(
-        model: &SourceCompileModel,
-        operation_indexes: &LoweringDependencyOperationIndexes,
+        model: &PackageSourceModel,
+        service_calls: crate::LoweredServiceCalls,
     ) -> Result<Self, PublicationError> {
         let plan = model.plan();
         let parsed_sources = model.sources().parsed_sources();
@@ -102,44 +99,40 @@ impl LoweredPublication {
                         plan.diagnostics
                             .source_semantic_context_error(&source_path, error)
                     })?;
-                let unit =
-                    compile_publication_source_file_ir_unit(PublicationSourceLoweringInput {
-                        source: parsed.source_text(),
-                        role: file_ir_role_for_source_role(role),
-                        // pipeline 文档禁止 lowering 重算 name resolution:
-                        // package aliases 和 service aliases 必须从 name_resolution model 读,
-                        // 不得通过 model.dependencies 重新拿原始数据。
-                        package_aliases: model.name_resolution().package_aliases_map(),
-                        package_interface_methods: &package_interface_methods,
-                        package_operations: operation_indexes.package_operations(),
-                        service_dependency_operations: operation_indexes
-                            .service_dependency_operations(),
-                        external_type_symbols: model.indexes().publication_type_symbols(),
-                        service_dependency_aliases: model.name_resolution().service_aliases(),
-                        publication_db_metadata: model.indexes().publication_db_metadata_index(),
-                        semantic_context: &source_semantic_context,
-                        source_alias_targets: model
-                            .resolutions()
-                            .alias_targets_for_module(module_path),
-                        type_resolution: model.type_resolution(),
-                        expression_types: Some(model.expression_types()),
-                        callable_return_types: &callable_return_types,
-                    })
-                    .map_err(|error| {
-                        plan.diagnostics
-                            .source_file_ir_unit_error(&source_path, error)
-                    })?;
-                sources.push(compiled_publication_source(parsed, role, &unit));
+                let unit = compile_package_source_file_ir_unit(PackageSourceLoweringInput {
+                    source: parsed.source_text(),
+                    role: file_ir_role_for_source_role(role),
+                    // pipeline 文档禁止 lowering 重算 name resolution:
+                    // package aliases 和 service aliases 必须从 name_resolution model 读,
+                    // 不得通过 model.dependencies 重新拿原始数据。
+                    package_aliases: model.name_resolution().package_aliases_map(),
+                    package_interface_methods: &package_interface_methods,
+                    resolved_call_targets: model.resolved_call_targets(),
+                    external_type_symbols: model.indexes().publication_type_symbols(),
+                    publication_db_metadata: model.indexes().publication_db_metadata_index(),
+                    semantic_context: &source_semantic_context,
+                    source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
+                    type_resolution: model.type_resolution(),
+                    expression_types: Some(model.expression_types()),
+                    callable_return_types: &callable_return_types,
+                    executable_signatures: model.executable_signatures(),
+                    interface_signatures: Some(model.interface_signatures()),
+                    service_calls: Some(&service_calls),
+                })
+                .map_err(|error| {
+                    plan.diagnostics
+                        .source_file_ir_unit_error(&source_path, error)
+                })?;
+                sources.push(compiled_package_source(parsed, role, &unit));
                 file_ir_units.push(unit);
             }
             Ok::<(), skiff_compiler_source::SourceCompileError>(())
         })?;
 
-        let current_package_id = match model.policy() {
-            PublicationCompilePolicy::Package { package_id } => Some(package_id),
-            PublicationCompilePolicy::Service { .. } => None,
-        };
-        rewrite_publication_local_refs(&mut file_ir_units, current_package_id);
+        rewrite_publication_local_refs(&mut file_ir_units, Some(model.policy().package_id()))
+            .map_err(|error| PublicationError::ContractValidation {
+                message: format!("File IR external ref rebuild failed: {error}"),
+            })?;
 
         // File IR `link_targets` (the set of names a package/service can link and
         // encode across its boundary) are no longer driven by the per-declaration
@@ -147,30 +140,22 @@ impl LoweredPublication {
         // the ABI/schema closure of those re-exported symbols. See doc §5: a type
         // reachable from a re-exported symbol's signature must be LINKABLE even if
         // it is not itself a public writable name.
-        derive_file_ir_link_targets(
-            &mut file_ir_units,
-            model.publication_api().seed(),
-            model.service_ingress(),
-        );
+        derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed());
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
-        let entrypoint_abi = EntrypointAbiIndex::build(
-            parsed_sources,
-            model.name_resolution().package_aliases_map(),
-            model.indexes(),
-            model.resolutions(),
-        )
-        .map_err(|message| PublicationError::ContractValidation { message })?;
+        let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)
+            .map_err(|message| PublicationError::ContractValidation { message })?;
 
         Ok(Self {
             file_ir_units,
             sources,
-            service_storage_projection: CompiledPublicationStorageProjection::default(),
+            service_storage_projection: CompiledPackageStorageProjection::default(),
             diagnostics: LoweringDiagnostics,
             metadata: LoweringMetadata {
                 synthetic_operations,
             },
             entrypoint_abi,
+            service_calls,
         })
     }
 
@@ -182,13 +167,13 @@ impl LoweredPublication {
         &mut self.file_ir_units
     }
 
-    pub fn sources(&self) -> &[CompiledPublicationSource] {
+    pub fn sources(&self) -> &[CompiledPackageSource] {
         &self.sources
     }
 
     pub fn set_service_storage_projection(
         &mut self,
-        service_storage_projection: CompiledPublicationStorageProjection,
+        service_storage_projection: CompiledPackageStorageProjection,
     ) {
         self.service_storage_projection = service_storage_projection;
     }
@@ -222,6 +207,10 @@ impl LoweredPublication {
 
     pub fn entrypoint_abi(&self) -> &EntrypointAbiIndex {
         &self.entrypoint_abi
+    }
+
+    pub fn service_calls(&self) -> &crate::LoweredServiceCalls {
+        &self.service_calls
     }
 }
 
@@ -596,11 +585,7 @@ impl PublicationDeclarationIndex {
 ///   (re-exported symbols in that unit)
 ///   ∪ (types in that unit reachable from any re-exported symbol's signature
 ///      anywhere in the publication, transitively).
-fn derive_file_ir_link_targets(
-    units: &mut [FileIrUnit],
-    seed: &PublicationApiSeed,
-    service_ingress: Option<&ServiceIngressModel>,
-) {
+fn derive_file_ir_link_targets(units: &mut [FileIrUnit], seed: &PublicationApiSeed) {
     let index = PublicationDeclarationIndex::build(units);
 
     // Seed: re-exported callables (functions / impl methods) become executable
@@ -631,7 +616,6 @@ fn derive_file_ir_link_targets(
             executable_seeds.push((unit_index, declaration.executable_index));
         }
     }
-    collect_service_ingress_executable_seeds(units, service_ingress, &mut executable_seeds);
     collect_spawn_executable_seeds(units, &mut executable_seeds);
 
     // Re-exported constants live in the seed's `public_symbols` map keyed by kind
@@ -804,43 +788,6 @@ fn derive_file_ir_link_targets(
     }
 }
 
-fn collect_service_ingress_executable_seeds(
-    units: &[FileIrUnit],
-    service_ingress: Option<&ServiceIngressModel>,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some(service_ingress) = service_ingress else {
-        return;
-    };
-    if let Some(http) = service_ingress.http() {
-        if let Some(target) = http.entry_target.as_deref() {
-            push_entry_target_method_seed(units, target, "handle", executable_seeds);
-        }
-        if let Some(handler) = http.guard.as_ref() {
-            push_service_ingress_handler_seed(units, handler, executable_seeds);
-        }
-        if let Some(handler) = http.pre.as_ref() {
-            push_service_ingress_handler_seed(units, handler, executable_seeds);
-        }
-        for route in &http.routes {
-            push_service_ingress_handler_seed(units, &route.handler, executable_seeds);
-        }
-    }
-    if let Some(websocket) = service_ingress.websocket() {
-        if let Some(target) = websocket.target.as_deref() {
-            push_entry_target_method_seed(units, target, "connect", executable_seeds);
-            push_entry_target_method_seed(units, target, "receive", executable_seeds);
-        } else {
-            if let Some(handler) = websocket.connect.as_ref() {
-                push_service_ingress_handler_seed(units, handler, executable_seeds);
-            }
-            if let Some(handler) = websocket.receive.as_ref() {
-                push_service_ingress_handler_seed(units, handler, executable_seeds);
-            }
-        }
-    }
-}
-
 fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut Vec<(usize, u32)>) {
     for (unit_index, unit) in units.iter().enumerate() {
         for executable in &unit.executables {
@@ -887,7 +834,7 @@ fn collect_spawn_executable_seeds(units: &[FileIrUnit], executable_seeds: &mut V
                         };
                         executable_seeds.push((target_unit_index, *executable_index));
                     }
-                    CallTargetIr::PackageSymbol { .. } => {}
+                    CallTargetIr::PackageCallable { .. } => {}
                     _ => {}
                 }
             }
@@ -904,57 +851,6 @@ fn spawn_submit_metadata_is_function(metadata: &MetadataValue) -> bool {
                 Some(MetadataValue::String(target_kind)) if target_kind == "function"
             )
     )
-}
-
-fn push_entry_target_method_seed(
-    units: &[FileIrUnit],
-    target: &str,
-    method: &str,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some((module_path, type_name)) = target.rsplit_once('.') else {
-        return;
-    };
-    push_executable_seed(
-        units,
-        module_path,
-        &format!("{type_name}.{method}"),
-        executable_seeds,
-    );
-}
-
-fn push_service_ingress_handler_seed(
-    units: &[FileIrUnit],
-    handler: &ServiceIngressHandler,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let ServiceIngressHandler::ServiceFunction {
-        module_path,
-        symbol,
-        ..
-    } = handler
-    else {
-        return;
-    };
-    push_executable_seed(units, module_path, symbol, executable_seeds);
-}
-
-fn push_executable_seed(
-    units: &[FileIrUnit],
-    module_path: &str,
-    symbol: &str,
-    executable_seeds: &mut Vec<(usize, u32)>,
-) {
-    let Some(unit_index) = units
-        .iter()
-        .position(|unit| unit.module_path == module_path)
-    else {
-        return;
-    };
-    let Some(declaration) = units[unit_index].declarations.executables.get(symbol) else {
-        return;
-    };
-    executable_seeds.push((unit_index, declaration.executable_index));
 }
 
 /// Append the publication-local declaration locations of every named type
@@ -1027,13 +923,13 @@ fn collect_type_ref_named_locations(
     }
 }
 
-fn compiled_publication_source(
+fn compiled_package_source(
     source: &ParsedCompilerSource,
     role: PublicationSourceRole,
     unit: &FileIrUnit,
-) -> CompiledPublicationSource {
+) -> CompiledPackageSource {
     let source_map_source = unit.source_map.sources.first();
-    CompiledPublicationSource {
+    CompiledPackageSource {
         source_path: source.relative_path().display().to_string(),
         module_path: source.module_path().to_string(),
         role,

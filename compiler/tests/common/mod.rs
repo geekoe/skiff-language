@@ -1,5 +1,8 @@
 pub mod artifacts;
-pub mod cli_command;
+pub mod contracts;
+mod package_graph;
+pub mod package_project;
+mod test_dir;
 
 #[allow(unused_imports)]
-pub use skiff_compiler::test_support::project_fixtures::TestDir;
+pub use test_dir::TestDir;

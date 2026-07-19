@@ -1,10 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer};
 use serde_json::{Map, Value};
-use skiff_artifact_model::{
-    InterfaceInstantiationRef, OperationAbiRef, ServiceDependencyConstraint,
-};
 use skiff_compiler_core::id::{PublicationId, SKIFF_STD_PUBLICATION_ID};
 
 pub use skiff_compiler_core::path_safety::{
@@ -18,45 +15,6 @@ pub struct PackageDependency {
     pub alias: Option<String>,
     pub config: Value,
     pub collection_name_mapping: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceDependency {
-    pub id: String,
-    pub version: String,
-    pub alias: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ResolvedServiceDependencies {
-    constraints: Vec<ServiceDependencyConstraint>,
-    dependency_lock: Vec<ServiceDependencyLockEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServiceDependencyLockEntry {
-    kind: &'static str,
-    id: String,
-    version: String,
-    alias: String,
-    declared_alias: String,
-    build_id: String,
-    service_protocol_identity: String,
-    operations: Vec<String>,
-    targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    remote_box_provenance: Vec<ServiceDependencyRemoteBoxProvenance>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServiceDependencyRemoteBoxProvenance {
-    pub interface: InterfaceInstantiationRef,
-    pub interface_display: String,
-    pub public_instance: String,
-    pub method_abi_id: String,
-    pub operation: OperationAbiRef,
 }
 
 impl PackageDependency {
@@ -78,73 +36,6 @@ impl PackageDependency {
                 &self.id
             }
         })
-    }
-}
-
-impl ResolvedServiceDependencies {
-    pub fn new(
-        constraints: Vec<ServiceDependencyConstraint>,
-        dependency_lock: Vec<ServiceDependencyLockEntry>,
-    ) -> Self {
-        Self {
-            constraints,
-            dependency_lock,
-        }
-    }
-
-    pub fn constraints(&self) -> &[ServiceDependencyConstraint] {
-        &self.constraints
-    }
-
-    pub fn dependency_lock(&self) -> &[ServiceDependencyLockEntry] {
-        &self.dependency_lock
-    }
-
-    pub fn aliases(&self) -> BTreeSet<String> {
-        self.constraints
-            .iter()
-            .map(|dependency| dependency.alias.clone())
-            .collect()
-    }
-}
-
-impl ServiceDependencyLockEntry {
-    pub fn from_resolved_service(
-        declared: &ServiceDependency,
-        resolved: &ServiceDependencyConstraint,
-    ) -> Self {
-        Self {
-            kind: "service",
-            id: declared.id.clone(),
-            version: declared.version.clone(),
-            alias: declared.alias.clone(),
-            declared_alias: declared.alias.clone(),
-            build_id: resolved.build_id.clone(),
-            service_protocol_identity: resolved.service_protocol_identity.clone(),
-            operations: resolved
-                .publication_abi
-                .operation_exports
-                .iter()
-                .map(|operation| operation.public_path.clone())
-                .collect(),
-            targets: resolved
-                .publication_abi
-                .operation_exports
-                .iter()
-                .map(|operation| operation.operation_abi_id.clone())
-                .collect(),
-            remote_box_provenance: Vec::new(),
-        }
-    }
-
-    pub fn alias(&self) -> &str {
-        &self.alias
-    }
-
-    pub fn add_remote_box_provenance(&mut self, provenance: ServiceDependencyRemoteBoxProvenance) {
-        if !self.remote_box_provenance.contains(&provenance) {
-            self.remote_box_provenance.push(provenance);
-        }
     }
 }
 

@@ -3,18 +3,11 @@ use std::path::PathBuf;
 use crate::CompilerSourceRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RawSourceOrigin {
-    Service,
-    Package { package_id: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSourceFileMeta {
     pub relative_path: PathBuf,
     pub module_path: String,
     pub is_test_file: bool,
     pub is_generated: bool,
-    pub origin: RawSourceOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

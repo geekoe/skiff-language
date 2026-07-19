@@ -420,9 +420,9 @@ fn p1a_case5_type_parameter_resolves_to_type_parameter_entity() {
 
 // ── case #6 ───────────────────────────────────────────────────────────────────
 
-/// Verification case #6:package callable → ExternalPackage entity。
+/// Verification case #6:package qualified type → ExternalPackage entity。
 ///
-/// `package_aliases` 包含 `myPkg` → `myPkg.doThing` 解析为 `Entity(ExternalPackage(...))`。
+/// `package_aliases` 包含 `myPkg` → `myPkg.Request` 只在type namespace解析。
 #[test]
 fn p1a_case6_package_alias_resolves_to_external_package_entity() {
     let mut package_aliases = BTreeSet::new();
@@ -431,23 +431,27 @@ fn p1a_case6_package_alias_resolves_to_external_package_entity() {
 
     let env = empty_env(&empty, &package_aliases, &empty, &empty, &empty);
 
-    let result = resolve_dotted_path(&env, "myPkg.doThing", EntityNamespace::Value)
-        .expect("myPkg.doThing 应解析成功");
+    let result = resolve_dotted_path(&env, "myPkg.Request", EntityNamespace::Type)
+        .expect("myPkg.Request 应在type namespace解析成功");
 
     let entity = result
         .as_entity()
-        .expect("package callable 应是 entity final result");
+        .expect("package qualified type 应是 entity final result");
     assert!(
         matches!(entity, EntityId::ExternalPackage(_)),
-        "package callable 应解析为 EntityId::ExternalPackage,实际:{entity:?}"
+        "package qualified type 应解析为 EntityId::ExternalPackage,实际:{entity:?}"
+    );
+    assert!(
+        resolve_dotted_path(&env, "myPkg.call", EntityNamespace::Value).is_none(),
+        "dot-call不能解析成package dependency call"
     );
 }
 
 // ── case #7 ───────────────────────────────────────────────────────────────────
 
-/// Verification case #7:service operation → ExternalService entity。
+/// Verification case #7:contract qualified type → ExternalService entity。
 ///
-/// `service_aliases` 包含 `mySvc` → `mySvc.doOp` 解析为 `Entity(ExternalService(...))`。
+/// `service_aliases` 包含 `mySvc` → `mySvc.Request` 只在type namespace解析。
 #[test]
 fn p1a_case7_service_alias_resolves_to_external_service_entity() {
     let mut service_aliases = BTreeSet::new();
@@ -456,66 +460,19 @@ fn p1a_case7_service_alias_resolves_to_external_service_entity() {
 
     let env = empty_env(&empty, &empty, &service_aliases, &empty, &empty);
 
-    let result = resolve_dotted_path(&env, "mySvc.doOp", EntityNamespace::Value)
-        .expect("mySvc.doOp 应解析成功");
+    let result = resolve_dotted_path(&env, "mySvc.Request", EntityNamespace::Type)
+        .expect("mySvc.Request 应在type namespace解析成功");
 
     let entity = result
         .as_entity()
-        .expect("service operation 应是 entity final result");
+        .expect("contract qualified type 应是 entity final result");
     assert!(
         matches!(entity, EntityId::ExternalService(_)),
-        "service operation 应解析为 EntityId::ExternalService,实际:{entity:?}"
-    );
-}
-
-// ── case #8 ───────────────────────────────────────────────────────────────────
-
-/// Verification case #8:package alias 与 service alias 同 display path **不产同 entity
-/// kind**(这条最关键)。
-///
-/// 场景:假设 package alias 和 service alias 都叫 `dep`。若分别作为 package alias 或
-/// service alias 出现,`dep.call` 应产出不同 entity kind——ExternalPackage ≠ ExternalService。
-///
-/// 这验证了 P1a 把两种别名拆开的核心价值(架构 case #8,L429-434)。
-#[test]
-fn p1a_case8_same_display_path_package_alias_vs_service_alias_different_entity_kind() {
-    // package alias `dep`
-    let mut package_aliases = BTreeSet::new();
-    package_aliases.insert("dep".to_string());
-    let empty = BTreeSet::new();
-
-    let pkg_env = empty_env(&empty, &package_aliases, &empty, &empty, &empty);
-    let pkg_result = resolve_dotted_path(&pkg_env, "dep.call", EntityNamespace::Value)
-        .expect("dep.call(package) 应解析成功");
-    let pkg_entity = pkg_result
-        .as_entity()
-        .expect("package callable 应是 entity");
-
-    // service alias `dep`(同 display name)
-    let mut service_aliases = BTreeSet::new();
-    service_aliases.insert("dep".to_string());
-
-    let svc_env = empty_env(&empty, &empty, &service_aliases, &empty, &empty);
-    let svc_result = resolve_dotted_path(&svc_env, "dep.call", EntityNamespace::Value)
-        .expect("dep.call(service) 应解析成功");
-    let svc_entity = svc_result
-        .as_entity()
-        .expect("service operation 应是 entity");
-
-    // 同 display path 但来自 package alias 和 service alias 的 entity 不能是同种类型。
-    assert!(
-        matches!(pkg_entity, EntityId::ExternalPackage(_)),
-        "package alias 应产 ExternalPackage,实际:{pkg_entity:?}"
+        "contract qualified type 应解析为 EntityId::ExternalService,实际:{entity:?}"
     );
     assert!(
-        matches!(svc_entity, EntityId::ExternalService(_)),
-        "service alias 应产 ExternalService,实际:{svc_entity:?}"
-    );
-    // 最重要:两者 EntityId 不同(一个 ExternalPackage,一个 ExternalService)。
-    assert_ne!(
-        std::mem::discriminant(&pkg_entity),
-        std::mem::discriminant(&svc_entity),
-        "package alias 与 service alias 同 display path 不能产同 entity discriminant"
+        resolve_dotted_path(&env, "mySvc.call", EntityNamespace::Value).is_none(),
+        "dot-call不能解析成contract dependency call"
     );
 }
 

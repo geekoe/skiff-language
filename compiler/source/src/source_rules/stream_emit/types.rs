@@ -88,7 +88,7 @@ pub(super) fn collect_emit_expression_call_violations(
         Expr::DbLeaseRead(read) => {
             collect_emit_expression_call_violations(path, &read.key, violations);
         }
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 
@@ -260,7 +260,7 @@ pub(super) fn infer_expr_type(
         Expr::Literal(crate::shared::ast::Literal::Bool(_)) => Some("bool".to_string()),
         Expr::Literal(crate::shared::ast::Literal::Null) => Some("null".to_string()),
         Expr::Identifier(name) => env.get(name).cloned(),
-        Expr::RemotePublicInstanceSource(_) => None,
+        Expr::DependencySourceAddress(_) => None,
         Expr::Record { type_name, .. } => Some(type_name.clone()),
         Expr::Call { callee, .. } => expr_path(callee).and_then(|path| {
             prelude_registry()

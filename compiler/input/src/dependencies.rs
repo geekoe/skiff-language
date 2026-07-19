@@ -1,14 +1,13 @@
 use serde_json::Value;
 
+pub use skiff_compiler_input_model::PackageDependency;
 pub use skiff_compiler_input_model::{
     canonical_publication_dependency_id, collect_package_dependency_violations,
     dependency_config_is_empty, empty_dependency_config, is_complex_package_dependency_id,
     is_publication_dependency_id, is_reserved_source_import_alias,
     is_safe_publication_artifact_id_component, is_safe_publication_artifact_path_segment,
-    is_standard_package_id, is_valid_source_import_alias, ResolvedServiceDependencies,
-    ServiceDependencyLockEntry, ServiceDependencyRemoteBoxProvenance,
+    is_standard_package_id, is_valid_source_import_alias,
 };
-pub use skiff_compiler_input_model::{PackageDependency, ServiceDependency};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPackage {

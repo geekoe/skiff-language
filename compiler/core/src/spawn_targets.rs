@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, ExecutableDeclarationIr, ExecutableIr, ExecutableKind, FileIrRef,
-    FileIrUnit, MetadataValue, OperationAbiRef, OperationCallableKind, OperationTargetRef,
-    PackageOperationTarget, PackageRefIr, SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
+    CallIr, CallTargetIr, ExecutableDeclarationIr, ExecutableKind, FileIrRef, FileIrUnit,
+    MetadataValue, OperationCallableKind, OperationTargetRef, SpawnTargetIr, SpawnTargetKindIr,
+    TypeRefIr,
 };
 
 pub use crate::type_closure::PackageTypeSource as PackageSpawnTargetSource;
@@ -46,7 +46,6 @@ pub fn service_spawn_targets_with_packages(
                 }
                 let Some(target) = service_spawn_target_for_call(
                     service_file_ir_units,
-                    package_sources,
                     unit,
                     call,
                     service_protocol_identity,
@@ -74,7 +73,6 @@ pub fn service_spawn_targets_with_packages(
                         continue;
                     }
                     let Some(target) = package_spawn_target_for_call(
-                        package_sources,
                         package,
                         unit,
                         call,
@@ -110,7 +108,6 @@ fn spawn_submit_is_function(metadata: &MetadataValue) -> Result<bool> {
 
 fn service_spawn_target_for_call(
     file_ir_units: &[FileIrUnit],
-    package_sources: &[PackageSpawnTargetSource],
     unit: &FileIrUnit,
     call: &CallIr,
     service_protocol_identity: &str,
@@ -162,16 +159,12 @@ fn service_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
-        CallTargetIr::PackageSymbol {
-            package_ref,
-            operation,
-        } => Ok(Some(package_operation_spawn_target(
-            package_sources,
-            package_ref,
-            operation,
-            service_protocol_identity,
-        )?)),
+        // A direct package call is external to this File IR owner. Assembly
+        // resolves its callable identity; spawn projection does not relink it.
+        CallTargetIr::PackageCallable { .. } => Ok(None),
         CallTargetIr::InterfaceMethod { .. } => Ok(None),
+        // A service boundary call is not a same-build executable spawn target.
+        CallTargetIr::ServiceCall { .. } => Ok(None),
         CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
@@ -180,7 +173,6 @@ fn service_spawn_target_for_call(
 }
 
 fn package_spawn_target_for_call(
-    package_sources: &[PackageSpawnTargetSource],
     package: &PackageSpawnTargetSource,
     unit: &FileIrUnit,
     call: &CallIr,
@@ -244,15 +236,11 @@ fn package_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
-        CallTargetIr::PackageSymbol {
-            package_ref,
-            operation,
-        } => Ok(Some(package_operation_spawn_target(
-            package_sources,
-            package_ref,
-            operation,
-            service_protocol_identity,
-        )?)),
+        // A direct package call is external to this File IR owner. Assembly
+        // resolves its callable identity; spawn projection does not relink it.
+        CallTargetIr::PackageCallable { .. } => Ok(None),
+        // A service boundary call is not a same-build executable spawn target.
+        CallTargetIr::ServiceCall { .. } => Ok(None),
         CallTargetIr::ServiceDependencySymbol { .. }
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
@@ -305,46 +293,6 @@ fn service_function_spawn_target(
     )))
 }
 
-fn package_operation_spawn_target(
-    package_sources: &[PackageSpawnTargetSource],
-    package_ref: &PackageRefIr,
-    operation: &OperationAbiRef,
-    service_protocol_identity: &str,
-) -> Result<SpawnTargetIr> {
-    let package = package_source_for_ref(package_sources, package_ref, &operation.public_path)?;
-    let Some(target) = package
-        .unit
-        .implementation_links
-        .operation_targets
-        .get(&operation.operation_abi_id)
-    else {
-        return Err(error(format!(
-            "spawn package target {} operationAbiId {} does not resolve to a package operation target",
-            package.package_id, operation.operation_abi_id
-        )));
-    };
-    let PackageOperationTarget::LocalExecutable { target, .. } = target else {
-        return Err(error(format!(
-            "spawn package target {}.{} resolves to a receiver operation; spawn supports function targets only",
-            package.package_id, operation.public_path
-        )));
-    };
-    let executable = package_operation_executable(package, target)?;
-    let target_identity = package_handler_target(&package.package_id, &operation.public_path);
-    Ok(SpawnTargetIr {
-        target_identity: target_identity.clone(),
-        kind: SpawnTargetKindIr::Function,
-        executable_target: target.clone(),
-        param_types: executable
-            .params
-            .iter()
-            .map(|param| param.ty.clone())
-            .collect(),
-        return_type: spawn_function_return_type(&target_identity, &executable.return_type)?,
-        service_protocol_identity: service_protocol_identity.to_string(),
-    })
-}
-
 fn package_function_spawn_target(
     package: &PackageSpawnTargetSource,
     target_identity: &str,
@@ -387,55 +335,6 @@ fn package_function_spawn_target(
         "spawn package target {}.{executable_symbol} does not resolve to a package function",
         package.package_id
     )))
-}
-
-fn package_operation_executable<'a>(
-    package: &'a PackageSpawnTargetSource,
-    target: &OperationTargetRef,
-) -> Result<&'a ExecutableIr> {
-    let Some(unit) = package
-        .file_ir_units
-        .iter()
-        .find(|unit| unit.file_ir_identity == target.file_ref.file_ir_identity)
-    else {
-        return Err(error(format!(
-            "package operation target file {} is missing from package {}",
-            target.file_ref.file_ir_identity, package.package_id
-        )));
-    };
-    unit.executables
-        .get(target.executable_index as usize)
-        .ok_or_else(|| {
-            error(format!(
-                "package operation target {} executable index {} is missing",
-                target.file_ref.file_ir_identity, target.executable_index
-            ))
-        })
-}
-
-fn package_source_for_ref<'a>(
-    package_sources: &'a [PackageSpawnTargetSource],
-    package_ref: &PackageRefIr,
-    operation_path: &str,
-) -> Result<&'a PackageSpawnTargetSource> {
-    let package_id = match package_ref {
-        PackageRefIr::PackageId { package_id } => package_id.as_str(),
-        PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
-    };
-    package_sources
-        .iter()
-        .find(|package| {
-            package.package_id == package_id
-                || package
-                    .dependency_refs
-                    .iter()
-                    .any(|dependency_ref| dependency_ref == package_id)
-        })
-        .ok_or_else(|| {
-            error(format!(
-                "spawn package target {operation_path} does not resolve to a linked package"
-            ))
-        })
 }
 
 fn executable_declaration_for_index(
@@ -570,12 +469,17 @@ fn error(message: impl Into<String>) -> SpawnTargetProjectionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::{ExecutableBody, ExprIr, SlotLayout};
+    use skiff_artifact_model::{
+        validate_file_ir_service_calls, ContractOperationId, ExecutableBody, ExecutableIr, ExprIr,
+        PackageCallableId, PackageCallableRef, PackageImplementationLinks, PackageRefIr,
+        ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity, SlotLayout,
+    };
 
     #[test]
     fn projects_service_function_spawn_target_from_file_ir() {
-        let targets = service_spawn_targets_with_packages(&[service_unit("void")], &[], "proto-1")
-            .expect("spawn target projection should succeed");
+        let targets =
+            service_spawn_targets_with_packages(&[service_file_ir("void")], &[], "proto-1")
+                .expect("spawn target projection should succeed");
 
         assert_eq!(targets.len(), 1);
         let target = &targets[0];
@@ -589,15 +493,87 @@ mod tests {
 
     #[test]
     fn rejects_non_void_spawn_function_return() {
-        let error = service_spawn_targets_with_packages(&[service_unit("string")], &[], "proto-1")
-            .expect_err("spawn target projection should reject non-void return");
+        let error =
+            service_spawn_targets_with_packages(&[service_file_ir("string")], &[], "proto-1")
+                .expect_err("spawn target projection should reject non-void return");
 
         assert!(error
             .message
             .contains("spawn target app.run must return void/null"));
     }
 
-    fn service_unit(return_type: &str) -> FileIrUnit {
+    #[test]
+    fn service_boundary_calls_are_not_same_build_spawn_targets() {
+        let mut unit = service_file_ir("void");
+        unit.external_refs.service_call_refs.push(ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: ContractOperationId::new("operation:run"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:dependency"),
+        });
+        let ExprIr::Call { call } = &mut unit.executables[0].body.expressions[0] else {
+            panic!("fixture must contain a call expression")
+        };
+        call.target = CallTargetIr::ServiceCall {
+            service_call_ref_index: ServiceCallRefIndex::new(0),
+        };
+        validate_file_ir_service_calls(&unit).expect("fixture must be canonical File IR");
+
+        let service_targets =
+            service_spawn_targets_with_packages(std::slice::from_ref(&unit), &[], "proto-1")
+                .expect("service boundary calls must not project spawn targets");
+        assert!(service_targets.is_empty());
+
+        let package = PackageSpawnTargetSource {
+            package_id: "consumer".to_string(),
+            dependency_refs: Vec::new(),
+            implementation_links: PackageImplementationLinks::default(),
+            file_ir_units: vec![unit],
+        };
+        let package_targets =
+            service_spawn_targets_with_packages(&[], std::slice::from_ref(&package), "proto-1")
+                .expect("package service boundary calls must not project spawn targets");
+        assert!(package_targets.is_empty());
+    }
+
+    #[test]
+    fn package_direct_calls_are_external_to_spawn_projection() {
+        let package_ref = PackageRefIr::Dependency {
+            dependency_ref: "tools".to_string(),
+        };
+        let package_callable_id = PackageCallableId::new("callable:tools.run");
+        let mut unit = service_file_ir("void");
+        unit.external_refs
+            .package_callables
+            .push(PackageCallableRef {
+                package_ref: package_ref.clone(),
+                package_callable_id: package_callable_id.clone(),
+            });
+        let ExprIr::Call { call } = &mut unit.executables[0].body.expressions[0] else {
+            panic!("fixture must contain a call expression")
+        };
+        call.target = CallTargetIr::PackageCallable {
+            package_ref,
+            package_callable_id,
+        };
+
+        let service_targets =
+            service_spawn_targets_with_packages(std::slice::from_ref(&unit), &[], "proto-1")
+                .expect("service package calls must not be relinked by spawn projection");
+        assert!(service_targets.is_empty());
+
+        let package = PackageSpawnTargetSource {
+            package_id: "consumer".to_string(),
+            dependency_refs: vec!["tools".to_string()],
+            implementation_links: PackageImplementationLinks::default(),
+            file_ir_units: vec![unit],
+        };
+        let package_targets =
+            service_spawn_targets_with_packages(&[], std::slice::from_ref(&package), "proto-1")
+                .expect("package dependency calls must not be relinked by spawn projection");
+        assert!(package_targets.is_empty());
+    }
+
+    fn service_file_ir(return_type: &str) -> FileIrUnit {
         let mut unit = FileIrUnit::empty("app", "hash");
         unit.file_ir_identity = "file:app".to_string();
         unit.declarations.executables.insert(

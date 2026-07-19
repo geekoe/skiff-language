@@ -2,24 +2,27 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    CallableEffectSummary, CallableMayEffects, CanonicalPublicCallableSignature,
-    ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr,
-    DbObjectKindIr, FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef,
-    MetadataValue, OperationAbiRef, OperationCallableKind, OperationTargetRef,
-    PackageDependencyConstraint, PackageDependencyPublicLinkScope, PackageOperationTarget,
-    PackageProductionLinkScope, PackageTestAssembly, PackageTestAssemblyKind,
-    PackageTestEntrypoint, PackageTestEntrypointKind, PackageTestExecutableRef,
-    PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
-    PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit, PublicationAbiUnit,
-    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
-    PublicationResourceRef, PublicationSchemaType, PublicationSchemaTypeNameability,
-    ServiceOperation, ServiceUnit, SourceCallMethodIndexEntry, SourceCallOperationIndexEntry,
-    SourceMapSource, TypeRefIr,
+    CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
+    CanonicalPublicCallableSignature, ConfigAndEffectMetadata, ContractOperationId,
+    DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExprIr,
+    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, MetadataValue,
+    OperationAbiRef, OperationCallableKind, OperationTargetRef, PackageCallableId,
+    PackageCallableRef, PackageDependencyConstraint, PackageDependencyPublicLinkScope,
+    PackageOperationTarget, PackageProductionLinkScope, PackageRefIr, PackageTestAssembly,
+    PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
+    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
+    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit,
+    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
+    PublicationPublicInstanceExport, PublicationResourceRef, PublicationSchemaType,
+    PublicationSchemaTypeNameability, ServiceCallRef, ServiceCallRefIndex, ServiceOperation,
+    ServiceProtocolIdentity, ServiceUnit, SourceCallMethodIndexEntry,
+    SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
 };
 
 use super::*;
 
 mod artifact_reference;
+mod canonical_compile_contract;
 mod file_ir;
 mod framing;
 mod golden;
@@ -44,7 +47,7 @@ fn resource_ref(path: &str, sha256: &str) -> PublicationResourceRef {
 
 fn package_test_assembly_fixture() -> PackageTestAssembly {
     let owner_test_file = PackageTestFileIrRef {
-        file_ir_identity: "skiff-file-ir-v3:sha256:testfile".to_string(),
+        file_ir_identity: "skiff-file-ir-v5:sha256:testfile".to_string(),
         file_ir_path: "units/files/test.json".to_string(),
         source_path: "tests/pkg.test.skiff".to_string(),
         module_path: "pkg.test".to_string(),
@@ -152,7 +155,7 @@ fn package_fixture(body_seed: &str) -> PackageUnit {
         },
     );
     let file = FileIrRef {
-        file_ir_identity: "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        file_ir_identity: "skiff-file-ir-v5:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         module_path: "pkg.main".to_string(),
         artifact_path: Some("units/files/pkg.json".into()),
         source_ast_hash: Some("source".into()),

@@ -7,30 +7,30 @@ mod compile_model;
 mod config_metadata;
 pub(crate) mod config_requirements;
 pub(crate) mod config_usage;
-mod dependency_operation_facts;
+#[cfg(test)]
+mod contract_dependency_test_fixture;
+mod contract_type_resolution;
+mod dependency_analysis;
 pub mod entity;
 pub(crate) mod expression_model;
 pub(crate) mod expression_type_model;
 mod linked_facts;
 pub(crate) mod linked_publication;
 mod name_resolution_model;
+mod package_db_schema;
 mod package_dependency_facts;
 mod package_export_resolver;
 pub mod package_rules;
 pub mod parsed_sources;
 pub mod prelude_registry;
 pub mod provider_rules;
-mod remote_public_instance;
 pub mod reserved_names;
+pub mod resolved_call_targets;
 pub mod root_projection_validation;
 pub mod root_refs;
 pub(crate) mod runtime_type_projection;
 pub mod semantic;
 mod semantics;
-pub mod service_ingress;
-pub mod service_package_facts;
-pub(crate) mod service_rules;
-pub(crate) mod service_storage_rules;
 pub(crate) mod shared;
 mod source_file_facts;
 pub mod source_graph;
@@ -49,18 +49,17 @@ use crate::shared::{
     type_expr::TypeExpr,
 };
 pub use compiler_input_model::{
-    PackageDependency, PublicationApiEntry, PublicationApiSpec, PublicationCompilePolicy,
-    ResolvedServiceDependencies,
+    PackageCompilePolicy, PackageDependency, PublicationApiEntry, PublicationApiSpec,
 };
 
 pub use api::{PublicationApi, SourceSymbolKey};
 pub use api_seed::PublicationApiSeed;
-pub use callable_effects::SourceCallableEffectFacts;
+pub use callable_effects::{SourceCallableEffectFacts, SourceCallableProvenanceFacts};
 pub use compile_model::{
     ExportBindingModel, ExportCallableBinding, ExportPublicInstanceBinding,
     ExportPublicInstanceInterfaceBinding, ExportSchemaBinding, ExportSymbolBinding,
-    PublicationApiModel, PublicationSourceSet, ResolutionModels, ResolvedDependencies,
-    SourceCompileModel, SourceCompileModelInput, SourceIndexes,
+    PackageSourceModel, PackageSourceModelInput, PackageSourceSet, PublicationApiModel,
+    ResolutionModels, ResolvedDependencies, SourceIndexes,
 };
 pub use config_metadata::{
     source_config_metadata_batches_from_parsed_sources, source_config_metadata_from_parsed_sources,
@@ -71,7 +70,16 @@ pub use config_requirements::{
     ConfigRequirementScope, ConfigRequirementSet, DependencyPackageConfigFacts,
 };
 pub use config_usage::ConfigSourceSpan;
-pub use dependency_operation_facts::DependencyPackageOperationFacts;
+pub use contract_type_resolution::{
+    SourceCallableSignatureFacts, SourceExecutableReceiver, SourceExecutableSignature,
+    SourceExecutableSignatureFacts, SourceInterfaceConformanceKey, SourceInterfaceMethodKey,
+    SourceInterfaceRequirementSignature, SourceInterfaceSignatureFacts,
+    ValidatedSourceInterfaceConformance, ValidatedSourceInterfaceMethod,
+};
+pub use dependency_analysis::{
+    PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
+    SourceDependencyAnalysisError, SourceDependencyAnalysisInput,
+};
 pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
@@ -82,19 +90,13 @@ pub use expression_type_model::{
     RepresentationConstructorValidation, UnknownConstructorField,
 };
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
-pub use linked_publication::CompileParsedPublicationSourcesInput;
+pub use linked_publication::CompileParsedPackageSourcesInput;
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
-pub use remote_public_instance::{
-    RemotePublicInstanceDirectOperation, RemotePublicInstanceOperationProjection,
-    RemotePublicInstanceOperationResolver, RemotePublicInstanceOperationSlot,
+pub use resolved_call_targets::{
+    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
 };
-pub use semantics::PublicationCompilePlan;
-pub use service_ingress::{
-    ServiceHttpIngressInput, ServiceHttpRouteIngress, ServiceHttpRouteIngressInput,
-    ServiceIngressHandler, ServiceIngressInput, ServiceIngressModel, ServiceWebSocketIngress,
-    ServiceWebSocketIngressInput,
-};
+pub use semantics::PackageCompilePlan;
 pub use shared::publication_error::PublicationError as SourceCompileError;
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
@@ -109,64 +111,69 @@ pub use type_resolution_model::{
 };
 pub use type_symbol_index::{publication_type_symbols, PublicationTypeSymbolIndex};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublicationKind {
-    Package,
-    Service,
+pub fn build_package_from_parsed_sources(
+    input: CompileParsedPackageSourcesInput<'_, '_>,
+) -> Result<PackageSourceModel, PublicationError> {
+    build_package_from_parsed_sources_with_dependency_analysis(
+        input,
+        &SourceDependencyAnalysisInput::default(),
+    )
 }
 
-pub fn build_from_parsed_sources(
-    input: CompileParsedPublicationSourcesInput<'_, '_>,
-) -> Result<SourceCompileModel, PublicationError> {
-    let linked = linked_publication::LinkedPublication::from_parsed_sources(input);
-    build_from_linked(linked)
+/// Package compilation entrypoint for validated PackageArtifact and
+/// ServiceContract dependency facts.
+pub fn build_package_from_parsed_sources_with_dependency_analysis(
+    input: CompileParsedPackageSourcesInput<'_, '_>,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<PackageSourceModel, PublicationError> {
+    let linked = linked_publication::LinkedPackage::from_parsed_sources(input);
+    build_from_linked(linked, dependency_analysis)
 }
 
 fn build_from_linked(
-    linked: linked_publication::LinkedPublication<'_, '_>,
-) -> Result<SourceCompileModel, PublicationError> {
-    let root_ref_policy = match linked.policy {
-        PublicationCompilePolicy::Package { .. } => {
-            root_refs::RootRefValidationPolicy::parsed_publication_sources()
-        }
-        PublicationCompilePolicy::Service { .. } => {
-            root_refs::RootRefValidationPolicy::service_sources()
-        }
-    };
+    linked: linked_publication::LinkedPackage<'_, '_>,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<PackageSourceModel, PublicationError> {
+    let mut package_aliases = linked.package_aliases.clone();
+    for alias in dependency_analysis.package_aliases() {
+        package_aliases.entry(alias.to_string()).or_default();
+    }
+    let root_ref_policy = root_refs::RootRefValidationPolicy::parsed_publication_sources();
     root_refs::validate_source_root_refs(
         linked.diagnostic_root,
         &linked.production_sources,
         root_ref_policy,
     )?;
     let parsed_sources = linked.parsed_sources;
-    service_storage_rules::validate_db_storage_sources(&parsed_sources)?;
-    if matches!(linked.policy, PublicationCompilePolicy::Service { .. }) {
-        service_storage_rules::validate_service_storage_sources(&parsed_sources)?;
-    }
+    package_db_schema::validate_package_db_schema(&parsed_sources)?;
     let dependency_package_config_facts = linked.package_facts.map(dependency_package_config_facts);
     let type_resolution_package_facts = linked.package_facts.map(type_resolution_package_facts);
     let package_db_metadata_index =
         package_db_metadata_index(linked.package_facts, linked.package_dependencies);
-    let dependency_package_operation_facts =
-        DependencyPackageOperationFacts::from_package_facts(linked.package_facts)?;
     let source_identity = source_identity::source_identity(&parsed_sources);
-    let publication_id_for_anchors = match &linked.policy {
-        PublicationCompilePolicy::Package { package_id } => *package_id,
-        PublicationCompilePolicy::Service { service_id } => *service_id,
-    };
     let declaration_anchors = source_identity::PublicationDeclarationAnchors::build(
         &parsed_sources,
-        publication_id_for_anchors,
+        linked.policy.package_id(),
     );
-    let publication_kind = publication_kind_for_policy(linked.policy);
-    let entity_model = entity::PublicationEntityModel::from_declaration_anchors(
-        entity_publication_kind(publication_kind),
-        declaration_anchors.anchors(),
-    );
-    let service_alias_set = linked.service_dependencies.aliases();
+    let entity_model =
+        entity::PublicationEntityModel::from_declaration_anchors(declaration_anchors.anchors());
+    let service_alias_set = dependency_analysis
+        .contract_aliases()
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(alias) = service_alias_set
+        .iter()
+        .find(|alias| package_aliases.contains_key(alias.as_str()))
+    {
+        return Err(PublicationError::ContractValidation {
+            message: format!(
+                "dependency alias `{alias}` is declared by both a package and a contract"
+            ),
+        });
+    }
     let name_resolution = NameResolutionModel::build_with(
         &parsed_sources,
-        linked.package_aliases,
+        &package_aliases,
         &service_alias_set,
         Some(entity_model.top_level()),
     );
@@ -175,13 +182,6 @@ fn build_from_linked(
         &parsed_sources,
         &name_resolution,
     )?;
-    if matches!(linked.policy, PublicationCompilePolicy::Service { .. }) {
-        service_rules::validate_service_publication_sources_with_name_resolution(
-            linked.diagnostic_root,
-            &parsed_sources,
-            &name_resolution,
-        )?;
-    }
     let linked_facts = SourceCompileLinkedFacts::build(SourceCompileLinkedFactsInput {
         diagnostic_root: linked.diagnostic_root,
         parsed_sources: &parsed_sources,
@@ -190,21 +190,19 @@ fn build_from_linked(
         dependency_package_config_facts: dependency_package_config_facts.as_deref(),
         policy: linked.policy,
         publication_api: linked.publication_api,
+        dependency_analysis,
     })?;
     let config_usage_seed = config_usage::collect_config_usage_seed_from_parsed_sources(
         linked.diagnostic_root,
         &parsed_sources,
     )?;
-    SourceCompileModel::build(SourceCompileModelInput {
+    PackageSourceModel::build(PackageSourceModelInput {
         parsed_sources,
         diagnostic_root: linked.diagnostic_root,
-        package_aliases: linked.package_aliases,
+        package_aliases: &package_aliases,
         package_dependencies: linked.package_dependencies,
         package_db_metadata_index,
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
-        dependency_package_operation_facts,
-        service_dependencies: linked.service_dependencies,
-        service_ingress: linked.service_ingress,
         entity_model,
         name_resolution,
         policy: linked.policy,
@@ -213,21 +211,8 @@ fn build_from_linked(
         declaration_anchors,
         config_usage_seed,
         dependency_config_requirements: linked_facts.dependency_config_requirements,
+        dependency_analysis,
     })
-}
-
-fn publication_kind_for_policy(policy: PublicationCompilePolicy<'_>) -> PublicationKind {
-    match policy {
-        PublicationCompilePolicy::Package { .. } => PublicationKind::Package,
-        PublicationCompilePolicy::Service { .. } => PublicationKind::Service,
-    }
-}
-
-fn entity_publication_kind(kind: PublicationKind) -> entity::PublicationKind {
-    match kind {
-        PublicationKind::Package => entity::PublicationKind::Package,
-        PublicationKind::Service => entity::PublicationKind::Service,
-    }
 }
 
 fn type_resolution_package_facts<'facts>(

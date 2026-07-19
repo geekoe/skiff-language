@@ -8,14 +8,14 @@ use crate::{
     config::ConfigMetadataFacts,
     effects::CallableEffectFacts,
     executable::ExecutableSignatureIr,
+    executable_target::{
+        LocalReceiverExecutableRef, OperationCallableKind, OperationTargetRef, PublicInstanceExport,
+    },
     publication_abi::{OperationAbiRef, PublicationAbiUnit},
     recoverable::RecoverableArtifactMetadata,
     refs::FileIrRef,
     resources::PublicationResourceRef,
     schema::PACKAGE_UNIT_SCHEMA_VERSION,
-    service_unit::{
-        LocalReceiverExecutableRef, OperationCallableKind, OperationTargetRef, PublicInstanceExport,
-    },
     types::{FunctionTypeParamIr, TypeDescriptorIr, TypeRefIr},
 };
 

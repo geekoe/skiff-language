@@ -1,5 +1,14 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublicationCompilePolicy<'a> {
-    Package { package_id: &'a str },
-    Service { service_id: &'a str },
+pub struct PackageCompilePolicy<'a> {
+    package_id: &'a str,
+}
+
+impl<'a> PackageCompilePolicy<'a> {
+    pub fn new(package_id: &'a str) -> Self {
+        Self { package_id }
+    }
+
+    pub fn package_id(self) -> &'a str {
+        self.package_id
+    }
 }

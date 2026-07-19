@@ -21,6 +21,89 @@ const skippedRustScanDirectories = new Set([
   'target',
 ]);
 const artifactIdentityFacadePath = 'artifact-identity/src/lib.rs';
+const canonicalFileIrCallValidatorRegistry = Object.freeze([
+  Object.freeze({
+    name: 'service-call',
+    owner: Object.freeze({
+      name: 'validate_file_ir_service_calls',
+      relPath: 'artifact-model/src/file_ir/service_calls.rs',
+      regexp: /\bpub\s+fn\s+validate_file_ir_service_calls\s*\(/,
+      fixtureText: 'pub fn validate_file_ir_service_calls() {}\n',
+    }),
+    shapeRequirements: Object.freeze([
+      Object.freeze({
+        relPath: 'artifact-model/src/file_ir.rs',
+        description: 'ExternalRefTable typed service_call_refs',
+        regexp: /\bpub\s+service_call_refs\s*:\s*Vec\s*<\s*ServiceCallRef\s*>/,
+        forbiddenRegexp: /serde\s*\([^)]*default[^)]*\)\s*]\s*pub\s+service_call_refs\b/s,
+        fixtureText: 'pub struct ExternalRefTable { pub service_call_refs: Vec<ServiceCallRef> }\n',
+      }),
+      Object.freeze({
+        relPath: 'artifact-model/src/executable.rs',
+        description: 'indexed ServiceCall target',
+        regexp: /\bServiceCall\s*\{\s*service_call_ref_index\s*:\s*ServiceCallRefIndex\s*,?\s*\}/s,
+        fixtureText: 'enum CallTargetIr { ServiceCall { service_call_ref_index: ServiceCallRefIndex } }\n',
+      }),
+    ]),
+    consumers: Object.freeze([
+      Object.freeze({
+        relPath: 'artifact-identity/src/file_ir.rs',
+        helper: 'File IR service-call identity validation',
+        regexp: /\bvalidate_file_ir_service_calls\s*\(\s*unit\s*\)\s*\?/,
+        fixtureText: 'fn identity(unit: &FileIrUnit) { validate_file_ir_service_calls(unit)?; }\n',
+      }),
+    ]),
+  }),
+  Object.freeze({
+    name: 'package-call',
+    owner: Object.freeze({
+      name: 'validate_file_ir_package_calls',
+      relPath: 'artifact-model/src/file_ir/package_calls.rs',
+      regexp: /\bpub\s+fn\s+validate_file_ir_package_calls\s*\(/,
+      fixtureText: 'pub fn validate_file_ir_package_calls() {}\n',
+    }),
+    shapeRequirements: Object.freeze([
+      Object.freeze({
+        relPath: 'artifact-model/src/file_ir.rs',
+        description: 'ExternalRefTable typed package_callables',
+        regexp: /\bpub\s+package_callables\s*:\s*Vec\s*<\s*PackageCallableRef\s*>/,
+        fixtureText: 'pub struct ExternalRefTable { pub package_callables: Vec<PackageCallableRef> }\n',
+      }),
+      Object.freeze({
+        relPath: 'artifact-model/src/executable.rs',
+        description: 'exact PackageCallable target fields',
+        regexp: /\bPackageCallable\s*\{\s*package_ref\s*:\s*PackageRefIr\s*,\s*package_callable_id\s*:\s*PackageCallableId\s*,?\s*\}/s,
+        fixtureText: 'enum CallTargetIr { PackageCallable { package_ref: PackageRefIr, package_callable_id: PackageCallableId } }\n',
+      }),
+      Object.freeze({
+        relPath: 'artifact-model/src/file_ir/package_calls.rs',
+        description: 'package-call exact-set validation error matrix',
+        regexp: /\benum\s+FileIrPackageCallValidationError\s*\{[\s\S]*\bMissingRef\s*\{[\s\S]*\bOrphanRef\s*\{[\s\S]*\bFieldMismatch\s*\{[\s\S]*\bDuplicateRef\s*\{/,
+        fixtureText: 'enum FileIrPackageCallValidationError { MissingRef {}, OrphanRef {}, FieldMismatch {}, DuplicateRef {} }\n',
+      }),
+      Object.freeze({
+        relPath: 'artifact-model/src/file_ir/package_calls.rs',
+        description: 'package-call exact packageRef and callable-id key',
+        regexp: /\bstruct\s+PackageCallKey\s*<[^>]+>\s*\{\s*package_ref\s*:\s*PackageRefKey\s*<[^>]+>\s*,\s*package_callable_id\s*:\s*&[^,]+str\s*,?\s*\}/s,
+        fixtureText: "struct PackageCallKey<'a> { package_ref: PackageRefKey<'a>, package_callable_id: &'a str }\n",
+      }),
+    ]),
+    consumers: Object.freeze([
+      Object.freeze({
+        relPath: 'artifact-identity/src/file_ir.rs',
+        helper: 'File IR package-call identity validation',
+        regexp: /\bvalidate_file_ir_package_calls\s*\(\s*unit\s*\)\s*\?/,
+        fixtureText: 'fn identity(unit: &FileIrUnit) { validate_file_ir_package_calls(unit)?; }\n',
+      }),
+      Object.freeze({
+        relPath: 'compiler/emission/src/emission/package_requirement_coverage.rs',
+        helper: 'File IR package-call emission validation',
+        regexp: /\bvalidate_file_ir_package_calls\s*\(\s*&file\.unit\s*\)/,
+        fixtureText: 'fn emit(file: &File) { validate_file_ir_package_calls(&file.unit); }\n',
+      }),
+    ]),
+  }),
+]);
 const ownerRequirements = [
   {
     name: 'framed_identity',
@@ -47,6 +130,12 @@ const ownerRequirements = [
     relPath: 'artifact-identity/src/file_ir.rs',
     regexp: /\bpub\s+fn\s+canonical_file_ir_identity_bytes\s*\(/,
   },
+  {
+    name: 'ServiceCallRefIndex',
+    relPath: 'artifact-model/src/file_ir.rs',
+    regexp: /\bpub\s+struct\s+ServiceCallRefIndex\s*\(\s*u32\s*\)\s*;/,
+  },
+  ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner),
   {
     name: 'ServiceUnitStorageIdentityPayload',
     relPath: 'artifact-identity/src/legacy_service.rs',
@@ -91,6 +180,76 @@ const ownerRequirements = [
     name: 'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
     regexp: /\bpub\s+const\s+PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'ServiceProtocolIdentityProjection',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+struct\s+ServiceProtocolIdentityProjection\b/,
+  },
+  {
+    name: 'contract_type_id',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+contract_type_id\s*\(/,
+  },
+  {
+    name: 'contract_operation_id',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+contract_operation_id\s*\(/,
+  },
+  {
+    name: 'service_protocol_identity',
+    relPath: 'artifact-identity/src/contract.rs',
+    regexp: /\bpub\s+fn\s+service_protocol_identity\s*\(/,
+  },
+  {
+    name: 'BoundaryOperationContract',
+    relPath: 'artifact-model/src/boundary/operation.rs',
+    regexp: /\bpub\s+struct\s+BoundaryOperationContract\b/,
+  },
+  {
+    name: 'BoundaryOperationDescriptor',
+    relPath: 'artifact-model/src/boundary/operation.rs',
+    regexp: /\bpub\s+struct\s+BoundaryOperationDescriptor\b/,
+  },
+  {
+    name: 'PackageArtifactLocalAbiIdentityProjection',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+struct\s+PackageArtifactLocalAbiIdentityProjection\b/,
+  },
+  {
+    name: 'PackageArtifactBuildIdentityProjection',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+struct\s+PackageArtifactBuildIdentityProjection\b/,
+  },
+  {
+    name: 'package_artifact_local_abi_identity',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+package_artifact_local_abi_identity\s*\(/,
+  },
+  {
+    name: 'package_artifact_build_identity',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+package_artifact_build_identity\s*\(/,
+  },
+  {
+    name: 'assign_package_artifact_identities',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+assign_package_artifact_identities\s*\(/,
+  },
+  {
+    name: 'validate_package_artifact_identities',
+    relPath: 'artifact-identity/src/package_artifact.rs',
+    regexp: /\bpub\s+fn\s+validate_package_artifact_identities\s*\(/,
+  },
+  {
+    name: 'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+SERVICE_PROTOCOL_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX\b/,
   },
   {
     name: 'PublicationAbiIdentityProjection',
@@ -282,12 +441,28 @@ const ownerRequirements = [
 const exclusiveDefinitionNames = new Set([
   'framed_identity',
   'FileIrIdentityPayload',
+  'ServiceCallRefIndex',
+  ...canonicalFileIrCallValidatorRegistry.map(({ owner }) => owner.name),
   'ServiceUnitStorageIdentityPayload',
   'PackageLocalAbiIdentityProjection',
   'PackageBuildIdentityProjection',
   'package_local_abi_identity',
   'package_implementation_links_identity',
   'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
+  'ServiceProtocolIdentityProjection',
+  'contract_type_id',
+  'contract_operation_id',
+  'service_protocol_identity',
+  'BoundaryOperationContract',
+  'BoundaryOperationDescriptor',
+  'PackageArtifactLocalAbiIdentityProjection',
+  'PackageArtifactBuildIdentityProjection',
+  'package_artifact_local_abi_identity',
+  'package_artifact_build_identity',
+  'assign_package_artifact_identities',
+  'validate_package_artifact_identities',
+  'SERVICE_PROTOCOL_IDENTITY_PREFIX',
+  'PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX',
   'PublicationAbiIdentityProjection',
   'OperationAbiIdentityInput',
   'PackageTestBuildIdentityPayload',
@@ -339,12 +514,14 @@ const facadeModules = [
   'artifact_path',
   'artifact_reference',
   'constants',
+  'contract',
   'error',
   'file_ir',
   'framing',
   'legacy_service',
   'operation',
   'package',
+  'package_artifact',
   'package_test',
   'publication',
   'publication_validation',
@@ -355,6 +532,7 @@ const facadeModules = [
 ];
 
 const canonicalDelegationRequirements = [
+  ...canonicalFileIrCallValidatorRegistry.flatMap(({ consumers }) => consumers),
   {
     relPath: 'artifact-identity/src/framing.rs',
     helper: 'artifact identity canonical bytes',
@@ -384,108 +562,40 @@ const adapterRequirements = [
     regexp: /\bskiff_artifact_identity::file_ir_identity\b/,
   },
   {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'File IR identity',
-    regexp: /\bskiff_artifact_identity::file_ir_identity\b/,
+    relPath: 'compiler/projection/src/package_artifact/projection.rs',
+    helper: 'PackageArtifact identity assignment',
+    regexp: /\buse\s+skiff_artifact_identity::assign_package_artifact_identities\b/,
   },
   {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'service-unit identity',
-    regexp: /\bskiff_artifact_identity::service_unit_identity\b/,
+    relPath: 'compiler/emission/src/emission/package_artifact.rs',
+    helper: 'PackageArtifact identity validation',
+    regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
   },
   {
-    relPath: 'compiler/projection/src/package_unit_artifacts/mod.rs',
-    helper: 'package identity assignment',
-    regexp: /\bskiff_artifact_identity::assign_package_unit_identities\b/,
+    relPath: 'compiler/driver/source_compile/canonical_dependencies.rs',
+    helper: 'canonical package dependency identity validation',
+    regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
   },
   {
-    relPath: 'compiler/emission/src/emission/package_unit_artifacts.rs',
-    helper: 'projected package identity validation',
-    regexp: /\bskiff_artifact_identity::validate_package_unit_identities\b/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/package_test_artifacts/package_units.rs',
-    helper: 'package implementation links identity',
-    regexp: /\bskiff_artifact_identity::package_implementation_links_identity\b/,
-  },
-  {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'publication ABI identity',
-    regexp: /\bskiff_artifact_identity::publication_abi_identity\b/,
-  },
-  {
-    relPath: 'compiler/publication-abi/src/lib.rs',
-    helper: 'public function operation ABI identity',
-    regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
-  },
-  {
-    relPath: 'compiler/publication-abi/src/lib.rs',
-    helper: 'public instance operation ABI identity',
-    regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/identity.rs',
-    helper: 'artifact emission identity re-export',
-    regexp: /\bpub\s+use\s+skiff_artifact_identity\s*::/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/identity.rs',
-    helper: 'service assembly identity',
-    regexp: /\bservice_assembly_identity\b/,
-  },
-  {
-    relPath: 'compiler/input/src/service_dependencies.rs',
-    helper: 'compiler service dependency artifact closure validation',
-    regexp: /\bvalidate_service_artifact_closure\s*\(/,
+    relPath: 'compiler/driver/pipeline/mod.rs',
+    helper: 'compiler-owned std PackageArtifact identity validation',
+    regexp: /\buse\s+skiff_artifact_identity::validate_package_artifact_identities\b/,
   },
   {
     relPath: 'runtime/package-test/src/lib.rs',
     helper: 'package implementation links identity',
     regexp: /\bskiff_artifact_identity::\{[^}]*package_implementation_links_identity|\buse\s+skiff_artifact_identity::package_implementation_links_identity\b/,
   },
-  {
-    relPath: 'compiler/emission/src/emission/identity.rs',
-    helper: 'artifact emission framed_identity',
-    regexp:
-      /\bpub\s+use\s+skiff_artifact_identity\s*::\s*\{[\s\S]*?\bframed_identity\b/,
-  },
-  {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'public_function_operation_abi_id',
-    regexp: /\bskiff_artifact_identity::public_function_operation_abi_id\b/,
-  },
-  {
-    relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
-    helper: 'public_instance_method_operation_abi_id',
-    regexp: /\bskiff_artifact_identity::public_instance_method_operation_abi_id\b/,
-  },
 ];
-
-const artifactEmissionIdentityAdapterPath = 'compiler/emission/src/emission/identity.rs';
-const artifactEmissionIdentityAdapterRegexp =
-  /^\s*pub\s+use\s+skiff_artifact_identity\s*::\s*\{\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*,?\s*\}\s*;\s*$/;
-const artifactEmissionFramingRequirements = [
-  {
-    relPath: 'compiler/emission/src/emission/package_artifacts.rs',
-    helper: 'package emission adapter import',
-    regexp: /\bidentity\s*::\s*\{[^}]*\bframed_identity\b/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/package_artifacts.rs',
-    helper: 'package assembly identity',
-    regexp: /\bframed_identity\s*\(\s*PACKAGE_ASSEMBLY_IDENTITY_PREFIX\s*,/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/service_artifacts.rs',
-    helper: 'service emission adapter import',
-    regexp: /\buse\s+crate::emission::identity::framed_identity\s*;/,
-  },
-  {
-    relPath: 'compiler/emission/src/emission/service_artifacts.rs',
-    helper: 'service bundle identity',
-    regexp: /\bframed_identity\s*\(\s*BUNDLE_IDENTITY_PREFIX\s*,/,
-  },
-];
+const canonicalCompileModelPaths = Object.freeze([
+  ['artifact-model/src/package_artifact.rs', 'PackageArtifact'],
+  ['artifact-model/src/service_contract.rs', 'ServiceContract'],
+]);
+const canonicalBoundaryContractPaths = Object.freeze({
+  projection: 'artifact-model/src/boundary/projection.rs',
+  operation: 'artifact-model/src/boundary/operation.rs',
+  serviceContract: 'artifact-model/src/service_contract.rs',
+});
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -500,67 +610,30 @@ async function runCheck() {
   const failures = [];
   const files = await collectCandidateRustFiles(root);
   const scriptFiles = await collectIdentityScriptFiles();
-  const ownerTextByPath = new Map();
-  for (const requirement of ownerRequirements) {
-    if (!ownerTextByPath.has(requirement.relPath)) {
-      ownerTextByPath.set(
-        requirement.relPath,
-        stripInlineTestModules(await readFile(join(root, requirement.relPath), 'utf8')),
-      );
+  const rustTextByPath = new Map(files.map(({ relPath, text }) => [relPath, text]));
+  failures.push(...collectOwnerRequirementFailures(ownerRequirements, rustTextByPath));
+
+  const facadeSource = rustTextByPath.get(artifactIdentityFacadePath);
+  if (facadeSource === undefined) {
+    failures.push(`${artifactIdentityFacadePath} is missing canonical facade owner`);
+  } else {
+    const facadeText = stripInlineTestModules(facadeSource);
+    for (const moduleName of facadeModules) {
+      const moduleDeclaration = new RegExp(`\\bmod\\s+${moduleName}\\s*;`);
+      if (!moduleDeclaration.test(facadeText)) {
+        failures.push(`${artifactIdentityFacadePath} is missing ${moduleName} module declaration`);
+      }
     }
-    if (!requirement.regexp.test(ownerTextByPath.get(requirement.relPath))) {
-      failures.push(`${requirement.relPath} is missing owned ${requirement.name}`);
+    if (/\b(?:struct|enum|fn)\s+\w+/.test(facadeText)) {
+      failures.push(`${artifactIdentityFacadePath} must contain declarations and re-exports only`);
     }
   }
 
-  const facadeText = stripInlineTestModules(
-    await readFile(join(root, artifactIdentityFacadePath), 'utf8'),
-  );
-  for (const moduleName of facadeModules) {
-    const moduleDeclaration = new RegExp(`\\bmod\\s+${moduleName}\\s*;`);
-    if (!moduleDeclaration.test(facadeText)) {
-      failures.push(`${artifactIdentityFacadePath} is missing ${moduleName} module declaration`);
-    }
-  }
-  if (/\b(?:struct|enum|fn)\s+\w+/.test(facadeText)) {
-    failures.push(`${artifactIdentityFacadePath} must contain declarations and re-exports only`);
-  }
-
-  const adapterTextByPath = new Map();
-  for (const { relPath } of adapterRequirements) {
-    if (!adapterTextByPath.has(relPath)) {
-      adapterTextByPath.set(relPath, await readFile(join(root, relPath), 'utf8'));
-    }
-  }
-  failures.push(...collectAdapterRequirementFailures(adapterRequirements, adapterTextByPath));
-  failures.push(...collectArtifactEmissionIdentityAdapterFailures(files));
-
-  const artifactEmissionFramingTextByPath = new Map();
-  for (const { relPath } of artifactEmissionFramingRequirements) {
-    if (!artifactEmissionFramingTextByPath.has(relPath)) {
-      artifactEmissionFramingTextByPath.set(
-        relPath,
-        await readFile(join(root, relPath), 'utf8'),
-      );
-    }
-  }
-  failures.push(
-    ...collectArtifactEmissionFramingRequirementFailures(
-      artifactEmissionFramingRequirements,
-      artifactEmissionFramingTextByPath,
-    ),
-  );
-
-  const canonicalDelegationTextByPath = new Map();
-  for (const { relPath } of canonicalDelegationRequirements) {
-    if (!canonicalDelegationTextByPath.has(relPath)) {
-      canonicalDelegationTextByPath.set(relPath, await readFile(join(root, relPath), 'utf8'));
-    }
-  }
+  failures.push(...collectAdapterRequirementFailures(adapterRequirements, rustTextByPath));
   failures.push(
     ...collectDelegationRequirementFailures(
       canonicalDelegationRequirements,
-      canonicalDelegationTextByPath,
+      rustTextByPath,
     ),
   );
 
@@ -570,6 +643,9 @@ async function runCheck() {
     );
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
+  failures.push(...collectCanonicalCompileModelFailures(files));
+  failures.push(...collectCanonicalBoundaryContractFailures(files));
+  failures.push(...collectCanonicalFileIrCallValidatorFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
     ...files,
     ...scriptFiles,
@@ -594,6 +670,21 @@ async function runCheck() {
   }
 
   console.log('Artifact identity single-source check passed.');
+}
+
+function collectOwnerRequirementFailures(requirements, textByPath) {
+  const failures = [];
+  for (const requirement of requirements) {
+    const text = textByPath.get(requirement.relPath);
+    if (text === undefined) {
+      failures.push(`${requirement.relPath} is missing canonical owner ${requirement.name}`);
+      continue;
+    }
+    if (!requirement.regexp.test(stripInlineTestModules(text))) {
+      failures.push(`${requirement.relPath} is missing owned ${requirement.name}`);
+    }
+  }
+  return failures;
 }
 
 function collectDelegationRequirementFailures(requirements, textByPath) {
@@ -629,38 +720,6 @@ function collectAdapterRequirementFailures(requirements, textByPath) {
   return failures;
 }
 
-function collectArtifactEmissionIdentityAdapterFailures(files) {
-  const adapter = files.find(({ relPath }) => relPath === artifactEmissionIdentityAdapterPath);
-  if (adapter === undefined) {
-    return [`${artifactEmissionIdentityAdapterPath} is missing`];
-  }
-  const productionText = stripRustComments(stripInlineTestModules(adapter.text));
-  if (
-    artifactEmissionIdentityAdapterRegexp.test(productionText)
-    && /\bframed_identity\b/.test(productionText)
-  ) {
-    return [];
-  }
-  return [
-    `${artifactEmissionIdentityAdapterPath} must be a single pub use skiff_artifact_identity::{...} adapter containing framed_identity`,
-  ];
-}
-
-function collectArtifactEmissionFramingRequirementFailures(requirements, textByPath) {
-  const failures = [];
-  for (const requirement of requirements) {
-    const text = textByPath.get(requirement.relPath);
-    const productionText =
-      text === undefined ? '' : stripRustComments(stripInlineTestModules(text));
-    if (!requirement.regexp.test(productionText)) {
-      failures.push(
-        `${requirement.relPath} must frame ${requirement.helper} through the artifact emission framed_identity adapter`,
-      );
-    }
-  }
-  return failures;
-}
-
 function collectOwnedDefinitionViolations(files) {
   const violations = [];
 
@@ -685,6 +744,90 @@ function collectOwnedDefinitionViolations(files) {
   }
 
   return violations;
+}
+
+function collectCanonicalCompileModelFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  for (const [relPath, typeName] of canonicalCompileModelPaths) {
+    const file = byPath.get(relPath);
+    if (file === undefined) {
+      failures.push(`${relPath} is missing canonical ${typeName}`);
+      continue;
+    }
+    const text = stripRustComments(stripInlineTestModules(file.text));
+    if (!new RegExp(`\\bpub\\s+struct\\s+${typeName}\\b`).test(text)) {
+      failures.push(`${relPath} is missing canonical ${typeName} definition`);
+    }
+    if (/\bservice_unit\s*::/.test(text)) {
+      failures.push(`${relPath} must not depend on the ServiceUnit module`);
+    }
+    const legacyField = /\bpub\s+\w+\s*:\s*(?:(?:Box|Option|Vec)\s*<\s*)*(PublicationAbiUnit|PackageUnit|ServiceUnit)\b/.exec(text);
+    if (legacyField !== null) {
+      failures.push(`${relPath} canonical ${typeName} embeds legacy ${legacyField[1]}`);
+    }
+  }
+  return failures;
+}
+
+function collectCanonicalBoundaryContractFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  const projection = byPath.get(canonicalBoundaryContractPaths.projection);
+  const operation = byPath.get(canonicalBoundaryContractPaths.operation);
+  const serviceContract = byPath.get(canonicalBoundaryContractPaths.serviceContract);
+  if (projection === undefined || operation === undefined || serviceContract === undefined) {
+    return ['canonical boundary operation owner files are incomplete'];
+  }
+
+  const projectionText = stripRustComments(stripInlineTestModules(projection.text));
+  const operationText = stripRustComments(stripInlineTestModules(operation.text));
+  const serviceContractText = stripRustComments(stripInlineTestModules(serviceContract.text));
+  if (!/\bAvailable\s*\{\s*operation_contract\s*:\s*BoundaryOperationContract\s*,\s*implementation_requirements\s*:\s*BoundaryImplementationRequirements\s*,?\s*\}/s.test(projectionText)) {
+    failures.push(
+      'BoundaryCallableProjection::Available must contain only operation_contract and implementation_requirements',
+    );
+  }
+  if (!/\bpub\s+struct\s+BoundaryOperationDescriptor\s*\{\s*pub\s+operation_id\s*:\s*ContractOperationId\s*,\s*pub\s+stable_key\s*:\s*String\s*,\s*pub\s+contract\s*:\s*BoundaryOperationContract\s*,?\s*\}/s.test(operationText)) {
+    failures.push(
+      'BoundaryOperationDescriptor must own the real operation id, stable key, and shared contract body',
+    );
+  }
+  if (!/\bpub\s+operations\s*:\s*BTreeMap\s*<\s*ContractOperationId\s*,\s*BoundaryOperationDescriptor\s*>/.test(serviceContractText)) {
+    failures.push('ServiceContract.operations must require BoundaryOperationDescriptor values');
+  }
+  return failures;
+}
+
+function collectCanonicalFileIrCallValidatorFailures(
+  files,
+  registry = canonicalFileIrCallValidatorRegistry,
+) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  for (const entry of registry) {
+    for (const requirement of entry.shapeRequirements) {
+      const file = byPath.get(requirement.relPath);
+      if (file === undefined) {
+        failures.push(
+          `${requirement.relPath} is missing canonical ${entry.name} shape owner for ${requirement.description}`,
+        );
+        continue;
+      }
+      const text = stripRustComments(stripInlineTestModules(file.text));
+      if (!requirement.regexp.test(text)) {
+        failures.push(
+          `${requirement.relPath} is missing canonical ${entry.name} shape ${requirement.description}`,
+        );
+      }
+      if (requirement.forbiddenRegexp?.test(text)) {
+        failures.push(
+          `${requirement.relPath} has forbidden ${entry.name} shape ${requirement.description}`,
+        );
+      }
+    }
+  }
+  return failures;
 }
 
 function collectPackageImplementationLinksIdentityViolations(files) {
@@ -876,6 +1019,32 @@ function isProductionIdentitySource(relPath) {
   );
 }
 
+function canonicalFileIrCallValidatorFixture(entry) {
+  const textByPath = new Map();
+  for (const requirement of [entry.owner, ...entry.shapeRequirements, ...entry.consumers]) {
+    const current = textByPath.get(requirement.relPath) ?? '';
+    textByPath.set(requirement.relPath, current + requirement.fixtureText);
+  }
+  return [...textByPath].map(([relPath, text]) => ({ relPath, text }));
+}
+
+function mutateCanonicalFixture(files, requirement, replacement = '') {
+  return files.map((file) => file.relPath === requirement.relPath
+    ? { ...file, text: file.text.replace(requirement.fixtureText, replacement) }
+    : file);
+}
+
+function collectFileIrCallValidatorGraphDiagnostics(entry, files) {
+  const textByPath = new Map(files.map(({ relPath, text }) => [relPath, text]));
+  return {
+    ownerFailures: collectOwnerRequirementFailures([entry.owner], textByPath),
+    shapeFailures: collectCanonicalFileIrCallValidatorFailures(files, [entry]),
+    delegationFailures: collectDelegationRequirementFailures(entry.consumers, textByPath),
+    duplicateViolations: collectOwnedDefinitionViolations(files)
+      .filter(({ name }) => name === entry.owner.name),
+  };
+}
+
 function runSelfTest() {
   const cases = [
     {
@@ -917,11 +1086,51 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects package build identity projection duplicate',
+      name: 'rejects duplicate File IR service-call validator owner',
       files: [
         {
-          relPath: 'compiler/projection/src/typed_artifacts/identity.rs',
+          relPath: 'compiler/lowering/src/service_call_validation.rs',
+          text: 'fn validate_file_ir_service_calls() {}\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects package build identity duplicate in terminal projection',
+      files: [
+        {
+          relPath: 'compiler/projection/src/package_artifact/projection.rs',
           text: 'struct PackageBuildIdentityProjection;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects duplicate PackageArtifact identity validation in terminal emission',
+      files: [
+        {
+          relPath: 'compiler/emission/src/emission/package_artifact.rs',
+          text: 'fn validate_package_artifact_identities() {}\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects service protocol identity projection duplicate',
+      files: [
+        {
+          relPath: 'compiler/contract/src/identity.rs',
+          text: 'struct ServiceProtocolIdentityProjection;\n',
+        },
+      ],
+      expectedViolations: 1,
+    },
+    {
+      name: 'rejects duplicate boundary operation contract owner',
+      files: [
+        {
+          relPath: 'compiler/projection/src/boundary/operation.rs',
+          text: 'pub struct BoundaryOperationContract;\n',
         },
       ],
       expectedViolations: 1,
@@ -947,10 +1156,10 @@ function runSelfTest() {
       expectedViolations: 1,
     },
     {
-      name: 'rejects artifact emission framed_identity outside its owner',
+      name: 'rejects framed_identity implementation in terminal package emission',
       files: [
         {
-          relPath: 'compiler/emission/src/emission/identity.rs',
+          relPath: 'compiler/emission/src/emission/package_artifact.rs',
           text: 'pub fn framed_identity() {}\n',
         },
       ],
@@ -1054,6 +1263,271 @@ function runSelfTest() {
     }
   }
 
+  const canonicalOwnerFixture = [
+    {
+      name: 'terminal_identity',
+      relPath: 'artifact-identity/src/terminal.rs',
+      regexp: /\bpub\s+fn\s+terminal_identity\s*\(/,
+    },
+  ];
+  const ownerRequirementCases = [
+    {
+      name: 'accepts a declared canonical owner',
+      textByPath: new Map([
+        ['artifact-identity/src/terminal.rs', 'pub fn terminal_identity() {}\n'],
+      ]),
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects a missing canonical owner file',
+      textByPath: new Map(),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects a canonical owner without its required definition',
+      textByPath: new Map([
+        ['artifact-identity/src/terminal.rs', 'pub fn other_identity() {}\n'],
+      ]),
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of ownerRequirementCases) {
+    const ownerFailures = collectOwnerRequirementFailures(
+      canonicalOwnerFixture,
+      testCase.textByPath,
+    );
+    if (ownerFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} owner failure(s), got ${ownerFailures.length}`,
+      );
+    }
+  }
+
+  const canonicalModelCases = [
+    {
+      name: 'allows independent canonical compile models',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'pub struct PackageArtifact { pub package_id: String }\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract { pub service_id: String }\n',
+        },
+      ],
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects legacy aggregate embedding in canonical models',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'pub struct PackageArtifact { pub legacy: PublicationAbiUnit }\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract { pub legacy: Option<ServiceUnit> }\n',
+        },
+      ],
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects ServiceUnit module dependency from canonical model',
+      files: [
+        {
+          relPath: 'artifact-model/src/package_artifact.rs',
+          text: 'use crate::service_unit::OperationTargetRef; pub struct PackageArtifact {}\n',
+        },
+        {
+          relPath: 'artifact-model/src/service_contract.rs',
+          text: 'pub struct ServiceContract {}\n',
+        },
+      ],
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalModelCases) {
+    const modelFailures = collectCanonicalCompileModelFailures(testCase.files);
+    if (modelFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} canonical model failure(s), got ${modelFailures.length}`,
+      );
+    }
+  }
+
+  const canonicalBoundaryContractFiles = ({
+    projection = 'enum BoundaryCallableProjection { Available { operation_contract: BoundaryOperationContract, implementation_requirements: BoundaryImplementationRequirements } }\n',
+    serviceContract = 'pub struct ServiceContract { pub operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor> }\n',
+  } = {}) => [
+    {
+      relPath: 'artifact-model/src/boundary/projection.rs',
+      text: projection,
+    },
+    {
+      relPath: 'artifact-model/src/boundary/operation.rs',
+      text: 'pub struct BoundaryOperationContract;\npub struct BoundaryOperationDescriptor { pub operation_id: ContractOperationId, pub stable_key: String, pub contract: BoundaryOperationContract }\n',
+    },
+    {
+      relPath: 'artifact-model/src/service_contract.rs',
+      text: serviceContract,
+    },
+  ];
+  const canonicalBoundaryContractCases = [
+    {
+      name: 'accepts contract-agnostic package boundary projections and service descriptors',
+      files: canonicalBoundaryContractFiles(),
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects operation descriptors in package boundary projections',
+      files: canonicalBoundaryContractFiles({
+        projection: 'enum BoundaryCallableProjection { Available { descriptor: BoundaryOperationDescriptor, implementation_requirements: BoundaryImplementationRequirements } }\n',
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects contract identities in package boundary projections',
+      files: canonicalBoundaryContractFiles({
+        projection: 'enum BoundaryCallableProjection { Available { operation_contract: BoundaryOperationContract, operation_id: ContractOperationId, stable_key: String, implementation_requirements: BoundaryImplementationRequirements } }\n',
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects body-only ServiceContract operations',
+      files: canonicalBoundaryContractFiles({
+        serviceContract: 'pub struct ServiceContract { pub operations: BTreeMap<ContractOperationId, BoundaryOperationContract> }\n',
+      }),
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of canonicalBoundaryContractCases) {
+    const boundaryFailures = collectCanonicalBoundaryContractFailures(testCase.files);
+    if (boundaryFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} canonical boundary failure(s), got ${boundaryFailures.length}`,
+      );
+    }
+  }
+
+  const assertCallValidatorGraph = (name, entry, files, expected = {}) => {
+    const diagnostics = collectFileIrCallValidatorGraphDiagnostics(entry, files);
+    for (const key of [
+      'ownerFailures',
+      'shapeFailures',
+      'delegationFailures',
+      'duplicateViolations',
+    ]) {
+      const expectedCount = expected[key] ?? 0;
+      if (diagnostics[key].length !== expectedCount) {
+        failures.push(
+          `${name}: expected ${expectedCount} ${key}, got ${diagnostics[key].length}`,
+        );
+      }
+    }
+  };
+
+  const serviceCallRegistry = canonicalFileIrCallValidatorRegistry
+    .find(({ name }) => name === 'service-call');
+  const canonicalServiceCallFiles = canonicalFileIrCallValidatorFixture(serviceCallRegistry);
+  assertCallValidatorGraph(
+    'accepts required table-owned indexed service calls',
+    serviceCallRegistry,
+    canonicalServiceCallFiles,
+  );
+  assertCallValidatorGraph(
+    'rejects optional service-call table ownership',
+    serviceCallRegistry,
+    mutateCanonicalFixture(
+      canonicalServiceCallFiles,
+      serviceCallRegistry.shapeRequirements[0],
+      'pub struct ExternalRefTable { #[serde(default)] pub service_call_refs: Vec<ServiceCallRef> }\n',
+    ),
+    { shapeFailures: 1 },
+  );
+  assertCallValidatorGraph(
+    'rejects inline service-call refs in instructions',
+    serviceCallRegistry,
+    mutateCanonicalFixture(
+      canonicalServiceCallFiles,
+      serviceCallRegistry.shapeRequirements[1],
+      'enum CallTargetIr { ServiceCall { service_call_ref: ServiceCallRef } }\n',
+    ),
+    { shapeFailures: 1 },
+  );
+
+  const packageCallRegistry = canonicalFileIrCallValidatorRegistry
+    .find(({ name }) => name === 'package-call');
+  const canonicalPackageCallFiles = canonicalFileIrCallValidatorFixture(packageCallRegistry);
+  assertCallValidatorGraph(
+    'accepts canonical package-call owner graph',
+    packageCallRegistry,
+    canonicalPackageCallFiles,
+  );
+  assertCallValidatorGraph(
+    'rejects missing package-call owner file',
+    packageCallRegistry,
+    canonicalPackageCallFiles.filter(({ relPath }) => relPath !== packageCallRegistry.owner.relPath),
+    { ownerFailures: 1, shapeFailures: 2 },
+  );
+  assertCallValidatorGraph(
+    'rejects missing package-call validator definition',
+    packageCallRegistry,
+    mutateCanonicalFixture(canonicalPackageCallFiles, packageCallRegistry.owner),
+    { ownerFailures: 1 },
+  );
+  assertCallValidatorGraph(
+    'rejects duplicate package-call validator definition',
+    packageCallRegistry,
+    [
+      ...canonicalPackageCallFiles,
+      {
+        relPath: 'compiler/lowering/src/package_call_validation.rs',
+        text: 'fn validate_file_ir_package_calls() {}\n',
+      },
+    ],
+    { duplicateViolations: 1 },
+  );
+  for (const consumer of packageCallRegistry.consumers) {
+    assertCallValidatorGraph(
+      `rejects missing ${consumer.helper} delegation`,
+      packageCallRegistry,
+      mutateCanonicalFixture(canonicalPackageCallFiles, consumer),
+      { delegationFailures: 1 },
+    );
+  }
+  assertCallValidatorGraph(
+    'rejects noncanonical package-call table shape',
+    packageCallRegistry,
+    mutateCanonicalFixture(
+      canonicalPackageCallFiles,
+      packageCallRegistry.shapeRequirements[0],
+      'pub struct ExternalRefTable { pub package_callables: Vec<PackageSymbolRef> }\n',
+    ),
+    { shapeFailures: 1 },
+  );
+  assertCallValidatorGraph(
+    'rejects incomplete PackageCallable target shape',
+    packageCallRegistry,
+    mutateCanonicalFixture(
+      canonicalPackageCallFiles,
+      packageCallRegistry.shapeRequirements[1],
+      'enum CallTargetIr { PackageCallable { package_ref: PackageRefIr } }\n',
+    ),
+    { shapeFailures: 1 },
+  );
+  const validationMatrixRequirement = packageCallRegistry.shapeRequirements[2];
+  assertCallValidatorGraph(
+    'rejects incomplete package-call exact-set validation matrix',
+    packageCallRegistry,
+    mutateCanonicalFixture(
+      canonicalPackageCallFiles,
+      validationMatrixRequirement,
+      validationMatrixRequirement.fixtureText.replace('FieldMismatch {}, ', ''),
+    ),
+    { shapeFailures: 1 },
+  );
+
   const serviceAssemblyDuplicateCases = [
     {
       name: 'rejects router service assembly hash implementation',
@@ -1091,79 +1565,6 @@ function runSelfTest() {
 
   failures.push(...devSyncArtifactPathSelfTestFailures());
   failures.push(...deprecatedPackageAbiRustSymbolSelfTestFailures());
-
-  const artifactEmissionAdapterCases = [
-    {
-      name: 'allows the pure artifact emission re-export adapter',
-      files: [
-        {
-          relPath: 'compiler/emission/src/emission/identity.rs',
-          text: 'pub use skiff_artifact_identity::{file_ir_identity, framed_identity};\n',
-        },
-      ],
-      expectedFailures: 0,
-    },
-    {
-      name: 'rejects a local function and format algorithm in the artifact emission adapter',
-      files: [
-        {
-          relPath: 'compiler/emission/src/emission/identity.rs',
-          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
-pub fn identity(prefix: &str, hash: &str) -> String {
-  format!("{prefix}:{hash}")
-}
-`,
-        },
-      ],
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects a local const in the artifact emission adapter',
-      files: [
-        {
-          relPath: 'compiler/emission/src/emission/identity.rs',
-          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
-pub const SEPARATOR: &str = ":";
-`,
-        },
-      ],
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects any other production item in the artifact emission adapter',
-      files: [
-        {
-          relPath: 'compiler/emission/src/emission/identity.rs',
-          text: `pub use skiff_artifact_identity::{file_ir_identity, framed_identity};
-pub struct LocalIdentity;
-`,
-        },
-      ],
-      expectedFailures: 1,
-    },
-    {
-      name: 'does not inspect unrelated compiler helpers',
-      files: [
-        {
-          relPath: 'compiler/emission/src/emission/identity.rs',
-          text: 'pub use skiff_artifact_identity::{file_ir_identity, framed_identity};\n',
-        },
-        {
-          relPath: 'compiler/source/src/cache.rs',
-          text: 'fn cache_path(prefix: &str, hash: &str) -> String { format!("{prefix}/{hash}") }\n',
-        },
-      ],
-      expectedFailures: 0,
-    },
-  ];
-  for (const testCase of artifactEmissionAdapterCases) {
-    const adapterFailures = collectArtifactEmissionIdentityAdapterFailures(testCase.files);
-    if (adapterFailures.length !== testCase.expectedFailures) {
-      failures.push(
-        `${testCase.name}: expected ${testCase.expectedFailures} failure(s), got ${adapterFailures.length}`,
-      );
-    }
-  }
 
   const adapterFixtureRequirement = [
     {

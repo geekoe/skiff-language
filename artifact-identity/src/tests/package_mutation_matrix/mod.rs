@@ -25,5 +25,5 @@ fn assert_build_only_change(base: &PackageUnit, changed: &PackageUnit) {
 }
 
 fn file_identity(seed: char) -> String {
-    format!("skiff-file-ir-v3:sha256:{}", seed.to_string().repeat(64))
+    format!("skiff-file-ir-v5:sha256:{}", seed.to_string().repeat(64))
 }

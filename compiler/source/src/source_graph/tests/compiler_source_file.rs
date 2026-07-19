@@ -1,22 +1,16 @@
-use std::path::PathBuf;
-
 use super::*;
-
-fn service_source(path: &str, module_path: &str) -> CompilerSourceFile {
-    CompilerSourceFile::parse(
-        PathBuf::from(path),
-        module_path.to_string(),
-        false,
-        false,
-        "type User {}\n".to_string(),
-        path,
-    )
-    .unwrap()
-}
 
 #[test]
 fn compiler_source_file_clone_shares_parsed_source_owner() {
-    let source = service_source("api/user.skiff", "api.user");
+    let source = CompilerSourceFile::parse(
+        "api/user.skiff".into(),
+        "api.user".to_string(),
+        false,
+        false,
+        "type User {}\n".to_string(),
+        "api/user.skiff",
+    )
+    .unwrap();
     let cloned = source.clone();
 
     assert!(

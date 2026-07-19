@@ -33,8 +33,8 @@ fn package_implementation_links_identity_preserves_v1_wire_golden() {
     assert_eq!(
         package_implementation_links_identity(&unit.implementation_links)
             .expect("implementation links identity"),
-        // Captured from the pre-migration compiler emission algorithm.
-        "skiff-package-implementation-links-v1:sha256:5d197d3c024e0f36dabc99424100e492affca57fe6ced9d905b02a95efd85674"
+        // Canonical implementation-link wire with File IR v5 target identity.
+        "skiff-package-implementation-links-v1:sha256:4fb0ad52def218e2c4e8433639758e77466e43cf88cb15e9051a918300ddcf90"
     );
 }
 

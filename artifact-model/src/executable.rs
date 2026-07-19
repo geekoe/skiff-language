@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     builtin_receiver_ops::BuiltinReceiverOp,
-    file_ir::{DbIndexDirectionIr, FieldPathIr},
+    compile_identity::PackageCallableId,
+    file_ir::{DbIndexDirectionIr, FieldPathIr, ServiceCallRefIndex},
     metadata::MetadataValue,
-    publication_abi::{InterfaceInstantiationRef, OperationAbiRef},
+    publication_abi::InterfaceInstantiationRef,
     refs::SourceSpanRef,
     symbols::{PackageRefIr, ServiceDependencySymbolRef, ServiceSymbolRef},
     targets::NativeTarget,
@@ -639,9 +640,16 @@ pub enum CallTargetIr {
     ServiceDependencySymbol {
         symbol: ServiceDependencySymbolRef,
     },
-    PackageSymbol {
+    /// Canonical service boundary call. The full fact has one owner in the
+    /// containing FileIrUnit external-ref table.
+    ServiceCall {
+        service_call_ref_index: ServiceCallRefIndex,
+    },
+    /// Canonical direct call into a package dependency. Local ABI expectations
+    /// remain owned by the matching package requirement.
+    PackageCallable {
         package_ref: PackageRefIr,
-        operation: OperationAbiRef,
+        package_callable_id: PackageCallableId,
     },
     Native {
         target: NativeTarget,

@@ -12,29 +12,31 @@ use crate::{
 };
 use crate::{
     BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
-    ExecutableLinkTargetIr, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
-    GatewayConfig, GatewayRoute, InterfaceInstantiationRef, InterfaceMethodSlotPlanIr,
-    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
-    LiteralIr, LocalReceiverExecutableRef, OperationAbiRef, OperationCallableKind,
-    OperationConstReceiverRef, OperationTargetRef, PackageDependencyConstraint,
-    PackageOperationTarget, PackageRefIr, PackageSymbolRef, PackageTestAssembly,
-    PackageTestAssemblyKind, PackageTestEntrypointKind, PackageUnit, PublicationAbiUnit,
-    PublicationOperationKind, PublicationResourceRef, ReceiverCallAbi,
-    RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata, RecoverableBoundaryContext,
-    RecoverableBoundaryKind, RecoverableBoundaryPlan, RecoverableCapabilityFlag,
-    RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan,
-    RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
-    RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
-    RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
-    RecoverableNativeAdapterOwner, RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef,
-    RecoverableRestoreCapability, RecoverableStorageLane, RecoverableStorageLanePlan,
-    RecoverableStorageLaneRef, RecoverableTrustBoundary, RecoverableTypeIdentityFact,
-    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
-    RecoverableUnionBranchIdentityRef, RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr,
-    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta,
-    ServiceOperation, ServiceOperationTarget, ServiceSymbolRef, ServiceUnit, SlotLayout,
-    SourceMapSource, SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr,
-    TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
+    ExecutableLinkTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrRef, FileIrUnit,
+    FunctionTypeParamIr, GatewayConfig, GatewayRoute, InterfaceInstantiationRef,
+    InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
+    InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef, OperationAbiRef,
+    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableId,
+    PackageCallableRef, PackageDependencyConstraint, PackageOperationTarget, PackageRefIr,
+    PackageSymbolRef, PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypointKind,
+    PackageUnit, PublicationAbiUnit, PublicationOperationKind, PublicationResourceRef,
+    ReceiverCallAbi, RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata,
+    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
+    RecoverableCapabilityFlag, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
+    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
+    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
+    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
+    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterOwner,
+    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableRestoreCapability,
+    RecoverableStorageLane, RecoverableStorageLanePlan, RecoverableStorageLaneRef,
+    RecoverableTrustBoundary, RecoverableTypeIdentityFact, RecoverableTypeIdentityRef,
+    RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
+    RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ServiceConfigMetadata,
+    ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
+    ServiceOperationTarget, ServiceSymbolRef, ServiceUnit, SlotLayout, SourceMapSource,
+    SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr,
+    TypeLinkTargetIr, TypeRefIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
+    FILE_IR_SCHEMA_VERSION,
 };
 
 fn string_type() -> TypeRefIr {
@@ -689,6 +691,28 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 }
 
 #[test]
+fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
+    let unit = FileIrUnit::empty("svc.empty", "source:empty");
+
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v5");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v3");
+    assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v1");
+    assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
+    assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
+    assert_eq!(unit.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
+    assert!(unit.external_refs.package_callables.is_empty());
+    assert_eq!(
+        serde_json::to_value(&unit.external_refs).unwrap(),
+        json!({ "serviceCallRefs": [] })
+    );
+
+    let wire = serde_json::to_value(unit).unwrap();
+    assert_eq!(wire["schemaVersion"], FILE_IR_SCHEMA_VERSION);
+    assert_eq!(wire["irFormatVersion"], FILE_IR_FORMAT_VERSION);
+    assert_eq!(wire["opcodeTableVersion"], FILE_IR_OPCODE_TABLE_VERSION);
+}
+
+#[test]
 fn for_in_value_slot_round_trips_and_defaults_to_single_binding() {
     let entry_value = json!({
         "kind": "forIn",
@@ -838,59 +862,164 @@ fn call_target_rejects_runtime_only_resolved_executable() {
 }
 
 #[test]
-fn package_call_target_uses_operation_abi_ref_shape() {
+fn package_callable_target_ref_and_table_use_canonical_identity_shape() {
+    let package_ref = PackageRefIr::Dependency {
+        dependency_ref: "tools".to_owned(),
+    };
+    let package_callable_id = PackageCallableId::new("callable:tools.ping");
+    let target = CallTargetIr::PackageCallable {
+        package_ref: package_ref.clone(),
+        package_callable_id: package_callable_id.clone(),
+    };
+    let target_wire = json!({
+        "kind": "packageCallable",
+        "packageRef": {
+            "kind": "dependency",
+            "dependencyRef": "tools"
+        },
+        "packageCallableId": "callable:tools.ping"
+    });
+
+    assert_eq!(serde_json::to_value(&target).unwrap(), target_wire);
+    assert_eq!(
+        serde_json::from_value::<CallTargetIr>(target_wire).unwrap(),
+        target
+    );
+
+    let callable_ref = PackageCallableRef {
+        package_ref,
+        package_callable_id,
+    };
+    let callable_ref_wire = json!({
+        "packageRef": {
+            "kind": "dependency",
+            "dependencyRef": "tools"
+        },
+        "packageCallableId": "callable:tools.ping"
+    });
+    assert_eq!(
+        serde_json::to_value(&callable_ref).unwrap(),
+        callable_ref_wire
+    );
+    assert_eq!(
+        serde_json::from_value::<PackageCallableRef>(callable_ref_wire.clone()).unwrap(),
+        callable_ref
+    );
+
+    let table = ExternalRefTable {
+        package_callables: vec![callable_ref],
+        ..ExternalRefTable::default()
+    };
+    let table_wire = json!({
+        "serviceCallRefs": [],
+        "packageCallables": [callable_ref_wire]
+    });
+    assert_eq!(serde_json::to_value(&table).unwrap(), table_wire);
+    assert_eq!(
+        serde_json::from_value::<ExternalRefTable>(table_wire).unwrap(),
+        table
+    );
+}
+
+#[test]
+fn package_callable_target_rejects_legacy_and_noncanonical_shapes() {
+    let package_ref = json!({
+        "kind": "dependency",
+        "dependencyRef": "tools"
+    });
     let operation = operation_ref(
         "operation:tools:ping",
         PublicationOperationKind::PublicFunction,
         "tools.ping",
     );
-    let target = CallTargetIr::PackageSymbol {
-        package_ref: PackageRefIr::Dependency {
-            dependency_ref: "tools".to_owned(),
-        },
-        operation: operation.clone(),
-    };
-    let value = serde_json::to_value(&target).unwrap();
 
-    assert_eq!(
-        value,
+    for invalid in [
         json!({
             "kind": "packageSymbol",
+            "packageRef": package_ref,
+            "operation": operation
+        }),
+        json!({
+            "kind": "packageCallable",
             "packageRef": {
                 "kind": "dependency",
                 "dependencyRef": "tools"
             },
-            "operation": operation
-        })
-    );
-    assert_eq!(
-        serde_json::from_value::<CallTargetIr>(value).unwrap(),
-        target
-    );
-}
-
-#[test]
-fn package_call_target_rejects_legacy_symbol_path_shape() {
-    let error = serde_json::from_value::<CallTargetIr>(json!({
-        "kind": "packageSymbol",
-        "symbol": {
-            "package": {
+            "packageCallableId": "callable:tools.ping",
+            "expectedLocalAbi": "local-abi:tools"
+        }),
+        json!({
+            "kind": "packageCallable",
+            "packageRef": {
                 "kind": "dependency",
                 "dependencyRef": "tools"
             },
-            "symbolPath": "tools.ping",
-            "abiExpectation": "abi:v1"
-        }
-    }))
-    .expect_err("package public call target must not accept legacy symbolPath shape")
-    .to_string();
+            "operation": operation_ref(
+                "operation:tools:ping",
+                PublicationOperationKind::PublicFunction,
+                "tools.ping",
+            )
+        }),
+        json!({
+            "kind": "packageCallable",
+            "packageRef": {
+                "kind": "dependency",
+                "dependencyRef": "tools"
+            },
+            "packageCallableId": "callable:tools.ping",
+            "symbolPath": "tools.ping"
+        }),
+        json!({
+            "kind": "packageCallable",
+            "packageRef": {
+                "kind": "dependency",
+                "dependencyRef": "tools"
+            },
+            "packageCallableId": "callable:tools.ping",
+            "operationTargetRef": {
+                "fileRef": {
+                    "fileIrIdentity": "file:tools",
+                    "modulePath": "tools"
+                },
+                "executableIndex": 0,
+                "callableAbiId": "abi:tools.ping",
+                "callableKind": "freeFunction"
+            }
+        }),
+    ] {
+        assert!(
+            serde_json::from_value::<CallTargetIr>(invalid).is_err(),
+            "noncanonical package call target must be rejected"
+        );
+    }
+}
 
-    assert!(
-        error.contains("packageRef")
-            || error.contains("operation")
-            || error.contains("unknown field"),
-        "unexpected legacy package call target error: {error}"
-    );
+#[test]
+fn package_callable_ref_and_table_reject_legacy_and_unknown_fields() {
+    for forbidden_field in [
+        "expectedLocalAbi",
+        "operation",
+        "symbolPath",
+        "operationTargetRef",
+    ] {
+        let mut value = json!({
+            "packageRef": {
+                "kind": "dependency",
+                "dependencyRef": "tools"
+            },
+            "packageCallableId": "callable:tools.ping"
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert(forbidden_field.to_owned(), json!("legacy"));
+        assert_unknown_field_rejected::<PackageCallableRef>(value);
+    }
+
+    assert_unknown_field_rejected::<ExternalRefTable>(json!({
+        "serviceCallRefs": [],
+        "packageOperationSymbols": []
+    }));
 }
 
 #[test]
@@ -1239,7 +1368,7 @@ fn package_test_assembly_rejects_unknown_entrypoint_fields() {
 
 fn package_test_assembly_json() -> serde_json::Value {
     let owner_file = json!({
-        "fileIrIdentity": "skiff-file-ir-v3:sha256:testfile",
+        "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
         "fileIrPath": "units/files/test.json",
         "sourcePath": "tests/pkg.test.skiff",
         "modulePath": "pkg.test"
@@ -1280,7 +1409,7 @@ fn package_test_assembly_json() -> serde_json::Value {
                 "modulePath": "pkg.test",
                 "ownerTestFile": owner_file,
                 "executableRef": {
-                    "fileIrIdentity": "skiff-file-ir-v3:sha256:testfile",
+                    "fileIrIdentity": "skiff-file-ir-v4:sha256:testfile",
                     "executableIndex": 0,
                     "executableLocalId": "test-entrypoint-0",
                     "symbol": "__skiff_package_test_0"
@@ -1304,7 +1433,7 @@ fn package_test_assembly_json() -> serde_json::Value {
             },
             "testFileScopes": [
                 {
-                    "ownerTestFileIdentity": "skiff-file-ir-v3:sha256:testfile",
+                    "ownerTestFileIdentity": "skiff-file-ir-v4:sha256:testfile",
                     "sourcePath": "tests/pkg.test.skiff",
                     "modulePath": "pkg.test",
                     "allowedLocalLinkDigest": "sha256:testlinks",

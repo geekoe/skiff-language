@@ -52,6 +52,22 @@ pub fn validate_package_sources(
     package_root: &Path,
     parsed_sources: &[ParsedCompilerSource],
 ) -> Result<(), PublicationError> {
+    validate_package_sources_with_dependency_analysis(
+        package_id,
+        dependencies,
+        package_root,
+        parsed_sources,
+        &crate::SourceDependencyAnalysisInput::default(),
+    )
+}
+
+pub(crate) fn validate_package_sources_with_dependency_analysis(
+    package_id: &str,
+    dependencies: &[PackageDependency],
+    package_root: &Path,
+    parsed_sources: &[ParsedCompilerSource],
+    dependency_analysis: &crate::SourceDependencyAnalysisInput,
+) -> Result<(), PublicationError> {
     let mut violations = Vec::new();
     let package_type_names = package_source_type_names(parsed_sources);
     let std_implicit_projection_roots = is_standard_package_id(package_id)
@@ -69,8 +85,16 @@ pub fn validate_package_sources(
     };
     let package_test_allowed_internal_imports = package_production_module_paths(parsed_sources);
     let no_allowed_internal_imports = BTreeSet::new();
-    let name_resolution_package_aliases = package_name_resolution_aliases(dependencies);
-    let service_dep_aliases = BTreeSet::new();
+    let mut name_resolution_package_aliases = package_name_resolution_aliases(dependencies);
+    for alias in dependency_analysis.package_aliases() {
+        name_resolution_package_aliases
+            .entry(alias.to_string())
+            .or_default();
+    }
+    let service_dep_aliases = dependency_analysis
+        .contract_aliases()
+        .map(str::to_string)
+        .collect();
     let name_resolution = NameResolutionModel::build_with(
         parsed_sources,
         &name_resolution_package_aliases,
@@ -283,7 +307,7 @@ mod tests {
             "main",
             r#"
                 function run() -> string {
-                  return dep.http.get()
+                  return dep/http/get()
                 }
             "#,
         )];

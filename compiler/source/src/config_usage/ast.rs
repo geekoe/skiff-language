@@ -650,7 +650,7 @@ fn collect_config_uses_in_expr(
             presence_uses,
             violations,
         ),
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 

@@ -1,737 +1,338 @@
 mod common;
-use common::artifacts::{
-    assert_publish_error_contains, assert_service_package_absent, assert_service_package_id,
-    build_temp_service_publication, package_assembly, package_source_artifact,
-    service_assembly_value, source_artifact,
+
+use common::{
+    artifacts::{module_artifact, source_artifact},
+    package_project::compile_package_project,
+    TestDir,
 };
-use skiff_compiler::{
-    test_support::{
-        project_fixtures::{
-            write_package_api_yml, write_package_manifest, write_package_manifest_in_dir,
-            write_package_source, ServiceProjectBuilder,
-        },
-        read_user_package_manifest,
-    },
-    PublishedFileIrArtifact,
+use skiff_artifact_model::{
+    CallIr, CallTargetIr, CallableEffectSummary, ExprIr, PackageCallableId, PackageLocalAbiSymbol,
+    PackageRefIr, TypeDescriptorIr, TypeRefIr,
 };
-use skiff_compiler_core::{
-    artifact::{CallIr, CallTargetIr, ExprIr, PackageRefIr, TypeDescriptorIr, TypeRefIr},
-    id::SKIFF_STD_PUBLICATION_ID,
-};
+use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
+use skiff_compiler_emission::PublishedFileIrArtifact;
 
 #[test]
-fn publishes_service_assembly_http_response_limit() {
-    let temp = ServiceProjectBuilder::package_model("http-response-limit-config", "", "return {}");
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages_and_extra(
-            "",
-            r#"
-http:
-  response:
-    maxBytes: 134217728
-"#,
+fn user_packages_reject_native_declarations() {
+    for (name, declaration, expected) in [
+        (
+            "native-function",
+            "native function hostOnly() -> string\n",
+            "cannot declare native function hostOnly",
         ),
-    );
+        (
+            "native-type",
+            "native type HostOnly\n",
+            "cannot declare native type HostOnly",
+        ),
+    ] {
+        let temp = TestDir::new("skiff-compiler", name);
+        temp.write(
+            "package.yml",
+            format!("id: example.com/{name}\nversion: 1.0.0\n"),
+        );
+        temp.write("main.skiff", declaration);
 
-    let published = build_temp_service_publication(temp.root());
-    let service = &published.artifacts.service_assembly.value["service"];
-
-    assert_eq!(
-        service["http"]["response"]["maxBytes"],
-        serde_json::json!(134217728u64)
-    );
+        let error = compile_package_project(temp.path())
+            .expect_err("user package native declarations must fail closed")
+            .to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
 }
 
 #[test]
-fn std_root_package_imports_and_user_package_ids_are_rejected() {
-    let temp = ServiceProjectBuilder::package_model(
-        "std-package-import",
-        "import skiff.run/foo",
-        "return {}",
+fn std_root_import_materializes_exact_requirement_and_typed_log_call() {
+    let temp = TestDir::new("skiff-compiler", "std-root-import");
+    temp.write(
+        "package.yml",
+        "id: example.com/std-consumer\nversion: 1.0.0\n",
     );
-    assert_publish_error_contains(
-        temp.root(),
-        &["import name must be a single ASCII identifier"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model(
-        "std-mongo-package-import",
-        "import std.mongo",
-        "return {}",
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["import name must be a single ASCII identifier"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model(
-        "std-http-nested-import",
-        "import skiff.run/foo",
-        "return {}",
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["import name must be a single ASCII identifier"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model(
-        "std-anything-nested-import",
-        "import std.anything",
-        "return {}",
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["import name must be a single ASCII identifier"],
-    );
-
-    let temp =
-        ServiceProjectBuilder::package_model("user-simple-package-id", "import app", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "single",
-        r#"
-id: example.com/app
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/app",
-        r#"
-run: main_impl.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "single",
-        "main_impl.skiff",
-        r#"
-          function run() -> string {
-            return "ok"
-          }
-        "#,
-    );
-    set_service_package_dependencies(&temp, &[("example.com/app", "0.1.0", Some("app"))]);
-
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/app");
-
-    let temp = ServiceProjectBuilder::package_model("config-user-package-id", "", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "config",
-        r#"
-id: config
-version: 0.1.0
-"#,
-    );
-
-    assert_package_manifest_error_contains(
-        temp.root(),
-        "config",
-        "0.1.0",
-        &["id config", "must be a publication id"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model("std-user-package-id", "", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "std-foo",
-        r#"
-id: skiff.run/foo
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "skiff.run/foo",
-        r#"
-skiff.run/foo: foo.run
-"#,
-    );
-
-    assert_package_manifest_error_contains(
-        temp.root(),
-        "skiff.run/foo",
-        "0.1.0",
-        &[
-            "api.yml key skiff.run/foo",
-            "dotted public keys are not supported; use nested mapping",
-        ],
-    );
-
-    let temp =
-        ServiceProjectBuilder::package_model("std-foo-dependency", "import app", "return {}");
-    write_package_manifest(
-        temp.root(),
-        "example.com/bad",
-        r#"
-id: example.com/bad
-version: 0.1.0
-packages:
-  - id: skiff.run/foo
-    version: 0.1.0
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "example.com/bad",
-        "bad.skiff",
-        r#"
-          function run() -> string {
-            return "ok"
-          }
-        "#,
-    );
-    set_service_package_dependencies(&temp, &[("example.com/bad", "0.1.0", Some("app"))]);
-    assert_publish_error_contains(
-        temp.root(),
-        &["packages entry skiff.run/foo", "requires alias"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model("std-core-user-package-id", "", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "std-core",
-        r#"
-id: skiff.run/core
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "skiff.run/core",
-        r#"
-skiff.run/core: core.run
-"#,
-    );
-
-    assert_package_manifest_error_contains(
-        temp.root(),
-        "skiff.run/core",
-        "0.1.0",
-        &[
-            "api.yml key skiff.run/core",
-            "dotted public keys are not supported; use nested mapping",
-        ],
-    );
-
-    let temp =
-        ServiceProjectBuilder::package_model("image-user-package-id", "import image", "return {}");
-    write_package_manifest_in_dir(
-        temp.root(),
-        "user-image",
-        r#"
-id: example.com/image
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "example.com/image",
-        r#"
-run: main_impl.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "user-image",
-        "main_impl.skiff",
-        r#"
-          function run() -> string {
-            return "ok"
-          }
-        "#,
-    );
-    set_service_package_dependencies(&temp, &[("example.com/image", "0.1.0", Some("image"))]);
-
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/image");
-
-    let temp = ServiceProjectBuilder::package_model(
-        "platform-user-package-id",
-        "import platform",
-        "return {}",
-    );
-    write_package_manifest(
-        temp.root(),
-        "platform",
-        r#"
-id: example.com/platform
-version: 0.1.0
-"#,
-    );
-    write_package_api_yml(
-        temp.root(),
-        "platform",
-        r#"
-main:
-  run: main_impl.run
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "platform",
-        "main_impl.skiff",
-        r#"
-          function run() -> string {
-            return "ok"
-          }
-        "#,
-    );
-    set_service_package_dependencies(
-        &temp,
-        &[("example.com/platform", "0.1.0", Some("platform"))],
-    );
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/platform");
-}
-
-#[test]
-fn service_and_user_packages_cannot_declare_native_functions() {
-    let temp = ServiceProjectBuilder::package_model("service-native-function", "", "return {}");
-    temp.add_source(
-        "internal/native_host.skiff",
-        r#"
-          native function hostOnly() -> string
-        "#,
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["service source cannot declare native function hostOnly"],
-    );
-
-    let temp = ServiceProjectBuilder::package_model(
-        "user-package-native-function",
-        "import app",
-        "return {}",
-    );
-    write_package_manifest(
-        temp.root(),
-        "app",
-        r#"
-id: example.com/app
-version: 0.1.0
-"#,
-    );
-    write_package_source(
-        temp.root(),
-        "app",
+    temp.write("api.yml", "Marker: main.Marker\nrun: main.run\n");
+    temp.write(
         "main.skiff",
-        r#"
-          native function hostOnly() -> string
-        "#,
-    );
-    set_service_package_dependencies(&temp, &[("example.com/app", "0.1.0", Some("app"))]);
-    assert_publish_error_contains(
-        temp.root(),
-        &["package example.com/app cannot declare native function hostOnly"],
-    );
+        r#"import std
+
+function run() -> void {
+  std.log.info("hello", null)
 }
 
-#[test]
-fn service_and_user_packages_cannot_declare_native_types() {
-    let temp = ServiceProjectBuilder::package_model("service-native-type", "", "return {}");
-    temp.add_source(
-        "internal/native_types.skiff",
-        r#"
-          native type HostOnly
-        "#,
-    );
-    assert_publish_error_contains(
-        temp.root(),
-        &["service source cannot declare native type HostOnly"],
-    );
-
-    let temp =
-        ServiceProjectBuilder::package_model("user-package-native-type", "import app", "return {}");
-    write_package_manifest(
-        temp.root(),
-        "app",
-        r#"
-id: example.com/app
-version: 0.1.0
+type Marker { request: std.http.HttpRequest }
 "#,
     );
-    write_package_source(
-        temp.root(),
-        "app",
-        "main.skiff",
-        r#"
-          native type HostOnly
-        "#,
-    );
-    set_service_package_dependencies(&temp, &[("example.com/app", "0.1.0", Some("app"))]);
-    assert_publish_error_contains(
-        temp.root(),
-        &["package example.com/app cannot declare native type HostOnly"],
-    );
-}
 
-#[test]
-fn std_root_import_allows_official_std_modules_and_records_std_package() {
-    let temp = ServiceProjectBuilder::package_model(
-        "std-root-import",
-        "import std",
-        r#"
-            const decoded = std.json.decode<JsonObject>("{\"ok\":true}")
-            return {}
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    let std_assembly = package_assembly(&published, "skiff.run/std");
+    let project = compile_package_project(temp.path()).expect("std consumer should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the canonical dependency closure");
+    assert_eq!(project.dependency_packages.len(), 1);
+
+    let requirement = std_requirement(&project.package);
+    assert_eq!(requirement.alias, "std");
+    assert_eq!(requirement.package_id, std.artifact.package_id);
+    assert_eq!(requirement.exact_version, std.artifact.package_version);
     assert_eq!(
-        std_assembly.value["apiSource"]["relativePath"],
-        serde_json::json!("api.yml")
+        requirement.expected_local_abi,
+        std.artifact.package_local_abi.local_abi_identity
     );
-    assert!(std_assembly.value["apiSource"]["contentHash"]
-        .as_str()
-        .is_some_and(|hash| hash.len() == 64));
-    let mut entries = std_assembly.value["exports"]["entries"]
-        .as_array()
-        .unwrap()
-        .clone();
-    entries.sort_by_key(|entry| entry["path"].as_str().unwrap().to_string());
-    assert_eq!(entries.len(), 98);
-    for (path, module) in [
-        ("actor.Actor", "actor"),
-        ("bytes.DecodeError", "bytes"),
-        ("crypto.sha256", "crypto"),
-        ("db.ConflictError", "db"),
-        ("db.DecodeError", "db"),
-        ("file.FileError", "file"),
-        ("file.ImmutableFile", "file"),
-        ("http.HttpRequest", "http"),
-        ("http.json", "http"),
-        ("json.DecodeError", "json"),
-        ("json.decode", "json"),
-        ("log.info", "log"),
-        ("number.DecodeError", "number"),
-        ("service.ProviderUnavailableError", "service"),
-        ("service.ProtocolError", "service"),
-        ("string.split", "string"),
-        ("telemetry.emit", "telemetry"),
-        ("time.DecodeError", "time"),
-        ("time.sleep", "time"),
-        ("websocket.ConnectionMessage", "websocket"),
-        ("websocket.sendJsonToBusinessIdentity", "websocket"),
+
+    let log_callable_id = public_callable_id(std, "std.log.info");
+    let main = module_artifact(&project.package, "main");
+    assert!(main
+        .unit
+        .external_refs
+        .service_symbols
+        .iter()
+        .any(|symbol| { symbol.module_path == "std.log" && symbol.symbol == "info" }));
+    assert!(file_contains_call(main, &|target| {
+        matches!(
+            target,
+            CallTargetIr::ExternalServiceSymbol { symbol }
+                if symbol.module_path == "std.log" && symbol.symbol == "info"
+        )
+    }));
+
+    let run_callable_id = public_callable_id(&project.package, "run");
+    let run_facts = &project.package.artifact.callable_semantic_facts[&run_callable_id];
+    assert!(matches!(
+        run_facts.effects,
+        CallableEffectSummary::Analyzed { .. }
+    ));
+
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 98);
+    for public_path in [
+        "std.actor.Actor",
+        "std.bytes.DecodeError",
+        "std.crypto.sha256",
+        "std.db.ConflictError",
+        "std.file.ImmutableFile",
+        "std.http.HttpRequest",
+        "std.http.json",
+        "std.json.DecodeError",
+        "std.json.decode",
+        "std.log.info",
+        "std.service.ProtocolError",
+        "std.telemetry.emit",
+        "std.time.sleep",
+        "std.websocket.ConnectionMessage",
     ] {
         assert!(
-            entries
-                .iter()
-                .any(|entry| entry == &serde_json::json!({ "module": module, "path": path })),
-            "missing std api.yml export {path} -> {module}: {entries:?}",
+            std.artifact
+                .package_local_abi
+                .public_symbols
+                .contains_key(public_path),
+            "std local ABI should contain {public_path}"
         );
     }
-    let removed_suffix = ["_", "api"].concat();
-    assert!(
-        entries.iter().all(|entry| {
-            entry["path"].as_str().unwrap().contains('.')
-                && !entry["module"].as_str().unwrap().ends_with(&removed_suffix)
-        }),
-        "std exports must be symbol-level api.yml entries: {entries:?}",
-    );
-    assert_service_package_absent(&published, "std.json");
-    assert_service_package_absent(&published, "std.http");
-    assert!(service_assembly_value(&published)
-        .get("transportSelection")
-        .is_none());
-    let service_artifact = source_artifact(&published, "internal/example.skiff");
-    let service_value = service_artifact.value();
-    assert!(
-        json_contains_native_symbol(&service_value, "std.json", "decode"),
-        "std.json.decode should lower directly to a native target: {service_value}",
-    );
+    assert!(std.artifact.callable_links.contains_key(&log_callable_id));
 
-    let json_artifact = package_source_artifact(&published, "json.skiff");
-    assert_native_wrapper_type_args(json_artifact, "decode", &[("T0", "T")]);
-    assert_native_wrapper_type_args(json_artifact, "encode", &[("T0", "T")]);
+    let log = source_artifact(std, "log.skiff");
+    let telemetry = source_artifact(std, "telemetry.skiff");
+    let emit_index = telemetry.unit.declarations.executables["emit"].executable_index;
+    assert!(file_contains_call(log, &|target| {
+        matches!(
+            target,
+            CallTargetIr::PublicationExecutable {
+                module_path,
+                executable_index,
+            } if module_path == "std.telemetry" && *executable_index == emit_index
+        )
+    }));
 
-    let http_artifact = package_source_artifact(&published, "http.skiff");
-    assert_native_wrapper_type_args(http_artifact, "decodeJson", &[("T0", "T")]);
-    assert_native_wrapper_type_args(http_artifact, "json", &[("T0", "T")]);
-    assert_native_wrapper_type_args(http_artifact, "jsonWithHeaders", &[("T0", "T")]);
-    assert_native_wrapper_type_args(http_artifact, "noContent", &[]);
+    assert_native_wrapper_type_args(source_artifact(std, "json.skiff"), "decode", &[("T0", "T")]);
+    assert_native_wrapper_type_args(source_artifact(std, "json.skiff"), "encode", &[("T0", "T")]);
+    assert_native_wrapper_type_args(
+        source_artifact(std, "http.skiff"),
+        "decodeJson",
+        &[("T0", "T")],
+    );
+    assert_native_wrapper_type_args(source_artifact(std, "http.skiff"), "json", &[("T0", "T")]);
+    assert_native_wrapper_type_args(source_artifact(std, "http.skiff"), "noContent", &[]);
+    assert_native_wrapper_type_args(telemetry, "emit", &[]);
 }
 
 #[test]
-fn standard_module_error_catch_types_are_public_source_types() {
-    let temp = ServiceProjectBuilder::package_model(
-        "module-decode-error-catch-types",
-        "import std",
-        r#"
-            const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
-            const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
-            const timeResult = catch<std.time.DecodeError>(Date.requireParse("not-a-date"))
-            const configResult = catch<config.DecodeError>(config.require<string>("app.secret"))
-            const dbConflictResult = catch<std.db.ConflictError>(null)
-            return {}
-        "#,
+fn standard_error_catch_types_are_public_package_symbols() {
+    let temp = TestDir::new("skiff-compiler", "std-error-catch-types");
+    temp.write(
+        "package.yml",
+        "id: example.com/std-errors\nversion: 1.0.0\n",
     );
+    temp.write("api.yml", "check: main.check\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
 
-    build_temp_service_publication(temp.root());
+function check() -> bool {
+  const jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
+  const numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
+  const timeResult = catch<std.time.DecodeError>(null)
+  const dbResult = catch<std.db.ConflictError>(null)
+  return true
 }
-
-#[test]
-fn std_log_import_lowers_runtime_target_and_effect_summary() {
-    let temp = ServiceProjectBuilder::package_model(
-        "std-log-import",
-        "import std",
-        r#"
-            const attrs = std.json.decode<JsonObject>("{\"event\":\"hello\"}")
-            std.log.info("hello", attrs)
-            return {}
-        "#,
-    );
-    let published = build_temp_service_publication(temp.root());
-    let std_assembly = package_assembly(&published, "skiff.run/std");
-    assert!(std_assembly.value["exports"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry == &serde_json::json!({ "module": "log", "path": "log.info" })));
-
-    let service_artifact = source_artifact(&published, "internal/example.skiff");
-    let service_value = service_artifact.value();
-    assert!(
-        json_contains_package_symbol(&service_value, "std", "std.log.info"),
-        "service call site should lower std.log.info as a typed package symbol call: {service_value}",
+"#,
     );
 
-    let log_artifact = package_source_artifact(&published, "log.skiff");
-    let log_value = log_artifact.value();
-    // The publication-local direct refs lowering pass rewrites the cross-module
-    // `std.telemetry.emit` call target inside std.log's File IR body from an
-    // `externalServiceSymbol` into a direct `publicationExecutable` address. The
-    // publication ABI stays symbolic; the wrapper implementation is direct.
-    let telemetry_artifact = package_source_artifact(&published, "telemetry.skiff");
-    assert_eq!(telemetry_artifact.module_path, "std.telemetry");
-    let emit_executable_index = declared_executable_index(&telemetry_artifact.value(), "emit");
-    assert!(
-        json_contains_publication_executable(&log_value, "std.telemetry", emit_executable_index),
-        "std.log wrapper should emit through direct std.telemetry publicationExecutable: {log_value}",
-    );
-    assert!(std_assembly.value["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|file| file["modulePath"] == "std.telemetry"));
-    assert!(std_assembly.value["exports"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry
-            == &serde_json::json!({ "module": "telemetry", "path": "telemetry.emit" })));
-    assert!(!std_assembly.value["exports"]["symbols"]["telemetry.emit"].is_null());
-
-    let telemetry_artifact = package_source_artifact(&published, "telemetry.skiff");
-    assert_native_wrapper_type_args(telemetry_artifact, "emit", &[]);
-}
-
-#[test]
-fn std_normal_types_use_external_package_symbols_and_internal_direct_refs() {
-    let temp = ServiceProjectBuilder::package_model(
-        "std-normal-types-not-native",
-        "import std",
-        r#"
-            return {}
-        "#,
-    );
-    temp.add_source(
-        "api/std_types.skiff",
-        r#"
-            type Envelope {
-              request: std.http.HttpRequest,
-              event: std.http.HttpResponseStreamEvent,
-              file: std.file.ImmutableFile,
-              gateway: std.websocket.WebSocketConnectResult<string>,
-              connect: std.websocket.ConnectionMessage,
-              raw: Json,
-              bytesValue: bytes,
-            }
-        "#,
-    );
-
-    let published = build_temp_service_publication(temp.root());
-    let service_artifact = source_artifact(&published, "api/std_types.skiff");
-    // A service crosses the std package boundary, so its nominal std types stay symbolic.
-    assert_std_normal_type_uses_package_symbol(service_artifact, "std.http.HttpRequest");
-    assert_std_normal_type_uses_package_symbol(
-        service_artifact,
-        "std.http.HttpResponseStreamEvent",
-    );
-    assert_std_normal_type_uses_package_symbol(service_artifact, "std.file.ImmutableFile");
-    assert_native_type_ref_present(service_artifact, "std.websocket.WebSocketConnectResult");
-    assert_std_normal_type_uses_package_symbol(service_artifact, "std.websocket.ConnectionMessage");
-    assert_no_native_std_normal_type_refs(service_artifact);
-
-    for source_path in ["http.skiff", "file.skiff", "websocket.skiff"] {
-        let artifact = package_source_artifact(&published, source_path);
-        assert_no_native_std_normal_type_refs(artifact);
+    let project = compile_package_project(temp.path()).expect("std catch types should compile");
+    let main = module_artifact(&project.package, "main");
+    for symbol_path in [
+        "std.json.DecodeError",
+        "std.number.DecodeError",
+        "std.time.DecodeError",
+        "std.db.ConflictError",
+    ] {
+        assert!(file_contains_std_package_type(main, symbol_path));
     }
+}
 
-    // Inside std's own publication, File IR uses direct addresses: LocalType for the
-    // declaring module and PublicationType for a sibling module.
-    let http_artifact = package_source_artifact(&published, "http.skiff");
+#[test]
+fn std_normal_types_use_package_symbols_and_internal_direct_refs() {
+    let temp = TestDir::new("skiff-compiler", "std-normal-types");
+    temp.write("package.yml", "id: example.com/std-types\nversion: 1.0.0\n");
+    temp.write("api.yml", "Envelope: types.Envelope\n");
+    temp.write(
+        "types.skiff",
+        r#"import std
+
+type Envelope {
+  request: std.http.HttpRequest,
+  event: std.http.HttpResponseStreamEvent,
+  file: std.file.ImmutableFile,
+  gateway: std.websocket.WebSocketConnectResult<string>,
+  connect: std.websocket.ConnectionMessage,
+  raw: Json,
+  bytesValue: bytes,
+}
+"#,
+    );
+
+    let project = compile_package_project(temp.path()).expect("std types should compile");
+    let consumer = module_artifact(&project.package, "types");
+    for symbol_path in [
+        "std.http.HttpRequest",
+        "std.http.HttpResponseStreamEvent",
+        "std.file.ImmutableFile",
+        "std.websocket.ConnectionMessage",
+    ] {
+        assert!(file_contains_std_package_type(consumer, symbol_path));
+    }
+    assert!(file_contains_type_ref(consumer, &|ty| {
+        matches!(
+            ty,
+            TypeRefIr::Native { name, .. }
+                if name == "std.websocket.WebSocketConnectResult"
+        )
+    }));
+
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("std should be in the dependency closure");
+    let http = source_artifact(std, "http.skiff");
     for symbol in [
         "HttpClientRequest",
         "HttpClientResponse",
         "HttpResponseStreamEvent",
         "HttpSseEvent",
     ] {
-        assert_publication_local_type_uses_direct_ref(http_artifact, http_artifact, symbol);
+        assert_direct_type_ref(http, http, symbol);
     }
-
-    let websocket_artifact = package_source_artifact(&published, "websocket.skiff");
+    let websocket = source_artifact(std, "websocket.skiff");
     for symbol in ["HttpHeader", "HttpQueryParam"] {
-        assert_publication_local_type_uses_direct_ref(websocket_artifact, http_artifact, symbol);
+        assert_direct_type_ref(websocket, http, symbol);
     }
-    assert_native_type_ref_present(http_artifact, "bytes");
-    assert_native_type_ref_present(http_artifact, "Json");
 }
 
 #[test]
-fn package_dependency_on_std_allows_std_root_import_and_records_std_package() {
-    let temp = ServiceProjectBuilder::package_model("package-std-root", "import app", "return {}");
-    temp.packages().add_package(
-        "example.com/schema",
-        r#"
-id: example.com/schema
-version: 0.1.0
-"#,
-        &[
-            (
-                "api.yml",
-                r#"
-Schema: schema_impl.Schema
-"#,
-            ),
-            (
-                "schema_impl.skiff",
-                r#"
-          type Schema {
-            request: std.http.HttpRequest,
-          }
-        "#,
-            ),
-        ],
+fn implicit_std_types_close_requirements_while_prelude_json_object_stays_local() {
+    let schema = TestDir::new("skiff-compiler", "implicit-std-schema");
+    schema.write("package.yml", "id: example.com/schema\nversion: 1.0.0\n");
+    schema.write("api.yml", "Schema: schema.Schema\n");
+    schema.write(
+        "schema.skiff",
+        "type Schema { request: std.http.HttpRequest }\n",
     );
-    set_service_package_dependencies(&temp, &[("example.com/schema", "0.1.0", Some("app"))]);
 
-    let published = build_temp_service_publication(temp.root());
-    assert_service_package_id(&published, "example.com/schema");
-    assert_service_package_absent(&published, "skiff.run/std");
-    assert_service_package_absent(&published, "std.http");
+    let project = compile_package_project(schema.path()).expect("implicit std type should compile");
+    let std = project
+        .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
+        .expect("implicit std type should close over std");
+    let requirement = std_requirement(&project.package);
+    assert_eq!(requirement.exact_version, std.artifact.package_version);
+    assert_eq!(
+        requirement.expected_local_abi,
+        std.artifact.package_local_abi.local_abi_identity
+    );
+    assert!(file_contains_std_package_type(
+        module_artifact(&project.package, "schema"),
+        "std.http.HttpRequest"
+    ));
+
+    let prelude = TestDir::new("skiff-compiler", "prelude-json-object");
+    prelude.write(
+        "package.yml",
+        "id: example.com/prelude-json\nversion: 1.0.0\n",
+    );
+    prelude.write("api.yml", "Output: types.Output\n");
+    prelude.write("types.skiff", "type Output { raw: JsonObject }\n");
+
+    let project =
+        compile_package_project(prelude.path()).expect("prelude JsonObject should compile");
+    assert!(project.package.artifact.package_requirements.is_empty());
+    assert!(project.dependency_packages.is_empty());
+    assert!(file_contains_type_ref(
+        module_artifact(&project.package, "types"),
+        &|ty| matches!(ty, TypeRefIr::Native { name, args } if name == "JsonObject" && args.is_empty())
+    ));
 }
 
-fn json_contains_package_symbol(
-    value: &serde_json::Value,
-    dependency_ref: &str,
-    symbol_path: &str,
+fn std_requirement(
+    package: &skiff_compiler::PublishedPackageArtifact,
+) -> &skiff_artifact_model::PackageRequirement {
+    package
+        .artifact
+        .package_requirements
+        .iter()
+        .find(|requirement| requirement.package_id == SKIFF_STD_PUBLICATION_ID)
+        .expect("consumer should carry the canonical std requirement")
+}
+
+fn public_callable_id(
+    package: &skiff_compiler::PublishedPackageArtifact,
+    public_path: &str,
+) -> PackageCallableId {
+    let Some(PackageLocalAbiSymbol::Callable { callable_id, .. }) = package
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get(public_path)
+    else {
+        panic!("package should expose callable {public_path}");
+    };
+    callable_id.clone()
+}
+
+fn file_contains_call(
+    file: &PublishedFileIrArtifact,
+    predicate: &impl Fn(&CallTargetIr) -> bool,
 ) -> bool {
-    match value {
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| json_contains_package_symbol(value, dependency_ref, symbol_path)),
-        serde_json::Value::Object(object) => {
-            object.get("kind").and_then(|value| value.as_str()) == Some("packageSymbol")
-                && object
-                    .get("packageRef")
-                    .and_then(|package| package.get("kind"))
-                    .and_then(|value| value.as_str())
-                    == Some("dependency")
-                && object
-                    .get("packageRef")
-                    .and_then(|package| package.get("dependencyRef"))
-                    .and_then(|value| value.as_str())
-                    == Some(dependency_ref)
-                && object
-                    .get("operation")
-                    .and_then(|operation| operation.get("publicPath"))
-                    .and_then(|value| value.as_str())
-                    == Some(symbol_path)
-                || object
-                    .values()
-                    .any(|value| json_contains_package_symbol(value, dependency_ref, symbol_path))
-        }
-        _ => false,
-    }
-}
-
-fn json_contains_native_symbol(
-    value: &serde_json::Value,
-    namespace: &str,
-    symbol_name: &str,
-) -> bool {
-    match value {
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| json_contains_native_symbol(value, namespace, symbol_name)),
-        serde_json::Value::Object(object) => {
-            object.get("kind").and_then(|value| value.as_str()) == Some("native")
-                && object
-                    .get("target")
-                    .and_then(|target| target.get("namespace"))
-                    .and_then(|value| value.as_str())
-                    == Some(namespace)
-                && object
-                    .get("target")
-                    .and_then(|target| target.get("symbol"))
-                    .and_then(|value| value.as_str())
-                    == Some(symbol_name)
-                || object
-                    .values()
-                    .any(|value| json_contains_native_symbol(value, namespace, symbol_name))
-        }
-        _ => false,
-    }
-}
-
-fn json_contains_publication_executable(
-    value: &serde_json::Value,
-    module_path: &str,
-    executable_index: u64,
-) -> bool {
-    match value {
-        serde_json::Value::Array(values) => values.iter().any(|value| {
-            json_contains_publication_executable(value, module_path, executable_index)
-        }),
-        serde_json::Value::Object(object) => {
-            object.get("kind").and_then(|value| value.as_str()) == Some("publicationExecutable")
-                && object.get("modulePath").and_then(|value| value.as_str()) == Some(module_path)
-                && object
-                    .get("executableIndex")
-                    .and_then(|value| value.as_u64())
-                    == Some(executable_index)
-                || object.values().any(|value| {
-                    json_contains_publication_executable(value, module_path, executable_index)
-                })
-        }
-        _ => false,
-    }
-}
-
-fn declared_executable_index(file_ir: &serde_json::Value, symbol: &str) -> u64 {
-    file_ir["declarations"]["executables"][symbol]["executableIndex"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("File IR is missing declared executable {symbol}"))
+    file.unit.executables.iter().any(|executable| {
+        executable.body.expressions.iter().any(
+            |expression| matches!(expression, ExprIr::Call { call } if predicate(&call.target)),
+        )
+    })
 }
 
 fn assert_native_wrapper_type_args(
-    artifact: &PublishedFileIrArtifact,
-    symbol_name: &str,
+    file: &PublishedFileIrArtifact,
+    symbol: &str,
     expected: &[(&str, &str)],
 ) {
-    let call = native_wrapper_call(artifact, symbol_name);
+    let call = native_wrapper_call(file, symbol);
     let actual = call
         .type_args
         .iter()
         .map(|(key, ty)| {
             let TypeRefIr::TypeParam { name } = ty else {
-                panic!(
-                    "expected native wrapper type arg {key} for {symbol_name} to be a type param, got {ty:?}"
-                );
+                panic!("native wrapper type arg {key} must be a type parameter: {ty:?}");
             };
             (key.as_str(), name.as_str())
         })
@@ -739,165 +340,50 @@ fn assert_native_wrapper_type_args(
     assert_eq!(actual, expected);
 }
 
-fn assert_no_native_std_normal_type_refs(artifact: &PublishedFileIrArtifact) {
-    assert_json_has_no_native_std_normal_type_refs(&artifact.value());
-
-    for ty in &artifact.unit.type_table {
-        assert_descriptor_has_no_native_std_normal_refs(&ty.descriptor);
-        for implemented in &ty.implements {
-            assert_type_ref_has_no_native_std_normal_refs(implemented);
-        }
-    }
-    for constant in &artifact.unit.constants {
-        assert_type_ref_has_no_native_std_normal_refs(&constant.ty);
-    }
-    for executable in &artifact.unit.executables {
-        for param in &executable.params {
-            assert_type_ref_has_no_native_std_normal_refs(&param.ty);
-        }
-        assert_type_ref_has_no_native_std_normal_refs(&executable.return_type);
-    }
+fn native_wrapper_call<'a>(file: &'a PublishedFileIrArtifact, symbol: &str) -> &'a CallIr {
+    let expected_symbol = format!("{}.{}", file.module_path, symbol);
+    let executable = file
+        .unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == expected_symbol)
+        .unwrap_or_else(|| panic!("{} should declare {expected_symbol}", file.source_path));
+    executable
+        .body
+        .expressions
+        .iter()
+        .find_map(|expression| {
+            let ExprIr::Call { call } = expression else {
+                return None;
+            };
+            let CallTargetIr::Native { target } = &call.target else {
+                return None;
+            };
+            (target.namespace == file.module_path && target.symbol == symbol).then_some(call)
+        })
+        .unwrap_or_else(|| panic!("{expected_symbol} should call its native target"))
 }
 
-fn assert_json_has_no_native_std_normal_type_refs(value: &serde_json::Value) {
-    match value {
-        serde_json::Value::Array(values) => {
-            for value in values {
-                assert_json_has_no_native_std_normal_type_refs(value);
-            }
-        }
-        serde_json::Value::Object(object) => {
-            if object.get("kind").and_then(|value| value.as_str()) == Some("builtin") {
-                if let Some(name) = object.get("name").and_then(|value| value.as_str()) {
-                    assert!(
-                        !std_normal_type_symbol(name),
-                        "std normal type {name} must retain nominal identity, not builtin JSON: {value}"
-                    );
-                }
-            }
-            for value in object.values() {
-                assert_json_has_no_native_std_normal_type_refs(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn assert_descriptor_has_no_native_std_normal_refs(descriptor: &TypeDescriptorIr) {
-    match descriptor {
-        TypeDescriptorIr::Record { fields } => {
-            for field in fields.values() {
-                assert_type_ref_has_no_native_std_normal_refs(field);
-            }
-        }
-        TypeDescriptorIr::Alias { target } => assert_type_ref_has_no_native_std_normal_refs(target),
-        TypeDescriptorIr::Union { variants } => {
-            for variant in variants {
-                assert_type_ref_has_no_native_std_normal_refs(variant);
-            }
-        }
-        TypeDescriptorIr::Native { .. } => {}
-    }
-}
-
-fn assert_type_ref_has_no_native_std_normal_refs(ty: &TypeRefIr) {
-    match ty {
-        TypeRefIr::Native { name, args } => {
-            assert!(
-                !std_normal_type_symbol(name),
-                "std normal type {name} must retain nominal identity, not Native"
-            );
-            for arg in args {
-                assert_type_ref_has_no_native_std_normal_refs(arg);
-            }
-        }
-        TypeRefIr::Record { fields } => {
-            for field in fields.values() {
-                assert_type_ref_has_no_native_std_normal_refs(field);
-            }
-        }
-        TypeRefIr::Union { items } => {
-            for item in items {
-                assert_type_ref_has_no_native_std_normal_refs(item);
-            }
-        }
-        TypeRefIr::Nullable { inner } => assert_type_ref_has_no_native_std_normal_refs(inner),
-        TypeRefIr::AnyInterface { interface } => {
-            for arg in &interface.canonical_type_args {
-                assert_type_ref_has_no_native_std_normal_refs(arg);
-            }
-        }
-        TypeRefIr::Function {
-            params,
-            return_type,
-        } => {
-            for param in params {
-                assert_type_ref_has_no_native_std_normal_refs(&param.ty);
-            }
-            assert_type_ref_has_no_native_std_normal_refs(return_type);
-        }
-        TypeRefIr::PackageSymbol { .. }
-        | TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. } => {}
-    }
-}
-
-fn assert_std_normal_type_uses_package_symbol(
-    artifact: &PublishedFileIrArtifact,
-    expected_symbol_path: &str,
-) {
-    assert!(
-        file_ir_contains_std_package_type_symbol(artifact, expected_symbol_path),
-        "{} should refer to std normal type {expected_symbol_path} through packageSymbol",
-        artifact.source_path
-    );
-}
-
-fn file_ir_contains_std_package_type_symbol(
-    artifact: &PublishedFileIrArtifact,
-    expected_symbol_path: &str,
-) -> bool {
-    file_ir_contains_type_ref(artifact, &|ty| {
+fn file_contains_std_package_type(file: &PublishedFileIrArtifact, symbol_path: &str) -> bool {
+    file_contains_type_ref(file, &|ty| {
         matches!(
             ty,
             TypeRefIr::PackageSymbol { symbol }
-                if official_std_package_ref(&symbol.package)
-                    && symbol.symbol_path == expected_symbol_path
+                if matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId { package_id }
+                        if package_id == SKIFF_STD_PUBLICATION_ID
+                ) && symbol.symbol_path == symbol_path
         )
     })
 }
 
-fn official_std_package_ref(package: &PackageRefIr) -> bool {
-    matches!(
-        package,
-        PackageRefIr::PackageId { package_id } if package_id == SKIFF_STD_PUBLICATION_ID
-    ) || matches!(
-        package,
-        PackageRefIr::Dependency { dependency_ref } if dependency_ref == "std"
-    )
-}
-
-fn assert_publication_local_type_uses_direct_ref(
+fn assert_direct_type_ref(
     consumer: &PublishedFileIrArtifact,
     declaration_owner: &PublishedFileIrArtifact,
     symbol: &str,
 ) {
-    let type_index = declaration_owner
-        .unit
-        .declarations
-        .types
-        .get(symbol)
-        .unwrap_or_else(|| {
-            panic!(
-                "{} should declare type {symbol}",
-                declaration_owner.source_path
-            )
-        })
-        .type_index;
+    let type_index = declaration_owner.unit.declarations.types[symbol].type_index;
     let expected = if consumer.module_path == declaration_owner.module_path {
         TypeRefIr::LocalType { type_index }
     } else {
@@ -906,54 +392,58 @@ fn assert_publication_local_type_uses_direct_ref(
             type_index,
         }
     };
-    assert!(
-        file_ir_contains_type_ref(consumer, &|ty| ty == &expected),
-        "{} should refer to {}.{symbol} through direct publication ref {expected:?}",
-        consumer.source_path,
-        declaration_owner.module_path,
-    );
-
-    let package_symbol_path = format!("{}.{symbol}", declaration_owner.module_path);
-    assert!(
-        !file_ir_contains_std_package_type_symbol(consumer, &package_symbol_path),
-        "{} current-publication ref {} must not remain a packageSymbol",
-        consumer.source_path,
-        package_symbol_path,
-    );
+    assert!(file_contains_type_ref(consumer, &|ty| ty == &expected));
 }
 
-fn assert_native_type_ref_present(artifact: &PublishedFileIrArtifact, expected_name: &str) {
-    assert!(
-        file_ir_contains_type_ref(artifact, &|ty| {
-            matches!(ty, TypeRefIr::Native { name, .. } if name == expected_name)
-        }),
-        "{} should still use native type {expected_name}",
-        artifact.source_path
-    );
-}
-
-fn file_ir_contains_type_ref(
-    artifact: &PublishedFileIrArtifact,
+fn file_contains_type_ref(
+    file: &PublishedFileIrArtifact,
     predicate: &impl Fn(&TypeRefIr) -> bool,
 ) -> bool {
-    artifact.unit.type_table.iter().any(|ty| {
+    file.unit.type_table.iter().any(|ty| {
         descriptor_contains_type_ref(&ty.descriptor, predicate)
             || ty
                 .implements
                 .iter()
                 .any(|implemented| type_ref_contains(implemented, predicate))
-    }) || artifact
+    }) || file
         .unit
         .constants
         .iter()
         .any(|constant| type_ref_contains(&constant.ty, predicate))
-        || artifact.unit.executables.iter().any(|executable| {
+        || file.unit.executables.iter().any(|executable| {
             executable
                 .params
                 .iter()
                 .any(|param| type_ref_contains(&param.ty, predicate))
                 || type_ref_contains(&executable.return_type, predicate)
+                || executable
+                    .body
+                    .expressions
+                    .iter()
+                    .any(|expression| expression_contains_type_ref(expression, predicate))
         })
+}
+
+fn expression_contains_type_ref(
+    expression: &ExprIr,
+    predicate: &impl Fn(&TypeRefIr) -> bool,
+) -> bool {
+    match expression {
+        ExprIr::Construct { type_ref, .. } => type_ref_contains(type_ref, predicate),
+        ExprIr::Catch {
+            catch_type: Some(catch_type),
+            ..
+        } => type_ref_contains(catch_type, predicate),
+        ExprIr::Throw { payload_type, .. } => type_ref_contains(payload_type, predicate),
+        ExprIr::DbOperation { operation } => type_ref_contains(&operation.result_type, predicate),
+        ExprIr::DbQuery { query } => type_ref_contains(&query.result_type, predicate),
+        ExprIr::DbTransaction { transaction } => {
+            type_ref_contains(&transaction.result_type, predicate)
+        }
+        ExprIr::DbLeaseClaim { claim } => type_ref_contains(&claim.result_type, predicate),
+        ExprIr::DbLeaseRead { read } => type_ref_contains(&read.result_type, predicate),
+        _ => false,
+    }
 }
 
 fn descriptor_contains_type_ref(
@@ -1004,165 +494,4 @@ fn type_ref_contains(ty: &TypeRefIr, predicate: &impl Fn(&TypeRefIr) -> bool) ->
         | TypeRefIr::Literal { .. }
         | TypeRefIr::TypeParam { .. } => false,
     }
-}
-
-fn std_normal_type_symbol(name: &str) -> bool {
-    matches!(
-        name,
-        "std.bytes.DecodeError"
-            | "std.db.ConflictError"
-            | "std.db.DecodeError"
-            | "std.file.FileError"
-            | "std.json.DecodeError"
-            | "std.number.DecodeError"
-            | "std.time.DecodeError"
-            | "std.service.ProviderUnavailableError"
-            | "std.service.ProtocolError"
-            | "std.http.HttpHeader"
-            | "std.http.HttpQueryParam"
-            | "std.http.HttpRequest"
-            | "std.http.HttpResponse"
-            | "std.http.HttpResponseStreamEvent"
-            | "std.http.HttpClientRequest"
-            | "std.http.HttpClientResponse"
-            | "std.http.HttpClientStreamHandle"
-            | "std.http.HttpSseEvent"
-            | "std.http.HttpError"
-            | "std.file.ImmutableFile"
-            | "std.file.CreateOptions"
-            | "std.file.FileInfo"
-            | "std.websocket.TextConnectionMessage"
-            | "std.websocket.BinaryConnectionMessage"
-            | "std.websocket.ConnectionMessage"
-            | "std.websocket.WebSocketConnectRequest"
-            | "std.websocket.WebSocketCloseEvent"
-            | "Duration"
-            | "std.time.Duration"
-            | "ImmutableFile"
-            | "CreateOptions"
-            | "FileInfo"
-            | "ConnectionMessage"
-            | "TextConnectionMessage"
-            | "BinaryConnectionMessage"
-    )
-}
-
-fn native_wrapper_call<'a>(artifact: &'a PublishedFileIrArtifact, symbol_name: &str) -> &'a CallIr {
-    let expected_symbol = format!("{}.{}", artifact.module_path, symbol_name);
-    let executable = artifact
-        .unit
-        .executables
-        .iter()
-        .find(|executable| executable.symbol == expected_symbol)
-        .unwrap_or_else(|| {
-            panic!(
-                "package artifact {} should contain executable {expected_symbol}",
-                artifact.source_path
-            )
-        });
-    executable
-        .body
-        .expressions
-        .iter()
-        .find_map(|expr| {
-            let ExprIr::Call { call } = expr else {
-                return None;
-            };
-            let CallTargetIr::Native { target } = &call.target else {
-                return None;
-            };
-            (target.namespace == artifact.module_path && target.symbol == symbol_name)
-                .then_some(call)
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "executable {expected_symbol} should contain a direct native call to {}.{symbol_name}",
-                artifact.module_path
-            )
-        })
-}
-
-#[test]
-fn json_object_is_prelude_type_without_std_json_import() {
-    let temp = ServiceProjectBuilder::package_model("bare-json-object", "", "return { raw: {} }");
-    temp.add_source(
-        "api/example.skiff",
-        r#"
-            type Input {}
-            type Output {
-              raw: JsonObject,
-            }
-            interface ExampleService {
-              function run(input: Input) -> Output
-            }
-        "#,
-    );
-
-    let published = build_temp_service_publication(temp.root());
-    let assembly_text = serde_json::to_string(&published.artifacts.service_assembly.value).unwrap();
-
-    assert!(!assembly_text.contains("std.json.JsonObject"));
-    assert!(assembly_text.contains("\"preludeIdentity\""));
-}
-
-fn set_service_package_dependencies(
-    temp: &ServiceProjectBuilder,
-    entries: &[(&str, &str, Option<&str>)],
-) {
-    let packages = entries
-        .iter()
-        .map(|(id, version, alias)| match alias {
-            Some(alias) => {
-                format!("  - id: {id}\n    version: {version}\n    alias: {alias}")
-            }
-            None => format!("  - id: {id}\n    version: {version}"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    temp.add_root_file(
-        "service.yml",
-        &service_config_with_packages_and_extra(&packages, ""),
-    );
-}
-
-fn service_config_with_packages_and_extra(packages: &str, extra: &str) -> String {
-    let package_block = if packages.trim().is_empty() {
-        String::new()
-    } else {
-        format!("packages:\n{packages}\n")
-    };
-    format!(
-        r#"
-id: example.com/example
-version: 1.0.0
-{package_block}
-{extra}"#
-    )
-}
-
-fn assert_package_manifest_error_contains(
-    root: &std::path::Path,
-    package_id: &str,
-    version: &str,
-    fragments: &[&str],
-) {
-    let manifest_path = root
-        .join(".skiff-packages")
-        .join(publication_storage_segment(package_id))
-        .join(version)
-        .join("package.yml");
-    let message = read_user_package_manifest(&manifest_path)
-        .unwrap_err()
-        .to_string();
-    for fragment in fragments {
-        assert!(
-            message.contains(fragment),
-            "expected error to contain {fragment:?}, got:\n{message}"
-        );
-    }
-}
-
-fn publication_storage_segment(package_id: &str) -> String {
-    package_id.replace('.', "~").replace('/', "~~")
 }

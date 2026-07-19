@@ -1627,7 +1627,7 @@ function make() -> void {
 }
 
 #[test]
-fn parses_remote_public_instance_source_for_direct_call_and_boxing() {
+fn parses_dependency_source_address_for_direct_call_and_boxing() {
     let ast = parse_source(
         r#"
 interface LlmClient {
@@ -1653,9 +1653,9 @@ function make() -> void {
     assert_eq!(field, "send");
     assert!(matches!(
         object.as_ref(),
-        crate::ast::Expr::RemotePublicInstanceSource(source)
+        crate::ast::Expr::DependencySourceAddress(source)
             if source.dependency_ref == "remoteLlm"
-                && source.public_instance_key == "managedLlm"
+                && source.public_path == "managedLlm"
     ));
 
     let crate::ast::Stmt::Let { value: boxed, .. } = &ast.functions[0].body.statements[1] else {
@@ -1667,10 +1667,57 @@ function make() -> void {
             if interface.name == "LlmClient"
                 && matches!(
                     value.as_ref(),
-                    crate::ast::Expr::RemotePublicInstanceSource(source)
+                    crate::ast::Expr::DependencySourceAddress(source)
                         if source.dependency_ref == "remoteLlm"
-                            && source.public_instance_key == "managedLlm"
+                            && source.public_path == "managedLlm"
                 )
+    ));
+}
+
+#[test]
+fn dependency_source_address_normalizes_nested_slash_segments() {
+    let ast = parse_source(
+        r#"
+function make() -> void {
+  tools/text/format()
+}
+"#,
+    )
+    .unwrap();
+
+    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { callee, .. }) =
+        &ast.functions[0].body.statements[0]
+    else {
+        panic!("expected nested dependency call");
+    };
+    assert!(matches!(
+        callee.as_ref(),
+        crate::ast::Expr::DependencySourceAddress(source)
+            if source.dependency_ref == "tools" && source.public_path == "text.format"
+    ));
+}
+
+#[test]
+fn dotted_call_remains_an_ordinary_field_call() {
+    let ast = parse_source(
+        r#"
+function make() -> void {
+  payments.submit()
+}
+"#,
+    )
+    .unwrap();
+
+    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { callee, .. }) =
+        &ast.functions[0].body.statements[0]
+    else {
+        panic!("expected dotted call");
+    };
+    assert!(matches!(
+        callee.as_ref(),
+        crate::ast::Expr::Field { object, field }
+            if field == "submit"
+                && matches!(object.as_ref(), crate::ast::Expr::Identifier(root) if root == "payments")
     ));
 }
 

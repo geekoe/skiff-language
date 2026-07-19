@@ -1,33 +1,25 @@
 use crate::{
-    parsed_sources::{
-        package_semantic_publication, service_semantic_publication, ParsedCompilerSource,
-    },
+    parsed_sources::{package_semantic_publication, ParsedCompilerSource},
     semantic::SemanticPublication,
     shared::error::CompileError,
     shared::publication_error::PublicationError,
     shared::source_role::PublicationSourceRole,
 };
-use compiler_input_model::PublicationCompilePolicy;
+use compiler_input_model::PackageCompilePolicy;
 
-pub struct PublicationCompilePlan<'a> {
-    semantic_scope: PublicationSemanticScope<'a>,
-    pub file_role_policy: PublicationFileRolePolicy,
-    pub diagnostics: PublicationCompileDiagnostics<'a>,
+pub struct PackageCompilePlan<'a> {
+    package_id: &'a str,
+    pub file_role_policy: PackageFileRolePolicy,
+    pub diagnostics: PackageCompileDiagnostics<'a>,
 }
 
-impl<'a> PublicationCompilePlan<'a> {
-    pub fn from_policy(policy: PublicationCompilePolicy<'a>) -> Self {
-        match policy {
-            PublicationCompilePolicy::Package { package_id } => Self {
-                semantic_scope: PublicationSemanticScope::Package { package_id },
-                file_role_policy: PublicationFileRolePolicy::FixedPackage,
-                diagnostics: PublicationCompileDiagnostics::Package { package_id },
-            },
-            PublicationCompilePolicy::Service { .. } => Self {
-                semantic_scope: PublicationSemanticScope::Service,
-                file_role_policy: PublicationFileRolePolicy::ServiceSourceRole,
-                diagnostics: PublicationCompileDiagnostics::Service,
-            },
+impl<'a> PackageCompilePlan<'a> {
+    pub fn from_policy(policy: PackageCompilePolicy<'a>) -> Self {
+        let package_id = policy.package_id();
+        Self {
+            package_id,
+            file_role_policy: PackageFileRolePolicy,
+            diagnostics: PackageCompileDiagnostics { package_id },
         }
     }
 
@@ -35,52 +27,26 @@ impl<'a> PublicationCompilePlan<'a> {
         &self,
         parsed_sources: &'a [ParsedCompilerSource],
     ) -> SemanticPublication<'a> {
-        self.semantic_scope.semantic_publication(parsed_sources)
+        package_semantic_publication(self.package_id, parsed_sources)
     }
 }
 
 #[derive(Clone, Copy)]
-enum PublicationSemanticScope<'a> {
-    Package { package_id: &'a str },
-    Service,
-}
+pub struct PackageFileRolePolicy;
 
-impl<'a> PublicationSemanticScope<'a> {
-    fn semantic_publication(
-        self,
-        parsed_sources: &'a [ParsedCompilerSource],
-    ) -> SemanticPublication<'a> {
-        match self {
-            Self::Package { package_id } => {
-                package_semantic_publication(package_id, parsed_sources)
-            }
-            Self::Service => service_semantic_publication(parsed_sources),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub enum PublicationFileRolePolicy {
-    FixedPackage,
-    ServiceSourceRole,
-}
-
-impl PublicationFileRolePolicy {
+impl PackageFileRolePolicy {
     pub fn file_role(self, source: &ParsedCompilerSource) -> PublicationSourceRole {
-        match self {
-            Self::FixedPackage => PublicationSourceRole::Package,
-            Self::ServiceSourceRole => source.role(),
-        }
+        let _ = source;
+        PublicationSourceRole::Package
     }
 }
 
 #[derive(Clone, Copy)]
-pub enum PublicationCompileDiagnostics<'a> {
-    Package { package_id: &'a str },
-    Service,
+pub struct PackageCompileDiagnostics<'a> {
+    package_id: &'a str,
 }
 
-impl PublicationCompileDiagnostics<'_> {
+impl PackageCompileDiagnostics<'_> {
     pub fn publication_semantic_context_error(self, error: CompileError) -> PublicationError {
         PublicationError::ContractValidation {
             message: error.to_string(),
@@ -88,13 +54,11 @@ impl PublicationCompileDiagnostics<'_> {
     }
 
     pub fn publication_db_metadata_index_error(self, error: CompileError) -> PublicationError {
-        match self {
-            Self::Package { package_id } => PublicationError::ContractValidation {
-                message: format!("failed to build package {package_id} db metadata index: {error}"),
-            },
-            Self::Service => PublicationError::ContractValidation {
-                message: format!("failed to build publication db metadata index: {error}"),
-            },
+        PublicationError::ContractValidation {
+            message: format!(
+                "failed to build package {} db metadata index: {error}",
+                self.package_id
+            ),
         }
     }
 
@@ -103,17 +67,11 @@ impl PublicationCompileDiagnostics<'_> {
         source_path: &str,
         error: CompileError,
     ) -> PublicationError {
-        match self {
-            Self::Package { package_id } => PublicationError::ContractValidation {
-                message: format!(
-                    "failed to find package {package_id} semantic context for source {source_path}: {error}"
-                ),
-            },
-            Self::Service => PublicationError::ContractValidation {
-                message: format!(
-                    "failed to find service semantic context for source {source_path}: {error}"
-                ),
-            },
+        PublicationError::ContractValidation {
+            message: format!(
+                "failed to find package {} semantic context for source {source_path}: {error}",
+                self.package_id
+            ),
         }
     }
 
@@ -122,15 +80,11 @@ impl PublicationCompileDiagnostics<'_> {
         source_path: &str,
         error: CompileError,
     ) -> PublicationError {
-        match self {
-            Self::Package { package_id } => PublicationError::ContractValidation {
-                message: format!(
-                    "failed to lower package {package_id} source {source_path} to typed File IR unit: {error}"
-                ),
-            },
-            Self::Service => PublicationError::ContractValidation {
-                message: format!("failed to lower {source_path} to typed File IR unit: {error}"),
-            },
+        PublicationError::ContractValidation {
+            message: format!(
+                "failed to lower package {} source {source_path} to typed File IR unit: {error}",
+                self.package_id
+            ),
         }
     }
 }
