@@ -2,14 +2,14 @@
 
 ## 目标
 
-在既有terminal任务以及T03A–I、T04A–C、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
+在既有terminal任务以及T03A–I、T03H1、T04A–C、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
 ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T04A–C、R10H、R10I和所有高风险任务证据。
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T03H1、T04A–C、R10H、R10I和所有高风险任务证据。
 
 ## 完成态
 

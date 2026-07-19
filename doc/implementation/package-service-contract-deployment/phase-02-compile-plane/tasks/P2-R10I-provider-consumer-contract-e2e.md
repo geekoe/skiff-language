@@ -10,7 +10,7 @@ types”“调用模型”与“Package编译”章节。
 
 ## 依赖与写域
 
-- 依赖P2-T03E、P2-T03I、P2-T04C、P2-R10H；先前6/7失败和T03G/T04B后的7/7证据都只具有
+- 依赖P2-T03E、P2-T03H1、P2-T03I、P2-T04C、P2-R10H；先前6/7失败和T03G/T04B后的7/7证据都只具有
   历史价值，不能替代interface/public-instance owner切换后的刷新运行。
 - 独占`compiler/tests/service_conformance.rs`及必要的专用测试fixture；不修改production或common API。
 
@@ -37,10 +37,10 @@ types”“调用模型”与“Package编译”章节。
 
 ## 执行合同
 
-- DAG：波次9f evidence refresh节点；与production复验共同通过后解除T07/A01。风险：高；动态证据由本任务
+- DAG：波次9g evidence refresh节点；与production复验共同通过后解除T07/A01。风险：高；动态证据由本任务
   唯一拥有，A01只读复核。
 - worktree：`/Users/geek/workspace/skiff-p2-r10i-contract-e2e`；分支：`codex/p2-r10i-contract-e2e`；
-  复验从含T03H/T03I/T04C的integration HEAD创建，只复用已合入的同一fixture，不另建第二套fixture。
+  复验从含T03H1/T03I/T04C的integration HEAD创建，只复用已合入的同一fixture，不另建第二套fixture。
 - 启动后5分钟内完成第一次实际测试代码修改；否则回报`TASK_NOT_EXECUTABLE`，修改前不跑测试。
 - 提交一个聚焦commit和自验收矩阵。证据只对该commit有效；任一typed contract production owner、common
   fixture、ServiceContract/PackageArtifact schema或compiler pipeline变化即失效。

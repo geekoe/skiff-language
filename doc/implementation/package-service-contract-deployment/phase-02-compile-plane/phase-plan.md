@@ -216,6 +216,12 @@ T03H
   └── T04C compiled/projection public-instance owner cutover
 
 T03I + T04C
+  └── F09C T03I full-lowering probe（package interface 34/35 historical evidence）
+
+F09C（只作为证据，不是活动DAG节点）
+  └── source exact owner误接管external package interface -> T03H1 package-interface regression repair
+
+T03H1
   └── R10I evidence refresh + production re-acceptance
       └── T07 evidence refresh -> A01 independent re-acceptance
 ```
@@ -247,8 +253,9 @@ T03I + T04C
 | 9c | R10I、F09B production复验 | 真实source E2E 7/7；独立复验暴露interface/public-instance第二owner |
 | 9d | T03H | 先冻结source exact interface/conformance query checkpoint |
 | 9e | T03I、T04C | interface execution projection与compiled→projection public-instance cutover并行收敛 |
-| 9f | R10I evidence refresh、production复验 | 只重跑被T03H/T03I/T04C失效的真实source与production证据 |
-| 9g | T07 → A01 | 唯一最终gate后独立阶段验收 |
+| 9f | T03H1 | 修复exact source owner误接管external package interface的窄回归 |
+| 9g | R10I evidence refresh、production复验 | 只重跑被T03H/T03I/T04C/T03H1失效的真实source与production证据 |
+| 9h | T07 → A01 | 唯一最终gate后独立阶段验收 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -297,6 +304,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T03F | [Source executable signature facts](tasks/P2-T03F-source-executable-signature-facts.md) | T03B、T03C、方案A | 高；source executable facts checkpoint |
 | T03G | [File IR execution type representation](tasks/P2-T03G-file-ir-execution-carrier.md) | T03E、T03F | 高；lowering execution handoff |
 | T03H | [Exact interface signature facts](tasks/P2-T03H-exact-interface-signature-facts.md) | T03F | 高；source/interface semantic checkpoint |
+| T03H1 | [Package interface conformance regression](tasks/P2-T03H1-package-interface-conformance-regression.md) | T03H、T03I finding | 中；source ownership repair |
 | T03I | [Interface File IR execution projection](tasks/P2-T03I-interface-execution-projection.md) | T03G、T03H | 高；interface execution handoff |
 | T04B | [Signature handoff owner cleanup](tasks/P2-T04B-signature-handoff-owner-cleanup.md) | T03F、T04A | 中高；compiled/projection owner repair |
 | T04C | [Public-instance signature owner cutover](tasks/P2-T04C-public-instance-signature-owner-cutover.md) | T03H、T04B | 高；compiled/projection public-instance checkpoint |
@@ -319,10 +327,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
-| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H1、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T04A–C、R10H、R10I及既有terminal任务 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T03H1、T04A–C、R10H、R10I及既有terminal任务 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
@@ -399,6 +407,8 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   并行，独占compiled/projection-input的source-validated public-instance handoff及canonical PackageArtifact内部
   execution target/consumer。T03I/T04C不得修改对方生产写域；T04C不得用File IR/TypeResolutionModel或legacy
   OperationAbiRef恢复semantic owner，组合证据只在共同合流后有效。
+- T03H1只修source exact/interface owner分类，external package interface继续由typed package facts拥有；不得
+  修改T03H public API shape、lowering或projection，也不得以跳过所有external selector吞掉resolution错误。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
 - R10A 在 R10 后独占 `compiler/tests/common/**` 的最后 API 修正、一个 representative lane probe target 与其

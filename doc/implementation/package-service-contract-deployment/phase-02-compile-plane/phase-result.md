@@ -2,7 +2,8 @@
 
 状态：STALE；旧T07证据对应`648bc68`之前的候选。A01发现typed contract source/signature主链未闭合，
 Phase 02已按phase-plan波次8重新打开；波次9c的R10I为7/7，但独立production复验又发现interface exact
-facts与public-instance projection仍有第二owner。T03H/T03I/T04C及其复验完成后才由T07整体刷新，本文旧命令只
+facts与public-instance projection仍有第二owner。T03H/T03I/T04C合入后又由完整lowering probe发现T03H1
+package-interface owner分类回归；其修复与复验完成后才由T07整体刷新，本文旧命令只
 保留历史证据价值。
 
 ## 1. 候选状态
