@@ -27,6 +27,10 @@ name = "db_process_metadata"
 path = "tests/db_process_metadata.rs"
 
 [[test]]
+name = "file_ir_execution_type_representation"
+path = "tests/file_ir_execution_type_representation.rs"
+
+[[test]]
 name = "package_imports"
 path = "tests/package_imports.rs"
 

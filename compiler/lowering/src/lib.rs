@@ -4,6 +4,7 @@ mod declaration_lowering;
 pub mod entrypoint_abi;
 pub mod entrypoint_abi_model;
 mod executable_declaration_lowering;
+mod executable_type_projection;
 mod external_refs;
 pub mod file_ir;
 mod function_lowering;

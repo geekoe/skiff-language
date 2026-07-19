@@ -115,6 +115,23 @@ impl SourceExecutableSignatureFacts {
     pub fn iter(&self) -> impl Iterator<Item = (&SourceSymbolKey, &SourceExecutableSignature)> {
         self.by_source_key.iter()
     }
+
+    /// Builds the same exact type/receiver facts for standalone File IR
+    /// lowering helpers, whose suspension analysis is supplied explicitly by
+    /// source owner key. Production package compilation uses [`Self::build`].
+    pub fn from_exact_may_suspend(
+        parsed_sources: &[ParsedCompilerSource],
+        type_resolution: &TypeResolutionModel,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        may_suspend: &BTreeMap<SourceSymbolKey, bool>,
+    ) -> Result<Self, String> {
+        executables::build_executable_signature_facts_from_may_suspend(
+            parsed_sources,
+            type_resolution,
+            dependency_analysis,
+            may_suspend,
+        )
+    }
 }
 
 /// Public-path view over [`SourceExecutableSignatureFacts`].

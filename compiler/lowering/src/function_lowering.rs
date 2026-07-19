@@ -119,6 +119,7 @@ pub(super) struct LoweredExecutableSignature {
     pub(super) params: Vec<FunctionTypeParamIr>,
     pub(super) return_type: TypeRefIr,
     pub(super) self_type: Option<TypeRefIr>,
+    pub(super) may_suspend: bool,
 }
 
 impl<'a> FunctionLowerer<'a> {

@@ -109,13 +109,13 @@ impl LoweredPackage {
                     package_interface_methods: &package_interface_methods,
                     resolved_call_targets: model.resolved_call_targets(),
                     external_type_symbols: model.indexes().publication_type_symbols(),
-                    service_dependency_aliases: model.name_resolution().service_aliases(),
                     publication_db_metadata: model.indexes().publication_db_metadata_index(),
                     semantic_context: &source_semantic_context,
                     source_alias_targets: model.resolutions().alias_targets_for_module(module_path),
                     type_resolution: model.type_resolution(),
                     expression_types: Some(model.expression_types()),
                     callable_return_types: &callable_return_types,
+                    executable_signatures: model.executable_signatures(),
                     service_calls: Some(&service_calls),
                 })
                 .map_err(|error| {
@@ -142,13 +142,8 @@ impl LoweredPackage {
         derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed());
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
-        let entrypoint_abi = EntrypointAbiIndex::build(
-            parsed_sources,
-            model.name_resolution().package_aliases_map(),
-            model.indexes(),
-            model.resolutions(),
-        )
-        .map_err(|message| PublicationError::ContractValidation { message })?;
+        let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)
+            .map_err(|message| PublicationError::ContractValidation { message })?;
 
         Ok(Self {
             file_ir_units,

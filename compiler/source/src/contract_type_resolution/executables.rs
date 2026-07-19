@@ -21,9 +21,39 @@ pub(super) fn build_executable_signature_facts(
     dependency_analysis: &SourceDependencyAnalysisInput,
     effects: &SourceCallableEffectFacts,
 ) -> Result<SourceExecutableSignatureFacts, String> {
+    let may_suspend = MaySuspendFacts::Effects(effects);
+    build_executable_signature_facts_with_may_suspend(
+        parsed_sources,
+        type_resolution,
+        dependency_analysis,
+        &may_suspend,
+    )
+}
+
+pub(super) fn build_executable_signature_facts_from_may_suspend(
+    parsed_sources: &[ParsedCompilerSource],
+    type_resolution: &TypeResolutionModel,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    may_suspend: &BTreeMap<SourceSymbolKey, bool>,
+) -> Result<SourceExecutableSignatureFacts, String> {
+    let may_suspend = MaySuspendFacts::Exact(may_suspend);
+    build_executable_signature_facts_with_may_suspend(
+        parsed_sources,
+        type_resolution,
+        dependency_analysis,
+        &may_suspend,
+    )
+}
+
+fn build_executable_signature_facts_with_may_suspend(
+    parsed_sources: &[ParsedCompilerSource],
+    type_resolution: &TypeResolutionModel,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    may_suspend: &MaySuspendFacts<'_>,
+) -> Result<SourceExecutableSignatureFacts, String> {
     let mut builder = ExecutableSignatureBuilder {
         resolver: ContractAwareTypeResolver::new(type_resolution, dependency_analysis),
-        effects,
+        may_suspend,
         by_source_key: BTreeMap::new(),
     };
     for parsed in parsed_sources {
@@ -62,8 +92,24 @@ pub(super) fn build_executable_signature_facts(
 
 struct ExecutableSignatureBuilder<'a> {
     resolver: ContractAwareTypeResolver<'a>,
-    effects: &'a SourceCallableEffectFacts,
+    may_suspend: &'a MaySuspendFacts<'a>,
     by_source_key: BTreeMap<SourceSymbolKey, SourceExecutableSignature>,
+}
+
+enum MaySuspendFacts<'a> {
+    Effects(&'a SourceCallableEffectFacts),
+    Exact(&'a BTreeMap<SourceSymbolKey, bool>),
+}
+
+impl MaySuspendFacts<'_> {
+    fn get(&self, source_key: &SourceSymbolKey) -> Result<bool, String> {
+        match self {
+            Self::Effects(effects) => exact_may_suspend(effects, source_key),
+            Self::Exact(values) => values.get(source_key).copied().ok_or_else(|| {
+                format!("source executable `{source_key}` has no exact suspension fact")
+            }),
+        }
+    }
 }
 
 impl ExecutableSignatureBuilder<'_> {
@@ -93,7 +139,7 @@ impl ExecutableSignatureBuilder<'_> {
             .resolver
             .resolve_source_type_ref(&function.return_type, &context)?;
         let receiver = executable_receiver(function, is_impl_method, &self.resolver, &context)?;
-        let may_suspend = exact_may_suspend(self.effects, &source_key)?;
+        let may_suspend = self.may_suspend.get(&source_key)?;
         let signature = SourceExecutableSignature {
             parameters,
             return_type,

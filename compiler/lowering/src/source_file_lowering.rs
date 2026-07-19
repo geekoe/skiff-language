@@ -8,13 +8,14 @@ use skiff_compiler_source::{
     parsed_sources::{parse_publication_sources, ParsedCompilerSource},
     publication_db_metadata_index,
     semantic::{
-        DbAttachmentIndex, PublicationSemanticContext, SemanticPublication, SemanticSource,
-        SourceSemanticContext,
+        impl_method_declaration_name, DbAttachmentIndex, PublicationSemanticContext,
+        SemanticPublication, SemanticSource, SourceSemanticContext,
     },
     source_graph::CompilerSourceFile,
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
-    ResolvedCallTargetFacts, TypeResolutionModel,
+    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceExecutableSignatureFacts,
+    SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, SourceFile},
@@ -44,13 +45,13 @@ pub struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub package_interface_methods: &'a PackageInterfaceMethodIndex,
     pub resolved_call_targets: &'a ResolvedCallTargetFacts,
     pub external_type_symbols: &'a PublicationTypeSymbolIndex,
-    pub service_dependency_aliases: &'a BTreeSet<String>,
     pub publication_db_metadata: &'a PublicationDbMetadataIndex,
     pub semantic_context: &'a SourceSemanticContext<'context, 'publication>,
     pub source_alias_targets: &'a BTreeMap<String, String>,
     pub type_resolution: &'a TypeResolutionModel,
     pub expression_types: Option<&'a ExpressionTypeModel>,
     pub callable_return_types: &'a BTreeMap<String, CallableReturnType>,
+    pub executable_signatures: &'a SourceExecutableSignatureFacts,
     pub service_calls: Option<&'a LoweredServiceCalls>,
 }
 
@@ -103,12 +104,12 @@ pub fn compile_package_source_file_ir_unit(
         input.package_interface_methods,
         input.resolved_call_targets,
         input.external_type_symbols,
-        input.service_dependency_aliases,
         input.publication_db_metadata,
         input.source_alias_targets,
         input.type_resolution,
         input.expression_types,
         input.callable_return_types,
+        input.executable_signatures,
         input.service_calls,
     )?;
     assign_file_ir_identity(&mut unit);
@@ -192,6 +193,14 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
     let source_semantic_context = publication_semantic_context.source_context(&module_path)?;
     let mut callable_return_types = BTreeMap::new();
     extend_callable_return_types_for_source(&mut callable_return_types, &module_path, parsed.ast());
+    let executable_signatures = standalone_executable_signatures(
+        &parsed_sources,
+        &type_resolution,
+        parsed.ast(),
+        &module_path,
+        ctx,
+        &expression_types,
+    )?;
     compile_package_source_file_ir_unit(PackageSourceLoweringInput {
         source,
         role: &role,
@@ -199,14 +208,60 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         package_interface_methods: ctx.package_interface_methods,
         resolved_call_targets: ctx.resolved_call_targets,
         external_type_symbols: ctx.external_type_symbols,
-        service_dependency_aliases: ctx.service_dependency_aliases,
         publication_db_metadata: ctx.publication_db_metadata,
         semantic_context: &source_semantic_context,
         source_alias_targets: parsed.alias_targets(),
         type_resolution: &type_resolution,
         expression_types: Some(&expression_types),
         callable_return_types: &callable_return_types,
+        executable_signatures: &executable_signatures,
         service_calls: ctx.service_calls,
+    })
+}
+
+fn standalone_executable_signatures(
+    parsed_sources: &[ParsedCompilerSource],
+    type_resolution: &TypeResolutionModel,
+    ast: &SourceFile,
+    module_path: &str,
+    ctx: &SourceFileLoweringContext<'_>,
+    expression_types: &ExpressionTypeModel,
+) -> Result<SourceExecutableSignatureFacts> {
+    let suspend_index = suspend_index_for_source(
+        ast,
+        module_path,
+        ctx.package_aliases,
+        ctx.service_dependency_aliases,
+        Some(expression_types),
+    );
+    let mut may_suspend = BTreeMap::new();
+    for function in &ast.functions {
+        may_suspend.insert(
+            SourceSymbolKey::new(module_path, &function.name),
+            suspend_index.function_may_suspend(&function.name),
+        );
+    }
+    for implementation in &ast.impls {
+        for method in &implementation.method_bodies {
+            may_suspend.insert(
+                SourceSymbolKey::new(
+                    module_path,
+                    impl_method_declaration_name(&implementation.target, &method.name),
+                ),
+                suspend_index.method_may_suspend(&implementation.target, &method.name),
+            );
+        }
+    }
+    SourceExecutableSignatureFacts::from_exact_may_suspend(
+        parsed_sources,
+        type_resolution,
+        &SourceDependencyAnalysisInput::default(),
+        &may_suspend,
+    )
+    .map_err(|message| {
+        CompileError::Semantic(format!(
+            "single-file exact executable signature model failed:\n- {message}"
+        ))
     })
 }
 
@@ -305,12 +360,12 @@ fn lower_source_file_ir_unit(
     package_interface_methods: &PackageInterfaceMethodIndex,
     resolved_call_targets: &ResolvedCallTargetFacts,
     external_type_symbols: &PublicationTypeSymbolIndex,
-    service_dependency_aliases: &BTreeSet<String>,
     publication_db_metadata: &PublicationDbMetadataIndex,
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
+    exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: Option<&LoweredServiceCalls>,
 ) -> Result<FileIrUnit> {
     let source = semantic_context.source;
@@ -338,12 +393,8 @@ fn lower_source_file_ir_unit(
         &ast.functions,
         &ast.impls,
         executable_index,
-        &type_indices,
-        &local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
+        module_path,
+        exact_executable_signatures,
     )?;
     let mut unit = FileIrUnit::empty(module_path.to_string(), source_ast_hash.clone());
     push_source_map_source(&mut unit, source_path, module_path, source_ast_hash);
@@ -400,20 +451,12 @@ fn lower_source_file_ir_unit(
         &mut unit,
         &mut next_span_id,
     )?;
-    let suspend_index = suspend_index_for_source(
-        ast,
-        module_path,
-        package_aliases,
-        service_dependency_aliases,
-        expression_types,
-    );
     lower_executables(
         &ast.functions,
         &ast.impls,
         &db_metadata,
         publication_db_metadata,
         &lowered_publication_db_metadata,
-        &suspend_index,
         executable_index,
         &const_indices,
         &type_indices,
@@ -1121,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_package_any_interface_function_param_to_package_symbol_selector() {
+    fn exact_package_any_interface_function_param_preserves_package_symbol_selector() {
         let unit = lowered_unit_with_package_facts(package_any_interface_signature_source());
         let accept = executable(&unit, "accept_package");
         let TypeRefIr::AnyInterface { interface } = &accept.params[0].ty else {
@@ -1135,7 +1178,7 @@ mod tests {
         assert_eq!(symbol.symbol_path, "Reader");
         assert!(matches!(
             symbol.package,
-            PackageRefIr::Dependency { ref dependency_ref } if dependency_ref == "pkg"
+            PackageRefIr::PackageId { ref package_id } if package_id == PACKAGE_ID
         ));
         assert_eq!(
             interface.canonical_type_args,
