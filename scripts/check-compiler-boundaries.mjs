@@ -1,10 +1,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   collectTerminalPublicShapeViolations,
   runTerminalPublicShapeSelfTest,
+  terminalPublicShapeRegistry,
 } from './lib/compiler-terminal-public-shape.mjs';
 
 const defaultRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -16,6 +17,9 @@ const terminalPublicShapeTools = {
   readText: async (file) =>
     stripInlineTestModules(file.text ?? (await readFile(file.absPath, 'utf8'))),
 };
+const projectionInputFrozenFreeFunctions = new Set(
+  terminalPublicShapeRegistry.find((entry) => entry.owner === 'projection-input').publicItems.fn,
+);
 
 const sourceCompileDownstreamStageImports = crateModuleImportRegexp([
   'lowering',
@@ -264,7 +268,7 @@ async function collectMatches(rule, files, severity) {
     ) {
       continue;
     }
-    const text = stripInlineTestModules(await readFile(file.absPath, 'utf8'));
+    const text = stripInlineTestModules(file.text ?? (await readFile(file.absPath, 'utf8')));
     for (const match of text.matchAll(rule.regexp)) {
       const line = lineNumberAt(text, match.index ?? 0);
       matches.push({
@@ -307,10 +311,13 @@ async function collectProjectionInputPurityViolations(files) {
     if (!file.relPath.startsWith('compiler/projection-input/src/')) {
       continue;
     }
-    const text = stripInlineTestModules(await readFile(file.absPath, 'utf8'));
+    const text = stripInlineTestModules(file.text ?? (await readFile(file.absPath, 'utf8')));
     for (const declaration of projectionInputPublicFunctionDeclarations(text)) {
       const implName = projectionInputImplNameAt(text, declaration.index);
       if (implName === undefined) {
+        if (projectionInputFrozenFreeFunctions.has(declaration.name)) {
+          continue;
+        }
         matches.push(
           projectionInputPurityMatch(
             file,
@@ -388,7 +395,15 @@ function projectionInputPurityMatch(file, text, declaration, pattern) {
 async function collectCandidateRustFiles(repoRoot) {
   const files = [];
   await collectRustFiles(join(repoRoot, 'compiler'), files, repoRoot);
-  return files.filter((file) => isProductionRustFile(file.relPath));
+  await Promise.all(
+    files.map(async (file) => {
+      file.text = await readFile(file.absPath, 'utf8');
+    }),
+  );
+  const cfgTestOnlyFiles = collectCfgTestOnlyModuleFiles(files);
+  return files.filter(
+    (file) => isProductionRustFile(file.relPath) && !cfgTestOnlyFiles.has(file.relPath),
+  );
 }
 
 async function collectRustFiles(directory, files, repoRoot) {
@@ -416,6 +431,94 @@ async function collectRustFiles(directory, files, repoRoot) {
       relPath: normalizePath(relative(repoRoot, absPath)),
     });
   }
+}
+
+function collectCfgTestOnlyModuleFiles(files) {
+  const productionReachable = 1;
+  const testReachable = 2;
+  const filesByPath = new Map(files.map((file) => [normalizePath(resolve(file.absPath)), file]));
+  const reachability = new Map();
+  const queue = [];
+
+  const enqueue = (file, state) => {
+    const current = reachability.get(file.relPath) ?? 0;
+    if ((current & state) !== 0) {
+      return;
+    }
+    reachability.set(file.relPath, current | state);
+    queue.push({ file, state });
+  };
+
+  for (const file of files) {
+    if (isRustCrateRoot(file.relPath)) {
+      enqueue(file, productionReachable);
+    }
+  }
+
+  while (queue.length > 0) {
+    const { file, state } = queue.shift();
+    for (const declaration of externalRustModuleDeclarations(file.text)) {
+      const child = resolveExternalRustModule(file, declaration, filesByPath);
+      if (child === undefined) {
+        continue;
+      }
+      const childState = state === testReachable || declaration.cfgTest
+        ? testReachable
+        : productionReachable;
+      enqueue(child, childState);
+    }
+  }
+
+  return new Set(
+    [...reachability.entries()]
+      .filter(([, state]) => state === testReachable)
+      .map(([relPath]) => relPath),
+  );
+}
+
+function isRustCrateRoot(relPath) {
+  const fileName = basename(relPath);
+  return fileName === 'lib.rs'
+    || fileName === 'main.rs'
+    || /\/src\/bin\/[^/]+\.rs$/.test(relPath);
+}
+
+function externalRustModuleDeclarations(text) {
+  const declarations = [];
+  const regexp =
+    /((?:^[ \t]*#\[[^\r\n]*\][ \t]*\r?\n)*)^[ \t]*(?:pub(?:\([^\r\n)]*\))?[ \t]+)?mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*;/gm;
+  for (const match of text.matchAll(regexp)) {
+    const attributes = match[1];
+    declarations.push({
+      cfgTest: /#\[\s*cfg\s*\(\s*test\s*\)\s*\]/.test(attributes),
+      name: match[2],
+      path: /#\[\s*path\s*=\s*"([^"]+)"\s*\]/.exec(attributes)?.[1],
+    });
+  }
+  return declarations;
+}
+
+function resolveExternalRustModule(file, declaration, filesByPath) {
+  const candidates = [];
+  if (declaration.path !== undefined) {
+    candidates.push(resolve(dirname(file.absPath), declaration.path));
+  } else {
+    const fileName = basename(file.absPath);
+    const moduleDirectory = ['lib.rs', 'main.rs', 'mod.rs'].includes(fileName)
+      ? dirname(file.absPath)
+      : join(dirname(file.absPath), fileName.slice(0, -'.rs'.length));
+    candidates.push(
+      join(moduleDirectory, `${declaration.name}.rs`),
+      join(moduleDirectory, declaration.name, 'mod.rs'),
+    );
+  }
+  for (const candidate of candidates) {
+    const child = filesByPath.get(normalizePath(resolve(candidate)));
+    if (child !== undefined) {
+      return child;
+    }
+  }
+  return undefined;
 }
 
 function isProductionRustFile(relPath) {

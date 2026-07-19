@@ -16,7 +16,7 @@ export const terminalPublicShapeRegistry = [
     root: 'compiler/compiled/src',
     publicItems: {
       struct: ['CompiledPackage'],
-      enum: [],
+      enum: ['ProjectionInputBuildError'],
       fn: [
         'build_projection_input',
         'compile_parsed_publication_sources',
@@ -29,7 +29,7 @@ export const terminalPublicShapeRegistry = [
       type: [],
       union: [],
     },
-    publicExports: [],
+    publicExports: ['ProjectionInputBuildError'],
     structFields: {
       CompiledPackage: ['lowered', 'model'],
     },
@@ -38,7 +38,7 @@ export const terminalPublicShapeRegistry = [
         name: 'build_projection_input',
         parameterName: 'compiled',
         parameterType: '&CompiledPackage',
-        returnType: 'ProjectionInput',
+        returnType: 'Result<ProjectionInput, ProjectionInputBuildError>',
       },
     ],
   },
@@ -62,6 +62,7 @@ export const terminalPublicShapeRegistry = [
         'ExportBindingProjection',
         'ExportCallableProjection',
         'ExportPublicInstanceInterfaceProjection',
+        'ExportPublicInstanceMethodProjection',
         'ExportPublicInstanceProjection',
         'ExportSchemaProjection',
         'ExportSymbolProjection',
@@ -106,7 +107,7 @@ export const terminalPublicShapeRegistry = [
         'PublicTypeKindProjection',
       ],
       const: [],
-      fn: [],
+      fn: ['canonical_package_public_path'],
       mod: [],
       static: [],
       trait: [],
@@ -119,9 +120,17 @@ export const terminalPublicShapeRegistry = [
       'ProjectionExecutableKey',
       'ProjectionPackageCallableKey',
       'ProjectionPackageCallableSignatureFacts',
+      'canonical_package_public_path',
     ],
     structFields: {
-      ProjectionInput: ['file_ir_units', 'lowering', 'resources', 'source', 'source_metadata'],
+      ProjectionInput: [
+        'callable_signatures',
+        'file_ir_units',
+        'lowering',
+        'resources',
+        'source',
+        'source_metadata',
+      ],
     },
     handoffs: [],
   },
@@ -140,6 +149,7 @@ export async function collectTerminalPublicShapeViolations(files, tools) {
     }
 
     const declarations = [];
+    const exports = [];
     for (const file of ownedFiles) {
       const text = await tools.readText(file);
       for (const declaration of terminalPublicItemDeclarations(text, tools)) {
@@ -158,6 +168,7 @@ export async function collectTerminalPublicShapeViolations(files, tools) {
         }
       }
       for (const exported of terminalPublicExports(text)) {
+        exports.push({ ...exported, file, text });
         if (!entry.publicExports.includes(exported.name)) {
           violations.push(
             terminalPublicShapeMatch(
@@ -173,12 +184,54 @@ export async function collectTerminalPublicShapeViolations(files, tools) {
       }
     }
 
+    for (const kind of terminalPublicItemKinds) {
+      for (const name of entry.publicItems[kind]) {
+        const matchingDeclarations = declarations.filter(
+          (candidate) => candidate.kind === kind && candidate.name === name,
+        );
+        if (matchingDeclarations.length === 0) {
+          violations.push(terminalMissingPublicShapeMatch(entry, `${kind} ${name}`));
+          continue;
+        }
+        for (const duplicate of matchingDeclarations.slice(1)) {
+          violations.push(
+            terminalPublicShapeMatch(
+              entry,
+              duplicate.file,
+              duplicate.text,
+              duplicate,
+              `duplicate canonical public ${kind} ${name}`,
+              tools,
+            ),
+          );
+        }
+      }
+    }
+    for (const name of entry.publicExports) {
+      const matchingExports = exports.filter((candidate) => candidate.name === name);
+      if (matchingExports.length === 0) {
+        violations.push(terminalMissingPublicShapeMatch(entry, `re-export ${name}`));
+        continue;
+      }
+      for (const duplicate of matchingExports.slice(1)) {
+        violations.push(
+          terminalPublicShapeMatch(
+            entry,
+            duplicate.file,
+            duplicate.text,
+            duplicate,
+            `duplicate canonical public re-export ${name}`,
+            tools,
+          ),
+        );
+      }
+    }
+
     for (const [structName, expectedFields] of Object.entries(entry.structFields)) {
       const declaration = declarations.find(
         (candidate) => candidate.kind === 'struct' && candidate.name === structName,
       );
       if (declaration === undefined) {
-        violations.push(terminalMissingPublicShapeMatch(entry, `struct ${structName}`));
         continue;
       }
       const actualFields = terminalNamedStructFields(declaration.text, declaration, tools);
@@ -201,7 +254,6 @@ export async function collectTerminalPublicShapeViolations(files, tools) {
         (candidate) => candidate.kind === 'fn' && candidate.name === handoff.name,
       );
       if (declaration === undefined) {
-        violations.push(terminalMissingPublicShapeMatch(entry, `handoff ${handoff.name}`));
         continue;
       }
       const expectedSignature = terminalHandoffSignature(handoff);
@@ -231,6 +283,9 @@ export async function runTerminalPublicShapeSelfTest(tools) {
   }
 
   const compiledRoot = terminalPublicShapeRegistry.find((entry) => entry.owner === 'compiled').root;
+  const projectionInputRoot = terminalPublicShapeRegistry.find(
+    (entry) => entry.owner === 'projection-input',
+  ).root;
   await expectTerminalPublicShapeSelfTestFailure(
     'renamed aggregate carrying compiled payload plus publication metadata/config',
     [
@@ -281,8 +336,75 @@ export async function runTerminalPublicShapeSelfTest(tools) {
     /canonical handoff/,
     tools,
   );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'canonical handoff regresses to the old infallible signature',
+    terminalMutateFixture(canonicalFiles, compiledRoot, (text) =>
+      text.replace(
+        '-> Result<ProjectionInput, ProjectionInputBuildError>',
+        '-> ProjectionInput',
+      ),
+    ),
+    /canonical handoff/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'compiled error declaration is removed',
+    terminalMutateFixture(canonicalFiles, compiledRoot, (text) =>
+      text.replace('pub enum ProjectionInputBuildError { Fixture }\n', ''),
+    ),
+    /missing canonical public enum ProjectionInputBuildError/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'compiled error re-export is removed',
+    terminalMutateFixture(canonicalFiles, compiledRoot, (text) =>
+      text.replace('pub use fixture_exports::{ProjectionInputBuildError};\n', ''),
+    ),
+    /missing canonical public re-export ProjectionInputBuildError/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'projection input gains an unregistered field',
+    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
+      text.replace(
+        '    source_metadata: (),\n}',
+        '    source_metadata: (),\n    deployment_hint: (),\n}',
+      ),
+    ),
+    /frozen ProjectionInput fields/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'projection input gains an unregistered callable DTO',
+    [
+      ...canonicalFiles,
+      terminalFixtureFile(
+        projectionInputRoot,
+        'extra_callable_dto.rs',
+        'pub struct ExtraCallableSignatureProjection;\n',
+      ),
+    ],
+    /undeclared public struct/,
+    tools,
+  );
+  await expectTerminalPublicShapeSelfTestFailure(
+    'canonical package public-path helper is renamed',
+    terminalMutateFixture(canonicalFiles, projectionInputRoot, (text) =>
+      text.replaceAll('canonical_package_public_path', 'renamed_package_public_path'),
+    ),
+    {
+      count: 4,
+      patterns: [
+        /undeclared public fn/,
+        /undeclared public re-export/,
+        /missing canonical public fn canonical_package_public_path/,
+        /missing canonical public re-export canonical_package_public_path/,
+      ],
+    },
+    tools,
+  );
 
-  console.log('Compiler boundary terminal public-shape self-test passed (5 cases).');
+  console.log('Compiler boundary terminal public-shape self-test passed (11 cases).');
 }
 
 function assertTerminalPublicShapeRegistry() {
@@ -419,11 +541,11 @@ function terminalNamedStructFields(text, declaration, tools) {
 }
 
 function terminalHandoffSignature(handoff) {
-  return [
-    `pubfn${handoff.name}`,
-    `(${handoff.parameterName}:${handoff.parameterType})`,
-    `->${handoff.returnType}`,
-  ].join('');
+  return normalizeTerminalFunctionSignature([
+      `pub fn ${handoff.name}`,
+      `(${handoff.parameterName}: ${handoff.parameterType})`,
+      `-> ${handoff.returnType}`,
+    ].join(''));
 }
 
 function terminalFunctionSignature(text, declarationIndex) {
@@ -435,7 +557,11 @@ function terminalFunctionSignature(text, declarationIndex) {
   if (end === -1) {
     return '<unclosed-function-signature>';
   }
-  return text.slice(declarationIndex, end).replace(/\s+/g, '');
+  return normalizeTerminalFunctionSignature(text.slice(declarationIndex, end));
+}
+
+function normalizeTerminalFunctionSignature(signature) {
+  return signature.replace(/\s+/g, '').replace(/,\)/g, ')');
 }
 
 function terminalPublicShapeMatch(entry, file, text, declaration, pattern, tools) {
@@ -470,17 +596,62 @@ function terminalMissingPublicShapeMatch(entry, missing) {
 
 function terminalPublicShapeFixtureFiles() {
   return terminalPublicShapeRegistry.map((entry) => {
-    const declarations = Object.entries(entry.structFields).map(([name, fields]) =>
-      `pub struct ${name} {\n${fields.map((field) => `    ${field}: (),`).join('\n')}\n}\n`,
+    const declarations = [];
+    for (const kind of terminalPublicItemKinds) {
+      for (const name of entry.publicItems[kind]) {
+        const fields = entry.structFields[name];
+        if (kind === 'struct' && fields !== undefined) {
+          declarations.push(
+            `pub struct ${name} {\n${fields.map((field) => `    ${field}: (),`).join('\n')}\n}\n`,
+          );
+          continue;
+        }
+        const handoff = entry.handoffs.find((candidate) => candidate.name === name);
+        if (kind === 'fn' && handoff !== undefined) {
+          declarations.push(
+            `pub fn ${handoff.name}(`
+              + `${handoff.parameterName}: ${handoff.parameterType}`
+              + `) -> ${handoff.returnType} {\n    todo!()\n}\n`,
+          );
+          continue;
+        }
+        declarations.push(terminalFixtureDeclaration(kind, name));
+      }
+    }
+    if (entry.publicExports.length > 0) {
+      declarations.push(`pub use fixture_exports::{${entry.publicExports.join(', ')}};\n`);
+    }
+    return terminalFixtureFile(
+      entry.root,
+      'terminal_shape_fixture.rs',
+      declarations.join('\n'),
     );
-    const handoffs = entry.handoffs.map(
-      (handoff) =>
-        `pub fn ${handoff.name}(`
-        + `${handoff.parameterName}: ${handoff.parameterType}`
-        + `) -> ${handoff.returnType} {\n    todo!()\n}\n`,
-    );
-    return terminalFixtureFile(entry.root, 'terminal_shape_fixture.rs', [...declarations, ...handoffs].join('\n'));
   });
+}
+
+function terminalFixtureDeclaration(kind, name) {
+  switch (kind) {
+    case 'const':
+      return `pub const ${name}: () = ();\n`;
+    case 'enum':
+      return `pub enum ${name} { Fixture }\n`;
+    case 'fn':
+      return `pub fn ${name}() {}\n`;
+    case 'mod':
+      return `pub mod ${name} {}\n`;
+    case 'static':
+      return `pub static ${name}: () = ();\n`;
+    case 'struct':
+      return `pub struct ${name};\n`;
+    case 'trait':
+      return `pub trait ${name} {}\n`;
+    case 'type':
+      return `pub type ${name} = ();\n`;
+    case 'union':
+      return `pub union ${name} { value: () }\n`;
+    default:
+      throw new Error(`unsupported terminal public fixture item kind: ${kind}`);
+  }
 }
 
 function terminalFixtureFile(root, name, text) {
@@ -499,7 +670,16 @@ function terminalMutateFixture(files, root, mutate) {
 
 async function expectTerminalPublicShapeSelfTestFailure(name, files, expectedPattern, tools) {
   const failures = await collectTerminalPublicShapeViolations(files, tools);
-  if (failures.length !== 1 || !expectedPattern.test(failures[0].pattern)) {
-    throw new Error(`${name}: expected one ${expectedPattern} failure, got ${JSON.stringify(failures)}`);
+  const expectation = expectedPattern instanceof RegExp
+    ? { count: 1, patterns: [expectedPattern] }
+    : expectedPattern;
+  if (
+    failures.length !== expectation.count
+    || !expectation.patterns.every((pattern) =>
+      failures.some((failure) => pattern.test(failure.pattern)))
+  ) {
+    throw new Error(
+      `${name}: expected ${expectation.count} failure(s) matching ${expectation.patterns.join(', ')}, got ${JSON.stringify(failures)}`,
+    );
   }
 }

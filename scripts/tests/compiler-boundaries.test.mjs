@@ -6,13 +6,15 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { terminalPublicShapeRegistry } from '../lib/compiler-terminal-public-shape.mjs';
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checker = join(repoRoot, 'scripts', 'check-compiler-boundaries.mjs');
 
 test('terminal public-shape registry self-test rejects renamed aggregate and adapter shapes', async () => {
   const result = await runChecker(['--self-test']);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /terminal public-shape self-test passed \(5 cases\)/);
+  assert.match(result.stdout, /terminal public-shape self-test passed \(11 cases\)/);
 });
 
 test('terminal package and code-free contract producers remain permitted', async () => {
@@ -109,6 +111,43 @@ test('terminal compiler shape ignores test-only support files', async () => {
   });
 });
 
+test('lowering excludes cfg(test) module files and descendants but rejects production imports', async () => {
+  await withFixture(async (root) => {
+    await write(
+      root,
+      'compiler/lowering/src/lib.rs',
+      `#[cfg(test)]
+mod verification_fixture;
+mod production_dependency;
+`,
+    );
+    await write(
+      root,
+      'compiler/lowering/src/verification_fixture.rs',
+      `use skiff_compiler_input::ResolvedContractDependency;
+mod nested_dependency;
+`,
+    );
+    await write(
+      root,
+      'compiler/lowering/src/verification_fixture/nested_dependency.rs',
+      'use skiff_compiler_input::ResolvedContractDependency;\n',
+    );
+    await write(
+      root,
+      'compiler/lowering/src/production_dependency.rs',
+      'use skiff_compiler_input::ResolvedContractDependency;\n',
+    );
+
+    const result = await runChecker(['--root', root]);
+    assert.notEqual(result.code, 0, result.stdout);
+    assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 1, result.stderr);
+    assert.match(result.stderr, /lowering_no_forbidden_imports/);
+    assert.match(result.stderr, /compiler\/lowering\/src\/production_dependency\.rs/);
+    assert.doesNotMatch(result.stderr, /verification_fixture/);
+  });
+});
+
 test('projection-input permits arbitrary DTO methods on its frozen public aggregate', async () => {
   await withFixture(async (root) => {
     await write(
@@ -136,10 +175,7 @@ test('projection-input rejects only an exact known behavior receiver and method 
     await write(
       root,
       'compiler/projection-input/src/lib.rs',
-      projectionInputFixture(`pub struct ProjectionSourceFacts;
-pub struct ProjectionSourceMetadata;
-
-impl ProjectionSourceFacts {
+      projectionInputFixture(`impl ProjectionSourceFacts {
     pub fn derive_projection_abi_ids(&self) {}
 }
 
@@ -151,7 +187,7 @@ impl ProjectionSourceMetadata {
 
     const result = await runChecker(['--root', root]);
     assert.notEqual(result.code, 0, result.stdout);
-    assert.match(result.stderr, /compiler\/projection-input\/src\/lib\.rs:13/);
+    assert.match(result.stderr, /compiler\/projection-input\/src\/lib\.rs:\d+/);
     assert.match(result.stderr, /projection_input_pure_dto_api_phase_7_5/);
     assert.match(result.stderr, /known non-DTO public behavior/);
     assert.equal((result.stderr.match(/^DENY /gm) ?? []).length, 1, result.stderr);
@@ -236,7 +272,19 @@ async function write(root, relativePath, contents) {
 }
 
 function projectionInputFixture(contents) {
+  const shape = terminalPublicShapeRegistry.find((entry) => entry.owner === 'projection-input');
+  const declarations = [];
+  for (const [kind, names] of Object.entries(shape.publicItems)) {
+    for (const name of names) {
+      if (kind === 'struct' && name === 'ProjectionInput') {
+        continue;
+      }
+      declarations.push(projectionInputFixtureDeclaration(kind, name));
+    }
+  }
+  declarations.push(`pub use fixture_exports::{${shape.publicExports.join(', ')}};`);
   return `pub struct ProjectionInput {
+    callable_signatures: (),
     file_ir_units: (),
     lowering: (),
     resources: (),
@@ -244,7 +292,34 @@ function projectionInputFixture(contents) {
     source_metadata: (),
 }
 
+${declarations.join('\n')}
+
 ${contents}`;
+}
+
+function projectionInputFixtureDeclaration(kind, name) {
+  switch (kind) {
+    case 'const':
+      return `pub const ${name}: () = ();`;
+    case 'enum':
+      return `pub enum ${name} { Fixture }`;
+    case 'fn':
+      return `pub fn ${name}() {}`;
+    case 'mod':
+      return `pub mod ${name} {}`;
+    case 'static':
+      return `pub static ${name}: () = ();`;
+    case 'struct':
+      return `pub struct ${name};`;
+    case 'trait':
+      return `pub trait ${name} {}`;
+    case 'type':
+      return `pub type ${name} = ();`;
+    case 'union':
+      return `pub union ${name} { value: () }`;
+    default:
+      throw new Error(`unsupported projection-input fixture item kind: ${kind}`);
+  }
 }
 
 function runChecker(args) {
