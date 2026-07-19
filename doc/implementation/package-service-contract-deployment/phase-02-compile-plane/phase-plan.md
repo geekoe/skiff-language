@@ -338,7 +338,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
-| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H2、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03H2、T03I、T04C、T04D、R10H | 高；真实source验收恢复与证据刷新 |
 | F09D | [Terminal production re-acceptance](tasks/P2-F09D-production-reacceptance.md) | T03H2、T03I、T04C、T04D | 高；只读production owner验收 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |

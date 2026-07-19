@@ -2,14 +2,15 @@
 
 ## 目标
 
-在既有terminal任务以及T03A–I、T03H1、T04A–C、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
-ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
+在既有terminal任务以及T03A–I、T03H1–H2、T04A–D、R10H全部合入，且同一候选上的R10I与F09D均PASS、
+旧 integration tail 从未进入新 branch ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T03H1、T04A–C、R10H、R10I和所有高风险任务证据。
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T03H1–H2、T04A–D、R10H，以及同一最终候选上
+  PASS的R10I/F09D高风险证据。
 
 ## 完成态
 
@@ -27,6 +28,8 @@ ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证�
 9. interface exact facts在source按ContractTypeId完成conformance，interface/executable共同使用opaque
    execution projection；canonical PackageArtifact public-instance path不生成或比较legacy OperationAbiRef/File IR
    semantic signature，compiled/projection-input也不从File IR/TypeResolutionModel重算interface conformance。
+10. source-declared、typed package、compiler-known与invalid interface使用单一owner分类，std public-path
+    normalization只有一个production owner。
 
 ## Gate
 

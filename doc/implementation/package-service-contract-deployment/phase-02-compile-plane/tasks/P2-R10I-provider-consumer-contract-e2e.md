@@ -10,9 +10,9 @@ types”“调用模型”与“Package编译”章节。
 
 ## 依赖与写域
 
-- 依赖P2-T03E、P2-T03H1、P2-T03I、P2-T04C、P2-R10H；先前6/7失败和T03G/T04B后的7/7证据都只具有
-  历史价值，不能替代interface/public-instance owner切换后的刷新运行。
-- 独占`compiler/tests/service_conformance.rs`及必要的专用测试fixture；不修改production或common API。
+- 依赖P2-T03E、P2-T03H2、P2-T03I、P2-T04C、P2-T04D、P2-R10H；先前6/7、7/7与波次9g的4/7
+  证据都只具有历史价值，不能替代两项9h repair合流后的刷新运行。
+- 只读消费`compiler/tests/service_conformance.rs`及专用测试fixture；不修改fixture、production或common API。
 
 ## 完成态
 
@@ -37,9 +37,10 @@ types”“调用模型”与“Package编译”章节。
 
 ## 执行合同
 
-- DAG：波次9g evidence refresh节点；与production复验共同通过后解除T07/A01。风险：高；动态证据由本任务
+- DAG：波次9i evidence refresh节点；等待T03H2与T04D共同合流，与F09D production复验共同通过后解除T07。
+  风险：高；动态证据由本任务
   唯一拥有，A01只读复核。
-- worktree：`/Users/geek/workspace/skiff-p2-r10i-contract-e2e`；从含T03H1/T03I/T04C的integration HEAD以
+- worktree：`/Users/geek/workspace/skiff-p2-r10i-contract-e2e`；从同时含T03H2与T04D的同一integration HEAD以
   detached HEAD创建，只复用已合入的同一fixture，不另建第二套fixture。
 - 本节点只刷新动态证据，不修改测试或production code，不创建提交。若现有fixture失败，直接回报精确FAIL，
   不在验收节点内修复或为通过测试改写断言。
