@@ -72,7 +72,9 @@ pub use config_requirements::{
 pub use config_usage::ConfigSourceSpan;
 pub use contract_type_resolution::{
     SourceCallableSignatureFacts, SourceExecutableReceiver, SourceExecutableSignature,
-    SourceExecutableSignatureFacts,
+    SourceExecutableSignatureFacts, SourceInterfaceConformanceKey, SourceInterfaceMethodKey,
+    SourceInterfaceRequirementSignature, SourceInterfaceSignatureFacts,
+    ValidatedSourceInterfaceConformance, ValidatedSourceInterfaceMethod,
 };
 pub use dependency_analysis::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,

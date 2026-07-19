@@ -11,6 +11,7 @@ use crate::{
 
 mod callables;
 mod executables;
+mod interfaces;
 mod types;
 mod validation;
 
@@ -86,6 +87,121 @@ pub enum SourceExecutableReceiver {
     None,
     Implicit { ty: PackageTypeRef },
     ExplicitParameter { parameter_index: usize },
+}
+
+/// Stable source key for one interface operation requirement.
+///
+/// The key deliberately carries source identity rather than a display-shaped
+/// `ServiceSymbol`: dependency aliases are never part of exact conformance.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceInterfaceMethodKey {
+    pub interface: SourceSymbolKey,
+    pub method: String,
+}
+
+/// Exact, pre-erasure interface operation requirement owned by source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceInterfaceRequirementSignature {
+    pub parameters: Vec<PackageCallableParameter>,
+    pub return_type: PackageTypeRef,
+    pub receiver: SourceExecutableReceiver,
+    pub interface_type_params: Vec<String>,
+    pub method_type_params: Vec<String>,
+    pub is_native: bool,
+    pub is_provider: bool,
+    pub is_static: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceInterfaceConformanceKey {
+    pub receiver: SourceSymbolKey,
+    pub interface: SourceSymbolKey,
+}
+
+/// One method whose exact requirement has been substituted and checked
+/// against its source executable before File IR erasure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedSourceInterfaceMethod {
+    pub key: SourceInterfaceMethodKey,
+    pub exact_requirement: SourceInterfaceRequirementSignature,
+    pub executable: SourceSymbolKey,
+    pub receiver_type: PackageTypeRef,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedSourceInterfaceConformance {
+    pub key: SourceInterfaceConformanceKey,
+    pub interface_arguments: Vec<PackageTypeRef>,
+    pub canonical_substitutions: BTreeMap<String, PackageTypeRef>,
+    pub methods: BTreeMap<String, ValidatedSourceInterfaceMethod>,
+}
+
+/// Canonical source owner for exact interface requirements and validated
+/// implementation conformances.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceInterfaceSignatureFacts {
+    requirements: BTreeMap<SourceInterfaceMethodKey, SourceInterfaceRequirementSignature>,
+    conformances: BTreeMap<SourceInterfaceConformanceKey, ValidatedSourceInterfaceConformance>,
+}
+
+impl SourceInterfaceSignatureFacts {
+    pub(crate) fn build(
+        parsed_sources: &[ParsedCompilerSource],
+        type_resolution: &TypeResolutionModel,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        executable_signatures: &SourceExecutableSignatureFacts,
+    ) -> Result<Self, String> {
+        interfaces::build_interface_signature_facts(
+            parsed_sources,
+            type_resolution,
+            dependency_analysis,
+            executable_signatures,
+        )
+    }
+
+    pub fn requirement(
+        &self,
+        key: &SourceInterfaceMethodKey,
+    ) -> Option<&SourceInterfaceRequirementSignature> {
+        self.requirements.get(key)
+    }
+
+    pub fn conformance(
+        &self,
+        key: &SourceInterfaceConformanceKey,
+    ) -> Option<&ValidatedSourceInterfaceConformance> {
+        self.conformances.get(key)
+    }
+
+    pub fn validated_method(
+        &self,
+        conformance: &SourceInterfaceConformanceKey,
+        method: &str,
+    ) -> Option<&ValidatedSourceInterfaceMethod> {
+        self.conformance(conformance)?.methods.get(method)
+    }
+
+    pub fn requirements(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &SourceInterfaceMethodKey,
+            &SourceInterfaceRequirementSignature,
+        ),
+    > {
+        self.requirements.iter()
+    }
+
+    pub fn conformances(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &SourceInterfaceConformanceKey,
+            &ValidatedSourceInterfaceConformance,
+        ),
+    > {
+        self.conformances.iter()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

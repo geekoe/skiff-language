@@ -947,12 +947,19 @@ fn validate_conformance_requirements(
         }
         let actual_params =
             method_params_for_requirement_compare(method, conformance, explicit_self);
-        if actual_params.len() != expected_params.len()
-            || actual_params
-                .iter()
-                .zip(&expected_params)
-                .any(|(actual, expected)| actual.ty != expected.ty)
-            || method.return_type != expected_return
+        let exact_source_owner_required = actual_params
+            .iter()
+            .chain(&expected_params)
+            .any(|param| contains_external_nominal(&param.ty, index))
+            || contains_external_nominal(&method.return_type, index)
+            || contains_external_nominal(&expected_return, index);
+        if !exact_source_owner_required
+            && (actual_params.len() != expected_params.len()
+                || actual_params
+                    .iter()
+                    .zip(&expected_params)
+                    .any(|(actual, expected)| actual.ty != expected.ty)
+                || method.return_type != expected_return)
         {
             return Err(CompileError::Semantic(format!(
                 "type {} method {} signature does not match interface {}; expected params {:?} return {:?}, got params {:?} return {:?}",
@@ -973,6 +980,53 @@ fn validate_conformance_requirements(
         }
     }
     Ok(())
+}
+
+/// Contract-qualified names still arrive at the legacy structural interface
+/// index as alias-shaped service symbols. Their exact identity comparison is
+/// owned by `SourceInterfaceSignatureFacts`, which has validated contract
+/// dependencies and therefore must run before any execution erasure.
+fn contains_external_nominal(ty: &TypeRefIr, index: &InterfaceIndex) -> bool {
+    match ty {
+        TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
+            let key = SourceSymbolKey::new(
+                symbol
+                    .module_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.module_path),
+                &symbol.symbol,
+            );
+            !index.source_types.contains_key(&key) && !index.interfaces.contains_key(&key)
+        }
+        TypeRefIr::Native { args, .. } => {
+            args.iter().any(|arg| contains_external_nominal(arg, index))
+        }
+        TypeRefIr::Record { fields } => fields
+            .values()
+            .any(|field| contains_external_nominal(field, index)),
+        TypeRefIr::Union { items } => items
+            .iter()
+            .any(|item| contains_external_nominal(item, index)),
+        TypeRefIr::Nullable { inner } => contains_external_nominal(inner, index),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            params
+                .iter()
+                .any(|param| contains_external_nominal(&param.ty, index))
+                || contains_external_nominal(return_type, index)
+        }
+        TypeRefIr::AnyInterface { interface } => interface
+            .canonical_type_args
+            .iter()
+            .any(|arg| contains_external_nominal(arg, index)),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => false,
+    }
 }
 
 fn validate_requirement_self_usage(

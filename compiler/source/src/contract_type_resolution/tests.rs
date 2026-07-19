@@ -17,6 +17,7 @@ use crate::{
 use super::*;
 
 mod executable_signatures;
+mod interface_signatures;
 
 #[test]
 fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain() {

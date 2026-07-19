@@ -125,6 +125,7 @@ pub struct PackageSourceModel {
     callable_effects: SourceCallableEffectFacts,
     callable_provenance: SourceCallableProvenanceFacts,
     executable_signatures: super::SourceExecutableSignatureFacts,
+    interface_signatures: super::SourceInterfaceSignatureFacts,
     callable_signatures: super::SourceCallableSignatureFacts,
     resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
@@ -247,6 +248,15 @@ impl PackageSourceModel {
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source executable signature resolution failed:\n- {message}"),
         })?;
+        let interface_signatures = super::SourceInterfaceSignatureFacts::build(
+            &input.parsed_sources,
+            &type_resolution,
+            input.dependency_analysis,
+            &executable_signatures,
+        )
+        .map_err(|message| PublicationError::ContractValidation {
+            message: format!("source interface signature resolution failed:\n- {message}"),
+        })?;
         let callable_signatures = super::SourceCallableSignatureFacts::build(
             &input.parsed_sources,
             &export_bindings,
@@ -280,6 +290,7 @@ impl PackageSourceModel {
             callable_effects,
             callable_provenance,
             executable_signatures,
+            interface_signatures,
             callable_signatures,
             resolved_call_targets,
             source_identity: input.source_identity,
@@ -354,6 +365,10 @@ impl PackageSourceModel {
 
     pub fn executable_signatures(&self) -> &super::SourceExecutableSignatureFacts {
         &self.executable_signatures
+    }
+
+    pub fn interface_signatures(&self) -> &super::SourceInterfaceSignatureFacts {
+        &self.interface_signatures
     }
 
     pub fn callable_signatures(&self) -> &super::SourceCallableSignatureFacts {

@@ -1813,7 +1813,7 @@ impl TypeResolutionModel {
         })
     }
 
-    fn resolve_source_type_key(
+    pub(crate) fn resolve_source_type_key(
         &self,
         name: &str,
         context: &TypeResolutionContext<'_>,
