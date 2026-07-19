@@ -15,8 +15,8 @@ mod package_callable_signatures;
 
 pub use callable_effects::{ProjectionCallableEffectFacts, ProjectionExecutableKey};
 pub use package_callable_signatures::{
-    DuplicateProjectionPackageCallableSignature, ProjectionPackageCallableKey,
-    ProjectionPackageCallableSignatureFacts,
+    canonical_package_public_path, DuplicateProjectionPackageCallableSignature,
+    ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
 };
 
 #[derive(Debug, Clone)]

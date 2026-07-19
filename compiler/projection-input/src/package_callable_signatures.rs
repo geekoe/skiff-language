@@ -4,6 +4,18 @@ use skiff_artifact_model::PackageCallableSignature;
 
 use crate::ProjectionExecutableKey;
 
+/// Normalize one source API path into the package-scoped path used by both
+/// compiled handoff keys and PackageArtifact callable targets.
+pub fn canonical_package_public_path(package_id: &str, public_path: &str) -> String {
+    if package_id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID
+        && !public_path.starts_with("std.")
+    {
+        format!("std.{public_path}")
+    } else {
+        public_path.to_string()
+    }
+}
+
 /// Stable key for one package API callable. Public path remains part of the
 /// key because two API entries may intentionally select the same executable
 /// while exposing distinct typed signatures.
@@ -119,6 +131,22 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn package_public_path_normalization_has_one_std_scope() {
+        assert_eq!(
+            canonical_package_public_path(skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID, "io"),
+            "std.io"
+        );
+        assert_eq!(
+            canonical_package_public_path(
+                skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID,
+                "std.io"
+            ),
+            "std.io"
+        );
+        assert_eq!(canonical_package_public_path("example.com/pkg", "io"), "io");
+    }
 
     #[test]
     fn duplicate_callable_signature_key_is_rejected() {

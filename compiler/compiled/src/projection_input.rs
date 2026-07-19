@@ -15,8 +15,7 @@ use skiff_compiler_projection_input::{
     ExportPublicInstanceProjection, ExportSchemaProjection, ExportSymbolProjection,
     PackageEntrypointProjectionFacts, ProjectionAbiDeclarationIds, ProjectionCallableEffectFacts,
     ProjectionDeclarationKey, ProjectionEntrypointAbiIndex, ProjectionExecutableKey,
-    ProjectionInput, ProjectionLoweringFacts, ProjectionPackageCallableKey,
-    ProjectionPackageCallableSignatureFacts, ProjectionSourceDeclarationKind,
+    ProjectionInput, ProjectionLoweringFacts, ProjectionSourceDeclarationKind,
     ProjectionSourceFacts, ProjectionSourceFactsParts, ProjectionSourceMetadata,
     ProjectionSourceSymbolKey, ProjectionSyntheticEntrypointExecutable,
     ProjectionSyntheticEntrypointExecutableKind, ProjectionSyntheticEntrypointIndex,
@@ -36,9 +35,11 @@ use skiff_compiler_source::{
     ResolvedCallTarget, SourceSymbolKey,
 };
 
-use crate::CompiledPackage;
+use crate::{package_callable_signatures, CompiledPackage, ProjectionInputBuildError};
 
-pub fn build_projection_input(compiled: &CompiledPackage) -> ProjectionInput {
+pub fn build_projection_input(
+    compiled: &CompiledPackage,
+) -> Result<ProjectionInput, ProjectionInputBuildError> {
     let model = compiled.compile_model();
     let file_ir_units = compiled.file_ir_units().to_vec();
     let source_metadata = compiled
@@ -68,124 +69,18 @@ pub fn build_projection_input(compiled: &CompiledPackage) -> ProjectionInput {
         compiled.service_actor_metadata().to_vec(),
         PackageEntrypointProjectionFacts::default(),
     );
-    let callable_signatures =
-        package_callable_signatures(model, compiled.file_ir_units(), model.policy().package_id());
-    ProjectionInput::new(
+    let callable_signatures = package_callable_signatures::build_package_callable_signatures(
+        model,
+        compiled.file_ir_units(),
+        model.policy().package_id(),
+    )?;
+    Ok(ProjectionInput::new(
         file_ir_units,
         source_metadata,
         source,
         lowering,
         callable_signatures,
-    )
-}
-
-fn package_callable_signatures(
-    model: &PackageSourceModel,
-    file_ir_units: &[FileIrUnit],
-    package_id: &str,
-) -> ProjectionPackageCallableSignatureFacts {
-    let units_by_module = file_ir_units
-        .iter()
-        .map(|unit| (unit.module_path.as_str(), unit))
-        .collect::<BTreeMap<_, _>>();
-    let entries = model
-        .callable_signatures()
-        .iter()
-        .map(|(public_path, signature)| {
-            let (module_path, executable_index) =
-                package_callable_target(model, &units_by_module, public_path);
-            (
-                ProjectionPackageCallableKey::new(
-                    scoped_public_path(package_id, public_path),
-                    module_path,
-                    executable_index,
-                ),
-                signature.clone(),
-            )
-        });
-    ProjectionPackageCallableSignatureFacts::try_from_entries(entries)
-        .expect("source callable signature keys must be unique after compiled handoff")
-}
-
-fn package_callable_target(
-    model: &PackageSourceModel,
-    units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    public_path: &str,
-) -> (String, u32) {
-    if let Some(binding) = model.export_bindings().public_callables().get(public_path) {
-        return executable_target(
-            units_by_module,
-            public_path,
-            &binding.source_module,
-            &binding.source_symbol,
-        );
-    }
-
-    let (instance, method_name) = model
-        .export_bindings()
-        .public_instances()
-        .values()
-        .find_map(|instance| {
-            public_path
-                .strip_prefix(&format!("{}.", instance.public_path))
-                .filter(|method_name| !method_name.contains('.'))
-                .map(|method_name| (instance, method_name))
-        })
-        .unwrap_or_else(|| {
-            panic!("source callable signature {public_path} has no package API binding")
-        });
-    let receiver = package_public_instance_receiver_symbol_for_adapter(
-        units_by_module,
-        &instance.source_module,
-        &instance.source_symbol,
-    )
-    .unwrap_or_else(|| {
-        panic!(
-            "public-instance callable signature {public_path} cannot resolve receiver {}.{}",
-            instance.source_module, instance.source_symbol
-        )
-    });
-    let source_symbol = skiff_compiler_source::semantic::impl_method_declaration_name(
-        &receiver.symbol,
-        method_name,
-    );
-    executable_target(
-        units_by_module,
-        public_path,
-        &receiver.module_path,
-        &source_symbol,
-    )
-}
-
-fn executable_target(
-    units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    public_path: &str,
-    module_path: &str,
-    source_symbol: &str,
-) -> (String, u32) {
-    let unit = units_by_module.get(module_path).unwrap_or_else(|| {
-        panic!("source callable signature {public_path} targets missing module {module_path}")
-    });
-    let declaration = unit
-        .declarations
-        .executables
-        .get(source_symbol)
-        .unwrap_or_else(|| {
-            panic!(
-                "source callable signature {public_path} targets missing executable {module_path}.{source_symbol}"
-            )
-        });
-    (module_path.to_string(), declaration.executable_index)
-}
-
-fn scoped_public_path(package_id: &str, public_path: &str) -> String {
-    if package_id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID
-        && !public_path.starts_with("std.")
-    {
-        format!("std.{public_path}")
-    } else {
-        public_path.to_string()
-    }
+    ))
 }
 
 fn callable_semantic_facts(
@@ -421,7 +316,7 @@ fn export_bindings_projection(
             .public_instances()
             .iter()
             .map(|(key, value)| {
-                let receiver = package_public_instance_receiver_symbol_for_adapter(
+                let receiver = package_callable_signatures::resolve_public_instance_receiver_symbol(
                     &file_units_by_module,
                     &value.source_module,
                     &value.source_symbol,
@@ -495,42 +390,6 @@ fn public_symbol_projection(
         source_module: symbol.source_module.clone(),
         source_symbol: symbol.source_symbol.clone(),
         kind: public_symbol_kind_projection(symbol.kind),
-    }
-}
-
-fn package_public_instance_receiver_symbol_for_adapter(
-    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    const_module: &str,
-    const_symbol: &str,
-) -> Option<ServiceSymbolRef> {
-    let unit = file_units_by_module.get(const_module).copied()?;
-    let const_decl = unit.declarations.constants.get(const_symbol)?;
-    let constant = unit.constants.get(const_decl.const_index as usize)?;
-    package_nominal_service_symbol_for_adapter(file_units_by_module, const_module, &constant.ty)
-}
-
-fn package_nominal_service_symbol_for_adapter(
-    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
-    module_path: &str,
-    ty: &TypeRefIr,
-) -> Option<ServiceSymbolRef> {
-    match ty {
-        TypeRefIr::LocalType { type_index } => {
-            let unit = file_units_by_module.get(module_path).copied()?;
-            let decl = unit.type_table.get(*type_index as usize)?;
-            Some(ServiceSymbolRef {
-                module_path: module_path.to_string(),
-                symbol: decl.name.clone(),
-            })
-        }
-        TypeRefIr::ServiceSymbol { symbol } => {
-            let unit = file_units_by_module
-                .get(symbol.module_path.as_str())
-                .copied()?;
-            unit.declarations.types.get(&symbol.symbol)?;
-            Some(symbol.clone())
-        }
-        _ => None,
     }
 }
 

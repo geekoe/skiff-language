@@ -48,7 +48,7 @@ pub fn compile_package(
         .service_call_ref_closure()
         .into_iter()
         .collect::<Vec<_>>();
-    let projection = skiff_compiler_compiled::projection_input::build_projection_input(&compiled)
+    let projection = skiff_compiler_compiled::projection_input::build_projection_input(&compiled)?
         .with_resources(resource_projection_inputs(&input.package.resources));
     let package_requirements = complete_package_requirement_closure(
         &package_id,

@@ -5,7 +5,10 @@ use skiff_compiler_source::{
     PackageSourceModel, PublicationApiSeed, SourceCompileError,
 };
 
+mod package_callable_signatures;
 pub mod projection_input;
+
+pub use package_callable_signatures::ProjectionInputBuildError;
 
 #[cfg(feature = "test-support")]
 use skiff_compiler_source::{ConfigRequirementSet, ExportBindingModel};

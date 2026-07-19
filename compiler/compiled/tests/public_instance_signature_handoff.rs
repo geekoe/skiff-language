@@ -90,7 +90,7 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
     .unwrap();
     let lowered = skiff_compiler_lowering::lower(&model).unwrap();
     let compiled = CompiledPackage::new(model, lowered);
-    let projection = build_projection_input(&compiled);
+    let projection = build_projection_input(&compiled).unwrap();
     let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: "example.com/public-instance",
         package_version: "1.0.0",

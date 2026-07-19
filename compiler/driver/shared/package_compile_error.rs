@@ -18,6 +18,11 @@ pub enum PackageCompileError {
     ContractValidation { message: String },
     #[error("invalid root reference in {path}:\n{message}")]
     RootPathReference { path: String, message: String },
+    #[error("compiled projection input is invalid: {source}")]
+    ProjectionInput {
+        #[from]
+        source: skiff_compiler_compiled::ProjectionInputBuildError,
+    },
 }
 
 impl From<skiff_compiler_source::SourceCompileError> for PackageCompileError {

@@ -4,7 +4,8 @@ use skiff_artifact_model::{
     OperationCallableKind, OperationTargetRef, PackageCallableId, PackageExportIndex,
 };
 use skiff_compiler_projection_input::{
-    ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
+    canonical_package_public_path, ProjectionPackageCallableKey,
+    ProjectionPackageCallableSignatureFacts,
 };
 
 use crate::{error::ProjectionError, package_artifact::api_exports::PackageExports};
@@ -69,7 +70,7 @@ pub(super) fn add_direct_impl_method_targets(
     let explicit_paths = api_exports
         .symbols
         .keys()
-        .map(|path| scoped_public_path(package_id, path))
+        .map(|path| canonical_package_public_path(package_id, path))
         .collect::<BTreeSet<_>>();
     let target_paths = targets
         .iter()
@@ -122,20 +123,26 @@ pub(super) fn attach_canonical_signatures(
             ),
         ));
     }
-    Ok(targets
+    targets
         .into_iter()
-        .map(|target| CanonicalCallable {
-            signature: signatures
-                .signature(&callable_signature_key(&target))
-                .expect("exact signature coverage checked")
-                .clone(),
-            public_path: target.public_path,
-            callable_id: target.callable_id,
-            owner_module: target.owner_module,
-            executable_index: target.executable_index,
-            target: target.target,
+        .map(|target| {
+            let key = callable_signature_key(&target);
+            let signature = signatures.signature(&key).cloned().ok_or_else(|| {
+                projection_error(
+                    package_id,
+                    format!("canonical callable signature `{key}` is missing after coverage check"),
+                )
+            })?;
+            Ok(CanonicalCallable {
+                signature,
+                public_path: target.public_path,
+                callable_id: target.callable_id,
+                owner_module: target.owner_module,
+                executable_index: target.executable_index,
+                target: target.target,
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn callable_signature_key(target: &CallableTarget) -> ProjectionPackageCallableKey {
@@ -148,14 +155,4 @@ fn callable_signature_key(target: &CallableTarget) -> ProjectionPackageCallableK
 
 fn package_callable_id(package_id: &str, public_path: &str) -> PackageCallableId {
     PackageCallableId::new(format!("pkg-callable:{package_id}:{public_path}"))
-}
-
-fn scoped_public_path(package_id: &str, public_path: &str) -> String {
-    if package_id == skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID
-        && !public_path.starts_with("std.")
-    {
-        format!("std.{public_path}")
-    } else {
-        public_path.to_string()
-    }
 }
