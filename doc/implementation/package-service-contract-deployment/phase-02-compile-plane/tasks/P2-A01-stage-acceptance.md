@@ -36,6 +36,10 @@
     File IR/display string反推或blanket Local producer，lowering也没有第二份contract operation index。
 14. 全部source executable从唯一exact facts投影File IR execution representation；contract leaf只成为opaque
     unknown且不携带identity。不存在dot dependency-call兼容、旧remote-only AST owner或ServiceSymbol fallback。
+15. interface operation拥有source exact facts，impl conformance比较ContractTypeId而非alias-shaped
+    ServiceSymbol；interface File IR同样只含opaque execution representation。PackageArtifact public-instance
+    projection只发现execution target，compiled/projection-input不能重算conformance，projection不能从File IR
+    生成/比较OperationAbiRef或semantic signature。
 
 ## 输出
 

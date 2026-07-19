@@ -2,14 +2,14 @@
 
 ## 目标
 
-在既有terminal任务以及T03A–G、T04A/B、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
+在既有terminal任务以及T03A–I、T04A–C、R10H、R10I全部合入，且旧 integration tail 从未进入新 branch
 ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖phase-plan列出的全部terminal任务，特别是T03A–G、T04A/B、R10H、R10I和所有高风险任务证据。
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–I、T04A–C、R10H、R10I和所有高风险任务证据。
 
 ## 完成态
 
@@ -24,6 +24,9 @@ ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证�
    Local，并且provider/consumer E2E未读取provider/deployment。
 8. slash dependency address、all-executable exact source facts和opaque File IR execution representation均有反向
    证据：无dot compatibility、无旧AST owner、无contract ServiceSymbol/display fallback。
+9. interface exact facts在source按ContractTypeId完成conformance，interface/executable共同使用opaque
+   execution projection；canonical PackageArtifact public-instance path不生成或比较legacy OperationAbiRef/File IR
+   semantic signature，compiled/projection-input也不从File IR/TypeResolutionModel重算interface conformance。
 
 ## Gate
 

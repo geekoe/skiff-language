@@ -93,8 +93,17 @@ execution type representation，不重复保存contract nominal identity：
 
 因此File IR无需新增contract type wire variant。Lowering必须消费source-owned exact executable signature facts
 做上述唯一确定性投影，不能重新解析AST type text，也不能用`ServiceSymbol`或display string代替contract
-identity。当前runtime若仍从File IR signature推导service boundary materialization，可以在后续runtime阶段暂时
-fail closed；终态必须改读ServiceContract descriptor，不能据此反向扩张File IR语义。
+identity。interface operation同样先形成source-owned exact signature facts：impl/interface conformance在擦除前按
+`ContractTypeId`完成，随后interface与executable共同使用上述execution projection。contract来源的
+`ServiceSymbol`不能留在任何File IR callable/interface signature中。
+
+PackageArtifact的public-instance discovery只需要`publicPath + receiver execution target`。它不得把File IR
+execution signature转成public signature、执行conformance比较或生成`OperationAbiRef`/operation protocol
+identity；exact Local ABI继续只由source exact facts经compiled/projection-input handoff附着。若legacy runtime
+adapter仍需要旧operation DTO，只能在canonical PackageArtifact之外消费typed semantic input生成。
+
+当前runtime若仍从File IR signature推导service boundary materialization，可以在后续runtime阶段暂时fail
+closed；终态必须改读ServiceContract descriptor，不能据此反向扩张File IR语义。
 
 每个进入Package API、因而可能被deployment选择的callable还携带一个显式boundary状态：
 
@@ -396,10 +405,13 @@ ServiceDeploymentInput
 ```
 
 PackageSourceModel拥有name/type resolution、public API graph、effect/provenance与dependency facts。
-它还为全部function/impl method拥有exact executable signature facts；public callable signature只是同一事实表
-按public path产生的view。Lowering只消费typed source facts，把exact source type投影为File IR execution
+它还为全部function/impl method拥有exact executable signature facts，并为全部interface operation拥有exact
+requirement facts；public callable signature只是executable事实表按public path产生的view。interface conformance
+只比较这两类exact facts。Lowering只消费typed source facts，把exact source type投影为File IR execution
 representation。package direct call降低为`PackageCallable` target；service call降低为`ServiceCallRef`。
-Package projection不读deployment配置。
+compiled/projection-input只转交source-validated interface binding/method key与execution target所需结构事实，
+不从File IR或`TypeResolutionModel`重算conformance。Package projection不读deployment配置，也不从File IR
+execution signature重做source conformance或ABI identity。
 
 Service call lowering只生成`ServiceCallRef`和contract value plan refs。Assembly linking为每个
 ActivationContext生成service binding vector / thunk；它不是stub package，也不让consumer依赖provider

@@ -205,10 +205,19 @@ T03E + T03F
   └── T04B signature handoff owner cleanup / evidence refresh
 
 T03G + T04B
-  └── R10I resume provider/consumer contract E2E
+  ├── R10I resume provider/consumer contract E2E（7/7）
+  └── F09B production re-acceptance（public-instance exact handoff FAIL historical evidence）
 
-R10I
-  └── T07 evidence refresh -> A01 independent re-acceptance
+F09B（只作为证据，不是活动DAG节点）
+  └── interface仍以ServiceSymbol做conformance/execution owner -> T03H exact interface signature facts
+
+T03H
+  ├── T03I interface File IR execution projection
+  └── T04C compiled/projection public-instance owner cutover
+
+T03I + T04C
+  └── R10I evidence refresh + production re-acceptance
+      └── T07 evidence refresh -> A01 independent re-acceptance
 ```
 
 | 波次 | 并行任务 | 说明 |
@@ -235,8 +244,11 @@ R10I
 | 8e | 未执行 | F09A阻断旧T07/A01，不产生无效gate证据 |
 | 9a | T03E、T03F | `/` dependency address与all-executable exact source facts并行检查点 |
 | 9b | T03G、T04B | File IR execution representation与signature handoff owner cleanup并行 |
-| 9c | R10I、production复验 | 恢复真实source E2E，同时只读复验受影响production链 |
-| 9d | T07 → A01 | 唯一最终gate后独立阶段验收 |
+| 9c | R10I、F09B production复验 | 真实source E2E 7/7；独立复验暴露interface/public-instance第二owner |
+| 9d | T03H | 先冻结source exact interface/conformance query checkpoint |
+| 9e | T03I、T04C | interface execution projection与compiled→projection public-instance cutover并行收敛 |
+| 9f | R10I evidence refresh、production复验 | 只重跑被T03H/T03I/T04C失效的真实source与production证据 |
+| 9g | T07 → A01 | 唯一最终gate后独立阶段验收 |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -284,7 +296,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T03E | [Canonical dependency source address](tasks/P2-T03E-canonical-dependency-source-address.md) | T03A–D、`/`决策 | 高；syntax/source address checkpoint |
 | T03F | [Source executable signature facts](tasks/P2-T03F-source-executable-signature-facts.md) | T03B、T03C、方案A | 高；source executable facts checkpoint |
 | T03G | [File IR execution type representation](tasks/P2-T03G-file-ir-execution-carrier.md) | T03E、T03F | 高；lowering execution handoff |
+| T03H | [Exact interface signature facts](tasks/P2-T03H-exact-interface-signature-facts.md) | T03F | 高；source/interface semantic checkpoint |
+| T03I | [Interface File IR execution projection](tasks/P2-T03I-interface-execution-projection.md) | T03G、T03H | 高；interface execution handoff |
 | T04B | [Signature handoff owner cleanup](tasks/P2-T04B-signature-handoff-owner-cleanup.md) | T03F、T04A | 中高；compiled/projection owner repair |
+| T04C | [Public-instance signature owner cutover](tasks/P2-T04C-public-instance-signature-owner-cutover.md) | T03H、T04B | 高；compiled/projection public-instance checkpoint |
 | T06 | [Legacy runtime/test consumer adapter](tasks/P2-T06-legacy-consumers.md) | 已取消 | 不进入新 integration |
 | R02 | [Explicit contract-operation route binding](tasks/P2-R02-contract-operation-route-binding.md) | 延后 Phase 03/04 | 不通过旧 runtime shell 落地 |
 | R03 | [Exact canonical payload symbols](tasks/P2-R03-exact-canonical-payload-symbols.md) | `9ca2547` | 中；只移植 canonical patch |
@@ -304,10 +319,10 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | R10G | [Shared fixture file-write owner](tasks/P2-R10G-shared-fixture-file-write.md) | R10B、R10C、R10E | 中；review abstraction repair |
 | R10F | [Std package imports fixture](tasks/P2-R10F-std-package-imports-fixture.md) | R10G | 高；cargo tests blocker |
 | R10H | [Typed contract fixture checkpoint](tasks/P2-R10H-typed-contract-fixture-checkpoint.md) | R10 | 中；programmatic contract input |
-| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03G、T04B、R10H | 高；真实source验收恢复 |
+| R10I | [Provider/consumer contract E2E](tasks/P2-R10I-provider-consumer-contract-e2e.md) | T03E、T03I、T04C、R10H | 高；真实source验收恢复与证据刷新 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–G、T04A/B、R10H、R10I及既有terminal任务 | gate owner |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–I、T04A–C、R10H、R10I及既有terminal任务 | gate owner |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
@@ -379,6 +394,11 @@ fixture 和结果记录，不新增语义。A01 只读验收。
   不得修改对方核心模块；根facade小冲突由后完成者基于checkpoint收敛。
 - T03G独占source exact facts到File IR execution representation的唯一lowering投影，删除AST/display reparse和
   ServiceSymbol fallback；T04B独占compiled/projection-input/projection signature mapping/normalization cleanup。
+- T03H独占source interface operation exact facts、ContractTypeId conformance与validated query API；不得修改
+  lowering/compiled/projection。T03I随后独占interface lowering对T03G execution projection的复用；T04C与它
+  并行，独占compiled/projection-input的source-validated public-instance handoff及canonical PackageArtifact内部
+  execution target/consumer。T03I/T04C不得修改对方生产写域；T04C不得用File IR/TypeResolutionModel或legacy
+  OperationAbiRef恢复semantic owner，组合证据只在共同合流后有效。
 - R10 独占 `compiler/tests/common/**` shared fixture checkpoint；R10B/R10C/R10D 只能消费其 API，不能各自
   复制 compile pipeline、dependency graph、artifact reader 或 contract builder。
 - R10A 在 R10 后独占 `compiler/tests/common/**` 的最后 API 修正、一个 representative lane probe target 与其
@@ -430,6 +450,9 @@ canonical File IR 的旧 ServiceDependencySymbol producer = 0
 dependency call 的 dot compatibility producer/fixture = 0
 旧 RemotePublicInstanceSource AST owner = 0
 contract-typed executable 的 File IR ServiceSymbol/display fallback = 0
+contract-typed interface operation 的 File IR ServiceSymbol/display fallback = 0
+canonical PackageArtifact public-instance path 的 OperationAbiRef / File IR signature conformance owner = 0
+compiled/projection-input public-instance path 的 implements_interface / package_interface_methods 重算DTO = 0
 compiler production 中 PublicationAbiUnit / PackageUnit / ServiceUnit / serviceAssembly producer = 0
 compiler production 中 legacy_runtime_adapter / compatibility / fallback allowlist = 0
 ```
