@@ -2,18 +2,21 @@
 
 ## 目标
 
-在既有terminal任务以及T03A–J、T03H1–H2、T04A–D、R10H全部合入，且同一候选上的R10I与F09D均PASS、
+在既有terminal任务以及T03A–J、T03H1–H2、T04A–D、T05C13、R10H全部合入，且同一候选上的R10I与F09D均PASS、
 旧 integration tail 从未进入新 branch ancestry后，运行一次阶段gate、修复纯机械fixture、记录精确证据。
 不得新增语义或顺手重构。
 
 ## 依赖与 worktree
 
 - 直接在Phase02 integration worktree执行，不另建task worktree。
-- 依赖phase-plan列出的全部terminal任务，特别是T03A–J、T03H1–H2、T04A–D、R10H，以及同一最终候选上
+- 依赖phase-plan列出的全部terminal任务，特别是T03A–J、T03H1–H2、T04A–D、T05C13、R10H，以及同一最终候选上
   PASS的R10I/F09D高风险证据。
 - 波次9j已在`2bb5d3e`唯一运行foundation与compiler总gate：foundation 281/0/1 PASS；compiler因canonical `/`
   fixture和T03J source blocker FAIL。fixture修复已提交为`e3cbffd`；T03J不触及foundation范围，因此恢复时不得
   重跑foundation或compiler总gate，只运行受影响的exact compiler repair probe与尚未执行的结构gate。
+- 波次9m已在`3b34570`运行exact runtime_slots repair probe与identity self-test/production scan并PASS；boundary
+  首次运行因checker仍冻结T04A–D之前shape而9-DENY。T05C13只改boundary checker，因此波次9o不得重跑上述
+  PASS证据，只重新执行boundary并继续尚未执行的DAG/public-API/rustfmt/diff。
 
 ## 完成态
 
@@ -39,12 +42,12 @@
 ## Gate
 
 ```bash
-# 9j已唯一运行，恢复时引用已有证据，不重跑：
+# 9j/9m已唯一运行，恢复时引用已有证据，不重跑：
 # node scripts/verify.mjs --only foundation
 # node scripts/verify.mjs --only compiler
-cargo test -p skiff-compiler --test runtime_slots map_keys_and_for_in_lower_to_typed_slots -- --exact --nocapture
-node scripts/check-artifact-identity-single-source.mjs --self-test
-node scripts/check-artifact-identity-single-source.mjs
+# cargo test -p skiff-compiler --test runtime_slots map_keys_and_for_in_lower_to_typed_slots -- --exact --nocapture
+# node scripts/check-artifact-identity-single-source.mjs --self-test
+# node scripts/check-artifact-identity-single-source.mjs
 node scripts/check-compiler-boundaries.mjs
 node scripts/check-compiler-crate-dag.mjs
 node scripts/check-crate-public-api.mjs --all-configured

@@ -7,7 +7,9 @@ facts与public-instance projection仍有第二owner。T03H/T03I/T04C/T03H1合入
 仅4/7通过；独立F09D同时确认该blocker与std public-path normalization重复owner。T03H2/T04D及复验完成后
 候选`2bb5d3e`的R10I/F09D均PASS；波次9j T07的foundation 281/0/1 PASS，但compiler首次总gate暴露并已提交
 canonical `/` fixture修复`e3cbffd`，同时发现resolved LocalType debug文本被source exact projector重新parse的
-T03J blocker。T03J及R10I/F09D复验完成后恢复T07剩余gate，本文旧命令只保留历史证据价值。
+T03J blocker。T03J合入后的候选`3b34570`上R10I/F09D、exact runtime_slots与identity双gate均PASS；boundary
+首次运行因checker仍冻结T04A–D之前的public shape与test-only reachability而9-DENY。T05C13完成后只复验
+boundary并继续剩余gate，本文旧命令只保留历史证据价值。
 
 ## 1. 候选状态
 

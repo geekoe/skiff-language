@@ -238,7 +238,13 @@ T07 findings
 
 e3cbffd + T03J
   └── R10I evidence refresh + F09D production re-acceptance
-      └── T07 remaining gate resume -> A01 independent re-acceptance
+      └── T07 remaining gate resume（exact/identity PASS；boundary FAIL historical evidence）
+
+T07 boundary finding
+  └── frozen public shape与test-only module reachability过期 -> T05C13 terminal boundary checker refresh
+
+T05C13
+  └── T07 boundary + remaining gate resume -> A01 independent re-acceptance
 ```
 
 | 波次 | 并行任务 | 说明 |
@@ -275,7 +281,9 @@ e3cbffd + T03J
 | 9j | T07 attempt | foundation 281/0/1 PASS；compiler首次总gate暴露dot fixture与resolved expression projection blocker |
 | 9k | T03J | 修复resolved IR经debug text重解析和derived exact sidecar丢失 |
 | 9l | R10I evidence refresh、F09D production复验 | 只重跑被T03J source改动失效的真实source与production证据 |
-| 9m | T07 resume → A01 | 不重跑仍有效总gate，只闭环compiler repair probe并运行尚未执行的结构gate |
+| 9m | T07 resume | exact runtime_slots与identity双gate PASS；boundary首次运行9-DENY，剩余gate停止 |
+| 9n | T05C13 | 精确刷新terminal frozen shape与cfg(test)文件可达性，禁止宽allow-list |
+| 9o | T07 boundary/remaining resume → A01 | 只重跑失效boundary并运行尚未执行的DAG/public-API/rustfmt/diff |
 
 T06/R02/R05/R07/R08/R09 位于被放弃的 integration tail，不进入新分支 ancestry；对应终态能力在
 Phase 03–05 直接实现。R12 的“在污染 tree 上清理”
@@ -315,6 +323,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | T05C10G | [Identity checker package-call owner coverage](tasks/P2-T05C10G-identity-checker-package-call-owner.md) | T05C10C、T05C10D、T05C10E、T05C10F | 高；checker fail-closed repair |
 | T05C11 | [Orphan publication owner cleanup](tasks/P2-T05C11-orphan-publication-owner-cleanup.md) | A01 finding、T07 candidate | 高；terminal model/adapter cleanup |
 | T05C12 | [Terminal compiler public-shape gate](tasks/P2-T05C12-terminal-compiler-public-shape-gate.md) | T05C11 | 高；renamed hidden-adapter negative gate |
+| T05C13 | [Terminal boundary checker refresh](tasks/P2-T05C13-terminal-boundary-checker-refresh.md) | T04A–D、T05C12、T07 finding | 高；terminal structure gate checkpoint |
 | T03A | [Canonical contract semantic facts](tasks/P2-T03A-canonical-contract-semantic-facts.md) | terminal checkpoint、qualified alias decision | 高；typed dependency checkpoint |
 | T03B | [Qualified contract type resolution](tasks/P2-T03B-qualified-contract-type-resolution.md) | T03A | 高；source type owner |
 | T03C | [Contract call type checking](tasks/P2-T03C-contract-call-type-checking.md) | T03A、T03B | 高；source expression owner |
@@ -354,7 +363,7 @@ fixture 和结果记录，不新增语义。A01 只读验收。
 | F09D | [Terminal production re-acceptance](tasks/P2-F09D-production-reacceptance.md) | T03H2、T03I、T03J、T04C、T04D | 高；只读production owner验收 |
 | R12 | [Terminal compile-plane cleanup](tasks/P2-R12-terminal-compile-plane-cleanup.md) | 已吸收 | 由 clean-base reconstruction 取代 |
 | R13 | [Canonical package DB schema validation](tasks/P2-R13-canonical-package-db-schema-validation.md) | T05 | 中；package DB/schema owner |
-| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–J、T03H1–H2、T04A–D、R10H、R10I、F09D及既有terminal任务 | gate owner；9j后恢复 |
+| T07 | [Phase integration gate](tasks/P2-T07-phase-integration.md) | T03A–J、T03H1–H2、T04A–D、T05C13、R10H、R10I、F09D及既有terminal任务 | gate owner；9o恢复 |
 | A01 | [Independent stage acceptance](tasks/P2-A01-stage-acceptance.md) | T07 | 独立只读验收 |
 
 ## 6. 写入冲突规则
