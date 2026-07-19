@@ -26,7 +26,7 @@ pub struct LinkedContractOperation {
 }
 
 impl LinkedContractOperation {
-    pub fn contract_operation_id(&self) -> &ContractOperationId {
+    pub fn operation_id(&self) -> &ContractOperationId {
         &self.contract_operation_id
     }
 
@@ -231,24 +231,21 @@ impl AssemblyLinkedCandidate {
                 actual: binding.contract.service_protocol_identity.clone(),
             });
         }
-        if !binding
-            .used_operations
-            .contains(call.contract_operation_id())
-        {
+        if !binding.used_operations.contains(call.operation_id()) {
             return Err(AssemblyServiceCallError::OperationNotBound {
                 activation: activation.clone(),
                 key,
-                operation: call.contract_operation_id().clone(),
+                operation: call.operation_id().clone(),
             });
         }
         if self
             .contracts
-            .operation_descriptor(&binding.contract, call.contract_operation_id())
+            .operation_descriptor(&binding.contract, call.operation_id())
             .is_none()
         {
             return Err(AssemblyServiceCallError::MissingContractOperation {
                 contract: binding.contract.clone(),
-                operation: call.contract_operation_id().clone(),
+                operation: call.operation_id().clone(),
             });
         }
         Ok(binding)

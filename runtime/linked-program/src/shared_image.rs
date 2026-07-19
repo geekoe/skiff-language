@@ -172,7 +172,7 @@ impl ActivationRelativeServiceCall {
         self.service_requirement_slot
     }
 
-    pub fn contract_operation_id(&self) -> &ContractOperationId {
+    pub fn operation_id(&self) -> &ContractOperationId {
         &self.contract_operation_id
     }
 

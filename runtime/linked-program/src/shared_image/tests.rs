@@ -216,7 +216,7 @@ fn service_calls_keep_caller_relative_tuple_and_never_select_provider_code() {
     assert_eq!(linked_a.service_requirement_slot(), 0);
     assert_eq!(linked_b.service_requirement_slot(), 0);
     assert_eq!(
-        linked_a.contract_operation_id(),
+        linked_a.operation_id(),
         &ContractOperationId::new("operation:echo")
     );
     assert_eq!(

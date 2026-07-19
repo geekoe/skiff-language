@@ -173,7 +173,7 @@ fn candidate_keeps_code_shared_and_service_bindings_activation_relative() {
     let provider_operation = candidate
         .activation(binding_a.provider())
         .unwrap()
-        .operation(service_call.contract_operation_id())
+        .operation(service_call.operation_id())
         .unwrap();
     assert_eq!(
         provider_operation.package_callable_id(),
