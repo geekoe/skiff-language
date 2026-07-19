@@ -9,10 +9,10 @@ use skiff_artifact_model::{
     ConstExport, ConstIr, ExecutableExport, ExecutableIr, FileIrUnit, PackageExportIndex,
     PackageRequirement, TypeExport,
 };
-use skiff_compiler_core::{
-    id::SKIFF_STD_PUBLICATION_ID,
-    package_interface_methods::{package_interface_method_signatures, PackageTypeSymbolIndex},
+use skiff_compiler_core::package_interface_methods::{
+    package_interface_method_signatures, PackageTypeSymbolIndex,
 };
+use skiff_compiler_projection_input::canonical_package_public_path;
 
 use crate::{
     error::ProjectionError,
@@ -183,11 +183,7 @@ pub(super) fn package_scoped_export_symbol(
     package: &PackageExportLinkProjectionInput<'_>,
     public_symbol: &str,
 ) -> String {
-    if package.package_id == SKIFF_STD_PUBLICATION_ID && !public_symbol.starts_with("std.") {
-        format!("std.{public_symbol}")
-    } else {
-        public_symbol.to_string()
-    }
+    canonical_package_public_path(package.package_id, public_symbol)
 }
 
 fn package_type_symbol_index(
