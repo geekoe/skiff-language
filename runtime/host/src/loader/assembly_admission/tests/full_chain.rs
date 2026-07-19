@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -14,14 +14,10 @@ use skiff_deployment::{
 use super::super::*;
 
 struct CountingResolver {
-    deployment_ref: ServiceDeploymentRef,
-    deployment: Arc<ServiceDeployment>,
-    contract_ref: ServiceContractRef,
-    contract: Arc<ServiceContract>,
-    package_ref: PackageArtifactRef,
-    package: Arc<PackageArtifact>,
-    file_ref: FileIrRef,
-    file: Arc<FileIrUnit>,
+    deployments: Vec<(ServiceDeploymentRef, Arc<ServiceDeployment>)>,
+    contracts: Vec<(ServiceContractRef, Arc<ServiceContract>)>,
+    packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
+    files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
     reads: AtomicUsize,
 }
 
@@ -31,10 +27,11 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
         reference: &ServiceDeploymentRef,
     ) -> anyhow::Result<Arc<ServiceDeployment>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if reference != &self.deployment_ref {
-            anyhow::bail!("missing deployment")
-        }
-        Ok(Arc::clone(&self.deployment))
+        self.deployments
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, deployment)| Arc::clone(deployment))
+            .ok_or_else(|| anyhow::anyhow!("missing deployment"))
     }
 
     fn resolve_contract(
@@ -42,10 +39,11 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
         reference: &ServiceContractRef,
     ) -> anyhow::Result<Arc<ServiceContract>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if reference != &self.contract_ref {
-            anyhow::bail!("missing contract")
-        }
-        Ok(Arc::clone(&self.contract))
+        self.contracts
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, contract)| Arc::clone(contract))
+            .ok_or_else(|| anyhow::anyhow!("missing contract"))
     }
 
     fn resolve_package(
@@ -53,10 +51,11 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
         reference: &PackageArtifactRef,
     ) -> anyhow::Result<Arc<PackageArtifact>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if reference != &self.package_ref {
-            anyhow::bail!("missing package")
-        }
-        Ok(Arc::clone(&self.package))
+        self.packages
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, package)| Arc::clone(package))
+            .ok_or_else(|| anyhow::anyhow!("missing package"))
     }
 
     fn resolve_file_ir(
@@ -65,10 +64,13 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
         reference: &FileIrRef,
     ) -> anyhow::Result<Arc<FileIrUnit>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if package != &self.package_ref || reference != &self.file_ref {
-            anyhow::bail!("missing File IR")
-        }
-        Ok(Arc::clone(&self.file))
+        self.files
+            .iter()
+            .find(|(candidate_package, candidate_file, _)| {
+                candidate_package == package && candidate_file == reference
+            })
+            .map(|(_, _, file)| Arc::clone(file))
+            .ok_or_else(|| anyhow::anyhow!("missing File IR"))
     }
 
     fn resolve_static_resource(
@@ -84,163 +86,132 @@ impl RuntimeAssemblyContentResolver for CountingResolver {
 struct FullChainFixture {
     assembly: RuntimeAssembly,
     resolver: CountingResolver,
-    operation_id: ContractOperationId,
+    provider_contract_ref: ServiceContractRef,
+    provider_contract: Arc<ServiceContract>,
+    provider_operation_id: ContractOperationId,
+    provider_callable_id: PackageCallableId,
+    provider_deployment_ref: ServiceDeploymentRef,
+    consumer_deployment_ref: ServiceDeploymentRef,
+    consumer_package_ref: PackageArtifactRef,
+    consumer_file_ir_identity: String,
     ingress: IngressSelector,
 }
 
 impl FullChainFixture {
     fn new() -> Self {
-        let service_id = "example.phase-three";
-        let contract_version = "1.0.0";
-        let operation_id =
-            skiff_artifact_identity::contract_operation_id(service_id, contract_version, "health")
-                .unwrap();
         let operation_contract = operation_contract();
-        let mut contract = ServiceContract {
-            schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
-            service_id: service_id.to_string(),
-            contract_version: contract_version.to_string(),
-            service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
-            operations: BTreeMap::from([(
-                operation_id.clone(),
-                BoundaryOperationDescriptor {
-                    operation_id: operation_id.clone(),
-                    stable_key: "health".to_string(),
-                    contract: operation_contract.clone(),
-                },
-            )]),
-            boundary_schema: BTreeMap::new(),
-            diagnostic_text: ContractDiagnosticText {
-                service: "Phase three".to_string(),
-                operations: BTreeMap::new(),
-                types: BTreeMap::new(),
-            },
-        };
-        skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
-        let contract_ref = contract_ref(&contract);
+        let (provider_contract, provider_operation_id) = service_contract(
+            "example.phase-three.provider",
+            "health",
+            "Phase three provider",
+            operation_contract.clone(),
+        );
+        let provider_contract_ref = contract_ref(&provider_contract);
+        let (consumer_contract, consumer_operation_id) = service_contract(
+            "example.phase-three.consumer",
+            "check",
+            "Phase three consumer",
+            operation_contract.clone(),
+        );
+        let consumer_contract_ref = contract_ref(&consumer_contract);
 
-        let callable_id = PackageCallableId::new("callable:health");
-        let mut file = FileIrUnit::empty("provider.main", "source:provider.main");
-        file.executables.push(ExecutableIr {
-            kind: ExecutableKind::Function,
-            symbol: "health".to_string(),
-            type_params: Vec::new(),
-            params: Vec::new(),
-            return_type: TypeRefIr::native("bool"),
-            self_type: None,
-            slots: SlotLayout::default(),
-            may_suspend: false,
-            body: ExecutableBody::default(),
-            source_span: None,
-        });
-        skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
-        let file_ref = FileIrRef {
-            file_ir_identity: file.file_ir_identity.clone(),
-            module_path: file.module_path.clone(),
-            artifact_path: None,
-            source_ast_hash: Some(file.source_ast_hash.clone()),
+        let provider_callable_id = PackageCallableId::new("callable:provider-health");
+        let provider_file = implementation_file("provider.main", "health", None);
+        let provider_file_ref = file_ref(&provider_file);
+        let provider_package = implementation_package(
+            "example.phase-three-provider",
+            "health",
+            provider_callable_id.clone(),
+            &provider_file,
+            operation_contract.clone(),
+            None,
+        );
+        let provider_package_ref = package_ref(&provider_package);
+
+        let service_requirement_slot = 7;
+        let provider_call = ServiceCallRef {
+            service_requirement_slot,
+            contract_operation_id: provider_operation_id.clone(),
+            expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
-        let effects = no_effects();
-        let provenance = CallableProvenanceSummary::Analyzed {
-            return_origins: Vec::new(),
-            throw_origins: Vec::new(),
-            escape_lanes: Vec::new(),
+        let provider_requirement = ContractRequirement {
+            alias: "provider".to_string(),
+            service_id: provider_contract_ref.service_id.clone(),
+            contract_version: provider_contract_ref.contract_version.clone(),
+            expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         };
-        let mut package = PackageArtifact {
-            schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            package_id: "example.phase-three-provider".to_string(),
-            package_version: "1.0.0".to_string(),
-            package_build_id: PackageBuildId::new("unassigned"),
-            files: vec![file_ref.clone()],
-            static_resources: Vec::new(),
-            package_local_abi: PackageLocalAbi {
-                local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
-                public_symbols: BTreeMap::from([(
-                    "health".to_string(),
-                    PackageLocalAbiSymbol::Callable {
-                        callable_id: callable_id.clone(),
-                        signature: PackageCallableSignature {
-                            parameters: Vec::new(),
-                            return_type: PackageTypeRef::Local {
-                                local_type: TypeRefIr::native("bool"),
-                            },
-                            throw_types: Vec::new(),
-                            may_suspend: false,
-                        },
-                    },
-                )]),
-            },
-            implementation_links: PackageImplementationLinks::default(),
-            callable_links: BTreeMap::from([(
-                callable_id.clone(),
-                PackageCallableLinkFact {
-                    callable_id: callable_id.clone(),
-                    target: OperationTargetRef {
-                        file_ref: file_ref.clone(),
-                        executable_index: 0,
-                        callable_abi_id: callable_id.to_string(),
-                        callable_kind: OperationCallableKind::PublicFunction,
-                    },
-                },
-            )]),
-            package_requirements: Vec::new(),
-            contract_requirements: Vec::new(),
-            service_requirements: Vec::new(),
-            runtime_requirements: PackageRuntimeRequirements {
-                config: Vec::new(),
-                resources: Vec::new(),
-                runtime_capabilities: Vec::new(),
-            },
-            callable_semantic_facts: BTreeMap::from([(
-                callable_id.clone(),
-                CallableSemanticFacts {
-                    effects: CallableEffectSummary::Analyzed {
-                        effects: effects.clone(),
-                    },
-                    provenance: provenance.clone(),
-                    resolved_call_targets: BTreeMap::new(),
-                },
-            )]),
-            boundary_projections: BTreeMap::from([(
-                callable_id.clone(),
-                BoundaryCallableProjection::Available {
-                    operation_contract,
-                    implementation_requirements: BoundaryImplementationRequirements {
-                        config: Vec::new(),
-                        state: Vec::new(),
-                        native_capabilities: Vec::new(),
-                        runtime_capabilities: Vec::new(),
-                        complete_may_effects: effects,
-                        provenance,
-                    },
-                },
-            )]),
-            service_call_refs: Vec::new(),
-        };
-        skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
-        let package_ref = package_ref(&package);
+        let consumer_callable_id = PackageCallableId::new("callable:consumer-check");
+        let consumer_file =
+            implementation_file("consumer.main", "check", Some(provider_call.clone()));
+        let consumer_file_ref = file_ref(&consumer_file);
+        let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
+        let consumer_package = implementation_package(
+            "example.phase-three-consumer",
+            "check",
+            consumer_callable_id,
+            &consumer_file,
+            operation_contract,
+            Some((provider_requirement, provider_call)),
+        );
+        let consumer_package_ref = package_ref(&consumer_package);
 
         let ingress = IngressSelector {
             protocol: IngressProtocol::Http,
             host: "phase-three.test".to_string(),
             method: Some("GET".to_string()),
-            path: "/health".to_string(),
+            path: "/check".to_string(),
         };
-        let deployment = project_service_deployment(
+        let provider_deployment = project_service_deployment(
             ServiceDeploymentInput {
                 schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
-                contract: contract_ref.clone(),
-                deployment_revision: DeploymentRevision::new("revision-1"),
-                implementation: package_ref.clone(),
+                contract: provider_contract_ref.clone(),
+                deployment_revision: DeploymentRevision::new("provider-revision-1"),
+                implementation: provider_package_ref.clone(),
                 operation_bindings: vec![ServiceDeploymentOperationInput {
-                    contract_operation_id: operation_id.clone(),
+                    contract_operation_id: provider_operation_id.clone(),
                     package_public_path: "health".to_string(),
                 }],
                 package_bindings: Vec::new(),
                 service_selectors: Vec::new(),
+                ingress: Vec::new(),
+                config_literals: Vec::new(),
+                secret_refs: Vec::new(),
+                state_bindings: Vec::new(),
+                resource_bindings: Vec::new(),
+                runtime_capability_bindings: Vec::new(),
+                policy: policy(),
+                diagnostic_text: DeploymentDiagnosticText {
+                    display_name: "Phase three provider deployment".to_string(),
+                    notes: BTreeMap::new(),
+                },
+            },
+            &provider_contract,
+            std::slice::from_ref(&provider_package),
+        )
+        .unwrap();
+        let provider_deployment_ref =
+            skiff_artifact_identity::service_deployment_ref(&provider_deployment);
+        let consumer_deployment = project_service_deployment(
+            ServiceDeploymentInput {
+                schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
+                contract: consumer_contract_ref.clone(),
+                deployment_revision: DeploymentRevision::new("consumer-revision-1"),
+                implementation: consumer_package_ref.clone(),
+                operation_bindings: vec![ServiceDeploymentOperationInput {
+                    contract_operation_id: consumer_operation_id.clone(),
+                    package_public_path: "check".to_string(),
+                }],
+                package_bindings: Vec::new(),
+                service_selectors: vec![ServiceSelectorBinding {
+                    key: ServiceRequirementKey {
+                        caller_package_build_id: consumer_package_ref.package_build_id.clone(),
+                        service_requirement_slot,
+                    },
+                    contract: provider_contract_ref.clone(),
+                }],
                 ingress: vec![DeploymentIngressBinding {
                     selector: ingress.clone(),
-                    contract_operation_id: operation_id.clone(),
+                    contract_operation_id: consumer_operation_id,
                 }],
                 config_literals: Vec::new(),
                 secret_refs: Vec::new(),
@@ -249,37 +220,71 @@ impl FullChainFixture {
                 runtime_capability_bindings: Vec::new(),
                 policy: policy(),
                 diagnostic_text: DeploymentDiagnosticText {
-                    display_name: "Phase three deployment".to_string(),
+                    display_name: "Phase three consumer deployment".to_string(),
                     notes: BTreeMap::new(),
                 },
             },
-            &contract,
-            std::slice::from_ref(&package),
+            &consumer_contract,
+            std::slice::from_ref(&consumer_package),
         )
         .unwrap();
-        let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
+        let consumer_deployment_ref =
+            skiff_artifact_identity::service_deployment_ref(&consumer_deployment);
         let assembly = resolve_runtime_assembly(
-            std::slice::from_ref(&deployment_ref),
-            std::slice::from_ref(&deployment),
-            std::slice::from_ref(&contract),
-            std::slice::from_ref(&package),
+            std::slice::from_ref(&consumer_deployment_ref),
+            &[consumer_deployment.clone(), provider_deployment.clone()],
+            &[consumer_contract.clone(), provider_contract.clone()],
+            &[consumer_package.clone(), provider_package.clone()],
         )
         .unwrap();
+        let provider_contract = Arc::new(provider_contract);
         let resolver = CountingResolver {
-            deployment_ref,
-            deployment: Arc::new(deployment),
-            contract_ref,
-            contract: Arc::new(contract),
-            package_ref,
-            package: Arc::new(package),
-            file_ref,
-            file: Arc::new(file),
+            deployments: vec![
+                (
+                    consumer_deployment_ref.clone(),
+                    Arc::new(consumer_deployment),
+                ),
+                (
+                    provider_deployment_ref.clone(),
+                    Arc::new(provider_deployment),
+                ),
+            ],
+            contracts: vec![
+                (consumer_contract_ref, Arc::new(consumer_contract)),
+                (
+                    provider_contract_ref.clone(),
+                    Arc::clone(&provider_contract),
+                ),
+            ],
+            packages: vec![
+                (consumer_package_ref.clone(), Arc::new(consumer_package)),
+                (provider_package_ref.clone(), Arc::new(provider_package)),
+            ],
+            files: vec![
+                (
+                    consumer_package_ref.clone(),
+                    consumer_file_ref,
+                    Arc::new(consumer_file),
+                ),
+                (
+                    provider_package_ref,
+                    provider_file_ref,
+                    Arc::new(provider_file),
+                ),
+            ],
             reads: AtomicUsize::new(0),
         };
         Self {
             assembly,
             resolver,
-            operation_id,
+            provider_contract_ref,
+            provider_contract,
+            provider_operation_id,
+            provider_callable_id,
+            provider_deployment_ref,
+            consumer_deployment_ref,
+            consumer_package_ref,
+            consumer_file_ir_identity,
             ingress,
         }
     }
@@ -296,45 +301,104 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
         .expect("projected non-empty assembly should admit");
 
     assert_eq!(active.identity(), &fixture.assembly.assembly_identity);
-    assert_eq!(active.candidate().shared_image().code_slots().len(), 1);
+    assert_eq!(active.candidate().shared_image().code_slots().len(), 2);
+    assert_eq!(active.candidate().activations().len(), 2);
     let stored_contract = active
         .contract_store()
-        .contract(&fixture.resolver.contract_ref)
+        .contract(&fixture.provider_contract_ref)
         .unwrap();
-    assert!(Arc::ptr_eq(stored_contract, &fixture.resolver.contract));
+    assert!(Arc::ptr_eq(stored_contract, &fixture.provider_contract));
     assert_eq!(
         stored_contract.service_protocol_identity,
-        fixture.resolver.contract_ref.service_protocol_identity
+        fixture.provider_contract_ref.service_protocol_identity
     );
     let expected_descriptor = fixture
-        .resolver
-        .contract
+        .provider_contract
         .operations
-        .get(&fixture.operation_id)
+        .get(&fixture.provider_operation_id)
         .unwrap();
+    let linked_call = active
+        .candidate()
+        .shared_image()
+        .resolve_activation_relative_service_call(
+            &fixture.consumer_package_ref.package_build_id,
+            &fixture.consumer_file_ir_identity,
+            ServiceCallRefIndex::new(0),
+        )
+        .unwrap();
+    assert_eq!(
+        linked_call.caller_package_build_id(),
+        &fixture.consumer_package_ref.package_build_id
+    );
+    assert_eq!(linked_call.service_requirement_slot(), 7);
+    assert_eq!(linked_call.operation_id(), &fixture.provider_operation_id);
+    assert_eq!(
+        linked_call.expected_protocol_identity(),
+        &fixture.provider_contract_ref.service_protocol_identity
+    );
+    let binding = active
+        .candidate()
+        .resolve_activation_relative_service_call(&fixture.consumer_deployment_ref, &linked_call)
+        .unwrap();
+    assert_eq!(
+        &binding.key().caller_package_build_id,
+        &fixture.consumer_package_ref.package_build_id
+    );
+    assert_eq!(binding.key().service_requirement_slot, 7);
+    assert_eq!(binding.contract(), &fixture.provider_contract_ref);
+    assert_eq!(binding.provider(), &fixture.provider_deployment_ref);
+    let provider_operation = active
+        .activation(binding.provider())
+        .unwrap()
+        .operation(linked_call.operation_id())
+        .unwrap();
+    assert_eq!(
+        provider_operation.package_callable_id(),
+        &fixture.provider_callable_id
+    );
     let active_descriptor = active
-        .operation_descriptor(&fixture.resolver.contract_ref, &fixture.operation_id)
+        .operation_descriptor(binding.contract(), linked_call.operation_id())
         .unwrap();
     assert!(std::ptr::eq(active_descriptor, expected_descriptor));
+    assert!(std::ptr::eq(
+        active_descriptor,
+        active
+            .contract_store()
+            .operation_descriptor(binding.contract(), linked_call.operation_id())
+            .unwrap()
+    ));
+    assert_eq!(
+        active_descriptor.contract.return_value.value_plan,
+        expected_descriptor.contract.return_value.value_plan
+    );
+    assert!(matches!(
+        &active_descriptor.contract.return_value.value_plan,
+        BoundaryValuePlan::Linkable {
+            owner: BoundaryValueOwner::Provider,
+            ..
+        }
+    ));
 
     let reads_after_admit = fixture.resolver.reads.load(Ordering::SeqCst);
     assert!(reads_after_admit > 0);
     let route = controller.route(&fixture.ingress).unwrap().unwrap();
     assert_eq!(route.assembly_identity(), active.identity());
-    assert!(std::ptr::eq(
-        route.operation_descriptor().unwrap(),
-        expected_descriptor
-    ));
-    let activation_wire = serde_json::to_string(route.activation().unwrap().source()).unwrap();
-    assert!(!activation_wire.contains("stableKey"));
-    assert!(!activation_wire.contains("valuePlan"));
+    assert_eq!(
+        route.activation().unwrap().deployment_ref(),
+        &fixture.consumer_deployment_ref
+    );
+    assert_eq!(route.operation_descriptor().unwrap().stable_key, "check");
+    let binding_wire =
+        serde_json::to_string(&active.candidate().assembly().service_binding_templates).unwrap();
+    assert!(!binding_wire.contains("stableKey"));
+    assert!(!binding_wire.contains("valuePlan"));
     assert_eq!(
         fixture.resolver.reads.load(Ordering::SeqCst),
         reads_after_admit,
-        "active contract/route lookup must not trigger artifact I/O"
+        "active service binding, contract, provider, and route lookup must not trigger artifact I/O"
     );
 
-    let mut tampered = fixture.assembly;
+    let mut tampered = fixture.assembly.clone();
     tampered.assembly_identity = AssemblyIdentity::new("tampered-candidate");
     assert!(controller.admit(tampered, &fixture.resolver).await.is_err());
     assert!(Arc::ptr_eq(&active, &controller.active().unwrap().unwrap()));
@@ -343,6 +407,186 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
         reads_after_admit,
         "failed reload must fail before content I/O and preserve active"
     );
+}
+
+fn service_contract(
+    service_id: &str,
+    stable_key: &str,
+    display_name: &str,
+    operation_contract: BoundaryOperationContract,
+) -> (ServiceContract, ContractOperationId) {
+    let contract_version = "1.0.0";
+    let operation_id =
+        skiff_artifact_identity::contract_operation_id(service_id, contract_version, stable_key)
+            .unwrap();
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id: service_id.to_string(),
+        contract_version: contract_version.to_string(),
+        service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
+        operations: BTreeMap::from([(
+            operation_id.clone(),
+            BoundaryOperationDescriptor {
+                operation_id: operation_id.clone(),
+                stable_key: stable_key.to_string(),
+                contract: operation_contract,
+            },
+        )]),
+        boundary_schema: BTreeMap::new(),
+        diagnostic_text: ContractDiagnosticText {
+            service: display_name.to_string(),
+            operations: BTreeMap::new(),
+            types: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+    (contract, operation_id)
+}
+
+fn implementation_file(
+    module_path: &str,
+    symbol: &str,
+    service_call: Option<ServiceCallRef>,
+) -> FileIrUnit {
+    let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    file.executables.push(ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: symbol.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::native("bool"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        source_span: None,
+    });
+    if let Some(service_call) = service_call {
+        file.external_refs.service_call_refs.push(service_call);
+        file.executables[0].body.expressions.push(ExprIr::Call {
+            call: CallIr {
+                target: CallTargetIr::ServiceCall {
+                    service_call_ref_index: ServiceCallRefIndex::new(0),
+                },
+                args: Vec::new(),
+                type_args: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+        });
+    }
+    skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
+    file
+}
+
+fn implementation_package(
+    package_id: &str,
+    public_path: &str,
+    callable_id: PackageCallableId,
+    file: &FileIrUnit,
+    operation_contract: BoundaryOperationContract,
+    service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
+) -> PackageArtifact {
+    let file_ref = file_ref(file);
+    let effects = no_effects();
+    let provenance = CallableProvenanceSummary::Analyzed {
+        return_origins: Vec::new(),
+        throw_origins: Vec::new(),
+        escape_lanes: Vec::new(),
+    };
+    let mut contract_requirements = Vec::new();
+    let mut service_requirements = Vec::new();
+    let mut service_call_refs = Vec::new();
+    if let Some((contract_requirement, service_call)) = service_dependency {
+        contract_requirements.push(contract_requirement.clone());
+        service_requirements.push(ServiceRequirement {
+            contract_requirement,
+            service_binding_slot: service_call.service_requirement_slot,
+            used_operations: BTreeSet::from([service_call.contract_operation_id.clone()]),
+        });
+        service_call_refs.push(service_call);
+    }
+    let mut package = PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: package_id.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("unassigned"),
+        files: vec![file_ref.clone()],
+        static_resources: Vec::new(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols: BTreeMap::from([(
+                public_path.to_string(),
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: callable_id.clone(),
+                    signature: PackageCallableSignature {
+                        parameters: Vec::new(),
+                        return_type: PackageTypeRef::Local {
+                            local_type: TypeRefIr::native("bool"),
+                        },
+                        throw_types: Vec::new(),
+                        may_suspend: false,
+                    },
+                },
+            )]),
+        },
+        implementation_links: PackageImplementationLinks::default(),
+        callable_links: BTreeMap::from([(
+            callable_id.clone(),
+            PackageCallableLinkFact {
+                callable_id: callable_id.clone(),
+                target: OperationTargetRef {
+                    file_ref,
+                    executable_index: 0,
+                    callable_abi_id: callable_id.to_string(),
+                    callable_kind: OperationCallableKind::PublicFunction,
+                },
+            },
+        )]),
+        package_requirements: Vec::new(),
+        contract_requirements,
+        service_requirements,
+        runtime_requirements: PackageRuntimeRequirements {
+            config: Vec::new(),
+            resources: Vec::new(),
+            runtime_capabilities: Vec::new(),
+        },
+        callable_semantic_facts: BTreeMap::from([(
+            callable_id.clone(),
+            CallableSemanticFacts {
+                effects: CallableEffectSummary::Analyzed {
+                    effects: effects.clone(),
+                },
+                provenance: provenance.clone(),
+                resolved_call_targets: BTreeMap::new(),
+            },
+        )]),
+        boundary_projections: BTreeMap::from([(
+            callable_id,
+            BoundaryCallableProjection::Available {
+                operation_contract,
+                implementation_requirements: BoundaryImplementationRequirements {
+                    config: Vec::new(),
+                    state: Vec::new(),
+                    native_capabilities: Vec::new(),
+                    runtime_capabilities: Vec::new(),
+                    complete_may_effects: effects,
+                    provenance,
+                },
+            },
+        )]),
+        service_call_refs,
+    };
+    skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+    package
+}
+
+fn file_ref(file: &FileIrUnit) -> FileIrRef {
+    FileIrRef {
+        file_ir_identity: file.file_ir_identity.clone(),
+        module_path: file.module_path.clone(),
+        artifact_path: None,
+        source_ast_hash: Some(file.source_ast_hash.clone()),
+    }
 }
 
 fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
