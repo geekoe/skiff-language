@@ -3,6 +3,7 @@
 //! The trust boundary resolves human public paths once, then emits only typed,
 //! canonical artifact references and callable identities.
 
+mod eligibility;
 mod error;
 mod operations;
 mod package_closure;

@@ -8,6 +8,8 @@ use skiff_artifact_model::*;
 
 use super::*;
 
+mod eligibility;
+
 struct ProjectionFixture {
     input: ServiceDeploymentInput,
     contract: ServiceContract,
