@@ -12,7 +12,6 @@ serde_json = "1.0"
 sha2 = "0.10"
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-compiler-projection = { path = "../../compiler/projection" }
 skiff-runtime-activation = { path = "../activation" }
 skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-linker = { path = "../linker" }

@@ -2530,7 +2530,6 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-compiler-projection",
  "skiff-runtime-activation",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",
