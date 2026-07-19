@@ -56,6 +56,11 @@ pub enum ProjectionError {
         operation_id: ContractOperationId,
         callable_id: PackageCallableId,
     },
+    #[error("callable {callable_id} fails independent boundary eligibility: {reasons:?}")]
+    BoundaryEligibilityViolation {
+        callable_id: PackageCallableId,
+        reasons: Vec<BoundaryUnavailableReason>,
+    },
     #[error(
         "callable {callable_id} semantic facts conflict with its boundary projection: {message}"
     )]

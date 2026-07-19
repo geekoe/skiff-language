@@ -6,6 +6,7 @@ use skiff_artifact_model::{
     ServiceContract, ServiceDeploymentInput,
 };
 
+use super::eligibility;
 use super::{ProjectionError, ProjectionResult};
 
 pub(super) struct ProjectedOperations<'a> {
@@ -89,7 +90,20 @@ pub(super) fn project_operation_bindings<'a>(
                 callable_id: callable_id.clone(),
             });
         }
-        validate_callable_facts(implementation, callable_id, implementation_requirements)?;
+        let facts = implementation
+            .callable_semantic_facts
+            .get(callable_id)
+            .ok_or_else(|| ProjectionError::CallableFactsMismatch {
+                callable_id: callable_id.clone(),
+                message: "callable semantic facts are absent".to_string(),
+            })?;
+        eligibility::validate_boundary_eligibility(
+            callable_id,
+            &descriptor.contract,
+            facts,
+            implementation_requirements,
+        )?;
+        validate_callable_facts(callable_id, facts, implementation_requirements)?;
 
         projected.push(DeploymentOperationBinding {
             contract_operation_id: binding.contract_operation_id.clone(),
@@ -108,17 +122,10 @@ pub(super) fn project_operation_bindings<'a>(
 }
 
 fn validate_callable_facts(
-    implementation: &PackageArtifact,
     callable_id: &PackageCallableId,
+    facts: &skiff_artifact_model::CallableSemanticFacts,
     requirements: &BoundaryImplementationRequirements,
 ) -> ProjectionResult<()> {
-    let facts = implementation
-        .callable_semantic_facts
-        .get(callable_id)
-        .ok_or_else(|| ProjectionError::CallableFactsMismatch {
-            callable_id: callable_id.clone(),
-            message: "callable semantic facts are absent".to_string(),
-        })?;
     match &facts.effects {
         CallableEffectSummary::Analyzed { effects }
             if effects == &requirements.complete_may_effects => {}
