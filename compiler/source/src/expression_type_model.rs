@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageTypeRef,
+    TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
@@ -20,12 +21,17 @@ use crate::{
 
 use super::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, PublicationDbMetadataIndex,
-    ResolvedDependencies, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
+    ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
 };
 
+mod contract_call_typing;
 mod db_projection;
 mod expression_assignability;
 
+use contract_call_typing::{
+    project_source_package_type, projected_type_contains_contract, ContractCallOutcome,
+    ContractCallTyping,
+};
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
 
@@ -194,9 +200,12 @@ struct OwnerChecker<'a> {
     publication_db_metadata: &'a PublicationDbMetadataIndex,
     expression_sources: &'a ExpressionSourceMap,
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
+    dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
     return_type: Option<TypeRef>,
     type_context: TypeResolutionContext<'a>,
     env: BTreeMap<String, ResolvedTypeRef>,
+    projected_env: BTreeMap<String, PackageTypeRef>,
+    projected_expression_types: BTreeMap<ExpressionKey, PackageTypeRef>,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
     facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
@@ -211,7 +220,7 @@ impl ExpressionTypeModel {
         expression_sources: &ExpressionSourceMap,
         type_resolution: &TypeResolutionModel,
         publication_db_metadata: &PublicationDbMetadataIndex,
-        _dependencies: Option<&ResolvedDependencies>,
+        dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
         let mut facts = BTreeMap::new();
@@ -226,6 +235,7 @@ impl ExpressionTypeModel {
                 type_resolution,
                 publication_db_metadata,
                 &callable_signatures,
+                dependency_analysis,
                 &mut facts,
                 &mut constructor_validations,
                 &mut representation_constructor_validations,
@@ -271,8 +281,8 @@ impl ExpressionTypeModel {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
     ) -> bool {
-        ExpressionAssignability::new("", expression_sources, type_resolution, type_context)
-            .value_assignable_to_expected(annotation, value, actual, expected)
+        ExpressionAssignability::new("", expression_sources, type_resolution, type_context, None)
+            .value_assignable_to_expected(annotation, value, actual, expected, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -294,6 +304,7 @@ impl ExpressionTypeModel {
             expression_sources,
             type_resolution,
             type_context,
+            None,
         )
         .object_literal_assignability_diagnostics(
             annotation, value, value_key, actual, expected, context,
@@ -308,6 +319,7 @@ fn check_source(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations: &mut BTreeMap<
@@ -334,6 +346,7 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
+            dependency_analysis,
             &const_env,
             facts,
             constructor_validations,
@@ -360,6 +373,7 @@ fn check_source(
                 type_resolution,
                 publication_db_metadata,
                 callable_signatures,
+                dependency_analysis,
                 &const_env,
                 facts,
                 constructor_validations,
@@ -379,6 +393,7 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
+            dependency_analysis,
             None,
             facts,
             constructor_validations,
@@ -408,6 +423,7 @@ fn check_source(
             type_resolution,
             publication_db_metadata,
             callable_signatures,
+            dependency_analysis,
             None,
             facts,
             constructor_validations,
@@ -434,6 +450,7 @@ fn check_source(
                     type_resolution,
                     publication_db_metadata,
                     callable_signatures,
+                    dependency_analysis,
                     None,
                     facts,
                     constructor_validations,
@@ -484,6 +501,7 @@ fn check_function_owner(
     type_resolution: &TypeResolutionModel,
     publication_db_metadata: &PublicationDbMetadataIndex,
     callable_signatures: &BTreeMap<String, CallableSignature>,
+    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     const_env: &BTreeMap<String, ResolvedTypeRef>,
     facts: &mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
     constructor_validations: &mut BTreeMap<ExpressionKey, ConstructorValidation>,
@@ -519,6 +537,7 @@ fn check_function_owner(
         type_resolution,
         publication_db_metadata,
         callable_signatures,
+        dependency_analysis,
         Some(function.return_type.clone()),
         facts,
         constructor_validations,
@@ -540,6 +559,7 @@ impl<'a> OwnerChecker<'a> {
         type_resolution: &'a TypeResolutionModel,
         publication_db_metadata: &'a PublicationDbMetadataIndex,
         callable_signatures: &'a BTreeMap<String, CallableSignature>,
+        dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
         return_type: Option<TypeRef>,
         facts: &'a mut BTreeMap<ExpressionKey, ExpressionTypeFact>,
         constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
@@ -549,6 +569,22 @@ impl<'a> OwnerChecker<'a> {
         >,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
+        let projected_env = dependency_analysis
+            .map(|dependency_analysis| {
+                env.iter()
+                    .filter_map(|(name, ty)| {
+                        let projected = project_source_package_type(
+                            ty,
+                            type_resolution,
+                            dependency_analysis,
+                            &type_context,
+                        );
+                        projected_type_contains_contract(&projected)
+                            .then(|| (name.clone(), projected))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             module_path,
             owner,
@@ -557,9 +593,12 @@ impl<'a> OwnerChecker<'a> {
             publication_db_metadata,
             expression_sources,
             callable_signatures,
+            dependency_analysis,
             return_type,
             type_context,
             env,
+            projected_env,
+            projected_expression_types: BTreeMap::new(),
             path_refinements: BTreeMap::new(),
             facts,
             constructor_validations,
@@ -587,7 +626,8 @@ impl<'a> OwnerChecker<'a> {
             } => {
                 let value_key = self.peek_key();
                 let actual = self.check_expr(value);
-                let binding_ty = if let Some(annotation) = ty {
+                let projected_actual = self.projected_expression_types.get(&value_key).cloned();
+                let (binding_ty, projected_binding) = if let Some(annotation) = ty {
                     match self
                         .type_resolution
                         .resolve_type_ref(annotation, &self.type_context)
@@ -604,29 +644,53 @@ impl<'a> OwnerChecker<'a> {
                                     self.expression_span(&value_key),
                                 );
                             }
-                            Some(expected)
+                            let projected_expected =
+                                self.dependency_analysis.and_then(|dependency_analysis| {
+                                    let projected = project_source_package_type(
+                                        &expected,
+                                        self.type_resolution,
+                                        dependency_analysis,
+                                        &self.type_context,
+                                    );
+                                    projected_type_contains_contract(&projected)
+                                        .then_some(projected)
+                                });
+                            (Some(expected), projected_expected)
                         }
                         Err(error) => {
                             self.diagnostics.push(format!(
                                 "{}: failed to resolve local binding {name} annotation: {error}",
                                 self.module_path
                             ));
-                            actual
+                            (actual, projected_actual)
                         }
                     }
                 } else {
-                    actual
+                    (actual, projected_actual)
                 };
                 if let Some(binding_ty) = binding_ty {
                     self.env.insert(name.clone(), binding_ty);
+                }
+                if let Some(projected_binding) = projected_binding {
+                    self.projected_env.insert(name.clone(), projected_binding);
+                } else {
+                    self.projected_env.remove(name);
                 }
                 false
             }
             Stmt::Assign { target, value } => {
                 self.check_expr(target);
+                let value_key = self.peek_key();
                 let actual = self.check_expr(value);
                 if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
                     self.env.insert(name.clone(), actual);
+                    if let Some(projected) =
+                        self.projected_expression_types.get(&value_key).cloned()
+                    {
+                        self.projected_env.insert(name.clone(), projected);
+                    } else {
+                        self.projected_env.remove(name);
+                    }
                 }
                 false
             }
@@ -761,10 +825,12 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_block_scoped(&mut self, block: &Block, narrowing: &TypeNarrowing) -> bool {
         let saved_env = self.env.clone();
+        let saved_projected_env = self.projected_env.clone();
         let saved_path_refinements = self.path_refinements.clone();
         self.apply_narrowing(narrowing);
         let exits = self.check_block(block);
         self.env = saved_env;
+        self.projected_env = saved_projected_env;
         self.path_refinements = saved_path_refinements;
         exits
     }
@@ -775,10 +841,12 @@ impl<'a> OwnerChecker<'a> {
         narrowing: &TypeNarrowing,
     ) -> Option<ResolvedTypeRef> {
         let saved_env = self.env.clone();
+        let saved_projected_env = self.projected_env.clone();
         let saved_path_refinements = self.path_refinements.clone();
         self.apply_narrowing(narrowing);
         let ty = self.check_expr(expr);
         self.env = saved_env;
+        self.projected_env = saved_projected_env;
         self.path_refinements = saved_path_refinements;
         ty
     }
@@ -1346,6 +1414,14 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         let ty = refined_ty.or(ty);
+        if !self.projected_expression_types.contains_key(&key) {
+            if let Expr::Identifier(name) = expr {
+                if let Some(projected) = self.projected_env.get(name).cloned() {
+                    self.projected_expression_types
+                        .insert(key.clone(), projected);
+                }
+            }
+        }
         let span = self
             .expression_sources
             .fact(&key)
@@ -1912,6 +1988,43 @@ impl<'a> OwnerChecker<'a> {
             return Some(return_type);
         }
         let path = expr_path(callee)?;
+        if !path
+            .split('.')
+            .next()
+            .is_some_and(|root| self.env.contains_key(root))
+        {
+            if let Some(dependency_analysis) = self.dependency_analysis {
+                match ContractCallTyping::new(
+                    self.type_resolution,
+                    dependency_analysis,
+                    &self.type_context,
+                )
+                .check_call(
+                    &path,
+                    type_args.len(),
+                    arg_types,
+                    &self.projected_expression_types,
+                ) {
+                    ContractCallOutcome::NotContract => {}
+                    ContractCallOutcome::Typed {
+                        return_type,
+                        projected_return_type,
+                    } => {
+                        self.projected_expression_types
+                            .insert(key.clone(), projected_return_type);
+                        return Some(return_type);
+                    }
+                    ContractCallOutcome::Invalid(diagnostics) => {
+                        let location = self.expression_span_label(key);
+                        self.diagnostics
+                            .extend(diagnostics.into_iter().map(|diagnostic| {
+                                format!("{}: {diagnostic} at {location}", self.module_path)
+                            }));
+                        return None;
+                    }
+                }
+            }
+        }
         if let Some(return_type) = self.config_intrinsic_call_type(&path, type_args) {
             return Some(return_type);
         }
@@ -2548,8 +2661,15 @@ impl<'a> OwnerChecker<'a> {
             self.expression_sources,
             self.type_resolution,
             &self.type_context,
+            self.dependency_analysis,
         );
-        if assignability.value_assignable_to_expected(annotation, value, actual, expected) {
+        if assignability.value_assignable_to_expected(
+            annotation,
+            value,
+            actual,
+            expected,
+            self.projected_expression_types.get(value_key),
+        ) {
             return true;
         }
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(

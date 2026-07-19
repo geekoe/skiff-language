@@ -216,7 +216,7 @@ impl PackageSourceModel {
             &expression_sources,
             &type_resolution,
             indexes.publication_db_metadata_index(),
-            None,
+            Some(input.dependency_analysis),
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("expression type model failed:\n- {}", error.message()),

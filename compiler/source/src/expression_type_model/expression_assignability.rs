@@ -4,9 +4,13 @@ use super::{
     object_literal_key_text, span_label, type_ir_is_null, type_ref_debug_text, ExpressionKey,
     ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
-use skiff_artifact_model::{FunctionTypeParamIr, PackageRefIr, TypeDescriptorIr, TypeRefIr};
+use skiff_artifact_model::{
+    FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
+};
 
 use crate::{
+    dependency_analysis::SourceDependencyAnalysisInput,
+    expression_type_model::contract_call_typing::contract_source_assignability,
     runtime_type_projection::lower_prelude_type_decl,
     shared::ast::{Expr, TypeRef},
     shared::error::SourceSpan,
@@ -33,6 +37,7 @@ pub(super) struct ExpressionAssignability<'a, 'ctx> {
     expression_sources: &'a ExpressionSourceMap,
     type_resolution: &'a TypeResolutionModel,
     type_context: &'a TypeResolutionContext<'ctx>,
+    dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
 }
 
 impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
@@ -41,12 +46,14 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         expression_sources: &'a ExpressionSourceMap,
         type_resolution: &'a TypeResolutionModel,
         type_context: &'a TypeResolutionContext<'ctx>,
+        dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
     ) -> Self {
         Self {
             diagnostic_path,
             expression_sources,
             type_resolution,
             type_context,
+            dependency_analysis,
         }
     }
 
@@ -56,7 +63,18 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         value: &Expr,
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
+        actual_projected: Option<&PackageTypeRef>,
     ) -> bool {
+        if let Some(assignable) = contract_source_assignability(
+            actual,
+            actual_projected,
+            expected,
+            self.type_resolution,
+            self.dependency_analysis,
+            self.type_context,
+        ) {
+            return assignable;
+        }
         self.value_assignable_to_resolved_expected(value, actual, expected)
             || annotation.is_some_and(|annotation| {
                 self.target_typed_object_literal_assignable(annotation, value, actual, expected)

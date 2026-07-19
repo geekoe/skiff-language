@@ -7,8 +7,8 @@ use skiff_artifact_model::{
 
 use crate::{
     callable_effects::SourceCallableEffectFacts, compile_model::ExportBindingModel,
-    parsed_sources::ParsedCompilerSource, SourceDependencyAnalysisInput, TypeResolutionContext,
-    TypeResolutionModel,
+    parsed_sources::ParsedCompilerSource, shared::ast::TypeRef, SourceDependencyAnalysisInput,
+    TypeResolutionContext, TypeResolutionModel,
 };
 
 mod callables;
@@ -29,6 +29,16 @@ pub(crate) fn package_type_ref_from_validated_contract_ref(
     ty: &ContractTypeRef,
 ) -> Result<PackageTypeRef, String> {
     types::package_type_ref_from_validated_contract_ref(ty)
+}
+
+pub(crate) fn package_type_ref_from_source_type(
+    ty: &TypeRef,
+    context: &TypeResolutionContext<'_>,
+    type_resolution: &TypeResolutionModel,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+) -> Result<PackageTypeRef, String> {
+    ContractAwareTypeResolver::new(type_resolution, dependency_analysis)
+        .resolve_source_type_ref(ty, context)
 }
 
 /// Exact callable signatures owned by source analysis.
