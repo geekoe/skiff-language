@@ -1,0 +1,262 @@
+use skiff_artifact_model::{
+    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
+    BoundaryErrorContract, BoundaryImplementationRequirements, BoundaryOperationContract,
+    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValuePlan,
+    BoundaryValuePlanUnavailableReason, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact, PackageCallableId,
+    ValueEscapeLane, ValueProvenance,
+};
+
+use super::{ProjectionError, ProjectionResult};
+
+/// Re-derive boundary eligibility from typed facts instead of trusting an
+/// artifact's `Available` discriminant or its duplicated requirements.
+pub(super) fn validate_boundary_eligibility(
+    callable_id: &PackageCallableId,
+    contract: &BoundaryOperationContract,
+    facts: &CallableSemanticFacts,
+    requirements: &BoundaryImplementationRequirements,
+) -> ProjectionResult<()> {
+    let mut reasons = Vec::new();
+    validate_effects(contract, &facts.effects, &facts.provenance, &mut reasons);
+    validate_provenance(&contract.effect_guarantee, &facts.provenance, &mut reasons);
+    validate_call_targets(facts, &mut reasons);
+    validate_contract_features(contract, &mut reasons);
+
+    // V1 has no typed native-adapter proof in PackageArtifact. An Available
+    // projection therefore cannot turn an asserted native requirement into
+    // adapter availability merely by carrying a matching string binding.
+    if !requirements.native_capabilities.is_empty() {
+        push_reason(
+            &mut reasons,
+            BoundaryUnavailableReason::NativeAdapterUnavailable,
+        );
+    }
+
+    normalize_reasons(&mut reasons);
+    if reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(ProjectionError::BoundaryEligibilityViolation {
+            callable_id: callable_id.clone(),
+            reasons,
+        })
+    }
+}
+
+fn validate_effects(
+    contract: &BoundaryOperationContract,
+    summary: &CallableEffectSummary,
+    provenance: &CallableProvenanceSummary,
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    let CallableEffectSummary::Analyzed { effects } = summary else {
+        push_reason(reasons, BoundaryUnavailableReason::AnalysisPending);
+        push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
+        return;
+    };
+    effect_reasons(&contract.effect_guarantee, *effects, provenance, reasons);
+    if effects.may_suspend != contract.may_suspend {
+        push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
+    }
+}
+
+fn effect_reasons(
+    guarantee: &BoundaryEffectGuarantee,
+    effects: CallableMayEffects,
+    provenance: &CallableProvenanceSummary,
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    if effects.writes_caller_reachable && guarantee.no_caller_reachable_mutation {
+        push_reason(reasons, BoundaryUnavailableReason::WritesCallerReachable);
+    }
+    if effects.returns_caller_alias && guarantee.detached_return {
+        push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
+    }
+    if effects.throws_caller_alias && guarantee.detached_error {
+        push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
+    }
+    if effects.escapes_caller_value
+        && guarantee.no_caller_value_escape
+        && !matches!(
+            provenance,
+            CallableProvenanceSummary::Analyzed { escape_lanes, .. } if !escape_lanes.is_empty()
+        )
+    {
+        push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
+    }
+    if effects.requires_same_heap_identity && guarantee.no_same_heap_identity {
+        push_reason(reasons, BoundaryUnavailableReason::RequiresSameHeapIdentity);
+    }
+    if effects.invokes_unknown_target {
+        push_reason(reasons, BoundaryUnavailableReason::UnknownCallTarget);
+    }
+}
+
+fn validate_provenance(
+    guarantee: &BoundaryEffectGuarantee,
+    provenance: &CallableProvenanceSummary,
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    match provenance {
+        CallableProvenanceSummary::Unknown { reason } => match reason {
+            skiff_artifact_model::CallableProvenanceUnknownReason::AnalysisPending => {
+                push_reason(reasons, BoundaryUnavailableReason::AnalysisPending);
+            }
+            skiff_artifact_model::CallableProvenanceUnknownReason::UnsupportedControlFlow => {
+                push_reason(reasons, BoundaryUnavailableReason::UnknownEffect);
+            }
+            skiff_artifact_model::CallableProvenanceUnknownReason::UnknownCallTarget => {
+                push_reason(reasons, BoundaryUnavailableReason::UnknownCallTarget);
+            }
+        },
+        CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } => {
+            if guarantee.detached_return
+                && return_origins
+                    .iter()
+                    .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+            {
+                push_reason(reasons, BoundaryUnavailableReason::ReturnsCallerAlias);
+            }
+            if guarantee.detached_error
+                && throw_origins
+                    .iter()
+                    .any(|origin| matches!(origin, ValueProvenance::CallerParameter { .. }))
+            {
+                push_reason(reasons, BoundaryUnavailableReason::ThrowsCallerAlias);
+            }
+            if guarantee.no_caller_value_escape {
+                for lane in escape_lanes {
+                    push_reason(
+                        reasons,
+                        BoundaryUnavailableReason::EscapesCallerValue { lane: *lane },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn validate_call_targets(
+    facts: &CallableSemanticFacts,
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    for target in facts.resolved_call_targets.values() {
+        let unknown = match target {
+            CallableTargetFact::Unknown => true,
+            CallableTargetFact::PackageDirect {
+                package_callable_id,
+            } => package_callable_id.is_empty(),
+            CallableTargetFact::ContractOperation { operation_id } => {
+                operation_id.as_str().is_empty()
+            }
+        };
+        if unknown {
+            push_reason(reasons, BoundaryUnavailableReason::UnknownCallTarget);
+        }
+    }
+}
+
+fn validate_contract_features(
+    contract: &BoundaryOperationContract,
+    reasons: &mut Vec<BoundaryUnavailableReason>,
+) {
+    for parameter in &contract.parameters {
+        validate_value_plan(&parameter.value_plan, reasons);
+    }
+    validate_value_plan(&contract.return_value.value_plan, reasons);
+    match &contract.errors {
+        BoundaryErrorContract::None => {}
+        BoundaryErrorContract::Typed { value_plan, .. } => validate_value_plan(value_plan, reasons),
+        BoundaryErrorContract::Unsupported { .. } => {
+            push_reason(reasons, BoundaryUnavailableReason::UnsupportedBoundaryType);
+        }
+    }
+    match &contract.stream {
+        BoundaryStreamContract::Unary => {}
+        BoundaryStreamContract::ServerStream {
+            item_value_plan, ..
+        } => validate_value_plan(item_value_plan, reasons),
+        BoundaryStreamContract::Unsupported { .. } => {
+            push_reason(reasons, BoundaryUnavailableReason::UnsupportedStream);
+        }
+    }
+    if matches!(
+        contract.cancellation,
+        BoundaryCancellationContract::Unsupported { .. }
+    ) {
+        push_reason(reasons, BoundaryUnavailableReason::UnsupportedBoundaryType);
+    }
+    if matches!(
+        contract.callbacks,
+        BoundaryCallbackContract::Unsupported { .. }
+    ) {
+        push_reason(
+            reasons,
+            BoundaryUnavailableReason::CallbackAdapterUnavailable,
+        );
+    }
+}
+
+fn validate_value_plan(plan: &BoundaryValuePlan, reasons: &mut Vec<BoundaryUnavailableReason>) {
+    let BoundaryValuePlan::Unsupported { reason } = plan else {
+        return;
+    };
+    let reason = match reason {
+        BoundaryValuePlanUnavailableReason::NativeAdapterRequired => {
+            BoundaryUnavailableReason::NativeAdapterUnavailable
+        }
+        BoundaryValuePlanUnavailableReason::CallbackAdapterRequired => {
+            BoundaryUnavailableReason::CallbackAdapterUnavailable
+        }
+        BoundaryValuePlanUnavailableReason::LanguageUnsupported
+        | BoundaryValuePlanUnavailableReason::UnknownType => {
+            BoundaryUnavailableReason::UnsupportedBoundaryType
+        }
+    };
+    push_reason(reasons, reason);
+}
+
+fn push_reason(reasons: &mut Vec<BoundaryUnavailableReason>, reason: BoundaryUnavailableReason) {
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
+}
+
+fn normalize_reasons(reasons: &mut Vec<BoundaryUnavailableReason>) {
+    reasons.sort_by_key(reason_sort_key);
+    reasons.dedup();
+}
+
+fn reason_sort_key(reason: &BoundaryUnavailableReason) -> (u8, u8) {
+    match reason {
+        BoundaryUnavailableReason::AnalysisPending => (0, 0),
+        BoundaryUnavailableReason::UnknownEffect => (1, 0),
+        BoundaryUnavailableReason::UnknownCallTarget => (2, 0),
+        BoundaryUnavailableReason::WritesCallerReachable => (3, 0),
+        BoundaryUnavailableReason::ReturnsCallerAlias => (4, 0),
+        BoundaryUnavailableReason::ThrowsCallerAlias => (5, 0),
+        BoundaryUnavailableReason::EscapesCallerValue { lane } => (6, escape_lane_rank(*lane)),
+        BoundaryUnavailableReason::RequiresSameHeapIdentity => (7, 0),
+        BoundaryUnavailableReason::CallbackAdapterUnavailable => (8, 0),
+        BoundaryUnavailableReason::NativeAdapterUnavailable => (9, 0),
+        BoundaryUnavailableReason::UnsupportedBoundaryType => (10, 0),
+        BoundaryUnavailableReason::UnsupportedStream => (11, 0),
+    }
+}
+
+fn escape_lane_rank(lane: ValueEscapeLane) -> u8 {
+    match lane {
+        ValueEscapeLane::Capture => 0,
+        ValueEscapeLane::Callback => 1,
+        ValueEscapeLane::Stream => 2,
+        ValueEscapeLane::Spawn => 3,
+        ValueEscapeLane::Database => 4,
+        ValueEscapeLane::Native => 5,
+        ValueEscapeLane::External => 6,
+    }
+}

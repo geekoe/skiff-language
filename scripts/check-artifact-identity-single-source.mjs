@@ -187,6 +187,56 @@ const ownerRequirements = [
     regexp: /\bpub\s+struct\s+ServiceProtocolIdentityProjection\b/,
   },
   {
+    name: 'DeploymentArtifactIdentityProjection',
+    relPath: 'artifact-identity/src/deployment.rs',
+    regexp: /\bpub\s+struct\s+DeploymentArtifactIdentityProjection\b/,
+  },
+  {
+    name: 'service_deployment_identity',
+    relPath: 'artifact-identity/src/deployment.rs',
+    regexp: /\bpub\s+fn\s+service_deployment_identity\s*\(/,
+  },
+  {
+    name: 'assign_service_deployment_identity',
+    relPath: 'artifact-identity/src/deployment.rs',
+    regexp: /\bpub\s+fn\s+assign_service_deployment_identity\s*\(/,
+  },
+  {
+    name: 'validate_service_deployment_identity',
+    relPath: 'artifact-identity/src/deployment.rs',
+    regexp: /\bpub\s+fn\s+validate_service_deployment_identity\s*\(/,
+  },
+  {
+    name: 'AssemblyIdentityProjection',
+    relPath: 'artifact-identity/src/runtime_assembly.rs',
+    regexp: /\bpub\s+struct\s+AssemblyIdentityProjection\b/,
+  },
+  {
+    name: 'runtime_assembly_identity',
+    relPath: 'artifact-identity/src/runtime_assembly.rs',
+    regexp: /\bpub\s+fn\s+runtime_assembly_identity\s*\(/,
+  },
+  {
+    name: 'assign_runtime_assembly_identity',
+    relPath: 'artifact-identity/src/runtime_assembly.rs',
+    regexp: /\bpub\s+fn\s+assign_runtime_assembly_identity\s*\(/,
+  },
+  {
+    name: 'validate_runtime_assembly_identity',
+    relPath: 'artifact-identity/src/runtime_assembly.rs',
+    regexp: /\bpub\s+fn\s+validate_runtime_assembly_identity\s*\(/,
+  },
+  {
+    name: 'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX\b/,
+  },
+  {
+    name: 'ASSEMBLY_IDENTITY_PREFIX',
+    relPath: 'artifact-identity/src/constants.rs',
+    regexp: /\bpub\s+const\s+ASSEMBLY_IDENTITY_PREFIX\b/,
+  },
+  {
     name: 'contract_type_id',
     relPath: 'artifact-identity/src/contract.rs',
     regexp: /\bpub\s+fn\s+contract_type_id\s*\(/,
@@ -450,6 +500,16 @@ const exclusiveDefinitionNames = new Set([
   'package_implementation_links_identity',
   'PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX',
   'ServiceProtocolIdentityProjection',
+  'DeploymentArtifactIdentityProjection',
+  'service_deployment_identity',
+  'assign_service_deployment_identity',
+  'validate_service_deployment_identity',
+  'AssemblyIdentityProjection',
+  'runtime_assembly_identity',
+  'assign_runtime_assembly_identity',
+  'validate_runtime_assembly_identity',
+  'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
+  'ASSEMBLY_IDENTITY_PREFIX',
   'contract_type_id',
   'contract_operation_id',
   'service_protocol_identity',
@@ -515,6 +575,7 @@ const facadeModules = [
   'artifact_reference',
   'constants',
   'contract',
+  'deployment',
   'error',
   'file_ir',
   'framing',
@@ -526,6 +587,7 @@ const facadeModules = [
   'publication',
   'publication_validation',
   'runtime_program',
+  'runtime_assembly',
   'semantic',
   'service_artifact_closure',
   'service_assembly_identity',
@@ -591,6 +653,247 @@ const canonicalCompileModelPaths = Object.freeze([
   ['artifact-model/src/package_artifact.rs', 'PackageArtifact'],
   ['artifact-model/src/service_contract.rs', 'ServiceContract'],
 ]);
+const canonicalDeploymentAssemblyModels = Object.freeze([
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'PackageArtifactRef',
+    requiredFields: Object.freeze([
+      'package_id',
+      'package_version',
+      'package_build_id',
+      'package_local_abi_identity',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceContractRef',
+    requiredFields: Object.freeze([
+      'service_id',
+      'contract_version',
+      'service_protocol_identity',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceDeploymentRef',
+    requiredFields: Object.freeze([
+      'service_id',
+      'contract_version',
+      'deployment_revision',
+      'deployment_artifact_identity',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'PackageRequirementKey',
+    requiredFields: Object.freeze([
+      'caller_package_build_id',
+      'package_requirement_alias',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceRequirementKey',
+    requiredFields: Object.freeze([
+      'caller_package_build_id',
+      'service_requirement_slot',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'PackageBinding',
+    requiredFields: Object.freeze(['key', 'package']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceSelectorBinding',
+    requiredFields: Object.freeze(['key', 'contract']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceDeploymentOperationInput',
+    requiredFields: Object.freeze(['contract_operation_id', 'package_public_path']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'DeploymentOperationBinding',
+    requiredFields: Object.freeze(['contract_operation_id', 'package_callable_id']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'IngressSelector',
+    requiredFields: Object.freeze(['protocol', 'host', 'method', 'path']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'DeploymentIngressBinding',
+    requiredFields: Object.freeze(['selector', 'contract_operation_id']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ConfigLiteralBinding',
+    requiredFields: Object.freeze(['path', 'value']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'SecretRefBinding',
+    requiredFields: Object.freeze(['path', 'secret_ref']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'StateBinding',
+    requiredFields: Object.freeze(['requirement_key', 'kind', 'namespace']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ResourceBinding',
+    requiredFields: Object.freeze(['requirement_key', 'capability', 'resource_ref']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'RuntimeCapabilityBinding',
+    requiredFields: Object.freeze(['capability', 'version']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ResourcePolicy',
+    requiredFields: Object.freeze(['cpu_millis', 'memory_bytes']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ActivationPolicy',
+    requiredFields: Object.freeze(['max_concurrency', 'idle_timeout_ms']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'DeploymentPolicy',
+    requiredFields: Object.freeze(['timeout_ms', 'resources', 'activation', 'principal']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'DeploymentDiagnosticText',
+    requiredFields: Object.freeze(['display_name', 'notes']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceDeploymentInput',
+    requiredFields: Object.freeze([
+      'schema_version',
+      'contract',
+      'deployment_revision',
+      'implementation',
+      'operation_bindings',
+      'package_bindings',
+      'service_selectors',
+      'ingress',
+      'config_literals',
+      'secret_refs',
+      'state_bindings',
+      'resource_bindings',
+      'runtime_capability_bindings',
+      'policy',
+      'diagnostic_text',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'ServiceDeployment',
+    requiredFields: Object.freeze([
+      'schema_version',
+      'contract',
+      'deployment_revision',
+      'deployment_artifact_identity',
+      'implementation',
+      'operation_bindings',
+      'package_bindings',
+      'service_selectors',
+      'ingress',
+      'config_literals',
+      'secret_refs',
+      'state_bindings',
+      'resource_bindings',
+      'runtime_capability_bindings',
+      'policy',
+      'diagnostic_text',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'PackageCodeSlot',
+    requiredFields: Object.freeze(['package']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'CanonicalPackageLinkPlan',
+    requiredFields: Object.freeze(['code_slots', 'package_links']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'ResolvedServiceBinding',
+    requiredFields: Object.freeze(['key', 'contract', 'provider', 'used_operations']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'ServiceBindingTemplate',
+    requiredFields: Object.freeze(['activation', 'bindings']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'ActivationTemplate',
+    requiredFields: Object.freeze([
+      'deployment',
+      'implementation_package_build_id',
+      'config_literals',
+      'secret_refs',
+      'state_bindings',
+      'resource_bindings',
+      'policy',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'GlobalIngressBinding',
+    requiredFields: Object.freeze([
+      'selector',
+      'deployment',
+      'contract',
+      'contract_operation_id',
+    ]),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/runtime_assembly.rs',
+    typeName: 'RuntimeAssembly',
+    requiredFields: Object.freeze([
+      'schema_version',
+      'assembly_identity',
+      'roots',
+      'resolved_deployments',
+      'resolved_contracts',
+      'resolved_packages',
+      'package_link_plan',
+      'service_binding_templates',
+      'activation_templates',
+      'global_ingress',
+    ]),
+  }),
+]);
+const canonicalDeploymentAssemblyIdentityNewtypes = Object.freeze([
+  'DeploymentRevision',
+  'DeploymentArtifactIdentity',
+  'AssemblyIdentity',
+]);
+const canonicalDeploymentAssemblyEnums = Object.freeze([
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'IngressProtocol',
+    variants: Object.freeze(['Http', 'WebSocket']),
+  }),
+  Object.freeze({
+    relPath: 'artifact-model/src/deployment.rs',
+    typeName: 'StateBindingKind',
+    variants: Object.freeze(['Database', 'Redis', 'Actor', 'Queue']),
+  }),
+]);
 const canonicalBoundaryContractPaths = Object.freeze({
   projection: 'artifact-model/src/boundary/projection.rs',
   operation: 'artifact-model/src/boundary/operation.rs',
@@ -644,6 +947,7 @@ async function runCheck() {
   }
   failures.push(...collectDeprecatedPackageAbiRustSymbolFailures(files));
   failures.push(...collectCanonicalCompileModelFailures(files));
+  failures.push(...collectCanonicalDeploymentAssemblyModelFailures(files));
   failures.push(...collectCanonicalBoundaryContractFailures(files));
   failures.push(...collectCanonicalFileIrCallValidatorFailures(files));
   for (const violation of collectPackageImplementationLinksIdentityViolations([
@@ -768,6 +1072,159 @@ function collectCanonicalCompileModelFailures(files) {
     }
   }
   return failures;
+}
+
+function collectCanonicalDeploymentAssemblyModelFailures(files) {
+  const failures = [];
+  const byPath = new Map(files.map((file) => [file.relPath, file]));
+  const canonicalTypeNames = new Set(
+    canonicalDeploymentAssemblyModels.map(({ typeName }) => typeName),
+  );
+
+  for (const model of canonicalDeploymentAssemblyModels) {
+    const file = byPath.get(model.relPath);
+    if (file === undefined) {
+      failures.push(`${model.relPath} is missing canonical ${model.typeName}`);
+      continue;
+    }
+    const text = stripRustComments(stripInlineTestModules(file.text));
+    const body = rustStructBody(text, model.typeName);
+    if (body === undefined) {
+      failures.push(`${model.relPath} is missing canonical ${model.typeName} definition`);
+      continue;
+    }
+    if (!/serde\s*\([^)]*rename_all\s*=\s*"camelCase"[^)]*deny_unknown_fields[^)]*\)/s.test(text.slice(Math.max(0, body.start - 300), body.start))) {
+      failures.push(`${model.relPath} ${model.typeName} must use strict camelCase wire`);
+    }
+    for (const field of model.requiredFields) {
+      if (!new RegExp(`\\bpub\\s+${field}\\s*:`).test(body.text)) {
+        failures.push(`${model.relPath} ${model.typeName} is missing canonical field ${field}`);
+      }
+    }
+    const declaredFields = [...body.text.matchAll(/\bpub\s+(\w+)\s*:/g)]
+      .map((match) => match[1]);
+    const unexpectedFields = declaredFields.filter(
+      (field) => !model.requiredFields.includes(field),
+    );
+    if (unexpectedFields.length > 0) {
+      failures.push(
+        `${model.relPath} ${model.typeName} has noncanonical field(s): ${unexpectedFields.join(', ')}`,
+      );
+    }
+    if (/\b(?:PublicationAbiUnit|PackageUnit|ServiceUnit)\b/.test(body.text)) {
+      failures.push(`${model.relPath} ${model.typeName} embeds a legacy aggregate`);
+    }
+    if (/\b(?:artifact_path|filesystem_path|service_assembly)\b/.test(body.text)) {
+      failures.push(`${model.relPath} ${model.typeName} embeds a path or raw service assembly`);
+    }
+    if (/\b(?:BoundaryOperationDescriptor|BoundaryOperationContract|ContractSchemaType)\b/.test(body.text)) {
+      failures.push(`${model.relPath} ${model.typeName} duplicates ServiceContract-owned descriptors`);
+    }
+  }
+
+  for (const model of canonicalDeploymentAssemblyEnums) {
+    const file = byPath.get(model.relPath);
+    if (file === undefined) {
+      failures.push(`${model.relPath} is missing canonical ${model.typeName}`);
+      continue;
+    }
+    const text = stripRustComments(stripInlineTestModules(file.text));
+    const body = rustEnumBody(text, model.typeName);
+    if (body === undefined) {
+      failures.push(`${model.relPath} is missing canonical ${model.typeName} definition`);
+      continue;
+    }
+    if (!/serde\s*\([^)]*rename_all\s*=\s*"camelCase"[^)]*\)/s.test(text.slice(Math.max(0, body.start - 300), body.start))) {
+      failures.push(`${model.relPath} ${model.typeName} must use canonical camelCase wire`);
+    }
+    const variants = [...body.text.matchAll(/\b([A-Z]\w*)\s*,/g)]
+      .map((match) => match[1]);
+    if (
+      variants.length !== model.variants.length
+      || variants.some((variant, index) => variant !== model.variants[index])
+    ) {
+      failures.push(
+        `${model.relPath} ${model.typeName} variants must be ${model.variants.join(', ')}`,
+      );
+    }
+  }
+
+  for (const file of files) {
+    if (!isProductionRustFile(file.relPath)) {
+      continue;
+    }
+    const text = stripRustComments(stripInlineTestModules(file.text));
+    for (const typeName of canonicalTypeNames) {
+      const owner = canonicalDeploymentAssemblyModels.find(
+        (model) => model.typeName === typeName,
+      ).relPath;
+      if (file.relPath !== owner && new RegExp(`\\bpub\\s+struct\\s+${typeName}\\b`).test(text)) {
+        failures.push(`${file.relPath} repeats canonical ${typeName} owned by ${owner}`);
+      }
+    }
+    for (const model of canonicalDeploymentAssemblyEnums) {
+      if (
+        file.relPath !== model.relPath
+        && new RegExp(`\\bpub\\s+enum\\s+${model.typeName}\\b`).test(text)
+      ) {
+        failures.push(
+          `${file.relPath} repeats canonical ${model.typeName} owned by ${model.relPath}`,
+        );
+      }
+    }
+  }
+
+  for (const typeName of canonicalDeploymentAssemblyIdentityNewtypes) {
+    const owner = 'artifact-model/src/compile_identity.rs';
+    let ownerCount = 0;
+    for (const file of files) {
+      if (!isProductionRustFile(file.relPath)) {
+        continue;
+      }
+      const text = stripRustComments(stripInlineTestModules(file.text));
+      const macro = new RegExp(`\\bstring_identity!\\s*\\(\\s*${typeName}\\s*\\)`, 'g');
+      const explicit = new RegExp(`\\bpub\\s+struct\\s+${typeName}\\b`, 'g');
+      const count = [...text.matchAll(macro)].length + [...text.matchAll(explicit)].length;
+      if (count === 0) {
+        continue;
+      }
+      if (file.relPath === owner) {
+        ownerCount += count;
+      } else {
+        failures.push(`${file.relPath} repeats canonical identity ${typeName} owned by ${owner}`);
+      }
+    }
+    if (ownerCount !== 1) {
+      failures.push(`${owner} must own exactly one ${typeName} definition, got ${ownerCount}`);
+    }
+  }
+  return failures;
+}
+
+function rustStructBody(text, typeName) {
+  const declaration = new RegExp(`\\bpub\\s+struct\\s+${typeName}\\s*\\{`).exec(text);
+  if (declaration === null) {
+    return undefined;
+  }
+  const open = text.indexOf('{', declaration.index);
+  const close = matchingBraceIndex(text, open);
+  if (close === -1) {
+    return undefined;
+  }
+  return { start: declaration.index, text: text.slice(open + 1, close) };
+}
+
+function rustEnumBody(text, typeName) {
+  const declaration = new RegExp(`\\bpub\\s+enum\\s+${typeName}\\s*\\{`).exec(text);
+  if (declaration === null) {
+    return undefined;
+  }
+  const open = text.indexOf('{', declaration.index);
+  const close = matchingBraceIndex(text, open);
+  if (close === -1) {
+    return undefined;
+  }
+  return { start: declaration.index, text: text.slice(open + 1, close) };
 }
 
 function collectCanonicalBoundaryContractFailures(files) {
@@ -1352,6 +1809,277 @@ function runSelfTest() {
     if (modelFailures.length !== testCase.expectedFailures) {
       failures.push(
         `${testCase.name}: expected ${testCase.expectedFailures} canonical model failure(s), got ${modelFailures.length}`,
+      );
+    }
+  }
+
+  const canonicalDeploymentText = `
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageArtifactRef {
+  pub package_id: String, pub package_version: String, pub package_build_id: Build,
+  pub package_local_abi_identity: Abi,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceContractRef {
+  pub service_id: String, pub contract_version: String, pub service_protocol_identity: Identity,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentRef {
+  pub service_id: String, pub contract_version: String, pub deployment_revision: Revision,
+  pub deployment_artifact_identity: Identity,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageRequirementKey {
+  pub caller_package_build_id: Build, pub package_requirement_alias: String,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceRequirementKey {
+  pub caller_package_build_id: Build, pub service_requirement_slot: u32,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageBinding { pub key: PackageRequirementKey, pub package: PackageArtifactRef }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceSelectorBinding { pub key: ServiceRequirementKey, pub contract: ServiceContractRef }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentOperationInput {
+  pub contract_operation_id: OperationId, pub package_public_path: String,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentOperationBinding {
+  pub contract_operation_id: OperationId, pub package_callable_id: CallableId,
+}
+#[serde(rename_all = "camelCase")]
+pub enum IngressProtocol { Http, WebSocket, }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IngressSelector {
+  pub protocol: Protocol, pub host: String, pub method: Option<String>, pub path: String,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentIngressBinding { pub selector: IngressSelector, pub contract_operation_id: OperationId }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigLiteralBinding { pub path: String, pub value: Value }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SecretRefBinding { pub path: String, pub secret_ref: String }
+#[serde(rename_all = "camelCase")]
+pub enum StateBindingKind { Database, Redis, Actor, Queue, }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateBinding { pub requirement_key: String, pub kind: Kind, pub namespace: String }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceBinding {
+  pub requirement_key: String, pub capability: String, pub resource_ref: String,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeCapabilityBinding { pub capability: String, pub version: String }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourcePolicy { pub cpu_millis: u32, pub memory_bytes: u64 }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivationPolicy { pub max_concurrency: u32, pub idle_timeout_ms: Option<u64> }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentPolicy {
+  pub timeout_ms: u64, pub resources: ResourcePolicy, pub activation: ActivationPolicy,
+  pub principal: String,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentDiagnosticText { pub display_name: String, pub notes: Map }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentInput {
+  pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
+  pub implementation: Ref, pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
+  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
+  pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeployment {
+  pub schema_version: String, pub contract: Ref, pub deployment_revision: Revision,
+  pub deployment_artifact_identity: Identity, pub implementation: Ref,
+  pub operation_bindings: Vec<Op>, pub package_bindings: Vec<Pkg>,
+  pub service_selectors: Vec<Svc>, pub ingress: Vec<Ingress>, pub config_literals: Vec<Config>,
+  pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>, pub resource_bindings: Vec<Resource>,
+  pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,
+}
+`;
+  const canonicalAssemblyText = `
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageCodeSlot { pub package: PackageArtifactRef }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CanonicalPackageLinkPlan { pub code_slots: Vec<PackageCodeSlot>, pub package_links: Vec<PackageBinding> }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedServiceBinding {
+  pub key: ServiceRequirementKey, pub contract: ServiceContractRef,
+  pub provider: ServiceDeploymentRef, pub used_operations: Vec<OperationId>,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceBindingTemplate {
+  pub activation: ServiceDeploymentRef, pub bindings: Vec<ResolvedServiceBinding>,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivationTemplate {
+  pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
+  pub config_literals: Vec<Config>, pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>,
+  pub resource_bindings: Vec<Resource>, pub policy: Policy,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GlobalIngressBinding {
+  pub selector: IngressSelector, pub deployment: ServiceDeploymentRef,
+  pub contract: ServiceContractRef, pub contract_operation_id: OperationId,
+}
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssembly {
+  pub schema_version: String, pub assembly_identity: Identity, pub roots: Vec<Ref>,
+  pub resolved_deployments: Vec<Ref>, pub resolved_contracts: Vec<Ref>,
+  pub resolved_packages: Vec<Ref>, pub package_link_plan: Plan,
+  pub service_binding_templates: Vec<ServiceTemplate>,
+  pub activation_templates: Vec<ActivationTemplate>, pub global_ingress: Vec<Ingress>,
+}
+`;
+  const canonicalLinkPlanText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CanonicalPackageLinkPlan { pub code_slots: Vec<PackageCodeSlot>, pub package_links: Vec<PackageBinding> }
+`;
+  const canonicalServiceTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceBindingTemplate {
+  pub activation: ServiceDeploymentRef, pub bindings: Vec<ResolvedServiceBinding>,
+}
+`;
+  const canonicalActivationTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivationTemplate {
+  pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
+  pub config_literals: Vec<Config>, pub secret_refs: Vec<Secret>, pub state_bindings: Vec<State>,
+  pub resource_bindings: Vec<Resource>, pub policy: Policy,
+}
+`;
+  const canonicalIdentityText = canonicalDeploymentAssemblyIdentityNewtypes
+    .map((name) => `string_identity!(${name});`)
+    .join('\n');
+  const canonicalDeploymentAssemblyFiles = ({
+    deployment = canonicalDeploymentText,
+    assembly = canonicalAssemblyText,
+    extra = [],
+  } = {}) => [
+    { relPath: 'artifact-model/src/deployment.rs', text: deployment },
+    { relPath: 'artifact-model/src/runtime_assembly.rs', text: assembly },
+    { relPath: 'artifact-model/src/compile_identity.rs', text: canonicalIdentityText },
+    ...extra,
+  ];
+  const deploymentAssemblyCases = [
+    {
+      name: 'accepts canonical deployment and assembly owners',
+      files: canonicalDeploymentAssemblyFiles(),
+      expectedFailures: 0,
+    },
+    {
+      name: 'rejects renamed canonical assembly field',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText.replace('pub package_link_plan:', 'pub linked_plan:'),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects renamed canonical package link-plan leaf',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText.replace('pub code_slots:', 'pub linked_code_slots:'),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects duplicate canonical package link-plan owner',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'runtime/model/src/package_link_plan.rs',
+          text: canonicalLinkPlanText,
+        }],
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects moved canonical package link-plan owner',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText.replace(canonicalLinkPlanText, ''),
+        extra: [{
+          relPath: 'runtime/model/src/package_link_plan.rs',
+          text: canonicalLinkPlanText,
+        }],
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects legacy aggregate embedded in package link plan',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText.replace(
+          'pub package_links: Vec<PackageBinding>',
+          'pub package_links: Vec<PackageBinding>, pub legacy: PackageUnit',
+        ),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects renamed service and activation template leaves',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText
+          .replace('pub bindings:', 'pub resolved_bindings:')
+          .replace('pub implementation_package_build_id:', 'pub implementation_build:'),
+      }),
+      expectedFailures: 4,
+    },
+    {
+      name: 'rejects duplicate service and activation template owners',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'runtime/model/src/templates.rs',
+          text: canonicalServiceTemplateText + canonicalActivationTemplateText,
+        }],
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects moved service and activation template owners',
+      files: canonicalDeploymentAssemblyFiles({
+        assembly: canonicalAssemblyText
+          .replace(canonicalServiceTemplateText, '')
+          .replace(canonicalActivationTemplateText, ''),
+        extra: [{
+          relPath: 'runtime/model/src/templates.rs',
+          text: canonicalServiceTemplateText + canonicalActivationTemplateText,
+        }],
+      }),
+      expectedFailures: 4,
+    },
+    {
+      name: 'rejects legacy aggregate embedded in deployment',
+      files: canonicalDeploymentAssemblyFiles({
+        deployment: canonicalDeploymentText.replace(
+          'pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text,',
+          'pub runtime_capability_bindings: Vec<Capability>, pub policy: Policy, pub diagnostic_text: Text, pub legacy: ServiceUnit,',
+        ),
+      }),
+      expectedFailures: 2,
+    },
+    {
+      name: 'rejects moved or repeated deployment owner',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'runtime/model/src/deployment.rs',
+          text: 'pub struct ServiceDeployment {}\n',
+        }],
+      }),
+      expectedFailures: 1,
+    },
+    {
+      name: 'rejects second assembly identity owner',
+      files: canonicalDeploymentAssemblyFiles({
+        extra: [{
+          relPath: 'runtime/model/src/identity.rs',
+          text: 'pub struct AssemblyIdentity(String);\n',
+        }],
+      }),
+      expectedFailures: 1,
+    },
+  ];
+  for (const testCase of deploymentAssemblyCases) {
+    const modelFailures = collectCanonicalDeploymentAssemblyModelFailures(testCase.files);
+    if (modelFailures.length !== testCase.expectedFailures) {
+      failures.push(
+        `${testCase.name}: expected ${testCase.expectedFailures} deployment/assembly failure(s), got ${modelFailures.length}`,
       );
     }
   }

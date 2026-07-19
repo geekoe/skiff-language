@@ -2315,6 +2315,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-deployment"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skiff-artifact-identity",
+ "skiff-artifact-model",
+ "thiserror",
+]
+
+[[package]]
 name = "skiff-runtime-activation"
 version = "0.1.0"
 dependencies = [
@@ -2391,6 +2401,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-deployment",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
@@ -2520,7 +2531,6 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-compiler-projection",
  "skiff-runtime-activation",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",

@@ -2,14 +2,21 @@ const standardCrates = Object.freeze(['std', 'core', 'alloc']);
 const approvedExternalValueCrates = Object.freeze(['serde', 'serde_json']);
 
 const managedRecords = deepFreeze([
-  record('skiff-compiler-contract', 0, [
+  record('skiff-deployment', 0, [
+    'skiff-deployment',
+    'skiff-artifact-model',
+    'skiff-artifact-identity',
+    ...standardCrates,
+    ...approvedExternalValueCrates,
+  ], 'deployment public API exposes only canonical artifact types and approved value crates'),
+  record('skiff-compiler-contract', 1, [
     'skiff-compiler-contract',
     'skiff-artifact-model',
     'skiff-artifact-identity',
     ...standardCrates,
     ...approvedExternalValueCrates,
   ], 'contract public API exposes only self/artifact-model/artifact-identity/std and approved value crates'),
-  record('skiff-compiler', 1, [
+  record('skiff-compiler', 2, [
     'skiff-compiler',
     'skiff-compiler-contract',
     'skiff-compiler-input-model',

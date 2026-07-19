@@ -1,5 +1,6 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
+use skiff_artifact_model::IngressSelector;
 use skiff_runtime_linked_program::ExecutableAddr;
 use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, ExecutionBudget, RequestCancel, RequestEnvelope,
@@ -8,18 +9,18 @@ use skiff_runtime_request::{
 };
 use skiff_runtime_transport::{response_mapper, TransportError};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::{
     capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
-    loader::load_service_build_from_artifact_roots_with_caches,
+    loader::assembly_admission::ActiveAssemblyRoute,
     telemetry::RequestTelemetryContext,
 };
 
 use super::{
-    control_plane::apply_control_config, package_test_entry, request_supervisor::CompletionTrace,
-    route_registry, spawn_worker, RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
+    package_test_entry, request_supervisor::CompletionTrace, route_registry, spawn_worker,
+    RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
 };
 
 struct RouterResponseEventSink {
@@ -71,12 +72,9 @@ impl RuntimeHost {
         &self,
         request: RequestEnvelope,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: Option<&spawn_worker::SpawnWorkerRegistration>,
+        _registration: Option<&spawn_worker::SpawnWorkerRegistration>,
     ) {
-        let operation_context = match self
-            .lookup_or_load_operation_inner(&request, sender.clone(), registration)
-            .await
-        {
+        let operation_context = match self.lookup_operation_in_state(&request) {
             Ok(operation_context) => operation_context,
             Err(error) => {
                 self.emit_request_route_error(&request, &error);
@@ -370,129 +368,40 @@ impl RuntimeHost {
         self.lookup_operation_in_state(request)
     }
 
+    /// Resolves a canonical ingress only from one immutable active assembly generation.
+    ///
+    /// Router wire mapping into `IngressSelector` remains outside Phase 03. Once supplied, this
+    /// entry performs no artifact access or candidate mutation and returns the activation template
+    /// plus descriptor pinned by `ActiveAssemblyRoute`.
+    #[allow(dead_code)]
+    pub(crate) fn lookup_active_assembly_request_route(
+        &self,
+        selector: &IngressSelector,
+    ) -> Result<ActiveAssemblyRoute> {
+        let route = self
+            .active_runtime_assembly_route(selector)
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Unsupported(format!(
+                    "no active assembly ingress matches {selector:?}"
+                ))
+            })?;
+        if route.activation().is_none() || route.operation_descriptor().is_none() {
+            return Err(RuntimeError::Decode(format!(
+                "active assembly {} generation {} has an incomplete ingress route",
+                route.assembly_identity(),
+                route.generation()
+            )));
+        }
+        Ok(route)
+    }
+
     #[cfg(test)]
-    pub(crate) async fn lookup_or_load_operation(
+    pub(crate) fn lookup_request_operation(
         &self,
         request: &RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<ServiceOperationContext> {
-        self.lookup_or_load_operation_inner(request, sender, None)
-            .await
-    }
-
-    async fn lookup_or_load_operation_inner(
-        &self,
-        request: &RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: Option<&spawn_worker::SpawnWorkerRegistration>,
-    ) -> Result<ServiceOperationContext> {
-        match self.lookup_operation_in_state(request) {
-            Ok(operation) => return Ok(operation),
-            Err(error) if request.service_id.is_none() => return Err(error),
-            Err(_) => {}
-        }
-
-        let loaded = self.lazy_load_request_service(request).await?;
-        if !loaded.is_empty() {
-            self.queue_service_registers(sender.clone(), &loaded)?;
-            if let Some(registration) = registration {
-                spawn_worker::start_spawn_workers_for_services(
-                    self.clone(),
-                    sender.clone(),
-                    loaded,
-                    registration,
-                );
-            }
-        }
         self.lookup_operation_in_state(request)
-    }
-
-    async fn lazy_load_request_service(
-        &self,
-        request: &RequestEnvelope,
-    ) -> Result<Vec<Arc<ServiceRuntimeContext>>> {
-        let Some(service_id) = request.service_id.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let build_id = request.build_id();
-        if !route_registry::is_service_build_id(build_id) {
-            return Err(RuntimeError::Unsupported(format!(
-                "request.start buildId must be skiff-service-build-v1:sha256:<64 lowercase hex>, got {}",
-                build_id
-            )));
-        }
-
-        let load_state = self.artifact_load_state.lock().await;
-        if self.lookup_operation_in_state(request).is_ok() {
-            return Ok(Vec::new());
-        }
-        if load_state.artifact_roots.is_empty() {
-            return Err(RuntimeError::Unsupported(format!(
-                "no artifact roots are configured for lazy loading serviceId {} buildId {}",
-                service_id, build_id
-            )));
-        }
-        let has_control_config = load_state
-            .service_config
-            .iter()
-            .any(|config| config.service_id == service_id && config.build_id == build_id);
-        let mut services = match load_service_build_from_artifact_roots_with_caches(
-            &load_state.artifact_roots,
-            service_id,
-            build_id,
-            &self.base_runtime_id,
-            self.default_http_response_max_bytes,
-            &load_state.load_options,
-            &self.artifact_caches,
-            has_control_config,
-        )
-        .await
-        {
-            Ok(services) => services,
-            Err(error) => {
-                warn!(
-                    event = "runtime.lazy_load_service_failed",
-                    service_id,
-                    build_id,
-                    stage = "load_artifact",
-                    error = %error
-                );
-                return Err(RuntimeError::invalid_artifact(error.to_string()));
-            }
-        };
-        services = match apply_control_config(services, &load_state.service_config) {
-            Ok(services) => services,
-            Err(error) => {
-                warn!(
-                    event = "runtime.lazy_load_service_failed",
-                    service_id,
-                    build_id,
-                    stage = "apply_control_config",
-                    error = %error
-                );
-                return Err(RuntimeError::invalid_artifact(error.to_string()));
-            }
-        };
-        drop(load_state);
-
-        let loaded_count = services.len();
-        let added = self.add_services(services).map_err(|error| {
-            warn!(
-                event = "runtime.lazy_load_service_failed",
-                service_id,
-                build_id,
-                stage = "add_services",
-                error = %error
-            );
-            RuntimeError::invalid_artifact(error.to_string())
-        })?;
-        if loaded_count > 0 && added.is_empty() {
-            warn!(
-                event = "runtime.lazy_load_service_noop",
-                service_id, build_id, loaded_count
-            );
-        }
-        Ok(added)
     }
 
     pub(crate) async fn cancel_request(&self, cancel: RequestCancel) {

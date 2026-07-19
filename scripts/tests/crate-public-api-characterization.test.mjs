@@ -14,7 +14,7 @@ import {
 } from './helpers/crate-public-api-harness.mjs';
 
 const helpOutput = `Usage:
-  node scripts/check-crate-public-api.mjs <crate> [--allow-crate <crate> ...]
+  node scripts/check-crate-public-api.mjs --crate <crate> [--allow-crate <crate> ...]
   node scripts/check-crate-public-api.mjs --all-configured
   node scripts/check-crate-public-api.mjs --self-test
 
@@ -23,6 +23,7 @@ Checks exported public API types with rustdoc JSON:
   RUSTC_BOOTSTRAP=1 cargo rustdoc -p <crate> --lib -- -Z unstable-options --output-format json
 
 Default gated crates:
+  skiff-deployment
   skiff-compiler-contract
   skiff-compiler
 `;
@@ -78,7 +79,7 @@ test('help aliases and duplicate help preserve the exact help snapshot and help 
     assert.deepEqual(result.cargoLog, []);
   }
   assert.deepEqual(
-    helpOutput.match(/^  skiff-compiler(?:-.+)?$/gm).map((line) => line.trim()),
+    helpOutput.match(/^  skiff-(?:deployment|compiler(?:-.+)?)$/gm).map((line) => line.trim()),
     HELP_ORDER,
   );
   assert.deepEqual(HELP_ORDER, GATE_POLICY.map(({ name }) => name));
@@ -101,6 +102,10 @@ test('parser errors preserve exact exit/stdout/stderr and never reach Cargo', as
     { args: ['--unknown'], error: 'unknown option: --unknown' },
     { args: ['--'], error: 'unknown option: --' },
     { args: ['one', 'two'], error: 'unexpected extra crate name: two' },
+    { args: ['--crate'], error: '--crate requires a crate name' },
+    { args: ['--crate='], error: '--crate requires a crate name' },
+    { args: ['--crate', 'one', '--crate', 'two'], error: 'crate name was specified more than once: two' },
+    { args: ['one', '--crate=two'], error: 'crate name was specified more than once: two' },
     { args: ['--all-configured', '--all-configured'], error: '--all-configured may be specified only once' },
     { args: ['--all-configured', 'one'], error: '--all-configured cannot be combined with an explicit crate' },
     { args: ['--all-configured', '--allow', 'extra'], error: '--all-configured cannot be combined with --allow-crate/--allow-list' },
@@ -248,6 +253,19 @@ test('explicit unmanaged package uses self plus std/core/alloc fallback policy',
   assert.deepEqual(
     { code: result.code, stderr: result.stderr, stdout: result.stdout },
     { code: 0, stderr: '', stdout: fallbackOutput('fixture-crate') },
+  );
+  assert.deepEqual(cargoKinds(result), ['metadata', 'probe', 'rustdoc']);
+});
+
+test('--crate selects the managed deployment policy and runs one rustdoc target', async () => {
+  const deploymentPolicy = GATE_POLICY.find(({ name }) => name === 'skiff-deployment');
+  const result = await runPublicApiCli(['--crate', deploymentPolicy.name], {
+    packageNames: [deploymentPolicy.name],
+    defaultRustdoc: passingRustdoc(deploymentPolicy.name),
+  });
+  assert.deepEqual(
+    { code: result.code, stderr: result.stderr, stdout: result.stdout },
+    { code: 0, stderr: '', stdout: expectedPassingOutput([deploymentPolicy]) },
   );
   assert.deepEqual(cargoKinds(result), ['metadata', 'probe', 'rustdoc']);
 });

@@ -9,6 +9,7 @@ mod overlay;
 pub mod package_unit;
 pub mod resolver;
 pub mod service_unit;
+mod shared_image;
 mod type_params;
 pub mod types;
 
@@ -30,10 +31,10 @@ pub use linked::{
     LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
     LinkedInterfaceMethodTablePlanIr, LinkedRemoteOperationSlotPlanIr,
     LinkedRemoteOperationTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, LiteralIr,
-    MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageOperationSymbolRef,
-    PackageRefIr, PackageSymbolRef, ParamIr, PatternIr, ReceiverCallAbi,
-    ServiceDependencySymbolRef, ServiceSymbolRef, SlotBindingIr, SlotIr, SlotLayoutIr,
-    SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr, UnaryOpIr,
+    MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef,
+    ParamIr, PatternIr, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
+    SlotBindingIr, SlotIr, SlotLayoutIr, SourceAstHash, SourceMapDto, StmtRefIr, TypeDeclIr,
+    UnaryOpIr,
 };
 pub use overlay::{LinkOverlay, ResolvedSymbol, SymbolOverlay};
 pub use package_unit::{
@@ -52,6 +53,11 @@ pub use service_unit::{
     PackageUsedSymbol, PackageUsedSymbolKind, ServiceConfigMetadata, ServiceDependencyConstraint,
     ServiceDependencyOperationRef, ServiceMeta, ServiceOperation, ServiceTimeoutConfig,
     ServiceUnit, SpawnTargetIr, SpawnTargetKindIr,
+};
+pub use shared_image::{
+    ActivationRelativeServiceCall, HydratedPackageCode, LinkedPackageDirectCall,
+    PackageCodeSlotIndex, SharedPackageCode, SharedPackageImageError, SharedPackageImageResult,
+    SharedPackageLinkedImage,
 };
 pub use skiff_runtime_model::resource::{
     LoadedPublicationResource, PublicationResourcePath, PublicationResourcePathError,

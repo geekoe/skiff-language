@@ -14,6 +14,22 @@ pub enum ArtifactIdentityError {
         "service contract declared protocol identity {declared} but content identity is {computed}"
     )]
     ServiceProtocolIdentityMismatch { declared: String, computed: String },
+    #[error("failed to serialize deployment artifact identity payload: {0}")]
+    SerializeDeploymentArtifactIdentity(serde_json::Error),
+    #[error("service deployment is invalid: {message}")]
+    InvalidServiceDeployment { message: String },
+    #[error(
+        "service deployment declared artifact identity {declared} but content identity is {computed}"
+    )]
+    DeploymentArtifactIdentityMismatch { declared: String, computed: String },
+    #[error("service deployment reference is invalid: {message}")]
+    ServiceDeploymentRefMismatch { message: String },
+    #[error("failed to serialize runtime assembly identity payload: {0}")]
+    SerializeAssemblyIdentity(serde_json::Error),
+    #[error("runtime assembly is invalid: {message}")]
+    InvalidRuntimeAssembly { message: String },
+    #[error("runtime assembly declared identity {declared} but content identity is {computed}")]
+    AssemblyIdentityMismatch { declared: String, computed: String },
     #[error("failed to serialize PackageArtifact local ABI identity payload: {0}")]
     SerializePackageArtifactLocalAbiIdentity(serde_json::Error),
     #[error("failed to serialize PackageArtifact build identity payload: {0}")]

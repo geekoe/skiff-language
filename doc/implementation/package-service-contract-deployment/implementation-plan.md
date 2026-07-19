@@ -1,6 +1,6 @@
 # Package、Service Contract 与 Deployment 总体实现计划
 
-状态：active；Phase 01 已完成并合入 `main`，Phase 02 正从 terminal-only checkpoint 重建
+状态：active；Phase 01–03 已完成，Phase 04 尚未启动（当前仅有 outline）
 
 唯一权威架构输入是 `doc/architecture/package-service-contract-deployment.md`。本文不定义新语义，只把
 该设计转化为可逐阶段验收、尽量缩短关键路径的实现路线。每阶段只向 `main` 合并一次；上一阶段验收后
@@ -41,15 +41,19 @@ ServiceDeployments + PackageArtifact closure ──► RuntimeAssembly
 | 阶段 | 当阶段必须落地的终态 | 允许的临时状态 |
 | --- | --- | --- |
 | Phase 02 | compiler 只产出 `PackageArtifact` / `ServiceContract` | service CLI/watch/runtime 可暂时无法消费；不输出 `PackageUnit` / `ServiceUnit` / `serviceAssembly` |
-| Phase 03 | 只用 `ServiceDeployment` / `RuntimeAssembly` 表达部署与闭包 | 尚未执行 service boundary；不保留旧 assembly/loader 兼容输入 |
-| Phase 04 | `ActivationContext` / `InProcessBoundary` 是唯一 service 执行路径 | 工具与业务服务尚未切换；不保留 remote relay fallback |
-| Phase 05 | CLI/watch/registry/router/test-runner/services 全部消费四对象 | 无旧 reader/writer、无 artifact 转换、无双轨 |
+| Phase 03 | 只用 `ServiceDeployment` / `RuntimeAssembly` 表达部署、完整闭包与 runtime admission | 尚未执行 service boundary；不保留旧 assembly/loader 兼容输入 |
+| Phase 04 | `ActivationContext` / `InProcessBoundary` 是唯一 service 执行路径 | tooling 与业务服务尚未切换；不保留 remote relay fallback |
+| Phase 05 | Skiff tooling、`skiff-packages` 与 `internals` consumer 全部消费四对象 | 无旧 reader/writer、artifact 转换、双轨或跨仓库 fallback |
 
-## 3. Phase 01 经验与后续约束
+## 3. Phase 01–02 经验与 Phase 02 后重审
 
 Phase 01 已建立 canonical identity、type closure、typed effect leaf、PackageUnit projection 和跨层引用验证。
 其早期独立任务并发有效，但后期形成长串行链；单个跨层验证提交触及 89 个文件，证明“一个 Agent 横跨
 compiler/runtime/router/scripts”不是可接受任务边界。
+
+Phase 02 已在 `main` 的 merge commit `629e78d` 完成 terminal compile-plane。它进一步证明：任务数量和
+artifact 数量不是目标；只有扩大 DAG 宽度、缩短关键路径或隔离写入 owner 的拆分才有价值。真实的
+producer/consumer 依赖不能伪并行，但也不应仅因可独立验证就机械增加阶段、完整 gate 与 merge。
 
 后续阶段必须遵守：
 
@@ -60,17 +64,37 @@ compiler/runtime/router/scripts”不是可接受任务边界。
 - 不为维持阶段间可运行性建立 compatibility/legacy bridge；旧路径在其 owner 被终态
   取代的阶段直接删除。
 
-Phase 01 的 `phase-plan.md` 与 `phase-result.md` 是当时执行记录，其中旧 Phase 02–07 编号只表示历史
-ledger；后续以本文当前划分为准。
+对 Phase 02 之后的旧三阶段划分重审后，结论是保留三个阶段边界，但修正阶段内部 DAG：
+
+1. Phase 03 仍同时交付 `ServiceDeployment` 与 `RuntimeAssembly`，因为单独合入 deployment 不能解除任何
+   跨阶段 consumer，也没有独立运行价值。运行时数据流仍严格是
+   `deployment -> assembly resolution -> loader/linker admission`；实现 DAG 则先冻结两对象 schema/validator，
+   再让 deployment projection、assembly resolver 与 typed runtime consumer 基于同一 checkpoint/fixture
+   并行，最终按真实数据流合流。deployment mismatch 与 assembly closure/provider mismatch 分别做高风险
+   verdict（可由同一只读 reviewer在同一 checkpoint分别输出），但只在最终稳定 assembly候选上运行一次
+   阶段 gate、独立阶段验收并合入 `main`。
+2. Phase 04 继续独立承接执行面。ordinary/error、async/stream/cancel、callback/native lane 共用
+   owner/context/materialization kernel；先建立短 kernel checkpoint，再扇出 lane，最终统一
+   ingress/internal dispatcher。把 kernel 单独升成阶段只会留下非终态 binding ABI。
+3. Phase 05 继续同时完成 Skiff 本仓 tooling 与外部 ecosystem cutover，但不能从第一波三仓并行。
+   先冻结 authoring/storage/control checkpoint，再迁移 Skiff registry/CLI/watch/router/test-runner，随后才从
+   精确 integration checkpoint 扇出 `skiff-packages` 与 `internals`，最后建立一个跨仓稳定候选和唯一最终
+   gate。外部 worktree 不要求此前先把中间 checkpoint 合入 `main`。
+
+因此本次重审不增加阶段数。每新增一个阶段都会增加 integration worktree、计划与独立评审、稳定周期、
+昂贵 gate、阶段验收和一次 `main` merge；没有新增 DAG 宽度或可消费稳定边界时，这些都是纯关键路径成本。
+
+Phase 01、Phase 02 的 `phase-plan.md`、`phase-result.md` 与 task 文件是完成时的执行记录；其中指向未来阶段的
+旧编号只表示历史 ledger。Phase 02 之后的当前编号与 owner 以本文和对应 outline 为准。
 
 ## 4. 当前阶段划分
 
 ```text
 Phase 01  Canonical semantic / identity foundation（已完成）
     │
-Phase 02  Compile plane：PackageArtifact + ServiceContract
+Phase 02  Compile plane：PackageArtifact + ServiceContract（已完成）
     │
-Phase 03  Deployment and assembly plane：ServiceDeployment + RuntimeAssembly
+Phase 03  Deployment and assembly plane：ServiceDeployment + RuntimeAssembly（已完成）
     │
 Phase 04  In-process execution plane：ActivationContext + InProcessBoundary
     │
@@ -84,34 +108,36 @@ typed effect leaf、PackageUnit builder 和跨层 artifact reference validation�
 
 ### Phase 02：Compile plane
 
-同时建立最终 `PackageArtifact` 与独立 `ServiceContract`。先冻结二者共享的 boundary descriptor、
-ContractTypeId、requirements、identity 和 wire API，再并行实现 contract artifact、package/effect pipeline
-与 service dependency lowering。阶段完成后 provider 和 consumer 可只凭 contract 独立编译，consumer
-artifact 只保存 `ServiceCallRef`，compiler 不再有 publication/package/service 共同 source pipeline，
-也不产出任何旧 runtime DTO。现有 service CLI/watch/runtime 在 Phase 03–05 完成前可暂时不可用。
-
-执行基线固定为 commit `9ca2547`：它包含 T01–T04 的 canonical contract、package artifact、effect 与
-service-call lowering，但尚未引入后续 runtime 兼容链。旧 Phase 02 integration 只作只读取证；不从其
-后半段整体 cherry-pick 或继续边删边修。后续终态实现按任务逐项移植或重做。
+阶段已完成并合入 `main`。最终 `PackageArtifact` 与独立 `ServiceContract` 共享 canonical boundary leaf，
+provider 和 consumer 可只凭 contract 独立编译，consumer artifact 只保存 `ServiceCallRef`；compiler 不再有
+publication/package/service 共同 source pipeline，也不产出任何旧 runtime DTO。最终证据见
+`phase-02-compile-plane/phase-result.md`。
 
 ### Phase 03：Deployment and assembly plane
 
-同时建立无源码 `ServiceDeployment` 与完整 `RuntimeAssembly`。先冻结 deployment/assembly schema、identity
-和 binding template API，再并行实现 deployment projection、assembly closure/provider resolution 与 runtime
-loader/linker adoption。阶段完成后 typed artifacts 足以构建、校验、链接和 admission 一个 assembly；
-不读取 `ServiceUnit`、`serviceAssembly` 或其 adapter shape。
+阶段已完成并通过独立验收。先完成无源码 `ServiceDeployment` 的 schema、identity、reference、projection 与
+fail-closed validation，形成
+高风险实现检查点；再从 root deployments 解析唯一 provider、完整 package/service closure、AssemblyIdentity、
+package link image 和 per-ActivationContext binding/config/state templates；最后让 runtime loader/linker 只消费
+`RuntimeAssembly` 并完成 admission。schema/validator checkpoint 后，三个写入域可使用 canonical typed
+fixtures 并行开发；集成与验收仍按真实 producer/consumer 顺序。阶段完成后 runtime production path 不读取
+`ServiceUnit`、`PackageUnit`、`serviceAssembly` 或 adapter shape，但还不执行 service boundary。最终证据见
+`phase-03-deployment-assembly/phase-result.md`。
 
 ### Phase 04：In-process execution plane
 
 建立 ActivationContext、service binding vector 和 transport-neutral materialization kernel；随后并行完成
 ordinary/error、async/stream/cancel、callback/native capability 三类 lane。Ingress 与内部 service call
-切到同一 dispatcher，package direct call 继续保留 same-heap mutation；production remote fallback 不可达。
+切到同一 dispatcher，package direct call 继续保留 same-heap mutation；所有 production service edge 都是
+`InProcessBoundary`，production remote selection/fallback 不可达。
 
 ### Phase 05：Ecosystem cutover
 
-并行迁移仓库 tooling、`skiff-packages` 和 `internals` consumer：registry/release、CLI/watch、router reload、
-test-runner、fixtures 与实际 services。每个 consumer 直接切到四对象，不通过旧 artifact adapter；
-完成完整非 live verify、必要 live/smoke 与多 replica 验收。
+先冻结不改变四对象 owner 的 authoring/storage/control API；再并行迁移 Skiff 本仓 registry/release、
+CLI/watch/dev sync、router/runtime reload、test-runner 与 fixtures；本仓 checkpoint 稳定后，才并行迁移
+`skiff-packages`、`internals` consumer 与实际 services。所有 consumer 直接读写四对象，不通过旧 artifact
+adapter；最后删除跨仓 production legacy 路径，完成完整非 live verify、必要 live/chat smoke 与多 replica
+验收。阶段只建立一次最终稳定候选、昂贵 gate 和独立验收。
 
 ## 5. Worktree 与提交协议
 
@@ -130,7 +156,7 @@ test-runner、fixtures 与实际 services。每个 consumer 直接切到四对�
 任务级：format / 静态检查 / 直接 crate 或 test filter
 批次级：共享 checkpoint consumer 组合 + 结构反向搜索
 阶段级：受影响 subject selector + 架构 gate + 一次独立阶段验收
-最终级：Phase 05 运行完整非 live verify 和必要 live/smoke
+最终级：Phase 05 运行完整非 live verify、跨仓库 live/smoke、多 replica 验收与全局 legacy 搜索
 ```
 
 完整套件、冷构建、E2E 和 live gate 对同一稳定代码状态只指定一个 owner。删除或重写测试时必须说明旧

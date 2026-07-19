@@ -1252,7 +1252,7 @@ fn artifact_to_linked_does_not_normalize_open_json_metadata() {
             }
         },
         "linkTargets": {},
-        "externalRefs": {}
+        "externalRefs": { "serviceCallRefs": [] }
     }))
     .expect("artifact metadata fixture should deserialize");
 
@@ -1299,7 +1299,7 @@ fn artifact_to_linked_preserves_type_decl_discriminator() {
             },
             "discriminator": "kind"
         }],
-        "externalRefs": {}
+        "externalRefs": { "serviceCallRefs": [] }
     }))
     .expect("artifact type fixture should deserialize");
 
@@ -1379,7 +1379,7 @@ fn artifact_to_linked_maps_canonical_db_query_and_change_ops() {
                 ]
             }
         }],
-        "externalRefs": {}
+        "externalRefs": { "serviceCallRefs": [] }
     }))
     .expect("canonical artifact fixture should deserialize");
 
@@ -3481,7 +3481,7 @@ fn link_runtime_program_links_compiler_shaped_throw_payload_local_types() {
                 ]
             }
         }],
-        "externalRefs": {}
+        "externalRefs": { "serviceCallRefs": [] }
     }))
     .expect("compiler-shaped throw artifact should deserialize");
 
@@ -3540,15 +3540,6 @@ fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files
         },
         symbol_path: "PkgType".to_string(),
         abi_expectation: None,
-    };
-    let package_operation = OperationAbiRef {
-        operation_abi_id: "operation:pkg:abi:pkgFn".to_string(),
-        kind: PublicationOperationKind::PublicFunction,
-        public_path: "pkgFn".to_string(),
-        public_instance_key: None,
-        interface: None,
-        method_abi_id: None,
-        display_name: "pkg.main.pkgFn".to_string(),
     };
     let service_type_ref = ServiceSymbolRef {
         module_path: "svc.main".to_string(),
@@ -3655,19 +3646,6 @@ fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files
                     metadata: BTreeMap::new(),
                 },
             },
-            LinkedExprIr::Call {
-                call: CallIr {
-                    target: LinkedCallTarget::PackageSymbol {
-                        package_ref: PackageRefIr::PackageId {
-                            package_id: "example.com/pkg".to_string(),
-                        },
-                        operation: package_operation.clone(),
-                    },
-                    args: Vec::new(),
-                    type_args: BTreeMap::new(),
-                    metadata: BTreeMap::new(),
-                },
-            },
             LinkedExprIr::Construct {
                 type_ref: LinkedTypeRef::LocalType { type_index: 0 },
                 fields: BTreeMap::new(),
@@ -3758,29 +3736,19 @@ fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files
                 if *addr == ExecutableAddr::service(0, 1))
     ));
     assert!(matches!(
-        &linked.body.expressions[2],
-        LinkedExprIr::Call { call }
-            if matches!(&call.target, LinkedCallTarget::Executable { addr }
-                if *addr == ExecutableAddr {
-                    unit: UnitAddr::Package(0),
-                    file: FileAddr::LoadedFileIndex(0),
-                    executable: 0,
-                })
-    ));
-    assert!(matches!(
         &linked.return_type,
         Some(LinkedTypeRef::Nullable { inner })
             if matches!(inner.as_ref(), LinkedTypeRef::Address { addr }
                 if *addr == TypeAddr { unit: UnitAddr::Package(0), file: FileAddr::LoadedFileIndex(0), type_index: 0 })
     ));
     assert!(matches!(
-        &linked.body.expressions[3],
+        &linked.body.expressions[2],
         LinkedExprIr::Construct { type_ref, .. }
             if matches!(type_ref, LinkedTypeRef::Address { addr }
                 if *addr == TypeAddr { unit: UnitAddr::Service, file: FileAddr::LoadedFileIndex(0), type_index: 0 })
     ));
     assert!(matches!(
-        &linked.body.expressions[5],
+        &linked.body.expressions[4],
         LinkedExprIr::DbQuery {
             target,
             result_type: Some(LinkedTypeRef::Address { addr: read_addr }),
@@ -3790,7 +3758,7 @@ fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files
             && *read_addr == TypeAddr { unit: UnitAddr::Package(0), file: FileAddr::LoadedFileIndex(0), type_index: 0 }
     ));
     assert!(matches!(
-        &linked.body.expressions[6],
+        &linked.body.expressions[5],
         LinkedExprIr::Throw { payload_type, .. }
             if matches!(payload_type, LinkedTypeRef::Address { addr }
                 if *addr == TypeAddr { unit: UnitAddr::Service, file: FileAddr::LoadedFileIndex(0), type_index: 0 })
@@ -3818,26 +3786,7 @@ fn link_runtime_program_rewrites_executable_bodies_without_mutating_loaded_files
 }
 
 #[test]
-fn package_operation_call_does_not_fallback_to_symbol_overlay() {
-    let service = Arc::new(service_unit(
-        "svc",
-        vec![FileIrRef::new("file:service", "svc.main".to_string())],
-        Vec::new(),
-        Vec::new(),
-    ));
-    let mut package = package_unit("pkg:build");
-    package.files = vec![FileIrRef::new("file:pkg", "pkg.main".to_string())];
-    package.implementation_links.functions.insert(
-        "pkgFn".to_string(),
-        executable_export("pkgFn", "file:pkg", 0),
-    );
-    let operation_abi_id = add_package_public_function_operation(&mut package, "pkgFn");
-    let operation = package.publication_abi.operation_exports[0].clone();
-    package
-        .implementation_links
-        .operation_targets
-        .remove(&operation_abi_id);
-
+fn legacy_package_operation_call_is_rejected_at_artifact_boundary() {
     let mut service_file = file_unit("file:service", "service.run");
     service_file
         .executables
@@ -3851,27 +3800,22 @@ fn package_operation_call_does_not_fallback_to_symbol_overlay() {
                     package_ref: PackageRefIr::PackageId {
                         package_id: "example.com/pkg".to_string(),
                     },
-                    operation,
+                    operation: compiler_operation_ref("pkg.main.pkgFn"),
                 },
                 args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
         });
-    let package_file = file_unit("file:pkg", "pkg.run");
-
-    let error = link_legacy_runtime_program(
-        service,
-        vec![Arc::new(service_file)],
-        vec![Arc::new(package)],
-        vec![vec![Arc::new(package_file)]],
-    )
-    .expect_err("package operation call must not fall back to function overlay")
-    .to_string();
+    let mut value = serde_json::to_value(service_file).expect("linked fixture should serialize");
+    normalize_linked_file_for_artifact(&mut value);
+    let error = serde_json::from_value::<ArtifactFileIrUnit>(value)
+        .expect_err("legacy packageSymbol call must fail at the artifact boundary")
+        .to_string();
 
     assert!(
-        error.contains("package public function operation target"),
-        "unexpected package operation link error: {error}"
+        error.contains("packageSymbol") || error.contains("unknown variant"),
+        "unexpected artifact boundary error: {error}"
     );
 }
 
@@ -5561,6 +5505,11 @@ fn normalize_linked_file_for_artifact(value: &mut Value) {
         declarations
             .entry("interfaces".to_string())
             .or_insert_with(|| json!({}));
+    }
+    if let Some(external_refs) = value.get_mut("externalRefs").and_then(Value::as_object_mut) {
+        external_refs
+            .entry("serviceCallRefs".to_string())
+            .or_insert_with(|| json!([]));
     }
     normalize_file_link_targets(value.get_mut("linkTargets").expect("file link targets"));
     normalize_executables(value.get_mut("executables").expect("file executables"));

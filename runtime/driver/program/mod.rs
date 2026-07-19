@@ -31,9 +31,9 @@ pub use linked::{
     DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableKind, ExprRefIr, ExternalRefIr,
     ExternalRefTable, FieldPathIr, FileDeclarations, FileLinkTargets, FunctionTypeParamIr,
     InterfaceDeclIr, InterfaceOperationIr, LiteralIr, MatchArmIr, MetadataValue, NativeTarget,
-    OperationAbiRef, PackageOperationSymbolRef, PackageRefIr, PackageSymbolRef, ParamIr, PatternIr,
-    ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef, SlotBindingIr, SlotIr,
-    SlotLayoutIr, SourceMapDto, StmtRefIr, TypeDeclIr, UnaryOpIr,
+    OperationAbiRef, PackageRefIr, PackageSymbolRef, ParamIr, PatternIr, ReceiverCallAbi,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SlotBindingIr, SlotIr, SlotLayoutIr,
+    SourceMapDto, StmtRefIr, TypeDeclIr, UnaryOpIr,
 };
 pub use linked::{
     LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,

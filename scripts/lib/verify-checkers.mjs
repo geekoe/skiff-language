@@ -53,6 +53,14 @@ export const CHECKER_REGISTRY = Object.freeze([
       invocation('checks:runtime-crate-dag', 'checks'),
     ],
   }),
+  checker('scripts/check-runtime-artifact-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
+    invocations: [
+      invocation('implementation:runtime:artifact-boundaries:self-test', 'runtime', [
+        '--self-test',
+      ]),
+      invocation('implementation:runtime:artifact-boundaries', 'runtime'),
+    ],
+  }),
   checker('scripts/check-runtime-eval-error-boundary.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:runtime-eval-error-boundary', 'checks')],
   }),
@@ -61,13 +69,13 @@ export const CHECKER_REGISTRY = Object.freeze([
   }),
 ]);
 
-export async function checkerPhases(root, selector) {
+export async function checkerPhases(root, selector, { kind } = {}) {
   return CHECKER_REGISTRY.flatMap((entry) =>
     entry.invocations
       .filter((candidate) => candidate.selector === selector)
       .map((candidate) => ({
         id: candidate.id,
-        kind: entry.classification,
+        kind: kind ?? entry.classification,
         command: 'node',
         args: [entry.path, ...candidate.args],
         cwd: root,

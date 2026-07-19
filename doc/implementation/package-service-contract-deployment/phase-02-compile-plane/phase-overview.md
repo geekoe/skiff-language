@@ -1,13 +1,13 @@
 # Phase 02：Compile Plane
 
-状态：active；从 `9ca2547` terminal-only checkpoint 重建；详见 `phase-plan.md`
+状态：complete；已验收并通过 merge commit `629e78d` 合入 `main`；详见 `phase-result.md`
 
 ## 输入
 
 - 唯一权威设计文档中的 PackageArtifact、ServiceContract、effect/boundary eligibility 与三类 dependency edge。
 - Phase 01 已合入的 canonical identity、type closure 和 typed effect leaf。PackageUnit 不是本阶段输出或兼容目标。
-- Phase 02 新 integration 从 `9ca2547` 创建，保留已完成的 T01–T04；旧 integration 后半段只读保留，
-  不作为新分支 ancestry 或批量移植来源。
+- Phase 02 integration 从 `9ca2547` 创建并完成 terminal rebuild；该基线与旧 integration tail 仅是历史
+  执行事实，不再表示当前待办。
 
 ## 完成态
 

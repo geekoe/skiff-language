@@ -52,6 +52,7 @@ uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 mongodb = "3.2"
+skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-capability-context = { path = "../capability-context", features = ["test-support"] }
 skiff-runtime-eval = { path = "../eval", features = ["test-support"] }

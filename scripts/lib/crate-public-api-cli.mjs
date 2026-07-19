@@ -62,6 +62,29 @@ export function parseCratePublicApiArgs(argv) {
       options.allConfigured = true;
       continue;
     }
+    if (arg === '--crate') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('--crate requires a crate name');
+      }
+      if (options.crateName) {
+        throw new Error(`crate name was specified more than once: ${value}`);
+      }
+      options.crateName = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--crate=')) {
+      const value = arg.slice('--crate='.length);
+      if (!value) {
+        throw new Error('--crate requires a crate name');
+      }
+      if (options.crateName) {
+        throw new Error(`crate name was specified more than once: ${value}`);
+      }
+      options.crateName = value;
+      continue;
+    }
     if (arg === '--allow-crate' || arg === '--allow') {
       const value = argv[index + 1];
       if (!value || value.startsWith('--')) {
@@ -114,7 +137,7 @@ export function parseCratePublicApiArgs(argv) {
 export function renderCratePublicApiUsage() {
   const managedCrates = MANAGED_CRATE_HELP_NAMES.map((crateName) => `  ${crateName}`).join('\n');
   return `Usage:
-  node scripts/check-crate-public-api.mjs <crate> [--allow-crate <crate> ...]
+  node scripts/check-crate-public-api.mjs --crate <crate> [--allow-crate <crate> ...]
   node scripts/check-crate-public-api.mjs --all-configured
   node scripts/check-crate-public-api.mjs --self-test
 

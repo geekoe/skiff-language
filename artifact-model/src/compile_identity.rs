@@ -58,3 +58,6 @@ string_identity!(ServiceProtocolIdentity);
 string_identity!(PackageBuildId);
 string_identity!(PackageLocalAbiIdentity);
 string_identity!(PackageCallableId);
+string_identity!(DeploymentRevision);
+string_identity!(DeploymentArtifactIdentity);
+string_identity!(AssemblyIdentity);
