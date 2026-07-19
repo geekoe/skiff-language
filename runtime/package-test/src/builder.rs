@@ -18,7 +18,7 @@ use super::{
     executable_graph::validate_package_test_executable_graph,
     load_package_test_build_artifact_from_artifact_roots, package_test_db_metadata,
     package_test_file_ir_ref_to_file_ref, package_test_protocol_identity,
-    package_test_recoverable_metadata, package_test_spawn_targets,
+    package_test_runtime_phase_boundary, package_test_spawn_targets,
     validate_loaded_package_test_link_policy, validate_loaded_test_file_scopes,
     LoadedPackageTestRuntimeProgram, PackageTestBuildArtifact, PackageTestBuildSelection,
     PackageTestDispatchArtifact, PackageTestDispatchSelection,
@@ -50,6 +50,11 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         &self,
         selection: &PackageTestBuildSelection,
     ) -> anyhow::Result<PackageTestRuntimeTemplate> {
+        package_test_runtime_phase_boundary()?;
+
+        // Phase 05 owns migration of the isolated synthetic ServiceUnit program below. Keeping
+        // the fence above as the first operation prevents artifact I/O or legacy materialization
+        // from becoming reachable from the Phase 03 assembly admission path.
         let build =
             load_package_test_build_artifact_from_artifact_roots(self.artifact_roots, selection)?;
         let artifact_loader =
@@ -140,23 +145,8 @@ impl<'a> PackageTestRuntimeBuilder<'a> {
         synthetic_service.package_dependencies = production_unit.dependencies.clone();
         synthetic_service.db =
             package_test_db_metadata(production_unit.as_ref(), &production_files);
-        synthetic_service.spawn_targets = package_test_spawn_targets(
-            production_unit.as_ref(),
-            &production_files,
-            &dependency_units,
-            &dependency_files,
-            &synthetic_service.protocol_identity,
-        )?;
-        synthetic_service.recoverable_metadata = package_test_recoverable_metadata(
-            &synthetic_service.service.id,
-            production_unit.as_ref(),
-            &production_files,
-            &test_files,
-            &dependency_units,
-            &dependency_files,
-            &synthetic_service.db,
-            &synthetic_service.spawn_targets,
-        )?;
+        synthetic_service.spawn_targets =
+            package_test_spawn_targets(&production_files, &synthetic_service.protocol_identity)?;
         let synthetic_service = Arc::new(synthetic_service);
 
         let mut service_files = production_files;
