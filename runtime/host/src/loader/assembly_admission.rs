@@ -41,10 +41,6 @@ impl ActiveAssemblyRoute {
         self.active.generation()
     }
 
-    pub(crate) fn binding(&self) -> &GlobalIngressBinding {
-        &self.binding
-    }
-
     pub(crate) fn activation(&self) -> Option<&LinkedActivationTemplate> {
         self.active.activation(&self.binding.deployment)
     }
@@ -62,10 +58,6 @@ impl ActiveAssembly {
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation
-    }
-
-    pub(crate) fn admitted_at(&self) -> OffsetDateTime {
-        self.admitted_at
     }
 
     pub(crate) fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
@@ -391,10 +383,12 @@ impl RuntimeHost {
             .map(|active| active.identity().clone())
     }
 
+    #[allow(dead_code)] // Phase 04 execution consumes an immutable active-generation snapshot.
     pub(crate) fn active_runtime_assembly(&self) -> anyhow::Result<Option<Arc<ActiveAssembly>>> {
         self.assembly_admission.active()
     }
 
+    #[allow(dead_code)] // Control-plane health consumes this without owning admission state.
     pub(crate) fn runtime_assembly_admission_health(
         &self,
     ) -> anyhow::Result<AssemblyAdmissionHealth> {
