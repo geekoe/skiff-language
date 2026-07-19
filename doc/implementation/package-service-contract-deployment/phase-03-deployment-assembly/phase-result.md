@@ -1,7 +1,7 @@
 # Phase 03 验证结果
 
-状态：**T09R affected-gate rebuild PASS；新 production candidate `bedcd032` / tree `a79017c8` 已冻结，等待
-P3-A01 独立复验。**
+状态：**Phase 03 COMPLETE；T09R affected-gate rebuild 与 P3-A01 独立复验均 PASS。最终 production
+candidate 为 `bedcd032` / tree `a79017c8`。**
 
 P3-A01 初次验收确认旧 gate ledger可复现，但在候选 `34b6a863` 上发现两项阻塞：full-chain fixture缺少真实
 consumer/service edge（A01-12）；runtime artifact boundary checker漏扫真实 `request_entry.rs`（A01-11）。两项均为
@@ -66,12 +66,14 @@ A01初验与修复提交为：
 | A01 initial acceptance | read-only | `34b6a86` | A01-11 request-entry checker漏扫；A01-12 full-chain缺consumer/service edge | FAIL；旧候选降为历史候选，分别退 F05/F04 |
 | F05 request-entry checker | `8afd857` | `fce36de` | F05 / structure-gate owner | self-test扩为16项，真实request-entry selector与omission可证 |
 | F04 provider/consumer chain | `ac6bc42` | `bedcd03` | F04 / integration-evidence owner | provider/consumer service edge、exact binding与zero extra I/O闭环 |
-| T09R affected-gate rebuild | `bedcd03` | direct | 仅受影响 runtime、boundary、full-chain、rustfmt与diff证据 | PASS；建立新 stability epoch，等待 A01复验 |
+| T09R affected-gate rebuild | `bedcd03` | direct | 仅受影响 runtime、boundary、full-chain、rustfmt与diff证据 | PASS；建立新 stability epoch |
+| A01 final acceptance | read-only | result HEAD `347f56b` | 独立复核 A01-11/A01-12、retained evidence 与新 stability epoch | PASS；无 blocker，Phase 03完成 |
 
 高风险独立 verdict 的结果：R01 在 F01 后 PASS；R02 的 assembly verdict保持 PASS、deployment verdict在 F02 后
 PASS；R03 在 `df9b884` 的 typed loader/image/linker checkpoint上 PASS。A01初验没有发现需退回 T01–T07 的
 schema、identity、projection、resolution、link 或 admission 产品语义缺口；两项 evidence/structure缺口已由 F04/F05
-关闭并由 T09R重建受影响证据。
+关闭并由 T09R重建受影响证据。A01在 result HEAD `347f56b221412c614ed54c1b480a15cd657f58cb`
+独立复验 PASS，确认两项原 blocker均闭合且未引入新 blocker。
 
 ## 3. 需求 → production code → test 证据
 
@@ -163,10 +165,14 @@ variant、增加 adapter/fallback/dual-read，也没有修改 projection/resolut
 - stable evidence只对 `bedcd032...` / tree `a79017c8...` 有效。修改 production owner、Cargo edge、checker、
   fixture、public surface或gate环境时，必须按影响面重建证据；不能拿task branch旧PASS替代。
 
-## 7. 下一验收边界
+## 7. 独立验收结果
 
-P3-A01应在本文result commit的clean tree上独立只读复验，并确认排除该doc-only result提交后candidate仍为
-`bedcd032c1c3f7226f9ff5778c3fefb05b800fd4` / tree `a79017c878b1dc11a8e91a5c87e942eb6569d752`；重点复核
-A01-11/A01-12已由真实request-entry coverage与provider/consumer service edge关闭。A01不得把Phase 04/05未实现的
-consumer执行能力计为本阶段blocking，也不得把上述v3 shared golden降级成runtime兼容路径；若发现四对象owner、
-identity、projection、resolution、link或admission语义缺口，则按原owner返回，而不是由result记录补语义。
+P3-A01在 result HEAD `347f56b221412c614ed54c1b480a15cd657f58cb` 上完成只读复验并 PASS；排除
+doc-only result提交后，production candidate仍为
+`bedcd032c1c3f7226f9ff5778c3fefb05b800fd4` / tree
+`a79017c878b1dc11a8e91a5c87e942eb6569d752`。验收确认真实 provider/consumer service edge、activation-relative
+binding、canonical contract store与零额外I/O闭环，也确认真实 `request_entry.rs` 是 checker的required exact
+owner，lazy-load mutation及registry/file omission负例均有效。最终 blocker为零。
+
+非阻塞项仅包括 `runtime/linked-program/src/shared_image.rs` 职责较集中、既有dead-code warning，以及 §6所列
+Phase 04/05边界。本文之后的阶段状态收尾提交只修改实现文档，不改变production candidate或验收证据。

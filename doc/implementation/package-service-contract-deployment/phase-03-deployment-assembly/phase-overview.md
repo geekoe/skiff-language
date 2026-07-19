@@ -1,6 +1,6 @@
 # Phase 03：Deployment And Assembly Plane
 
-状态：active；Phase 02 已验收，决策缺口审计完成，详细 DAG 见 `phase-plan.md`
+状态：complete；production candidate `bedcd032` 已通过 P3-A01 独立验收
 
 ## 架构边界
 

@@ -1,6 +1,6 @@
 # Package、Service Contract 与 Deployment 总体实现计划
 
-状态：active；Phase 01、Phase 02 已完成并合入 `main`，当前执行 Phase 03
+状态：active；Phase 01–03 已完成，Phase 04 尚未启动（当前仅有 outline）
 
 唯一权威架构输入是 `doc/architecture/package-service-contract-deployment.md`。本文不定义新语义，只把
 该设计转化为可逐阶段验收、尽量缩短关键路径的实现路线。每阶段只向 `main` 合并一次；上一阶段验收后
@@ -94,7 +94,7 @@ Phase 01  Canonical semantic / identity foundation（已完成）
     │
 Phase 02  Compile plane：PackageArtifact + ServiceContract（已完成）
     │
-Phase 03  Deployment and assembly plane：ServiceDeployment + RuntimeAssembly
+Phase 03  Deployment and assembly plane：ServiceDeployment + RuntimeAssembly（已完成）
     │
 Phase 04  In-process execution plane：ActivationContext + InProcessBoundary
     │
@@ -115,12 +115,14 @@ publication/package/service 共同 source pipeline，也不产出任何旧 runti
 
 ### Phase 03：Deployment and assembly plane
 
-先完成无源码 `ServiceDeployment` 的 schema、identity、reference、projection 与 fail-closed validation，形成
+阶段已完成并通过独立验收。先完成无源码 `ServiceDeployment` 的 schema、identity、reference、projection 与
+fail-closed validation，形成
 高风险实现检查点；再从 root deployments 解析唯一 provider、完整 package/service closure、AssemblyIdentity、
 package link image 和 per-ActivationContext binding/config/state templates；最后让 runtime loader/linker 只消费
 `RuntimeAssembly` 并完成 admission。schema/validator checkpoint 后，三个写入域可使用 canonical typed
 fixtures 并行开发；集成与验收仍按真实 producer/consumer 顺序。阶段完成后 runtime production path 不读取
-`ServiceUnit`、`PackageUnit`、`serviceAssembly` 或 adapter shape，但还不执行 service boundary。
+`ServiceUnit`、`PackageUnit`、`serviceAssembly` 或 adapter shape，但还不执行 service boundary。最终证据见
+`phase-03-deployment-assembly/phase-result.md`。
 
 ### Phase 04：In-process execution plane
 

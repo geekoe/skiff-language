@@ -1,6 +1,6 @@
 # Phase 03：Deployment And Assembly Plane 实现计划
 
-状态：active；P3-A01 初次验收 FAIL，正在执行 F04/F05 有界修复
+状态：complete；F04/F05 已关闭初验 blocker，T09R 与 P3-A01 复验均 PASS
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§5、§9、§10、§12、
 §14。本文只冻结 Phase 03 的实现 DAG、V1 内部表示、写入 ownership 与验收证据，不定义 authoring、
