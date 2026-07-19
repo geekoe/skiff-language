@@ -2313,6 +2313,15 @@ mod tests {
     fn canonicalize_test_artifact_json(mut value: Value) -> Value {
         match value.get("schemaVersion").and_then(Value::as_str) {
             Some("skiff-file-ir-v3") => {
+                value["schemaVersion"] = json!(skiff_artifact_model::FILE_IR_SCHEMA_VERSION);
+                value["irFormatVersion"] = json!(skiff_artifact_model::FILE_IR_FORMAT_VERSION);
+                if let Some(external_refs) =
+                    value.get_mut("externalRefs").and_then(Value::as_object_mut)
+                {
+                    external_refs
+                        .entry("serviceCallRefs".to_string())
+                        .or_insert_with(|| json!([]));
+                }
                 let unit: skiff_artifact_model::FileIrUnit =
                     serde_json::from_value(value.clone()).expect("test File IR should parse");
                 let identity =
@@ -2372,11 +2381,11 @@ mod tests {
 
     fn service_file_identity_for_test() -> String {
         let unit: skiff_artifact_model::FileIrUnit = serde_json::from_value(json!({
-            "schemaVersion": "skiff-file-ir-v3",
+            "schemaVersion": skiff_artifact_model::FILE_IR_SCHEMA_VERSION,
             "fileIrIdentity": "file:service",
             "sourceAstHash": "source:file:service",
             "modulePath": "svc.main",
-            "irFormatVersion": "skiff-file-ir-format-v1",
+            "irFormatVersion": skiff_artifact_model::FILE_IR_FORMAT_VERSION,
             "opcodeTableVersion": "skiff-opcode-table-v1",
             "sourceMap": { "format": "skiff-file-ir-source-map-v1" },
             "declarations": { "interfaces": {} },
@@ -2397,7 +2406,7 @@ mod tests {
                     "body": {}
                 }
             ],
-            "externalRefs": {}
+            "externalRefs": { "serviceCallRefs": [] }
         }))
         .expect("test service File IR should parse");
         file_ir_identity(&unit).expect("test service File IR identity should compute")

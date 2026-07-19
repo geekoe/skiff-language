@@ -2358,37 +2358,27 @@ fn artifact_loader_package_bugfix_changes_dynamic_build_id_for_same_service_vers
 }
 
 #[test]
-fn artifact_loader_dynamic_build_id_matches_cross_system_fixture() {
+fn runtime_strict_boundary_rejects_obsolete_cross_system_dynamic_build_id_fixture() {
     let fixture = dynamic_build_id_fixture();
     assert!(fixture.applies_to.iter().any(|system| system == "runtime"));
+    assert!(fixture.artifact_root.values().any(|value| {
+        value.get("schemaVersion").and_then(Value::as_str) == Some("skiff-file-ir-v3")
+    }));
 
     let temp = TempDir::new("runtime-dynamic-build-id-fixture");
     write_fixture_artifact_root(temp.path(), &fixture);
 
-    let program = load_test_layers_at_root(
+    let error = load_test_layers_at_root(
         temp.path(),
         RuntimeProgramArtifactSelection::release(&fixture.service_id, &fixture.service_version),
     )
-    .expect("cross-system dynamic build id fixture should load");
+    .expect_err("obsolete v3 cross-system fixture must fail at the strict runtime boundary");
 
-    assert_eq!(
-        program.identity.dynamic_build_id,
-        fixture.expected_dynamic_build_id
-    );
-    assert_eq!(
-        program
-            .image
-            .packages
-            .iter()
-            .map(|package| package.package_id.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "example.com/pkg-alpha",
-            "skiff.run/std",
-            "example.com/pkg-shared",
-            "example.com/pkg-leaf",
-            "example.com/pkg-beta"
-        ]
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `serviceCallRefs`"),
+        "unexpected obsolete fixture error: {error:#}"
     );
 }
 
@@ -3089,6 +3079,13 @@ fn canonicalize_test_file_ir_json(mut value: Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    value["schemaVersion"] = json!(skiff_artifact_model::FILE_IR_SCHEMA_VERSION);
+    value["irFormatVersion"] = json!(skiff_artifact_model::FILE_IR_FORMAT_VERSION);
+    if let Some(external_refs) = value.get_mut("externalRefs").and_then(Value::as_object_mut) {
+        external_refs
+            .entry("serviceCallRefs".to_string())
+            .or_insert_with(|| json!([]));
+    }
     let Ok(unit) = serde_json::from_value::<skiff_artifact_model::FileIrUnit>(value.clone()) else {
         return value;
     };

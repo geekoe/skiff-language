@@ -83,6 +83,32 @@ fn test_host_with_artifact_roots(artifact_roots: Vec<PathBuf>) -> super::super::
     .expect("runtime host should build")
 }
 
+const PACKAGE_TEST_PHASE_05_MIGRATION_ERROR: &str =
+    "package-test legacy service-program materialization is unavailable until its Phase 05 consumer migration";
+
+fn assert_package_test_phase_05_migration_error(error: impl std::fmt::Display) {
+    let error = error.to_string();
+    assert!(
+        error.contains(PACKAGE_TEST_PHASE_05_MIGRATION_ERROR),
+        "unexpected package-test terminal-seam error: {error}"
+    );
+}
+
+fn assert_package_test_phase_05_error_frame(
+    message: super::super::RouterWriterMessage,
+    request_id: &str,
+) {
+    let super::super::RouterWriterMessage::Binary(frame) = message else {
+        panic!("expected binary response.error frame");
+    };
+    let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
+        decode_typed_binary_frame(&frame).expect("response.error should decode");
+    assert_eq!(header.request_id, request_id);
+    assert!(payload.is_empty());
+    assert_eq!(header.error.code, "InvalidArtifact");
+    assert_package_test_phase_05_migration_error(header.error.message);
+}
+
 async fn apply_router_control_artifact_roots(
     host: &super::super::RuntimeHost,
     artifact_roots: Vec<PathBuf>,
@@ -490,15 +516,13 @@ async fn binary_package_test_start_fails_closed_without_artifact_roots() {
         other => panic!("expected binary response.error frame, got {other:?}"),
     };
     assert_eq!(error.code, "InvalidArtifact");
-    assert!(error
-        .message
-        .contains("no artifact roots are configured for package-test dispatch"));
+    assert_package_test_phase_05_migration_error(error.message);
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
 
 #[tokio::test]
-async fn binary_package_test_start_executes_loaded_test_entrypoint() {
+async fn binary_package_test_start_reports_phase_05_materialization_boundary() {
     let fixture = write_package_test_runtime_fixture();
     let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
     let (sender, mut receiver) = mpsc::unbounded_channel();
@@ -521,19 +545,7 @@ async fn binary_package_test_start_executes_loaded_test_entrypoint() {
         .await
         .expect("package-test runtime response should not block")
         .expect("package-test runtime response should be sent");
-    let (header, payload) = match message {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseEndFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.end should decode");
-            (header, payload)
-        }
-        other => panic!("expected binary response.end frame, got {other:?}"),
-    };
-
-    assert_eq!(header.envelope_type, "response.end");
-    assert_eq!(header.request_id, "package-test-executes");
-    assert!(header.payload_present);
-    assert!(!payload.is_empty());
+    assert_package_test_phase_05_error_frame(message, "package-test-executes");
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -576,18 +588,7 @@ async fn binary_package_test_start_returns_before_template_preprocessing_complet
         .await
         .expect("package-test runtime response should arrive after unblocking preprocessing")
         .expect("package-test runtime response should be sent");
-    let (header, payload) = match message {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseEndFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.end should decode");
-            (header, payload)
-        }
-        other => panic!("expected binary response.end frame, got {other:?}"),
-    };
-
-    assert_eq!(header.request_id, "package-test-start-nonblocking");
-    assert!(header.payload_present);
-    assert!(!payload.is_empty());
+    assert_package_test_phase_05_error_frame(message, "package-test-start-nonblocking");
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -628,18 +629,7 @@ async fn binary_package_test_start_queues_when_execution_slots_are_full() {
             "queued package-test runtime response should arrive after releasing execution slots",
         )
         .expect("queued package-test runtime response should be sent");
-    let (header, payload) = match message {
-        super::super::RouterWriterMessage::Binary(frame) => {
-            let (header, payload): (ResponseEndFrameHeader, Vec<u8>) =
-                decode_typed_binary_frame(&frame).expect("response.end should decode");
-            (header, payload)
-        }
-        other => panic!("expected binary response.end frame, got {other:?}"),
-    };
-
-    assert_eq!(header.request_id, "package-test-start-queued");
-    assert!(header.payload_present);
-    assert!(!payload.is_empty());
+    assert_package_test_phase_05_error_frame(message, "package-test-start-queued");
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -796,7 +786,7 @@ async fn binary_package_test_start_saturation_returns_request_error_without_ws_f
 }
 
 #[tokio::test]
-async fn package_test_runtime_template_first_miss_is_singleflight_per_cache_key() {
+async fn package_test_runtime_template_waiters_fail_closed_at_phase_05_boundary() {
     let fixture = write_package_test_runtime_fixture();
     let artifact_roots = vec![fixture.artifact_root_path()];
     let host = test_host_with_artifact_roots(artifact_roots.clone());
@@ -837,72 +827,38 @@ async fn package_test_runtime_template_first_miss_is_singleflight_per_cache_key(
     assert!(!second.is_finished());
 
     drop(template_build_guard);
-    let first_loaded = first
+    let first_error = first
         .await
         .expect("first package-test load task should join")
-        .expect("first package-test runtime program should load");
-    let second_loaded = second
+        .expect_err("first package-test load must fail at the Phase 05 boundary");
+    let second_error = second
         .await
         .expect("second package-test load task should join")
-        .expect("second package-test runtime program should load");
+        .expect_err("second package-test load must fail at the Phase 05 boundary");
 
-    assert_eq!(host.package_test_template_build_count_for_test(), 1);
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
-    assert!(std::sync::Arc::ptr_eq(
-        &first_loaded.image,
-        &second_loaded.image
-    ));
-    assert!(std::sync::Arc::ptr_eq(
-        &first_loaded.activation,
-        &second_loaded.activation
-    ));
+    assert_package_test_phase_05_migration_error(first_error);
+    assert_package_test_phase_05_migration_error(second_error);
+    assert_eq!(host.package_test_template_build_count_for_test(), 2);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 }
 
 #[tokio::test]
-async fn package_test_service_context_loads_local_config() {
+async fn package_test_runtime_load_fails_before_legacy_service_context() {
     let fixture = write_package_test_runtime_fixture();
     let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
     let header = fixture.start_header("package-test-local-config");
 
-    let loaded = host
+    let error = host
         .load_package_test_runtime_program(&header)
         .await
-        .expect("package-test runtime program should load");
-    let context = host
-        .package_test_service_context(&loaded, &header)
-        .expect("package-test service context should load local config");
+        .expect_err("legacy package-test service context must remain unreachable");
 
-    assert_eq!(context.service_id, "example.com/pkg");
-    assert_eq!(
-        context.activation_identity.as_deref(),
-        Some(header.activation_id.as_str())
-    );
-    assert_eq!(context.build_id, header.test_build_identity);
-    assert!(context
-        .contract_identity
-        .starts_with("skiff-protocol-v1:sha256:"));
-    assert_eq!(
-        context
-            .config
-            .resolved_config_value()
-            .pointer("/app/secret"),
-        Some(&json!("router-secret"))
-    );
-    assert_eq!(
-        context
-            .config
-            .resolved_config_value()
-            .pointer("/serviceDb/mongoUrl"),
-        Some(&json!("business-config"))
-    );
-    assert!(
-        context.service_db.is_some(),
-        "top-level package-test serviceDb should configure DB runtime"
-    );
+    assert_package_test_phase_05_migration_error(error);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 }
 
 #[tokio::test]
-async fn package_test_runtime_program_cache_reuses_template_across_entrypoints_and_activations() {
+async fn package_test_runtime_cache_stays_empty_across_phase_05_failures() {
     let fixture = write_package_test_runtime_fixture();
     let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
     let first_header = fixture.start_header_for(
@@ -916,67 +872,22 @@ async fn package_test_runtime_program_cache_reuses_template_across_entrypoints_a
         "skiff-package-test-run-v1:example~com~~pkg:run:2",
     );
 
-    let first = host
+    let first_error = host
         .load_package_test_runtime_program(&first_header)
         .await
-        .expect("first package-test runtime program should load");
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
-    let second = host
+        .expect_err("first entrypoint must fail at the Phase 05 boundary");
+    let second_error = host
         .load_package_test_runtime_program(&second_header)
         .await
-        .expect("second package-test runtime program should load from template cache");
+        .expect_err("second entrypoint must fail at the Phase 05 boundary");
 
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
-    assert!(std::sync::Arc::ptr_eq(&first.image, &second.image));
-    assert!(std::sync::Arc::ptr_eq(
-        &first.activation,
-        &second.activation
-    ));
-    assert_ne!(
-        first.dispatch.entrypoint.entrypoint_id,
-        second.dispatch.entrypoint.entrypoint_id
-    );
-    assert_eq!(
-        first.dispatch.entrypoint.entrypoint_id,
-        fixture.entrypoint_ids[0]
-    );
-    assert_eq!(
-        second.dispatch.entrypoint.entrypoint_id,
-        fixture.entrypoint_ids[1]
-    );
-
-    let first_context = host
-        .package_test_service_context(&first, &first_header)
-        .expect("first package-test service context should load");
-    let second_context = host
-        .package_test_service_context(&second, &second_header)
-        .expect("second package-test service context should load");
-    assert_eq!(
-        first_context.activation_identity.as_deref(),
-        Some("skiff-package-test-run-v1:example~com~~pkg:run:1")
-    );
-    assert_eq!(
-        second_context.activation_identity.as_deref(),
-        Some("skiff-package-test-run-v1:example~com~~pkg:run:2")
-    );
-    assert_eq!(
-        first_context
-            .config
-            .resolved_config_value()
-            .pointer("/app/secret"),
-        Some(&json!("router-secret"))
-    );
-    assert_eq!(
-        second_context
-            .config
-            .resolved_config_value()
-            .pointer("/app/secret"),
-        Some(&json!("router-secret-2"))
-    );
+    assert_package_test_phase_05_migration_error(first_error);
+    assert_package_test_phase_05_migration_error(second_error);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 }
 
 #[tokio::test]
-async fn package_test_runtime_program_cache_clears_on_reload_and_root_change() {
+async fn package_test_runtime_cache_remains_empty_across_root_change() {
     let first_fixture = write_package_test_runtime_fixture();
     let second_fixture = write_package_test_runtime_fixture();
     let host = test_host();
@@ -987,11 +898,12 @@ async fn package_test_runtime_program_cache_clears_on_reload_and_root_change() {
         "package-test-cache-root-1",
     )
     .await;
-    let first = host
+    let first_error = host
         .load_package_test_runtime_program(&first_fixture.start_header("package-test-root-1"))
         .await
-        .expect("first root package-test runtime program should load");
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
+        .expect_err("first root must fail at the Phase 05 boundary");
+    assert_package_test_phase_05_migration_error(first_error);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 
     apply_router_control_artifact_roots(
         &host,
@@ -1001,26 +913,19 @@ async fn package_test_runtime_program_cache_clears_on_reload_and_root_change() {
     .await;
     assert!(
         host.artifact_caches.package_test_templates.is_empty(),
-        "successful reload must invalidate package-test runtime template cache"
+        "root reload must not create a legacy package-test template"
     );
 
-    let second = host
+    let second_error = host
         .load_package_test_runtime_program(&second_fixture.start_header("package-test-root-2"))
         .await
-        .expect("second root package-test runtime program should load after cache invalidation");
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
-    assert!(
-        !std::sync::Arc::ptr_eq(&first.image, &second.image),
-        "root-changing reload must not serve the stale cached package-test image"
-    );
-    assert!(
-        !std::sync::Arc::ptr_eq(&first.activation, &second.activation),
-        "root-changing reload must not serve the stale cached package-test activation"
-    );
+        .expect_err("second root must fail at the Phase 05 boundary");
+    assert_package_test_phase_05_migration_error(second_error);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 }
 
 #[tokio::test]
-async fn package_test_runtime_program_cache_does_not_store_failed_entrypoint_load() {
+async fn package_test_runtime_cache_does_not_store_phase_05_failures() {
     let fixture = write_package_test_runtime_fixture();
     let host = test_host_with_artifact_roots(vec![fixture.artifact_root_path()]);
     let mut bad_header = fixture.start_header("package-test-cache-bad-entrypoint");
@@ -1032,62 +937,36 @@ async fn package_test_runtime_program_cache_does_not_store_failed_entrypoint_loa
         .load_package_test_runtime_program(&bad_header)
         .await
         .expect_err("invalid entrypoint should not load");
-    assert!(error.to_string().contains("is not listed in assembly"));
+    assert_package_test_phase_05_migration_error(error);
     assert!(
         host.artifact_caches.package_test_templates.is_empty(),
         "failed entrypoint dispatch must not populate the package-test template cache"
     );
 
-    host.load_package_test_runtime_program(&fixture.start_header("package-test-cache-valid"))
+    let error = host
+        .load_package_test_runtime_program(&fixture.start_header("package-test-cache-valid"))
         .await
-        .expect("valid package-test runtime program should load after failed dispatch");
-    assert_eq!(host.artifact_caches.package_test_templates.len(), 1);
+        .expect_err("valid entrypoint must also stop at the Phase 05 boundary");
+    assert_package_test_phase_05_migration_error(error);
+    assert!(host.artifact_caches.package_test_templates.is_empty());
 }
 
 #[tokio::test]
-async fn package_test_template_stats_count_shared_runtime_objects() {
+async fn package_test_template_stats_stay_empty_at_phase_05_boundary() {
     let fixture = write_package_test_runtime_fixture();
     let artifact_roots = vec![fixture.artifact_root_path()];
     let host = test_host_with_artifact_roots(artifact_roots.clone());
     let header = fixture.start_header("package-test-cache-stats");
 
-    let loaded = host
+    let error = host
         .load_package_test_runtime_program(&header)
         .await
-        .expect("package-test runtime program should load");
-    let selection = PackageTestDispatchSelection {
-        package_id: header.package_id.clone(),
-        package_version: header.package_version.clone(),
-        test_build_identity: header.test_build_identity.clone(),
-        entrypoint_id: header.entrypoint_id.clone(),
-        activation_id: header.activation_id.clone(),
-    };
-    let cache_key =
-        PackageTestRuntimeTemplateCache::cache_key(&artifact_roots, &selection.build_selection());
-    let template = host
-        .artifact_caches
-        .package_test_templates
-        .get(&cache_key)
-        .expect("package-test runtime template should be cached");
-    let shared_runtime_bytes = template.shared_runtime_estimated_size_bytes();
+        .expect_err("package-test runtime must stop at the Phase 05 boundary");
+    assert_package_test_phase_05_migration_error(error);
     let stats = host.artifact_caches.stats();
 
-    assert_eq!(stats.package_test_templates.entries, 1);
-    assert_eq!(
-        stats.package_test_templates.estimated_size_bytes,
-        template.estimated_size_bytes()
-    );
-    assert!(
-        shared_runtime_bytes
-            >= std::mem::size_of_val(loaded.image.as_ref())
-                .saturating_add(std::mem::size_of_val(loaded.activation.as_ref())),
-        "shared runtime estimate must include at least the package-test image and activation roots"
-    );
-    assert!(
-        stats.package_test_templates.estimated_size_bytes >= shared_runtime_bytes,
-        "package-test template cache stats must include shared runtime object estimates"
-    );
-    assert!(stats.total_estimated_size_bytes >= stats.package_test_templates.estimated_size_bytes);
+    assert_eq!(stats.package_test_templates.entries, 0);
+    assert_eq!(stats.package_test_templates.estimated_size_bytes, 0);
 }
 
 #[tokio::test]
@@ -1738,7 +1617,7 @@ fn package_test_file_ir_fixture() -> FileIrUnit {
                 }
             }
         ],
-        "externalRefs": {}
+        "externalRefs": { "serviceCallRefs": [] }
     }))
     .expect("package-test File IR fixture should deserialize")
 }
