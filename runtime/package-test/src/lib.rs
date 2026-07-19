@@ -11,19 +11,14 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     CallTargetIr, DbIndexIr, DbMetadataIndexIr, DbMetadataIr, ExecutableKind, ExprIr, FileIrRef,
-    FileIrUnit, MetadataValue, OperationCallableKind, OperationTargetRef, PackageOperationTarget,
-    PackageRefIr, PackageTestAssembly, PackageTestFileIrRef, PackageTestFileLinkScope,
-    PackageTestPackageUnitRef, PackageUnit, RecoverableArtifactMetadata, ServiceUnit,
-    SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
-};
-use skiff_compiler_projection::recoverable_boundary::{
-    recoverable_metadata_for_service_artifacts, PackageTypeSource, RecoverableInputs,
+    FileIrUnit, MetadataValue, OperationCallableKind, OperationTargetRef, PackageTestAssembly,
+    PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestPackageUnitRef, PackageUnit,
+    ServiceUnit, SpawnTargetIr, SpawnTargetKindIr, TypeRefIr,
 };
 use skiff_runtime_activation::RuntimeActivation;
 use skiff_runtime_linked_program::{
     ExecutableAddr, FileAddr, LinkedFileUnit, LinkedProgramImage, RuntimeProgramIdentity, UnitAddr,
 };
-use skiff_runtime_linker::package_handler_target;
 use skiff_runtime_loader::ArtifactGraphCache;
 
 mod builder;
@@ -48,6 +43,25 @@ use self::executable_graph::validate_package_test_executable_graph;
 
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageTestRuntimeSeamError {
+    LegacyServiceProgramMaterializationUnavailable,
+}
+
+impl std::fmt::Display for PackageTestRuntimeSeamError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "package-test legacy service-program materialization is unavailable until its Phase 05 consumer migration",
+        )
+    }
+}
+
+impl std::error::Error for PackageTestRuntimeSeamError {}
+
+fn package_test_runtime_phase_boundary() -> Result<(), PackageTestRuntimeSeamError> {
+    Err(PackageTestRuntimeSeamError::LegacyServiceProgramMaterializationUnavailable)
+}
 
 #[derive(Debug, Clone)]
 pub struct LoadedPackageTestRuntimeProgram {
@@ -490,68 +504,8 @@ fn package_test_db_index(index: &DbIndexIr) -> DbMetadataIndexIr {
     }
 }
 
-fn package_test_recoverable_metadata(
-    service_id: &str,
-    production_unit: &PackageUnit,
-    production_files: &[Arc<FileIrUnit>],
-    test_files: &[Arc<FileIrUnit>],
-    dependency_units: &[Arc<PackageUnit>],
-    dependency_files: &[Vec<Arc<FileIrUnit>>],
-    db_metadata: &[DbMetadataIr],
-    spawn_targets: &[SpawnTargetIr],
-) -> anyhow::Result<RecoverableArtifactMetadata> {
-    let file_ir_units = production_files
-        .iter()
-        .chain(test_files)
-        .map(|file| file.as_ref().clone())
-        .collect::<Vec<_>>();
-    let mut package_sources = Vec::with_capacity(dependency_units.len() + 1);
-    package_sources.push(PackageTypeSource {
-        package_id: production_unit.package_id.clone(),
-        dependency_refs: Vec::new(),
-        unit: production_unit.clone(),
-        file_ir_units: production_files
-            .iter()
-            .map(|file| file.as_ref().clone())
-            .collect(),
-    });
-    package_sources.extend(
-        dependency_units
-            .iter()
-            .zip(dependency_files)
-            .map(|(unit, files)| PackageTypeSource {
-                package_id: unit.package_id.clone(),
-                dependency_refs: production_unit
-                    .dependencies
-                    .iter()
-                    .filter(|dependency| dependency.id == unit.package_id)
-                    .map(|dependency| dependency.alias.clone())
-                    .collect(),
-                unit: unit.as_ref().clone(),
-                file_ir_units: files.iter().map(|file| file.as_ref().clone()).collect(),
-            }),
-    );
-
-    recoverable_metadata_for_service_artifacts(
-        service_id,
-        &file_ir_units,
-        db_metadata,
-        spawn_targets,
-        RecoverableInputs {
-            package_sources: &package_sources,
-            ..RecoverableInputs::default()
-        },
-    )
-    .map_err(|error| {
-        anyhow::anyhow!("failed to project package-test recoverable metadata: {error}")
-    })
-}
-
 fn package_test_spawn_targets(
-    production_unit: &PackageUnit,
     production_files: &[Arc<FileIrUnit>],
-    dependency_units: &[Arc<PackageUnit>],
-    dependency_files: &[Vec<Arc<FileIrUnit>>],
     service_protocol_identity: &str,
 ) -> anyhow::Result<Vec<SpawnTargetIr>> {
     let mut targets = BTreeMap::<String, SpawnTargetIr>::new();
@@ -568,10 +522,7 @@ fn package_test_spawn_targets(
                     continue;
                 }
                 let Some(target) = package_test_spawn_target_for_call(
-                    production_unit,
                     production_files,
-                    dependency_units,
-                    dependency_files,
                     file,
                     call,
                     service_protocol_identity,
@@ -602,10 +553,7 @@ fn spawn_submit_is_function(metadata: &MetadataValue) -> anyhow::Result<bool> {
 }
 
 fn package_test_spawn_target_for_call(
-    production_unit: &PackageUnit,
     production_files: &[Arc<FileIrUnit>],
-    dependency_units: &[Arc<PackageUnit>],
-    dependency_files: &[Vec<Arc<FileIrUnit>>],
     file: &FileIrUnit,
     call: &skiff_artifact_model::CallIr,
     service_protocol_identity: &str,
@@ -655,17 +603,10 @@ fn package_test_spawn_target_for_call(
                 service_protocol_identity,
             )?))
         }
-        CallTargetIr::PackageSymbol {
-            package_ref,
-            operation,
-        } => Ok(Some(package_test_package_operation_spawn_target(
-            production_unit,
-            dependency_units,
-            dependency_files,
-            package_ref,
-            operation,
-            service_protocol_identity,
-        )?)),
+        // Canonical package calls retain only a PackageCallableId. The shared assembly image owns
+        // target resolution; this legacy package-test program must not reconstruct one from a
+        // public path or an old operation ABI.
+        CallTargetIr::PackageCallable { .. } => Ok(None),
         _ => Ok(None),
     }
 }
@@ -735,114 +676,6 @@ fn package_test_service_function_spawn_target(
         }
     }
     anyhow::bail!("spawn target {target_identity} does not resolve to an owner production function")
-}
-
-fn package_test_package_operation_spawn_target(
-    production_unit: &PackageUnit,
-    dependency_units: &[Arc<PackageUnit>],
-    dependency_files: &[Vec<Arc<FileIrUnit>>],
-    package_ref: &PackageRefIr,
-    operation: &skiff_artifact_model::OperationAbiRef,
-    service_protocol_identity: &str,
-) -> anyhow::Result<SpawnTargetIr> {
-    let (package, files) = package_test_dependency_for_ref(
-        production_unit,
-        dependency_units,
-        dependency_files,
-        package_ref,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "spawn package target {} does not resolve to a package-test dependency",
-            operation.public_path
-        )
-    })?;
-    let Some(target) = package
-        .implementation_links
-        .operation_targets
-        .get(&operation.operation_abi_id)
-    else {
-        anyhow::bail!(
-            "spawn package target {} operationAbiId {} does not resolve to a package operation target",
-            package.package_id,
-            operation.operation_abi_id
-        );
-    };
-    let PackageOperationTarget::LocalExecutable { target, .. } = target else {
-        anyhow::bail!(
-            "spawn package target {}.{} resolves to a receiver operation; spawn supports function targets only",
-            package.package_id,
-            operation.public_path
-        );
-    };
-    let executable = package_test_operation_executable(package, files, target)?;
-    let target_identity = package_handler_target(&package.package_id, &operation.public_path);
-    Ok(SpawnTargetIr {
-        target_identity: target_identity.clone(),
-        kind: SpawnTargetKindIr::Function,
-        executable_target: target.clone(),
-        param_types: executable
-            .params
-            .iter()
-            .map(|param| param.ty.clone())
-            .collect(),
-        return_type: spawn_function_return_type(&target_identity, &executable.return_type)?,
-        service_protocol_identity: service_protocol_identity.to_string(),
-    })
-}
-
-fn package_test_dependency_for_ref<'a>(
-    production_unit: &'a PackageUnit,
-    dependency_units: &'a [Arc<PackageUnit>],
-    dependency_files: &'a [Vec<Arc<FileIrUnit>>],
-    package_ref: &PackageRefIr,
-) -> Option<(&'a PackageUnit, &'a [Arc<FileIrUnit>])> {
-    let package_id = match package_ref {
-        PackageRefIr::PackageId { package_id } => package_id.as_str(),
-        PackageRefIr::Dependency { dependency_ref } => production_unit
-            .dependencies
-            .iter()
-            .find(|dependency| {
-                dependency.alias == *dependency_ref || dependency.id == *dependency_ref
-            })
-            .map(|dependency| dependency.id.as_str())
-            .unwrap_or(dependency_ref.as_str()),
-    };
-    dependency_units
-        .iter()
-        .zip(dependency_files.iter())
-        .find_map(|(unit, files)| {
-            (unit.package_id == package_id).then_some((unit.as_ref(), files.as_slice()))
-        })
-}
-
-fn package_test_operation_executable<'a>(
-    package: &PackageUnit,
-    files: &'a [Arc<FileIrUnit>],
-    target: &OperationTargetRef,
-) -> anyhow::Result<&'a skiff_artifact_model::ExecutableIr> {
-    let file = files
-        .iter()
-        .find(|file| {
-            file.file_ir_identity == target.file_ref.file_ir_identity
-                && file.module_path == target.file_ref.module_path
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "package operation target file {} is missing from package {}",
-                target.file_ref.file_ir_identity,
-                package.package_id
-            )
-        })?;
-    file.executables
-        .get(target.executable_index as usize)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "package operation target {} executable index {} is missing",
-                target.file_ref.file_ir_identity,
-                target.executable_index
-            )
-        })
 }
 
 fn executable_declaration_for_index(
@@ -1031,13 +864,12 @@ mod tests {
         DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
         ExecutableDeclarationIr as ArtifactExecutableDeclarationIr, ExecutableExport,
         ExecutableIr as ArtifactExecutableIr, ExecutableKind as ArtifactExecutableKind,
-        ExecutableSignatureIr, ExprIr as ArtifactExprIr,
-        FunctionTypeParamIr as ArtifactFunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr,
+        ExecutableSignatureIr, ExprIr as ArtifactExprIr, InterfaceDeclIr, InterfaceOperationIr,
         MetadataValue as ArtifactMetadataValue, PackageDependencyPublicLinkScope,
         PackageProductionLinkScope, PackageTestAssemblyKind, PackageTestEntrypoint,
         PackageTestEntrypointKind, PackageTestExecutableRef, PackageTestFileLinkScope,
         PackageTestLinkPolicy, PackageTestRuntimeExpectedError, PackageUnit,
-        ParamIr as ArtifactParamIr, ReceiverCallAbi, RecoverableStorageLane, ServiceSymbolRef,
+        ParamIr as ArtifactParamIr, ReceiverCallAbi, ServiceSymbolRef,
         SlotLayout as ArtifactSlotLayout, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
         TypeRefIr,
     };
@@ -1342,143 +1174,32 @@ mod tests {
     }
 
     #[test]
-    fn package_test_recoverable_metadata_projects_any_interface_db_lanes() {
-        let production_unit = package_unit_fixture(
-            "example.com/agent",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            "3333333333333333333333333333333333333333333333333333333333333333",
-        );
-        let production_file = Arc::new(file_ir_with_recoverable_agent_run_db_object(
-            "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "agent.run",
-        ));
-        let metadata = package_test_db_metadata(&production_unit, &[production_file.clone()]);
-
-        let recoverable = package_test_recoverable_metadata(
-            "__skiff.package-test/example.com/agent",
-            &production_unit,
-            &[production_file],
-            &[],
-            &[],
-            &[],
-            &metadata,
-            &[],
-        )
-        .expect("package-test recoverable metadata should project");
-
-        assert_eq!(
-            recoverable.storage_lanes["db:AgentRun:field:runtimeBindings"].lane,
-            RecoverableStorageLane::RecoverableEnvelope
-        );
-        assert_eq!(
-            recoverable.storage_lanes["db:AgentRun:field:currentConfig"].lane,
-            RecoverableStorageLane::RecoverableEnvelope
-        );
-        assert!(
-            recoverable.boundary_plans["db:AgentRun:field:runtimeBindings"]
-                .runtime_carrier_check_required
-        );
-    }
-
-    #[test]
-    fn package_test_recoverable_metadata_rejects_non_recoverable_db_function_fields() {
-        let production_unit = package_unit_fixture(
-            "example.com/agent",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            "3333333333333333333333333333333333333333333333333333333333333333",
-        );
-        let mut production_file = file_ir_with_recoverable_agent_run_db_object(
-            "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "agent.run",
-        );
-        let callback_ty = TypeRefIr::Function {
-            params: vec![ArtifactFunctionTypeParamIr {
-                name: "input".to_string(),
-                ty: TypeRefIr::native("string"),
-            }],
-            return_type: Box::new(TypeRefIr::native("string")),
+    fn package_test_builder_fails_before_legacy_artifact_loading() {
+        let selection = PackageTestBuildSelection {
+            package_id: "example.com/pkg".to_string(),
+            package_version: "1.0.0".to_string(),
+            test_build_identity: "skiff-package-test-build-v1:sha256:missing".to_string(),
         };
-        production_file
-            .declarations
-            .db
-            .get_mut("AgentRun")
-            .expect("AgentRun DB declaration")
-            .fields
-            .push(DbObjectFieldIr {
-                name: "callback".to_string(),
-                ty: callback_ty.clone(),
-                storage: Default::default(),
-            });
-        let TypeDescriptorIr::Record { fields } = &mut production_file.type_table[0].descriptor
-        else {
-            panic!("AgentRun type should be a record");
-        };
-        fields.insert("callback".to_string(), callback_ty);
-        let production_file = Arc::new(production_file);
-        let metadata = package_test_db_metadata(&production_unit, &[production_file.clone()]);
-
-        let error = package_test_recoverable_metadata(
-            "__skiff.package-test/example.com/agent",
-            &production_unit,
-            &[production_file],
-            &[],
-            &[],
-            &[],
-            &metadata,
-            &[],
-        )
-        .expect_err("function DB fields must not enter recoverable package-test metadata");
-
-        let message = error.to_string();
-        assert!(message.contains("db field AgentRun.callback"));
-        assert!(message.contains("callback function type"));
-    }
-
-    #[test]
-    fn package_test_builder_loads_recoverable_db_metadata_for_any_interface_fields() {
-        let root = unique_temp_dir();
-        let (selection, _production_unit, _production_file, _test_file) =
-            write_package_test_builder_recoverable_fixture(&root);
         let file_cache = FileIrCache::new();
         let package_cache = PackageCache::new();
-        let loaded = PackageTestRuntimeBuilder::new(
-            &[root.path_buf()],
+        let builder = PackageTestRuntimeBuilder::new(
+            &[],
             ArtifactGraphCache::new(&file_cache, &package_cache),
-        )
-        .load(&selection)
-        .expect("package-test builder should load synthetic service");
+        );
+        let error = builder
+            .load_template(&selection)
+            .expect_err("legacy package-test runtime owner must be fenced before artifact lookup");
 
-        let service = loaded.synthetic_service_unit.as_ref();
-        let agent_run = service
-            .db
-            .iter()
-            .find(|entry| entry.type_name == "AgentRun")
-            .expect("AgentRun DB metadata");
-        assert!(agent_run
-            .fields
-            .iter()
-            .any(|field| field.name == "runtimeBindings"));
         assert_eq!(
-            service.recoverable_metadata.storage_lanes["db:AgentRun:field:runtimeBindings"].lane,
-            RecoverableStorageLane::RecoverableEnvelope
-        );
-        assert_eq!(
-            service.recoverable_metadata.storage_lanes["db:AgentRun:field:currentConfig"].lane,
-            RecoverableStorageLane::RecoverableEnvelope
-        );
-        assert!(
-            service.recoverable_metadata.boundary_plans["db:AgentRun:field:runtimeBindings"]
-                .runtime_carrier_check_required
+            error
+                .downcast_ref::<PackageTestRuntimeSeamError>()
+                .expect("typed package-test seam error"),
+            &PackageTestRuntimeSeamError::LegacyServiceProgramMaterializationUnavailable
         );
     }
 
     #[test]
     fn package_test_spawn_targets_project_owner_production_function_routes() {
-        let production_unit = package_unit_fixture(
-            "example.com/agent",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            "3333333333333333333333333333333333333333333333333333333333333333",
-        );
         let wake_file = Arc::new(file_ir_with_spawn_call(
             "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "thread",
@@ -1493,14 +1214,9 @@ mod tests {
             "runThreadDrain",
         ));
 
-        let targets = package_test_spawn_targets(
-            &production_unit,
-            &[wake_file, runner_file],
-            &[],
-            &[],
-            "package-test-protocol",
-        )
-        .expect("owner production spawn targets should project");
+        let targets =
+            package_test_spawn_targets(&[wake_file, runner_file], "package-test-protocol")
+                .expect("owner production spawn targets should project");
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target_identity, "function:runner.runThreadDrain");
@@ -1516,11 +1232,6 @@ mod tests {
 
     #[test]
     fn package_test_spawn_targets_project_owner_publication_executable_routes() {
-        let production_unit = package_unit_fixture(
-            "example.com/agent",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            "3333333333333333333333333333333333333333333333333333333333333333",
-        );
         let wake_file = Arc::new(file_ir_with_publication_spawn_call(
             "skiff-file-ir-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "thread",
@@ -1535,14 +1246,9 @@ mod tests {
             "runThreadDrain",
         ));
 
-        let targets = package_test_spawn_targets(
-            &production_unit,
-            &[wake_file, runner_file],
-            &[],
-            &[],
-            "package-test-protocol",
-        )
-        .expect("owner publication executable spawn targets should project");
+        let targets =
+            package_test_spawn_targets(&[wake_file, runner_file], "package-test-protocol")
+                .expect("owner publication executable spawn targets should project");
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target_identity, "function:runner.runThreadDrain");

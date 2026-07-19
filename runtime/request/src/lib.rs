@@ -1,3 +1,4 @@
+mod assembly_seam;
 pub mod cancellation;
 mod context;
 mod effect_context;
@@ -19,6 +20,7 @@ mod runner;
 mod runtime_ingress;
 mod websocket_ingress;
 
+pub use assembly_seam::{RuntimeAssemblyRequestSeamError, RuntimeAssemblyRequestTarget};
 pub use context::{
     invocation_context_from_request, request_payload_context_from_request, RequestPayloadContext,
 };
