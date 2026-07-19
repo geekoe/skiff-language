@@ -124,6 +124,7 @@ pub struct PackageSourceModel {
     export_bindings: ExportBindingModel,
     callable_effects: SourceCallableEffectFacts,
     callable_provenance: SourceCallableProvenanceFacts,
+    executable_signatures: super::SourceExecutableSignatureFacts,
     callable_signatures: super::SourceCallableSignatureFacts,
     resolved_call_targets: ResolvedCallTargetFacts,
     // P1b: source_identity (role b) kept for reference; revision_id now uses descriptor-based
@@ -237,12 +238,20 @@ impl PackageSourceModel {
         );
         let callable_effects = callable_analysis.effects;
         let callable_provenance = callable_analysis.provenance;
+        let executable_signatures = super::SourceExecutableSignatureFacts::build(
+            &input.parsed_sources,
+            &type_resolution,
+            input.dependency_analysis,
+            &callable_effects,
+        )
+        .map_err(|message| PublicationError::ContractValidation {
+            message: format!("source executable signature resolution failed:\n- {message}"),
+        })?;
         let callable_signatures = super::SourceCallableSignatureFacts::build(
             &input.parsed_sources,
             &export_bindings,
             &type_resolution,
-            input.dependency_analysis,
-            &callable_effects,
+            &executable_signatures,
         )
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("source callable signature resolution failed:\n- {message}"),
@@ -270,6 +279,7 @@ impl PackageSourceModel {
             export_bindings,
             callable_effects,
             callable_provenance,
+            executable_signatures,
             callable_signatures,
             resolved_call_targets,
             source_identity: input.source_identity,
@@ -340,6 +350,10 @@ impl PackageSourceModel {
 
     pub fn callable_provenance(&self) -> &SourceCallableProvenanceFacts {
         &self.callable_provenance
+    }
+
+    pub fn executable_signatures(&self) -> &super::SourceExecutableSignatureFacts {
+        &self.executable_signatures
     }
 
     pub fn callable_signatures(&self) -> &super::SourceCallableSignatureFacts {

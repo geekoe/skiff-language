@@ -2,6 +2,8 @@ use skiff_artifact_model::{
     ContractTypeRef, PackageTypeRef, ServiceContract, ServiceSymbolRef, TypeRefIr,
 };
 
+pub(super) use crate::contract_type_resolution::package_type_contains_contract;
+
 use crate::{
     contract_type_resolution::package_type_ref_from_source_type, shared::ast::TypeRef,
     ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
@@ -26,7 +28,10 @@ impl<'a, 'ctx> ContractCallTypeProjection<'a, 'ctx> {
         }
     }
 
-    pub(super) fn source_package_type(&self, ty: &ResolvedTypeRef) -> PackageTypeRef {
+    pub(super) fn try_source_package_type(
+        &self,
+        ty: &ResolvedTypeRef,
+    ) -> Result<PackageTypeRef, String> {
         let source = TypeRef {
             name: ty.source_text.clone(),
         };
@@ -36,7 +41,12 @@ impl<'a, 'ctx> ContractCallTypeProjection<'a, 'ctx> {
             self.type_resolution,
             self.dependency_analysis,
         )
-        .unwrap_or_else(|_| package_type_ref_from_ir(&ty.ir))
+    }
+
+    pub(super) fn source_package_type(&self, ty: &ResolvedTypeRef) -> PackageTypeRef {
+        self.try_source_package_type(ty).unwrap_or_else(|error| {
+            panic!("resolved source type cannot lose its exact projection: {error}")
+        })
     }
 }
 
@@ -51,10 +61,11 @@ pub(crate) fn contract_source_assignability(
     let dependency_analysis = dependency_analysis?;
     let projection =
         ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
-    let actual = actual_projected
-        .cloned()
-        .unwrap_or_else(|| projection.source_package_type(actual));
-    let expected = projection.source_package_type(expected);
+    let actual = match actual_projected {
+        Some(actual) => actual.clone(),
+        None => projection.try_source_package_type(actual).ok()?,
+    };
+    let expected = projection.try_source_package_type(expected).ok()?;
     (package_type_contains_contract(&actual) || package_type_contains_contract(&expected))
         .then(|| package_type_assignable(&actual, &expected))
 }
@@ -103,17 +114,6 @@ pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &Packag
     }
 }
 
-pub(super) fn package_type_contains_contract(ty: &PackageTypeRef) -> bool {
-    match ty {
-        PackageTypeRef::Contract { .. } => true,
-        PackageTypeRef::Container { arguments, .. } => {
-            arguments.iter().any(package_type_contains_contract)
-        }
-        PackageTypeRef::Nullable { inner } => package_type_contains_contract(inner),
-        PackageTypeRef::Local { .. } => false,
-    }
-}
-
 fn package_type_is_null(ty: &PackageTypeRef) -> bool {
     matches!(
         ty,
@@ -127,21 +127,6 @@ fn package_type_is_null(ty: &PackageTypeRef) -> bool {
             },
         }
     )
-}
-
-fn package_type_ref_from_ir(ty: &TypeRefIr) -> PackageTypeRef {
-    match ty {
-        TypeRefIr::Native { name, args } => PackageTypeRef::Container {
-            name: name.clone(),
-            arguments: args.iter().map(package_type_ref_from_ir).collect(),
-        },
-        TypeRefIr::Nullable { inner } => PackageTypeRef::Nullable {
-            inner: Box::new(package_type_ref_from_ir(inner)),
-        },
-        _ => PackageTypeRef::Local {
-            local_type: ty.clone(),
-        },
-    }
 }
 
 pub(super) fn resolved_contract_type(

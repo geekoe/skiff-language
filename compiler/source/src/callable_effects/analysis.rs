@@ -6,8 +6,8 @@ use skiff_artifact_model::{
 
 use crate::{
     parsed_sources::ParsedCompilerSource, semantic::impl_method_declaration_name,
-    shared::type_syntax::generic_parts, ExpressionTypeModel, ResolvedCallTargetFacts,
-    SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionModel,
+    shared::type_syntax::generic_type_parameter_names, ExpressionTypeModel,
+    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionModel,
 };
 
 use super::{
@@ -145,7 +145,7 @@ fn callable_definitions<'a>(
             );
         }
         for implementation in &parsed.ast().impls {
-            let inherited = generic_type_params(&implementation.target);
+            let inherited = generic_type_parameter_names(&implementation.target);
             for method in &implementation.method_bodies {
                 let key = SourceSymbolKey::new(
                     module_path,
@@ -169,23 +169,4 @@ fn callable_definitions<'a>(
         }
     }
     definitions
-}
-
-fn generic_type_params(name: &str) -> Vec<String> {
-    generic_parts(name)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim())
-                .filter(|arg| {
-                    !arg.is_empty()
-                        && arg
-                            .chars()
-                            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                })
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }

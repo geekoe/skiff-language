@@ -161,7 +161,7 @@ impl ContractAwareTypeResolver<'_> {
     }
 }
 
-fn package_type_contains_contract(ty: &PackageTypeRef) -> bool {
+pub(crate) fn package_type_contains_contract(ty: &PackageTypeRef) -> bool {
     match ty {
         PackageTypeRef::Contract { .. } => true,
         PackageTypeRef::Container { arguments, .. } => {

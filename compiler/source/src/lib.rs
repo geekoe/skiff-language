@@ -70,7 +70,10 @@ pub use config_requirements::{
     ConfigRequirementScope, ConfigRequirementSet, DependencyPackageConfigFacts,
 };
 pub use config_usage::ConfigSourceSpan;
-pub use contract_type_resolution::SourceCallableSignatureFacts;
+pub use contract_type_resolution::{
+    SourceCallableSignatureFacts, SourceExecutableReceiver, SourceExecutableSignature,
+    SourceExecutableSignatureFacts,
+};
 pub use dependency_analysis::{
     PackageDependencyAnalysisFacts, PackageDependencyCallableAnalysis,
     SourceDependencyAnalysisError, SourceDependencyAnalysisInput,

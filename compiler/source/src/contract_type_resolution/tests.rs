@@ -16,6 +16,8 @@ use crate::{
 
 use super::*;
 
+mod executable_signatures;
+
 #[test]
 fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain() {
     let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
@@ -32,6 +34,12 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
                     nested: Array<payments.User?>?
                 ) -> payments.User {
                     return remote
+                }
+
+                function privateSink(input: payments.User) -> void {}
+
+                function suspendedHelper(input: payments.User) -> void {
+                    spawn privateSink(input)
                 }
             "#,
         &dependency_analysis,
@@ -70,6 +78,24 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
         PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
     ));
     assert!(!signature.may_suspend);
+
+    let executable_signatures = model.executable_signatures();
+    assert_eq!(executable_signatures.iter().count(), 3);
+    let private_sink = executable_signatures
+        .signature(&crate::SourceSymbolKey::new("api", "privateSink"))
+        .expect("private helper receives an exact signature fact");
+    assert!(matches!(
+        private_sink.receiver,
+        SourceExecutableReceiver::None
+    ));
+    assert!(matches!(
+        &private_sink.parameters[0].ty,
+        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+    ));
+    let suspended = executable_signatures
+        .signature(&crate::SourceSymbolKey::new("api", "suspendedHelper"))
+        .expect("private suspending helper receives an exact signature fact");
+    assert!(suspended.may_suspend);
 }
 
 #[test]
@@ -132,6 +158,18 @@ fn public_instance_operations_receive_exact_source_owned_signatures() {
         &signature.return_type,
         PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
     ));
+
+    let executable = model
+        .executable_signatures()
+        .signature(&crate::SourceSymbolKey::new("api", "Handler.submit"))
+        .expect("public instance implementation has one exact executable fact");
+    assert!(matches!(
+        &executable.receiver,
+        SourceExecutableReceiver::Implicit {
+            ty: PackageTypeRef::Local { .. }
+        }
+    ));
+    assert_eq!(executable.parameters.len(), 2);
 }
 
 #[test]

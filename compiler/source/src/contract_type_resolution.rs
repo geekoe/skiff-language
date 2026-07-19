@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallableEffectSummary, ContractTypeRef, PackageCallableParameter, PackageCallableSignature,
-    PackageTypeRef,
+    ContractTypeRef, PackageCallableParameter, PackageCallableSignature, PackageTypeRef,
 };
 
 use crate::{
-    callable_effects::SourceCallableEffectFacts, compile_model::ExportBindingModel,
-    parsed_sources::ParsedCompilerSource, shared::ast::TypeRef, SourceDependencyAnalysisInput,
-    TypeResolutionContext, TypeResolutionModel,
+    compile_model::ExportBindingModel, parsed_sources::ParsedCompilerSource, shared::ast::TypeRef,
+    SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 
 mod callables;
+mod executables;
 mod types;
 mod validation;
 
-use callables::{exported_callable_source, public_instance_operation_exports};
+use callables::public_instance_operation_exports;
+pub(crate) use types::package_type_contains_contract;
 use types::ContractAwareTypeResolver;
 pub(crate) use validation::validate_contract_type_uses;
 
@@ -41,11 +41,87 @@ pub(crate) fn package_type_ref_from_source_type(
         .resolve_source_type_ref(ty, context)
 }
 
-/// Exact callable signatures owned by source analysis.
+/// Exact signature for one source executable.
 ///
-/// Contract nominal types stay explicit in `PackageCallableSignature`; they
-/// are never encoded through File IR or reconstructed by projection.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Contract nominal types stay explicit here; File IR execution projection
+/// consumes this fact instead of reconstructing it from lowered types.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceExecutableSignature {
+    pub parameters: Vec<PackageCallableParameter>,
+    pub return_type: PackageTypeRef,
+    pub receiver: SourceExecutableReceiver,
+    pub may_suspend: bool,
+}
+
+impl SourceExecutableSignature {
+    fn package_callable_signature(&self) -> Result<PackageCallableSignature, String> {
+        let parameters = match self.receiver {
+            SourceExecutableReceiver::None | SourceExecutableReceiver::Implicit { .. } => {
+                self.parameters.clone()
+            }
+            SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 } => self
+                .parameters
+                .get(1..)
+                .ok_or_else(|| {
+                    "explicit receiver points to a missing source parameter".to_string()
+                })?
+                .to_vec(),
+            SourceExecutableReceiver::ExplicitParameter { parameter_index } => {
+                return Err(format!(
+                    "explicit receiver must be source parameter 0, found {parameter_index}"
+                ));
+            }
+        };
+        Ok(PackageCallableSignature {
+            parameters,
+            return_type: self.return_type.clone(),
+            throw_types: Vec::new(),
+            may_suspend: self.may_suspend,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceExecutableReceiver {
+    None,
+    Implicit { ty: PackageTypeRef },
+    ExplicitParameter { parameter_index: usize },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceExecutableSignatureFacts {
+    by_source_key: BTreeMap<SourceSymbolKey, SourceExecutableSignature>,
+}
+
+impl SourceExecutableSignatureFacts {
+    pub(crate) fn build(
+        parsed_sources: &[ParsedCompilerSource],
+        type_resolution: &TypeResolutionModel,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        effects: &crate::SourceCallableEffectFacts,
+    ) -> Result<Self, String> {
+        executables::build_executable_signature_facts(
+            parsed_sources,
+            type_resolution,
+            dependency_analysis,
+            effects,
+        )
+    }
+
+    pub fn signature(&self, source_key: &SourceSymbolKey) -> Option<&SourceExecutableSignature> {
+        self.by_source_key.get(source_key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&SourceSymbolKey, &SourceExecutableSignature)> {
+        self.by_source_key.iter()
+    }
+}
+
+/// Public-path view over [`SourceExecutableSignatureFacts`].
+///
+/// This table never resolves source types independently. Receiver removal and
+/// public binding happen exactly once while creating this view.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceCallableSignatureFacts {
     by_public_path: BTreeMap<String, PackageCallableSignature>,
 }
@@ -55,10 +131,8 @@ impl SourceCallableSignatureFacts {
         parsed_sources: &[ParsedCompilerSource],
         exports: &ExportBindingModel,
         type_resolution: &TypeResolutionModel,
-        dependency_analysis: &SourceDependencyAnalysisInput,
-        effects: &SourceCallableEffectFacts,
+        executable_signatures: &SourceExecutableSignatureFacts,
     ) -> Result<Self, String> {
-        let resolver = ContractAwareTypeResolver::new(type_resolution, dependency_analysis);
         let mut by_public_path = BTreeMap::new();
         let mut callable_exports = exports
             .public_callables()
@@ -73,45 +147,18 @@ impl SourceCallableSignatureFacts {
             )?);
         }
         for export in callable_exports {
-            let source = exported_callable_source(parsed_sources, &export)?;
-            let context =
-                TypeResolutionContext::with_type_params(&export.source_module, source.type_params);
-            let parameters = source
-                .params
-                .iter()
-                .skip(source.receiver_parameter_offset)
-                .map(|parameter| {
-                    Ok(PackageCallableParameter {
-                        name: parameter.name.clone(),
-                        ty: resolver.resolve_source_type_ref(&parameter.ty, &context)?,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            let return_type = resolver.resolve_source_type_ref(source.return_type, &context)?;
-            let effect = effects
-                .operations()
-                .get(&source.effect_key)
+            let source_key = SourceSymbolKey::new(&export.source_module, &export.source_symbol);
+            let executable_signature = executable_signatures
+                .signature(&source_key)
                 .ok_or_else(|| {
                     format!(
-                        "exported callable `{}` has no source-owned effect facts for {}",
-                        export.public_path, source.effect_key
+                        "exported callable `{}` has no exact source executable signature fact for {source_key}",
+                        export.public_path
                     )
                 })?;
-            let may_suspend = match effect {
-                CallableEffectSummary::Analyzed { effects } => effects.may_suspend,
-                CallableEffectSummary::Unknown { reason } => {
-                    return Err(format!(
-                        "exported callable `{}` has unknown source effects: {reason:?}",
-                        export.public_path
-                    ));
-                }
-            };
-            let signature = PackageCallableSignature {
-                parameters,
-                return_type,
-                throw_types: Vec::new(),
-                may_suspend,
-            };
+            let signature = executable_signature
+                .package_callable_signature()
+                .map_err(|error| format!("exported callable `{}`: {error}", export.public_path))?;
             if by_public_path
                 .insert(export.public_path.clone(), signature)
                 .is_some()
