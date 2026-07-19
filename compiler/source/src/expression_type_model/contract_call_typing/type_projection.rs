@@ -42,12 +42,6 @@ impl<'a, 'ctx> ContractCallTypeProjection<'a, 'ctx> {
             self.dependency_analysis,
         )
     }
-
-    pub(super) fn source_package_type(&self, ty: &ResolvedTypeRef) -> PackageTypeRef {
-        self.try_source_package_type(ty).unwrap_or_else(|error| {
-            panic!("resolved source type cannot lose its exact projection: {error}")
-        })
-    }
 }
 
 pub(crate) fn contract_source_assignability(
@@ -57,17 +51,21 @@ pub(crate) fn contract_source_assignability(
     type_resolution: &TypeResolutionModel,
     dependency_analysis: Option<&SourceDependencyAnalysisInput>,
     type_context: &TypeResolutionContext<'_>,
-) -> Option<bool> {
-    let dependency_analysis = dependency_analysis?;
+) -> Result<Option<bool>, String> {
+    let Some(dependency_analysis) = dependency_analysis else {
+        return Ok(None);
+    };
     let projection =
         ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context);
     let actual = match actual_projected {
         Some(actual) => actual.clone(),
-        None => projection.try_source_package_type(actual).ok()?,
+        None => projection.try_source_package_type(actual)?,
     };
-    let expected = projection.try_source_package_type(expected).ok()?;
-    (package_type_contains_contract(&actual) || package_type_contains_contract(&expected))
-        .then(|| package_type_assignable(&actual, &expected))
+    let expected = projection.try_source_package_type(expected)?;
+    Ok(
+        (package_type_contains_contract(&actual) || package_type_contains_contract(&expected))
+            .then(|| package_type_assignable(&actual, &expected)),
+    )
 }
 
 pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &PackageTypeRef) -> bool {

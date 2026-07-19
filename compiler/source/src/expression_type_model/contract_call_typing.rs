@@ -157,10 +157,19 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 ));
                 continue;
             };
-            let actual_projected = projected_types
-                .get(argument_key)
-                .cloned()
-                .unwrap_or_else(|| self.type_projection.source_package_type(actual));
+            let actual_projected = match projected_types.get(argument_key).cloned() {
+                Some(projected) => projected,
+                None => match self.type_projection.try_source_package_type(actual) {
+                    Ok(projected) => projected,
+                    Err(error) => {
+                        diagnostics.push(format!(
+                            "contract call `{path}` argument {} exact source type projection failed: {error}",
+                            index + 1
+                        ));
+                        continue;
+                    }
+                },
+            };
             if !package_type_assignable(&actual_projected, &expected) {
                 let expected_label =
                     resolved_contract_type(&parameter.ty, &call.alias, call.contract)
@@ -211,9 +220,9 @@ pub(super) fn project_source_package_type(
     type_resolution: &TypeResolutionModel,
     dependency_analysis: &SourceDependencyAnalysisInput,
     type_context: &TypeResolutionContext<'_>,
-) -> PackageTypeRef {
+) -> Result<PackageTypeRef, String> {
     ContractCallTypeProjection::new(type_resolution, dependency_analysis, type_context)
-        .source_package_type(ty)
+        .try_source_package_type(ty)
 }
 
 pub(super) fn projected_type_contains_contract(ty: &PackageTypeRef) -> bool {

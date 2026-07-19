@@ -64,7 +64,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
         actual_projected: Option<&PackageTypeRef>,
-    ) -> bool {
+    ) -> Result<bool, String> {
         if let Some(assignable) = contract_source_assignability(
             actual,
             actual_projected,
@@ -72,9 +72,19 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             self.type_resolution,
             self.dependency_analysis,
             self.type_context,
-        ) {
-            return assignable;
+        )? {
+            return Ok(assignable);
         }
+        Ok(self.value_assignable_without_contract_projection(annotation, value, actual, expected))
+    }
+
+    pub(super) fn value_assignable_without_contract_projection(
+        &self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+    ) -> bool {
         self.value_assignable_to_resolved_expected(value, actual, expected)
             || annotation.is_some_and(|annotation| {
                 self.target_typed_object_literal_assignable(annotation, value, actual, expected)

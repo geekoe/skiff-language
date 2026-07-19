@@ -21,27 +21,45 @@ impl ContractProjectionState {
         type_resolution: &TypeResolutionModel,
         dependency_analysis: Option<&SourceDependencyAnalysisInput>,
         type_context: &TypeResolutionContext<'_>,
-    ) -> Self {
-        let bindings = dependency_analysis
-            .map(|dependency_analysis| {
-                env.iter()
-                    .filter_map(|(name, ty)| {
-                        let projected = project_source_package_type(
-                            ty,
-                            type_resolution,
-                            dependency_analysis,
-                            type_context,
-                        );
-                        projected_type_contains_contract(&projected)
-                            .then(|| (name.clone(), projected))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self {
-            bindings,
-            expression_types: BTreeMap::new(),
+    ) -> (Self, Vec<String>) {
+        let mut bindings = BTreeMap::new();
+        let mut diagnostics = Vec::new();
+        if let Some(dependency_analysis) = dependency_analysis {
+            for (name, ty) in env {
+                match Self::project_contract_type(
+                    ty,
+                    type_resolution,
+                    dependency_analysis,
+                    type_context,
+                ) {
+                    Ok(Some(projected)) => {
+                        bindings.insert(name.clone(), projected);
+                    }
+                    Ok(None) => {}
+                    Err(error) => diagnostics.push(format!(
+                        "initial binding `{name}` exact source type projection failed: {error}"
+                    )),
+                }
+            }
         }
+        (
+            Self {
+                bindings,
+                expression_types: BTreeMap::new(),
+            },
+            diagnostics,
+        )
+    }
+
+    pub(crate) fn project_contract_type(
+        ty: &ResolvedTypeRef,
+        type_resolution: &TypeResolutionModel,
+        dependency_analysis: &SourceDependencyAnalysisInput,
+        type_context: &TypeResolutionContext<'_>,
+    ) -> Result<Option<PackageTypeRef>, String> {
+        let projected =
+            project_source_package_type(ty, type_resolution, dependency_analysis, type_context)?;
+        Ok(projected_type_contains_contract(&projected).then_some(projected))
     }
 
     pub(crate) fn binding_snapshot(&self) -> BTreeMap<String, PackageTypeRef> {

@@ -27,10 +27,7 @@ mod contract_call_typing;
 mod db_projection;
 mod expression_assignability;
 
-use contract_call_typing::{
-    project_source_package_type, projected_type_contains_contract, ContractCallOutcome,
-    ContractCallTyping, ContractProjectionState,
-};
+use contract_call_typing::{ContractCallOutcome, ContractCallTyping, ContractProjectionState};
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
 
@@ -280,7 +277,7 @@ impl ExpressionTypeModel {
         expected: &ResolvedTypeRef,
     ) -> bool {
         ExpressionAssignability::new("", expression_sources, type_resolution, type_context, None)
-            .value_assignable_to_expected(annotation, value, actual, expected, None)
+            .value_assignable_without_contract_projection(annotation, value, actual, expected)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -567,8 +564,13 @@ impl<'a> OwnerChecker<'a> {
         >,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
-        let contract_projection =
+        let (contract_projection, projection_diagnostics) =
             ContractProjectionState::new(&env, type_resolution, dependency_analysis, &type_context);
+        diagnostics.extend(
+            projection_diagnostics
+                .into_iter()
+                .map(|diagnostic| format!("{module_path}: {diagnostic}")),
+        );
         Self {
             module_path,
             owner,
@@ -596,6 +598,29 @@ impl<'a> OwnerChecker<'a> {
             exits = self.check_stmt(stmt) || exits;
         }
         exits
+    }
+
+    fn project_contract_binding_type(
+        &mut self,
+        ty: &ResolvedTypeRef,
+        context: &str,
+    ) -> Option<skiff_artifact_model::PackageTypeRef> {
+        let dependency_analysis = self.dependency_analysis?;
+        match ContractProjectionState::project_contract_type(
+            ty,
+            self.type_resolution,
+            dependency_analysis,
+            &self.type_context,
+        ) {
+            Ok(projected) => projected,
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: {context} exact source type projection failed: {error}",
+                    self.module_path
+                ));
+                None
+            }
+        }
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> bool {
@@ -630,17 +655,10 @@ impl<'a> OwnerChecker<'a> {
                                     self.expression_span(&value_key),
                                 );
                             }
-                            let projected_expected =
-                                self.dependency_analysis.and_then(|dependency_analysis| {
-                                    let projected = project_source_package_type(
-                                        &expected,
-                                        self.type_resolution,
-                                        dependency_analysis,
-                                        &self.type_context,
-                                    );
-                                    projected_type_contains_contract(&projected)
-                                        .then_some(projected)
-                                });
+                            let projected_expected = self.project_contract_binding_type(
+                                &expected,
+                                &format!("local binding `{name}` annotation"),
+                            );
                             (Some(expected), projected_expected)
                         }
                         Err(error) => {
@@ -2638,14 +2656,23 @@ impl<'a> OwnerChecker<'a> {
             &self.type_context,
             self.dependency_analysis,
         );
-        if assignability.value_assignable_to_expected(
+        match assignability.value_assignable_to_expected(
             annotation,
             value,
             actual,
             expected,
             self.contract_projection.expression_type(value_key),
         ) {
-            return true;
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(error) => {
+                self.diagnostics.push(format!(
+                    "{}: {context} exact source type projection failed at {}: {error}",
+                    self.module_path,
+                    span_label(fallback_span)
+                ));
+                return false;
+            }
         }
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(
             annotation, value, value_key, actual, expected, context,

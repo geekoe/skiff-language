@@ -4,7 +4,9 @@ use compiler_input_model::{PackageCompilePolicy, PublicationApiSpec};
 use skiff_artifact_identity::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
 };
-use skiff_artifact_model::{BoundaryCancellationContract, BoundaryStreamContract, ContractTypeRef};
+use skiff_artifact_model::{
+    BoundaryCancellationContract, BoundaryStreamContract, ContractTypeRef, TypeRefIr,
+};
 use skiff_compiler_input::ResolvedContractDependency;
 
 use crate::{
@@ -12,8 +14,12 @@ use crate::{
     contract_dependency_test_fixture::{contract_fixture, requirement},
     parsed_sources::parse_publication_sources,
     source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, PackageSourceModel, ResolvedCallTarget,
-    SourceDependencyAnalysisInput,
+    CompileParsedPackageSourcesInput, ExpressionKey, ExpressionOwnerKey, PackageSourceModel,
+    ResolvedCallTarget, ResolvedTypeRef, SourceDependencyAnalysisInput, TypeResolutionContext,
+};
+
+use super::{
+    contract_source_assignability, ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 
 #[test]
@@ -346,6 +352,75 @@ fn inline_contract_operation_shapes_fail_closed() {
         error.contains("unsupported inline contract shape"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn contract_call_reports_fallible_argument_projection_failure() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    let model = build_model("function helper() -> void {}", &dependencies).unwrap();
+    let context = TypeResolutionContext::source("api");
+    let argument_key =
+        ExpressionKey::new("api", ExpressionOwnerKey::Function("helper".to_string()), 0);
+    let outcome = ContractCallTyping::new(model.type_resolution(), &dependencies, &context)
+        .check_call(
+            "payments/submit",
+            0,
+            &[(argument_key, Some(unprojectable_source_type()))],
+            &BTreeMap::new(),
+        );
+
+    assert!(matches!(
+        outcome,
+        ContractCallOutcome::Invalid(diagnostics)
+            if diagnostics.iter().any(|diagnostic|
+                diagnostic.contains("argument 1 exact source type projection failed"))
+    ));
+}
+
+#[test]
+fn projected_environment_reports_initial_binding_projection_failure() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    let model = build_model("function helper() -> void {}", &dependencies).unwrap();
+    let context = TypeResolutionContext::source("api");
+    let (_, diagnostics) = ContractProjectionState::new(
+        &BTreeMap::from([("input".to_string(), unprojectable_source_type())]),
+        model.type_resolution(),
+        Some(&dependencies),
+        &context,
+    );
+
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.contains("initial binding `input` exact source type projection failed")
+    }));
+}
+
+#[test]
+fn contract_assignability_does_not_swallow_projection_failure() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    let model = build_model("function helper() -> void {}", &dependencies).unwrap();
+    let context = TypeResolutionContext::source("api");
+    let expected = ResolvedTypeRef {
+        source_text: "payments.User".to_string(),
+        ir: TypeRefIr::native("opaque-test-value"),
+    };
+    let error = contract_source_assignability(
+        &unprojectable_source_type(),
+        None,
+        &expected,
+        model.type_resolution(),
+        Some(&dependencies),
+        &context,
+    )
+    .expect_err("exact projection failure must not become no-contract-type");
+
+    assert!(error.contains("Missing"), "unexpected error: {error}");
+}
+
+fn unprojectable_source_type() -> ResolvedTypeRef {
+    ResolvedTypeRef {
+        source_text: "payments.Missing".to_string(),
+        ir: TypeRefIr::native("opaque-test-value"),
+    }
 }
 
 fn build_model(
