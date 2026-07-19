@@ -1,8 +1,10 @@
+mod assembly_seam;
 pub mod error;
 pub mod http_plan;
 pub mod native_call_plan;
 pub mod type_plan;
 
+pub use assembly_seam::{RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget};
 pub use error::{Error, Result};
 pub use http_plan::{
     binary_http_request_parameter_plan, binary_http_response_plan,
