@@ -15,7 +15,9 @@
   `94faac5e49a5d7d3e2acc574d2611490f20f4394`，与T05C13开发提交`a6b4cf6`的tree完全相同；恢复时
   工作树clean。
 - 最终代码状态`C-code`是`B`加§2.2–2.3两项T07机械修复。result-record commit同时包含本文；本文不记录
-  自指commit hash，最终hash由T07回报给gate owner。
+  自指commit hash；T07结果提交为`43a6de936767216b82021f934f79b70cc756020f`。
+- A01验收提交为`a79d91701d8eaaf6b1a0cad926e604c28847f776`；相对T07结果只修改A01任务文档，
+  排除`doc/**`后diff为空，因此不使production、fixture、checker、Cargo或既有动态证据失效。
 - 未merge `main`、未push，未新增legacy/compatibility adapter、dual path、fallback或allow-list扩张。
 
 ## 2. 修复时间线
@@ -121,3 +123,22 @@ crate暴露进facade rustdoc。移除`#[from]`，改为crate-private `projection
   rustdoc证据失效。§2.2的受影响rustdoc面已由单crate probe重新建立，未改变Cargo edge。
 - 修改任一Phase Rust文件使对应targeted rustfmt覆盖失效；result commit之后任何代码或文档变化都使最终
   `git diff --check`失效。不得用任务级旧commit证据替代受影响的最终证据面。
+
+## 7. A01独立阶段验收
+
+A01在detached、clean的`a79d917`上只读验收并给出PASS，无blocking issue。它独立确认：
+
+- package code pipeline与code-free ServiceContract producer已经分离，PackageArtifact/ServiceContract之间无
+  publication/service aggregate、provider/deployment泄漏或兼容adapter。
+- effect/provenance fixed point、package/service call target、ServiceRequirement/ServiceCallRef、exact source
+  facts、resolved PackageTypeRef sidecar、opaque File IR execution representation及public-instance handoff均符合
+  设计，Unknown/invalid路径fail closed。
+- terminal boundary registry没有通配allow-list或known-violation ledger，`#[cfg(test)]`排除由真实模块可达性
+  派生；A01的亚秒级boundary/identity/DAG实扫与最终clean/diff检查全部PASS。
+
+Non-blocking follow-up不阻塞Phase 02完成：
+
+1. `compiler/input-model/src/compile_input.rs`有一处注释仍暗示legacy service configuration会在边界前适配；
+   production不存在该adapter，后续编辑该模块时同步纠正文案。
+2. `compiler/compiled/src/projection_input.rs`仍约1067行，后续可按ABI、effect、entrypoint与config投影职责拆分；
+   当前未发现重复语义owner或正确性问题，不为文件长度本身重开本阶段。
