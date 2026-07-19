@@ -11,6 +11,8 @@ use skiff_artifact_model::{
 
 use super::*;
 
+mod full_chain;
+
 #[derive(Default)]
 struct NoContentResolver {
     reads: AtomicUsize,
