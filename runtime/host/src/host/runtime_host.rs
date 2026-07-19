@@ -71,7 +71,7 @@ pub struct RuntimeHost {
     pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
     pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
     pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
-    pub(super) assembly_admission: Arc<AssemblyAdmissionController>,
+    pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(super) package_test_start_executor:
         Arc<super::package_test_entry::PackageTestStartExecutor>,
     pub(super) package_test_template_builds:

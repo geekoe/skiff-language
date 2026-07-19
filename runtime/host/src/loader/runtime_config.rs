@@ -1252,9 +1252,10 @@ mod tests {
             extra: serde_json::Map::new(),
         };
 
-        let error = host
-            .lookup_request_operation(&request)
-            .expect_err("request entry must not load a missing route from artifact storage");
+        let error = match host.lookup_request_operation(&request) {
+            Ok(_) => panic!("request entry must not load a missing route from artifact storage"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("no registered route supports"));
         assert!(host.service_snapshot().is_empty());
     }
