@@ -2315,6 +2315,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-deployment"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skiff-artifact-identity",
+ "skiff-artifact-model",
+ "thiserror",
+]
+
+[[package]]
 name = "skiff-runtime-activation"
 version = "0.1.0"
 dependencies = [

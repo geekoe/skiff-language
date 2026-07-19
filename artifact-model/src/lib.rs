@@ -13,6 +13,7 @@ pub mod compile_requirements;
 pub mod config;
 pub mod contract_types;
 pub mod cross_package_identity;
+pub mod deployment;
 pub mod effects;
 pub mod executable;
 pub mod executable_target;
@@ -26,6 +27,7 @@ pub mod publication_abi;
 pub mod recoverable;
 pub mod refs;
 pub mod resources;
+pub mod runtime_assembly;
 pub mod schema;
 pub mod service_contract;
 pub mod service_unit;
@@ -54,8 +56,9 @@ pub use builtin_receiver_ops::{
     RECEIVER_BUILTIN_CAPABILITY_VERSION, SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
 pub use compile_identity::{
-    ContractOperationId, ContractTypeId, PackageBuildId, PackageCallableId,
-    PackageLocalAbiIdentity, ServiceProtocolIdentity,
+    AssemblyIdentity, ContractOperationId, ContractTypeId, DeploymentArtifactIdentity,
+    DeploymentRevision, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    ServiceProtocolIdentity,
 };
 pub use compile_requirements::{
     ContractRequirement, PackageConfigRequirement, PackageRequirement, PackageResourceRequirement,
@@ -71,6 +74,14 @@ pub use contract_types::{
     BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractLiteral,
     ContractSchemaType, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
     ContractTypeShape, PackageTypeRef,
+};
+pub use deployment::{
+    ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,
+    DeploymentOperationBinding, DeploymentPolicy, IngressProtocol, IngressSelector,
+    PackageArtifactRef, PackageBinding, PackageRequirementKey, ResourceBinding, ResourcePolicy,
+    RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
+    ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
@@ -127,13 +138,19 @@ pub use recoverable::{
 };
 pub use refs::{FileIrRef, SourcePosition, SourceSpanRef};
 pub use resources::PublicationResourceRef;
+pub use runtime_assembly::{
+    ActivationTemplate, CanonicalPackageLinkPlan, GlobalIngressBinding, PackageCodeSlot,
+    ResolvedServiceBinding, RuntimeAssembly, ServiceBindingTemplate,
+};
 pub use schema::{
     ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, PACKAGE_ASSEMBLY_KIND, PACKAGE_TEST_ASSEMBLY_KIND,
     PACKAGE_TEST_ASSEMBLY_SCHEMA_VERSION, PACKAGE_TEST_ENTRYPOINT_KIND,
-    PACKAGE_UNIT_SCHEMA_VERSION, PUBLICATION_ABI_UNIT_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND,
-    SERVICE_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
+    PACKAGE_UNIT_SCHEMA_VERSION, PUBLICATION_ABI_UNIT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
 };
 pub use service_contract::{ContractDiagnosticText, ServiceContract};
 pub use service_unit::{

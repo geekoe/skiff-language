@@ -18,6 +18,11 @@ pub const CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER: &str = "skiff-contract-oper
 pub const CONTRACT_OPERATION_IDENTITY_PREFIX: &str = "skiff-contract-operation-v1:sha256";
 pub const SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER: &str = "skiff-service-protocol-identity-v2";
 pub const SERVICE_PROTOCOL_IDENTITY_PREFIX: &str = "skiff-service-protocol-v2:sha256";
+pub const DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER: &str =
+    "skiff-deployment-artifact-identity-v1";
+pub const DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX: &str = "skiff-deployment-artifact-v1:sha256";
+pub const ASSEMBLY_IDENTITY_SCHEMA_MARKER: &str = "skiff-runtime-assembly-identity-v1";
+pub const ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-runtime-assembly-v1:sha256";
 pub const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
     "skiff-package-implementation-links-v1:sha256";
 pub const OPERATION_ABI_IDENTITY_PREFIX: &str = "skiff-operation-abi-v1:sha256";
