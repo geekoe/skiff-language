@@ -2,7 +2,7 @@
 
 ## 目标
 
-让`payments.charge(...)`在source typed analysis阶段按同一validated `ServiceContract`的operation descriptor
+让`payments/charge(...)`在source typed analysis阶段按同一validated `ServiceContract`的operation descriptor
 完成参数和返回类型检查，而不是仅解析出operation ID后交给lowering。
 
 权威设计：`doc/architecture/package-service-contract-deployment.md`的“ServiceContract nominal types”、
@@ -16,7 +16,7 @@
 
 ## 完成态
 
-1. contract call按qualified alias与operation stable key解析唯一descriptor，验证arity、每个参数、返回类型及
+1. contract call按`alias/publicPath(...)`dependency address与operation stable key解析唯一descriptor，验证arity、每个参数、返回类型及
    当前语言支持的suspend/call形态。
 2. comparison复用T03B的canonical contract-aware type projection；contract nominal按`ContractTypeId`比较，
    builtin/container/nullable递归比较，不退化为字符串或结构碰巧相等。
@@ -28,7 +28,7 @@
 ## 聚焦验收
 
 - source tests覆盖正确调用、unknown operation、wrong arity、wrong argument、wrong return use与contract nominal
-  mismatch。
+  mismatch；旧dot call由T03E统一删除。
 - 运行source crate聚焦测试/检查及`git diff --check`；不运行Phase gate。
 
 ## 禁止项

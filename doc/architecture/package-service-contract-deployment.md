@@ -80,6 +80,22 @@ ContractRequirement引入的`ContractTypeId`可以出现在PackageLocalAbi和pac
 它在package内部仍是普通local value type。只有call site进入ServiceBinding时才执行boundary
 materialization。
 
+File IR executable signature与PackageLocalAbi不是同一个type owner。File IR只保存本地执行需要的
+execution type representation，不重复保存contract nominal identity：
+
+- package-local type保留原有local execution type；container与nullable递归保留执行外形；
+- `PackageTypeRef::Contract` leaf统一投影为固定opaque `unknown` execution value；它不编码dependency alias、
+  stable key、`ContractTypeId`或schema；
+- source typecheck、package ABI、contract matching与boundary value plan只能读取source typed facts、
+  PackageArtifact和ServiceContract，不能从opaque File IR signature反推；
+- 这里的`unknown`不表示source类型未知。source已经按精确`ContractTypeId`完成检查；它也不能参与ABI相等、
+  boundary eligibility或protocol identity。
+
+因此File IR无需新增contract type wire variant。Lowering必须消费source-owned exact executable signature facts
+做上述唯一确定性投影，不能重新解析AST type text，也不能用`ServiceSymbol`或display string代替contract
+identity。当前runtime若仍从File IR signature推导service boundary materialization，可以在后续runtime阶段暂时
+fail closed；终态必须改读ServiceContract descriptor，不能据此反向扩张File IR语义。
+
 每个进入Package API、因而可能被deployment选择的callable还携带一个显式boundary状态：
 
 ```text
@@ -178,8 +194,13 @@ Package source中的contract dependency alias使用现有qualified namespace，�
 
 - `payments.User`按`ContractRequirement(alias = payments)`解析到ServiceContract中stable key为`User`的
   `ContractTypeId`；
-- `payments.charge(...)`按同一validated ServiceContract中的operation descriptor解析，并在source typed
+- `payments/charge(...)`按同一validated ServiceContract中的operation descriptor解析，并在source typed
   analysis阶段检查参数与返回类型；
+- dependency source address复用现有`<dependencyAlias>/<publicPath>`语法。`/`分隔dependency resolver root与
+  public source-call path；`.`只用于type qualified path和address之后的成员访问，例如
+  `payments.User`、`payments/managed.charge(...)`；
+- package call与contract/service call都使用`/`地址；linkage kind来自validated dependency alias，不由
+  分隔符或物理local/remote binding猜测。`payments.charge(...)`不作为旧兼容拼写接受；
 - package dependency alias与contract dependency alias共享一个dependency alias namespace，任何冲突在
   compile input trust boundary fail closed，不能靠type/call上下文猜测；
 - qualified alias只选择typed dependency，不进入ContractTypeId/ContractOperationId本体，也不能从provider
@@ -375,8 +396,10 @@ ServiceDeploymentInput
 ```
 
 PackageSourceModel拥有name/type resolution、public API graph、effect/provenance与dependency facts。
-Lowering只消费typed source facts。package direct call降低为`PackageCallable` target；service call降低为
-`ServiceCallRef`。Package projection不读deployment配置。
+它还为全部function/impl method拥有exact executable signature facts；public callable signature只是同一事实表
+按public path产生的view。Lowering只消费typed source facts，把exact source type投影为File IR execution
+representation。package direct call降低为`PackageCallable` target；service call降低为`ServiceCallRef`。
+Package projection不读deployment配置。
 
 Service call lowering只生成`ServiceCallRef`和contract value plan refs。Assembly linking为每个
 ActivationContext生成service binding vector / thunk；它不是stub package，也不让consumer依赖provider
