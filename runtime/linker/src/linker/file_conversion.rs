@@ -20,6 +20,7 @@ pub fn linked_file_unit_from_artifact(
         );
     }
     validate_receiver_builtin_ops(unit)?;
+    reject_canonical_assembly_calls(unit)?;
     Ok(LinkedFileUnit {
         schema_version: unit.schema_version.clone(),
         file_ir_identity: unit.file_ir_identity.clone(),
@@ -35,6 +36,41 @@ pub fn linked_file_unit_from_artifact(
         executables: unit.executables.iter().map(linked_executable).collect(),
         external_refs: linked_external_refs(&unit.external_refs),
     })
+}
+
+fn reject_canonical_assembly_calls(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
+    if !unit.external_refs.service_call_refs.is_empty()
+        || !unit.external_refs.package_callables.is_empty()
+    {
+        anyhow::bail!(
+            "File IR {} contains canonical package/service call refs and must be linked through RuntimeAssembly",
+            unit.file_ir_identity
+        );
+    }
+    for body in unit
+        .constants
+        .iter()
+        .map(|constant| &constant.body)
+        .chain(unit.executables.iter().map(|executable| &executable.body))
+    {
+        if body.expressions.iter().any(|expression| {
+            matches!(
+                expression,
+                artifact::ExprIr::Call { call }
+                    if matches!(
+                        call.target,
+                        artifact::CallTargetIr::ServiceCall { .. }
+                            | artifact::CallTargetIr::PackageCallable { .. }
+                    )
+            )
+        }) {
+            anyhow::bail!(
+                "File IR {} contains a canonical package/service call and must be linked through RuntimeAssembly",
+                unit.file_ir_identity
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_receiver_builtin_ops(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
@@ -315,7 +351,6 @@ fn linked_external_refs(external_refs: &artifact::ExternalRefTable) -> ExternalR
         service_symbols: external_refs.service_symbols.clone(),
         service_dependency_symbols: external_refs.service_dependency_symbols.clone(),
         package_symbols: external_refs.package_symbols.clone(),
-        package_operation_symbols: external_refs.package_operation_symbols.clone(),
         native_targets: external_refs.native_targets.clone(),
         refs: BTreeMap::new(),
     }
@@ -838,13 +873,10 @@ fn linked_call(call: &artifact::CallIr) -> CallIr {
                     symbol: symbol.clone(),
                 }
             }
-            artifact::CallTargetIr::PackageSymbol {
-                package_ref,
-                operation,
-            } => LinkedCallTarget::PackageSymbol {
-                package_ref: package_ref.clone(),
-                operation: operation.clone(),
-            },
+            artifact::CallTargetIr::ServiceCall { .. }
+            | artifact::CallTargetIr::PackageCallable { .. } => {
+                unreachable!("canonical calls are rejected before legacy File IR conversion")
+            }
             artifact::CallTargetIr::Native { target } => LinkedCallTarget::Native {
                 target: target.clone(),
             },
