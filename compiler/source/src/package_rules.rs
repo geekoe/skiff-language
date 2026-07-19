@@ -307,7 +307,7 @@ mod tests {
             "main",
             r#"
                 function run() -> string {
-                  return dep.http.get()
+                  return dep/http/get()
                 }
             "#,
         )];

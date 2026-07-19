@@ -15,6 +15,7 @@ use skiff_syntax::{
         BinaryOp, DbBlockMode, DbOperationKind, Expr, ForBinding, Literal, ObjectLiteralKey,
         PatchOperation, Stmt, TypeRef, UnaryOp,
     },
+    ast_utils::{dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
     type_syntax::generic_parts,
 };
@@ -992,7 +993,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.next_expression_key();
                 self.consume_static_callee_expression_keys(object)
             }
-            Expr::RemotePublicInstanceSource(_) => {
+            Expr::DependencySourceAddress(_) => {
                 self.next_expression_key();
                 Ok(())
             }
@@ -1072,10 +1073,10 @@ impl<'a> FunctionLowerer<'a> {
             Expr::InterfaceBox { value, interface } => {
                 self.lower_interface_box(expression_key.as_ref(), value, interface)?
             }
-            Expr::RemotePublicInstanceSource(source) => {
+            Expr::DependencySourceAddress(source) => {
                 return Err(CompileError::Semantic(format!(
-                    "remote public instance source `{}/{}` is not a value; use `as I` or call a method directly",
-                    source.dependency_ref, source.public_instance_key
+                    "dependency source address `{}/{}` is not a value; use `as I` to box a public instance or call an exported callable",
+                    source.dependency_ref, source.public_path
                 )));
             }
             Expr::Throw { value } => {
@@ -1265,7 +1266,9 @@ impl<'a> FunctionLowerer<'a> {
                     "typed package target does not have a static symbol path",
                 )
             })?;
-            let root = path.split('.').next().unwrap_or(path);
+            let root = dependency_source_address_parts(path)
+                .map(|(dependency_ref, _)| dependency_ref)
+                .unwrap_or_else(|| path.split('.').next().unwrap_or(path));
             if self.bindings.contains_key(root) {
                 return Err(package_call_resolution_error(
                     expression_key,
@@ -1304,7 +1307,9 @@ impl<'a> FunctionLowerer<'a> {
         let Some(path) = path.as_deref() else {
             return Ok(None);
         };
-        let root = path.split('.').next().unwrap_or(path);
+        let root = dependency_source_address_parts(path)
+            .map(|(dependency_ref, _)| dependency_ref)
+            .unwrap_or_else(|| path.split('.').next().unwrap_or(path));
         if self.bindings.contains_key(root) || !self.package_aliases.contains_key(root) {
             return Ok(None);
         }
@@ -2026,7 +2031,7 @@ fn expr_preorder_node_count(expr: &Expr) -> u32 {
     match expr {
         Expr::Literal(_)
         | Expr::Identifier(_)
-        | Expr::RemotePublicInstanceSource(_)
+        | Expr::DependencySourceAddress(_)
         | Expr::DbOperation(_)
         | Expr::DbQuery(_) => 1,
         Expr::Unary { expr, .. }
@@ -2121,19 +2126,6 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
             .map(expr_preorder_node_count)
             .unwrap_or_default(),
         Stmt::Break | Stmt::Continue => 0,
-    }
-}
-
-pub(super) fn expr_path(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Identifier(name) => Some(name.clone()),
-        Expr::RemotePublicInstanceSource(source) => Some(format!(
-            "{}/{}",
-            source.dependency_ref, source.public_instance_key
-        )),
-        Expr::Field { object, field } => Some(format!("{}.{}", expr_path(object)?, field)),
-        Expr::Generic { callee, .. } => expr_path(callee),
-        _ => None,
     }
 }
 

@@ -9,13 +9,14 @@ use skiff_syntax::{
         DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector, DbWhereClause,
         Expr, ForBinding, Literal, PatchOperation, SourceFile, Stmt, TypeRef,
     },
+    ast_utils::expr_path,
     type_syntax::generic_inner,
 };
 
 use super::db_lowering::{
     db_lease_read_result_type_text, db_operation_result_type_text_without_metadata,
 };
-use super::function_lowering::{expr_path, is_builtin_call_root};
+use super::function_lowering::is_builtin_call_root;
 use super::type_lowering::{bare_type_name, type_root};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -463,7 +464,7 @@ impl SuspendContext<'_, '_> {
     fn expr_may_suspend(&mut self, expr: &Expr) -> bool {
         self.next_expression_key();
         match expr {
-            Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => false,
+            Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => false,
             Expr::Binary { left, right, .. } => {
                 self.expr_may_suspend(left) || self.expr_may_suspend(right)
             }
@@ -649,7 +650,7 @@ impl SuspendContext<'_, '_> {
             Expr::Literal(Literal::Bool(_)) => Some("bool".to_string()),
             Expr::Literal(Literal::Null) => Some("null".to_string()),
             Expr::Identifier(name) => self.env.resolve(name).map(str::to_string),
-            Expr::RemotePublicInstanceSource(_) => None,
+            Expr::DependencySourceAddress(_) => None,
             Expr::Record {
                 type_name,
                 type_args,

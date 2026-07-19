@@ -91,7 +91,7 @@ pub(super) fn collect_db_index_where_field_paths(expr: &Expr, visit: &mut impl F
         | Expr::DbLeaseRead(_)
         | Expr::Literal(_)
         | Expr::Identifier(_)
-        | Expr::RemotePublicInstanceSource(_)
+        | Expr::DependencySourceAddress(_)
         | Expr::Field { .. } => {}
     }
 }

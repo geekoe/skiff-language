@@ -379,7 +379,7 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
             "dep".to_string(),
             PackageDependencyAnalysisFacts::new(
                 PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
-                BTreeMap::from([("run".to_string(), dependency)]),
+                BTreeMap::from([("tools.run".to_string(), dependency)]),
             ),
         )]),
         Vec::new(),
@@ -389,7 +389,7 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
         r#"
             type Boxed { value: string }
             function wrapper(input: Boxed) -> Boxed {
-              return dep.run(input)
+              return dep/tools/run(input)
             }
         "#,
         dependency_input,
@@ -428,7 +428,7 @@ fn contract_target_carries_full_requirement_while_effects_fail_closed() {
     let model = analyze(
         r#"
             function wrapper(input: echo.payload) -> void {
-              echo.send(input)
+              echo/send(input)
             }
         "#,
         dependency_input,
@@ -460,7 +460,7 @@ fn unknown_contract_member_fails_with_source_location_and_stable_key() {
     let error = match analyze_result(
         r#"
             function wrapper() -> void {
-              echo.missing()
+              echo/missing()
             }
         "#,
         dependency_input,

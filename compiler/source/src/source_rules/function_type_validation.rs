@@ -213,7 +213,7 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
             collect_function_type_name_violations(path, &read.target.name, violations);
             collect_expr_function_type_violations(path, &read.key, violations);
         }
-        Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+        Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
     }
 }
 

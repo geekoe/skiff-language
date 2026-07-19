@@ -7,14 +7,23 @@ use crate::{
     parsed_sources::ParsedCompilerSource,
     shared::{
         ast::{Expr, ForBinding, FunctionDecl, Pattern, Stmt},
-        ast_utils::{expr_path, walk_expr, walk_pattern, walk_stmt, AstVisitor},
+        ast_utils::{
+            dependency_source_address_parts, expr_path, walk_expr, walk_pattern, walk_stmt,
+            AstVisitor,
+        },
         type_syntax::generic_parts,
     },
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, ExpressionTypeModel,
     SourceDependencyAnalysisInput, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 
-use super::{ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason};
+use super::{
+    dependency_diagnostics::{
+        contract_member_error, dependency_member_error, dotted_dependency_call_error,
+        unknown_dependency_alias_error,
+    },
+    ResolvedCallTarget, ResolvedCallTargetFacts, UnknownCallTargetReason,
+};
 
 #[derive(Clone)]
 enum LocalCallTarget {
@@ -177,10 +186,10 @@ impl TargetCollector<'_> {
     ) -> ResolvedCallTarget {
         let semantic_callee = without_generic(callee);
         if let Some(path) = expr_path(semantic_callee) {
-            let path_root_is_local = path
-                .split('.')
-                .next()
-                .is_some_and(|root| self.local_value_names.contains(root));
+            let path_root = dependency_source_address_parts(&path)
+                .map(|(dependency_ref, _)| dependency_ref)
+                .unwrap_or_else(|| path.split('.').next().unwrap_or(&path));
+            let path_root_is_local = self.local_value_names.contains(path_root);
             if !path_root_is_local {
                 let local_target = self.local_targets.resolve_path(self.module_path, &path);
                 match self.dependencies.resolve_path(&path) {
@@ -224,9 +233,45 @@ impl TargetCollector<'_> {
                         return unknown(UnknownCallTargetReason::UnresolvedName);
                     }
                     ResolvedDependencyAnalysisTarget::MissingMember => {
+                        if let Some((alias, public_path)) = dependency_source_address_parts(&path) {
+                            self.errors.push(dependency_member_error(
+                                self.diagnostic_path,
+                                call_key,
+                                self.expression_sources,
+                                alias,
+                                public_path,
+                            ));
+                        }
                         return unknown(UnknownCallTargetReason::UnresolvedName);
                     }
-                    ResolvedDependencyAnalysisTarget::Missing => {}
+                    ResolvedDependencyAnalysisTarget::Missing => {
+                        if let Some((alias, _)) = dependency_source_address_parts(&path) {
+                            self.errors.push(unknown_dependency_alias_error(
+                                self.diagnostic_path,
+                                call_key,
+                                self.expression_sources,
+                                alias,
+                            ));
+                            return unknown(UnknownCallTargetReason::UnresolvedName);
+                        }
+                        if let Some((alias, public_path)) = path.split_once('.') {
+                            let is_dependency_alias = self
+                                .dependencies
+                                .package_aliases()
+                                .chain(self.dependencies.contract_aliases())
+                                .any(|candidate| candidate == alias);
+                            if is_dependency_alias {
+                                self.errors.push(dotted_dependency_call_error(
+                                    self.diagnostic_path,
+                                    call_key,
+                                    self.expression_sources,
+                                    alias,
+                                    public_path,
+                                ));
+                                return unknown(UnknownCallTargetReason::UnresolvedName);
+                            }
+                        }
+                    }
                 }
 
                 if let Some(target) = local_target {
@@ -454,46 +499,6 @@ fn local_value_names(function: &FunctionDecl) -> BTreeSet<String> {
     }
     collector.visit_block(&function.body);
     collector.0
-}
-
-fn contract_member_error(
-    diagnostic_path: &str,
-    call_key: &ExpressionKey,
-    expression_sources: &ExpressionSourceMap,
-    alias: &str,
-    stable_key: Option<&str>,
-) -> String {
-    let source_location = expression_sources
-        .fact(call_key)
-        .map(|fact| format!("{}:{}", fact.span.start.line, fact.span.start.column))
-        .unwrap_or_else(|| "unknown location".to_string());
-    let location = format!(
-        "{diagnostic_path}:{source_location}: {}, call expression #{}",
-        expression_owner_label(call_key.owner()),
-        call_key.preorder_index()
-    );
-    match stable_key {
-        Some(stable_key) => format!(
-            "{location}: contract dependency `{alias}` has no operation stable key `{stable_key}`"
-        ),
-        None => format!(
-            "{location}: contract dependency `{alias}` must be followed by an operation stable key"
-        ),
-    }
-}
-
-fn expression_owner_label(owner: &ExpressionOwnerKey) -> String {
-    match owner {
-        ExpressionOwnerKey::Function(name) => format!("function `{name}`"),
-        ExpressionOwnerKey::ImplMethod { type_name, method } => {
-            format!("method `{type_name}.{method}`")
-        }
-        ExpressionOwnerKey::Const(name) => format!("const `{name}`"),
-        ExpressionOwnerKey::Test(name) => format!("test `{name}`"),
-        ExpressionOwnerKey::DbIndexWhere { db, index } => {
-            format!("db index `{db}.{index}`")
-        }
-    }
 }
 
 fn unknown(reason: UnknownCallTargetReason) -> ResolvedCallTarget {

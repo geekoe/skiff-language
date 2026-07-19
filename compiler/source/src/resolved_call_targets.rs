@@ -8,6 +8,7 @@ use skiff_artifact_model::{
 use crate::{semantic::impl_method_declaration_name, ExpressionKey, SourceSymbolKey};
 
 mod builder;
+mod dependency_diagnostics;
 
 /// Shared typed call-target carrier consumed by source effect analysis and
 /// lowering. It records semantic destination kind before either consumer runs.

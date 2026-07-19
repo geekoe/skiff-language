@@ -9,6 +9,8 @@ use skiff_compiler_input::{
 };
 use thiserror::Error;
 
+use crate::shared::ast_utils::dependency_source_address_parts;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SourceDependencyAnalysisError {
     #[error("package dependency alias `{alias}` is declared more than once")]
@@ -99,7 +101,7 @@ impl SourceDependencyAnalysisInput {
 
     /// Resolves both dependency kinds through the namespace frozen by `new`.
     pub(crate) fn resolve_path(&self, path: &str) -> ResolvedDependencyAnalysisTarget<'_> {
-        let Some((alias, callable_path)) = path.split_once('.') else {
+        let Some((alias, callable_path)) = dependency_source_address_parts(path) else {
             return if self.packages.contains_key(path) {
                 ResolvedDependencyAnalysisTarget::MissingMember
             } else if self.contracts.requirement(path).is_ok() {
@@ -256,7 +258,19 @@ mod tests {
         let expected_requirement = requirement("svc", &contract);
         let input =
             SourceDependencyAnalysisInput::new(
-                [("pkg".to_string(), package_facts("abi:pkg", "callable:run"))],
+                [(
+                    "pkg".to_string(),
+                    PackageDependencyAnalysisFacts::new(
+                        PackageLocalAbiIdentity::new("abi:pkg"),
+                        BTreeMap::from([
+                            ("run".to_string(), package_callable("callable:run")),
+                            (
+                                "nested.run".to_string(),
+                                package_callable("callable:nested-run"),
+                            ),
+                        ]),
+                    ),
+                )],
                 [ResolvedContractDependency::validated(
                     expected_requirement.clone(),
                     contract.clone(),
@@ -284,12 +298,20 @@ mod tests {
             &contract_type_id("example.svc", "1.0.0", "payload").unwrap()
         );
         assert!(matches!(
-            input.resolve_path("pkg.run"),
+            input.resolve_path("pkg/run"),
             ResolvedDependencyAnalysisTarget::Package { .. }
         ));
         assert!(matches!(
-            input.resolve_path("svc.run"),
+            input.resolve_path("svc/run"),
             ResolvedDependencyAnalysisTarget::Contract { .. }
+        ));
+        assert!(matches!(
+            input.resolve_path("pkg/nested.run"),
+            ResolvedDependencyAnalysisTarget::Package { .. }
+        ));
+        assert!(matches!(
+            input.resolve_path("pkg.run"),
+            ResolvedDependencyAnalysisTarget::Missing
         ));
         assert!(matches!(
             input.contract_operation_by_stable_key("missing", "run"),
@@ -300,15 +322,15 @@ mod tests {
             Err(ContractDependencyError::UnknownOperationStableKey { .. })
         ));
         assert!(matches!(
-            input.resolve_path("missing.run"),
+            input.resolve_path("missing/run"),
             ResolvedDependencyAnalysisTarget::Missing
         ));
         assert!(matches!(
-            input.resolve_path("pkg.missing"),
+            input.resolve_path("pkg/missing"),
             ResolvedDependencyAnalysisTarget::MissingMember
         ));
         assert!(matches!(
-            input.resolve_path("svc.missing"),
+            input.resolve_path("svc/missing"),
             ResolvedDependencyAnalysisTarget::UnknownContractMember {
                 alias,
                 stable_key: Some(stable_key),

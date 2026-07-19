@@ -11,10 +11,9 @@
 //! 范围约束(P1a 决策):**只产出 typed 结果 + 测试验证,不重连 lowering。**
 //! lowering 消费 entity ref 归 P3b。
 //!
-//! **package alias ≠ service alias**(架构 case #8,L429-434):现有诊断 pass 把两类依赖
-//! 别名和 module root 摊平成一个 `BTreeSet`,无法区分,本就违反"同 display path 不同
-//! entity kind"。P1a 的 env 把 package aliases / service aliases 拆成独立集合,resolver
-//! 据此产 `ExternalPackage` vs `ExternalService` 不同 entity——这是 case #6/#7/#8 的地基。
+//! package 与 contract alias 在 compile input trust boundary 共享一个 namespace；这里保留
+//! 两类 validated fact 以生成准确的 qualified type entity。`.` 不解析 dependency value
+//! call；callable address 统一由 `<alias>/<publicPath>` 的 source resolver 处理。
 //!
 //! builtin 处理(P1a):root 是否 builtin 查 `prelude_registry()` + 一份显式 intrinsic
 //! root 表,取代旧 `matches!("std"|"ext"|...)`。builtin 编号此阶段是稳定占位(builtin
@@ -33,9 +32,8 @@ use super::table::PublicationEntityTable;
 
 /// resolver 的输入环境。
 ///
-/// 与旧 pass 的关键差异:不再用单个摊平的 `module_roots`,而是把 lookup 起点按架构分类:
-/// 当前 publication module roots、package 依赖别名、service 依赖别名各成一集。这样
-/// resolver 才能对 `pkg.x` 与 `svc.x` 产出不同 entity kind(case #8)。
+/// 当前 publication module roots、package dependency facts与contract dependency facts
+/// 分开提供；上层trust boundary保证两个dependency集合的alias不冲突。
 ///
 /// `local_owner` 给定时,value namespace 内 scope 可见名字解析为 `Local` entity(由该
 /// owner 铸 id);为 `None` 时表示顶层位置(无局部作用域)。
@@ -45,10 +43,9 @@ use super::table::PublicationEntityTable;
 pub struct ResolutionEnv<'a> {
     /// 当前 publication 内的 module roots(如 `user`、`billing` 等模块名第一段)。
     module_roots: &'a BTreeSet<String>,
-    /// package 依赖别名集(来自 manifest dependencies)。解析为 ExternalPackage entity。
+    /// package 依赖别名集。仅在 type namespace 解析 qualified type。
     package_aliases: &'a BTreeSet<String>,
-    /// service 依赖别名集(来自 service.yml dependencies)。解析为 ExternalService
-    /// entity——与 package alias 同 display path 时产出不同 entity kind(case #8)。
+    /// contract/service 依赖别名集。仅在 type namespace 解析 qualified type。
     service_aliases: &'a BTreeSet<String>,
     /// value namespace 中 scope 可见的名字(参数、局部变量、顶层函数/const 等)。
     value_names: &'a BTreeSet<String>,
@@ -108,9 +105,9 @@ impl<'a> ResolutionEnv<'a> {
 /// 1. intrinsic resolver root(`root`/`std`/`config`/...):本身不是 entity。`std.<symbol>`
 ///    若 prelude_registry 命中则落 builtin entity;否则单段 → `ResolverRoot`、含点号 →
 ///    `PathPrefix`。
-/// 2. package 依赖别名:`pkg.<...>` → `ExternalPackage` entity(local linkage)。
-/// 3. service 依赖别名:`svc.<...>` → `ExternalService` entity(remote linkage)。**与 2 不
-///    同 kind**,即使 display path 相同(case #8)。
+/// 2. type namespace 中的package alias:`pkg.Type` → `ExternalPackage` entity。
+/// 3. type namespace 中的contract alias:`svc.Type` → `ExternalService` entity。
+///    value namespace 不接受点号dependency call；`pkg/callable`由source call resolver处理。
 /// 4. prelude native symbol root → builtin entity。
 /// 5. 当前 scope 可见名字:
 ///    - value namespace + `local_owner` → `Local` entity(铸 owner-bound id)。
@@ -156,15 +153,15 @@ pub fn resolve_dotted_path(
         )));
     }
 
-    // 2) package 依赖别名 → ExternalPackage(local linkage)。
-    if env.package_aliases.contains(root) {
+    // 2) package qualified type。Value call 必须使用 `<alias>/<publicPath>`。
+    if namespace == EntityNamespace::Type && env.package_aliases.contains(root) {
         return Some(ResolvedPath::Entity(EntityId::ExternalPackage(
             ExternalPackageEntityId::from_index(stable_name_index(path)),
         )));
     }
 
-    // 3) service 依赖别名 → ExternalService(remote linkage)。与 2 不同 kind(case #8)。
-    if env.service_aliases.contains(root) {
+    // 3) contract qualified type。Linkage kind 不由此处或路径分隔符决定。
+    if namespace == EntityNamespace::Type && env.service_aliases.contains(root) {
         return Some(ResolvedPath::Entity(EntityId::ExternalService(
             ExternalServiceEntityId::from_index(stable_name_index(path)),
         )));

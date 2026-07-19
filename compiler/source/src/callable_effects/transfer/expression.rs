@@ -21,7 +21,7 @@ impl Evaluator<'_, '_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| AbstractValue::constant(reference)),
-            Expr::RemotePublicInstanceSource(_) => {
+            Expr::DependencySourceAddress(_) => {
                 self.state.effects.requires_same_heap_identity = true;
                 self.state.effects.invokes_unknown_target = true;
                 self.state.effects.may_suspend = true;

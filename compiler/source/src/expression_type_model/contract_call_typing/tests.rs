@@ -22,7 +22,7 @@ fn valid_contract_call_is_typed_before_target_facts_are_published() {
     let model = build_model(
         r#"
             function entry(input: payments.User) -> payments.User {
-                return payments.submit(input)
+                return payments/submit(input)
             }
         "#,
         &dependencies,
@@ -44,9 +44,9 @@ fn valid_contract_call_is_typed_before_target_facts_are_published() {
 fn unknown_alias_and_operation_fail_source_compilation() {
     let dependencies = dependencies(&[("payments", "example.payments")]);
     for (call, expected) in [
-        ("missing.submit(input)", "missing"),
+        ("missing/submit(input)", "missing"),
         (
-            "payments.missing(input)",
+            "payments/missing(input)",
             "no operation stable key `missing`",
         ),
     ] {
@@ -61,12 +61,31 @@ fn unknown_alias_and_operation_fail_source_compilation() {
 }
 
 #[test]
+fn dotted_contract_call_is_not_a_dependency_call_compatibility_spelling() {
+    let dependencies = dependencies(&[("payments", "example.payments")]);
+    let error = build_model(
+        r#"
+            function entry(input: payments.User) -> payments.User {
+                return payments.submit(input)
+            }
+        "#,
+        &dependencies,
+    )
+    .expect_err("dot-call spelling must not resolve through a contract alias")
+    .to_string();
+    assert!(
+        error.contains("payments") && error.contains("submit"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn wrong_arity_and_argument_type_fail_descriptor_checking() {
     let dependencies = dependencies(&[("payments", "example.payments")]);
     for (body, expected) in [
-        ("payments.submit()", "arity mismatch"),
+        ("payments/submit()", "arity mismatch"),
         (
-            "payments.submit(\"not a contract user\")",
+            "payments/submit(\"not a contract user\")",
             "argument 1 type mismatch",
         ),
     ] {
@@ -86,7 +105,7 @@ fn contract_call_return_use_is_checked_in_source() {
     let error = build_model(
         r#"
             function entry(input: payments.User) -> string {
-                return payments.submit(input)
+                return payments/submit(input)
             }
         "#,
         &dependencies,
@@ -108,7 +127,7 @@ fn contract_nominals_compare_by_contract_type_id() {
     let error = build_model(
         r#"
             function entry(input: accounts.User) -> void {
-                payments.submit(input)
+                payments/submit(input)
             }
         "#,
         &dependencies,
@@ -151,7 +170,7 @@ fn builtin_container_and_nullable_contract_types_compare_recursively() {
     build_model(
         r#"
             function entry(input: Array<payments.User?>) -> bool {
-                return payments.submit(input)
+                return payments/submit(input)
             }
         "#,
         &dependencies,
@@ -161,7 +180,7 @@ fn builtin_container_and_nullable_contract_types_compare_recursively() {
     let error = build_model(
         r#"
             function entry(input: Array<accounts.User?>) -> void {
-                payments.submit(input)
+                payments/submit(input)
             }
         "#,
         &dependencies,
@@ -193,7 +212,7 @@ fn may_suspend_unary_contract_call_uses_the_ordinary_source_call_form() {
     build_model(
         r#"
             function entry(input: payments.User) -> payments.User {
-                return payments.submit(input)
+                return payments/submit(input)
             }
         "#,
         &dependencies,
@@ -207,7 +226,7 @@ fn unsupported_generic_and_stream_call_forms_fail_source_typing() {
     let generic_error = build_model(
         r#"
             function entry(input: payments.User) -> void {
-                payments.submit<payments.User>(input)
+                payments/submit<payments.User>(input)
             }
         "#,
         &dependencies,
@@ -237,7 +256,7 @@ fn unsupported_generic_and_stream_call_forms_fail_source_typing() {
     let stream_error = build_model(
         r#"
             function entry(input: streaming.User) -> void {
-                streaming.submit(input)
+                streaming/submit(input)
             }
         "#,
         &streaming_dependencies,
@@ -268,8 +287,8 @@ fn closure_only_contract_results_keep_nominal_identity_for_pass_through_calls() 
     build_model(
         r#"
             function entry() -> bool {
-                const secret = payments.fetch()
-                return payments.consume(secret)
+                const secret = payments/fetch()
+                return payments/consume(secret)
             }
         "#,
         &dependencies,
@@ -279,8 +298,8 @@ fn closure_only_contract_results_keep_nominal_identity_for_pass_through_calls() 
     let error = build_model(
         r#"
             function entry() -> bool {
-                const secret = accounts.fetch()
-                return payments.consume(secret)
+                const secret = accounts/fetch()
+                return payments/consume(secret)
             }
         "#,
         &dependencies,
@@ -316,7 +335,7 @@ fn inline_contract_operation_shapes_fail_closed() {
     let error = build_model(
         r#"
             function entry(input: payments.User) -> void {
-                payments.submit(input)
+                payments/submit(input)
             }
         "#,
         &dependencies,

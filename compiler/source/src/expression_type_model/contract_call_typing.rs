@@ -1,15 +1,18 @@
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryErrorContract,
-    BoundaryStreamContract, PackageTypeRef,
+    BoundaryOperationDescriptor, BoundaryStreamContract, PackageTypeRef, ServiceContract,
 };
 
 use crate::{
-    contract_type_resolution::package_type_ref_from_validated_contract_ref, ResolvedTypeRef,
+    contract_type_resolution::package_type_ref_from_validated_contract_ref,
+    shared::ast_utils::dependency_source_address_parts, ResolvedTypeRef,
     SourceDependencyAnalysisInput, TypeResolutionContext, TypeResolutionModel,
 };
 
+mod projected_environment;
 mod type_projection;
 
+pub(super) use projected_environment::ContractProjectionState;
 pub(super) use type_projection::contract_source_assignability;
 use type_projection::{
     package_type_assignable, package_type_contains_contract, resolved_contract_type,
@@ -28,6 +31,12 @@ pub(super) enum ContractCallOutcome {
 pub(super) struct ContractCallTyping<'a, 'ctx> {
     dependency_analysis: &'a SourceDependencyAnalysisInput,
     type_projection: ContractCallTypeProjection<'a, 'ctx>,
+}
+
+struct ResolvedContractCall<'a> {
+    alias: String,
+    contract: &'a ServiceContract,
+    operation: &'a BoundaryOperationDescriptor,
 }
 
 impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
@@ -53,40 +62,78 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         arg_types: &[(super::ExpressionKey, Option<ResolvedTypeRef>)],
         projected_types: &std::collections::BTreeMap<super::ExpressionKey, PackageTypeRef>,
     ) -> ContractCallOutcome {
-        let (alias, stable_key) = match path.split_once('.') {
-            Some(parts) => parts,
-            // T03A owns unknown-member diagnostics and their exact source
-            // owner/location. Leave unresolved members for that pass.
-            None => return ContractCallOutcome::NotContract,
-        };
-        let Ok(contract) = self.dependency_analysis.contract(alias) else {
+        let Some(call) = self.lookup_call(path) else {
             return ContractCallOutcome::NotContract;
         };
-        let operation = match self
+        let mut diagnostics = operation_shape_diagnostics(path, &call.operation.contract);
+        self.check_call_shape(
+            path,
+            type_arg_count,
+            arg_types.len(),
+            &call,
+            &mut diagnostics,
+        );
+        self.check_arguments(path, arg_types, projected_types, &call, &mut diagnostics);
+        let Some((return_type, projected_return_type)) =
+            self.resolve_return(path, &call, &mut diagnostics)
+        else {
+            return ContractCallOutcome::Invalid(diagnostics);
+        };
+        if diagnostics.is_empty() {
+            ContractCallOutcome::Typed {
+                return_type,
+                projected_return_type,
+            }
+        } else {
+            ContractCallOutcome::Invalid(diagnostics)
+        }
+    }
+
+    fn lookup_call(&self, path: &str) -> Option<ResolvedContractCall<'_>> {
+        let (alias, stable_key) = dependency_source_address_parts(path)?;
+        let contract = self.dependency_analysis.contract(alias).ok()?;
+        let operation = self
             .dependency_analysis
             .contract_operation_by_stable_key(alias, stable_key)
-        {
-            Ok(operation) => operation,
-            // T03A owns unknown-member diagnostics and rejects the call before
-            // any real contract-operation target can be published.
-            Err(_) => return ContractCallOutcome::NotContract,
-        };
+            .ok()?;
+        Some(ResolvedContractCall {
+            alias: alias.to_string(),
+            contract,
+            operation,
+        })
+    }
 
-        let mut diagnostics = operation_shape_diagnostics(path, &operation.contract);
+    fn check_call_shape(
+        &self,
+        path: &str,
+        type_arg_count: usize,
+        arg_count: usize,
+        call: &ResolvedContractCall<'_>,
+        diagnostics: &mut Vec<String>,
+    ) {
         if type_arg_count != 0 {
             diagnostics.push(format!(
                 "contract call `{path}` does not accept source type arguments"
             ));
         }
-        if operation.contract.parameters.len() != arg_types.len() {
+        if call.operation.contract.parameters.len() != arg_count {
             diagnostics.push(format!(
-                "contract call `{path}` arity mismatch: expected {} arguments, found {}",
-                operation.contract.parameters.len(),
-                arg_types.len()
+                "contract call `{path}` arity mismatch: expected {} arguments, found {arg_count}",
+                call.operation.contract.parameters.len()
             ));
         }
+    }
 
-        for (index, (parameter, (argument_key, actual))) in operation
+    fn check_arguments(
+        &self,
+        path: &str,
+        arg_types: &[(super::ExpressionKey, Option<ResolvedTypeRef>)],
+        projected_types: &std::collections::BTreeMap<super::ExpressionKey, PackageTypeRef>,
+        call: &ResolvedContractCall<'_>,
+        diagnostics: &mut Vec<String>,
+    ) {
+        for (index, (parameter, (argument_key, actual))) in call
+            .operation
             .contract
             .parameters
             .iter()
@@ -115,9 +162,10 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 .cloned()
                 .unwrap_or_else(|| self.type_projection.source_package_type(actual));
             if !package_type_assignable(&actual_projected, &expected) {
-                let expected_label = resolved_contract_type(&parameter.ty, alias, contract)
-                    .map(|ty| ty.source_text)
-                    .unwrap_or_else(|_| format!("{:?}", parameter.ty));
+                let expected_label =
+                    resolved_contract_type(&parameter.ty, &call.alias, call.contract)
+                        .map(|ty| ty.source_text)
+                        .unwrap_or_else(|_| format!("{:?}", parameter.ty));
                 diagnostics.push(format!(
                     "contract call `{path}` argument {} type mismatch: expected {expected_label}, found {}",
                     index + 1,
@@ -125,33 +173,35 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
                 ));
             }
         }
+    }
 
-        let projected_return_type =
-            match package_type_ref_from_validated_contract_ref(&operation.contract.return_value.ty)
-            {
-                Ok(projected_return_type) => projected_return_type,
-                Err(error) => {
-                    diagnostics.push(format!(
+    fn resolve_return(
+        &self,
+        path: &str,
+        call: &ResolvedContractCall<'_>,
+        diagnostics: &mut Vec<String>,
+    ) -> Option<(ResolvedTypeRef, PackageTypeRef)> {
+        let projected = match package_type_ref_from_validated_contract_ref(
+            &call.operation.contract.return_value.ty,
+        ) {
+            Ok(projected) => projected,
+            Err(error) => {
+                diagnostics.push(format!(
                     "contract call `{path}` return uses unsupported inline contract shape: {error}"
                 ));
-                    return ContractCallOutcome::Invalid(diagnostics);
-                }
-            };
-        let return_type =
-            match resolved_contract_type(&operation.contract.return_value.ty, alias, contract) {
-                Ok(return_type) => return_type,
-                Err(error) => {
-                    diagnostics.push(error);
-                    return ContractCallOutcome::Invalid(diagnostics);
-                }
-            };
-        if diagnostics.is_empty() {
-            ContractCallOutcome::Typed {
-                return_type,
-                projected_return_type,
+                return None;
             }
-        } else {
-            ContractCallOutcome::Invalid(diagnostics)
+        };
+        match resolved_contract_type(
+            &call.operation.contract.return_value.ty,
+            &call.alias,
+            call.contract,
+        ) {
+            Ok(resolved) => Some((resolved, projected)),
+            Err(error) => {
+                diagnostics.push(error);
+                None
+            }
         }
     }
 }

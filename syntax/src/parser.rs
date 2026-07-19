@@ -7,11 +7,11 @@ use crate::{
         DbIndexWhereSourceSpans, DbLeaseClaim, DbLeaseDecl, DbLeaseRead, DbObjectFieldValue,
         DbObjectKey, DbOperation, DbOperationKind, DbOrderEntry, DbProjection, DbQuery,
         DbQueryBlock, DbRetention, DbRetentionUnit, DbSelector, DbStorageCodec, DbStorageDecl,
-        DbTransaction, DbWhereClause, ExecutableSourceSpans, Expr, ExprSourceSpans, FieldDecl,
-        FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl, InterfaceDecl,
-        InterfaceOperation, Literal, MatchArm, PackageId, Param, Pattern, PatternField,
-        RecordFieldSourceSpans, RemotePublicInstanceSource, SourceFile, SourceSpanTable, Stmt,
-        StmtSourceSpans, TypeDecl, TypeRef, UnaryOp,
+        DbTransaction, DbWhereClause, DependencySourceAddress, ExecutableSourceSpans, Expr,
+        ExprSourceSpans, FieldDecl, FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl,
+        InterfaceDecl, InterfaceOperation, Literal, MatchArm, PackageId, Param, Pattern,
+        PatternField, RecordFieldSourceSpans, SourceFile, SourceSpanTable, Stmt, StmtSourceSpans,
+        TypeDecl, TypeRef, UnaryOp,
     },
     ast_utils::{expr_path, without_generic},
     error::{CompileError, Result, SourceLocation, SourceSpan},
@@ -2044,8 +2044,8 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<ParsedExpr> {
         let mut expr = self.parse_primary()?;
         loop {
-            if self.check_remote_public_instance_source_suffix(&expr) {
-                expr = self.parse_remote_public_instance_source(expr)?;
+            if self.check_dependency_source_address_suffix(&expr) {
+                expr = self.parse_dependency_source_address(expr)?;
                 continue;
             }
             if self.match_symbol(".") {
@@ -2347,7 +2347,7 @@ impl Parser {
         }
     }
 
-    fn check_remote_public_instance_source_suffix(&self, expr: &ParsedExpr) -> bool {
+    fn check_dependency_source_address_suffix(&self, expr: &ParsedExpr) -> bool {
         if !matches!(expr.expr, Expr::Identifier(_)) {
             return false;
         }
@@ -2363,7 +2363,7 @@ impl Parser {
             && contiguous_locations(slash.span.end, segment.span.start)
     }
 
-    fn parse_remote_public_instance_source(&mut self, expr: ParsedExpr) -> Result<ParsedExpr> {
+    fn parse_dependency_source_address(&mut self, expr: ParsedExpr) -> Result<ParsedExpr> {
         let Expr::Identifier(dependency_ref) = expr.expr else {
             unreachable!("remote source suffix is only checked for identifiers");
         };
@@ -2391,9 +2391,9 @@ impl Parser {
             end,
         };
         Ok(ParsedExpr {
-            expr: Expr::RemotePublicInstanceSource(RemotePublicInstanceSource {
+            expr: Expr::DependencySourceAddress(DependencySourceAddress {
                 dependency_ref,
-                public_instance_key: segments.join("."),
+                public_path: segments.join("."),
             }),
             spans: expr_source_spans(span, Vec::new()),
         })

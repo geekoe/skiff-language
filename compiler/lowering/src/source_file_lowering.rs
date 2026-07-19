@@ -1193,7 +1193,7 @@ mod tests {
     fn typed_contract_call_site_lowers_to_canonical_service_call_without_legacy_operation_abi() {
         let source = r#"
           function run() -> void {
-            echo.ping()
+            echo/ping()
           }
         "#;
         let operation_id = ContractOperationId::new("operation:ping");
@@ -1263,7 +1263,7 @@ mod tests {
     fn package_call_source() -> &'static str {
         r#"
           function run() -> void {
-            utils.format()
+            utils/format()
           }
         "#
     }
@@ -1355,7 +1355,7 @@ mod tests {
         .unwrap_err();
 
         let message = error.to_string();
-        assert!(message.contains("package dependency call `utils.format`"));
+        assert!(message.contains("package dependency call `utils/format`"));
         assert!(message.contains("missing ResolvedCallTargetFacts entry"));
         assert!(!message.contains("ExternalServiceSymbol"));
     }
@@ -1373,7 +1373,7 @@ mod tests {
         let error = lower_package_call(&package_aliases, &targets).unwrap_err();
 
         let message = error.to_string();
-        assert!(message.contains("package dependency call `utils.format`"));
+        assert!(message.contains("package dependency call `utils/format`"));
         assert!(message.contains("Unknown(UnresolvedName)"));
         assert!(!message.contains("ExternalServiceSymbol"));
     }

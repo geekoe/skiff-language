@@ -120,7 +120,7 @@ impl OwnerCollector<'_> {
         let mut children = spans.children.iter();
         let mut blocks = spans.blocks.iter();
         match expr {
-            Expr::Literal(_) | Expr::Identifier(_) | Expr::RemotePublicInstanceSource(_) => {}
+            Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
             Expr::Binary { left, right, .. } => {
                 self.visit_expr(
                     left,
@@ -644,7 +644,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
         Expr::Literal(_) => "literal",
         Expr::Identifier(_) => "identifier",
-        Expr::RemotePublicInstanceSource(_) => "remote public instance source",
+        Expr::DependencySourceAddress(_) => "dependency source address",
         Expr::Binary { .. } => "binary",
         Expr::Unary { .. } => "unary",
         Expr::Call { .. } => "call",
