@@ -16,8 +16,10 @@
 
 ## 预期波次
 
-1. Skiff tooling、`skiff-packages`、`internals` 三个写入域并行迁移。
-2. 旧对象/旧路径反向搜索、完整非 live verify、必要 live/multi-replica/chat smoke、独立最终验收。
+1. 先冻结不改变四对象 owner的 authoring/storage/control checkpoint；再并行迁移 Skiff本仓 registry/release、
+   CLI/watch/dev sync、router/runtime reload、test-runner与 fixtures。
+2. 本仓 checkpoint稳定后，从 exact integration commit并行迁移 `skiff-packages`、`internals` consumer与实际
+   services；最后做旧对象/旧路径反向搜索、完整 non-live verify、必要 live/multi-replica/chat smoke和独立验收。
 
 ## 阶段验收
 

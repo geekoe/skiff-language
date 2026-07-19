@@ -45,6 +45,8 @@
   `PackageBuildId` code 每 replica 只链接一次，而每个 activation 的 service/config/state binding template
   保持独立。
 - runtime 以整个 `RuntimeAssembly` 建立候选、load/link/admit 并原子替换；请求路径不再 lazy-load artifact。
+- active assembly保留 exact immutable ServiceContract store；Phase 04可按 contract ref + operation ID读取 canonical
+  descriptor/value plan，不从 template复制或在请求时重载。
 - runtime production loader/linker/admission 不读取 `ServiceUnit`、`PackageUnit`、raw `serviceAssembly`、
   display name、source path 或 provider executable guess；不生成 dual path、fallback 或 compatibility adapter。
 - 本阶段只形成 ActivationContext template 与 `InProcessBoundary` binding plan，不实例化/执行 boundary；
@@ -52,10 +54,13 @@
 
 ## 三个实现波次
 
-1. canonical deployment/assembly schema、identity、reference、validator 与新 crate shell checkpoint。
-2. source-free deployment projection、typed RuntimeAssembly loader、shared package image三个非重叠 owner并行；
-   projection合流后由释放的 worker继续 assembly resolver。
-3. linker checkpoint 后，host whole-assembly admission 与下游 compile seam/结构 gate 收敛；建立稳定候选、
+1. canonical deployment/assembly schema、identity、reference、validator与新 crate shell checkpoint；独立验收
+   PASS后扇出。
+2. deployment projection、assembly resolver、typed loader、shared package image四个同层 owner按三个 worker动态
+   排队；projection与resolver分别消费 frozen DTO/fixture，不互相串行。两个 control-plane verdict PASS且
+   loader/image完成后建立 linker checkpoint，再做 runtime-link验收。
+3. runtime-link PASS后，host whole-assembly admission、下游 consumer seam、结构 checker三个 owner并行收敛；
+   建立稳定候选、
    运行唯一阶段 gate 和独立验收。
 
 ## 阶段验收
@@ -69,5 +74,6 @@
 - 两个 activation 可复用同一 package code，并为相同 `(callerPackageBuildId, slot)` 绑定不同本地 provider；
   config/state/callback mutable owner 不因共享 code 而共享。
 - 空 assembly admission 成功但没有任何 dispatch target；admission 失败不改变当前 active assembly。
+- admission后 canonical contract descriptor/value plan仍可 typed lookup，不产生第二 descriptor owner或请求时I/O。
 - 结构反向搜索与 checker self-test 证明 runtime production 新路径没有旧 DTO、raw JSON linking、
   request-time lazy load 或第二 identity/schema owner。

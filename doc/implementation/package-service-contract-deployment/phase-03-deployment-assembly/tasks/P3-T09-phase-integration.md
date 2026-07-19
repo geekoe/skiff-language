@@ -4,20 +4,21 @@
 
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2、§5、§9、§10、§11、§12、§14。
 - 风险/验收组：阶段级稳定候选与唯一昂贵 gate owner。
-- 当前成熟度：T02–T08只是实现检查点；完成真实链路探针且无在途 writer后才建立 stability epoch。
-- evidence只对 `phase-result.md` 记录的 exact clean commit、依赖/生成物/配置与测试环境有效；任何 production
+- 当前成熟度：T02–T07、T08A、T08B只是实现检查点；完成真实链路探针且无在途 writer后才建立
+  stability epoch。
+- 有效证据状态：只对 `phase-result.md` 记录的 exact clean commit、依赖/生成物/配置与测试环境有效；任何 production
   owner、public surface、Cargo dependency、checker、fixture或 gate环境变化按影响面使证据失效。
 
 ## 角色与 DAG
 
-- 依赖：T02–T08 全部合入 Phase 03 integration branch且无在途 writer。
+- 依赖：T02–T07、T08A、T08B全部合入，R01–R03均在相应 exact commit上 PASS，且无在途 writer。
 - 在 `/Users/geek/workspace/skiff-package-service-phase-03` 执行；不新建 task worktree。
 - 这是 Phase 03 唯一昂贵 gate owner。其它任务不得重复运行完整 selector。
 - 只做机械 integration blocker修复；任何 schema/identity/projection/resolution/link/admission语义缺口退回原 owner。
 
 ## 合流与 stability epoch
 
-1. 按 DAG而非完成时间合流：T01 → T02/T04/T05 → T03 → T06 → T07/T08。
+1. 按 DAG而非完成时间合流：T01 → R01 → T02/T03/T04/T05 → R02 → T06 → R03 → T07/T08A/T08B。
 2. 每次合流记录 source commit、target commit、冲突owner和已失效证据；合流后删除已合并 task worktree/branch。
 3. 所有 production owner静止后固定 stable candidate commit；只对该 exact commit建立 evidence ledger。
 4. blocker修复使相关证据失效；全部相关修复合流后建立新 epoch，不边修边反复跑完整 gate。
@@ -39,6 +40,10 @@ ServiceContract + provider/consumer PackageArtifact
 零/多 provider、ABI/protocol mismatch、Unavailable/missing operation、binding/template/ingress/tamper与 failed reload
 preserves active等正负例。不得用 legacy aggregate builder或 fake空 contract绕过 producer。
 
+admit成功后还必须从 active assembly按 `ServiceContractRef + ContractOperationId`取得 canonical descriptor/value
+plan，并证明该 lookup不触发 artifact I/O、template不复制 descriptor、contract store identity与 assembly exact ref
+一致。
+
 ## 唯一完整 gate
 
 ```bash
@@ -57,5 +62,6 @@ baseline，不扩大任务；本阶段改动文件不得有格式失败。
 
 ## 结果记录
 
-新增 `phase-result.md`，写入：stable candidate commit、最终 commit、合流表、需求→代码→测试矩阵、全部命令与
-exit status、失败分类/修复owner、未运行的 Phase 04/05 gate、已知残余风险。完成后提交 integration commit。
+新增 `phase-result.md`，写入：stable production candidate commit及 tree ID、合流表、需求→代码→测试矩阵、
+全部命令与 exit status、失败分类/修复owner、未运行的 Phase 04/05 gate、已知残余风险。随后提交 result记录；
+该文档-only commit不使 production证据失效，其 commit hash写在任务回报和后续 merge记录中，不在文件内自引用。

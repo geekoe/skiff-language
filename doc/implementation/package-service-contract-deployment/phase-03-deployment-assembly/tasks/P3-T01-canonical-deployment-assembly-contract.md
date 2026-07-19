@@ -12,7 +12,7 @@
 ## DAG 与执行约束
 
 - 依赖：P3-D01 文档评审 PASS。
-- 解锁：T02、T04、T05；T03 在 T02 API 合流后启动。
+- 解锁：R01；R01 PASS 后 T02、T03、T04、T05均只依赖本 checkpoint。
 - branch：`codex/p3-t01-canonical-contract`。
 - worktree：`/Users/geek/workspace/skiff-p3-t01-contract`。
 - 接受任务后五分钟内必须产生第一个真实代码 edit；此前不跑测试、不重做设计；若 shared surface 无法按本文冻结，回报
@@ -29,7 +29,8 @@ runtime loading 或 execution。
 - `artifact-model/**`：deployment/assembly DTO 与 leaf key/ref/template/link-plan 类型。
 - `artifact-identity/**`：DeploymentArtifactIdentity、AssemblyIdentity 的 assign/validate、canonical projection、
   mutation matrix。
-- 新 `deployment/Cargo.toml`、`deployment/src/lib.rs`、公共 error/validation 模块及测试 fixture builder。
+- 新 `deployment/Cargo.toml`、`deployment/src/lib.rs`、公共 error/validation模块及测试 fixture builder；预建并
+  导出互不引用的空 `projection` / `assembly` module shell，使 T02/T03 不争抢 crate root。
 - root `Cargo.toml`、`Cargo.lock`、必要 verify subject registry、identity checker及其 self-test。
 
 不得修改 compiler、`runtime/**`、T02 projection 或 T03 resolver。既有 legacy DTO 可暂留给 Phase 05，但新对象

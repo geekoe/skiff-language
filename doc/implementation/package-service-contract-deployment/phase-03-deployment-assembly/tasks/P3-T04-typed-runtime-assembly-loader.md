@@ -5,14 +5,14 @@
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2、§9、§10、§11、§12、§14。
 - 风险/验收组：高风险 typed artifact trust boundary；与 T05、T06合成一次 runtime-link batch只读验收，
   T09覆盖最终链路。
-- 当前成熟度：T01 canonical implementation checkpoint；完成后推进 typed loader checkpoint。
-- 有效证据状态：本任务 clean commit叠加调度时 exact T01 integration checkpoint。RuntimeAssembly/ref surface、
+- 当前成熟度：R01已验收 canonical implementation checkpoint；完成后推进 typed loader checkpoint。
+- 有效证据状态：本任务 clean commit叠加调度时 exact R01 integration checkpoint。RuntimeAssembly/ref surface、
   loader production call graph、storage resolver、依赖、fixture或测试变化会使证据失效。
 - integration边界：只提交 task branch，不 merge integration/main、不 push；主 Agent接收后合流。
 
 ## DAG 与执行约束
 
-- 依赖：T01 checkpoint 已合入 integration；以 T01 canonical fixtures/API 开发，不复制 resolver。
+- 依赖：R01 PASS；以 T01 canonical fixtures/API开发，不复制 resolver。
 - 解锁：T06。
 - branch：`codex/p3-t04-typed-loader`。
 - worktree：`/Users/geek/workspace/skiff-p3-t04-loader`。
@@ -33,14 +33,18 @@ runtime crate。
    linking前失败。
 4. 相同 PackageBuildId只load一次并可按 deterministic code slot查询；activation template不在 loader中变成
    mutable runtime owner。
-5. canonical empty assembly load成功且返回空 hydrated input。
-6. 新入口不带 legacy fallback、dual-read或请求时 lazy load API。旧定义若仍供 Phase 05未迁 consumer编译，必须
+5. hydrate并保留 exact immutable `ServiceContract` store，以 `ServiceContractRef`校验内容并提供
+   `(ServiceContractRef, ContractOperationId) -> canonical BoundaryOperationDescriptor/value plan` typed lookup；
+   template只保存 ref + operation ID，不复制 descriptor。
+6. canonical empty assembly load成功且返回空 hydrated input/contract store。
+7. 新入口不带 legacy fallback、dual-read或请求时 lazy load API。旧定义若仍供 Phase 05未迁 consumer编译，必须
    与新 production入口物理隔离且不可被 linker/admission调用。
 
 ## 最早风险探针
 
-- tampered assembly/deployment/package/file/resource/ref均给稳定错误并不返回 partial load。
+- tampered assembly/deployment/contract/package/file/resource/ref均给稳定错误并不返回 partial load。
 - duplicate refs、same build不同内容、missing link-plan target失败。
+- contract ref/protocol/operation mismatch失败；成功 hydrate后 canonical descriptor/value plan可 typed lookup。
 - production reverse search证明 typed入口不消费 old `ArtifactIndexPointer` chain。
 
 ## 唯一验证 ownership

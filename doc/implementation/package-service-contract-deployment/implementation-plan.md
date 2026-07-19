@@ -71,7 +71,8 @@ producer/consumer 依赖不能伪并行，但也不应仅因可独立验证就�
    `deployment -> assembly resolution -> loader/linker admission`；实现 DAG 则先冻结两对象 schema/validator，
    再让 deployment projection、assembly resolver 与 typed runtime consumer 基于同一 checkpoint/fixture
    并行，最终按真实数据流合流。deployment mismatch 与 assembly closure/provider mismatch 分别做高风险
-   批次验收，但只在最终稳定 assembly 候选上运行一次阶段 gate、独立阶段验收并合入 `main`。
+   verdict（可由同一只读 reviewer在同一 checkpoint分别输出），但只在最终稳定 assembly候选上运行一次
+   阶段 gate、独立阶段验收并合入 `main`。
 2. Phase 04 继续独立承接执行面。ordinary/error、async/stream/cancel、callback/native lane 共用
    owner/context/materialization kernel；先建立短 kernel checkpoint，再扇出 lane，最终统一
    ingress/internal dispatcher。把 kernel 单独升成阶段只会留下非终态 binding ABI。

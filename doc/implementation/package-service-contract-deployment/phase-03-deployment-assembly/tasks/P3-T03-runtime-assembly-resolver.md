@@ -3,20 +3,22 @@
 ## 权威输入、风险与证据状态
 
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2、§5、§6.2、§10、§11、§12、§14。
-- 风险/验收组：高风险 assembly closure/provider resolution；与 T02 合成一次 deployment/assembly batch只读验收。
-- 当前成熟度：T01/T02 implementation checkpoints；完成后推进 assembly resolver checkpoint，不是稳定候选。
-- 有效证据状态：本任务 clean commit叠加调度时 exact T01/T02 integration checkpoint。deployment/assembly
-  surface、selector规则、依赖、fixture或测试变化会使证据失效。
+- 风险/验收组：高风险 assembly closure/provider resolution；R02在同一 checkpoint分别判定
+  deployment/assembly边界。
+- 当前成熟度：R01已验收 canonical implementation checkpoint；完成后推进 assembly resolver checkpoint，
+  不是稳定候选。
+- 有效证据状态：本任务 clean commit叠加调度时 exact R01 integration checkpoint。deployment/assembly surface、
+  selector规则、依赖、fixture或测试变化会使证据失效。
 - integration边界：只提交 task branch，不 merge integration/main、不 push；主 Agent接收后合流。
 
 ## DAG 与执行约束
 
-- 依赖：T01、T02 已合入 integration。
-- 解锁：T06。
+- 依赖：R01 PASS；只消费 T01 frozen `ServiceDeployment` DTO/validator/fixture，不调用 T02 projection函数。
+- 解锁：R02 assembly verdict；R02 PASS 后与 T04/T05共同解锁 T06。
 - branch：`codex/p3-t03-assembly-resolver`。
 - worktree：`/Users/geek/workspace/skiff-p3-t03-assembly`。
-- 五分钟内产生真实代码 edit；此前不跑测试、不重做设计；T01/T02 surface不足时回报 owner，不复制
-  projection或 identity规则。
+- 五分钟内产生真实代码 edit；此前不跑测试、不重做设计；T01 surface不足时回报 owner，不复制 projection
+  或 identity规则。
 
 ## 写入范围
 

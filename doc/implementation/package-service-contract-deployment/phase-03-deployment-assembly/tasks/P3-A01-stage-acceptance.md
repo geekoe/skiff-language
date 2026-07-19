@@ -26,13 +26,15 @@ surface、依赖、checker、fixture、配置或 gate环境变化都按影响面
    secret material、path/display/replica state不进入 identity。
 8. loader/linker/admission在请求前验证 exact refs、File IR/resource/link plan/template tamper；raw JSON/source/
    display无法成为 semantic owner。
-9. whole-assembly candidate一次性 admit/atomic swap；失败保留旧 active；request path零 artifact I/O/lazy load；
+9. admitted active assembly保留 immutable canonical ServiceContract store；ref + operation ID可取得 descriptor/value
+   plan，template不复制 owner，请求路径不重载 contract。
+10. whole-assembly candidate一次性 admit/atomic swap；失败保留旧 active；request path零 artifact I/O/lazy load；
    health能观察 identity与最后状态。
-10. structure checker与 self-test能发现旧 DTO、raw/display/source linking、lazy load、第二 owner、改名/移动/
+11. structure checker与 self-test能发现旧 DTO、raw/display/source linking、lazy load、第二 owner、改名/移动/
     duplicate/test-only伪例外；无 broad allowlist或 ledger。
-11. T09需求→代码→测试证据对应同一 stable commit；高风险边界有真实 producer/consumer E2E与负例，不是只靠
+12. T09需求→代码→测试证据对应同一 stable commit；高风险边界有真实 producer/consumer E2E与负例，不是只靠
     serde fixture。
-12. authoring/registry/router/test-runner/telemetry、ActivationContext execution、async/stream/callback/cancel、
+13. authoring/registry/router/test-runner/telemetry、ActivationContext execution、async/stream/callback/cancel、
     RemoteBoundary确实留在后续阶段，未用临时兼容实现填洞。
 
 ## 输出

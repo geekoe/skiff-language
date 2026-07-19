@@ -4,14 +4,14 @@
 
 - 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2、§3、§6、§9、§10、§12、§14。
 - 风险/验收组：高风险 shared-code/activation-owner boundary；与 T04、T06合成一次 runtime-link batch只读验收。
-- 当前成熟度：T01 canonical implementation checkpoint；完成后推进 shared linked-image checkpoint。
-- 有效证据状态：本任务 clean commit叠加调度时 exact T01 integration checkpoint。link-plan/model surface、
+- 当前成熟度：R01已验收 canonical implementation checkpoint；完成后推进 shared linked-image checkpoint。
+- 有效证据状态：本任务 clean commit叠加调度时 exact R01 integration checkpoint。link-plan/model surface、
   linked-program production API、依赖、fixture或测试变化会使证据失效。
 - integration边界：只提交 task branch，不 merge integration/main、不 push；主 Agent接收后合流。
 
 ## DAG 与执行约束
 
-- 依赖：T01 checkpoint 已合入 integration；以 canonical link-plan fixtures开发。
+- 依赖：R01 PASS；以 canonical link-plan fixtures开发。
 - 解锁：T06。
 - branch：`codex/p3-t05-shared-image`。
 - worktree：`/Users/geek/workspace/skiff-p3-t05-image`。

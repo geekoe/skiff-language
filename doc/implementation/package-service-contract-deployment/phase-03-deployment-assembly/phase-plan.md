@@ -1,6 +1,6 @@
 # Phase 03：Deployment And Assembly Plane 实现计划
 
-状态：planning；决策缺口审计完成，等待独立文档评审后执行
+状态：active；决策缺口审计完成，T01 仅在 D01 文档 gate PASS 后启动
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§5、§9、§10、§12、
 §14。本文只冻结 Phase 03 的实现 DAG、V1 内部表示、写入 ownership 与验收证据，不定义 authoring、
@@ -18,9 +18,11 @@ registry 或执行语义。
    `PackageBuildId` 每 replica 只链接一次，activation-owned binding/config/state template 不共享 mutable owner。
 4. runtime 以完整 assembly 建立候选并原子替换；admission 失败保留旧 active assembly，请求路径不 lazy-load
    artifact。
-5. runtime production 新路径不读取 `ServiceUnit`、`PackageUnit`、raw `serviceAssembly`、source path、display
+5. loader/linker/admission保留 immutable canonical `ServiceContract` store；Phase 04可在 active assembly上按
+   `ServiceContractRef + ContractOperationId` 取得 descriptor/value plan，无需请求时重载或复制 owner。
+6. runtime production 新路径不读取 `ServiceUnit`、`PackageUnit`、raw `serviceAssembly`、source path、display
    name 或 raw JSON 来猜 target；不新增 adapter、dual-read、fallback 或 RemoteBoundary。
-6. Phase 03 只落 ActivationContext template、service binding template 与 canonical link plan；不实例化/传播
+7. Phase 03 只落 ActivationContext template、service binding template 与 canonical link plan；不实例化/传播
    ActivationContext，不执行 materialization/dispatcher/callback/cancel，这些属于 Phase 04。
 
 ## 2. 已闭合的 V1 实现选择
@@ -45,6 +47,8 @@ registry 或执行语义。
   admission 成功但任何 lookup 都 fail closed。
 - artifact 保存 deterministic link plan；runtime `linked-program` hydrate 成含 `Arc`、loaded File IR/resource
   view 的共享内存 image。现有 service-specific `LinkedProgramImage` 不能原样成为 assembly wire。
+- runtime loader hydrate exact `ServiceContract` 内容为 immutable store；linked/admitted candidate保留它，binding
+  template始终只保存 ref + operation ID，descriptor/value plan仍只有 ServiceContract一个 canonical owner。
 - semantic refs 不携带 artifact filesystem path；storage/pointer/path trust boundary留给 Phase 05。
 
 ## 3. Canonical typed checkpoint
@@ -89,23 +93,27 @@ wire 使用 deny-unknown。
 ```text
 Wave 1
   T01 canonical deployment/assembly contract checkpoint
+    └── R01 independent canonical checkpoint acceptance
 
-Wave 2（T01 合流后填满三个 worker）
-  T02 source-free ServiceDeployment projection ──► T03 RuntimeAssembly resolver / binding templates
+Wave 2（R01 PASS 后四个同层节点按关键路径填满三个 worker）
+  T02 source-free ServiceDeployment projection ──┐
+  T03 RuntimeAssembly resolver / binding templates ─┴── R02 deployment / assembly acceptance
   T04 typed RuntimeAssembly loader / hydration
   T05 shared PackageArtifact linked-image model
+  R02 + T04 + T05 ──► T06 assembly linker checkpoint ──► R03 runtime-link acceptance
 
-Wave 3
-  T06 assembly linker checkpoint（T03 + T04 + T05）
-    ├── T07 whole-assembly host admission / atomic swap
-    └── T08 downstream compile seam / terminal structure gates
+Wave 3（R03 PASS 后填满三个 worker）
+  T07 whole-assembly host admission / atomic swap
+  T08A downstream runtime consumer seams
+  T08B runtime artifact boundary checker
   T09 stable-candidate integration gate
   A01 independent stage acceptance
 ```
 
-运行时数据流仍是 deployment → assembly → load/link/admit。Wave 2 先以 T02/T04/T05 填满三个 worker；T02
-合流后由释放的 worker从新 integration checkpoint执行 T03。并行来自 T01 冻结的 strict typed fixture/API，
-而不是复制 producer规则；真实链路只在 integration branch合成一次。
+运行时数据流仍是 deployment → assembly → load/link/admit，但 T02与 T03都只消费 T01冻结的 DTO/validator/
+fixture，T03不调用 T02 projection函数。Wave 2有四个同层实现节点，主 Agent按预计关键路径先启动三个、首个
+worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖。真实 producer链路只在 integration branch
+合成一次。
 
 ## 5. 任务索引
 
@@ -113,20 +121,24 @@ Wave 3
 | --- | --- | --- | --- |
 | D01 | [Independent phase-plan review](tasks/P3-D01-phase-plan-review.md) | Phase 03 文档 checkpoint | 只读；执行前 gate |
 | T01 | [Canonical deployment/assembly contract](tasks/P3-T01-canonical-deployment-assembly-contract.md) | 文档评审 PASS | 高；独立 schema/identity checkpoint |
-| T02 | [Source-free ServiceDeployment projection](tasks/P3-T02-service-deployment-projection.md) | T01 | 高；deployment batch |
-| T03 | [RuntimeAssembly resolver](tasks/P3-T03-runtime-assembly-resolver.md) | T01、T02 API | 高；assembly batch |
-| T04 | [Typed RuntimeAssembly loader](tasks/P3-T04-typed-runtime-assembly-loader.md) | T01 | 高；runtime loader batch |
-| T05 | [Shared PackageArtifact linked image](tasks/P3-T05-shared-package-linked-image.md) | T01 | 高；linked-program batch |
-| T06 | [RuntimeAssembly linker checkpoint](tasks/P3-T06-runtime-assembly-linker.md) | T03–T05 | 高；linker batch |
-| T07 | [Whole-assembly host admission](tasks/P3-T07-whole-assembly-admission.md) | T06 | 高；admission batch |
-| T08 | [Terminal runtime seams and structure gates](tasks/P3-T08-terminal-runtime-seams.md) | T06 | 中高；runtime consumer/structure batch |
-| T09 | [Phase integration gate](tasks/P3-T09-phase-integration.md) | T02–T08 | gate owner；唯一昂贵阶段 gate |
+| R01 | [Canonical checkpoint acceptance](tasks/P3-R01-canonical-contract-acceptance.md) | T01 exact integration commit | 高风险只读 gate；PASS解锁 Wave 2 |
+| T02 | [Source-free ServiceDeployment projection](tasks/P3-T02-service-deployment-projection.md) | R01 PASS | 高；deployment verdict |
+| T03 | [RuntimeAssembly resolver](tasks/P3-T03-runtime-assembly-resolver.md) | R01 PASS | 高；assembly verdict；不依赖 T02函数 |
+| T04 | [Typed RuntimeAssembly loader](tasks/P3-T04-typed-runtime-assembly-loader.md) | R01 PASS | 高；runtime-link batch |
+| T05 | [Shared PackageArtifact linked image](tasks/P3-T05-shared-package-linked-image.md) | R01 PASS | 高；runtime-link batch |
+| R02 | [Deployment / assembly acceptance](tasks/P3-R02-deployment-assembly-acceptance.md) | T02、T03 exact integration commit | 高风险只读 gate；两个独立 verdict |
+| T06 | [RuntimeAssembly linker checkpoint](tasks/P3-T06-runtime-assembly-linker.md) | R02 PASS、T04、T05 | 高；runtime-link batch |
+| R03 | [Runtime-link acceptance](tasks/P3-R03-runtime-link-acceptance.md) | T04–T06 exact integration commit | 高风险只读 gate；PASS解锁 Wave 3 |
+| T07 | [Whole-assembly host admission](tasks/P3-T07-whole-assembly-admission.md) | R03 PASS | 高；admission batch |
+| T08A | [Terminal runtime consumer seams](tasks/P3-T08A-terminal-runtime-seams.md) | R03 PASS | 中；runtime consumer batch |
+| T08B | [Runtime artifact boundary checker](tasks/P3-T08B-runtime-artifact-boundary-checker.md) | R03 PASS | 中高；structure gate |
+| T09 | [Phase integration gate](tasks/P3-T09-phase-integration.md) | T02–T07、T08A、T08B、R01–R03 | gate owner；唯一昂贵阶段 gate |
 | A01 | [Independent stage acceptance](tasks/P3-A01-stage-acceptance.md) | T09 | 独立只读验收 |
 
 ## 6. 写入 ownership
 
 - T01 独占 `artifact-model/**`、`artifact-identity/**`、root `Cargo.toml`/`Cargo.lock`、新 `deployment/` crate
-  shell、Rust verify subject registry 与 identity checker。T02–T08 不修改 frozen model/identity/checker；发现
+  shell、Rust verify subject registry 与 identity checker。T02–T08B不修改 frozen model/identity/checker；发现
   缺字段或 validator 缺口必须回报 T01 checkpoint amendment。
 - T02 独占 `deployment/src/projection/**`；T03 独占 `deployment/src/assembly/**`。二者不得读取 compiler
   source crate，且不得互相复制 contract/package validation。
@@ -134,8 +146,9 @@ Wave 3
   T01 model 与各自 public API 交接，不交叉修改。
 - T07 独占 `runtime/host/src/loader/**`、whole-assembly state/admission/health owner，以及
   `request_entry.rs` 的 request-time lazy-load 删除面；不实现 Phase 04 dispatcher。
-- T08 独占受影响的 `runtime/{activation,eval,package-test,request}/**` compile seam 和新 runtime artifact
-  boundary checker；只删除/断开旧入口或适配 frozen terminal types，不恢复旧 DTO producer。
+- T08A独占受影响的 `runtime/{activation,eval,package-test,request,linked-type-plan}/**` compile seam；只删除/
+  断开旧入口或适配 frozen terminal types，不恢复旧 DTO producer。
+- T08B独占 runtime artifact boundary checker、self-test/subject registry与 verify接线，不修改 Rust production。
 - T09 只做 integration、机械 blocker 修复、gate 与结果记录；任何语义缺口退回原 owner。
 - 已经很长的 `runtime/host/src/loader/runtime_config.rs`、`runtime/linker/src/linker.rs` 及其千行子模块不得继续
   接收新 assembly owner；新职责按 model/validation/resolution/admission 拆文件。
@@ -163,6 +176,7 @@ Wave 3
 
 - package direct call严格走 requirement alias → expected local ABI → exact PackageArtifact → callableLinks。
 - service call保留 activation-relative slot，不全局 patch provider executable。
+- typed load/link/admit后按 contract ref + operation ID仍可取得 canonical descriptor/value plan，且不触发artifact I/O。
 - tampered artifact/ref/File IR/resource/link plan/template在 admission 前失败；失败不替换 active assembly。
 - request path不触发 artifact load；health 可观察 active/candidate AssemblyIdentity与最后 admission 状态。
 - runtime production反向搜索中旧 DTO/raw JSON/display-name/source linking和lazy-load归零；checker自检可识别
@@ -183,18 +197,19 @@ node scripts/check-crate-public-api.mjs --all-configured
 git diff --check
 ```
 
-`check-runtime-artifact-boundaries.mjs` 由 T08 新增，并必须有 self-test。最终 targeted rustfmt覆盖本阶段所有
+`check-runtime-artifact-boundaries.mjs` 由 T08B新增，并必须有 self-test。最终 targeted rustfmt覆盖本阶段所有
 Rust改动文件；若 full workspace rustfmt仍命中未改 baseline，只记录可逐字复现的旧文件，不扩大本阶段。
 
 Phase 03 不运行 router、test-runner、telemetry、live、chat smoke 或跨仓库 gate；这些 consumer 尚未切换，
-不能证明 assembly control plane完成。若共享类型使它们无法编译，T08只做删除/断开旧入口所需的 terminal
+不能证明 assembly control plane完成。若共享类型使它们无法编译，T08A只做删除/断开旧入口所需的 terminal
 compile seam，不建立 adapter。
 
 ## 9. 稳定候选与验收
 
-- T01 schema/identity checkpoint单独做一次只读边界验收；T02+T03合成一次 deployment/assembly batch验收；
-  T04+T05+T06合成一次 runtime-link batch验收。T07+T08的 admission/structure探针合流后由 T09与 A01覆盖，
-  不再增加重复验收。T09前不运行完整阶段 gate。
+- R01在 T01 exact integration commit上独立验收 schema/identity并阻断 Wave 2；R02在 T02/T03 exact commit上
+  由同一 reviewer分别输出 deployment与assembly verdict并阻断 T06；R03在 T04/T05/T06 exact commit上验收
+  runtime-link handoff并阻断 Wave 3。T07/T08A/T08B合流后由 T09与 A01覆盖，不增加重复验收。T09前不运行
+  完整阶段 gate。
 - 所有 production owner合流、无在途写入/设计问题、真实 typed E2E与结构探针通过后，才固定 stable
   candidate与 stability epoch。
 - A01在 exact clean commit上只读验收四对象 owner、identity separation、provider/package closure、shared

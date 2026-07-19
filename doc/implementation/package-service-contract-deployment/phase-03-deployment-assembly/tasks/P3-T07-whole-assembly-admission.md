@@ -2,16 +2,16 @@
 
 ## 权威输入、风险与证据状态
 
-- 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2.6–§2.10、§10、§11、§12、§14。
-- 风险/验收组：高风险 atomic admission/concurrency；与 T08合流后做 runtime-admission batch验收。
-- 当前成熟度：T06 pre-admission candidate；完成后推进 whole-assembly admission checkpoint，不是稳定候选。
-- 有效证据状态：本任务 clean commit叠加调度时 exact T06 integration checkpoint。candidate API、host active/
+- 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2 列表 6–10、§10、§11、§12、§14。
+- 风险/验收组：高风险 atomic admission/concurrency；与 T08A/T08B合流后由 T09风险探针和 A01验收。
+- 当前成熟度：R03已验收 pre-admission candidate；完成后推进 whole-assembly admission checkpoint，不是稳定候选。
+- 有效证据状态：本任务 clean commit叠加调度时 exact R03 integration checkpoint。candidate API、host active/
   candidate state、request entry、依赖、fixture、concurrency测试或环境变化会使相关证据失效。
 - integration边界：只提交 task branch，不 merge integration/main、不 push；主 Agent接收后合流。
 
 ## DAG 与执行约束
 
-- 依赖：T06 已合入 integration。
+- 依赖：R03 PASS，可与 T08A、T08B并行。
 - 解锁：T09。
 - branch：`codex/p3-t07-assembly-admission`。
 - worktree：`/Users/geek/workspace/skiff-p3-t07-admission`。
@@ -33,10 +33,12 @@
 3. health/control-plane internal state可观察 active AssemblyIdentity、candidate identity/stage、最后 admission
    success/error和时间；错误不泄漏 secret material。
 4. canonical empty assembly可成为 active，业务 service/ingress lookup fail closed。
-5. request entry只查 active assembly route/activation template；没有 artifact I/O、pointer parse、load/link或
+5. active assembly保留 candidate的 immutable canonical ServiceContract store；Phase 04可按 ref + operation ID
+   lookup descriptor/value plan，无需 request-time artifact load或第二 descriptor owner。
+6. request entry只查 active assembly route/activation template；没有 artifact I/O、pointer parse、load/link或
    `lazy_load_request_service`。
-6. drain/reload边界保留 whole-assembly一致性；本阶段不定义 router wire、release pointer或多 assembly routing。
-7. production admission不调用 legacy service-level loader/linker fallback，不把旧 `ServiceUnit`/`PackageUnit`
+7. drain/reload边界保留 whole-assembly一致性；本阶段不定义 router wire、release pointer或多 assembly routing。
+8. production admission不调用 legacy service-level loader/linker fallback，不把旧 `ServiceUnit`/`PackageUnit`
    转换成新 candidate。
 
 ## 最早风险探针

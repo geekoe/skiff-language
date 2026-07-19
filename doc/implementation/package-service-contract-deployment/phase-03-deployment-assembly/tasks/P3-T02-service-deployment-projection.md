@@ -2,8 +2,8 @@
 
 ## 权威输入、风险与证据状态
 
-- 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2.1–§2.5、§5、§9、§10、§11、§14。
-- 风险/验收组：高风险 deployment projection；与 T03 合流后做一次 deployment/assembly batch只读验收，
+- 唯一架构事实源：`doc/architecture/package-service-contract-deployment.md` §2 列表 1–5、§5、§9、§10、§11、§14。
+- 风险/验收组：高风险 deployment projection；R02在同一 checkpoint分别判定 deployment/assembly边界，
   T09覆盖最终集成。
 - 当前成熟度：T01 canonical implementation checkpoint；完成后推进 deployment implementation checkpoint。
 - 有效证据状态：本任务 clean commit叠加调度时的 exact T01 integration checkpoint。T01 public surface/
@@ -12,8 +12,8 @@
 
 ## DAG 与执行约束
 
-- 依赖：T01 checkpoint 已合入 integration。
-- 解锁：T03；为 T09 提供真实 deployment producer。
+- 依赖：R01 PASS；与 T03/T04/T05之间无 API依赖，按可用 worker调度。
+- 解锁：R02 deployment verdict；为 T09提供真实 deployment producer。
 - branch：`codex/p3-t02-deployment-projection`。
 - worktree：`/Users/geek/workspace/skiff-p3-t02-deployment`。
 - 接受任务后五分钟内产生真实代码 edit；此前不跑测试、不重做设计；若 T01 缺字段，立即回报 checkpoint
