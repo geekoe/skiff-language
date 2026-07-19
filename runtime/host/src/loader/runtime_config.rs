@@ -1195,8 +1195,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_host_lazy_loads_service_from_configured_artifact_roots() {
-        let temp = TempDir::new("runtime-config-lazy-load");
+    async fn request_entry_does_not_load_service_from_configured_artifact_roots() {
+        let temp = TempDir::new("runtime-config-request-entry-no-load");
         let root = temp.path().join("artifacts");
         write_file_ir(&root, "units/files/service.json");
         write_service_unit(&root, "units/services/account.json");
@@ -1232,9 +1232,8 @@ mod tests {
             http_egress_proxy: None,
         })
         .expect("runtime host should build with artifact roots");
-        let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
         let request = RequestEnvelope {
-            request_id: "lazy-request-1".to_string(),
+            request_id: "request-entry-no-load-1".to_string(),
             mode: "unary".to_string(),
             target,
             operation_abi_id: Some(SERVICE_RUN_OPERATION_ABI_ID.to_string()),
@@ -1253,22 +1252,11 @@ mod tests {
             extra: serde_json::Map::new(),
         };
 
-        let _operation = host
-            .lookup_or_load_operation(&request, sender)
-            .await
-            .expect("runtime should lazy load service for request");
-
-        let frame = expect_binary_router_message(
-            receiver
-                .recv()
-                .await
-                .expect("lazy load should queue runtime.register"),
-        );
-        let (register, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("register frame should decode");
-        assert!(payload.is_empty());
-        assert_eq!(register.service_id, "skiff.run/account");
-        assert_eq!(register.build_id, build_id);
+        let error = host
+            .lookup_request_operation(&request)
+            .expect_err("request entry must not load a missing route from artifact storage");
+        assert!(error.to_string().contains("no registered route supports"));
+        assert!(host.service_snapshot().is_empty());
     }
 
     #[tokio::test]

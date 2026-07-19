@@ -10,8 +10,11 @@ use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
 use crate::{
-    artifact_cache::RuntimeArtifactCaches, config::skiff_file_tmp_dir,
-    config_view::RuntimeConfigView, error::Result, loader::ArtifactLoadOptions,
+    artifact_cache::RuntimeArtifactCaches,
+    config::skiff_file_tmp_dir,
+    config_view::RuntimeConfigView,
+    error::Result,
+    loader::{assembly_admission::AssemblyAdmissionController, ArtifactLoadOptions},
 };
 
 use super::{
@@ -68,6 +71,7 @@ pub struct RuntimeHost {
     pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
     pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
     pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
+    pub(super) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(super) package_test_start_executor:
         Arc<super::package_test_entry::PackageTestStartExecutor>,
     pub(super) package_test_template_builds:
@@ -125,6 +129,7 @@ impl RuntimeHost {
                 epoch: 0,
             })),
             artifact_caches: Arc::new(RuntimeArtifactCaches::new()),
+            assembly_admission: Arc::new(AssemblyAdmissionController::default()),
             package_test_start_executor: Arc::new(
                 super::package_test_entry::PackageTestStartExecutor::default(),
             ),
