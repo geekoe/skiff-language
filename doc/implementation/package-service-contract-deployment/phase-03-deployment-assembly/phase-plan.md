@@ -1,6 +1,6 @@
 # Phase 03：Deployment And Assembly Plane 实现计划
 
-状态：active；决策缺口审计完成，T01 仅在 D01 文档 gate PASS 后启动
+状态：active；P3-A01 初次验收 FAIL，正在执行 F04/F05 有界修复
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§5、§9、§10、§12、
 §14。本文只冻结 Phase 03 的实现 DAG、V1 内部表示、写入 ownership 与验收证据，不定义 authoring、
@@ -108,6 +108,8 @@ Wave 3（R03 PASS 后填满三个 worker）
   T08B runtime artifact boundary checker
   T09 stable-candidate integration gate
   A01 independent stage acceptance
+    └── 初次 FAIL：F04 provider/consumer E2E + F05 request-entry checker coverage
+          └── T09R affected-gate rebuild ──► A01 re-acceptance
 ```
 
 运行时数据流仍是 deployment → assembly → load/link/admit，但 T02与 T03都只消费 T01冻结的 DTO/validator/
@@ -137,6 +139,9 @@ worker释放后立即启动第四个；不会为填槽位制造 T02→T03依赖�
 | T08B | [Runtime artifact boundary checker](tasks/P3-T08B-runtime-artifact-boundary-checker.md) | R03 PASS | 中高；structure gate |
 | T09 | [Phase integration gate](tasks/P3-T09-phase-integration.md) | T02–T07、T08A、T08B、R01–R03 | gate owner；唯一昂贵阶段 gate |
 | A01 | [Independent stage acceptance](tasks/P3-A01-stage-acceptance.md) | T09 | 独立只读验收 |
+| F04 | [Provider/consumer full-chain evidence](tasks/P3-F04-provider-consumer-full-chain.md) | A01-12 FAIL at `34b6a863` | 中；只补真实 consumer/service edge 跨层证据 |
+| F05 | [Request-entry boundary checker coverage](tasks/P3-F05-request-entry-boundary-checker.md) | A01-11 FAIL at `34b6a863` | 中；精确补 terminal request owner 与 mutation 自测 |
+| T09R | affected-gate rebuild | F04、F05合流 | gate owner；建立新 stability epoch，不重跑无关 gate |
 
 ## 6. 写入 ownership
 

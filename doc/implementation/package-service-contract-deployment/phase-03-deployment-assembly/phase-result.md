@@ -1,6 +1,10 @@
 # Phase 03 验证结果
 
-状态：**T09 PASS，stable production candidate 已建立；等待 P3-A01 独立只读验收。**
+状态：**P3-A01 初次验收 FAIL；`34b6a863` 为历史候选，等待 F04/F05 修复与新 stability epoch。**
+
+初次 A01确认 gate ledger本身可复现，但发现两项阻塞：full-chain fixture缺少真实 consumer/service edge；runtime
+artifact boundary checker漏扫真实 `request_entry.rs`。两项均为局部 evidence/structure-gate缺口，不涉及产品决策；
+分别由 F04、F05修复，合流后由 T09R重建受影响证据，再交 A01复验。
 
 Phase 03 的 canonical deployment / assembly、typed load/link 与 whole-assembly admission 已在同一候选上闭环。
 本记录之后的提交只包含本文，不改变 production、fixture、Cargo、checker 或 gate 结论。
