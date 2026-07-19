@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use compiler_input_model::{
-    PackageCompilePolicy, PackageDependency, PublicationApiEntry, PublicationApiSpec,
+    PackageCompilePolicy, PackageDependency, PublicationApiEntry,
+    PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
 use skiff_artifact_identity::contract_type_id;
 use skiff_artifact_model::{ContractLiteral, ContractTypeRef, PackageTypeRef, TypeRefIr};
@@ -69,6 +70,68 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
         PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
     ));
     assert!(!signature.may_suspend);
+}
+
+#[test]
+fn public_instance_operations_receive_exact_source_owned_signatures() {
+    let user_id = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    let dependency_analysis = contract_dependencies();
+    let publication_api = PublicationApiSpec::from_public_instances(vec![
+        PublicationApiPublicInstanceEntry::for_source(
+            "handler",
+            "root.api.handler",
+            ["root.api.PublicApi"],
+        )
+        .unwrap(),
+    ]);
+    let model = build_model_with_publication_api(
+        r#"
+            interface PublicApi {
+              function submit(
+                input: payments.User,
+                nested: Array<payments.User?>?
+              ) -> payments.User
+            }
+            type Handler implements PublicApi {}
+            impl Handler {
+              function submit(
+                input: payments.User,
+                nested: Array<payments.User?>?
+              ) -> payments.User {
+                return input
+              }
+            }
+            const handler: Handler = Handler {}
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+        &[],
+        &publication_api,
+    )
+    .expect("public instance signatures build from source facts");
+
+    let signatures = model.callable_signatures();
+    assert_eq!(signatures.iter().count(), 1);
+    let signature = signatures
+        .signature("handler.submit")
+        .expect("derived public instance operation signature");
+    assert!(matches!(
+        &signature.parameters[0].ty,
+        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+    ));
+    assert!(matches!(
+        &signature.parameters[1].ty,
+        PackageTypeRef::Nullable { inner }
+            if matches!(inner.as_ref(), PackageTypeRef::Container { name, arguments }
+                if name == "Array"
+                && matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
+                    if matches!(inner.as_ref(), PackageTypeRef::Contract { contract_type_id }
+                        if contract_type_id == &user_id)))
+    ));
+    assert!(matches!(
+        &signature.return_type,
+        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &user_id
+    ));
 }
 
 #[test]
@@ -191,6 +254,25 @@ fn build_model_with_package_dependencies(
     package_aliases: &BTreeMap<String, Vec<String>>,
     package_dependencies: &[PackageDependency],
 ) -> Result<PackageSourceModel, SourceCompileError> {
+    let publication_api = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
+        "submit", "api", "submit",
+    )]);
+    build_model_with_publication_api(
+        source,
+        dependency_analysis,
+        package_aliases,
+        package_dependencies,
+        &publication_api,
+    )
+}
+
+fn build_model_with_publication_api(
+    source: &str,
+    dependency_analysis: &SourceDependencyAnalysisInput,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    package_dependencies: &[PackageDependency],
+    publication_api: &PublicationApiSpec,
+) -> Result<PackageSourceModel, SourceCompileError> {
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         "api".to_string(),
@@ -206,15 +288,12 @@ fn build_model_with_package_dependencies(
         &production_sources,
     )
     .expect("fixture source facts build");
-    let publication_api = PublicationApiSpec::from_entries(vec![PublicationApiEntry::for_source(
-        "submit", "api", "submit",
-    )]);
     build_package_from_parsed_sources_with_dependency_analysis(
         CompileParsedPackageSourcesInput {
             parsed_sources,
             production_sources,
             diagnostic_root: Path::new("/tmp/contract-type-resolution"),
-            publication_api: Some(&publication_api),
+            publication_api: Some(publication_api),
             package_aliases,
             package_dependencies,
             package_facts: None,

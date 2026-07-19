@@ -15,7 +15,7 @@ mod callables;
 mod types;
 mod validation;
 
-use callables::exported_callable_source;
+use callables::{exported_callable_source, public_instance_operation_exports};
 use types::ContractAwareTypeResolver;
 pub(crate) use validation::validate_contract_type_uses;
 
@@ -50,8 +50,20 @@ impl SourceCallableSignatureFacts {
     ) -> Result<Self, String> {
         let resolver = ContractAwareTypeResolver::new(type_resolution, dependency_analysis);
         let mut by_public_path = BTreeMap::new();
-        for export in exports.public_callables().values() {
-            let source = exported_callable_source(parsed_sources, export)?;
+        let mut callable_exports = exports
+            .public_callables()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for instance in exports.public_instances().values() {
+            callable_exports.extend(public_instance_operation_exports(
+                parsed_sources,
+                instance,
+                type_resolution,
+            )?);
+        }
+        for export in callable_exports {
+            let source = exported_callable_source(parsed_sources, &export)?;
             let context =
                 TypeResolutionContext::with_type_params(&export.source_module, source.type_params);
             let parameters = source
