@@ -8,7 +8,7 @@
 
 - 原始用户目标。
 - 唯一设计：`doc/architecture/package-service-contract-deployment.md`。
-- 总纲、Phase02 plan及P2-T01–T07、P2-R02–R13全部任务文件。
+- 总纲、Phase02 plan及本阶段全部任务文件，包括T03A–J、T04A–D、T05C1–13与R10A–I。
 - integration branch最终commit与T07证据表。
 
 ## 必验条款
@@ -40,6 +40,12 @@
     ServiceSymbol；interface File IR同样只含opaque execution representation。PackageArtifact public-instance
     projection只发现execution target，compiled/projection-input不能重算conformance，projection不能从File IR
     生成/比较OperationAbiRef或semantic signature。
+16. expression exact projection直接消费resolved IR和完整PackageTypeRef sidecar；LocalType debug/display不回流
+    source parser，Map keys、单/双binding for-in、local generic与nullable narrowing不丢Local/Contract/container/
+    nullable事实；缺失contract sidecar与unsupported inline shape继续fail closed。
+17. terminal boundary checker精确冻结fallible projection handoff、callable/public-instance DTO、canonical public-path
+    helper与ProjectionInput字段；test-only排除来自`#[cfg(test)]`模块可达性，production同类import仍被拒绝，
+    不存在通配allow-list、路径特例或known-violation ledger。
 
 ## 输出
 
