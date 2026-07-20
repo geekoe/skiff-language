@@ -13,8 +13,8 @@ const CALLBACK_CARRIER_REQUIRED_FIELDS = Object.freeze([
   'opaque_capability_id',
 ]);
 
-const USER_CODE_SPAWN_ANCHOR = /\b(?:execute_user_code|call_program_executable|execute_runtime_request|run_(?:provider_)?stream|run_stream_producer_task)\b/;
-const OWNED_CONTEXT_ANCHOR = /\b(?:OwnedProgramExecutionContext|RequestActivationContext|ActiveAssemblyRoute|ProviderStreamTask)\b/;
+const USER_CODE_SPAWN_ANCHOR = /\b(?:execute_user_code|call_program_executable|execute_runtime_(?:assembly_)?request|run_(?:provider_)?stream|run_stream_producer_task)\b/;
+const OWNED_CONTEXT_ANCHOR = /\b(?:OwnedProgramExecutionContext|RequestActivationContext|ActiveAssemblyRoute|ProviderStreamTask|RequestExecutionInput|AssemblyRequestExecutionInput|_pinned_route)\b/;
 
 export function checkRuntimeExecutionBoundaryRules(
   registry,
@@ -37,14 +37,24 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   }
   const canonicalOwner = registry.owners.find(({ role }) => role === 'service-dispatcher');
   const canonical = ownerMatches.get('service-dispatcher') ?? [];
-  const candidateRegexp = /\b(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*(?:InProcessBoundary|ServiceDispatcher)[A-Za-z0-9_]*)\b|\bfn\s+(dispatch_[A-Za-z0-9_]*service(?:_call)?[A-Za-z0-9_]*)\b/g;
+  const adapters = [
+    ...(ownerMatches.get('internal-service-call-adapter') ?? []),
+    ...(ownerMatches.get('ingress-service-call-adapter') ?? []),
+  ];
+  const candidateRegexp = /\b(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*(?:InProcessBoundary|ServiceDispatcher))\b|\bfn\s+(dispatch_[A-Za-z0-9_]*(?:service|in_process_boundary)[A-Za-z0-9_]*)\b/g;
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     for (const match of source.identifiers.matchAll(candidateRegexp)) {
       const symbol = match[1] ?? match[2];
       const isCanonical = canonicalOwner
         && symbol === canonicalOwner.symbol
         && canonical.some((entry) => entry.relPath === source.relPath && entry.index === match.index);
-      if (!isCanonical) {
+      const isAdapter = match[2]
+        && canonicalOwner
+        && adapters.some(
+          (entry) => entry.relPath === source.relPath && entry.index === match.index,
+        )
+        && rustFunctionCallsOwner(source.identifiers, match.index, canonicalOwner.symbol);
+      if (!isCanonical && !isAdapter) {
         violations.push(runtimeExecutionBoundaryViolation({
           id: 'second-in-process-dispatcher',
           subject: subject.id,
@@ -58,7 +68,6 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
   }
 
   const remoteRule = /\b(?:[A-Za-z0-9_]*RemoteBoundary[A-Za-z0-9_]*|[A-Za-z0-9_]*remote_boundary[A-Za-z0-9_]*|select_remote(?:_boundary)?|dispatch_remote(?:_service)?|fallback_to_remote|remote_fallback|BoundaryKind\s*::\s*Remote)\b/g;
-  const legacyEdgeRule = /\bservice_dispatch\s*::\s*call_outbound_service(?:_operation)?\s*\(/g;
   for (const source of sourcesWithin(subject.discoveryRoots, subject.language, sources)) {
     addPatternViolations(
       source,
@@ -68,15 +77,9 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
       'in-process service dispatch must fail closed instead of selecting or falling back remote',
       violations,
     );
-    addPatternViolations(
-      source,
-      legacyEdgeRule,
-      'legacy-outbound-service-edge',
-      subject.id,
-      'canonical assembly execution still calls the legacy outbound/router service path',
-      violations,
-    );
   }
+
+  checkLegacyServiceEdges(registry, subject, sources, violations);
 
   if (canonicalOwner) {
     for (const root of subject.zones?.canonicalCallers ?? []) {
@@ -86,13 +89,60 @@ function checkSingleDispatcher(registry, sources, ownerMatches, violations) {
       const callers = [...sources.values()].filter(
         (source) => source.language === subject.language && pathIsWithin(source.relPath, root),
       );
-      if (!callers.some((source) => callRegexp.test(source.identifiers))) {
+      const callsites = callers.flatMap((source) =>
+        [...source.identifiers.matchAll(new RegExp(callRegexp.source, 'g'))]
+          .filter((match) => !/\bfn\s+$/.test(source.identifiers.slice(
+            Math.max(0, match.index - 12),
+            match.index,
+          )))
+          .map((match) => ({ match, source })),
+      );
+      if (callsites.length === 0) {
         violations.push(runtimeExecutionBoundaryViolation({
           id: 'dispatcher-callsite-missing',
           subject: subject.id,
           relPath: root,
           matched: canonicalOwner.symbol,
           detail: 'canonical ingress and internal call must both reference the single dispatcher',
+        }));
+      } else if (callsites.length > 1) {
+        for (const { match, source } of callsites) {
+          violations.push(runtimeExecutionBoundaryViolation({
+            id: 'dispatcher-callsite-duplicate',
+            subject: subject.id,
+            relPath: source.relPath,
+            line: lineNumberAt(source.identifiers, match.index),
+            matched: canonicalOwner.symbol,
+            detail: 'each canonical ingress/internal adapter must enter the dispatcher exactly once',
+          }));
+        }
+      }
+    }
+  }
+}
+
+function checkLegacyServiceEdges(registry, subject, sources, violations) {
+  const fenceOwner = registry.owners.find(({ role }) => role === 'legacy-service-path-fence');
+  if (!fenceOwner) {
+    return;
+  }
+  const edge = /\bservice_dispatch\s*::\s*call_outbound_service(?:_operation)?\s*\(/g;
+  const fence = new RegExp(
+    `\\b(?:self\\s*\\.\\s*)?${escapeRuntimeExecutionBoundaryRegexp(fenceOwner.symbol)}\\s*\\(`,
+  );
+  for (const source of sourcesWithin(subject.zones?.legacyServiceEdges ?? [], 'rust', sources)) {
+    for (const match of source.identifiers.matchAll(edge)) {
+      const blockStart = enclosingBlockStart(source.identifiers, match.index);
+      const prefix = source.identifiers.slice(blockStart, match.index);
+      if (!fence.test(prefix)) {
+        violations.push(runtimeExecutionBoundaryViolation({
+          id: 'legacy-outbound-service-edge',
+          subject: subject.id,
+          ownerRole: fenceOwner.role,
+          relPath: source.relPath,
+          line: lineNumberAt(source.identifiers, match.index),
+          matched: match[0],
+          detail: 'legacy outbound service edge is not dominated by the assembly fail-closed fence',
         }));
       }
     }
@@ -274,44 +324,100 @@ function checkRouterServiceRejection(registry, sources, ownerMatches, violations
     );
   }
 
-  const rejectionOwner = registry.owners.find(
-    ({ role }) => role === 'router-runtime-service-rejection',
-  );
-  if (rejectionOwner) {
-    const call = new RegExp(
-      `\\b${escapeRuntimeExecutionBoundaryRegexp(rejectionOwner.symbol)}\\s*\\(`,
-    );
-    const endpointSources = sourcesWithin(
-      ['router/src/router/runtimeEndpoint.ts'],
-      'typescript',
-      sources,
-    );
-    if (!endpointSources.some((source) => call.test(source.identifiers))) {
-      violations.push(runtimeExecutionBoundaryViolation({
-        id: 'router-service-rejection-callsite-missing',
-        subject: subject.id,
-        ownerRole: rejectionOwner.role,
-        relPath: 'router/src/router/runtimeEndpoint.ts',
-        matched: rejectionOwner.symbol,
-        detail: 'runtime request.start does not call the stable service-relay rejection owner',
-      }));
-    }
-  }
-
   const forbiddenOwnerWork = /\b(?:pickDispatchConnection|validateRuntimeRequestStartSource|pending|forward|lazy|runtimeRegistry)\b|\bregistry\s*\./g;
   for (const match of ownerMatches.get('router-runtime-service-rejection') ?? []) {
-    for (const entry of match.item.identifiers.matchAll(forbiddenOwnerWork)) {
+    const ownerText = match.item.commentless;
+    const requestStartCase = typescriptCaseClause(ownerText, 'request.start');
+    if (!requestStartCase) {
+      violations.push(runtimeExecutionBoundaryViolation({
+        id: 'router-service-rejection-incomplete',
+        subject: subject.id,
+        ownerRole: match.owner.role,
+        relPath: match.relPath,
+        line: match.line,
+        matched: 'request.start',
+        detail: 'runtime endpoint rejection owner has no request.start case',
+      }));
+      continue;
+    }
+    const ordered = [
+      /header\s*\.\s*caller\s*\.\s*kind\s*!==\s*['"]service['"]/,
+      /\bthis\s*\.\s*sendFrame\s*\(/,
+      /type\s*:\s*['"]response\.error['"]/,
+      /code\s*:\s*['"]InProcessServiceCallRequired['"]/,
+      /message\s*:\s*['"][^'"]*in-process binding[^'"]*['"]/,
+      /\breturn\s*;/,
+    ].map((pattern) => pattern.exec(requestStartCase.text)?.index ?? -1);
+    if (
+      ordered.includes(-1)
+      || ordered.some((index, position) => position > 0 && index <= ordered[position - 1])
+    ) {
+      violations.push(runtimeExecutionBoundaryViolation({
+        id: 'router-service-rejection-incomplete',
+        subject: subject.id,
+        ownerRole: match.owner.role,
+        relPath: match.relPath,
+        line: match.line + lineNumberAt(ownerText, requestStartCase.start) - 1,
+        matched: 'request.start',
+        detail: 'service request.start must fail closed with the stable response.error before returning',
+      }));
+    }
+    for (const entry of requestStartCase.text.matchAll(forbiddenOwnerWork)) {
       violations.push(runtimeExecutionBoundaryViolation({
         id: 'router-rejection-enters-relay-owner',
         subject: subject.id,
         ownerRole: match.owner.role,
         relPath: match.relPath,
-        line: match.line + lineNumberAt(match.item.identifiers, entry.index) - 1,
+        line: match.line
+          + lineNumberAt(ownerText, requestStartCase.start + entry.index)
+          - 1,
         matched: entry[0],
         detail: 'service rejection must occur before registry, lazy selection, pending, or forward work',
       }));
     }
   }
+}
+
+function rustFunctionCallsOwner(text, declarationIndex, ownerSymbol) {
+  const brace = text.indexOf('{', declarationIndex);
+  if (brace === -1) {
+    return false;
+  }
+  const close = matchingDelimiterIndex(text, brace, '{', '}');
+  if (close === -1) {
+    return false;
+  }
+  return new RegExp(
+    `\\b${escapeRuntimeExecutionBoundaryRegexp(ownerSymbol)}\\s*\\(`,
+  ).test(text.slice(brace + 1, close));
+}
+
+function enclosingBlockStart(text, index) {
+  const stack = [];
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (text[cursor] === '{') {
+      stack.push(cursor + 1);
+    } else if (text[cursor] === '}') {
+      stack.pop();
+    }
+  }
+  return stack.at(-1) ?? 0;
+}
+
+function typescriptCaseClause(text, label) {
+  const startMatch = new RegExp(
+    `\\bcase\\s*['"]${escapeRuntimeExecutionBoundaryRegexp(label)}['"]\\s*:`,
+  ).exec(text);
+  if (!startMatch) {
+    return undefined;
+  }
+  const start = startMatch.index;
+  const remainder = text.slice(start + startMatch[0].length);
+  const next = /\n\s*(?:case\s+[^:]+|default)\s*:/.exec(remainder);
+  const end = next
+    ? start + startMatch[0].length + next.index
+    : text.length;
+  return { end, start, text: text.slice(start, end) };
 }
 
 function callRange(text, index) {

@@ -5,11 +5,11 @@ import {
 } from './runtime-execution-boundary-registry.mjs';
 import { checkRuntimeExecutionBoundaryRules } from './runtime-execution-boundary-rules.mjs';
 import { loadRuntimeExecutionBoundarySources } from './runtime-execution-boundary-source.mjs';
-import { PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY } from './runtime-execution-boundary-subjects.mjs';
+import { RUNTIME_EXECUTION_BOUNDARY_REGISTRY } from './runtime-execution-boundary-subjects.mjs';
 
 export async function collectRuntimeExecutionBoundaryViolations(
   repoRoot,
-  registry = PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY,
+  registry = RUNTIME_EXECUTION_BOUNDARY_REGISTRY,
 ) {
   const violations = validateRuntimeExecutionBoundaryRegistry(registry);
   if (violations.some(({ id }) => id === 'invalid-execution-boundary-registry')) {

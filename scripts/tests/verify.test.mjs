@@ -170,6 +170,35 @@ test('runtime artifact boundary checker belongs to the runtime subject without d
   assert.equal(plan.phases.filter((phase) => phase.command === 'cargo').length, 1);
 });
 
+test('runtime execution boundary checker belongs exactly once to checks', async () => {
+  const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
+  const executionPhases = checks.phases.filter((phase) =>
+    phase.args.includes('scripts/check-runtime-execution-boundaries.mjs'));
+  assert.deepEqual(
+    executionPhases.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
+    [
+      {
+        id: 'checks:runtime-execution-boundaries',
+        command: 'node',
+        args: ['scripts/check-runtime-execution-boundaries.mjs'],
+        kind: 'default verify',
+      },
+    ],
+  );
+
+  const runtime = await buildVerifyPlan({ root, selectors: ['runtime'] });
+  assert.equal(
+    runtime.phases.some((phase) =>
+      phase.args.includes('scripts/check-runtime-execution-boundaries.mjs')),
+    false,
+  );
+  assert.equal(
+    runtime.phases.filter((phase) =>
+      phase.args.includes('scripts/check-runtime-artifact-boundaries.mjs')).length,
+    2,
+  );
+});
+
 test('verify list shows compiler boundaries once without known-red wording', async () => {
   const result = await runProcess(
     process.execPath,
@@ -182,6 +211,23 @@ test('verify list shows compiler boundaries once without known-red wording', asy
     1,
   );
   assert.doesNotMatch(result.stdout, /known-red|13 violations/);
+});
+
+test('verify checks list expands the runtime execution boundary checker once', async () => {
+  const result = await runProcess(
+    process.execPath,
+    [verifyPath, '--only', 'checks', '--list'],
+    { cwd: root },
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(
+    (result.stdout.match(/scripts\/check-runtime-execution-boundaries\.mjs/g) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (result.stdout.match(/scripts\/check-runtime-artifact-boundaries\.mjs/g) ?? []).length,
+    0,
+  );
 });
 
 test('runtime-live lists every missing explicit input in one blocked phase', async () => {

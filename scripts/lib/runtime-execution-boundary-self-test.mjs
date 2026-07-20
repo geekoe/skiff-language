@@ -15,7 +15,7 @@ import {
   collectRuntimeExecutionBoundaryViolations,
   formatRuntimeExecutionBoundaryViolation,
 } from './runtime-execution-boundary-checker.mjs';
-import { PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY } from './runtime-execution-boundary-subjects.mjs';
+import { RUNTIME_EXECUTION_BOUNDARY_REGISTRY } from './runtime-execution-boundary-subjects.mjs';
 
 export const RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS = Object.freeze([
   expectation('remote boundary violation injection', 'remote-boundary-selection'),
@@ -23,6 +23,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS = Object.freeze([
   expectation('canonical dispatcher renamed', 'required-owner-missing'),
   expectation('canonical dispatcher moved', 'owner-outside-registered-root'),
   expectation('canonical dispatcher duplicated', 'duplicate-required-owner'),
+  expectation('canonical ingress dispatcher call omitted', 'dispatcher-callsite-missing'),
   expectation('required subject omitted', 'subject-registry-omission'),
   expectation('required production file omitted', 'required-subject-file-missing'),
   expectation('required owner role omitted', 'owner-registry-omission'),
@@ -39,8 +40,11 @@ export const RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS = Object.freeze([
   expectation('unowned user-code spawn', 'unowned-user-code-spawn'),
   expectation('recoverable callback acceptance', 'recoverable-callback-not-rejected'),
   expectation('host request old-route fallback', 'host-request-fallback'),
+  expectation('assembly request route pin omitted', 'required-owner-anchor-missing'),
   expectation('legacy outbound service edge', 'legacy-outbound-service-edge'),
+  expectation('legacy outbound fence omitted', 'legacy-outbound-service-edge'),
   expectation('router runtime service relay', 'router-service-relay'),
+  expectation('router rejection payload omitted', 'router-service-rejection-incomplete'),
   expectation('router rejection enters registry', 'router-rejection-enters-relay-owner'),
 ]);
 
@@ -97,8 +101,8 @@ function mutationMatrix() {
       (root) => replace(
         root,
         'runtime/eval/src/assembly_execution/mod.rs',
-        'fn dispatch_service_call',
-        'fn renamed_dispatch_service_call',
+        'fn dispatch_in_process_boundary',
+        'fn renamed_dispatch_in_process_boundary',
       ),
     ),
     mutation(
@@ -124,6 +128,16 @@ function mutationMatrix() {
       },
     ),
     mutation(
+      'canonical ingress dispatcher call omitted',
+      'dispatcher-callsite-missing',
+      (root) => replace(
+        root,
+        'runtime/eval/src/assembly_execution/ingress.rs',
+        '    dispatch_in_process_boundary(context).await;',
+        '    adapt_ingress_only(context).await;',
+      ),
+    ),
+    mutation(
       'required subject omitted',
       'subject-registry-omission',
       undefined,
@@ -136,7 +150,7 @@ function mutationMatrix() {
     mutation(
       'required production file omitted',
       'required-subject-file-missing',
-      (root) => rm(join(root, 'runtime/host/src/host/request_entry.rs')),
+      (root) => rm(join(root, 'runtime/host/src/host/request_entry/assembly.rs')),
     ),
     mutation(
       'required owner role omitted',
@@ -260,9 +274,19 @@ function mutationMatrix() {
       'host-request-fallback',
       (root) => replace(
         root,
-        'runtime/host/src/host/request_entry.rs',
+        'runtime/host/src/host/request_entry/assembly.rs',
         'lookup_active_assembly_request_route',
         'lookup_operation_in_state',
+      ),
+    ),
+    mutation(
+      'assembly request route pin omitted',
+      'required-owner-anchor-missing',
+      (root) => replace(
+        root,
+        'runtime/host/src/host/request_entry/assembly.rs',
+        'let _pinned_route = route;',
+        'let _unpinned_route = route;',
       ),
     ),
     mutation(
@@ -275,6 +299,16 @@ function mutationMatrix() {
       ),
     ),
     mutation(
+      'legacy outbound fence omitted',
+      'legacy-outbound-service-edge',
+      (root) => replace(
+        root,
+        'runtime/eval/src/eval_context.rs',
+        '    self.ensure_legacy_service_path_allowed();',
+        '    let _legacy_path_is_unfenced = self;',
+      ),
+    ),
+    mutation(
       'router runtime service relay',
       'router-service-relay',
       (root) => append(
@@ -284,13 +318,23 @@ function mutationMatrix() {
       ),
     ),
     mutation(
+      'router rejection payload omitted',
+      'router-service-rejection-incomplete',
+      (root) => replace(
+        root,
+        'router/src/router/runtimeEndpoint.ts',
+        "          code: 'InProcessServiceCallRequired',",
+        "          code: 'UnexpectedRuntimeRequest',",
+      ),
+    ),
+    mutation(
       'router rejection enters registry',
       'router-rejection-enters-relay-owner',
       (root) => replace(
         root,
-        'router/src/router/runtimeDispatcher.ts',
-        '    this.sendRuntimeErrorResponse(callerWs, callerRequestId, {',
-        '    this.options.registry.pickDispatchConnection(request);\n    this.sendRuntimeErrorResponse(callerWs, callerRequestId, {',
+        'router/src/router/runtimeEndpoint.ts',
+        '        this.sendFrame(ws, {',
+        '        this.options.registry.pickDispatchConnection(header);\n        this.sendFrame(ws, {',
       ),
     ),
   ];
@@ -324,6 +368,24 @@ async function writeSafeFixture(root) {
       [
         'pub async fn dispatch_service_call(context: &Context) {',
         '    let _target = context.resolve_service_call();',
+        '    dispatch_in_process_boundary(context).await;',
+        '}',
+        'async fn dispatch_in_process_boundary(context: &Context) {',
+        '    record_in_process_boundary_dispatch(context);',
+        '    match BoundaryStreamContract::Unary {',
+        '        BoundaryStreamContract::Unary => use_contract(BoundaryCancellationContract::NotCancellable),',
+        '    }',
+        '}',
+        '',
+      ].join('\n'),
+    ),
+    write(
+      root,
+      'runtime/eval/src/assembly_execution/ingress.rs',
+      [
+        'pub async fn dispatch_ingress_via_in_process_boundary(context: &Context) {',
+        '    let _args = adapt_ingress_arguments(context);',
+        '    dispatch_in_process_boundary(context).await;',
         '}',
         '',
       ].join('\n'),
@@ -343,7 +405,16 @@ async function writeSafeFixture(root) {
       root,
       'runtime/eval/src/eval_context.rs',
       [
-        'fn internal_call() { dispatch_service_call(); }',
+        'fn ensure_legacy_service_path_allowed(&self) -> Result<()> {',
+        '    if self.projection.assembly().is_some() {',
+        '        return Err("assembly execution cannot use legacy service path");',
+        '    }',
+        '    Ok(())',
+        '}',
+        'fn legacy_consumer(&self) {',
+        '    self.ensure_legacy_service_path_allowed();',
+        '    service_dispatch::call_outbound_service();',
+        '}',
         '#[cfg(test)]',
         'fn hidden_tls() { tokio::task_local! { static CURRENT_ACTIVATION: u8; } }',
         '',
@@ -414,15 +485,18 @@ async function writeSafeFixture(root) {
     ),
     write(
       root,
-      'runtime/host/src/host/request_entry.rs',
+      'runtime/host/src/host/request_entry/assembly.rs',
       [
         'impl RuntimeHost {',
         '    async fn spawn_request_inner(&self) {',
-        '        let active: ActiveAssemblyRoute = self.lookup_active_assembly_request_route();',
-        '        dispatch_service_call(active);',
-        '        let request_operation_context = active.request_context();',
+        '        let route: ActiveAssemblyRoute = self.lookup_active_assembly_request_route();',
+        '        let target = route.request_target();',
+        '        self.spawn_assembly_request(route, target).await;',
+        '    }',
+        '    async fn spawn_assembly_request(&self, route: ActiveAssemblyRoute, target: Target) {',
         '        tokio::spawn(async move {',
-        '            execute_runtime_request(request_operation_context).await;',
+        '            let _pinned_route = route;',
+        '            execute_runtime_assembly_request(AssemblyRequestExecutionInput { target }).await;',
         '        });',
         '    }',
         '}',
@@ -431,27 +505,66 @@ async function writeSafeFixture(root) {
     ),
     write(
       root,
-      'router/src/router/runtimeDispatcher.ts',
+      'runtime/host/src/host/request_entry.rs',
       [
-        'export class RuntimeDispatcher {',
-        '  rejectRuntimeServiceRequestStart(callerWs: WebSocket, callerRequestId: string): void {',
-        '    this.sendRuntimeErrorResponse(callerWs, callerRequestId, {',
-        "      code: 'RemoteServiceRelayDisabled',",
-        "      message: 'service calls require an in-process binding'",
+        'fn spawn_owned_legacy_request(input: RequestExecutionInput) {',
+        '    tokio::spawn(async move {',
+        '        execute_runtime_request(input).await;',
         '    });',
-        '  }',
         '}',
         '',
       ].join('\n'),
     ),
     write(
       root,
+      'runtime/host/src/loader/active_assembly_context.rs',
+      [
+        'struct ActiveAssemblyContextSet {',
+        '    activations_by_deployment: Map,',
+        '    contracts: Map,',
+        '    operation_targets: Map,',
+        '}',
+        '',
+      ].join('\n'),
+    ),
+    write(
+      root,
+      'runtime/host/src/loader/assembly_admission.rs',
+      [
+        'struct ActiveAssemblyRoute {',
+        '    active: Arc<ActiveAssembly>,',
+        '    activation: Arc<ActivationContext>,',
+        '    provider_target: OperationTargetRef,',
+        '}',
+        '',
+      ].join('\n'),
+    ),
+    write(
+      root,
+      'router/src/router/runtimeDispatcher.ts',
+      'export class RuntimeDispatcher {}\n',
+    ),
+    write(
+      root,
       'router/src/router/runtimeEndpoint.ts',
       [
-        "case 'request.start':",
-        "  if (header.caller.kind !== 'service') throw new Error('invalid caller');",
-        '  this.dispatcher().rejectRuntimeServiceRequestStart(ws, header.requestId);',
-        '  return;',
+        'export class RuntimeEndpoint {',
+        '  private async handleBinaryMessage(ws: WebSocket, data: Uint8Array): Promise<void> {',
+        '    const header = decode(data);',
+        '    switch (header.type) {',
+        "      case 'request.start':",
+        "        if (header.caller.kind !== 'service') throw new Error('invalid caller');",
+        '        this.sendFrame(ws, {',
+        "          type: 'response.error',",
+        "          code: 'InProcessServiceCallRequired',",
+        "          message: 'service calls require an in-process binding'",
+        '        });',
+        '        return;',
+        "      case 'response.end':",
+        '        return;',
+        '    }',
+        '  }',
+        '}',
         '',
       ].join('\n'),
     ),
@@ -465,10 +578,10 @@ async function writeSafeFixture(root) {
 
 function cloneRegistry() {
   return {
-    sourceRoots: PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY.sourceRoots.map((entry) => ({
+    sourceRoots: RUNTIME_EXECUTION_BOUNDARY_REGISTRY.sourceRoots.map((entry) => ({
       ...entry,
     })),
-    subjects: PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY.subjects.map((entry) => ({
+    subjects: RUNTIME_EXECUTION_BOUNDARY_REGISTRY.subjects.map((entry) => ({
       ...entry,
       discoveryRoots: [...entry.discoveryRoots],
       requiredFiles: [...entry.requiredFiles],
@@ -476,7 +589,7 @@ function cloneRegistry() {
         Object.entries(entry.zones).map(([name, roots]) => [name, [...roots]]),
       ),
     })),
-    owners: PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY.owners.map((entry) => ({
+    owners: RUNTIME_EXECUTION_BOUNDARY_REGISTRY.owners.map((entry) => ({
       ...entry,
       ownedRoots: [...entry.ownedRoots],
       requiredAnchors: [...entry.requiredAnchors],
