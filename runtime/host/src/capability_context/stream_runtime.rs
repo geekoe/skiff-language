@@ -11,8 +11,8 @@ use std::{
 use serde_json::Value;
 use skiff_runtime_boundary::stream::{stream_id, stream_value};
 use skiff_runtime_capability_context::{
-    CancellationSignals, CancellationToken, StreamLifetimeGuard, StreamPoll, StreamPullSource,
-    StreamRuntimeError, StreamRuntimeResult,
+    CancellationSignals, CancellationToken, StreamInternalItem, StreamLifetimeGuard, StreamPoll,
+    StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
 };
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -41,6 +41,7 @@ pub struct StreamCancelSignal {
 #[derive(Debug)]
 enum StreamEvent {
     Item(Value),
+    InternalItem(StreamInternalItem),
     End,
     Error(StreamRuntimeError),
 }
@@ -257,6 +258,7 @@ impl StreamRuntime {
                     next_channel_event(self, id, &state, receiver, signals, cancellation).await?;
                 match event {
                     Some(StreamEvent::Item(value)) => Ok(StreamPoll::Item(value)),
+                    Some(StreamEvent::InternalItem(item)) => Ok(StreamPoll::InternalItem(item)),
                     Some(StreamEvent::End) => {
                         self.finish_stream(id, StreamTerminalReason::End);
                         Ok(StreamPoll::End)
@@ -490,13 +492,31 @@ impl StreamSink {
         signals: &[StreamCancelSignal],
         cancellation: &CancellationSignals<'_>,
     ) -> StreamRuntimeResult<()> {
-        if self.is_cancelled() {
-            return Err(StreamRuntimeError::cancelled());
-        }
-        if external_cancelled(signals, cancellation) {
-            return Err(StreamRuntimeError::cancelled());
-        }
-        if cancellation.is_cancelled() {
+        self.send_event_with_stream_cancellation(StreamEvent::Item(item), signals, cancellation)
+            .await
+    }
+
+    pub async fn send_internal_with_stream_cancellation(
+        &self,
+        item: StreamInternalItem,
+        signals: &[StreamCancelSignal],
+        cancellation: &CancellationSignals<'_>,
+    ) -> StreamRuntimeResult<()> {
+        self.send_event_with_stream_cancellation(
+            StreamEvent::InternalItem(item),
+            signals,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn send_event_with_stream_cancellation(
+        &self,
+        event: StreamEvent,
+        signals: &[StreamCancelSignal],
+        cancellation: &CancellationSignals<'_>,
+    ) -> StreamRuntimeResult<()> {
+        if self.is_cancelled() || external_cancelled(signals, cancellation) {
             return Err(StreamRuntimeError::cancelled());
         }
         let cancel_notified = self.cancel_notify.notified();
@@ -504,17 +524,14 @@ impl StreamSink {
         cancel_notified.as_mut().enable();
         let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
         tokio::pin!(external_cancel_notified);
-        if self.is_cancelled() {
-            return Err(StreamRuntimeError::cancelled());
-        }
-        if external_cancelled(signals, cancellation) {
+        if self.is_cancelled() || external_cancelled(signals, cancellation) {
             return Err(StreamRuntimeError::cancelled());
         }
         tokio::select! {
             permit = self.sender.reserve() => {
                 permit
                     .map_err(|_| StreamRuntimeError::cancelled())?
-                    .send(StreamEvent::Item(item));
+                    .send(event);
                 Ok(())
             }
             _ = &mut cancel_notified => Err(StreamRuntimeError::cancelled()),

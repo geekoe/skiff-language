@@ -77,9 +77,9 @@ pub use request_payload::{
 pub use response::{HttpNameValue, HttpResponseMetadata, ResponseError};
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
-    StreamCapabilityContext, StreamLifetimeGuard, StreamLifetimeGuardApi, StreamPoll,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult,
-    StreamSink, StreamSinkApi, TypedStreamSink,
+    StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
 };
 pub use telemetry::{TelemetryCapabilityApi, TelemetryCapabilityContext};
 pub use time::TimeCapabilityContext;

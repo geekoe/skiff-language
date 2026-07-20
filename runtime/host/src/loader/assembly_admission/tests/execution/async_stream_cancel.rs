@@ -6,7 +6,14 @@ use skiff_artifact_model::{
     BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
-use skiff_runtime_model::runtime_value::RuntimeValue;
+use skiff_runtime_activation::CallbackCapabilityError;
+use skiff_runtime_eval::error::RuntimeError;
+use skiff_runtime_model::{
+    request_heap::RequestHeap,
+    runtime_value::{
+        CallbackCapabilityCarrier, HeapHandle, HeapNode, InterfaceCarrier, RuntimeValue,
+    },
+};
 
 use super::{
     artifacts::{ProjectedFixture, TypedExecutionContract},
@@ -73,6 +80,41 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
 }
 
 #[tokio::test]
+async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_shared_planner() {
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::async_typed_error()).await;
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect_err("declared provider throw should cross the async service boundary");
+    let RuntimeError::UserException(exception) = error else {
+        panic!("declared async typed error should retain its user-exception class: {error}")
+    };
+    assert_eq!(
+        exception.error_payload().unwrap().get("messages"),
+        Some(&serde_json::json!(["provider async typed error"])),
+        "shared planner must materialize the declared payload shape into the caller error"
+    );
+}
+
+#[tokio::test]
 async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_target() {
     let baseline = crate::capability_context::stream_runtime_streams_active();
     {
@@ -112,6 +154,203 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
     })
     .await
     .expect("dropping the full-chain runtime must close its stream registry and lifetime lease");
+}
+
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_and_expires_on_end()
+{
+    let baseline = crate::capability_context::stream_runtime_streams_active();
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::callback_stream()).await;
+    let provider = fixture.resolve_provider();
+    let provider_activation = provider.provider_activation().clone();
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .active_entry_count(),
+        0
+    );
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("consumer should invoke the provider-owned callback item and observe stream end");
+    assert_eq!(result, RuntimeValue::Null);
+    let carrier = callback_carrier_in_heap(&heap);
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .active_entry_count(),
+        0,
+        "normal stream end must close its callback lifetime"
+    );
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .lookup(&carrier)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+    wait_for_stream_runtime_baseline(baseline).await;
+}
+
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_break() {
+    let baseline = crate::capability_context::stream_runtime_streams_active();
+    let fixture =
+        TypedExecutionFixture::admit_contract(TypedExecutionContract::callback_stream_cancel())
+            .await;
+    let provider = fixture.resolve_provider();
+    let provider_activation = provider.provider_activation().clone();
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let result = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect("consumer should invoke one callback item before breaking the stream");
+    assert_eq!(result, RuntimeValue::Null);
+    let carrier = callback_carrier_in_heap(&heap);
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .lookup(&carrier)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired,
+        "early break must close the stream-scoped callback capability"
+    );
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .active_entry_count(),
+        0
+    );
+    wait_for_stream_runtime_baseline(baseline).await;
+}
+
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_mapping_before_owner() {
+    let fixture = TypedExecutionFixture::admit_contract(
+        TypedExecutionContract::callback_stream_with_operation_key("different"),
+    )
+    .await;
+    let provider = fixture.resolve_provider();
+    let provider_activation = provider.provider_activation().clone();
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect_err("callback stream mapping mismatch must fail before publication");
+    let message = error.to_string();
+    assert!(
+        message.contains("contract operation different has no same-name local method"),
+        "stream projection should preserve the stable mapping error: {error}"
+    );
+    assert!(
+        !message.contains("CallbackProbe.invoke missing block entry"),
+        "mapping mismatch must fail before owner invocation: {error}"
+    );
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .active_entry_count(),
+        0,
+        "failed projection must roll back callback registration"
+    );
+}
+
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_rejects_callback_item_wrong_tuple_before_owner() {
+    let fixture = TypedExecutionFixture::admit_contract(
+        TypedExecutionContract::callback_stream_wrong_tuple(),
+    )
+    .await;
+    let provider = fixture.resolve_provider();
+    let provider_activation = provider.provider_activation().clone();
+    let runtime = TypedExecutionRuntime::new(
+        &fixture
+            .eval_target
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, &fixture.eval_target);
+    let mut heap = context.request_heap();
+
+    let error = interpreter
+        .execute_runtime_assembly_addr(
+            context,
+            &mut heap,
+            &fixture.consumer_executable_addr(0),
+            Vec::new(),
+        )
+        .await
+        .expect_err("callback stream signature mismatch must fail before publication");
+    let message = error.to_string();
+    assert!(
+        message
+            .contains("callback contract operation invoke signature does not match local method"),
+        "stream projection should reject the exact callback tuple: {error}"
+    );
+    assert!(
+        !message.contains("CallbackProbe.invoke missing block entry"),
+        "tuple mismatch must fail before owner invocation: {error}"
+    );
+    assert_eq!(
+        provider_activation
+            .callback_capabilities()
+            .active_entry_count(),
+        0,
+        "failed tuple projection must roll back callback registration"
+    );
 }
 
 #[test]
@@ -172,4 +411,29 @@ fn detached_effect_guarantee() -> BoundaryEffectGuarantee {
         no_caller_value_escape: true,
         no_same_heap_identity: true,
     }
+}
+
+fn callback_carrier_in_heap(heap: &RequestHeap) -> CallbackCapabilityCarrier {
+    for index in 0..heap.len() {
+        let Ok(index) = u32::try_from(index) else {
+            break;
+        };
+        let Ok(HeapNode::Interface(interface)) = heap.get(HeapHandle::new(index, 0)) else {
+            continue;
+        };
+        if let InterfaceCarrier::CallbackCapability(carrier) = interface.carrier() {
+            return carrier.clone();
+        }
+    }
+    panic!("consumer heap should retain the projected opaque callback carrier")
+}
+
+async fn wait_for_stream_runtime_baseline(baseline: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while crate::capability_context::stream_runtime_streams_active() > baseline {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stream terminal must remove its concrete registry entry");
 }

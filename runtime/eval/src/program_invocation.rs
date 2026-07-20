@@ -1027,6 +1027,12 @@ impl Interpreter {
             )?;
             let item = match item {
                 StreamPoll::Item(item) => item,
+                StreamPoll::InternalItem(_) => {
+                    return Err(EvalStreamExecutionError::Eval(RuntimeError::Decode(
+                        "in-process runtime item cannot cross a server-stream response boundary"
+                            .to_string(),
+                    )))
+                }
                 StreamPoll::End => return Ok(()),
             };
             let mut heap = context.request_heap();
@@ -1072,6 +1078,12 @@ impl Interpreter {
             )?;
             let item = match item {
                 StreamPoll::Item(item) => item,
+                StreamPoll::InternalItem(_) => {
+                    return Err(EvalStreamExecutionError::Eval(RuntimeError::Decode(
+                        "in-process runtime item cannot cross an HTTP response boundary"
+                            .to_string(),
+                    )))
+                }
                 StreamPoll::End => return Ok(()),
             };
             let mut heap = context.request_heap();

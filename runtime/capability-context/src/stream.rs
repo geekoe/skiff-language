@@ -8,8 +8,12 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
-use skiff_runtime_model::type_plan::RuntimeTypePlan;
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, TypeIdentity, WirePayload},
+    request_heap::RequestHeap,
+    runtime_value::RuntimeValue,
+    type_plan::RuntimeTypePlan,
+};
 
 use crate::{CancellationToken, ExecutionControl};
 
@@ -107,7 +111,27 @@ pub trait StreamPullSource: Send {
 #[derive(Debug)]
 pub enum StreamPoll {
     Item(Value),
+    InternalItem(StreamInternalItem),
     End,
+}
+
+/// An in-process stream item that cannot be represented by the wire JSON carrier. The heap owns
+/// every handle reachable from `value`, so the item can cross the producer task boundary without
+/// borrowing the provider request heap.
+#[derive(Debug)]
+pub struct StreamInternalItem {
+    value: RuntimeValue,
+    heap: RequestHeap,
+}
+
+impl StreamInternalItem {
+    pub fn new(value: RuntimeValue, heap: RequestHeap) -> Self {
+        Self { value, heap }
+    }
+
+    pub fn into_parts(self) -> (RuntimeValue, RequestHeap) {
+        (self.value, self.heap)
+    }
 }
 
 pub trait StreamCancelSignalApi: Any + Send + Sync + fmt::Debug {
@@ -172,6 +196,27 @@ impl fmt::Debug for StreamLifetimeGuard {
 }
 
 pub trait StreamSinkApi: Any + Send + Sync + fmt::Debug {
+    /// Gives an in-process boundary a chance to project a non-JSON value before the ordinary emit
+    /// encoder runs. Returning `None` preserves the existing typed JSON path.
+    fn project_runtime_item(
+        &self,
+        _item: RuntimeValue,
+        _source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        Ok(None)
+    }
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        _item: StreamInternalItem,
+        _signals: &'a [StreamCancelSignal],
+        _cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async {
+            Err(StreamRuntimeError::decode(
+                "stream sink does not accept in-process runtime items",
+            ))
+        })
+    }
     fn send<'a>(
         &'a self,
         item: Value,
@@ -233,6 +278,25 @@ impl StreamSink {
     ) -> StreamRuntimeResult<()> {
         self.inner
             .send_with_cancellation(item, signals, cancel_tokens.into_iter().collect())
+            .await
+    }
+
+    pub fn project_runtime_item(
+        &self,
+        item: RuntimeValue,
+        source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        self.inner.project_runtime_item(item, source_heap)
+    }
+
+    pub async fn send_internal_with_cancellation(
+        &self,
+        item: StreamInternalItem,
+        signals: &[StreamCancelSignal],
+        cancel_tokens: impl IntoIterator<Item = CancellationToken>,
+    ) -> StreamRuntimeResult<()> {
+        self.inner
+            .send_internal_with_cancellation(item, signals, cancel_tokens.into_iter().collect())
             .await
     }
 

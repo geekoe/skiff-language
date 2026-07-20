@@ -21,8 +21,8 @@ use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableMaterializationScope,
 };
 use skiff_runtime_capability_context::{
-    CancellationToken, StreamCancelSignal, StreamLifetimeGuard, StreamLifetimeGuardApi,
-    StreamRuntimeError, StreamRuntimeResult,
+    CancellationToken, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
+    StreamLifetimeGuardApi, StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
@@ -30,6 +30,7 @@ use skiff_runtime_model::{
 };
 
 use super::{
+    boundary_materialization::CanonicalServiceBoundaryPlan,
     callback_native::CallbackNativeCapabilityHooks, AssemblyExecutionHandoffError,
     AssemblyExecutionLaneKind, RuntimeExecutionProjection,
 };
@@ -87,8 +88,12 @@ async fn execute_provider_unary(
     target: RuntimeAssemblyServiceCallTarget,
     args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    let mut provider_heap = context.context.request_heap();
-    let provider_args = materialize_parameters(context, &target, args, &mut provider_heap)?;
+    let boundary =
+        CanonicalServiceBoundaryPlan::new(target.descriptor(), target.contract(), args.len())?;
+    let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
+    let caller_hooks = CallbackNativeCapabilityHooks::new(&context.context);
+    let provider_args =
+        boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &caller_hooks)?;
     let provider_context = provider_execution_context(&context.context, &target)?;
     // Capture on every async-lane call. `may_suspend` never controls whether the future owns its
     // provider activation; it only describes the contract surface.
@@ -118,32 +123,17 @@ async fn execute_provider_unary(
         )
         .await
     };
-    let provider_value = match provider_result {
-        Ok(value) => value,
+    let provider_result = match provider_result {
         Err(error) if error.is_cancelled() => {
             provider_request.cancel();
             return Err(error);
         }
-        Err(error) => return Err(error),
+        result => result,
     };
 
     let provider_context = owned_provider.borrow();
     let hooks = CallbackNativeCapabilityHooks::new(&provider_context);
-    materialize_value(
-        "return",
-        &target.descriptor().contract.return_value.ty,
-        &target.contract().boundary_schema,
-        &target.descriptor().contract.return_value.value_plan,
-        &provider_value,
-        &provider_heap,
-        context.heap,
-        canonical_scope(
-            &target.descriptor().contract.return_value.value_plan,
-            BoundaryValueOwner::Provider,
-            BoundaryValueLifetime::Call,
-        )?,
-        &hooks,
-    )
+    boundary.materialize_provider_result(provider_result, &mut provider_heap, context.heap, &hooks)
 }
 
 async fn await_provider_unary<F>(
@@ -189,6 +179,8 @@ fn start_provider_stream(
             "stream-contract",
         ));
     };
+    let boundary =
+        CanonicalServiceBoundaryPlan::new(target.descriptor(), target.contract(), args.len())?;
     canonical_scope(
         item_value_plan,
         BoundaryValueOwner::Provider,
@@ -212,8 +204,10 @@ fn start_provider_stream(
         }
     })?;
 
-    let mut provider_heap = context.context.request_heap();
-    let provider_args = materialize_parameters(context, &target, args, &mut provider_heap)?;
+    let mut provider_heap = boundary.fresh_provider_heap(context.context.request_heap_limits());
+    let hooks = CallbackNativeCapabilityHooks::new(&context.context);
+    let provider_args =
+        boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &hooks)?;
     let provider_context = provider_execution_context(&context.context, &target)?;
     let provider_stream_item_type = provider_stream_item_execution_plan(
         context.interpreter,
@@ -456,45 +450,6 @@ fn provider_execution_context<'a>(
         .with_runtime_assembly_target(provider_target))
 }
 
-fn materialize_parameters(
-    context: &EvalContext<'_>,
-    target: &RuntimeAssemblyServiceCallTarget,
-    args: Vec<RuntimeValue>,
-    provider_heap: &mut RequestHeap,
-) -> Result<Vec<RuntimeValue>> {
-    let parameters = &target.descriptor().contract.parameters;
-    if parameters.len() != args.len() {
-        return Err(RuntimeError::InvalidArtifact(format!(
-            "canonical service operation {} expects {} parameters, got {}",
-            target.descriptor().operation_id,
-            parameters.len(),
-            args.len()
-        )));
-    }
-    let hooks = CallbackNativeCapabilityHooks::new(&context.context);
-    parameters
-        .iter()
-        .zip(args)
-        .map(|(parameter, value)| {
-            materialize_value(
-                &format!("parameter {}", parameter.name),
-                &parameter.ty,
-                &target.contract().boundary_schema,
-                &parameter.value_plan,
-                &value,
-                context.heap,
-                provider_heap,
-                canonical_scope(
-                    &parameter.value_plan,
-                    BoundaryValueOwner::Caller,
-                    BoundaryValueLifetime::Call,
-                )?,
-                &hooks,
-            )
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn materialize_value(
     stage: &str,
@@ -604,6 +559,43 @@ impl BoundaryStreamSink {
         .map_err(StreamRuntimeError::producer)?;
         runtime_to_wire(&materialized, &receiver_heap).map_err(StreamRuntimeError::producer)
     }
+
+    fn project_internal_item(
+        &self,
+        item: RuntimeValue,
+        source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        if !matches!(
+            self.item_value_plan,
+            BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::CallbackCapability,
+                ..
+            }
+        ) {
+            return Ok(None);
+        }
+        let provider_context = self.provider_context.borrow();
+        let mut receiver_heap = provider_context.request_heap();
+        let hooks = CallbackNativeCapabilityHooks::new(&provider_context);
+        let materialized = materialize_value(
+            "stream item",
+            &self.item_type,
+            &self.boundary_schema,
+            &self.item_value_plan,
+            &item,
+            source_heap,
+            &mut receiver_heap,
+            canonical_scope(
+                &self.item_value_plan,
+                BoundaryValueOwner::Provider,
+                BoundaryValueLifetime::Stream,
+            )
+            .map_err(StreamRuntimeError::producer)?,
+            &hooks,
+        )
+        .map_err(StreamRuntimeError::producer)?;
+        Ok(Some(StreamInternalItem::new(materialized, receiver_heap)))
+    }
 }
 
 impl fmt::Debug for BoundaryStreamSink {
@@ -613,6 +605,27 @@ impl fmt::Debug for BoundaryStreamSink {
 }
 
 impl StreamSinkApi for BoundaryStreamSink {
+    fn project_runtime_item(
+        &self,
+        item: RuntimeValue,
+        source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        self.project_internal_item(item, source_heap)
+    }
+
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        item: StreamInternalItem,
+        signals: &'a [StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.inner
+                .send_internal_with_cancellation(item, signals, cancel_tokens)
+                .await
+        })
+    }
+
     fn send<'a>(
         &'a self,
         item: Value,

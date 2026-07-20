@@ -241,6 +241,15 @@ impl<'a> EvalContext<'a> {
                 let sink = self.env.stream_sink.as_ref().ok_or_else(|| {
                     RuntimeError::Decode("emit used outside a stream output context".to_string())
                 })?;
+                if let Some(item) = sink.project_runtime_item(value.clone(), self.heap)? {
+                    sink.send_internal_with_cancellation(
+                        item,
+                        &[],
+                        [self.execution.cancellation_token()],
+                    )
+                    .await?;
+                    return Ok(Flow::Continue);
+                }
                 let value = runtime_to_wire_required_plan(
                     &value,
                     self.env.current_stream_item_type.as_ref(),

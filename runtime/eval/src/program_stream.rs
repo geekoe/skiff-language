@@ -59,14 +59,24 @@ impl Interpreter {
                     [execution.cancellation_token()],
                 )
                 .await?;
-            let item = match item {
-                StreamPoll::Item(item) => item,
+            let item_value = match item {
+                StreamPoll::InternalItem(item) => {
+                    let (value, source_heap) = item.into_parts();
+                    deep_clone_runtime_value_between_heaps(&source_heap, heap, &value)?
+                }
+                StreamPoll::Item(item) => {
+                    if let Some(item_type) = item_type.as_ref() {
+                        runtime_from_wire_required_plan(
+                            &item,
+                            Some(item_type),
+                            "stream item",
+                            heap,
+                        )?
+                    } else {
+                        runtime_from_wire(&item, heap)?
+                    }
+                }
                 StreamPoll::End => return Ok(Flow::Continue),
-            };
-            let item_value = if let Some(item_type) = item_type.as_ref() {
-                runtime_from_wire_required_plan(&item, Some(item_type), "stream item", heap)?
-            } else {
-                runtime_from_wire(&item, heap)?
             };
             let flow = self
                 .exec_program_for_in_body(
@@ -407,7 +417,7 @@ impl Interpreter {
                 )
                 .await
             {
-                Ok(StreamPoll::Item(_)) => continue,
+                Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => continue,
                 Ok(StreamPoll::End) => return Ok(()),
                 Err(error) => return Err(error),
             }
