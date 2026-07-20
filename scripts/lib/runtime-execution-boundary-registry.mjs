@@ -3,6 +3,7 @@ import {
   REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES,
   REQUIRED_RUNTIME_EXECUTION_BOUNDARY_SUBJECT_IDS,
 } from './runtime-execution-boundary-subjects.mjs';
+import { scanRuntimeExecutionBoundarySource } from './runtime-execution-boundary-source.mjs';
 
 const FORBIDDEN_REGISTRY_FIELDS = Object.freeze([
   'allowlist',
@@ -273,7 +274,7 @@ export function inspectRuntimeExecutionBoundaryOwners(registry, sources, violati
         }));
       }
       for (const anchor of owner.requiredAnchors) {
-        if (!match.item.commentless.includes(anchor)) {
+        if (!ownerItemHasTokenAnchor(match.item, owner.language, anchor)) {
           violations.push(runtimeExecutionBoundaryViolation({
             id: ownerAnchorViolationId(owner.role),
             subject: owner.subjectId,
@@ -328,23 +329,40 @@ function ownerDeclarationRegexp(owner) {
 }
 
 function declarationItem(source, index) {
-  const identifiers = source.identifiers;
-  const semicolon = identifiers.indexOf(';', index);
-  const brace = identifiers.indexOf('{', index);
+  const code = source.code;
+  const semicolon = code.indexOf(';', index);
+  const brace = code.indexOf('{', index);
   let end;
   if (semicolon !== -1 && (brace === -1 || semicolon < brace)) {
     end = semicolon + 1;
   } else if (brace !== -1) {
-    const close = matchingDelimiterIndex(identifiers, brace, '{', '}');
-    end = close === -1 ? identifiers.length : close + 1;
+    const close = matchingDelimiterIndex(code, brace, '{', '}');
+    end = close === -1 ? code.length : close + 1;
   } else {
-    const newline = identifiers.indexOf('\n', index);
-    end = newline === -1 ? identifiers.length : newline;
+    const newline = code.indexOf('\n', index);
+    end = newline === -1 ? code.length : newline;
   }
   return {
     commentless: source.commentless.slice(index, end),
+    code: source.code.slice(index, end),
     identifiers: source.identifiers.slice(index, end),
+    tokens: source.tokens
+      .filter((entry) => entry.start >= index && entry.end <= end)
+      .map((entry) => ({ ...entry, end: entry.end - index, start: entry.start - index })),
   };
+}
+
+function ownerItemHasTokenAnchor(item, language, anchor) {
+  const expected = scanRuntimeExecutionBoundarySource(anchor, language).tokens
+    .filter(({ kind }) => !['comment', 'literal'].includes(kind));
+  if (expected.length === 0) {
+    return false;
+  }
+  const actual = item.tokens.filter(({ kind }) => !['comment', 'literal'].includes(kind));
+  return actual.some((_token, start) => expected.every(
+    (candidate, offset) => actual[start + offset]?.kind === candidate.kind
+      && actual[start + offset]?.value === candidate.value,
+  ));
 }
 
 function matchingDelimiterIndex(text, openIndex, open, close) {

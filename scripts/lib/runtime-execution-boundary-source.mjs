@@ -6,6 +6,9 @@ import {
   loadRuntimeRustSources,
   productionRustViews,
 } from './runtime-artifact-boundary-rust-source.mjs';
+import { scanRuntimeExecutionBoundarySource } from './runtime-execution-boundary-lexer.mjs';
+
+export { scanRuntimeExecutionBoundarySource };
 
 export async function loadRuntimeExecutionBoundarySources(repoRoot, sourceRoots) {
   const sources = new Map();
@@ -24,11 +27,14 @@ export async function loadRuntimeExecutionBoundarySources(repoRoot, sourceRoots)
         if (testOnlyFiles.has(relPath)) {
           continue;
         }
+        const production = productionRustViews(source);
+        const lexical = scanRuntimeExecutionBoundarySource(production.commentless, 'rust');
         sources.set(relPath, {
           language: 'rust',
           relPath,
           source,
-          ...productionRustViews(source),
+          ...production,
+          ...lexical,
         });
       }
       continue;
@@ -57,9 +63,11 @@ export async function loadRuntimeExecutionBoundarySources(repoRoot, sourceRoots)
 
 export function productionTypeScriptViews(source) {
   const commentless = maskTypeScript(source, { comments: true, strings: false });
+  const lexical = scanRuntimeExecutionBoundarySource(source, 'typescript');
   return {
     commentless,
     identifiers: maskTypeScript(commentless, { comments: false, strings: true }),
+    ...lexical,
   };
 }
 
@@ -76,7 +84,7 @@ async function visitTypeScript(directory, files, repoRoot) {
 }
 
 function maskTypeScript(source, options) {
-  const output = [...source];
+  const output = source.split('');
   let state = 'code';
   let escaped = false;
 

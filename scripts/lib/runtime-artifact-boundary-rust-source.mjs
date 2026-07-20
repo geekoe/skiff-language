@@ -147,7 +147,7 @@ function matchingDelimiterIndex(text, openIndex, open, close) {
 }
 
 function stripRustComments(source) {
-  const output = [...source];
+  const output = source.split('');
   let index = 0;
   let blockDepth = 0;
   while (index < source.length) {
@@ -190,7 +190,7 @@ function stripRustComments(source) {
 }
 
 function maskRustStringLiterals(source) {
-  const output = [...source];
+  const output = source.split('');
   let index = 0;
   while (index < source.length) {
     const end = rustStringEnd(source, index);

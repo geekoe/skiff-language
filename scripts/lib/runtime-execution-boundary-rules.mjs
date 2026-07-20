@@ -4,6 +4,13 @@ import {
   pathIsWithin,
   runtimeExecutionBoundaryViolation,
 } from './runtime-execution-boundary-registry.mjs';
+import {
+  findForwardKindTokenIndexes,
+  findRouterRequestStartCases,
+  inspectRouterServiceRejectionCase,
+  isRouterRelayOwnerToken,
+  isRouterRelayWorkToken,
+} from './runtime-execution-boundary-router.mjs';
 
 const CALLBACK_CARRIER_REQUIRED_FIELDS = Object.freeze([
   'owner_runtime_replica_id',
@@ -302,33 +309,33 @@ function checkRouterServiceRejection(registry, sources, ownerMatches, violations
   if (!subject) {
     return;
   }
-  const relayOwner = /\b(?:handleRuntimeRequestStart|RuntimeForwardInvocation|forwardedRequestIdsByCaller|trackForwardedRequest|forwardResponse(?:Start|Chunk|End)|createForwardedRequestId|resolveRuntimeOriginatedTimeoutMs|validateRuntimeRequestStartSource)\b/g;
-  const forwardKind = /\bkind\s*:\s*['"]forward['"]/g;
   for (const source of sourcesWithin(subject.discoveryRoots, 'typescript', sources)) {
-    addPatternViolations(
-      source,
-      relayOwner,
-      'router-service-relay',
-      subject.id,
-      'router retains a runtime-originated service selection/forward lifecycle owner',
-      violations,
-    );
-    addPatternViolations(
-      source,
-      forwardKind,
-      'router-service-relay',
-      subject.id,
-      'router retains a runtime-originated service selection/forward lifecycle owner',
-      violations,
-      'commentless',
-    );
+    for (const token of source.tokens.filter(isRouterRelayOwnerToken)) {
+      violations.push(runtimeExecutionBoundaryViolation({
+        id: 'router-service-relay',
+        subject: subject.id,
+        relPath: source.relPath,
+        line: lineNumberAt(source.code, token.start),
+        matched: token.value,
+        detail: 'router retains a runtime-originated service selection/forward lifecycle owner',
+      }));
+    }
+    for (const tokenIndex of findForwardKindTokenIndexes(source.tokens)) {
+      const token = source.tokens[tokenIndex];
+      violations.push(runtimeExecutionBoundaryViolation({
+        id: 'router-service-relay',
+        subject: subject.id,
+        relPath: source.relPath,
+        line: lineNumberAt(source.code, token.start),
+        matched: "kind: 'forward'",
+        detail: 'router retains a runtime-originated service selection/forward lifecycle owner',
+      }));
+    }
   }
 
-  const forbiddenOwnerWork = /\b(?:pickDispatchConnection|validateRuntimeRequestStartSource|pending|forward|lazy|runtimeRegistry)\b|\bregistry\s*\./g;
   for (const match of ownerMatches.get('router-runtime-service-rejection') ?? []) {
-    const ownerText = match.item.commentless;
-    const requestStartCase = typescriptCaseClause(ownerText, 'request.start');
-    if (!requestStartCase) {
+    const requestStartCases = findRouterRequestStartCases(match.item.tokens);
+    if (requestStartCases.length !== 1) {
       violations.push(runtimeExecutionBoundaryViolation({
         id: 'router-service-rejection-incomplete',
         subject: subject.id,
@@ -336,42 +343,35 @@ function checkRouterServiceRejection(registry, sources, ownerMatches, violations
         relPath: match.relPath,
         line: match.line,
         matched: 'request.start',
-        detail: 'runtime endpoint rejection owner has no request.start case',
+        detail: requestStartCases.length === 0
+          ? 'runtime endpoint rejection owner has no structural switch(header.type) request.start case'
+          : 'runtime endpoint rejection owner has multiple structural request.start cases',
       }));
       continue;
     }
-    const ordered = [
-      /header\s*\.\s*caller\s*\.\s*kind\s*!==\s*['"]service['"]/,
-      /\bthis\s*\.\s*sendFrame\s*\(/,
-      /type\s*:\s*['"]response\.error['"]/,
-      /code\s*:\s*['"]InProcessServiceCallRequired['"]/,
-      /message\s*:\s*['"][^'"]*in-process binding[^'"]*['"]/,
-      /\breturn\s*;/,
-    ].map((pattern) => pattern.exec(requestStartCase.text)?.index ?? -1);
-    if (
-      ordered.includes(-1)
-      || ordered.some((index, position) => position > 0 && index <= ordered[position - 1])
-    ) {
+    const requestStartCase = requestStartCases[0];
+    const structure = inspectRouterServiceRejectionCase(requestStartCase.tokens);
+    if (!structure.complete) {
       violations.push(runtimeExecutionBoundaryViolation({
         id: 'router-service-rejection-incomplete',
         subject: subject.id,
         ownerRole: match.owner.role,
         relPath: match.relPath,
-        line: match.line + lineNumberAt(ownerText, requestStartCase.start) - 1,
+        line: match.line + lineNumberAt(match.item.code, requestStartCase.start) - 1,
         matched: 'request.start',
-        detail: 'service request.start must fail closed with the stable response.error before returning',
+        detail: `service request.start rejection is structurally incomplete: ${structure.missing.join(', ')}`,
       }));
     }
-    for (const entry of requestStartCase.text.matchAll(forbiddenOwnerWork)) {
+    for (const token of requestStartCase.tokens.filter(isRouterRelayWorkToken)) {
       violations.push(runtimeExecutionBoundaryViolation({
         id: 'router-rejection-enters-relay-owner',
         subject: subject.id,
         ownerRole: match.owner.role,
         relPath: match.relPath,
         line: match.line
-          + lineNumberAt(ownerText, requestStartCase.start + entry.index)
+          + lineNumberAt(match.item.code, token.start)
           - 1,
-        matched: entry[0],
+        matched: token.value,
         detail: 'service rejection must occur before registry, lazy selection, pending, or forward work',
       }));
     }
@@ -402,22 +402,6 @@ function enclosingBlockStart(text, index) {
     }
   }
   return stack.at(-1) ?? 0;
-}
-
-function typescriptCaseClause(text, label) {
-  const startMatch = new RegExp(
-    `\\bcase\\s*['"]${escapeRuntimeExecutionBoundaryRegexp(label)}['"]\\s*:`,
-  ).exec(text);
-  if (!startMatch) {
-    return undefined;
-  }
-  const start = startMatch.index;
-  const remainder = text.slice(start + startMatch[0].length);
-  const next = /\n\s*(?:case\s+[^:]+|default)\s*:/.exec(remainder);
-  const end = next
-    ? start + startMatch[0].length + next.index
-    : text.length;
-  return { end, start, text: text.slice(start, end) };
 }
 
 function callRange(text, index) {
