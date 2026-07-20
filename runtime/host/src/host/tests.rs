@@ -140,6 +140,18 @@ fn router_binary_chunk(message: RouterWriterMessage) -> (ResponseChunkFrameHeade
     decode_typed_binary_frame(&frame).expect("binary response chunk should decode")
 }
 
+async fn spawn_resolved_host_test_request(
+    host: &RuntimeHost,
+    request: RequestEnvelope,
+    sender: mpsc::UnboundedSender<RouterWriterMessage>,
+) {
+    let operation_context = host
+        .lookup_request_operation(&request)
+        .expect("host test request operation should resolve");
+    host.spawn_resolved_request(operation_context, request, sender, "runtime.request_error")
+        .await;
+}
+
 fn set_request_string_arg(request: &mut RequestEnvelope, name: &str, value: &str) {
     let args_descriptor = json!({
         "kind": "record",
@@ -1543,7 +1555,7 @@ async fn request_error_emits_trace_event() {
         }),
     );
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = timeout(Duration::from_secs(1), receiver.recv())
         .await
         .expect("response should not block")
@@ -1608,7 +1620,7 @@ async fn interpreter_request_error_includes_executable_diagnostic_frame() {
     let mut request = request(BUILD_A, "program.target");
     request.payload_bytes = b"not-runtime-payload".to_vec();
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = timeout(Duration::from_secs(1), receiver.recv())
         .await
         .expect("response should not block")
@@ -1695,7 +1707,7 @@ async fn telemetry_down_does_not_block_simple_request_path() {
     let mut request = request(BUILD_A, "program.target");
     set_request_string_arg(&mut request, "input", "Ada");
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = timeout(Duration::from_millis(500), receiver.recv())
         .await
         .expect("telemetry outage must not block request")
@@ -1791,7 +1803,7 @@ async fn runtime_program_service_routes_registers_and_executes() {
     let mut request = request(BUILD_A, "program.target");
     set_request_string_arg(&mut request, "input", "Ada");
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = timeout(Duration::from_secs(1), receiver.recv())
         .await
         .expect("runtime program response should not block")
@@ -1927,7 +1939,7 @@ async fn runtime_binary_http_request_returns_binary_http_response_body() {
     )
     .expect("binary HTTP request should build");
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = router_binary(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2158,7 +2170,7 @@ async fn runtime_raw_http_adapter_stream_passes_pre_context_to_handler() {
     );
     request.mode = "serverStream".to_string();
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let (start, start_payload) = router_binary_start(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2223,7 +2235,7 @@ async fn runtime_binary_http_server_stream_sends_start_chunks_and_end() {
     let body = b"stream chunk".to_vec();
     let request = binary_http_stream_request("request-http-stream", body.clone());
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let (start, start_payload) = router_binary_start(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2399,7 +2411,7 @@ async fn runtime_binary_http_request_rejects_std_http_service_symbol_types() {
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let request = binary_http_request("request-http-fallback", Vec::new());
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let error = router_binary_error_json(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2441,7 +2453,7 @@ async fn runtime_binary_http_request_rejects_std_http_package_symbol_types() {
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let request = binary_http_request("request-http-package-fallback", Vec::new());
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let error = router_binary_error_json(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2482,7 +2494,7 @@ async fn runtime_binary_http_request_rejects_non_http_fallback_service_symbol_ty
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let request = binary_http_request("request-http-reject", Vec::new());
 
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let error = router_binary_error_json(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2533,7 +2545,7 @@ async fn runtime_binary_operation_decodes_payload_args_and_encodes_response_payl
     request.payload_bytes = payload;
 
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     let response = router_binary(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -2656,8 +2668,7 @@ async fn runtime_binary_operation_coerces_map_literal_return_to_union_record_pay
     })
     .expect("host should build");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_request(request(BUILD_A, "program.target"), sender)
-        .await;
+    spawn_resolved_host_test_request(&host, request(BUILD_A, "program.target"), sender).await;
     let response = router_binary(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -3765,7 +3776,7 @@ async fn run_runtime_program_request(
     })
     .expect("host should build");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     router_binary_error_json(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -3793,7 +3804,7 @@ async fn run_runtime_program_binary_http_request(
     })
     .expect("host should build");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_request(request, sender).await;
+    spawn_resolved_host_test_request(&host, request, sender).await;
     router_binary_end(
         timeout(Duration::from_secs(1), receiver.recv())
             .await
