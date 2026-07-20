@@ -25,4 +25,6 @@ pub use error::{Result, RuntimeError};
 pub use skiff_runtime_model::{request_heap, runtime_value, runtime_value_graph};
 
 #[cfg(test)]
+mod callback_materialization_tests;
+#[cfg(test)]
 mod service_linkable_tests;
