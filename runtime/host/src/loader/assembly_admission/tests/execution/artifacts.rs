@@ -12,11 +12,14 @@ use super::resolver::TypedResolver;
 
 const CALLBACK_INTERFACE_SYMBOL: &str = "CallbackProbe";
 const CALLBACK_INTERFACE_METHOD: &str = "invoke";
+const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
 
 #[derive(Clone)]
 pub(super) struct TypedExecutionContract {
-    operation: BoundaryOperationContract,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    consumer_operation: BoundaryOperationContract,
+    consumer_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    provider_operation: BoundaryOperationContract,
+    provider_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
 }
 
 impl TypedExecutionContract {
@@ -25,13 +28,72 @@ impl TypedExecutionContract {
         boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
     ) -> Self {
         Self {
-            operation,
-            boundary_schema,
+            consumer_operation: operation.clone(),
+            consumer_boundary_schema: boundary_schema.clone(),
+            provider_operation: operation,
+            provider_boundary_schema: boundary_schema,
         }
     }
 
     pub(super) fn unary() -> Self {
         Self::new(unary_contract(), BTreeMap::new())
+    }
+
+    pub(super) fn callback() -> Self {
+        Self::callback_with_operation_key(CALLBACK_INTERFACE_METHOD)
+    }
+
+    pub(super) fn callback_with_operation_key(contract_operation: &str) -> Self {
+        let service_id = "example.phase-four.provider";
+        let contract_version = "1.0.0";
+        let stable_key = "callbackProbe";
+        let callback_type_id =
+            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
+                .expect("callback fixture ContractTypeId should be canonical");
+        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let callback_plan = BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request,
+        };
+        let mut provider_operation = unary_contract();
+        provider_operation.parameters = vec![BoundaryParameter {
+            name: "callback".to_string(),
+            ty: callback_type,
+            value_plan: callback_plan,
+        }];
+        provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
+            interface_type_ids: vec![callback_type_id.clone()],
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityUnavailable,
+        };
+        let provider_boundary_schema = BTreeMap::from([(
+            callback_type_id.clone(),
+            ContractSchemaType {
+                contract_type_id: callback_type_id,
+                stable_key: stable_key.to_string(),
+                shape: ContractTypeShape {
+                    nameability: ContractTypeNameability::PublicNameable,
+                    descriptor: ContractTypeDescriptor::CallbackInterface {
+                        operations: BTreeMap::from([(
+                            contract_operation.to_string(),
+                            BoundaryCallbackOperation {
+                                parameters: Vec::new(),
+                                return_type: ContractTypeRef::builtin("bool"),
+                                may_suspend: false,
+                            },
+                        )]),
+                    },
+                },
+            },
+        )]);
+        Self {
+            consumer_operation: unary_contract(),
+            consumer_boundary_schema: BTreeMap::new(),
+            provider_operation,
+            provider_boundary_schema,
+        }
     }
 }
 
@@ -48,20 +110,22 @@ pub(super) struct ProjectedFixture {
 
 impl ProjectedFixture {
     pub(super) fn new(contract_fixture: TypedExecutionContract) -> Self {
-        let operation_contract = contract_fixture.operation;
-        let boundary_schema = contract_fixture.boundary_schema;
+        let consumer_operation_contract = contract_fixture.consumer_operation;
+        let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
+        let provider_operation_contract = contract_fixture.provider_operation;
+        let provider_boundary_schema = contract_fixture.provider_boundary_schema;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
-            operation_contract.clone(),
-            boundary_schema.clone(),
+            provider_operation_contract.clone(),
+            provider_boundary_schema,
         );
         let provider_contract_ref = contract_ref(&provider_contract);
         let (consumer_contract, consumer_operation) = service_contract(
             "example.phase-four.consumer",
             "consume",
-            operation_contract.clone(),
-            boundary_schema,
+            consumer_operation_contract.clone(),
+            consumer_boundary_schema,
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
@@ -69,9 +133,10 @@ impl ProjectedFixture {
         let provider_file = implementation_file(
             "phase_four.provider",
             "provide",
-            operation_contract.may_suspend,
+            provider_operation_contract.may_suspend,
             None,
             None,
+            operation_has_callback_parameter(&provider_operation_contract),
         );
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -79,7 +144,7 @@ impl ProjectedFixture {
             "provide",
             provider_callable.clone(),
             &provider_file,
-            operation_contract.clone(),
+            provider_operation_contract,
             None,
             None,
         );
@@ -100,9 +165,12 @@ impl ProjectedFixture {
         let consumer_file = implementation_file(
             "phase_four.consumer",
             "consume",
-            operation_contract.may_suspend,
+            consumer_operation_contract.may_suspend,
             Some(service_call.clone()),
             Some(("providerPackage".to_string(), provider_callable.clone())),
+            operation_has_callback_parameter(
+                &provider_contract.operations[&provider_operation].contract,
+            ),
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
@@ -111,7 +179,7 @@ impl ProjectedFixture {
             "consume",
             PackageCallableId::new("callable:phase-four-consumer"),
             &consumer_file,
-            operation_contract,
+            consumer_operation_contract,
             Some((provider_requirement, service_call)),
             Some(("providerPackage".to_string(), provider_package_ref.clone())),
         );
@@ -303,6 +371,7 @@ fn implementation_file(
     may_suspend: bool,
     service_call: Option<ServiceCallRef>,
     package_call: Option<(String, PackageCallableId)>,
+    callback_lane: bool,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
     let mut entry = ExecutableIr {
@@ -317,20 +386,31 @@ fn implementation_file(
         body: ExecutableBody::default(),
         source_span: None,
     };
-    if let Some(service_call) = service_call {
+    if callback_lane && service_call.is_none() {
+        configure_callback_provider_entry(&mut entry);
+    } else if let Some(service_call) = service_call {
         file.external_refs.service_call_refs.push(service_call);
+        let call_args = if callback_lane {
+            append_callback_preimage(&mut entry, module_path)
+        } else {
+            Vec::new()
+        };
+        let call_expression = u32::try_from(entry.body.expressions.len())
+            .expect("fixture expression count should fit u32");
         entry.body.expressions.push(ExprIr::Call {
             call: CallIr {
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(0),
                 },
-                args: Vec::new(),
+                args: call_args,
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
         });
         entry.body.statements.push(StmtIr::Expr {
-            value: ExprRefIr { expression: 0 },
+            value: ExprRefIr {
+                expression: call_expression,
+            },
         });
         entry.body.blocks.push(BlockIr {
             label: "entry".to_string(),
@@ -354,59 +434,189 @@ fn implementation_file(
             },
             Vec::new(),
         ));
-        let callback_interface = callback_interface_ref(module_path);
-        let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
-            &callback_interface,
-            CALLBACK_INTERFACE_METHOD,
-        );
-        file.declarations.types.insert(
-            CALLBACK_INTERFACE_SYMBOL.to_string(),
-            TypeDeclarationIr {
-                type_index: 0,
-                symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}"),
-                source_span: None,
-            },
-        );
-        file.declarations.interfaces.insert(
-            CALLBACK_INTERFACE_SYMBOL.to_string(),
-            InterfaceDeclIr {
-                name: CALLBACK_INTERFACE_SYMBOL.to_string(),
-                type_params: Vec::new(),
-                operations: vec![InterfaceOperationIr {
-                    name: CALLBACK_INTERFACE_METHOD.to_string(),
-                    type_params: Vec::new(),
-                    params: vec![FunctionTypeParamIr {
-                        name: "self".to_string(),
-                        ty: TypeRefIr::native("Self"),
-                    }],
-                    return_type: TypeRefIr::native("bool"),
-                    is_native: false,
-                    is_provider: false,
-                    is_static: false,
-                    implicit_self: None,
-                }],
-                source_span: None,
-            },
-        );
-        file.type_table.push(TypeDeclIr {
-            name: CALLBACK_INTERFACE_SYMBOL.to_string(),
-            descriptor: TypeDescriptorIr::Record {
-                fields: BTreeMap::new(),
-            },
-            type_params: Vec::new(),
-            discriminator: None,
-            implements: Vec::new(),
-            source_span: None,
-        });
-        file.executables.push(callback_checkpoint_executable(
-            format!("{symbol}_callback"),
-            callback_interface,
-            callback_method_abi_id,
-        ));
+        install_callback_interface_fixture(&mut file, module_path, symbol, callback_lane);
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
         .expect("fixture File IR should receive a canonical identity");
     file
+}
+
+fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
+    let callback_interface = callback_interface_ref("phase_four.consumer");
+    let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
+        &callback_interface,
+        CALLBACK_INTERFACE_METHOD,
+    );
+    entry.params.push(ParamIr {
+        name: "callback".to_string(),
+        slot: 0,
+        ty: TypeRefIr::AnyInterface {
+            interface: callback_interface.clone(),
+        },
+    });
+    entry.slots = SlotLayout {
+        slots: vec![SlotIr {
+            index: 0,
+            name: "callback".to_string(),
+            kind: SlotKind::Param,
+        }],
+        frame_size: 1,
+    };
+    entry.body = ExecutableBody {
+        blocks: vec![BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        }],
+        statements: vec![StmtIr::Expr {
+            value: ExprRefIr { expression: 1 },
+        }],
+        expressions: vec![
+            ExprIr::LoadSlot { slot: 0 },
+            ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::InterfaceMethod {
+                        interface: callback_interface,
+                        method_abi_id: callback_method_abi_id,
+                        slot: 0,
+                    },
+                    args: vec![ExprRefIr { expression: 0 }],
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            },
+        ],
+    };
+}
+
+fn append_callback_preimage(entry: &mut ExecutableIr, module_path: &str) -> Vec<ExprRefIr> {
+    let callback_interface = callback_interface_ref(module_path);
+    let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
+        &callback_interface,
+        CALLBACK_INTERFACE_METHOD,
+    );
+    let concrete_type = TypeRefIr::LocalType { type_index: 0 };
+    entry.body.expressions.extend([
+        ExprIr::Literal {
+            value: LiteralIr::Bool { value: true },
+        },
+        ExprIr::InterfaceBox {
+            value: ExprRefIr { expression: 0 },
+            interface: callback_interface.clone(),
+            source: BoxSourceIr::Local {
+                concrete_type: concrete_type.clone(),
+                method_table: InterfaceMethodTablePlanIr {
+                    interface: callback_interface,
+                    concrete_type: concrete_type.clone(),
+                    slots: vec![InterfaceMethodSlotPlanIr {
+                        slot: 0,
+                        method_name: CALLBACK_INTERFACE_METHOD.to_string(),
+                        method_abi_id: callback_method_abi_id,
+                        signature: InterfaceMethodSlotSignatureIr {
+                            params: vec![FunctionTypeParamIr {
+                                name: "self".to_string(),
+                                ty: concrete_type,
+                            }],
+                            return_type: TypeRefIr::native("bool"),
+                        },
+                        target: InterfaceMethodSlotTargetIr {
+                            executable_index: CALLBACK_OWNER_EXECUTABLE_INDEX,
+                            receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+                        },
+                    }],
+                },
+            },
+        },
+    ]);
+    vec![ExprRefIr { expression: 1 }]
+}
+
+fn install_callback_interface_fixture(
+    file: &mut FileIrUnit,
+    module_path: &str,
+    symbol: &str,
+    include_owner_method: bool,
+) {
+    let callback_interface = callback_interface_ref(module_path);
+    let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
+        &callback_interface,
+        CALLBACK_INTERFACE_METHOD,
+    );
+    file.declarations.types.insert(
+        CALLBACK_INTERFACE_SYMBOL.to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: format!("{module_path}.{CALLBACK_INTERFACE_SYMBOL}"),
+            source_span: None,
+        },
+    );
+    file.declarations.interfaces.insert(
+        CALLBACK_INTERFACE_SYMBOL.to_string(),
+        InterfaceDeclIr {
+            name: CALLBACK_INTERFACE_SYMBOL.to_string(),
+            type_params: Vec::new(),
+            operations: vec![InterfaceOperationIr {
+                name: CALLBACK_INTERFACE_METHOD.to_string(),
+                type_params: Vec::new(),
+                params: vec![FunctionTypeParamIr {
+                    name: "self".to_string(),
+                    ty: TypeRefIr::native("Self"),
+                }],
+                return_type: TypeRefIr::native("bool"),
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: None,
+            }],
+            source_span: None,
+        },
+    );
+    file.type_table.push(TypeDeclIr {
+        name: CALLBACK_INTERFACE_SYMBOL.to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: Vec::new(),
+        discriminator: None,
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file.executables.push(callback_checkpoint_executable(
+        format!("{symbol}_callback"),
+        callback_interface,
+        callback_method_abi_id,
+    ));
+    if include_owner_method {
+        assert_eq!(
+            file.executables.len(),
+            CALLBACK_OWNER_EXECUTABLE_INDEX as usize,
+            "callback fixture owner executable index must match its admitted method table"
+        );
+        file.executables.push(ExecutableIr {
+            kind: ExecutableKind::ImplMethod,
+            symbol: format!("{CALLBACK_INTERFACE_SYMBOL}.{CALLBACK_INTERFACE_METHOD}"),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::native("bool"),
+            self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
+            slots: SlotLayout::default(),
+            may_suspend: false,
+            body: ExecutableBody::default(),
+            source_span: None,
+        });
+    }
+}
+
+fn operation_has_callback_parameter(operation: &BoundaryOperationContract) -> bool {
+    operation.parameters.iter().any(|parameter| {
+        matches!(
+            parameter.value_plan,
+            BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::CallbackCapability,
+                encoding: BoundaryValueEncoding::OpaqueCapability,
+                ..
+            }
+        )
+    })
 }
 
 fn checkpoint_call_executable(

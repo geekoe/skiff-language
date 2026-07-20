@@ -7,12 +7,12 @@ use skiff_artifact_model::{
     BoundaryCallbackOperation, ContractSchemaType, ContractTypeId, ContractTypeRef,
 };
 use skiff_runtime_model::{
-    addr::ExecutableAddr,
-    request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap},
-    runtime_value::{
-        InterfaceCarrier, InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue,
-        RuntimeValue,
+    callback_projection::{
+        CallbackContractOperationProjection, CallbackContractProjection,
+        CallbackContractProjectionError,
     },
+    request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap},
+    runtime_value::{InterfaceCarrier, InterfaceValue, RuntimeValue},
 };
 
 const EXPLICIT_NATIVE_ADAPTER_PREFIX: &str = "native-callback-adapter:";
@@ -29,27 +29,67 @@ pub fn explicit_native_callback_adapter_concrete_type(adapter_identity: &str) ->
 pub struct ExplicitNativeCallbackAdapterDescriptor {
     adapter_identity: String,
     boundary_type: ContractTypeRef,
-    adapter_contract: String,
-    operations: BTreeMap<String, BoundaryCallbackOperation>,
+    canonical_contract_type_id: ContractTypeId,
+    operations: BTreeMap<String, ExplicitNativeCallbackOperation>,
+}
+
+/// Native adapters must declare the same explicit stable-name/method-ABI
+/// mapping used by local callback projection. A native marker alone is never a
+/// license to expose every method in the local table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplicitNativeCallbackOperation {
+    contract: BoundaryCallbackOperation,
+    local_method_name: String,
+    method_abi_id: String,
+}
+
+impl ExplicitNativeCallbackOperation {
+    pub fn new(
+        contract: BoundaryCallbackOperation,
+        local_method_name: impl Into<String>,
+        method_abi_id: impl Into<String>,
+    ) -> Result<Self, CallbackAdapterError> {
+        let operation = Self {
+            contract,
+            local_method_name: local_method_name.into(),
+            method_abi_id: method_abi_id.into(),
+        };
+        if operation.local_method_name.is_empty() || operation.method_abi_id.is_empty() {
+            return Err(CallbackAdapterError::MissingNativeOperationMapping);
+        }
+        Ok(operation)
+    }
+
+    pub fn contract(&self) -> &BoundaryCallbackOperation {
+        &self.contract
+    }
+
+    pub fn local_method_name(&self) -> &str {
+        &self.local_method_name
+    }
+
+    pub fn method_abi_id(&self) -> &str {
+        &self.method_abi_id
+    }
 }
 
 impl ExplicitNativeCallbackAdapterDescriptor {
     pub fn new(
         adapter_identity: impl Into<String>,
         boundary_type: ContractTypeRef,
-        adapter_contract: impl Into<String>,
-        operations: BTreeMap<String, BoundaryCallbackOperation>,
+        canonical_contract_type_id: ContractTypeId,
+        operations: BTreeMap<String, ExplicitNativeCallbackOperation>,
     ) -> Result<Self, CallbackAdapterError> {
         let descriptor = Self {
             adapter_identity: adapter_identity.into(),
             boundary_type,
-            adapter_contract: adapter_contract.into(),
+            canonical_contract_type_id,
             operations,
         };
         if descriptor.adapter_identity.is_empty() {
             return Err(CallbackAdapterError::MissingAdapterIdentity);
         }
-        if descriptor.adapter_contract.is_empty() {
+        if descriptor.canonical_contract_type_id.as_str().is_empty() {
             return Err(CallbackAdapterError::MissingContract);
         }
         Ok(descriptor)
@@ -63,11 +103,11 @@ impl ExplicitNativeCallbackAdapterDescriptor {
         &self.boundary_type
     }
 
-    pub fn adapter_contract(&self) -> &str {
-        &self.adapter_contract
+    pub fn canonical_contract_type_id(&self) -> &ContractTypeId {
+        &self.canonical_contract_type_id
     }
 
-    pub fn operations(&self) -> &BTreeMap<String, BoundaryCallbackOperation> {
+    pub fn operations(&self) -> &BTreeMap<String, ExplicitNativeCallbackOperation> {
         &self.operations
     }
 }
@@ -99,57 +139,9 @@ pub enum InProcessCallbackAdapterKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct InProcessCallbackOperation {
-    contract_operation: String,
-    slot: u32,
-    method_abi_id: String,
-    executable: ExecutableAddr,
-    receiver_call_abi: InterfaceReceiverCallAbi,
-    parameters: Vec<ContractTypeRef>,
-    return_type: ContractTypeRef,
-    may_suspend: bool,
-}
-
-impl InProcessCallbackOperation {
-    pub fn contract_operation(&self) -> &str {
-        &self.contract_operation
-    }
-
-    pub const fn slot(&self) -> u32 {
-        self.slot
-    }
-
-    pub fn method_abi_id(&self) -> &str {
-        &self.method_abi_id
-    }
-
-    pub fn executable(&self) -> &ExecutableAddr {
-        &self.executable
-    }
-
-    pub const fn receiver_call_abi(&self) -> InterfaceReceiverCallAbi {
-        self.receiver_call_abi
-    }
-
-    pub fn parameters(&self) -> &[ContractTypeRef] {
-        &self.parameters
-    }
-
-    pub fn return_type(&self) -> &ContractTypeRef {
-        &self.return_type
-    }
-
-    pub const fn may_suspend(&self) -> bool {
-        self.may_suspend
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct InProcessCallbackAdapter {
-    contract: String,
-    source_interface: String,
+    projection: CallbackContractProjection,
     kind: InProcessCallbackAdapterKind,
-    operations: Vec<InProcessCallbackOperation>,
     receiver: RuntimeValue,
     boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
     owner_heap: Arc<tokio::sync::Mutex<RequestHeap>>,
@@ -157,16 +149,17 @@ pub struct InProcessCallbackAdapter {
 
 impl InProcessCallbackAdapter {
     pub fn from_local_interface(
-        contract: impl Into<String>,
+        canonical_contract_type_id: ContractTypeId,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         Self::from_interface(
-            contract.into(),
+            canonical_contract_type_id,
             interface,
             contract_operations,
+            None,
             boundary_schema,
             source_heap,
             false,
@@ -192,10 +185,16 @@ impl InProcessCallbackAdapter {
         if descriptor.boundary_type() != boundary_type {
             return Err(CallbackAdapterError::BoundaryTypeMismatch);
         }
+        let contract_operations = descriptor
+            .operations()
+            .iter()
+            .map(|(name, operation)| (name.clone(), operation.contract().clone()))
+            .collect();
         Self::from_interface(
-            descriptor.adapter_contract().to_string(),
+            descriptor.canonical_contract_type_id().clone(),
             interface,
-            descriptor.operations(),
+            &contract_operations,
+            Some(descriptor.operations()),
             boundary_schema,
             source_heap,
             true,
@@ -203,14 +202,15 @@ impl InProcessCallbackAdapter {
     }
 
     fn from_interface(
-        contract: String,
+        canonical_contract_type_id: ContractTypeId,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
+        native_mappings: Option<&BTreeMap<String, ExplicitNativeCallbackOperation>>,
         boundary_schema: &BTreeMap<ContractTypeId, ContractSchemaType>,
         source_heap: &RequestHeap,
         require_native_adapter: bool,
     ) -> Result<Self, CallbackAdapterError> {
-        if contract.is_empty() {
+        if canonical_contract_type_id.as_str().is_empty() {
             return Err(CallbackAdapterError::MissingContract);
         }
         let InterfaceCarrier::Local {
@@ -224,9 +224,6 @@ impl InProcessCallbackAdapter {
         if method_table.interface_abi_id() != interface.interface() {
             return Err(CallbackAdapterError::InterfaceIdentityMismatch);
         }
-        if interface.interface() != contract {
-            return Err(CallbackAdapterError::InterfaceIdentityMismatch);
-        }
         let kind = if require_native_adapter {
             let adapter_identity = explicit_native_adapter_identity(interface)?;
             InProcessCallbackAdapterKind::ExplicitNative {
@@ -235,41 +232,25 @@ impl InProcessCallbackAdapter {
         } else {
             InProcessCallbackAdapterKind::LocalInterface
         };
-        if method_table.slots().len() != contract_operations.len() {
-            return Err(CallbackAdapterError::OperationCountMismatch {
-                contract: contract_operations.len(),
-                implementation: method_table.slots().len(),
-            });
-        }
-        let operations = contract_operations
-            .iter()
-            .zip(method_table.slots())
-            .enumerate()
-            .map(|(index, ((contract_operation, descriptor), method))| {
-                let expected_slot = u32::try_from(index)
-                    .map_err(|_| CallbackAdapterError::OperationSlotOverflow)?;
-                if method.slot() != expected_slot || method.method_abi_id().is_empty() {
-                    return Err(CallbackAdapterError::MethodTableMismatch {
-                        contract_operation: contract_operation.clone(),
-                        expected_slot,
-                    });
-                }
-                let InterfaceMethodTarget::LocalExecutable {
-                    executable,
-                    receiver_call_abi,
-                } = method.target();
-                Ok(InProcessCallbackOperation {
-                    contract_operation: contract_operation.clone(),
-                    slot: method.slot(),
-                    method_abi_id: method.method_abi_id().to_string(),
-                    executable: executable.clone(),
-                    receiver_call_abi: *receiver_call_abi,
-                    parameters: descriptor.parameters.clone(),
-                    return_type: descriptor.return_type.clone(),
-                    may_suspend: descriptor.may_suspend,
+        let projection = CallbackContractProjection::build(
+            canonical_contract_type_id,
+            contract_operations,
+            interface,
+        )?;
+        if let Some(native_mappings) = native_mappings {
+            if native_mappings.len() != projection.operations().len()
+                || projection.operations().iter().any(|operation| {
+                    native_mappings
+                        .get(operation.contract_operation())
+                        .is_none_or(|mapping| {
+                            mapping.local_method_name() != operation.local_method_name()
+                                || mapping.method_abi_id() != operation.method_abi_id()
+                        })
                 })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            {
+                return Err(CallbackAdapterError::NativeOperationMappingMismatch);
+            }
+        }
         let mut owner_heap = RequestHeap::new(source_heap.limits().clone());
         let receiver =
             deep_clone_runtime_value_between_heaps(source_heap, &mut owner_heap, payload).map_err(
@@ -278,22 +259,20 @@ impl InProcessCallbackAdapter {
                 },
             )?;
         Ok(Self {
-            contract,
-            source_interface: interface.interface().to_string(),
+            projection,
             kind,
-            operations,
             receiver,
             boundary_schema: boundary_schema.clone(),
             owner_heap: Arc::new(tokio::sync::Mutex::new(owner_heap)),
         })
     }
 
-    pub fn contract(&self) -> &str {
-        &self.contract
+    pub fn canonical_contract_type_id(&self) -> &ContractTypeId {
+        self.projection.canonical_contract_type_id()
     }
 
     pub fn source_interface(&self) -> &str {
-        &self.source_interface
+        self.projection.local_interface_abi_id()
     }
 
     pub fn kind(&self) -> &InProcessCallbackAdapterKind {
@@ -308,8 +287,12 @@ impl InProcessCallbackAdapter {
         &self.boundary_schema
     }
 
-    pub fn operations(&self) -> &[InProcessCallbackOperation] {
-        &self.operations
+    pub fn projection(&self) -> &CallbackContractProjection {
+        &self.projection
+    }
+
+    pub fn operations(&self) -> &[CallbackContractOperationProjection] {
+        self.projection.operations()
     }
 
     pub fn owner_heap(&self) -> &tokio::sync::Mutex<RequestHeap> {
@@ -320,16 +303,10 @@ impl InProcessCallbackAdapter {
         &self,
         slot: u32,
         method_abi_id: &str,
-    ) -> Result<&InProcessCallbackOperation, CallbackAdapterError> {
-        let index =
-            usize::try_from(slot).map_err(|_| CallbackAdapterError::OperationUnavailable {
-                slot,
-                method_abi_id: method_abi_id.to_string(),
-            })?;
+    ) -> Result<&CallbackContractOperationProjection, CallbackAdapterError> {
         let operation = self
-            .operations
-            .get(index)
-            .filter(|operation| operation.slot == slot && operation.method_abi_id == method_abi_id)
+            .projection
+            .operation(slot, method_abi_id)
             .ok_or_else(|| CallbackAdapterError::OperationUnavailable {
                 slot,
                 method_abi_id: method_abi_id.to_string(),
@@ -346,8 +323,14 @@ pub enum CallbackAdapterError {
     MissingContract,
     #[error("callback adapter source must be an owner-local interface")]
     SourceMustBeLocal,
-    #[error("callback adapter interface identity does not match its method table or contract")]
+    #[error("callback adapter local interface ABI does not match its method table")]
     InterfaceIdentityMismatch,
+    #[error(
+        "native callback adapter operation mapping must declare local method name and method ABI"
+    )]
+    MissingNativeOperationMapping,
+    #[error("native callback adapter operation mapping does not match admitted local metadata")]
+    NativeOperationMappingMismatch,
     #[error("native callback adapter does not declare the requested boundary type")]
     BoundaryTypeMismatch,
     #[error("native value has no explicit callback adapter")]
@@ -362,24 +345,10 @@ pub enum CallbackAdapterError {
     AdapterRegistryUnavailable,
     #[error("callback adapter owner state cannot be materialized: {message}")]
     OwnerStateMaterialization { message: String },
-    #[error(
-        "callback adapter operation count mismatch: contract declares {contract}, implementation has {implementation}"
-    )]
-    OperationCountMismatch {
-        contract: usize,
-        implementation: usize,
-    },
-    #[error("callback adapter operation slot does not fit u32")]
-    OperationSlotOverflow,
-    #[error(
-        "callback adapter method table does not implement contract operation {contract_operation} at slot {expected_slot}"
-    )]
-    MethodTableMismatch {
-        contract_operation: String,
-        expected_slot: u32,
-    },
     #[error("callback operation {method_abi_id} at slot {slot} is unavailable")]
     OperationUnavailable { slot: u32, method_abi_id: String },
+    #[error(transparent)]
+    CanonicalProjection(#[from] CallbackContractProjectionError),
 }
 
 fn explicit_native_adapter_identity(
@@ -397,11 +366,14 @@ fn explicit_native_adapter_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_runtime_model::addr::ExecutableAddr;
     use skiff_runtime_model::runtime_value::{
-        InterfaceMethodSlot, InterfaceMethodTable, InterfaceValue,
+        InterfaceMethodSignature, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
+        InterfaceMethodType, InterfaceReceiverCallAbi, InterfaceValue,
     };
 
     const CONTRACT: &str = "contract:observer";
+    const INTERFACE: &str = "interface-abi:observer";
     const METHOD: &str = "method:observer:observe";
 
     fn boundary_type() -> ContractTypeRef {
@@ -419,17 +391,37 @@ mod tests {
         )])
     }
 
+    fn native_operations() -> BTreeMap<String, ExplicitNativeCallbackOperation> {
+        BTreeMap::from([(
+            "observe".to_string(),
+            ExplicitNativeCallbackOperation::new(
+                operations().remove("observe").unwrap(),
+                "observe",
+                METHOD,
+            )
+            .unwrap(),
+        )])
+    }
+
     fn interface(concrete_type: String) -> InterfaceValue {
         InterfaceValue::new(
-            CONTRACT.to_string(),
+            INTERFACE.to_string(),
             InterfaceCarrier::Local {
                 concrete_type,
                 method_table: InterfaceMethodTable::new(
                     "table:observer".to_string(),
-                    CONTRACT.to_string(),
-                    vec![InterfaceMethodSlot::new(
+                    INTERFACE.to_string(),
+                    vec![InterfaceMethodSlot::from_admitted_metadata(
                         0,
+                        "observe".to_string(),
                         METHOD.to_string(),
+                        InterfaceMethodSignature::new(
+                            vec![
+                                InterfaceMethodType::builtin("Self"),
+                                InterfaceMethodType::builtin("string"),
+                            ],
+                            InterfaceMethodType::builtin("bool"),
+                        ),
                         InterfaceMethodTarget::LocalExecutable {
                             executable: ExecutableAddr::service(0, 7),
                             receiver_call_abi: InterfaceReceiverCallAbi::ExplicitSelfFirst,
@@ -447,8 +439,8 @@ mod tests {
             ExplicitNativeCallbackAdapterDescriptor::new(
                 "builtin:test",
                 boundary_type(),
-                CONTRACT,
-                operations(),
+                ContractTypeId::new(CONTRACT),
+                native_operations(),
             )
             .unwrap(),
         )
@@ -462,7 +454,7 @@ mod tests {
             &RequestHeap::default(),
         )
         .expect("explicit native adapter should project");
-        assert_eq!(adapter.contract(), CONTRACT);
+        assert_eq!(adapter.canonical_contract_type_id().as_str(), CONTRACT);
         assert!(matches!(
             adapter.kind(),
             InProcessCallbackAdapterKind::ExplicitNative { adapter_identity }
@@ -490,6 +482,58 @@ mod tests {
                 &RequestHeap::default(),
             ),
             Err(CallbackAdapterError::BoundaryTypeMismatch)
+        ));
+    }
+
+    #[test]
+    fn callback_adapter_projects_distinct_contract_and_interface_identities_by_name() {
+        let adapter = InProcessCallbackAdapter::from_local_interface(
+            ContractTypeId::new(CONTRACT),
+            &interface("local:observer".to_string()),
+            &operations(),
+            &BTreeMap::new(),
+            &RequestHeap::default(),
+        )
+        .expect("contract identity must not be compared to local interface ABI");
+        assert_eq!(adapter.canonical_contract_type_id().as_str(), CONTRACT);
+        assert_eq!(adapter.source_interface(), INTERFACE);
+        assert_eq!(
+            adapter.operation(0, METHOD).unwrap().local_method_name(),
+            "observe"
+        );
+    }
+
+    #[test]
+    fn callback_adapter_rejects_explicit_native_mapping_that_disagrees_with_admitted_abi() {
+        let identity = "builtin:wrong-mapping";
+        let wrong_mapping = BTreeMap::from([(
+            "observe".to_string(),
+            ExplicitNativeCallbackOperation::new(
+                operations().remove("observe").unwrap(),
+                "observe",
+                "method:wrong",
+            )
+            .unwrap(),
+        )]);
+        register_explicit_native_callback_adapter(
+            ExplicitNativeCallbackAdapterDescriptor::new(
+                identity,
+                boundary_type(),
+                ContractTypeId::new(CONTRACT),
+                wrong_mapping,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            InProcessCallbackAdapter::from_registered_explicit_native_interface(
+                &boundary_type(),
+                &interface(explicit_native_callback_adapter_concrete_type(identity)),
+                &BTreeMap::new(),
+                &RequestHeap::default(),
+            ),
+            Err(CallbackAdapterError::NativeOperationMappingMismatch)
         ));
     }
 

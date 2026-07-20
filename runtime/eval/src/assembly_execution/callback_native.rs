@@ -84,7 +84,7 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
         } else {
             let (contract, operations) = callback_contract(request.ty, request.boundary_schema)?;
             InProcessCallbackAdapter::from_local_interface(
-                contract.as_str(),
+                contract.clone(),
                 &interface,
                 operations,
                 request.boundary_schema,
@@ -93,7 +93,8 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
         }
         .map_err(callback_materialization_error)?;
         validate_adapter_preimage(target, &adapter)?;
-        let contract = adapter.contract().to_string();
+        let contract = adapter.canonical_contract_type_id().as_str().to_string();
+        let receiver_interface_abi_id = adapter.source_interface().to_string();
         let lifetime = match request.lifetime {
             BoundaryValueLifetime::Request => CallbackLifetime::Request,
             BoundaryValueLifetime::Stream => CallbackLifetime::Stream,
@@ -121,12 +122,15 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
             )
             .map_err(callback_materialization_error)?;
         let rollback_carrier = carrier.clone();
-        Ok(ServiceLinkableCapabilityProjection::new(
-            carrier,
-            move || {
-                let _ = table.revoke(&rollback_carrier);
-            },
-        ))
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                carrier,
+                receiver_interface_abi_id,
+                move || {
+                    let _ = table.revoke(&rollback_carrier);
+                },
+            ),
+        )
     }
 }
 
@@ -171,7 +175,9 @@ pub(crate) async fn execute_interface_call(
         .map_err(callback_capability_error)?;
     let adapter = Arc::downcast::<InProcessCallbackAdapter>(payload)
         .map_err(|_| callback_capability_error(CallbackCapabilityError::CapabilityUnavailable))?;
-    if adapter.contract() != carrier.interface_or_adapter_contract() || !call.type_args.is_empty() {
+    if adapter.canonical_contract_type_id().as_str() != carrier.interface_or_adapter_contract()
+        || !call.type_args.is_empty()
+    {
         return Err(callback_capability_error(
             CallbackCapabilityError::CapabilityUnavailable,
         ));

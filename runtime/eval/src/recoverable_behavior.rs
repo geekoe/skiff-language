@@ -34,8 +34,10 @@ use skiff_runtime_model::{
     },
     request_heap::RequestHeap,
     runtime_value::{
-        InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget, InterfaceReceiverCallAbi,
-        RemoteOperationSlot, RemoteOperationTable,
+        InterfaceMethodLiteral, InterfaceMethodSignature, InterfaceMethodSlot,
+        InterfaceMethodTable, InterfaceMethodTarget, InterfaceMethodType,
+        InterfaceMethodUnresolvedType, InterfaceReceiverCallAbi, RemoteOperationSlot,
+        RemoteOperationTable,
     },
 };
 
@@ -566,14 +568,94 @@ fn interface_method_slot_from_linked(
             ))
         })?,
     };
-    Ok(InterfaceMethodSlot::new(
+    Ok(InterfaceMethodSlot::from_admitted_metadata(
         slot.slot,
+        slot.method_name.clone(),
         slot.method_abi_id.clone(),
+        InterfaceMethodSignature::new(
+            slot.signature
+                .params
+                .iter()
+                .map(|param| interface_method_type_from_linked(&param.ty))
+                .collect(),
+            interface_method_type_from_linked(&slot.signature.return_type),
+        ),
         InterfaceMethodTarget::LocalExecutable {
             executable,
             receiver_call_abi: interface_receiver_call_abi(slot.target.receiver_call_abi),
         },
     ))
+}
+
+fn interface_method_type_from_linked(ty: &LinkedTypeRef) -> InterfaceMethodType {
+    match ty {
+        LinkedTypeRef::Native { name, args } => InterfaceMethodType::Builtin {
+            name: name.clone(),
+            arguments: args.iter().map(interface_method_type_from_linked).collect(),
+        },
+        LinkedTypeRef::Address { addr } => InterfaceMethodType::Nominal(addr.clone()),
+        LinkedTypeRef::Record { fields } => InterfaceMethodType::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), interface_method_type_from_linked(ty)))
+                .collect(),
+        ),
+        LinkedTypeRef::Union { items } => InterfaceMethodType::Union(
+            items
+                .iter()
+                .map(interface_method_type_from_linked)
+                .collect(),
+        ),
+        LinkedTypeRef::Nullable { inner } => {
+            InterfaceMethodType::Nullable(Box::new(interface_method_type_from_linked(inner)))
+        }
+        LinkedTypeRef::Literal { value } => InterfaceMethodType::Literal(match value {
+            skiff_runtime_linked_program::LiteralIr::Null => InterfaceMethodLiteral::Null,
+            skiff_runtime_linked_program::LiteralIr::Bool { value } => {
+                InterfaceMethodLiteral::Bool(*value)
+            }
+            skiff_runtime_linked_program::LiteralIr::Number { value } => {
+                InterfaceMethodLiteral::Number(value.clone())
+            }
+            skiff_runtime_linked_program::LiteralIr::String { value } => {
+                InterfaceMethodLiteral::String(value.clone())
+            }
+        }),
+        LinkedTypeRef::AnyInterface { interface } => InterfaceMethodType::AnyInterface {
+            interface_abi_id: interface.interface_abi_id.clone(),
+            canonical_type_arguments: interface
+                .canonical_type_args
+                .iter()
+                .map(interface_method_type_from_linked)
+                .collect(),
+        },
+        LinkedTypeRef::Function {
+            params,
+            return_type,
+        } => InterfaceMethodType::Function {
+            parameters: params
+                .iter()
+                .map(|param| interface_method_type_from_linked(&param.ty))
+                .collect(),
+            return_type: Box::new(interface_method_type_from_linked(return_type)),
+        },
+        LinkedTypeRef::TypeParam { name } => InterfaceMethodType::TypeParameter(name.clone()),
+        LinkedTypeRef::LocalType { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::LocalType)
+        }
+        LinkedTypeRef::PublicationType { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PublicationType)
+        }
+        LinkedTypeRef::ServiceSymbol { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::ServiceSymbol)
+        }
+        LinkedTypeRef::PackageSymbol { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::PackageSymbol)
+        }
+        LinkedTypeRef::DbObjectSymbol { .. } => {
+            InterfaceMethodType::Unresolved(InterfaceMethodUnresolvedType::DbObjectSymbol)
+        }
+    }
 }
 
 fn interface_receiver_call_abi(value: ReceiverCallAbi) -> InterfaceReceiverCallAbi {
