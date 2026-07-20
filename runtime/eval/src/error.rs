@@ -1645,6 +1645,34 @@ pub fn attach_diagnostic_frame(error: RuntimeError, frame: Value) -> RuntimeErro
     error.with_diagnostic_frame(frame)
 }
 
+/// Replaces the user-exception leaf without changing diagnostic wrapper structure.
+pub(crate) fn replace_user_exception_preserving_diagnostics(
+    error: RuntimeError,
+    exception: UserException,
+) -> RuntimeError {
+    match error {
+        RuntimeError::UserException(_) => RuntimeError::UserException(exception),
+        RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } => RuntimeError::WithSource {
+            source_id,
+            frame,
+            error: Box::new(replace_user_exception_preserving_diagnostics(
+                *error, exception,
+            )),
+        },
+        RuntimeError::WithDiagnosticFrame { frame, error } => RuntimeError::WithDiagnosticFrame {
+            frame,
+            error: Box::new(replace_user_exception_preserving_diagnostics(
+                *error, exception,
+            )),
+        },
+        other => other,
+    }
+}
+
 pub fn unwrap_diagnostic_source_context(error: &RuntimeError) -> &RuntimeError {
     match error {
         RuntimeError::WithSource { error, .. }
@@ -1793,6 +1821,84 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn replace_user_exception_preserves_nested_diagnostic_and_source_wrappers() {
+        let original_identity = TypeIdentity::builtin("ProviderProblem");
+        let original = UserException::from_typed_payload(
+            serde_json::json!({ "message": "provider" }),
+            original_identity.clone(),
+            Some(original_identity),
+        )
+        .expect("original typed exception should build");
+        let replacement_identity = TypeIdentity::builtin("CallerProblem");
+        let replacement = UserException::from_typed_payload(
+            serde_json::json!({ "message": "caller" }),
+            replacement_identity.clone(),
+            Some(replacement_identity.clone()),
+        )
+        .expect("replacement typed exception should build");
+        let diagnostic_frame = serde_json::json!({ "operation": "service.call" });
+        let source_frame = serde_json::json!({ "sourceId": 41, "module": "provider" });
+        let error = RuntimeError::WithDiagnosticFrame {
+            frame: Box::new(diagnostic_frame.clone()),
+            error: Box::new(RuntimeError::WithSource {
+                source_id: 41,
+                frame: Box::new(source_frame.clone()),
+                error: Box::new(RuntimeError::UserException(original)),
+            }),
+        };
+
+        let replaced = replace_user_exception_preserving_diagnostics(error, replacement);
+
+        let RuntimeError::WithDiagnosticFrame { frame, error } = replaced else {
+            panic!("diagnostic wrapper should remain outermost")
+        };
+        assert_eq!(*frame, diagnostic_frame);
+        let RuntimeError::WithSource {
+            source_id,
+            frame,
+            error,
+        } = *error
+        else {
+            panic!("source wrapper should remain nested inside diagnostic wrapper")
+        };
+        assert_eq!(source_id, 41);
+        assert_eq!(*frame, source_frame);
+        let RuntimeError::UserException(exception) = *error else {
+            panic!("user exception should remain the wrapped leaf")
+        };
+        assert_eq!(exception.actual_payload_type(), &replacement_identity);
+        assert_eq!(
+            exception.envelope()["error"],
+            serde_json::json!({ "message": "caller" })
+        );
+    }
+
+    #[test]
+    fn replace_user_exception_leaves_other_error_classes_unchanged() {
+        let replacement_identity = TypeIdentity::builtin("CallerProblem");
+        let replacement = UserException::from_typed_payload(
+            serde_json::json!({ "message": "caller" }),
+            replacement_identity.clone(),
+            Some(replacement_identity),
+        )
+        .expect("replacement typed exception should build");
+
+        let error = replace_user_exception_preserving_diagnostics(
+            RuntimeError::Protocol {
+                target: "operation:provider".to_string(),
+                message: "provider protocol failure".to_string(),
+            },
+            replacement,
+        );
+
+        assert!(matches!(
+            error,
+            RuntimeError::Protocol { ref target, ref message }
+                if target == "operation:provider" && message == "provider protocol failure"
+        ));
+    }
 
     fn recoverable_boundary_error() -> RecoverableBoundaryError {
         let context = RuntimeRecoverableBoundaryContext::new(

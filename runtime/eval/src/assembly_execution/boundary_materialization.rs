@@ -13,7 +13,7 @@ use skiff_runtime_model::{
 };
 
 use crate::{
-    error::{Result, RuntimeError, UserException},
+    error::{replace_user_exception_preserving_diagnostics, Result, RuntimeError, UserException},
     exceptions::user_exception_for_catch,
     runtime_ops::{runtime_from_wire, runtime_to_wire},
 };
@@ -180,7 +180,10 @@ impl<'a> CanonicalServiceBoundaryPlan<'a> {
             .insert("error".to_string(), detached_payload);
         let detached_exception =
             UserException::from_runtime_parts(exception.actual_payload_type().clone(), envelope);
-        Err(replace_user_exception(error, detached_exception))
+        Err(replace_user_exception_preserving_diagnostics(
+            error,
+            detached_exception,
+        ))
     }
 
     fn protocol_error(&self, message: impl Into<String>) -> RuntimeError {
@@ -301,26 +304,6 @@ fn invalid_materialization_plan(
     RuntimeError::InvalidArtifact(format!(
         "canonical service operation {operation} {role} value plan is invalid: {error}"
     ))
-}
-
-fn replace_user_exception(error: RuntimeError, exception: UserException) -> RuntimeError {
-    match error {
-        RuntimeError::UserException(_) => RuntimeError::UserException(exception),
-        RuntimeError::WithSource {
-            source_id,
-            frame,
-            error,
-        } => RuntimeError::WithSource {
-            source_id,
-            frame,
-            error: Box::new(replace_user_exception(*error, exception)),
-        },
-        RuntimeError::WithDiagnosticFrame { frame, error } => RuntimeError::WithDiagnosticFrame {
-            frame,
-            error: Box::new(replace_user_exception(*error, exception)),
-        },
-        other => other,
-    }
 }
 
 #[cfg(test)]
