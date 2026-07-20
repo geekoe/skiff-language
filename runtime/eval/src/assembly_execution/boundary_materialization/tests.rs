@@ -142,11 +142,17 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         json!({ "message": "rejected", "trace": ["provider"] }),
         identity.clone(),
     );
+    let diagnostic_frame = json!({ "provider": "diagnostic-frame" });
+    let source_frame = json!({ "sourceId": 17, "module": "provider" });
     let error = planner
         .materialize_provider_result(
             Err(RuntimeError::WithDiagnosticFrame {
-                frame: Box::new(json!({ "provider": "frame" })),
-                error: Box::new(RuntimeError::UserException(declared)),
+                frame: Box::new(diagnostic_frame.clone()),
+                error: Box::new(RuntimeError::WithSource {
+                    source_id: 17,
+                    frame: Box::new(source_frame.clone()),
+                    error: Box::new(RuntimeError::UserException(declared)),
+                }),
             }),
             &mut provider_heap,
             &mut caller_heap,
@@ -154,7 +160,28 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         )
         .err()
         .expect("declared typed error should remain an error");
-    assert!(matches!(&error, RuntimeError::WithDiagnosticFrame { .. }));
+    let RuntimeError::WithDiagnosticFrame {
+        frame,
+        error: source_error,
+    } = &error
+    else {
+        panic!("diagnostic wrapper should remain outermost")
+    };
+    assert_eq!(frame.as_ref(), &diagnostic_frame);
+    let RuntimeError::WithSource {
+        source_id,
+        frame,
+        error: user_error,
+    } = source_error.as_ref()
+    else {
+        panic!("source wrapper should remain nested inside diagnostic wrapper")
+    };
+    assert_eq!(*source_id, 17);
+    assert_eq!(frame.as_ref(), &source_frame);
+    assert!(matches!(
+        user_error.as_ref(),
+        RuntimeError::UserException(_)
+    ));
     let caught = user_exception_for_catch(&error).expect("typed error should be caller-catchable");
     assert_eq!(caught.actual_payload_type(), &identity);
     assert_eq!(
@@ -187,7 +214,11 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         )
         .err()
         .expect("typed payload shape mismatch should be protocol error");
-    assert!(matches!(shape_error, RuntimeError::Protocol { .. }));
+    assert!(matches!(
+        shape_error,
+        RuntimeError::Protocol { ref target, .. }
+            if target == "operation:shared-boundary-test"
+    ));
 
     let no_error_operation = operation(
         Vec::new(),
@@ -210,7 +241,11 @@ fn service_error_boundary_classification_is_shared_across_lanes() {
         )
         .err()
         .expect("undeclared typed throw should be protocol error");
-    assert!(matches!(undeclared, RuntimeError::Protocol { .. }));
+    assert!(matches!(
+        undeclared,
+        RuntimeError::Protocol { ref target, .. }
+            if target == "operation:shared-boundary-test"
+    ));
 }
 
 fn operation(
