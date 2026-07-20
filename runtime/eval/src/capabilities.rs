@@ -51,10 +51,11 @@ pub use skiff_runtime_capability_context::{
     OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
-    StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
-    StreamRuntimeApi, StreamRuntimeOwner, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
-    TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
-    WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
+    StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup, StreamPoll,
+    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeOwner, StreamSink,
+    StreamSinkApi, TelemetryCapabilityApi, TelemetryCapabilityContext, TimeCapabilityContext,
+    TypedStreamSink, WebsocketCapabilityApi, WebsocketCapabilityContext,
+    HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
 
 pub trait EvalRuntimeFactoryApi: Send + Sync {
@@ -740,6 +741,10 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
 }
 
 impl NativeFileSourceStreamCapability for RuntimeNativeFileSourceStreamCapability<'_> {
+    fn stream_consumer_cleanup(&self, stream: &Value) -> StreamConsumerCleanup {
+        StreamConsumerCleanup::new(self.0.stream_runtime_handle(), stream)
+    }
+
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,

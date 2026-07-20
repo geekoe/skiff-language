@@ -367,6 +367,65 @@ async fn stream_runtime_pull_stream_normal_end_does_not_cancel_request_token() {
 }
 
 #[tokio::test]
+async fn stream_runtime_pull_source_error_finishes_once_and_cannot_be_polled_again() {
+    let registry = OutboundRequestRegistry::default();
+    let (response_sender, _response_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (cancel_sender, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancel_sender: OutboundRequestCancelSender = Arc::new(move |request_id, reason| {
+        cancel_sender
+            .send((request_id.to_string(), reason.to_string()))
+            .map_err(|_| OutboundRequestCancelSendError::Closed)
+    });
+    let lease = registry
+        .insert_with_lease(
+            "pull-source-error".to_string(),
+            response_sender,
+            Some(cancel_sender),
+            "stream_cancelled",
+        )
+        .expect("pull source lease should register");
+    let polls = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let runtime = StreamRuntime::default();
+    let request_generation = 91;
+    runtime.open_scope(request_generation);
+    let stream = runtime.pull_stream_with_cancellation_in_scope(
+        ErrorThenItemPullSource {
+            _lease: lease,
+            polls: Arc::clone(&polls),
+            drops: Arc::clone(&drops),
+        },
+        CancellationToken::new(),
+        request_generation,
+    );
+    assert_eq!(runtime.active_stream_count(), 1);
+    assert_eq!(runtime.active_stream_count_in_scope(request_generation), 1);
+    assert_eq!(registry.pending_count(), 1);
+    assert_eq!(registry.active_lease_count(), 1);
+
+    let error = runtime.next(&stream).await.unwrap_err();
+    assert!(error.to_string().contains("pull source failed"));
+    assert_eq!(runtime.active_stream_count(), 0);
+    assert_eq!(runtime.active_stream_count_in_scope(request_generation), 0);
+    assert_eq!(registry.pending_count(), 0);
+    assert_eq!(registry.active_lease_count(), 0);
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    let (request_id, reason) =
+        tokio::time::timeout(std::time::Duration::from_millis(100), cancel_rx.recv())
+            .await
+            .expect("source error should drop and cancel its lease")
+            .expect("cancel receiver should stay open");
+    assert_eq!(request_id, "pull-source-error");
+    assert_eq!(reason, "stream_cancelled");
+
+    let second_error = runtime.next(&stream).await.unwrap_err();
+    assert!(second_error.to_string().contains("unknown Stream value"));
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn stream_runtime_pull_stream_explicit_cancel_cancels_source_token() {
     let runtime = StreamRuntime::default();
     let token = CancellationToken::new();
@@ -697,6 +756,33 @@ impl StreamPullSource for EndPullSource {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {
         Box::pin(async { Ok(None) })
+    }
+}
+
+struct ErrorThenItemPullSource {
+    _lease: OutboundRequestLease,
+    polls: Arc<AtomicUsize>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl StreamPullSource for ErrorThenItemPullSource {
+    fn next<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<Value>>> + Send + 'a>> {
+        let poll = self.polls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if poll == 0 {
+                Err(StreamRuntimeError::decode("pull source failed"))
+            } else {
+                Ok(Some(json!("must not be polled")))
+            }
+        })
+    }
+}
+
+impl Drop for ErrorThenItemPullSource {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
     }
 }
 

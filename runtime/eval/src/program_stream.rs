@@ -27,8 +27,8 @@ use super::{
 };
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
+    capabilities::StreamConsumerCleanup,
     error::{Result, RuntimeError},
-    stream_cleanup::StreamConsumerCleanup,
     type_projection::EvalTypeProjection,
 };
 

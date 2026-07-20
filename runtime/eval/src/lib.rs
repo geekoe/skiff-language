@@ -41,7 +41,6 @@ pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
 pub mod stream_callback;
-mod stream_cleanup;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod type_descriptor;
