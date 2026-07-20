@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01在`ef14a08`与`9eaea40`两次FAIL；原三项已闭环，F05修复合流ABI回归
+状态：active；R01在`c0c2244` PASS，Wave 2 execution lanes已解锁
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
