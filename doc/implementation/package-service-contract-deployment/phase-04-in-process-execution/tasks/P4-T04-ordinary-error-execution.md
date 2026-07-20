@@ -19,7 +19,8 @@
 
 ## 写入范围
 
-独占T03预留的ordinary/error lane模块、canonical package/service executable invocation实现与直接lane测试；只在
+独占T03预留的ordinary/error lane模块、canonical package/service executable invocation实现，以及
+`runtime/host/src/loader/assembly_admission/tests/execution/ordinary.rs`；只在
 任务合同明确预留的旧`service_dispatch`删除面删除被替代production edge。不得修改stream/callback、host/router、
 compiler或shared kernel public API。
 
@@ -41,6 +42,7 @@ compiler或shared kernel public API。
 - 同一mutable object分别走package direct与service boundary：前者same handle并可mutation，后者不同handle且隔离。
 - provider在成功、typed throw、runtime fail三种退出后，下一条caller指令均观察caller context。
 - fake router/outbound hook设为panic，所有正负例保持零调用。
+- host ordinary lane测试必须复用T03 typed full-chain fixture，经projection/resolver/load/link/admit后执行，不手写target。
 
 ```bash
 cargo test -p skiff-runtime-eval ordinary_in_process

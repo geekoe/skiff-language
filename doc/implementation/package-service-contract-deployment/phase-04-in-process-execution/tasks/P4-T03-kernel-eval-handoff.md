@@ -20,8 +20,9 @@
 ## 写入范围
 
 独占`runtime/eval`的assembly seam、execution context carrier、central canonical call hook、lane module roots/shells及
-必要Cargo/export；可做`runtime/request/src/assembly_seam.rs`的纯typed handoff更新。不得实现任一具体lane，
-不得修改T01/T02 owner、host/router。
+必要Cargo/export；可做`runtime/request/src/assembly_seam.rs`的纯typed handoff更新。另独占
+`runtime/host/src/loader/assembly_admission/tests/execution/**`共享typed full-chain fixture/harness与三个空lane test
+文件，不修改host production。不得实现任一具体lane，不得修改T01/T02 owner或router。
 
 ## 完成态
 
@@ -32,13 +33,20 @@
 3. canonical package direct与service instruction分别进入冻结hook；legacy service symbol不能作为canonical fallback。
 4.预声明ordinary/error、async/stream/cancel、callback/native三个非重叠lane模块和trait/error交接；checkpoint允许
   lane unavailable但必须typed fail closed，不能调用旧router dispatcher。
-5.中央`eval_context.rs`/`program_execution.rs`的后续写入owner冻结；T04–T06通过各自模块实现，不再争抢match owner。
+5. `eval_context`对T02 opaque callback carrier建立到T06 callback hook的exhaustive delegate；R01阶段typed fail
+   closed，不能落入legacy remote carrier/router branch。
+6.共享fixture使用真实`ServiceContract`/`PackageArtifact`、deployment projection、assembly resolver、typed
+  load/link/admit构造provider/consumer execution input，不手写resolved binding/target；预声明ordinary/stream/
+  callback lane测试文件供T04–T06独占。
+7.中央`eval_context.rs`/`program_execution.rs`与fixture root的后续写入owner冻结；T04–T06通过各自模块和lane测试
+  文件实现，不再争抢match/fixture owner。
 
 ## 唯一验证 ownership
 
 ```bash
 cargo check -p skiff-runtime-eval -p skiff-runtime-request
 cargo test -p skiff-runtime-eval assembly_execution_handoff
+cargo test -p skiff-runtime-host typed_execution_fixture
 rg -n 'thread_local!|task_local!' runtime/eval/src runtime/activation/src
 git diff --check
 ```

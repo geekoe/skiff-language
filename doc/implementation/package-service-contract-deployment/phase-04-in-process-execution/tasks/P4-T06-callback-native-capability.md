@@ -20,7 +20,8 @@
 
 ## 写入范围
 
-独占T02/T03预留的callback/native lane、interface invocation consumer、native explicit callback adapter和对应测试；
+独占T02/T03预留的callback/native lane、interface invocation consumer、native explicit callback adapter，以及
+`runtime/host/src/loader/assembly_admission/tests/execution/callback_native.rs`；
 可在新boundary callback模块扩实现，不继续堆`binary.rs`/`recoverable.rs`。不得修改ordinary/stream、host/router、
 compiler或T03中央wiring。
 
@@ -47,7 +48,7 @@ git diff --check
 ```
 
 必须覆盖success context switch/restore、wrong tuple、所有expiration trigger、recoverable拒绝与native adapter缺失。
-不得运行完整gate。
+host lane测试必须复用T03 typed full-chain fixture，不手写resolved target。不得运行完整gate。
 
 ## 回报
 

@@ -20,7 +20,9 @@
 ## 写入范围
 
 独占T03/T02预留的async/stream/cancel lane模块、`runtime/capability-context` stream/cancellation owner、host concrete
-stream runtime的必要最小改动，以及对应测试。不得修改ordinary/callback、router/compiler/shared kernel API。
+stream runtime的必要最小改动，以及
+`runtime/host/src/loader/assembly_admission/tests/execution/async_stream_cancel.rs`。不得修改ordinary/callback、
+fixture root、router/compiler/shared kernel API。
 
 ## 完成态
 
@@ -45,6 +47,7 @@ git diff --check
 ```
 
 探针覆盖provider/receiver owner、item alias隔离、backpressure、early break、cancel race、registry清理。不得运行完整gate。
+host lane测试必须复用T03 typed full-chain fixture，不手写resolved target。
 
 ## 回报
 

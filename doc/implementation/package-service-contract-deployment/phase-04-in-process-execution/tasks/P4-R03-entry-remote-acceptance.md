@@ -2,8 +2,8 @@
 
 ## 角色与精确输入
 
-高风险只读验收Agent。输入为权威设计§6.2、§7、§12、§14、§15，`phase-plan.md`，P4-T07/T08/T09任务合同，
-三任务已合流exact clean commit，以及R01/R02与开发证据。不得修改或预设PASS。
+高风险只读验收Agent。输入为权威设计§6.2、§7、§12、§14、§15，`phase-plan.md`，P4-T07/T08/T09/T09R任务合同，
+T09R完成后的exact clean commit，以及R01/R02与开发证据。不得修改或预设PASS。
 
 ## 必验 verdict
 

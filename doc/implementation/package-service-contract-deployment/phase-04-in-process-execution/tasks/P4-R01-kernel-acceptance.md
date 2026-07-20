@@ -15,9 +15,13 @@
 1. execution image每build只链接一次，package direct与activation-relative service instruction无混淆，无legacy aggregate adapter。
 2. ActivationContext按deployment/generation隔离，binding/config/state/callback mutable owner不按package build共享。
 3. materializer直接消费canonical contract schema/value plan，普通graph detached，callback hook显式且recoverable fail closed。
-4. callback capability字段、owner/generation/lifetime/error符合设计，无method table/native address/rebuild/fallback。
-5. eval handoff显式传播owner，三个lane seam可独立写入，checkpoint fail closed不会触发旧outbound/router路径。
-6. T04–T06的写入ownership确实不争中央文件；任何缺失共享API必须在R01阻塞，不能让lane各自发明。
+4. callback capability字段、owner/generation/lifetime/error符合设计，无method table/native address/rebuild/fallback；
+   model/eval/binary/recoverable exhaustive delegate与DB/spawn/queue persistent拒绝owner完整。
+5. eval handoff显式传播owner，opaque callback只进入冻结hook，三个lane seam可独立写入，checkpoint fail closed不会
+   触发旧outbound/router路径。
+6. 共享typed fixture真实经过deployment/resolver/load/link/admit且没有手写resolved target；T04–T06各有预声明
+   lane测试文件。
+7. T04–T06的写入ownership确实不争中央或fixture root；任何缺失共享API必须在R01阻塞，不能让lane各自发明。
 
 ## 输出
 

@@ -20,10 +20,13 @@
 
 ## 写入范围
 
-- `runtime/model`：最小opaque callback-capability runtime carrier及exhaustive model/heap测试。
+- `runtime/model`：显式`InterfaceCarrier::CallbackCapability`（或语义等价的独立opaque carrier）及所有exhaustive
+  clone/graph/size/model测试；该variant只保存runtime、activation、generation、contract和opaque id。
 - `runtime/boundary`：新增service-linkable contract plan/materializer模块；不要继续扩大`binary.rs`/`recoverable.rs`。
 - `runtime/activation`：新增ActivationContext、request generation/lifecycle、binding vector、capability table和kernel error/API。
-- 必要Cargo manifest/DAG声明。不得修改linked-program/linker/eval/request/host/router/compiler。
+- `runtime/boundary`现有binary/recoverable owner、`runtime/service-db`及供spawn/queue共用的persistent boundary只允许
+  增加到新模块的最小exhaustive拒绝delegate与测试。必要Cargo manifest/DAG声明。
+- 不得修改linked-program/linker/eval/request/host/router/compiler。
 
 ## 完成态
 
@@ -37,7 +40,8 @@
 5. opaque callback carrier只含设计字段，不含method table/native object/address；activation-owned table支持
    register/lookup/expire，区分expired与unavailable，不重建/fallback。
 6. materializer为callback/native lane只提供显式hook；普通detached path遇到local interface/native handle fail closed。
-7. callback capability不能通过recoverable/DB/spawn/queue已有encoder；不改变普通deep clone与package direct语义。
+7. callback capability在binary/recoverable、DB及供spawn/queue共用的persistent encoder处结构化fail closed；相关
+   exhaustive match在R01前闭合，rebuild hook零调用。不改变普通deep clone与package direct语义。
 
 ## 最早探针与唯一验证 ownership
 
@@ -45,6 +49,7 @@
 cargo test -p skiff-runtime-model callback_capability
 cargo test -p skiff-runtime-boundary service_linkable
 cargo test -p skiff-runtime-activation activation_context
+cargo test -p skiff-runtime-service-db callback_capability
 node scripts/check-runtime-crate-dag.mjs
 git diff --check
 ```

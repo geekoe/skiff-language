@@ -21,8 +21,8 @@
 1. canonical assembly execution image 与 ActivationContext、binding ABI、materialization、capability table kernel
    合成一个共享检查点。
 2. ordinary/error、async/stream/cancel、callback/native 三类 lane 并行。
-3. ingress/internal dispatcher cutover、router remote relay retirement、execution boundary checker、runtime/router
-   gate、live smoke 与独立验收。
+3. ingress/internal dispatcher cutover、router remote relay retirement 与 checker engine 并行；合流后注册真实
+   production subjects 并要求零违规，再进入 runtime/router gate、live smoke 与独立验收。
 
 ## 阶段验收
 

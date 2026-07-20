@@ -65,6 +65,10 @@ ActivationContext
 RequestActivationContext
   explicit receiver/provider owner + request generation + cancel/stream lifetime
 
+InterfaceCarrier::CallbackCapability
+  runtime replica / owner activation / request generation / interface-or-adapter contract / opaque id
+  no method table, native object or address
+
 InProcessBoundaryKernel
   resolve caller build + slot -> provider activation + contract operation
   plan-aware detached materialization
@@ -89,8 +93,8 @@ Wave 2：R01 PASS 后三个lane并行                         │
 
 Wave 3：R02 PASS 后三个非重叠owner并行
   T07 host/request ingress + unified dispatcher ─────────┐
-  T08 router runtime-service relay retirement ───────────┼─► R03
-  T09 execution boundary checker ────────────────────────┘
+  T08 router runtime-service relay retirement ───────────┼─► T09R merged-production registration ─► R03
+  T09 execution boundary checker/self-test ──────────────┘
        └─► T10 stable-candidate integration gate ─► A01 independent stage acceptance
 ```
 
@@ -114,8 +118,9 @@ checker写入域互不重叠。
 | R02 | [Execution lanes acceptance](tasks/P4-R02-lanes-acceptance.md) | T04–T06 exact commit | 高风险只读 gate |
 | T07 | [Unified ingress/internal dispatcher](tasks/P4-T07-unified-ingress-dispatch.md) | R02 PASS | 高；entry batch |
 | T08 | [Router service-relay retirement](tasks/P4-T08-router-service-relay-retirement.md) | R02 PASS | 高；entry batch |
-| T09 | [Execution boundary checker](tasks/P4-T09-execution-boundary-checker.md) | R02 PASS | 中高；structure gate |
-| R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T07–T09 exact commit | 高风险只读 gate |
+| T09 | [Execution boundary checker](tasks/P4-T09-execution-boundary-checker.md) | R02 PASS | 中高；并行 checker/self-test implementation |
+| T09R | [Merged production registration](tasks/P4-T09R-execution-boundary-registration.md) | T07–T09 exact merged commit | 中高；production checker checkpoint |
+| R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T09R exact commit | 高风险只读 gate |
 | T10 | [Phase integration gate](tasks/P4-T10-phase-integration.md) | R01–R03 PASS | 唯一昂贵 gate owner |
 | A01 | [Independent stage acceptance](tasks/P4-A01-stage-acceptance.md) | frozen T10 candidate | 独立只读验收 |
 
@@ -123,11 +128,15 @@ checker写入域互不重叠。
 
 - T01独占`runtime/linked-program/**`、`runtime/linker/**`、`runtime/linked-type-plan/**`中的assembly execution
   projection。不得修改activation/boundary/eval/request/host/router。
-- T02独占`runtime/model`的opaque callback carrier、`runtime/boundary`新service-linkable materializer、
-  `runtime/activation`新context/binding/capability modules。不得修改eval/host或旧recoverable实现的大文件；新增职责
-  必须拆新模块。
+- T02独占`runtime/model`的`InterfaceCarrier::CallbackCapability`与exhaustive model clone/graph seam、
+  `runtime/boundary`新service-linkable materializer、`runtime/activation`新context/binding/capability modules；同时
+  拥有`binary`/`recoverable`、`runtime/service-db`及供spawn/queue共用的persistent boundary最小拒绝delegate与
+  测试，保证callback carrier在所有persistent lane fail closed。新逻辑必须拆新模块，旧大文件只接delegate
+  match，不复制实现。
 - T03独占`runtime/eval`的assembly execution seam、显式context carrier与lane hook/module shell，以及必要crate
-  exports。T04–T06不得再改T03冻结的中央dispatch文件。
+  exports；它还独占host admission tests下共享typed execution fixture/harness与三个预声明lane test文件。T03在
+  `eval_context`冻结callback capability到T06 hook的exhaustive delegate（checkpoint typed fail closed）。T04–T06
+  不得再改T03冻结的中央dispatch或fixture root。
 - T04独占ordinary/error lane模块与canonical package/service call executor；不得修改stream/callback模块。
 - T05独占async/stream/cancel lane模块、现有stream runtime/cancellation owner的必要最小改动；不得修改ordinary/
   callback或中央wiring。
@@ -136,7 +145,9 @@ checker写入域互不重叠。
 - T07独占`runtime/request/**`、`runtime/host/**`的canonical request entry、active-generation context set和旧
   outbound service injection删除面，以及必要`runtime/transport`严格selector projection；不修改router。
 - T08独占`router/**` runtime-originated service relay拒绝/删除面；保留gateway与非service control flow。
-- T09独占execution boundary checker、self-test/subject registry与verify接线，不修改Rust/TypeScript production。
+- T09独占execution boundary checker engine与hermetic self-test；其独立branch允许报告T07/T08尚未合流导致的已知
+  production violations，不得伪报零。T09R在三分支合流后独占真实subject registration、production checker、
+  verify接线与零违规证据，不修改Rust/TypeScript production。
 - T10只做集成、机械compile/test seam、证据汇总与结果草案；语义缺口退回原owner。
 
 已经很长的`runtime/boundary/src/binary.rs`、`recoverable.rs`、`runtime/eval/src/eval_context.rs`、
@@ -166,6 +177,8 @@ checker写入域互不重叠。
 - ordinary detached plan遇到local interface/native handle必须通过显式callback adapter，否则fail closed；opaque
   capability不携带method table/native address。
 - capability进入DB/spawn/queue/recoverable编码必须失败，不调用rebuild/fallback hook。
+- T03共享fixture必须从`ServiceContract`/`PackageArtifact`经过deployment projection、assembly resolver、typed
+  load/link/admit取得execution target；T04–T06分别在预声明lane文件增加正负例，不能手写resolved provider。
 
 ### Entry / remote retirement
 
@@ -207,7 +220,8 @@ Phase 04不运行telemetry或跨仓完整gate；没有修改compiler时保留Pha
   frozen lane seams；PASS后才扇出T04–T06。
 - R02对T04 ordinary/error、T05 async/stream/cancel、T06 callback/native分别给出verdict，并检查三者只通过T03
   kernel交接；PASS后才开始entry cutover。
-- R03在T07–T09 exact commit上验收single dispatcher、active-generation ingress、router service relay retirement与
+- T09先在独立branch完成checker/self-test；T07/T08/T09合流后由T09R注册真实owner并要求production零违规。
+  R03在T09R exact commit上验收single dispatcher、active-generation ingress、router service relay retirement与
   checker mutation coverage；PASS后进入收敛模式。
 - T10先完成阶段标准→真实入口/动态或结构证据/关键负例/owner/精确commit覆盖检查，再冻结stable candidate。
 - A01只对冻结candidate给出PASS/FAIL。任何production、Cargo、checker、fixture或gate环境变化都结束当前

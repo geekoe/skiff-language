@@ -13,12 +13,14 @@
 
 ## 必验问题
 
-1. 三波DAG是否形成短shared kernel后真实扇出；T01/T02、T04–T06、T07–T09写入范围是否可并行且没有中央文件争抢。
+1. 三波DAG是否形成短shared kernel后真实扇出；T01/T02、T04–T06、T07–T09写入范围是否可并行且没有中央文件争抢；
+   T09是否只负责checker engine/self-test，并在T07–T09合流后由T09R注册真实production subjects与证明零违规。
 2. `AssemblyExecutionImage`是否仍只链接code一次，package direct与service call是否保持不同语义；是否避免
    `ServiceUnit`/`PackageUnit`/legacy `EvalRuntimeProgram` adapter。
 3. ActivationContext、request generation、binding vector、materializer、callback table owner和lifetime是否严格符合设计。
-4. ordinary/error、async/stream/cancel、callback/native三个lane是否均有可执行正负例；Phase 02 unsupported source
-   lane的边界是否被正确留给Phase 05，而没有用内部手写target绕过typed production pipeline。
+4. ordinary/error、async/stream/cancel、callback/native三个lane是否均有可执行正负例；共享fixture是否有明确owner并
+   真实经过deployment/resolver/load/link/admit；Phase 02 unsupported source lane的边界是否被正确留给Phase 05，
+   而没有用内部手写target绕过typed production pipeline。
 5. ingress/internal是否进入同一dispatcher；host active-generation pin与router service-relay retirement是否完整，
    又没有误删gateway、actor/spawn控制语义。
 6. 每个高风险边界是否有独立验收、最早探针、唯一gate owner和精确证据失效范围。
