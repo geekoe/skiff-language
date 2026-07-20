@@ -1,8 +1,11 @@
 use std::{collections::BTreeSet, path::Path};
 
-use serde::{Deserialize, Serialize};
-use skiff_artifact_identity::{EnvironmentActivationStatePath, RuntimeAssemblyRecordPath};
-use skiff_artifact_model::RuntimeAssemblyRef;
+use serde::{de, Deserialize, Deserializer, Serialize};
+use skiff_artifact_identity::EnvironmentActivationStatePath;
+use skiff_artifact_model::{
+    validate_activation_environment, validate_activation_generation, validate_activation_token,
+    validate_runtime_assembly_ref, validate_transition_generations, RuntimeAssemblyRef,
+};
 
 use super::{
     error::{EcosystemStorageError, StorageResult},
@@ -14,15 +17,15 @@ use super::{
 pub const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION: &str =
     "skiff-environment-activation-state-v1";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommittedActivation {
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingActivation {
     pub activation_id: String,
     pub expected_generation: u64,
@@ -31,13 +34,65 @@ pub struct PendingActivation {
     pub participant_replica_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EnvironmentActivationState {
     pub schema_version: String,
     pub environment: String,
     pub committed: CommittedActivation,
     pub pending: Option<PendingActivation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawCommittedActivation {
+    generation: u64,
+    assembly: RuntimeAssemblyRef,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawPendingActivation {
+    activation_id: String,
+    expected_generation: u64,
+    candidate_generation: u64,
+    assembly: RuntimeAssemblyRef,
+    participant_replica_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawEnvironmentActivationState {
+    schema_version: String,
+    environment: String,
+    committed: RawCommittedActivation,
+    pending: Option<RawPendingActivation>,
+}
+
+impl<'de> Deserialize<'de> for EnvironmentActivationState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawEnvironmentActivationState::deserialize(deserializer)?;
+        let state = Self {
+            schema_version: raw.schema_version,
+            environment: raw.environment,
+            committed: CommittedActivation {
+                generation: raw.committed.generation,
+                assembly: raw.committed.assembly,
+            },
+            pending: raw.pending.map(|pending| PendingActivation {
+                activation_id: pending.activation_id,
+                expected_generation: pending.expected_generation,
+                candidate_generation: pending.candidate_generation,
+                assembly: pending.assembly,
+                participant_replica_ids: pending.participant_replica_ids,
+            }),
+        };
+        state.validate().map_err(de::Error::custom)?;
+        Ok(state)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,11 +121,22 @@ impl EnvironmentActivationState {
     }
 
     pub fn validate(&self) -> StorageResult<()> {
+        map_activation_validation(
+            &self.environment,
+            validate_activation_environment(&self.environment),
+        )?;
         let path = EnvironmentActivationStatePath::new(&self.environment)?;
         if self.schema_version != ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION {
             return invalid(path.as_str(), "activation state schemaVersion mismatch");
         }
-        RuntimeAssemblyRecordPath::new(&self.committed.assembly)?;
+        map_activation_validation(
+            path.as_str(),
+            validate_activation_generation(self.committed.generation, "committed.generation"),
+        )?;
+        map_activation_validation(
+            path.as_str(),
+            validate_runtime_assembly_ref(&self.committed.assembly),
+        )?;
         if let Some(pending) = &self.pending {
             validate_token(&pending.activation_id, "activationId", path.as_str())?;
             if pending.expected_generation != self.committed.generation {
@@ -79,20 +145,17 @@ impl EnvironmentActivationState {
                     "pending expectedGeneration must equal committed generation",
                 );
             }
-            if pending.candidate_generation
-                != pending.expected_generation.checked_add(1).ok_or_else(|| {
-                    EcosystemStorageError::InvalidRecord {
-                        path: path.as_str().into(),
-                        message: "activation generation overflow".to_string(),
-                    }
-                })?
-            {
-                return invalid(
-                    path.as_str(),
-                    "candidateGeneration must be expectedGeneration + 1",
-                );
-            }
-            RuntimeAssemblyRecordPath::new(&pending.assembly)?;
+            map_activation_validation(
+                path.as_str(),
+                validate_transition_generations(
+                    pending.expected_generation,
+                    pending.candidate_generation,
+                ),
+            )?;
+            map_activation_validation(
+                path.as_str(),
+                validate_runtime_assembly_ref(&pending.assembly),
+            )?;
             let participants =
                 normalized_replica_ids(&pending.participant_replica_ids, path.as_str())?;
             if participants != pending.participant_replica_ids {
@@ -401,14 +464,17 @@ fn normalized_set(values: &[String], label: &str) -> StorageResult<BTreeSet<Stri
 }
 
 fn validate_token(value: &str, label: &str, path: &str) -> StorageResult<()> {
-    if value.is_empty()
-        || value != value.trim()
-        || value.len() > 200
-        || value.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return invalid(path, format!("{label} must be a non-empty canonical token"));
-    }
-    Ok(())
+    map_activation_validation(path, validate_activation_token(value, label))
+}
+
+fn map_activation_validation(
+    path: impl AsRef<Path>,
+    validation: Result<(), String>,
+) -> StorageResult<()> {
+    validation.map_err(|message| EcosystemStorageError::InvalidRecord {
+        path: path.as_ref().to_path_buf(),
+        message,
+    })
 }
 
 fn cas_error<T>(path: impl AsRef<Path>, message: impl Into<String>) -> StorageResult<T> {

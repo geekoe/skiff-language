@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "skiff-environment-activation-state-v1",
+  "environment": "test",
+  "committed": {
+    "generation": 41,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "pending": {
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "participantReplicaIds": ["runtime-a", "runtime-b"]
+  }
+}

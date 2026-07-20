@@ -37,7 +37,13 @@ pub mod symbols;
 pub mod targets;
 pub mod types;
 
-pub use assembly_activation_control::{AssemblyActivationControl, AssemblyActivationRejectReason};
+pub use assembly_activation_control::{
+    validate_activation_environment, validate_activation_generation, validate_activation_token,
+    validate_runtime_assembly_ref, validate_transition_generations, AssemblyActivationControl,
+    AssemblyActivationRejectReason, AssemblyActivationRequest,
+    ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION, MAX_SAFE_ACTIVATION_GENERATION,
+    RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
+};
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
     BoundaryCallbackLifetime, BoundaryCancellationContract, BoundaryConfigRequirement,
@@ -87,10 +93,13 @@ pub use deployment::{
     ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
 };
 pub use ecosystem_authoring::{
+    is_dependency_alias_lexically_valid, is_dependency_alias_reserved, is_dependency_alias_valid,
     parse_package_contracts_yml, parse_runtime_assembly_yml, parse_service_contract_definition_yml,
     parse_service_deployment_yml, EcosystemAuthoringError, PackageContractAuthoring,
     PackageContractsAuthoring, RuntimeAssemblyAuthoring, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring,
+    DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
+    DEPENDENCY_ALIAS_RESERVED_VECTORS,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,

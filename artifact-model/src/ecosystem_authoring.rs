@@ -7,6 +7,40 @@ use crate::{
     SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 
+/// Shared source-level dependency alias vectors.  Package and contract
+/// dependencies deliberately consume this leaf owner instead of maintaining
+/// separate lexical or reserved-word tables.
+pub const DEPENDENCY_ALIAS_POSITIVE_VECTORS: &[&str] = &["a", "accounts", "a0", "a_B9"];
+pub const DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS: &[&str] = &[
+    "",
+    "Accounts",
+    "9accounts",
+    "_accounts",
+    "account-service",
+    "account.service",
+    "账户",
+];
+pub const DEPENDENCY_ALIAS_RESERVED_VECTORS: &[&str] = &[
+    "package", "service", "std", "ext", "connect", "config", "root",
+];
+
+pub fn is_dependency_alias_lexically_valid(alias: &str) -> bool {
+    let mut chars = alias.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_lowercase()
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+pub fn is_dependency_alias_reserved(alias: &str) -> bool {
+    DEPENDENCY_ALIAS_RESERVED_VECTORS.contains(&alias)
+}
+
+pub fn is_dependency_alias_valid(alias: &str) -> bool {
+    is_dependency_alias_lexically_valid(alias) && !is_dependency_alias_reserved(alias)
+}
+
 #[derive(Debug)]
 pub enum EcosystemAuthoringError {
     Yaml(serde_yaml::Error),
@@ -145,7 +179,7 @@ impl PackageContractsAuthoring {
                     ));
                 }
             }
-            if !is_dependency_alias(&dependency.alias) {
+            if !is_dependency_alias_valid(&dependency.alias) {
                 return Err(format!(
                     "package.yml contract alias {} must match [a-z][A-Za-z0-9_]* and not be reserved",
                     dependency.alias
@@ -285,19 +319,6 @@ fn validate_deployment_authoring(deployment: &ServiceDeploymentAuthoring) -> Res
     Ok(())
 }
 
-fn is_dependency_alias(alias: &str) -> bool {
-    let mut chars = alias.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_lowercase()
-        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
-        && !matches!(
-            alias,
-            "package" | "service" | "std" | "ext" | "connect" | "config" | "root"
-        )
-}
-
 fn is_safe_token(value: &str) -> bool {
     !value.is_empty()
         && value != "."
@@ -350,6 +371,24 @@ contracts:
                 parse_package_contracts_yml(&invalid).is_err(),
                 "{forbidden}"
             );
+        }
+    }
+
+    #[test]
+    fn dependency_alias_vectors_have_one_shared_leaf_owner() {
+        for alias in DEPENDENCY_ALIAS_POSITIVE_VECTORS {
+            assert!(is_dependency_alias_lexically_valid(alias), "{alias}");
+            assert!(!is_dependency_alias_reserved(alias), "{alias}");
+            assert!(is_dependency_alias_valid(alias), "{alias}");
+        }
+        for alias in DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS {
+            assert!(!is_dependency_alias_lexically_valid(alias), "{alias}");
+            assert!(!is_dependency_alias_valid(alias), "{alias}");
+        }
+        for alias in DEPENDENCY_ALIAS_RESERVED_VECTORS {
+            assert!(is_dependency_alias_lexically_valid(alias), "{alias}");
+            assert!(is_dependency_alias_reserved(alias), "{alias}");
+            assert!(!is_dependency_alias_valid(alias), "{alias}");
         }
     }
 

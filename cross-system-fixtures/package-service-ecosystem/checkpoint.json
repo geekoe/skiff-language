@@ -14,9 +14,13 @@
     "staticResource": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/resources/<content-sha256>.blob"
   },
   "coordinateEncoding": {
-    ".": "~",
-    "/": "~~",
+    ".": "~d",
+    "/": "~s",
     "~": "rejected"
+  },
+  "coordinateExamples": {
+    "a.b/c/d": "a~db~sc~sd",
+    "a.b/c..d": "a~db~sc~d~dd"
   },
   "pointerPaths": {
     "PackageArtifact": "pointers/package-artifacts/<package-id>/<package-version>.json",
@@ -29,6 +33,11 @@
     "state": ["schemaVersion", "environment", "committed", "pending"],
     "committed": ["generation", "assembly"],
     "pending": ["activationId", "expectedGeneration", "candidateGeneration", "assembly", "participantReplicaIds"]
+  },
+  "activationRequest": {
+    "schemaVersion": "skiff-assembly-activation-request-v1",
+    "fields": ["schemaVersion", "environment", "activationId", "expectedGeneration", "assembly"],
+    "controlEndpoint": "POST /__skiff/activate-assembly"
   },
   "controlWireFields": {
     "prepare": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],

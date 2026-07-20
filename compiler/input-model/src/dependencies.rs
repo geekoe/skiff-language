@@ -177,20 +177,38 @@ pub fn is_standard_package_id(id: &str) -> bool {
 }
 
 pub fn is_valid_source_import_alias(alias: &str) -> bool {
-    let mut chars = alias.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_lowercase() && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    skiff_artifact_model::is_dependency_alias_lexically_valid(alias)
 }
 
 pub fn is_reserved_source_import_alias(alias: &str) -> bool {
-    matches!(
-        alias,
-        "package" | "service" | "std" | "ext" | "connect" | "config" | "root"
-    )
+    skiff_artifact_model::is_dependency_alias_reserved(alias)
 }
 
 pub fn is_complex_package_dependency_id(package_id: &str) -> bool {
     package_id.contains('.') || package_id.contains('/')
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{
+        DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS, DEPENDENCY_ALIAS_POSITIVE_VECTORS,
+        DEPENDENCY_ALIAS_RESERVED_VECTORS,
+    };
+
+    use super::*;
+
+    #[test]
+    fn compiler_helpers_thinly_delegate_the_shared_dependency_alias_vectors() {
+        for alias in DEPENDENCY_ALIAS_POSITIVE_VECTORS {
+            assert!(is_valid_source_import_alias(alias), "{alias}");
+            assert!(!is_reserved_source_import_alias(alias), "{alias}");
+        }
+        for alias in DEPENDENCY_ALIAS_LEXICAL_NEGATIVE_VECTORS {
+            assert!(!is_valid_source_import_alias(alias), "{alias}");
+        }
+        for alias in DEPENDENCY_ALIAS_RESERVED_VECTORS {
+            assert!(is_valid_source_import_alias(alias), "{alias}");
+            assert!(is_reserved_source_import_alias(alias), "{alias}");
+        }
+    }
 }

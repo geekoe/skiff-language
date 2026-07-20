@@ -223,6 +223,61 @@ fn four_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas()
 }
 
 #[test]
+fn activation_storage_coordinate_collision_pair_has_independent_records_and_cas() {
+    let (_temp, store) = test_store();
+    let mut slash = package_fixture();
+    slash.package_id = "a.b/c/d".to_string();
+    assign_package_artifact_identities(&mut slash).unwrap();
+    let mut adjacent_dots = package_fixture();
+    adjacent_dots.package_id = "a.b/c..d".to_string();
+    assign_package_artifact_identities(&mut adjacent_dots).unwrap();
+
+    let slash_path = store.write_package_artifact(&slash).unwrap();
+    let adjacent_dots_path = store.write_package_artifact(&adjacent_dots).unwrap();
+    assert_ne!(slash_path, adjacent_dots_path);
+    assert!(slash_path.is_file());
+    assert!(adjacent_dots_path.is_file());
+
+    let slash_ref = package_artifact_ref(&slash).unwrap();
+    let adjacent_dots_ref = package_artifact_ref(&adjacent_dots).unwrap();
+    assert_eq!(
+        store.read_package_artifact(&slash_ref).unwrap().package_id,
+        slash.package_id
+    );
+    assert_eq!(
+        store
+            .read_package_artifact(&adjacent_dots_ref)
+            .unwrap()
+            .package_id,
+        adjacent_dots.package_id
+    );
+    let slash_pointer = PackageArtifactPointer::new(slash_ref.clone()).unwrap();
+    let adjacent_dots_pointer = PackageArtifactPointer::new(adjacent_dots_ref.clone()).unwrap();
+    store
+        .compare_and_swap_package_artifact_pointer(None, &slash_pointer)
+        .unwrap();
+    store
+        .compare_and_swap_package_artifact_pointer(None, &adjacent_dots_pointer)
+        .unwrap();
+
+    assert_eq!(
+        store
+            .read_package_artifact_pointer(&slash_ref.package_id, &slash_ref.package_version)
+            .unwrap(),
+        Some(slash_pointer)
+    );
+    assert_eq!(
+        store
+            .read_package_artifact_pointer(
+                &adjacent_dots_ref.package_id,
+                &adjacent_dots_ref.package_version,
+            )
+            .unwrap(),
+        Some(adjacent_dots_pointer)
+    );
+}
+
+#[test]
 fn storage_rejects_tamper_unknown_duplicate_missing_and_cross_root_content() {
     let (_temp, store) = test_store();
     let package = package_fixture();
@@ -319,6 +374,32 @@ fn file_and_resource_records_validate_exact_identity_path_and_content() {
             .as_ref(),
         resource
     );
+}
+
+#[test]
+fn activation_state_golden_and_shared_mutation_corpus_decode_strictly() {
+    let state_fixture = include_str!(
+        "../../../cross-system-fixtures/package-service-ecosystem/activation-state.json"
+    );
+    let state: EnvironmentActivationState =
+        serde_json::from_str(state_fixture).expect("canonical activation state fixture");
+    assert_eq!(state.committed.generation, 41);
+    assert_eq!(state.pending.as_ref().unwrap().candidate_generation, 42);
+
+    let state_value: serde_json::Value = serde_json::from_str(state_fixture).unwrap();
+    assert_eq!(serde_json::to_value(&state).unwrap(), state_value);
+    let mutations: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../cross-system-fixtures/package-service-ecosystem/activation-mutations.json"
+    ))
+    .unwrap();
+    for mutation in mutations["state"].as_array().unwrap() {
+        let candidate = apply_activation_mutation(&state_value, mutation);
+        assert!(
+            serde_json::from_value::<EnvironmentActivationState>(candidate).is_err(),
+            "state mutation {} must fail",
+            mutation["name"]
+        );
+    }
 }
 
 #[test]
@@ -485,4 +566,41 @@ fn activation_prepare_abort_commit_and_crash_recovery_are_fail_closed() {
     assert!(store
         .commit_environment_activation("test", "", 7, 8, &candidate_ref, &[], &[],)
         .is_err());
+}
+
+fn apply_activation_mutation(
+    base: &serde_json::Value,
+    mutation: &serde_json::Value,
+) -> serde_json::Value {
+    let mut candidate = base.clone();
+    let path = mutation["path"].as_array().expect("mutation path");
+    let (last, parents) = path.split_last().expect("non-empty mutation path");
+    let mut parent = &mut candidate;
+    for segment in parents {
+        parent = parent
+            .as_object_mut()
+            .expect("mutation object parent")
+            .get_mut(segment.as_str().expect("path string"))
+            .expect("mutation path exists");
+    }
+    let object = parent.as_object_mut().expect("mutation object");
+    let field = last.as_str().expect("path string");
+    match mutation["operation"].as_str().expect("mutation operation") {
+        "replace" => {
+            *object.get_mut(field).expect("replace path exists") = mutation["value"].clone();
+        }
+        "remove" => {
+            object.remove(field).expect("remove path exists");
+        }
+        "add" => {
+            assert!(
+                object
+                    .insert(field.to_string(), mutation["value"].clone())
+                    .is_none(),
+                "add path must be new"
+            );
+        }
+        operation => panic!("unknown mutation operation {operation}"),
+    }
+    candidate
 }
