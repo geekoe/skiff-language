@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01 PASS；R02在`ae7b601`第四次独立复验PASS，Wave 3 entry/checker已解锁
+状态：active；R01/R02 PASS；R03在`5ba7273`因checker字符串伪anchor绕过FAIL，F11修复中
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
@@ -99,6 +99,7 @@ Wave 3：R02 PASS 后三个非重叠owner并行
   T07 host/request ingress + unified dispatcher ─────────┐
   T08 router runtime-service relay retirement ───────────┼─► T09R merged-production registration ─► R03
   T09 execution boundary checker/self-test ──────────────┘
+  R03 FAIL repair loop：F11 lexical/structural anchor hardening ─► R03 retry
        └─► T10 stable-candidate integration gate ─► A01 independent stage acceptance
 ```
 
@@ -134,7 +135,8 @@ checker写入域互不重叠。
 | T08 | [Router service-relay retirement](tasks/P4-T08-router-service-relay-retirement.md) | R02 PASS | 高；entry batch |
 | T09 | [Execution boundary checker](tasks/P4-T09-execution-boundary-checker.md) | R02 PASS | 中高；并行 checker/self-test implementation |
 | T09R | [Merged production registration](tasks/P4-T09R-execution-boundary-registration.md) | T07–T09 exact merged commit | 中高；production checker checkpoint |
-| R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T09R exact commit | 高风险只读 gate |
+| F11 | [Checker string-camouflage hardening](tasks/P4-F11-checker-string-camouflage.md) | R03@`5ba7273` structure blocker | 高；checker lexical repair |
+| R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T09R、F11 exact commit | 高风险只读 gate |
 | T10 | [Phase integration gate](tasks/P4-T10-phase-integration.md) | R01–R03 PASS | 唯一昂贵 gate owner |
 | A01 | [Independent stage acceptance](tasks/P4-A01-stage-acceptance.md) | frozen T10 candidate | 独立只读验收 |
 

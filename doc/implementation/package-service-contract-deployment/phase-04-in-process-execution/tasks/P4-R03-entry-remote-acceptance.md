@@ -5,6 +5,9 @@
 高风险只读验收Agent。输入为权威设计§6.2、§7、§12、§14、§15，`phase-plan.md`，P4-T07/T08/T09/T09R任务合同，
 T09R完成后的exact clean commit，以及R01/R02与开发证据。不得修改或预设PASS。
 
+首次验收在`5ba7273`因checker可由Rust字符串和TypeScript template string伪造required anchor/case而FAIL。复验还必须
+读取P4-F11合同与diff，独立重做host/router伪anchor mutation，不能只接受新增self-test为证据。
+
 ## 必验 verdict
 
 1. **UNIFIED_ENTRY**：active-generation context set原子发布；wire严格投影selector；ingress/internal命中同一
