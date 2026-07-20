@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：planning checkpoint；等待 P4-D01 独立文档评审
+状态：active；P4-D01 PASS（审查基线`0ed310c`，其后三项原始blocker全部闭环，仅回写本状态）
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
