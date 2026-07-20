@@ -106,7 +106,7 @@ impl TypedExecutionFixture {
         }
     }
 
-    pub(super) async fn assert_dynamic_checkpoint_hooks(&self) {
+    pub(super) async fn assert_dynamic_execution_results(&self) {
         let runtime = TypedExecutionRuntime::new(
             &self
                 .eval_target
@@ -119,7 +119,7 @@ impl TypedExecutionFixture {
         let context = runtime.context(&interpreter, &self.eval_target);
 
         let mut service_heap = context.request_heap();
-        let service_error = interpreter
+        let service_result = interpreter
             .execute_runtime_assembly_addr(
                 context.clone(),
                 &mut service_heap,
@@ -127,14 +127,15 @@ impl TypedExecutionFixture {
                 Vec::new(),
             )
             .await
-            .expect_err("service checkpoint executable must reach the frozen service hook");
-        assert!(
-            service_error.to_string().contains("service-call"),
-            "service executable stopped before the service hook: {service_error}"
+            .expect("service executable must return the real admitted provider result");
+        assert_eq!(
+            service_result,
+            RuntimeValue::Bool(true),
+            "service executable must propagate the detached provider result"
         );
 
         let mut package_heap = context.request_heap();
-        let package_error = interpreter
+        let package_result = interpreter
             .execute_runtime_assembly_addr(
                 context.clone(),
                 &mut package_heap,
@@ -142,10 +143,11 @@ impl TypedExecutionFixture {
                 Vec::new(),
             )
             .await
-            .expect_err("package checkpoint executable must reach the frozen package hook");
-        assert!(
-            package_error.to_string().contains("package-direct"),
-            "package executable stopped before the package hook: {package_error}"
+            .expect("package executable must return the real admitted package target result");
+        assert_eq!(
+            package_result,
+            RuntimeValue::Bool(true),
+            "package executable must propagate the same-heap provider result"
         );
 
         let callback_interface = callback_interface_ref("phase_four.consumer");
@@ -243,7 +245,7 @@ pub(super) async fn assert_typed_execution_fixture() {
         .activation_by_opaque_id(provider.provider_activation().activation_id().as_str())
         .expect("callback owner lookup should use the admitted activation owner set");
     assert!(Arc::ptr_eq(&opaque_owner, provider.provider_activation()));
-    fixture.assert_dynamic_checkpoint_hooks().await;
+    fixture.assert_dynamic_execution_results().await;
 }
 
 #[tokio::test]
@@ -355,7 +357,7 @@ async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
     let request_generation = request_target.eval().request_activation().generation();
     skiff_runtime_eval::start_in_process_boundary_dispatch_probe_for_test(request_generation);
 
-    let error = skiff_runtime_eval::dispatch_ingress_via_in_process_boundary(
+    let result = skiff_runtime_eval::dispatch_ingress_via_in_process_boundary(
         &interpreter,
         context,
         &mut heap,
@@ -363,10 +365,18 @@ async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
         &request,
     )
     .await
-    .expect_err("fixture provider intentionally has no entry block");
-    assert!(error
-        .to_string()
-        .contains("executable provide missing block entry"));
+    .expect("ingress must return the real nested provider result");
+    let skiff_runtime_eval::InProcessBoundaryIngressResponse::RuntimePayload(payload) = result
+    else {
+        panic!("non-binary ingress fixture must return a runtime payload")
+    };
+    let decoded = skiff_runtime_boundary::binary::decode_payload(
+        &payload,
+        &serde_json::json!({ "kind": "builtin", "name": "bool", "args": [] }),
+        &mut skiff_runtime_model::request_heap::RequestHeap::default(),
+    )
+    .expect("ingress response must retain its canonical bool payload");
+    assert_eq!(decoded, RuntimeValue::Bool(true));
 
     let records =
         skiff_runtime_eval::take_in_process_boundary_dispatch_records_for_test(request_generation);

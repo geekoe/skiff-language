@@ -23,7 +23,7 @@ use super::{
 
 #[tokio::test]
 async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_chain() {
-    let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::new(
+    let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::returning_null(
         async_unary_contract(),
         BTreeMap::new(),
     ))
@@ -53,7 +53,7 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
         .generation();
     let mut heap = context.request_heap();
 
-    let error = interpreter
+    let result = interpreter
         .execute_runtime_assembly_addr(
             context,
             &mut heap,
@@ -61,11 +61,12 @@ async fn typed_execution_async_stream_cancel_reaches_owned_provider_future_full_
             Vec::new(),
         )
         .await
-        .expect_err("fixture provider has no body, but the owned provider future must be reached");
+        .expect("owned provider future must return the real admitted provider result");
 
-    assert!(
-        error.to_string().contains("provide missing block entry"),
-        "service call stopped before the exact provider executable: {error}"
+    assert_eq!(
+        result,
+        RuntimeValue::Null,
+        "async service call must propagate the provider's declared void result"
     );
     assert_eq!(
         fixture.eval_target.activation_context().activation_id(),
@@ -117,10 +118,9 @@ async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_
 #[tokio::test]
 async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_target() {
     {
-        let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::new(
-            server_stream_contract(),
-            BTreeMap::new(),
-        ))
+        let fixture = TypedExecutionFixture::admit_contract(
+            TypedExecutionContract::returning_null(server_stream_contract(), BTreeMap::new()),
+        )
         .await;
         let runtime = TypedExecutionRuntime::new(
             &fixture
@@ -143,7 +143,19 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
             )
             .await
             .expect("server stream should reach the async lane from the admitted call target");
-        assert_eq!(result, RuntimeValue::Null);
+        let RuntimeValue::Heap(stream_handle) = result else {
+            panic!("server-stream consumer must return the admitted stream carrier")
+        };
+        let HeapNode::Object(stream_carrier) = heap
+            .get(stream_handle)
+            .expect("returned stream carrier must remain in the consumer heap")
+        else {
+            panic!("server-stream carrier must retain its canonical object shape")
+        };
+        assert!(matches!(
+            stream_carrier.fields().get("__skiffStreamId"),
+            Some(RuntimeValue::String(stream_id)) if stream_id.starts_with("stream-")
+        ));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while crate::eval_capability_adapter::concrete_stream_runtime(
                 &interpreter.stream_runtime,
@@ -405,7 +417,10 @@ fn typed_execution_async_stream_cancel_rejects_unsupported_descriptor_before_pro
         reason: BoundaryFeatureUnavailableReason::UnknownSemantics,
     };
     let rejected = std::panic::catch_unwind(|| {
-        ProjectedFixture::new(TypedExecutionContract::new(contract, BTreeMap::new()))
+        ProjectedFixture::new(TypedExecutionContract::returning_null(
+            contract,
+            BTreeMap::new(),
+        ))
     });
     assert!(
         rejected.is_err(),

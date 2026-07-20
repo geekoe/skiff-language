@@ -15,33 +15,70 @@ const CALLBACK_INTERFACE_METHOD: &str = "invoke";
 const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
 const CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX: u32 = 2;
 
+#[derive(Clone, Copy)]
+enum ProviderBehavior {
+    ReturnTrue,
+    ReturnNull,
+    ThrowTypedError,
+    InvokeCallback,
+    EmitCallbackStream,
+}
+
+#[derive(Clone, Copy)]
+enum ConsumerBehavior {
+    ReturnCall,
+    InvokeCallback,
+    ConsumeCallbackStream { break_after_item: bool },
+}
+
+enum ImplementationRole {
+    Provider(ProviderBehavior),
+    Consumer {
+        service_call: ServiceCallRef,
+        package_call: (String, PackageCallableId),
+        behavior: ConsumerBehavior,
+    },
+}
+
 #[derive(Clone)]
 pub(super) struct TypedExecutionContract {
     consumer_operation: BoundaryOperationContract,
     consumer_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
     provider_operation: BoundaryOperationContract,
     provider_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
-    consumer_breaks_callback_stream: bool,
-    provider_throws_typed_error: bool,
+    consumer_behavior: ConsumerBehavior,
+    provider_behavior: ProviderBehavior,
 }
 
 impl TypedExecutionContract {
-    pub(super) fn new(
+    fn with_provider_behavior(
         operation: BoundaryOperationContract,
         boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+        provider_behavior: ProviderBehavior,
     ) -> Self {
         Self {
             consumer_operation: operation.clone(),
             consumer_boundary_schema: boundary_schema.clone(),
             provider_operation: operation,
             provider_boundary_schema: boundary_schema,
-            consumer_breaks_callback_stream: false,
-            provider_throws_typed_error: false,
+            consumer_behavior: ConsumerBehavior::ReturnCall,
+            provider_behavior,
         }
     }
 
     pub(super) fn unary() -> Self {
-        Self::new(unary_contract(), BTreeMap::new())
+        Self::with_provider_behavior(
+            unary_contract(),
+            BTreeMap::new(),
+            ProviderBehavior::ReturnTrue,
+        )
+    }
+
+    pub(super) fn returning_null(
+        operation: BoundaryOperationContract,
+        boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    ) -> Self {
+        Self::with_provider_behavior(operation, boundary_schema, ProviderBehavior::ReturnNull)
     }
 
     pub(super) fn async_typed_error() -> Self {
@@ -88,8 +125,8 @@ impl TypedExecutionContract {
             consumer_boundary_schema: BTreeMap::new(),
             provider_operation: operation,
             provider_boundary_schema,
-            consumer_breaks_callback_stream: false,
-            provider_throws_typed_error: true,
+            consumer_behavior: ConsumerBehavior::ReturnCall,
+            provider_behavior: ProviderBehavior::ThrowTypedError,
         }
     }
 
@@ -147,8 +184,8 @@ impl TypedExecutionContract {
             consumer_boundary_schema: BTreeMap::new(),
             provider_operation,
             provider_boundary_schema,
-            consumer_breaks_callback_stream: false,
-            provider_throws_typed_error: false,
+            consumer_behavior: ConsumerBehavior::InvokeCallback,
+            provider_behavior: ProviderBehavior::InvokeCallback,
         }
     }
 
@@ -158,7 +195,9 @@ impl TypedExecutionContract {
 
     pub(super) fn callback_stream_cancel() -> Self {
         let mut fixture = Self::callback_stream();
-        fixture.consumer_breaks_callback_stream = true;
+        fixture.consumer_behavior = ConsumerBehavior::ConsumeCallbackStream {
+            break_after_item: true,
+        };
         fixture
     }
 
@@ -232,8 +271,10 @@ impl TypedExecutionContract {
             consumer_boundary_schema: BTreeMap::new(),
             provider_operation,
             provider_boundary_schema,
-            consumer_breaks_callback_stream: false,
-            provider_throws_typed_error: false,
+            consumer_behavior: ConsumerBehavior::ConsumeCallbackStream {
+                break_after_item: false,
+            },
+            provider_behavior: ProviderBehavior::EmitCallbackStream,
         }
     }
 }
@@ -255,8 +296,8 @@ impl ProjectedFixture {
         let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
         let provider_operation_contract = contract_fixture.provider_operation;
         let provider_boundary_schema = contract_fixture.provider_boundary_schema;
-        let consumer_breaks_callback_stream = contract_fixture.consumer_breaks_callback_stream;
-        let provider_throws_typed_error = contract_fixture.provider_throws_typed_error;
+        let consumer_behavior = contract_fixture.consumer_behavior;
+        let provider_behavior = contract_fixture.provider_behavior;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
@@ -277,12 +318,7 @@ impl ProjectedFixture {
             "phase_four.provider",
             "provide",
             provider_operation_contract.may_suspend,
-            None,
-            None,
-            operation_has_callback_parameter(&provider_operation_contract),
-            operation_has_callback_stream_item(&provider_operation_contract),
-            false,
-            provider_throws_typed_error,
+            ImplementationRole::Provider(provider_behavior),
         );
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -312,16 +348,11 @@ impl ProjectedFixture {
             "phase_four.consumer",
             "consume",
             consumer_operation_contract.may_suspend,
-            Some(service_call.clone()),
-            Some(("providerPackage".to_string(), provider_callable.clone())),
-            operation_has_callback_parameter(
-                &provider_contract.operations[&provider_operation].contract,
-            ),
-            operation_has_callback_stream_item(
-                &provider_contract.operations[&provider_operation].contract,
-            ),
-            consumer_breaks_callback_stream,
-            false,
+            ImplementationRole::Consumer {
+                service_call: service_call.clone(),
+                package_call: ("providerPackage".to_string(), provider_callable.clone()),
+                behavior: consumer_behavior,
+            },
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
@@ -520,15 +551,9 @@ fn implementation_file(
     module_path: &str,
     symbol: &str,
     may_suspend: bool,
-    service_call: Option<ServiceCallRef>,
-    package_call: Option<(String, PackageCallableId)>,
-    callback_lane: bool,
-    callback_stream_lane: bool,
-    consumer_breaks_callback_stream: bool,
-    provider_throws_typed_error: bool,
+    role: ImplementationRole,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
-    let is_provider = service_call.is_none();
     let mut entry = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: symbol.to_string(),
@@ -538,98 +563,175 @@ fn implementation_file(
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend,
-        body: ExecutableBody::default(),
+        body: ExecutableBody {
+            blocks: Vec::new(),
+            statements: Vec::new(),
+            expressions: Vec::new(),
+        },
         source_span: None,
     };
-    if provider_throws_typed_error && is_provider {
-        configure_async_typed_error_provider_entry(&mut file, &mut entry, module_path);
-    } else if callback_stream_lane && is_provider {
-        configure_callback_stream_provider_entry(
-            &mut entry,
+    match role {
+        ImplementationRole::Provider(behavior) => {
+            configure_provider_entry(&mut file, &mut entry, module_path, behavior);
+            file.executables.push(entry);
+            install_provider_support(&mut file, module_path, symbol, behavior);
+        }
+        ImplementationRole::Consumer {
+            service_call,
+            package_call,
+            behavior,
+        } => {
+            configure_consumer_entry(&mut file, &mut entry, module_path, service_call, behavior);
+            file.executables.push(entry);
+            install_consumer_support(&mut file, module_path, symbol, package_call, behavior);
+        }
+    }
+    skiff_artifact_identity::assign_file_ir_identity(&mut file)
+        .expect("fixture File IR should receive a canonical identity");
+    file
+}
+
+fn configure_provider_entry(
+    file: &mut FileIrUnit,
+    entry: &mut ExecutableIr,
+    module_path: &str,
+    behavior: ProviderBehavior,
+) {
+    match behavior {
+        ProviderBehavior::ReturnTrue => configure_return_true_entry(entry),
+        ProviderBehavior::ReturnNull => configure_return_null_provider_entry(entry),
+        ProviderBehavior::ThrowTypedError => {
+            configure_async_typed_error_provider_entry(file, entry, module_path);
+        }
+        ProviderBehavior::InvokeCallback => configure_callback_provider_entry(entry),
+        ProviderBehavior::EmitCallbackStream => configure_callback_stream_provider_entry(
+            entry,
             module_path,
             CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
-        );
-    } else if callback_lane && is_provider {
-        configure_callback_provider_entry(&mut entry);
-    } else if let Some(service_call) = service_call {
-        file.external_refs.service_call_refs.push(service_call);
-        let call_args = if callback_lane {
-            append_callback_preimage(&mut entry, module_path)
-        } else {
-            Vec::new()
-        };
-        let call_expression = u32::try_from(entry.body.expressions.len())
-            .expect("fixture expression count should fit u32");
-        entry.body.expressions.push(ExprIr::Call {
-            call: CallIr {
-                target: CallTargetIr::ServiceCall {
-                    service_call_ref_index: ServiceCallRefIndex::new(0),
-                },
-                args: call_args,
-                type_args: BTreeMap::new(),
-                metadata: BTreeMap::new(),
+        ),
+    }
+}
+
+fn configure_consumer_entry(
+    file: &mut FileIrUnit,
+    entry: &mut ExecutableIr,
+    module_path: &str,
+    service_call: ServiceCallRef,
+    behavior: ConsumerBehavior,
+) {
+    file.external_refs.service_call_refs.push(service_call);
+    let call_args = match behavior {
+        ConsumerBehavior::InvokeCallback => append_callback_preimage(entry, module_path),
+        ConsumerBehavior::ReturnCall | ConsumerBehavior::ConsumeCallbackStream { .. } => Vec::new(),
+    };
+    let call_expression = u32::try_from(entry.body.expressions.len())
+        .expect("fixture expression count should fit u32");
+    entry.body.expressions.push(ExprIr::Call {
+        call: CallIr {
+            target: CallTargetIr::ServiceCall {
+                service_call_ref_index: ServiceCallRefIndex::new(0),
             },
-        });
-        if callback_stream_lane {
-            configure_callback_stream_consumer_entry(
-                &mut entry,
-                call_expression,
-                consumer_breaks_callback_stream,
-            );
-        } else {
-            entry.body.statements.push(StmtIr::Expr {
-                value: ExprRefIr {
+            args: call_args,
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+    });
+    match behavior {
+        ConsumerBehavior::ReturnCall | ConsumerBehavior::InvokeCallback => {
+            entry.body.statements.push(StmtIr::Return {
+                value: Some(ExprRefIr {
                     expression: call_expression,
-                },
+                }),
             });
             entry.body.blocks.push(BlockIr {
                 label: "entry".to_string(),
                 statements: vec![StmtRefIr { statement: 0 }],
             });
         }
+        ConsumerBehavior::ConsumeCallbackStream { break_after_item } => {
+            configure_callback_stream_consumer_entry(entry, call_expression, break_after_item);
+        }
     }
-    file.executables.push(entry);
-    if let Some((dependency_ref, package_callable_id)) = package_call {
-        let package_ref = PackageRefIr::Dependency { dependency_ref };
-        file.external_refs
-            .package_callables
-            .push(PackageCallableRef {
-                package_ref: package_ref.clone(),
-                package_callable_id: package_callable_id.clone(),
-            });
-        file.executables.push(checkpoint_call_executable(
-            format!("{symbol}_package_direct"),
-            CallTargetIr::PackageCallable {
-                package_ref,
-                package_callable_id,
-            },
-            Vec::new(),
-        ));
+}
+
+fn install_provider_support(
+    file: &mut FileIrUnit,
+    module_path: &str,
+    symbol: &str,
+    behavior: ProviderBehavior,
+) {
+    if matches!(behavior, ProviderBehavior::EmitCallbackStream) {
         install_callback_interface_fixture(
-            &mut file,
-            module_path,
-            symbol,
-            callback_lane,
-            CALLBACK_OWNER_EXECUTABLE_INDEX,
-        );
-    }
-    if callback_stream_lane && is_provider {
-        install_callback_interface_fixture(
-            &mut file,
+            file,
             module_path,
             symbol,
             true,
             CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
         );
-        configure_callback_owner_success(
+        configure_return_true_entry(
             file.executables
                 .last_mut()
                 .expect("callback stream owner executable should be installed"),
         );
     }
-    skiff_artifact_identity::assign_file_ir_identity(&mut file)
-        .expect("fixture File IR should receive a canonical identity");
-    file
+}
+
+fn install_consumer_support(
+    file: &mut FileIrUnit,
+    module_path: &str,
+    symbol: &str,
+    package_call: (String, PackageCallableId),
+    behavior: ConsumerBehavior,
+) {
+    let (dependency_ref, package_callable_id) = package_call;
+    let package_ref = PackageRefIr::Dependency { dependency_ref };
+    file.external_refs
+        .package_callables
+        .push(PackageCallableRef {
+            package_ref: package_ref.clone(),
+            package_callable_id: package_callable_id.clone(),
+        });
+    file.executables.push(checkpoint_call_executable(
+        format!("{symbol}_package_direct"),
+        CallTargetIr::PackageCallable {
+            package_ref,
+            package_callable_id,
+        },
+        Vec::new(),
+    ));
+    install_callback_interface_fixture(
+        file,
+        module_path,
+        symbol,
+        matches!(behavior, ConsumerBehavior::InvokeCallback),
+        CALLBACK_OWNER_EXECUTABLE_INDEX,
+    );
+}
+
+fn configure_return_true_entry(entry: &mut ExecutableIr) {
+    entry.body = ExecutableBody {
+        blocks: vec![BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        }],
+        statements: vec![StmtIr::Return {
+            value: Some(ExprRefIr { expression: 0 }),
+        }],
+        expressions: vec![ExprIr::Literal {
+            value: LiteralIr::Bool { value: true },
+        }],
+    };
+}
+
+fn configure_return_null_provider_entry(entry: &mut ExecutableIr) {
+    entry.body = ExecutableBody {
+        blocks: vec![BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        }],
+        statements: vec![StmtIr::Return { value: None }],
+        expressions: Vec::new(),
+    };
 }
 
 fn configure_async_typed_error_provider_entry(
@@ -787,21 +889,6 @@ fn configure_callback_stream_consumer_entry(
             statements: body_statements,
         },
     ]);
-}
-
-fn configure_callback_owner_success(owner: &mut ExecutableIr) {
-    owner.body = ExecutableBody {
-        blocks: vec![BlockIr {
-            label: "entry".to_string(),
-            statements: vec![StmtRefIr { statement: 0 }],
-        }],
-        statements: vec![StmtIr::Return {
-            value: Some(ExprRefIr { expression: 0 }),
-        }],
-        expressions: vec![ExprIr::Literal {
-            value: LiteralIr::Bool { value: true },
-        }],
-    };
 }
 
 fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
@@ -972,37 +1059,12 @@ fn install_callback_interface_fixture(
             self_type: Some(TypeRefIr::LocalType { type_index: 0 }),
             slots: SlotLayout::default(),
             may_suspend: false,
+            // Intentional callback-owner missing-entry probe; validation/execution must fail
+            // closed instead of inventing an owner-method body.
             body: ExecutableBody::default(),
             source_span: None,
         });
     }
-}
-
-fn operation_has_callback_parameter(operation: &BoundaryOperationContract) -> bool {
-    operation.parameters.iter().any(|parameter| {
-        matches!(
-            parameter.value_plan,
-            BoundaryValuePlan::Linkable {
-                carrier: BoundaryValueCarrier::CallbackCapability,
-                encoding: BoundaryValueEncoding::OpaqueCapability,
-                ..
-            }
-        )
-    })
-}
-
-fn operation_has_callback_stream_item(operation: &BoundaryOperationContract) -> bool {
-    matches!(
-        operation.stream,
-        BoundaryStreamContract::ServerStream {
-            item_value_plan: BoundaryValuePlan::Linkable {
-                carrier: BoundaryValueCarrier::CallbackCapability,
-                encoding: BoundaryValueEncoding::OpaqueCapability,
-                ..
-            },
-            ..
-        }
-    )
 }
 
 fn checkpoint_call_executable(
@@ -1024,8 +1086,8 @@ fn checkpoint_call_executable(
                 label: "entry".to_string(),
                 statements: vec![StmtRefIr { statement: 0 }],
             }],
-            statements: vec![StmtIr::Expr {
-                value: ExprRefIr { expression: 0 },
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 0 }),
             }],
             expressions: vec![ExprIr::Call {
                 call: CallIr {
