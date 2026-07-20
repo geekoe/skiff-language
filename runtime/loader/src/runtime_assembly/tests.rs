@@ -196,7 +196,7 @@ impl Fixture {
         let file_ref = FileIrRef {
             file_ir_identity: file.file_ir_identity.clone(),
             module_path: file.module_path.clone(),
-            artifact_path: Some("files/provider.json".to_string()),
+            artifact_path: None,
             source_ast_hash: Some(file.source_ast_hash.clone()),
         };
 
@@ -213,7 +213,7 @@ impl Fixture {
             sha256: hex::encode(Sha256::digest(resource.as_ref())),
             byte_len: resource.len() as u64,
             content_type: Some("text/plain".to_string()),
-            artifact_path: Some("resources/health.txt".to_string()),
+            artifact_path: None,
         };
         let effects = no_effects();
         let provenance = CallableProvenanceSummary::Analyzed {
@@ -592,6 +592,75 @@ fn missing_file_link_target_and_contract_operation_mismatch_fail_closed() {
         .unwrap_err()
         .to_string()
         .contains("operation bindings do not exactly match"));
+}
+
+#[test]
+fn runtime_assembly_filesystem_resolver_hydrates_exact_canonical_closure() {
+    let fixture = Fixture::new();
+    let temp = TestArtifactRoot::new();
+    let store = skiff_deployment::storage::CanonicalArtifactStore::create(temp.path()).unwrap();
+    let package_ref = package_ref(&fixture.package);
+    let contract_ref = contract_ref(&fixture.contract);
+    let deployment_ref = skiff_artifact_identity::service_deployment_ref(&fixture.deployment);
+    let assembly_ref = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+
+    store.write_service_contract(&fixture.contract).unwrap();
+    store.write_package_artifact(&fixture.package).unwrap();
+    store
+        .write_file_ir(&package_ref, &fixture.package.files[0], &fixture.file)
+        .unwrap();
+    store
+        .write_static_resource(
+            &package_ref,
+            &fixture.package.static_resources[0],
+            fixture.resource.as_ref(),
+        )
+        .unwrap();
+    store.write_service_deployment(&fixture.deployment).unwrap();
+    store.write_runtime_assembly(&fixture.assembly).unwrap();
+
+    let resolver = crate::FilesystemRuntimeAssemblyContentResolver::from_store(store);
+    let hydrated = resolver.load_runtime_assembly(&assembly_ref).unwrap();
+    assert_eq!(
+        hydrated.assembly().assembly_identity,
+        assembly_ref.assembly_identity
+    );
+    assert!(hydrated.deployment(&deployment_ref).is_some());
+    assert!(hydrated.contract_store().contract(&contract_ref).is_some());
+    assert_eq!(
+        hydrated
+            .package(&package_ref.package_build_id)
+            .unwrap()
+            .resource("assets/health.txt")
+            .unwrap()
+            .bytes()
+            .as_ref(),
+        fixture.resource.as_ref()
+    );
+}
+
+struct TestArtifactRoot(std::path::PathBuf);
+
+impl TestArtifactRoot {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "skiff-runtime-assembly-resolver-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir(&path).expect("create runtime assembly test root");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestArtifactRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {

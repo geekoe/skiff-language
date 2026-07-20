@@ -4,6 +4,7 @@ mod artifact_reference;
 mod constants;
 mod contract;
 mod deployment;
+mod ecosystem_paths;
 mod error;
 mod file_ir;
 mod framing;
@@ -50,7 +51,8 @@ pub use constants::{
 pub use contract::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
     normalize_contract_definition_surface, normalize_contract_operation_contract,
-    normalize_contract_type_shape, service_protocol_identity, service_protocol_identity_projection,
+    normalize_contract_type_shape, service_contract_from_definition, service_contract_ref,
+    service_protocol_identity, service_protocol_identity_projection,
     validate_service_contract_identities, ServiceProtocolIdentityProjection,
 };
 pub use deployment::{
@@ -59,6 +61,12 @@ pub use deployment::{
     validate_service_deployment_identity, validate_service_deployment_input,
     validate_service_deployment_ref, validate_service_deployment_surface,
     DeploymentArtifactIdentityProjection,
+};
+pub use ecosystem_paths::{
+    EnvironmentActivationStatePath, PackageArtifactPointerPath, PackageArtifactRecordPath,
+    PackageFileIrRecordPath, PackageResourceRecordPath, RuntimeAssemblyPointerPath,
+    RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
+    ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };
 pub use error::{ArtifactIdentityError, Result};
 pub use file_ir::{
@@ -84,8 +92,9 @@ pub use package::{
 pub use package_artifact::{
     assign_package_artifact_identities, package_artifact_build_identity,
     package_artifact_build_identity_projection, package_artifact_local_abi_identity,
-    package_artifact_local_abi_identity_projection, validate_package_artifact_identities,
-    PackageArtifactBuildIdentityProjection, PackageArtifactLocalAbiIdentityProjection,
+    package_artifact_local_abi_identity_projection, package_artifact_ref,
+    validate_package_artifact_identities, PackageArtifactBuildIdentityProjection,
+    PackageArtifactLocalAbiIdentityProjection,
 };
 pub use package_resolver::{
     ordered_package_build_identities_from_artifact_refs,
@@ -107,7 +116,7 @@ pub use publication_validation::{
 };
 pub use runtime_assembly::{
     assign_runtime_assembly_identity, runtime_assembly_identity,
-    runtime_assembly_identity_projection, validate_runtime_assembly_identity,
+    runtime_assembly_identity_projection, runtime_assembly_ref, validate_runtime_assembly_identity,
     validate_runtime_assembly_surface, AssemblyIdentityProjection,
 };
 pub use runtime_program::{

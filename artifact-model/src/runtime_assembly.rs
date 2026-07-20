@@ -7,6 +7,13 @@ use crate::{
     ServiceRequirementKey, StateBinding,
 };
 
+/// Exact reference to one immutable RuntimeAssembly record.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyRef {
+    pub assembly_identity: AssemblyIdentity,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageCodeSlot {

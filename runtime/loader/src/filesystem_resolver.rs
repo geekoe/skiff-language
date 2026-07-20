@@ -1,0 +1,83 @@
+use std::{path::Path, sync::Arc};
+
+use skiff_artifact_model::{
+    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PublicationResourceRef,
+    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef,
+};
+use skiff_deployment::storage::CanonicalArtifactStore;
+
+use crate::{HydratedRuntimeAssembly, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
+
+/// Production filesystem resolver for the canonical four-record store.
+///
+/// Every path comes from an exact typed reference. Raw coordinates are checked
+/// before typed deserialization by the store; no legacy pointer/index or host
+/// admission hook participates in hydration.
+#[derive(Debug, Clone)]
+pub struct FilesystemRuntimeAssemblyContentResolver {
+    store: CanonicalArtifactStore,
+}
+
+impl FilesystemRuntimeAssemblyContentResolver {
+    pub fn open(artifact_root: impl AsRef<Path>) -> anyhow::Result<Self> {
+        Ok(Self {
+            store: CanonicalArtifactStore::open(artifact_root)?,
+        })
+    }
+
+    pub fn from_store(store: CanonicalArtifactStore) -> Self {
+        Self { store }
+    }
+
+    pub fn store(&self) -> &CanonicalArtifactStore {
+        &self.store
+    }
+
+    pub fn load_runtime_assembly(
+        &self,
+        reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<HydratedRuntimeAssembly> {
+        let assembly = self.store.read_runtime_assembly(reference)?;
+        RuntimeAssemblyLoader::new(self).load(assembly)
+    }
+}
+
+impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver {
+    fn resolve_deployment(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>> {
+        Ok(self.store.read_service_deployment(reference)?)
+    }
+
+    fn resolve_contract(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>> {
+        Ok(self.store.read_service_contract(reference)?)
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>> {
+        Ok(self.store.read_package_artifact(reference)?)
+    }
+
+    fn resolve_file_ir(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+    ) -> anyhow::Result<Arc<FileIrUnit>> {
+        Ok(self.store.read_file_ir(package, reference)?)
+    }
+
+    fn resolve_static_resource(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &PublicationResourceRef,
+    ) -> anyhow::Result<Arc<[u8]>> {
+        Ok(self.store.read_static_resource(package, reference)?)
+    }
+}

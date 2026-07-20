@@ -1,8 +1,8 @@
 use serde::Serialize;
 use skiff_artifact_model::{
     ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GlobalIngressBinding,
-    PackageArtifactRef, RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef,
-    ServiceDeploymentRef,
+    PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
+    ServiceContractRef, ServiceDeploymentRef,
 };
 
 use crate::{
@@ -79,6 +79,13 @@ pub fn validate_runtime_assembly_identity(assembly: &RuntimeAssembly) -> Result<
         });
     }
     Ok(())
+}
+
+pub fn runtime_assembly_ref(assembly: &RuntimeAssembly) -> Result<RuntimeAssemblyRef> {
+    validate_runtime_assembly_identity(assembly)?;
+    Ok(RuntimeAssemblyRef {
+        assembly_identity: assembly.assembly_identity.clone(),
+    })
 }
 
 fn invalid_assembly<T>(message: impl Into<String>) -> Result<T> {

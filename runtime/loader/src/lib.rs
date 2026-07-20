@@ -1,4 +1,5 @@
 mod cache;
+mod filesystem_resolver;
 pub mod graph;
 mod identity;
 mod paths;
@@ -12,6 +13,7 @@ pub use cache::{
     ArtifactCacheBucketStats, ArtifactCacheEvictionCandidate, ArtifactCacheKind, FileIrCache,
     PackageCache, RemovedArtifactCacheEntry,
 };
+pub use filesystem_resolver::FilesystemRuntimeAssemblyContentResolver;
 pub use graph::{
     select_runtime_program_pointer_from_roots, ArtifactGraph, ArtifactGraphCache,
     ArtifactGraphIdentities, ArtifactGraphLoader, RuntimeProgramArtifactSelection,

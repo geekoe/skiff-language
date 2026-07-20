@@ -6,6 +6,7 @@ pub use abi_identity::{
     DescriptorHash, ExternalDeclarationAnchor, PublishedDeclarationId, SchemaRevision, StdSymbolId,
     TypeNameability,
 };
+pub mod assembly_activation_control;
 pub mod boundary;
 pub mod builtin_receiver_ops;
 pub mod compile_identity;
@@ -14,6 +15,7 @@ pub mod config;
 pub mod contract_types;
 pub mod cross_package_identity;
 pub mod deployment;
+pub mod ecosystem_authoring;
 pub mod effects;
 pub mod executable;
 pub mod executable_target;
@@ -35,6 +37,7 @@ pub mod symbols;
 pub mod targets;
 pub mod types;
 
+pub use assembly_activation_control::{AssemblyActivationControl, AssemblyActivationRejectReason};
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
     BoundaryCallbackLifetime, BoundaryCancellationContract, BoundaryConfigRequirement,
@@ -82,6 +85,12 @@ pub use deployment::{
     RuntimeCapabilityBinding, SecretRefBinding, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
     ServiceRequirementKey, ServiceSelectorBinding, StateBinding, StateBindingKind,
+};
+pub use ecosystem_authoring::{
+    parse_package_contracts_yml, parse_runtime_assembly_yml, parse_service_contract_definition_yml,
+    parse_service_deployment_yml, EcosystemAuthoringError, PackageContractAuthoring,
+    PackageContractsAuthoring, RuntimeAssemblyAuthoring, ServiceContractDefinition,
+    ServiceContractDefinitionDiagnosticText, ServiceDeploymentAuthoring,
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
@@ -140,7 +149,7 @@ pub use refs::{FileIrRef, SourcePosition, SourceSpanRef};
 pub use resources::PublicationResourceRef;
 pub use runtime_assembly::{
     ActivationTemplate, CanonicalPackageLinkPlan, GlobalIngressBinding, PackageCodeSlot,
-    ResolvedServiceBinding, RuntimeAssembly, ServiceBindingTemplate,
+    ResolvedServiceBinding, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
 };
 pub use schema::{
     ARTIFACT_INDEX_SCHEMA_VERSION, BUNDLE_SCHEMA_VERSION, CONTRACT_SCHEMA_ARTIFACT_VERSION,
@@ -149,8 +158,9 @@ pub use schema::{
     PACKAGE_TEST_ASSEMBLY_SCHEMA_VERSION, PACKAGE_TEST_ENTRYPOINT_KIND,
     PACKAGE_UNIT_SCHEMA_VERSION, PUBLICATION_ABI_UNIT_SCHEMA_VERSION,
     RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_ASSEMBLY_KIND, SERVICE_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION, SERVICE_UNIT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    SERVICE_UNIT_SCHEMA_VERSION,
 };
 pub use service_contract::{ContractDiagnosticText, ServiceContract};
 pub use service_unit::{
