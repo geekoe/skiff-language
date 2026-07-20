@@ -1,6 +1,6 @@
 use skiff_runtime_boundary::service_linkable::{
-    ServiceLinkableCapabilityHooks, ServiceLinkableCapabilityRequest,
-    ServiceLinkableMaterializationError,
+    ServiceLinkableCapabilityHooks, ServiceLinkableCapabilityProjection,
+    ServiceLinkableCapabilityRequest, ServiceLinkableMaterializationError,
 };
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::runtime_value::{CallbackCapabilityCarrier, RuntimeValue};
@@ -25,14 +25,16 @@ impl ServiceLinkableCapabilityHooks for CallbackNativeCapabilityHooks<'_, '_> {
     fn project_callback_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> std::result::Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
+    {
         Err(ServiceLinkableMaterializationError::CallbackHookRequired)
     }
 
     fn project_native_adapter_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> std::result::Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> std::result::Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>
+    {
         Err(ServiceLinkableMaterializationError::NativeAdapterHookRequired)
     }
 }
