@@ -116,18 +116,28 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                 };
                 let is_callback =
                     contract_type_is_callback_interface(self.ty, self.boundary_schema)?;
-                let capability = if is_callback {
+                let projection = if is_callback {
                     hooks.project_callback_capability(request)?
                 } else {
                     hooks.project_native_adapter_capability(request)?
                 };
-                validate_projected_capability(&capability, *lifetime)?;
-                let handle = destination_heap
-                    .alloc_interface(InterfaceValue::new(
-                        capability.interface_or_adapter_contract().to_string(),
-                        InterfaceCarrier::CallbackCapability(capability),
-                    ))
-                    .map_err(model_error)?;
+                validate_projected_capability(projection.capability(), *lifetime)?;
+                let checkpoint = destination_heap.checkpoint();
+                let handle = match destination_heap.alloc_interface(InterfaceValue::new(
+                    projection
+                        .capability()
+                        .interface_or_adapter_contract()
+                        .to_string(),
+                    InterfaceCarrier::CallbackCapability(projection.capability().clone()),
+                )) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        destination_heap.rollback_to_checkpoint(checkpoint);
+                        drop(projection);
+                        return Err(model_error(error));
+                    }
+                };
+                projection.commit();
                 Ok(RuntimeValue::Heap(handle))
             }
             _ => Err(ServiceLinkableMaterializationError::InvalidPlan {
@@ -156,12 +166,48 @@ pub trait ServiceLinkableCapabilityHooks: Send + Sync {
     fn project_callback_capability(
         &self,
         request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError>;
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>;
 
     fn project_native_adapter_capability(
         &self,
         request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError>;
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError>;
+}
+
+/// Owns the rollback obligation for a newly registered capability until the
+/// destination carrier has been allocated successfully. Dropping an uncommitted
+/// projection invokes the rollback exactly once.
+pub struct ServiceLinkableCapabilityProjection {
+    capability: CallbackCapabilityCarrier,
+    rollback: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl ServiceLinkableCapabilityProjection {
+    pub fn new(
+        capability: CallbackCapabilityCarrier,
+        rollback: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            capability,
+            rollback: Some(Box::new(rollback)),
+        }
+    }
+
+    pub fn capability(&self) -> &CallbackCapabilityCarrier {
+        &self.capability
+    }
+
+    fn commit(mut self) {
+        self.rollback.take();
+    }
+}
+
+impl Drop for ServiceLinkableCapabilityProjection {
+    fn drop(&mut self) {
+        if let Some(rollback) = self.rollback.take() {
+            rollback();
+        }
+    }
 }
 
 pub struct FailClosedServiceLinkableCapabilityHooks;
@@ -170,14 +216,14 @@ impl ServiceLinkableCapabilityHooks for FailClosedServiceLinkableCapabilityHooks
     fn project_callback_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         Err(ServiceLinkableMaterializationError::CallbackHookRequired)
     }
 
     fn project_native_adapter_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         Err(ServiceLinkableMaterializationError::NativeAdapterHookRequired)
     }
 }

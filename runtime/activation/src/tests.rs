@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use skiff_artifact_model::{
     ActivationPolicy, AssemblyIdentity, ContractOperationId, DeploymentArtifactIdentity,
@@ -97,6 +100,18 @@ fn binding(
             .collect(),
     )
     .expect("binding fixture should build")
+}
+
+struct DropProbe(Arc<AtomicUsize>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn drop_probe(counter: &Arc<AtomicUsize>) -> CallbackCapabilityPayload {
+    Arc::new(DropProbe(Arc::clone(counter)))
 }
 
 #[test]
@@ -418,6 +433,280 @@ fn activation_context_stream_extends_callback_then_close_cancel_and_owner_exit_f
         unavailable_owner
             .callback_capabilities()
             .lookup(&unavailable)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityUnavailable
+    );
+}
+
+#[test]
+fn callback_capability_cleanup_drains_only_terminal_generation_and_revoke_is_idempotent() {
+    let owner = activation(
+        "cleanup-owner",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "owner-build",
+        Vec::new(),
+    );
+    let drops = Arc::new(AtomicUsize::new(0));
+    let first_request = RequestActivationContext::begin(Arc::clone(&owner)).unwrap();
+    let second_request = RequestActivationContext::begin(Arc::clone(&owner)).unwrap();
+    let first = owner
+        .callback_capabilities()
+        .register(
+            &owner,
+            &first_request,
+            "contract:reader",
+            "first-generation",
+            CallbackLifetime::Request,
+            drop_probe(&drops),
+        )
+        .unwrap();
+    let second = owner
+        .callback_capabilities()
+        .register(
+            &owner,
+            &second_request,
+            "contract:reader",
+            "second-generation",
+            CallbackLifetime::Request,
+            drop_probe(&drops),
+        )
+        .unwrap();
+    assert_eq!(owner.callback_capabilities().active_entry_count(), 2);
+
+    first_request.end_request();
+    first_request.end_request();
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(owner.callback_capabilities().active_entry_count(), 1);
+    assert_eq!(
+        owner.callback_capabilities().lookup(&first).unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+    owner.callback_capabilities().revoke(&first).unwrap();
+    owner.callback_capabilities().revoke(&first).unwrap();
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    owner
+        .callback_capabilities()
+        .lookup(&second)
+        .expect("another request generation must remain active");
+
+    second_request.cancel();
+    second_request.cancel();
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    assert_eq!(owner.callback_capabilities().active_entry_count(), 0);
+    assert_eq!(owner.callback_capabilities().tombstone_count(), 2);
+}
+
+#[test]
+fn callback_capability_cleanup_stream_cancel_owner_exit_and_context_drop_release_once() {
+    let stream_owner = activation(
+        "cleanup-stream",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "owner-build",
+        Vec::new(),
+    );
+    let stream_drops = Arc::new(AtomicUsize::new(0));
+    let request_drops = Arc::new(AtomicUsize::new(0));
+    let stream_request = RequestActivationContext::begin(Arc::clone(&stream_owner)).unwrap();
+    let stream = stream_request.open_stream().unwrap();
+    stream_owner
+        .callback_capabilities()
+        .register(
+            &stream_owner,
+            &stream_request,
+            "contract:request",
+            "request-alongside-stream-cleanup",
+            CallbackLifetime::Request,
+            drop_probe(&request_drops),
+        )
+        .unwrap();
+    let stream_carrier = stream_owner
+        .callback_capabilities()
+        .register(
+            &stream_owner,
+            &stream_request,
+            "contract:stream",
+            "stream-cleanup",
+            CallbackLifetime::Stream,
+            drop_probe(&stream_drops),
+        )
+        .unwrap();
+    stream_request.end_request();
+    stream_request.end_request();
+    assert_eq!(request_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(stream_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(stream_owner.callback_capabilities().active_entry_count(), 1);
+    stream.close();
+    stream.close();
+    drop(stream);
+    stream_request.cancel();
+    assert_eq!(stream_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        stream_owner
+            .callback_capabilities()
+            .lookup(&stream_carrier)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+
+    let exited_owner = activation(
+        "cleanup-exit",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "owner-build",
+        Vec::new(),
+    );
+    let exit_drops = Arc::new(AtomicUsize::new(0));
+    let exit_request = RequestActivationContext::begin(Arc::clone(&exited_owner)).unwrap();
+    let exited = exited_owner
+        .callback_capabilities()
+        .register(
+            &exited_owner,
+            &exit_request,
+            "contract:reader",
+            "owner-exit-cleanup",
+            CallbackLifetime::Request,
+            drop_probe(&exit_drops),
+        )
+        .unwrap();
+    exited_owner.mark_owner_unavailable();
+    exited_owner.mark_owner_unavailable();
+    exit_request.cancel();
+    assert_eq!(exit_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(exited_owner.callback_capabilities().active_entry_count(), 0);
+    assert_eq!(
+        exited_owner
+            .callback_capabilities()
+            .lookup(&exited)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityUnavailable
+    );
+
+    let dropped_owner = activation(
+        "cleanup-drop",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "owner-build",
+        Vec::new(),
+    );
+    let context_drops = Arc::new(AtomicUsize::new(0));
+    let context_stream_drops = Arc::new(AtomicUsize::new(0));
+    let (dropped_carrier, dropped_stream_carrier, dropped_stream) = {
+        let request = RequestActivationContext::begin(Arc::clone(&dropped_owner)).unwrap();
+        let stream = request.open_stream().unwrap();
+        let request_carrier = dropped_owner
+            .callback_capabilities()
+            .register(
+                &dropped_owner,
+                &request,
+                "contract:reader",
+                "context-drop-cleanup",
+                CallbackLifetime::Request,
+                drop_probe(&context_drops),
+            )
+            .unwrap();
+        let stream_carrier = dropped_owner
+            .callback_capabilities()
+            .register(
+                &dropped_owner,
+                &request,
+                "contract:stream",
+                "context-drop-stream-cleanup",
+                CallbackLifetime::Stream,
+                drop_probe(&context_stream_drops),
+            )
+            .unwrap();
+        (request_carrier, stream_carrier, stream)
+    };
+    assert_eq!(context_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(context_stream_drops.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        dropped_owner.callback_capabilities().active_entry_count(),
+        1
+    );
+    assert_eq!(
+        dropped_owner
+            .callback_capabilities()
+            .lookup(&dropped_carrier)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+    dropped_owner
+        .callback_capabilities()
+        .lookup(&dropped_stream_carrier)
+        .expect("stream lease must outlive the last request context");
+    drop(dropped_stream);
+    assert_eq!(context_stream_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        dropped_owner.callback_capabilities().active_entry_count(),
+        0
+    );
+    assert_eq!(
+        dropped_owner
+            .callback_capabilities()
+            .lookup(&dropped_stream_carrier)
+            .unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+}
+
+#[test]
+fn callback_capability_cleanup_tombstones_are_activation_owned_and_bounded() {
+    let owner = activation(
+        "cleanup-bounded",
+        "r1",
+        "assembly-a",
+        7,
+        "replica-a",
+        "owner-build",
+        Vec::new(),
+    );
+    let request = RequestActivationContext::begin(Arc::clone(&owner)).unwrap();
+    let mut last = None;
+    for index in 0..=CALLBACK_CAPABILITY_TOMBSTONE_LIMIT {
+        let carrier = owner
+            .callback_capabilities()
+            .register(
+                &owner,
+                &request,
+                "contract:reader",
+                format!("bounded-{index}"),
+                CallbackLifetime::Request,
+                Arc::new(()),
+            )
+            .unwrap();
+        owner.callback_capabilities().revoke(&carrier).unwrap();
+        last = Some(carrier);
+    }
+    assert_eq!(
+        owner.callback_capabilities().tombstone_count(),
+        CALLBACK_CAPABILITY_TOMBSTONE_LIMIT
+    );
+    let last = last.unwrap();
+    assert_eq!(
+        owner.callback_capabilities().lookup(&last).unwrap_err(),
+        CallbackCapabilityError::CapabilityExpired
+    );
+    let wrong_owner = skiff_runtime_model::value::CallbackCapabilityCarrier::new(
+        last.owner_runtime_replica_id(),
+        "another-activation",
+        last.request_generation(),
+        last.interface_or_adapter_contract(),
+        last.opaque_capability_id(),
+    );
+    assert_eq!(
+        owner
+            .callback_capabilities()
+            .lookup(&wrong_owner)
             .unwrap_err(),
         CallbackCapabilityError::CapabilityUnavailable
     );
