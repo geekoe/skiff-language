@@ -111,6 +111,7 @@ checker写入域互不重叠。
 | T01 | [Canonical assembly execution image](tasks/P4-T01-assembly-execution-image.md) | D01 PASS | 高；kernel checkpoint |
 | T02 | [Activation/materialization/capability core](tasks/P4-T02-activation-boundary-kernel.md) | D01 PASS | 高；kernel checkpoint |
 | T03 | [Kernel eval handoff](tasks/P4-T03-kernel-eval-handoff.md) | T01、T02 | 高；共享 API integration |
+| F01 | [Package-test call-target exhaustiveness](tasks/P4-F01-package-test-call-target-exhaustiveness.md) | T03 host fixture compile blocker | 低；T01 API fallout repair |
 | R01 | [Kernel checkpoint acceptance](tasks/P4-R01-kernel-acceptance.md) | T03 exact commit | 高风险只读 gate |
 | T04 | [Ordinary/error execution](tasks/P4-T04-ordinary-error-execution.md) | R01 PASS | 高；lane batch |
 | T05 | [Async/stream/cancel execution](tasks/P4-T05-async-stream-cancel.md) | R01 PASS | 高；lane batch |
