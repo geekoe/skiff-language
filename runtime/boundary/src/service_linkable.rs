@@ -1,0 +1,270 @@
+use std::collections::BTreeMap;
+
+use skiff_artifact_model::{
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, BoundaryValuePlanUnavailableReason, ContractSchemaType, ContractTypeId,
+    ContractTypeRef,
+};
+use skiff_runtime_model::{
+    request_heap::RequestHeap,
+    value::{CallbackCapabilityCarrier, InterfaceCarrier, InterfaceValue, RuntimeValue},
+};
+
+use crate::{
+    service_linkable_detached::{
+        materialize_detached_graph, model_error, reject_detached_interface_graph,
+    },
+    service_linkable_schema::{
+        contract_type_is_callback_interface, validate_schema_closure, value_matches_contract_type,
+    },
+};
+
+/// Borrowed, canonical service contract plan used by the in-process boundary.
+/// It retains no File IR or runtime-inferred type descriptor.
+pub struct ServiceLinkableContractPlan<'a> {
+    ty: &'a ContractTypeRef,
+    boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+    value_plan: &'a BoundaryValuePlan,
+}
+
+impl<'a> ServiceLinkableContractPlan<'a> {
+    pub fn new(
+        ty: &'a ContractTypeRef,
+        boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+        value_plan: &'a BoundaryValuePlan,
+    ) -> Result<Self, ServiceLinkableMaterializationError> {
+        validate_schema_closure(ty, boundary_schema)?;
+        validate_value_plan_shape(value_plan)?;
+        Ok(Self {
+            ty,
+            boundary_schema,
+            value_plan,
+        })
+    }
+
+    pub fn ty(&self) -> &ContractTypeRef {
+        self.ty
+    }
+
+    pub fn value_plan(&self) -> &BoundaryValuePlan {
+        self.value_plan
+    }
+
+    pub fn materialize(
+        &self,
+        value: &RuntimeValue,
+        source_heap: &RequestHeap,
+        destination_heap: &mut RequestHeap,
+        scope: ServiceLinkableMaterializationScope,
+        hooks: &dyn ServiceLinkableCapabilityHooks,
+    ) -> Result<RuntimeValue, ServiceLinkableMaterializationError> {
+        let BoundaryValuePlan::Linkable {
+            carrier,
+            encoding,
+            owner,
+            lifetime,
+        } = self.value_plan
+        else {
+            let BoundaryValuePlan::Unsupported { reason } = self.value_plan else {
+                unreachable!();
+            };
+            return Err(ServiceLinkableMaterializationError::UnsupportedPlan { reason: *reason });
+        };
+        if *owner != scope.owner {
+            return Err(ServiceLinkableMaterializationError::OwnerMismatch {
+                expected: *owner,
+                actual: scope.owner,
+            });
+        }
+        if *lifetime != scope.lifetime {
+            return Err(ServiceLinkableMaterializationError::LifetimeMismatch {
+                expected: *lifetime,
+                actual: scope.lifetime,
+            });
+        }
+        match (carrier, encoding) {
+            (BoundaryValueCarrier::DetachedValueGraph, BoundaryValueEncoding::CanonicalValue) => {
+                if scope.owner == BoundaryValueOwner::CapabilityOwner {
+                    return Err(ServiceLinkableMaterializationError::InvalidPlan {
+                        message: "detached value graph cannot be owned by capability owner",
+                    });
+                }
+                reject_detached_interface_graph(value, source_heap)?;
+                if !value_matches_contract_type(value, source_heap, self.ty, self.boundary_schema)?
+                {
+                    return Err(ServiceLinkableMaterializationError::TypeMismatch);
+                }
+                let checkpoint = destination_heap.checkpoint();
+                let result = materialize_detached_graph(value, source_heap, destination_heap);
+                if result.is_err() {
+                    destination_heap.rollback_to_checkpoint(checkpoint);
+                }
+                result
+            }
+            (BoundaryValueCarrier::CallbackCapability, BoundaryValueEncoding::OpaqueCapability) => {
+                if scope.owner != BoundaryValueOwner::CapabilityOwner {
+                    return Err(ServiceLinkableMaterializationError::InvalidPlan {
+                        message: "callback capability must be owned by capability owner",
+                    });
+                }
+                let request = ServiceLinkableCapabilityRequest {
+                    value,
+                    source_heap,
+                    ty: self.ty,
+                    boundary_schema: self.boundary_schema,
+                    lifetime: *lifetime,
+                };
+                let is_callback =
+                    contract_type_is_callback_interface(self.ty, self.boundary_schema)?;
+                let capability = if is_callback {
+                    hooks.project_callback_capability(request)?
+                } else {
+                    hooks.project_native_adapter_capability(request)?
+                };
+                validate_projected_capability(&capability, *lifetime)?;
+                let handle = destination_heap
+                    .alloc_interface(InterfaceValue::new(
+                        capability.interface_or_adapter_contract().to_string(),
+                        InterfaceCarrier::CallbackCapability(capability),
+                    ))
+                    .map_err(model_error)?;
+                Ok(RuntimeValue::Heap(handle))
+            }
+            _ => Err(ServiceLinkableMaterializationError::InvalidPlan {
+                message: "carrier and encoding are not a canonical service-linkable pair",
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceLinkableMaterializationScope {
+    pub owner: BoundaryValueOwner,
+    pub lifetime: BoundaryValueLifetime,
+}
+
+#[derive(Clone, Copy)]
+pub struct ServiceLinkableCapabilityRequest<'a> {
+    pub value: &'a RuntimeValue,
+    pub source_heap: &'a RequestHeap,
+    pub ty: &'a ContractTypeRef,
+    pub boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
+    pub lifetime: BoundaryValueLifetime,
+}
+
+pub trait ServiceLinkableCapabilityHooks: Send + Sync {
+    fn project_callback_capability(
+        &self,
+        request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError>;
+
+    fn project_native_adapter_capability(
+        &self,
+        request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError>;
+}
+
+pub struct FailClosedServiceLinkableCapabilityHooks;
+
+impl ServiceLinkableCapabilityHooks for FailClosedServiceLinkableCapabilityHooks {
+    fn project_callback_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+        Err(ServiceLinkableMaterializationError::CallbackHookRequired)
+    }
+
+    fn project_native_adapter_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+        Err(ServiceLinkableMaterializationError::NativeAdapterHookRequired)
+    }
+}
+
+fn validate_value_plan_shape(
+    plan: &BoundaryValuePlan,
+) -> Result<(), ServiceLinkableMaterializationError> {
+    match plan {
+        BoundaryValuePlan::Unsupported { reason } => {
+            Err(ServiceLinkableMaterializationError::UnsupportedPlan { reason: *reason })
+        }
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            ..
+        } if *owner != BoundaryValueOwner::CapabilityOwner => Ok(()),
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request | BoundaryValueLifetime::Stream,
+        } => Ok(()),
+        BoundaryValuePlan::Linkable { .. } => {
+            Err(ServiceLinkableMaterializationError::InvalidPlan {
+                message: "invalid carrier/encoding/owner/lifetime combination",
+            })
+        }
+    }
+}
+
+fn validate_projected_capability(
+    capability: &CallbackCapabilityCarrier,
+    lifetime: BoundaryValueLifetime,
+) -> Result<(), ServiceLinkableMaterializationError> {
+    if capability.owner_runtime_replica_id().is_empty()
+        || capability.owner_activation_id().is_empty()
+        || capability.interface_or_adapter_contract().is_empty()
+        || capability.opaque_capability_id().is_empty()
+        || lifetime == BoundaryValueLifetime::Call
+    {
+        return Err(ServiceLinkableMaterializationError::InvalidProjectedCapability);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ServiceLinkableMaterializationError {
+    #[error("service-linkable value plan is unsupported: {reason:?}")]
+    UnsupportedPlan {
+        reason: BoundaryValuePlanUnavailableReason,
+    },
+    #[error("service-linkable value plan is invalid: {message}")]
+    InvalidPlan { message: &'static str },
+    #[error("service-linkable owner mismatch: expected {expected:?}, got {actual:?}")]
+    OwnerMismatch {
+        expected: BoundaryValueOwner,
+        actual: BoundaryValueOwner,
+    },
+    #[error("service-linkable lifetime mismatch: expected {expected:?}, got {actual:?}")]
+    LifetimeMismatch {
+        expected: BoundaryValueLifetime,
+        actual: BoundaryValueLifetime,
+    },
+    #[error("contract boundary schema is missing {contract_type_id}")]
+    MissingSchema { contract_type_id: ContractTypeId },
+    #[error("contract boundary schema identity mismatch for {requested}: got {actual}")]
+    SchemaIdentityMismatch {
+        requested: ContractTypeId,
+        actual: ContractTypeId,
+    },
+    #[error("contract boundary schema contains a cycle at {contract_type_id}")]
+    CyclicSchema { contract_type_id: ContractTypeId },
+    #[error("runtime value does not match the canonical contract type")]
+    TypeMismatch,
+    #[error("runtime value matches more than one structural union branch")]
+    AmbiguousStructuralUnion,
+    #[error("detached service materialization rejects {carrier} interface carrier")]
+    DetachedInterfaceCarrier { carrier: &'static str },
+    #[error("detached service materialization rejects a cyclic value graph")]
+    CyclicValueGraph,
+    #[error("callback capability projection requires an explicit runtime hook")]
+    CallbackHookRequired,
+    #[error("native adapter projection requires an explicit runtime hook")]
+    NativeAdapterHookRequired,
+    #[error("callback/native hook returned an invalid opaque capability")]
+    InvalidProjectedCapability,
+    #[error("runtime model rejected service materialization: {message}")]
+    RuntimeModel { message: String },
+}

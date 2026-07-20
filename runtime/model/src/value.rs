@@ -128,6 +128,13 @@ pub enum InterfaceCarrier {
         public_instance_key: RuntimeString,
         operations: RemoteOperationTable,
     },
+    /// Opaque request-scoped route back to the activation that owns a
+    /// boundary-capable interface or native adapter.
+    ///
+    /// This carrier deliberately contains no method table, native object, or
+    /// process address.  Dispatch has to resolve it through the owning
+    /// runtime's activation capability table.
+    CallbackCapability(CallbackCapabilityCarrier),
 }
 
 impl InterfaceCarrier {
@@ -135,7 +142,55 @@ impl InterfaceCarrier {
         match self {
             Self::Local { .. } => "local",
             Self::Remote { .. } => "remote",
+            Self::CallbackCapability(_) => "callback capability",
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallbackCapabilityCarrier {
+    owner_runtime_replica_id: RuntimeString,
+    owner_activation_id: RuntimeString,
+    request_generation: u64,
+    interface_or_adapter_contract: RuntimeString,
+    opaque_capability_id: RuntimeString,
+}
+
+impl CallbackCapabilityCarrier {
+    pub fn new(
+        owner_runtime_replica_id: impl Into<RuntimeString>,
+        owner_activation_id: impl Into<RuntimeString>,
+        request_generation: u64,
+        interface_or_adapter_contract: impl Into<RuntimeString>,
+        opaque_capability_id: impl Into<RuntimeString>,
+    ) -> Self {
+        Self {
+            owner_runtime_replica_id: owner_runtime_replica_id.into(),
+            owner_activation_id: owner_activation_id.into(),
+            request_generation,
+            interface_or_adapter_contract: interface_or_adapter_contract.into(),
+            opaque_capability_id: opaque_capability_id.into(),
+        }
+    }
+
+    pub fn owner_runtime_replica_id(&self) -> &str {
+        &self.owner_runtime_replica_id
+    }
+
+    pub fn owner_activation_id(&self) -> &str {
+        &self.owner_activation_id
+    }
+
+    pub const fn request_generation(&self) -> u64 {
+        self.request_generation
+    }
+
+    pub fn interface_or_adapter_contract(&self) -> &str {
+        &self.interface_or_adapter_contract
+    }
+
+    pub fn opaque_capability_id(&self) -> &str {
+        &self.opaque_capability_id
     }
 }
 
@@ -524,6 +579,31 @@ mod tests {
         assert_eq!(
             operations.slots()[0].operation_abi_id(),
             "operation:reader:read"
+        );
+    }
+
+    #[test]
+    fn callback_capability_carrier_is_opaque_and_labeled() {
+        let carrier = CallbackCapabilityCarrier::new(
+            "runtime-a",
+            "activation-a",
+            17,
+            "contract:reader",
+            "capability-1",
+        );
+        let value = InterfaceValue::new(
+            "contract:reader".to_string(),
+            InterfaceCarrier::CallbackCapability(carrier.clone()),
+        );
+
+        assert_eq!(carrier.owner_runtime_replica_id(), "runtime-a");
+        assert_eq!(carrier.owner_activation_id(), "activation-a");
+        assert_eq!(carrier.request_generation(), 17);
+        assert_eq!(carrier.interface_or_adapter_contract(), "contract:reader");
+        assert_eq!(carrier.opaque_capability_id(), "capability-1");
+        assert_eq!(
+            value.diagnostic_label(),
+            "any interface contract:reader (callback capability)"
         );
     }
 }

@@ -619,6 +619,14 @@ impl RecoverableValueEncoder<'_> {
             ));
         }
         match value.carrier() {
+            InterfaceCarrier::CallbackCapability(carrier) => Err(
+                crate::persistent::callback_capability_not_recoverable_error(
+                    carrier,
+                    path,
+                    self.context,
+                    self.expected,
+                ),
+            ),
             InterfaceCarrier::Remote {
                 dependency_ref,
                 public_instance_key,
@@ -2716,9 +2724,9 @@ mod tests {
         RuntimeRecoverableTrustBoundary,
     };
     use skiff_runtime_model::runtime_value::{
-        InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
-        InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationSlot, RemoteOperationTable,
-        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValueKey,
+        CallbackCapabilityCarrier, InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable,
+        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationSlot,
+        RemoteOperationTable, RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValueKey,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
@@ -4482,6 +4490,54 @@ mod tests {
             RecoverableBoundaryErrorCode::CrossServiceInterfaceCallbackUnavailable
         );
         assert_eq!(hooks.encode_calls.get(), 0);
+    }
+
+    #[test]
+    fn callback_capability_recoverable_encode_rejects_before_every_behavior_hook() {
+        let expected = any_reader_expected();
+        let mut heap = RequestHeap::default();
+        let value = RuntimeValue::Heap(
+            heap.alloc_interface(InterfaceValue::new(
+                READER_INTERFACE.to_string(),
+                InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    7,
+                    READER_INTERFACE,
+                    "capability-1",
+                )),
+            ))
+            .expect("callback capability should allocate"),
+        );
+        for kind in [
+            RuntimeRecoverableBoundaryKind::RuntimeBinaryPayload,
+            RuntimeRecoverableBoundaryKind::SpawnPayload,
+            RuntimeRecoverableBoundaryKind::QueueWorkItemPayload,
+        ] {
+            let context = RuntimeRecoverableBoundaryContext::new(
+                kind,
+                RuntimeRecoverableTrustBoundary::OwnerInternal,
+                RuntimeRecoverableStorageLane::RecoverableEnvelope,
+            )
+            .with_explicit_recoverable_slot();
+            let hooks = TestBehaviorHooks::default();
+            let error = RecoverableBoundaryCodec::encode_with_behavior(
+                &value, &expected, &context, &heap, &hooks,
+            )
+            .expect_err("callback capability must never enter recoverable encoding");
+            let RuntimeError::Recoverable(error) = error else {
+                panic!("expected structured recoverable error");
+            };
+            assert_eq!(
+                error.code(),
+                RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable
+            );
+            assert_eq!(hooks.encode_calls.get(), 0);
+            assert_eq!(hooks.restore_calls.get(), 0);
+            assert_eq!(hooks.conformance_calls.get(), 0);
+            assert_eq!(hooks.table_calls.get(), 0);
+            assert_eq!(hooks.remote_table_calls.get(), 0);
+        }
     }
 
     #[test]

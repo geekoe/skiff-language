@@ -2333,6 +2333,8 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",
+ "skiff-runtime-model",
+ "thiserror",
 ]
 
 [[package]]

@@ -693,6 +693,16 @@ fn interface_recoverable_envelope_encode_error(
     expected_type: &RuntimeTypePlan,
     boundary: &PayloadBoundary,
 ) -> RuntimeError {
+    if let crate::runtime_value::InterfaceCarrier::CallbackCapability(carrier) = value.carrier() {
+        let context = runtime_binary_recoverable_context(boundary);
+        let expected =
+            RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
+                expected_type,
+            );
+        return crate::persistent::callback_capability_not_recoverable_error(
+            carrier, "$", &context, &expected,
+        );
+    }
     interface_recoverable_envelope_error(
         RecoverableBoundaryErrorCode::UnsupportedEncode,
         "encode",
@@ -1090,9 +1100,9 @@ mod tests {
         RecoverableRestoredLocalInterfaceSelf,
     };
     use crate::runtime_value::{
-        InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable, InterfaceMethodTarget,
-        InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationSlot, RemoteOperationTable,
-        RuntimeBytes,
+        CallbackCapabilityCarrier, InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable,
+        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationSlot,
+        RemoteOperationTable, RuntimeBytes,
     };
     use crate::type_descriptor::{RuntimeTypeNode, RuntimeTypePlanDescriptorExt};
 
@@ -2315,6 +2325,41 @@ mod tests {
         assert_interface_recoverable_envelope_error(
             error,
             RecoverableBoundaryErrorCode::UnsupportedEncode,
+        );
+    }
+
+    #[test]
+    fn runtime_binary_callback_capability_is_structurally_non_recoverable() {
+        let plan = any_interface_plan();
+        let mut heap = RequestHeap::default();
+        let handle = heap
+            .alloc_interface(InterfaceValue::new(
+                "pkg.Reader".to_string(),
+                InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    7,
+                    "contract:reader",
+                    "capability-1",
+                )),
+            ))
+            .expect("callback capability should allocate");
+
+        let error =
+            encode_payload_plan(&RuntimeValue::Heap(handle), &plan, &test_boundary(), &heap)
+                .expect_err("runtime binary must reject callback capability");
+        let RuntimeError::Recoverable(error) = error else {
+            panic!("expected structured recoverable rejection");
+        };
+        assert_eq!(
+            error.code(),
+            RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable
+        );
+        assert_eq!(
+            error
+                .detail()
+                .and_then(|detail| detail.get("rebuildAttempted")),
+            Some(&serde_json::json!(false))
         );
     }
 
