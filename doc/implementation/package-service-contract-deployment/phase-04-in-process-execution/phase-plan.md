@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01 PASS；R02在`9809dee`复验仍FAIL，F09修复stream terminal/drop清理闭环
+状态：active；R01 PASS；R02在`484cab0`第三次复验仍FAIL，F10收口pull error与file consumer异常退出
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
@@ -93,7 +93,7 @@ Wave 2：R01 PASS 后三个lane并行                         │
   T05 async/stream/cancel ───────────────────────────────┼─► R02
   T06 callback/native capability ────────────────────────┘
   R02 FAIL repair loop：F06 shared materialization + F07 callback mapping ─► F08 async/stream integration
-                         └─► F09 stream terminal/drop cleanup ─► R02 retry
+                         └─► F09 stream terminal/drop cleanup ─► F10 pull/file cleanup ─► R02 retry
 
 Wave 3：R02 PASS 后三个非重叠owner并行
   T07 host/request ingress + unified dispatcher ─────────┐
@@ -128,7 +128,8 @@ checker写入域互不重叠。
 | F07 | [Canonical callback interface projection](tasks/P4-F07-canonical-callback-interface-projection.md) | R02@`ee1609c` blockers 1、4 | 高；T06 owner repair |
 | F08 | [Async error/stream capability integration](tasks/P4-F08-async-stream-capability-integration.md) | F06、F07 merged | 高；T05 cross-lane integration |
 | F09 | [Stream terminal/drop cleanup](tasks/P4-F09-stream-terminal-drop-cleanup.md) | R02@`9809dee` lifecycle blocker | 高；T05 terminal ownership repair |
-| R02 | [Execution lanes acceptance](tasks/P4-R02-lanes-acceptance.md) | T04–T06、F06–F09 exact merged commit | 高风险只读 gate |
+| F10 | [Pull/file consumer cleanup](tasks/P4-F10-pull-file-consumer-cleanup.md) | R02@`484cab0` terminal blockers | 高；pull/native consumer repair |
+| R02 | [Execution lanes acceptance](tasks/P4-R02-lanes-acceptance.md) | T04–T06、F06–F10 exact merged commit | 高风险只读 gate |
 | T07 | [Unified ingress/internal dispatcher](tasks/P4-T07-unified-ingress-dispatch.md) | R02 PASS | 高；entry batch |
 | T08 | [Router service-relay retirement](tasks/P4-T08-router-service-relay-retirement.md) | R02 PASS | 高；entry batch |
 | T09 | [Execution boundary checker](tasks/P4-T09-execution-boundary-checker.md) | R02 PASS | 中高；并行 checker/self-test implementation |
