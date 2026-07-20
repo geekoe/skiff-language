@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01/R02 PASS；R03在`5ba7273`因checker字符串伪anchor绕过FAIL，F11修复中
+状态：active；R01/R02/R03 PASS；T10@`453c11f` runtime gate FAIL，F12–F15收敛修复中
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
@@ -100,7 +100,11 @@ Wave 3：R02 PASS 后三个非重叠owner并行
   T08 router runtime-service relay retirement ───────────┼─► T09R merged-production registration ─► R03
   T09 execution boundary checker/self-test ──────────────┘
   R03 FAIL repair loop：F11 lexical/structural anchor hardening ─► R03 retry
-       └─► T10 stable-candidate integration gate ─► A01 independent stage acceptance
+       └─► T10 stable-candidate integration gate
+             FAIL repair wave：F12 canonical host fixture ───────┐
+                               F13 typed provider fixture ────────┼─► F15 gate mechanics ─► T10 retry
+                               F14 stream runtime owner ──────────┘
+             └─► A01 independent stage acceptance
 ```
 
 T01/T02可并行，因为前者只拥有immutable code projection，后者只拥有runtime owner/materializer；T03只在二者
@@ -136,6 +140,10 @@ checker写入域互不重叠。
 | T09 | [Execution boundary checker](tasks/P4-T09-execution-boundary-checker.md) | R02 PASS | 中高；并行 checker/self-test implementation |
 | T09R | [Merged production registration](tasks/P4-T09R-execution-boundary-registration.md) | T07–T09 exact merged commit | 中高；production checker checkpoint |
 | F11 | [Checker string-camouflage hardening](tasks/P4-F11-checker-string-camouflage.md) | R03@`5ba7273` structure blocker | 高；checker lexical repair |
+| F12 | [Canonical host request fixture migration](tasks/P4-F12-canonical-host-test-fixture.md) | T10@`453c11f` host gate blockers | 中；T07 test fixture repair |
+| F13 | [Typed full-chain provider fixture completion](tasks/P4-F13-typed-full-chain-provider-fixture.md) | T10@`453c11f` typed chain blocker | 高；full-chain evidence repair |
+| F14 | [Stream runtime owner consistency](tasks/P4-F14-stream-runtime-owner-consistency.md) | T10@`453c11f` stream regression | 高；T05 production owner repair |
+| F15 | [Final gate mechanical hygiene](tasks/P4-F15-final-gate-mechanics.md) | F12–F14 merged | 低；format/policy gate seam |
 | R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T09R、F11 exact commit | 高风险只读 gate |
 | T10 | [Phase integration gate](tasks/P4-T10-phase-integration.md) | R01–R03 PASS | 唯一昂贵 gate owner |
 | A01 | [Independent stage acceptance](tasks/P4-A01-stage-acceptance.md) | frozen T10 candidate | 独立只读验收 |
@@ -165,6 +173,8 @@ checker写入域互不重叠。
   production violations，不得伪报零。T09R在三分支合流后独占真实subject registration、production checker、
   verify接线与零违规证据，不修改Rust/TypeScript production。
 - T10只做集成、机械compile/test seam、证据汇总与结果草案；语义缺口退回原owner。
+- F12独占旧host request test fixture，不改production；F13独占typed execution test artifact/scenario；F14独占eval
+  stream runtime handle owner；三者写入域互不重叠。F15只收敛targeted rustfmt与既有command owner ledger。
 
 已经很长的`runtime/boundary/src/binary.rs`、`recoverable.rs`、`runtime/eval/src/eval_context.rs`、
 `program_execution.rs`和router dispatcher/registry不得继续接收新execution owner；新职责进入按lane拆分的模块。

@@ -23,3 +23,10 @@ T09R完成后的exact clean commit，以及R01/R02与开发证据。不得修改
 
 首行总体`PASS`或`FAIL`，分别给出三个verdict、blocking issues、non-blocking follow-up、证据命令、动态缺口和残余
 风险。PASS才允许T10冻结候选；结论锚定exact commit。
+
+## 复验结论
+
+PASS，锚定clean commit `b0d144d97ab341f90232613b7d2240160a8307ff`：`UNIFIED_ENTRY`、
+`NO_REMOTE_SERVICE_RELAY`、`STRUCTURE_GATE`全部PASS。独立复现Host普通/raw字符串伪anchor与Router template
+quasi/`${...}` interpolation伪case均被稳定违规捕获；execution self-test 30/30、Node tests 4/4、artifact checker
+self-test 16/16及production检查全部通过。无blocking issue；T10仍需真实动态链和完整gate。
