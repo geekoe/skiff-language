@@ -229,7 +229,7 @@ impl EvalRuntimeProgramSource for EvalRuntimeProgram {
 
 #[derive(Clone)]
 pub struct Interpreter {
-    program: Arc<EvalRuntimeProgram>,
+    program: Option<Arc<EvalRuntimeProgram>>,
     pub native_registry: NativeRegistry,
     pub stream_runtime: StreamRuntime,
     pub http_options: HttpRuntimeOptions,
@@ -269,6 +269,24 @@ impl From<InterpreterHttpOptions> for HttpRuntimeOptions {
 }
 
 impl Interpreter {
+    /// Creates an interpreter engine for canonical assembly execution.
+    ///
+    /// No legacy program is installed; any accidental legacy projection request therefore fails
+    /// closed instead of adapting the assembly image into a service-shaped aggregate.
+    pub fn for_runtime_assembly(runtime_factory: EvalRuntimeFactory) -> Self {
+        let stream_runtime = runtime_factory.stream_runtime();
+        let test_effect_doubles =
+            runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
+        Self {
+            program: None,
+            native_registry: NativeRegistry,
+            stream_runtime,
+            http_options: HttpRuntimeOptions::from_env(),
+            test_effect_doubles,
+            deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
+        }
+    }
+
     pub fn with_program(
         program: Arc<impl EvalRuntimeProgramSource>,
         runtime_factory: EvalRuntimeFactory,
@@ -373,7 +391,7 @@ impl Interpreter {
             test_effects_enabled,
         );
         Self {
-            program,
+            program: Some(program),
             native_registry: NativeRegistry,
             stream_runtime,
             http_options,
@@ -396,7 +414,7 @@ impl Interpreter {
             test_effects_enabled,
         );
         Self {
-            program,
+            program: Some(program),
             native_registry: NativeRegistry,
             stream_runtime,
             http_options,

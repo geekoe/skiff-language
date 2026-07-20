@@ -34,6 +34,7 @@ use super::{
     source_context::program_source_context_frame,
     *,
 };
+use crate::assembly_execution::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
 use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 
 pub struct ProgramExecutionInput<'a> {
@@ -172,6 +173,10 @@ impl<'a> ProgramExecutionContext<'a> {
         self.runtime_assembly_target
             .as_ref()
             .ok_or(RuntimeAssemblyEvalSeamError::MissingExecutionTarget)
+    }
+
+    pub(crate) fn runtime_assembly_target_if_present(&self) -> Option<&RuntimeAssemblyEvalTarget> {
+        self.runtime_assembly_target.as_ref()
     }
 }
 
@@ -401,18 +406,144 @@ impl<'a> ExecutableInvocation<'a> {
     }
 }
 
+struct AssemblyExecutableInvocation<'a> {
+    projection: &'a RuntimeAssemblyExecutionProjection,
+    addr: ExecutableAddr,
+    file: &'a LinkedFileUnit,
+    executable: &'a LinkedExecutable,
+    explicit_self_param: bool,
+}
+
+impl<'a> AssemblyExecutableInvocation<'a> {
+    fn resolve(
+        projection: &'a RuntimeAssemblyExecutionProjection,
+        addr: &ExecutableAddr,
+    ) -> Result<Self> {
+        let resolved = projection.resolve_nested_executable(addr)?;
+        Ok(Self {
+            projection,
+            addr: resolved.addr,
+            file: resolved.file.as_ref(),
+            executable: resolved.executable,
+            explicit_self_param: executable_has_explicit_self_binding(resolved.executable),
+        })
+    }
+
+    fn validate_arg_count(&self, arg_count: usize) -> Result<()> {
+        let expected_args = if self.explicit_self_param {
+            arg_count.saturating_add(1)
+        } else {
+            arg_count
+        };
+        validate_program_call_arg_count(self.executable, expected_args)
+    }
+
+    fn validate_raw_arg_count(&self, arg_count: usize) -> Result<()> {
+        validate_program_call_arg_count(self.executable, arg_count)
+    }
+
+    fn accepts_separate_self_argument_without_self_param(&self, arg_count: usize) -> bool {
+        matches!(self.executable.kind, ExecutableKind::ImplMethod)
+            && self.executable.self_type.is_some()
+            && !self.explicit_self_param
+            && arg_count == self.executable.params.len() + 1
+    }
+
+    fn env(&self) -> Result<Env> {
+        Env::for_program_executable(
+            self.executable,
+            Some(self.file.module_path.clone()),
+            program_assembly_index(&self.addr),
+        )
+    }
+
+    fn env_for_call(
+        &self,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        type_args: &BTreeMap<String, LinkedTypeRef>,
+    ) -> Result<Env> {
+        let mut env = self.env()?;
+        env.stream_sink = caller_env.stream_sink.clone();
+        env.current_stream_item_type = caller_env.current_stream_item_type.clone();
+        env.response_stream_sink = caller_env.response_stream_sink.clone();
+        env.type_substitutions = call_type_substitutions(
+            self.projection.type_view(),
+            caller_addr,
+            &caller_env.type_substitutions,
+            self.executable,
+            type_args,
+        );
+        Ok(env)
+    }
+
+    fn declare_self(&self, env: &mut Env, self_value: RuntimeValue) -> Result<()> {
+        if self.explicit_self_param {
+            env.declare_program_parameter(self.executable, "self", self_value)?;
+        } else {
+            env.declare_program_self(self.executable, self_value)?;
+        }
+        Ok(())
+    }
+
+    fn declare_args(&self, env: &mut Env, args: &[RuntimeValue]) -> Result<()> {
+        for (index, parameter) in self
+            .executable
+            .params
+            .iter()
+            .skip(usize::from(self.explicit_self_param))
+            .enumerate()
+        {
+            env.declare_program_parameter(
+                self.executable,
+                &parameter.name,
+                args.get(index).cloned().unwrap_or(RuntimeValue::Null),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl Interpreter {
+    /// Executes a canonical assembly address through the same nested-invocation path used by
+    /// package/service/callback lanes. The supplied context must already be pinned to a
+    /// [`RuntimeAssemblyEvalTarget`]; absence is a structured error and never selects legacy.
+    pub async fn execute_runtime_assembly_addr(
+        &self,
+        context: ProgramExecutionContext<'_>,
+        heap: &mut RequestHeap,
+        addr: &ExecutableAddr,
+        args: Vec<RuntimeValue>,
+    ) -> Result<RuntimeValue> {
+        context.runtime_assembly_target()?;
+        self.call_program_executable(
+            context,
+            heap,
+            &Env::new(),
+            addr,
+            addr,
+            &BTreeMap::new(),
+            args,
+        )
+        .await
+    }
+
     pub fn program_projection(&self) -> Result<EvalProgramProjection<'_>> {
+        let program = self.program.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(
+                "assembly interpreter has no legacy RuntimeProgram projection".to_string(),
+            )
+        })?;
         Ok(EvalProgramProjection::new_with_resources(
-            &self.program.service_id,
-            &self.program.service_files,
-            &self.program.packages,
-            &self.program.package_files,
-            &self.program.service_resources,
-            &self.program.package_resources,
-            &self.program.spawn_routes,
-            &self.program.link_overlay,
-            &self.program.types,
+            &program.service_id,
+            &program.service_files,
+            &program.packages,
+            &program.package_files,
+            &program.service_resources,
+            &program.package_resources,
+            &program.spawn_routes,
+            &program.link_overlay,
+            &program.types,
         ))
     }
 
@@ -429,6 +560,24 @@ impl Interpreter {
     ) -> Result<RuntimeValue> {
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
+
+        if let Some(projection) = context
+            .runtime_assembly_target_if_present()
+            .map(RuntimeAssemblyEvalTarget::execution_projection)
+        {
+            return self
+                .call_assembly_executable(
+                    &context,
+                    projection,
+                    heap,
+                    caller_env,
+                    caller_addr,
+                    addr,
+                    type_args,
+                    args,
+                )
+                .await;
+        }
 
         let invocation = ExecutableInvocation::resolve(self, addr)?;
         let has_separate_self_arg =
@@ -459,6 +608,57 @@ impl Interpreter {
 
         let flow = invocation
             .exec(self, context.clone(), heap, &mut env)
+            .await?;
+        context.execution().poll_execution_budget()?;
+        FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn call_assembly_executable(
+        &self,
+        context: &ProgramExecutionContext<'_>,
+        projection: &RuntimeAssemblyExecutionProjection,
+        heap: &mut RequestHeap,
+        caller_env: &Env,
+        caller_addr: &ExecutableAddr,
+        addr: &ExecutableAddr,
+        type_args: &BTreeMap<String, LinkedTypeRef>,
+        args: Vec<RuntimeValue>,
+    ) -> Result<RuntimeValue> {
+        let invocation = AssemblyExecutableInvocation::resolve(projection, addr)?;
+        let has_separate_self_arg =
+            invocation.accepts_separate_self_argument_without_self_param(args.len());
+        if !has_separate_self_arg {
+            invocation.validate_raw_arg_count(args.len())?;
+        }
+        let mut env = invocation.env_for_call(caller_env, caller_addr, type_args)?;
+        let (self_value, args) = if invocation.explicit_self_param || has_separate_self_arg {
+            let Some((self_value, args)) = args.split_first() else {
+                return Err(RuntimeError::Decode(format!(
+                    "callable {} missing self argument",
+                    invocation.executable.symbol
+                )));
+            };
+            (self_value.clone(), args)
+        } else {
+            (
+                caller_env
+                    .self_value()
+                    .unwrap_or_else(|| RuntimeValue::Null),
+                args.as_slice(),
+            )
+        };
+        invocation.declare_self(&mut env, self_value)?;
+        invocation.declare_args(&mut env, args)?;
+        let flow = self
+            .exec_program_executable(
+                context.clone(),
+                heap,
+                &mut env,
+                &invocation.addr,
+                invocation.file,
+                invocation.executable,
+            )
             .await?;
         context.execution().poll_execution_budget()?;
         FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol)
@@ -532,13 +732,56 @@ impl Interpreter {
         context.execution().add_instruction_units(1)?;
         context.execution().poll_execution_budget()?;
 
+        if let Some(projection) = context
+            .runtime_assembly_target_if_present()
+            .map(RuntimeAssemblyEvalTarget::execution_projection)
+        {
+            let invocation = AssemblyExecutableInvocation::resolve(projection, addr)?;
+            invocation.validate_arg_count(args.len())?;
+            if allow_stream_defer {
+                if let Some(value) = self
+                    .prepare_deferred_stream_producer_from_values(
+                        RuntimeExecutionProjection::Assembly(projection.clone()),
+                        context.clone(),
+                        heap,
+                        caller_env,
+                        caller_addr,
+                        &invocation.addr,
+                        invocation.executable,
+                        type_args,
+                        self_value.clone(),
+                        args.clone(),
+                    )
+                    .await?
+                {
+                    context.execution().poll_execution_budget()?;
+                    return Ok(value);
+                }
+            }
+            let mut env = invocation.env_for_call(caller_env, caller_addr, type_args)?;
+            invocation.declare_self(&mut env, self_value)?;
+            invocation.declare_args(&mut env, &args)?;
+            let flow = self
+                .exec_program_executable(
+                    context.clone(),
+                    heap,
+                    &mut env,
+                    &invocation.addr,
+                    invocation.file,
+                    invocation.executable,
+                )
+                .await?;
+            context.execution().poll_execution_budget()?;
+            return FlowCompletionPolicy::callable_value(flow, &invocation.executable.symbol);
+        }
+
         let invocation = ExecutableInvocation::resolve(self, addr)?;
         invocation.validate_arg_count(args.len())?;
 
         if allow_stream_defer {
             if let Some(value) = self
                 .prepare_deferred_stream_producer_from_values(
-                    self.program_projection()?,
+                    RuntimeExecutionProjection::Legacy(self.program_projection()?),
                     context.clone(),
                     heap,
                     caller_env,
@@ -577,7 +820,7 @@ impl Interpreter {
         executable: &LinkedExecutable,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_executable()
             .await
     }
@@ -605,8 +848,8 @@ impl Interpreter {
         const_addr: &ConstAddr,
     ) -> Result<RuntimeValue> {
         let context = context.into_program_execution_context();
-        let program = self.program_projection()?;
-        let file = program.resolve_file(&const_addr.unit, &const_addr.file)?;
+        let projection = RuntimeExecutionProjection::for_context(self, &context)?;
+        let resolved = projection.resolve_const(const_addr)?;
         let addr = ExecutableAddr {
             unit: const_addr.unit.clone(),
             file: const_addr.file.clone(),
@@ -617,7 +860,7 @@ impl Interpreter {
             heap,
             caller_env,
             &addr,
-            file.as_ref(),
+            resolved.file,
             const_addr.const_index,
         )
         .await
@@ -673,7 +916,7 @@ impl Interpreter {
         label: &str,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_block(label)
             .await
     }
@@ -689,7 +932,7 @@ impl Interpreter {
         statement: &LinkedStmtIr,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_statement(statement)
             .await
     }
@@ -708,7 +951,7 @@ impl Interpreter {
         item_value: RuntimeValue,
     ) -> Result<Flow> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .exec_program_for_in_body(item_slot, body, item_value)
             .await
     }
@@ -724,7 +967,7 @@ impl Interpreter {
         expr_ref: ExprRefIr,
     ) -> Result<RuntimeValue> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr_ref(expr_ref)
             .await
     }
@@ -740,7 +983,7 @@ impl Interpreter {
         expr: &LinkedExprIr,
     ) -> Result<RuntimeValue> {
         let context = context.into_program_execution_context();
-        EvalContext::new(self, context, heap, env, addr, file, executable)
+        EvalContext::new(self, context, heap, env, addr, file, executable)?
             .eval_program_expr(expr)
             .await
     }

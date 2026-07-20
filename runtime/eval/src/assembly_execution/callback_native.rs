@@ -45,7 +45,8 @@ pub(crate) async fn execute_interface_call(
     _slot: u32,
     _args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    Err(AssemblyExecutionHandoffError::unavailable(
+    Err(AssemblyExecutionHandoffError::unavailable_at(
         AssemblyExecutionLaneKind::CallbackNative,
+        "callback-interface",
     ))
 }

@@ -26,8 +26,8 @@ use super::{
     Interpreter,
 };
 use crate::{
+    assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
-    invocation::EvalProgramProjection,
     type_projection::EvalTypeProjection,
 };
 
@@ -111,9 +111,9 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn exec_program_stream_producer_for_in(
+    pub(crate) async fn exec_program_stream_producer_for_in(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         env: &mut Env,
@@ -173,9 +173,9 @@ impl Interpreter {
     /// parked producer is driven concurrently the first time that stream value
     /// is consumed by a `for-in` (see `exec_program_stream_for_in`).
     #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_deferred_stream_producer(
+    pub(crate) async fn prepare_deferred_stream_producer(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         env: &mut Env,
@@ -214,9 +214,9 @@ impl Interpreter {
     /// executable after receiver dispatch, so the expression-level stream
     /// resolver cannot catch them before argument evaluation.
     #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_deferred_stream_producer_from_values(
+    pub(crate) async fn prepare_deferred_stream_producer_from_values(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         env: &Env,
@@ -230,7 +230,7 @@ impl Interpreter {
         if !executable_body_contains_emit(producer_executable) {
             return Ok(None);
         }
-        let type_projection = EvalTypeProjection::new(program);
+        let type_projection = EvalTypeProjection::from_execution_projection(program.clone());
         let Some(item_type) = stream_item_plan_from_return_type(
             &type_projection,
             caller_addr,
@@ -325,9 +325,9 @@ impl Interpreter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_native_stream_producer_arg(
+    pub(crate) async fn prepare_native_stream_producer_arg(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         env: &mut Env,
@@ -418,7 +418,7 @@ impl Interpreter {
     #[allow(clippy::too_many_arguments)]
     async fn prepare_stream_producer(
         &self,
-        program: EvalProgramProjection<'async_recursion>,
+        program: RuntimeExecutionProjection<'async_recursion>,
         context: ProgramExecutionContext<'async_recursion>,
         heap: &mut RequestHeap,
         env: &mut Env,
@@ -447,9 +447,14 @@ impl Interpreter {
         let mut args = Vec::with_capacity(producer.call.args.len());
         for arg in &producer.call.args {
             let expr = program_expression_ref(_executable, *arg)?;
-            if let Some(arg_producer) =
-                self.resolve_stream_producer_call(program, addr, heap, env, _executable, expr)?
-            {
+            if let Some(arg_producer) = self.resolve_stream_producer_call(
+                program.clone(),
+                addr,
+                heap,
+                env,
+                _executable,
+                expr,
+            )? {
                 if !arg_producers.is_empty() {
                     for producer in &arg_producers {
                         self.stream_runtime.cancel(&producer.stream_value);
@@ -461,7 +466,7 @@ impl Interpreter {
                 }
                 let nested = match self
                     .prepare_stream_producer(
-                        program,
+                        program.clone(),
                         context.clone(),
                         heap,
                         env,
@@ -553,9 +558,9 @@ impl Interpreter {
         })
     }
 
-    pub fn resolve_stream_producer_call(
+    pub(crate) fn resolve_stream_producer_call(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         current_addr: &ExecutableAddr,
         heap: &RequestHeap,
         env: &Env,
@@ -568,16 +573,16 @@ impl Interpreter {
         self.resolve_stream_producer_from_call(program, current_addr, heap, env, executable, call)
     }
 
-    pub fn resolve_stream_producer_from_call(
+    pub(crate) fn resolve_stream_producer_from_call(
         &self,
-        program: EvalProgramProjection<'_>,
+        program: RuntimeExecutionProjection<'_>,
         current_addr: &ExecutableAddr,
         _heap: &RequestHeap,
         env: &Env,
         _executable: &LinkedExecutable,
         call: &CallIr,
     ) -> Result<Option<StreamProducerCall>> {
-        let type_projection = EvalTypeProjection::new(program);
+        let type_projection = EvalTypeProjection::from_execution_projection(program.clone());
         let (addr, receiver_const, producer_self, call) = match &call.target {
             LinkedCallTarget::Executable { addr } => (addr.clone(), None, None, call.clone()),
             LinkedCallTarget::LocalExecutable { .. }
@@ -604,7 +609,7 @@ impl Interpreter {
             },
             _ => return Ok(None),
         };
-        let resolved = program.executable_at(&addr)?;
+        let resolved = program.resolve_nested_executable(&addr)?;
         if !executable_body_contains_emit(resolved.executable) {
             return Ok(None);
         }

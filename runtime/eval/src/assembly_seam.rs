@@ -14,6 +14,8 @@ use skiff_runtime_linked_type_plan::{
     RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget,
 };
 
+use crate::assembly_execution::RuntimeAssemblyExecutionProjection;
+
 /// Host-owned lookup surface needed after an activation-relative service instruction is decoded.
 ///
 /// The resolver returns only typed, already-admitted assembly facts. It cannot load artifacts,
@@ -41,6 +43,7 @@ pub trait RuntimeAssemblyEvalResolver: Send + Sync {
 #[derive(Clone)]
 pub struct RuntimeAssemblyEvalTarget {
     execution_image: Arc<AssemblyExecutionImage>,
+    execution_projection: RuntimeAssemblyExecutionProjection,
     request_activation: RequestActivationContext,
     resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
 }
@@ -86,8 +89,11 @@ impl RuntimeAssemblyEvalTarget {
             &execution_image,
             current.implementation_package_build_id(),
         )?;
+        let execution_projection =
+            RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&execution_image));
         Ok(Self {
             execution_image,
+            execution_projection,
             request_activation,
             resolver,
         })
@@ -95,6 +101,10 @@ impl RuntimeAssemblyEvalTarget {
 
     pub fn execution_image(&self) -> &Arc<AssemblyExecutionImage> {
         &self.execution_image
+    }
+
+    pub(crate) fn execution_projection(&self) -> &RuntimeAssemblyExecutionProjection {
+        &self.execution_projection
     }
 
     pub fn request_activation(&self) -> &RequestActivationContext {

@@ -2380,6 +2380,7 @@ dependencies = [
  "skiff-runtime-capability-context",
  "skiff-runtime-linked-program",
  "skiff-runtime-linked-type-plan",
+ "skiff-runtime-linker",
  "skiff-runtime-model",
  "skiff-runtime-native",
  "skiff-runtime-native-contract",

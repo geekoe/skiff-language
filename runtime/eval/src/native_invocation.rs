@@ -19,10 +19,50 @@ use super::{
     program_types::{program_package_type_addr, program_publication_type_addr},
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection,
+    error::{Result, RuntimeError},
+};
 
 pub fn resolve_runtime_native_invocation(
     interpreter: &Interpreter,
+    current_addr: &ExecutableAddr,
+    env: &Env,
+    call: &CallIr,
+    target: &NativeTarget,
+) -> Result<RuntimeNativeInvocation> {
+    let program = interpreter.program_projection()?.type_view();
+    resolve_runtime_native_invocation_in_type_view(
+        interpreter,
+        program,
+        current_addr,
+        env,
+        call,
+        target,
+    )
+}
+
+pub(crate) fn resolve_runtime_execution_native_invocation(
+    interpreter: &Interpreter,
+    projection: &RuntimeExecutionProjection<'_>,
+    current_addr: &ExecutableAddr,
+    env: &Env,
+    call: &CallIr,
+    target: &NativeTarget,
+) -> Result<RuntimeNativeInvocation> {
+    resolve_runtime_native_invocation_in_type_view(
+        interpreter,
+        projection.type_view(),
+        current_addr,
+        env,
+        call,
+        target,
+    )
+}
+
+fn resolve_runtime_native_invocation_in_type_view(
+    interpreter: &Interpreter,
+    program: ProgramTypeView<'_>,
     current_addr: &ExecutableAddr,
     env: &Env,
     call: &CallIr,
@@ -41,7 +81,6 @@ pub fn resolve_runtime_native_invocation(
                 return Err(RuntimeError::InvalidArtifact(message));
             }
         };
-    let program = interpreter.program_projection()?.type_view();
     let actor_metadata = resolve_actor_native_metadata(binding_key, &target_name, call)?;
     let resource_owner = (runtime_shared_native_route(binding_key)
         == Some(RuntimeNativeRoute::Resource))

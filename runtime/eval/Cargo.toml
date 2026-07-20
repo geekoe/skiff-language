@@ -29,3 +29,4 @@ tokio = { version = "1.44", features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
+skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
