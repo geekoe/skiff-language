@@ -18,13 +18,13 @@ import { scanCommandExecutionSource } from '../lib/command-execution-scanner.mjs
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-test('actual production ledger passes with exactly ten explicit lifecycle owners', async () => {
+test('actual production ledger passes with exactly eleven explicit lifecycle owners', async () => {
   await assertCommandExecutionPolicy(root);
-  assert.equal(COMMAND_EXECUTION_LEDGER.length, 10);
-  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 10);
+  assert.equal(COMMAND_EXECUTION_LEDGER.length, 11);
+  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 11);
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'spawn').length,
-    8,
+    9,
   );
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'execFile').length,

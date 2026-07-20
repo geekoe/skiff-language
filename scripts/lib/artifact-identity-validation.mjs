@@ -173,6 +173,7 @@ function runIdentityCli(identityCliPath, payload) {
   return new Promise((resolvePromise, reject) => {
     let child;
     try {
+      // child-process-owner: artifact-identity-cli
       child = spawn(identityCliPath, ['runtime-program-build-id'], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
