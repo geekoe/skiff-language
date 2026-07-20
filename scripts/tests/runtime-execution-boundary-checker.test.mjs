@@ -5,6 +5,12 @@ import {
   RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS,
   runRuntimeExecutionBoundarySelfTest,
 } from '../lib/runtime-execution-boundary-self-test.mjs';
+import { inspectRuntimeExecutionBoundaryOwners } from '../lib/runtime-execution-boundary-registry.mjs';
+import { checkRuntimeExecutionBoundaryRules } from '../lib/runtime-execution-boundary-rules.mjs';
+import {
+  productionTypeScriptViews,
+  scanRuntimeExecutionBoundarySource,
+} from '../lib/runtime-execution-boundary-source.mjs';
 import {
   RUNTIME_EXECUTION_BOUNDARY_REGISTRY,
   REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES,
@@ -14,7 +20,7 @@ import {
 test('runtime execution boundary checker rejects every hermetic mutation', async () => {
   const matrix = await runRuntimeExecutionBoundarySelfTest();
   assert.deepEqual(matrix, RUNTIME_EXECUTION_BOUNDARY_MUTATION_EXPECTATIONS);
-  assert.equal(matrix.length, 28);
+  assert.equal(matrix.length, 30);
   assert.deepEqual(
     new Set(matrix.map(({ expectedId }) => expectedId)),
     new Set([
@@ -37,12 +43,205 @@ test('runtime execution boundary checker rejects every hermetic mutation', async
       'unowned-user-code-spawn',
       'recoverable-callback-not-rejected',
       'host-request-fallback',
+      'host-active-assembly-entry-missing',
       'required-owner-anchor-missing',
       'legacy-outbound-service-edge',
       'router-service-relay',
       'router-service-rejection-incomplete',
       'router-rejection-enters-relay-owner',
     ]),
+  );
+});
+
+test('source scanner masks camouflage literals and preserves typed spans', () => {
+  const rust = [
+    'real_host_call();',
+    '// comment_host_call();',
+    '/* outer /* nested_comment_call(); */ block_comment_call(); */',
+    "let character = 'x';",
+    "let byte_character = b'x';",
+    'let ordinary = "🦀 ordinary_host_call(";',
+    'let bytes = b"byte_host_call(";',
+    'let raw = r#"raw_host_call("#;',
+    'let byte_raw = br##"byte_raw_host_call("##;',
+  ].join('\n');
+  const rustView = scanRuntimeExecutionBoundarySource(rust, 'rust');
+  assertStableCodeView(rust, rustView.code);
+  assert.deepEqual(
+    rustView.tokens.filter(({ kind }) => kind === 'comment').map(({ tokenKind }) => tokenKind),
+    ['line-comment', 'block-comment'],
+  );
+  assert.deepEqual(
+    rustView.tokens.filter(({ kind }) => kind === 'literal').map(({ literalKind }) => literalKind),
+    ['char', 'byte-char', 'string', 'byte-string', 'raw-string', 'b-raw-string'],
+  );
+  assert.match(rustView.code, /real_host_call\s*\(/);
+  assert.doesNotMatch(rustView.code, /comment_host_call|ordinary_host_call|byte_host_call|raw_host_call/);
+  assertTokenSpans(rust, rustView.tokens);
+
+  const typescript = [
+    'realRouterCall();',
+    '// case \'request.start\': fakeLineComment();',
+    '/* case "request.start": fakeBlockComment(); */',
+    "const single = '🧭 case request.start fakeSingle()';",
+    'const double = "case request.start fakeDouble()";',
+    "const regexp = /case 'request.start': registry.pickDispatchConnection/;",
+    "const template = `case 'request.start': fakeTemplate()`;",
+    'const interpolation = `fakeOuter() ${(/registry/.test(value), this.options.registry.pickDispatchConnection(header))} ${`fakeNested() ${realNestedCall()}`} fakeTail()`;',
+  ].join('\n');
+  const typeScriptView = scanRuntimeExecutionBoundarySource(typescript, 'typescript');
+  assertStableCodeView(typescript, typeScriptView.code);
+  assert.deepEqual(
+    typeScriptView.tokens.filter(({ kind }) => kind === 'comment').map(({ tokenKind }) => tokenKind),
+    ['line-comment', 'block-comment'],
+  );
+  assert.deepEqual(
+    typeScriptView.tokens.filter(({ kind }) => kind === 'literal').map(({ literalKind }) => literalKind),
+    ['string', 'string', 'regexp', 'template', 'template', 'regexp', 'template'],
+  );
+  assert.match(typeScriptView.code, /realRouterCall\s*\(/);
+  assert.match(typeScriptView.code, /registry\s*\.\s*pickDispatchConnection\s*\(/);
+  assert.match(typeScriptView.code, /realNestedCall\s*\(/);
+  assert.doesNotMatch(
+    typeScriptView.code,
+    /fakeLineComment|fakeBlockComment|fakeSingle|fakeDouble|fakeTemplate|fakeOuter|fakeNested|fakeTail/,
+  );
+  assert.equal(
+    typeScriptView.tokens.some(({ kind, value }) => kind === 'keyword' && value === 'case'),
+    false,
+  );
+  assertTokenSpans(typescript, typeScriptView.tokens);
+});
+
+test('independent R03 in-memory camouflage mutations fail closed', () => {
+  const hostPath = 'runtime/host/src/host/request_entry/assembly.rs';
+  const hostOwner = {
+    declarationKind: 'function',
+    language: 'rust',
+    ownedRoots: [hostPath],
+    requiredAnchors: [
+      'lookup_active_assembly_request_route(',
+      'route.request_target(',
+      'spawn_assembly_request(',
+    ],
+    requiredFile: hostPath,
+    role: 'host-request-entry',
+    subjectId: 'active-only-host-request-entry',
+    symbol: 'spawn_request_inner',
+  };
+  const hostSafe = [
+    'async fn spawn_request_inner(&self) {',
+    '    let route = self.lookup_active_assembly_request_route();',
+    '    let target = route.request_target();',
+    '    self.spawn_assembly_request(route, target).await;',
+    '}',
+  ].join('\n');
+  const hostMutation = replaceProbe(
+    hostSafe,
+    [
+      '    let route = self.lookup_active_assembly_request_route();',
+      '    let target = route.request_target();',
+      '    self.spawn_assembly_request(route, target).await;',
+    ].join('\n'),
+    [
+      '    let lookup_active_assembly_request_route_similar = 1;',
+      '    let _ordinary = "lookup_active_assembly_request_route(";',
+      '    let _raw = r#"route.request_target("#;',
+      '    let _bytes = b"spawn_assembly_request(";',
+      '    let _ = lookup_active_assembly_request_route_similar;',
+    ].join('\n'),
+  );
+  const hostViolations = [];
+  const hostMatches = inspectRuntimeExecutionBoundaryOwners(
+    { owners: [hostOwner] },
+    new Map([[hostPath, rustSource(hostPath, hostMutation)]]),
+    hostViolations,
+  );
+  assert.equal(hostMatches.get(hostOwner.role)?.length, 1);
+  assert.deepEqual(
+    hostViolations.map(({ id, matched }) => ({ id, matched })),
+    hostOwner.requiredAnchors.map((matched) => ({
+      id: 'host-active-assembly-entry-missing',
+      matched,
+    })),
+  );
+
+  const routerPath = 'router/src/router/runtimeEndpoint.ts';
+  const routerOwner = {
+    declarationKind: 'method',
+    language: 'typescript',
+    ownedRoots: [routerPath],
+    requiredAnchors: [],
+    requiredFile: routerPath,
+    role: 'router-runtime-service-rejection',
+    subjectId: 'router-runtime-service-rejection',
+    symbol: 'handleBinaryMessage',
+  };
+  const safeCase = [
+    "      case 'request.start':",
+    "        if (header.caller.kind !== 'service') throw new Error('invalid caller');",
+    '        this.sendFrame(ws, {',
+    "          type: 'response.error',",
+    '          requestId: header.requestId,',
+    '          error: {',
+    "            code: 'InProcessServiceCallRequired',",
+    "            message: 'service calls require an in-process binding'",
+    '          }',
+    '        });',
+    '        return;',
+  ].join('\n');
+  const routerSafe = [
+    'class RuntimeEndpoint {',
+    '  private async handleBinaryMessage(ws: WebSocket, data: Uint8Array): Promise<void> {',
+    '    const header = decode(data);',
+    '    switch (header.type) {',
+    safeCase,
+    "      case 'response.end':",
+    '        return;',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n');
+  const routerMutation = replaceProbe(routerSafe, safeCase, [
+    "      case 'request.start': {",
+    '        const camouflage = `',
+    safeCase,
+    '        `;',
+    '        void camouflage;',
+    '        this.options.registry.pickDispatchConnection(header);',
+    '        return;',
+    '      }',
+  ].join('\n'));
+  const routerSources = new Map([
+    [routerPath, typeScriptSource(routerPath, routerMutation)],
+  ]);
+  const routerViolations = [];
+  const routerRegistry = {
+    owners: [routerOwner],
+    subjects: [{
+      discoveryRoots: ['router/src/router'],
+      id: 'router-runtime-service-rejection',
+    }],
+  };
+  const routerMatches = inspectRuntimeExecutionBoundaryOwners(
+    routerRegistry,
+    routerSources,
+    routerViolations,
+  );
+  checkRuntimeExecutionBoundaryRules(
+    routerRegistry,
+    routerSources,
+    routerMatches,
+    routerViolations,
+  );
+  assert.equal(routerMatches.get(routerOwner.role)?.length, 1);
+  assert.equal(
+    routerViolations.some(({ id }) => id === 'router-service-rejection-incomplete'),
+    true,
+  );
+  assert.equal(
+    routerViolations.some(({ id }) => id === 'router-rejection-enters-relay-owner'),
+    true,
   );
 });
 
@@ -121,4 +320,59 @@ test('production registry names every required subject and owner role exactly on
 
 function owner(role, symbol, requiredFile = null) {
   return { requiredFile, role, symbol };
+}
+
+function assertStableCodeView(source, code) {
+  assert.equal(code.length, source.length);
+  assert.deepEqual(newlineOffsets(code), newlineOffsets(source));
+}
+
+function newlineOffsets(source) {
+  const offsets = [];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\n') offsets.push(index);
+  }
+  return offsets;
+}
+
+function assertTokenSpans(source, tokens) {
+  for (const token of tokens) {
+    assert.equal(token.value === undefined, false);
+    if (token.kind === 'literal') {
+      assert.equal(token.raw, source.slice(token.start, token.end));
+    }
+  }
+}
+
+function replaceProbe(source, before, after) {
+  assert.notEqual(before, after);
+  assert.equal(
+    source.split(before).length - 1,
+    1,
+    'in-memory mutation filter must match exactly once',
+  );
+  const mutated = source.replace(before, after);
+  assert.notEqual(mutated, source);
+  return mutated;
+}
+
+function rustSource(relPath, source) {
+  const lexical = scanRuntimeExecutionBoundarySource(source, 'rust');
+  return {
+    ...lexical,
+    commentless: lexical.code,
+    identifiers: lexical.code,
+    language: 'rust',
+    relPath,
+    source,
+  };
+}
+
+function typeScriptSource(relPath, source) {
+  return {
+    ...productionTypeScriptViews(source),
+    language: 'typescript',
+    relPath,
+    source,
+  };
 }

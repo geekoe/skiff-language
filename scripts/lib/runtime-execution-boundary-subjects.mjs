@@ -115,7 +115,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         ownedRoots: ['runtime/eval/src/assembly_execution/mod.rs'],
         requiredFile: 'runtime/eval/src/assembly_execution/mod.rs',
         requiredAnchors: [
-          'record_in_process_boundary_dispatch',
+          'record_in_process_boundary_dispatch(',
           'BoundaryStreamContract',
           'BoundaryCancellationContract',
         ],
@@ -128,7 +128,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         symbol: 'dispatch_service_call',
         ownedRoots: ['runtime/eval/src/assembly_execution/mod.rs'],
         requiredFile: 'runtime/eval/src/assembly_execution/mod.rs',
-        requiredAnchors: ['resolve_service_call', 'dispatch_in_process_boundary'],
+        requiredAnchors: ['resolve_service_call(', 'dispatch_in_process_boundary('],
       },
       {
         role: 'ingress-service-call-adapter',
@@ -138,7 +138,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         symbol: 'dispatch_ingress_via_in_process_boundary',
         ownedRoots: ['runtime/eval/src/assembly_execution/ingress.rs'],
         requiredFile: 'runtime/eval/src/assembly_execution/ingress.rs',
-        requiredAnchors: ['adapt_ingress_arguments', 'dispatch_in_process_boundary'],
+        requiredAnchors: ['adapt_ingress_arguments(', 'dispatch_in_process_boundary('],
       },
       {
         role: 'legacy-service-path-fence',
@@ -148,7 +148,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         symbol: 'ensure_legacy_service_path_allowed',
         ownedRoots: ['runtime/eval/src/eval_context.rs'],
         requiredFile: 'runtime/eval/src/eval_context.rs',
-        requiredAnchors: ['projection.assembly().is_some()', 'assembly execution cannot use legacy'],
+        requiredAnchors: ['projection.assembly().is_some()', 'return Err('],
       },
       {
         role: 'activation-context',
@@ -227,9 +227,9 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         ownedRoots: ['runtime/host/src/host/request_entry/assembly.rs'],
         requiredFile: 'runtime/host/src/host/request_entry/assembly.rs',
         requiredAnchors: [
-          'lookup_active_assembly_request_route',
-          'route.request_target()',
-          'spawn_assembly_request',
+          'lookup_active_assembly_request_route(',
+          'route.request_target(',
+          'spawn_assembly_request(',
         ],
       },
       {
@@ -243,7 +243,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         requiredAnchors: [
           '_pinned_route',
           'AssemblyRequestExecutionInput',
-          'execute_runtime_assembly_request',
+          'execute_runtime_assembly_request(',
         ],
       },
       {
@@ -263,11 +263,7 @@ export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         symbol: 'handleBinaryMessage',
         ownedRoots: ['router/src/router/runtimeEndpoint.ts'],
         requiredFile: 'router/src/router/runtimeEndpoint.ts',
-        requiredAnchors: [
-          "case 'request.start'",
-          'InProcessServiceCallRequired',
-          'in-process binding',
-        ],
+        requiredAnchors: [],
       },
     ],
   });
