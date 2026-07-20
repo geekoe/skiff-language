@@ -1,8 +1,8 @@
 # Phase 04 验证结果
 
-状态：**P4-T10 COMPLETE；Phase-scoped requirements/gates无blocker，frozen production candidate为
-`13b4600f` / tree `a34e103c`，可提交P4-A01独立验收。Repo `router`与`checks` selector仍有明确的
-inherited baseline failures，本文不把这两个命令写成PASS。**
+状态：**Phase 04 COMPLETE；P4-T10无Phase-scoped blocker，P4-A01在frozen production candidate
+`13b4600f` / tree `a34e103c`上独立验收PASS。Repo `router`与`checks` selector仍有明确的inherited
+baseline failures，本文不把这两个命令写成PASS。**
 
 Phase 04的assembly execution image、ActivationContext、ordinary/error、async/stream/cancel、
 callback/native、unified ingress与router service-relay retirement已经在同一production candidate上闭环。
@@ -10,8 +10,8 @@ F16只迁移eval error wrapper owner；其后唯一受影响的完整runtime sel
 candidate binary provenance最终恢复为四方一致；Agine smoke在Phase 05尚未提供active assembly ingress时精确
 fail closed，分类为`EXPECTED_PHASE05`，不是Phase 04 PASS证据。
 
-本文是T10 result draft。P4-A01尚未给出独立verdict，因此本文不宣布Phase 04 COMPLETE，也不授权merge
-`main`或push。
+P4-A01只读验收锚定doc commit `c5b5d5e3359a7399fceeffd55078753b2b5f5f85`与上述production
+candidate，确认无blocking issue并授权主Agent合并`main`。Push仍需用户明确授权。
 
 ## 1. Frozen candidate与stability epoch
 
@@ -249,3 +249,29 @@ baseline与`EXPECTED_PHASE05`没有通过放宽checker、修改fixture、增加c
 
 T10最终结论：**Phase-scoped requirements/gates无blocker，可提交P4-A01；repo selectors仍有明确inherited
 baseline failures，不能把`router`或`checks`命令写成PASS。**
+
+## 9. P4-A01独立阶段验收
+
+结论：**PASS**。验收锚定doc commit `c5b5d5e3359a7399fceeffd55078753b2b5f5f85` / tree
+`0ace483a0e6f719f641cde862703825e45ecb0c5`与production candidate `13b4600f38ae1d0cdc6878ecb518e2b616d5e4fa`
+/ tree `a34e103cb8a95f0611b380ae3a173266471fcc6d`；二者之间只有Phase文档变化。
+
+A01独立复核execution checker production与30/30 mutation、51个production eval files的error checker、router
+service rejection、F14R cleanup 8/8、F16 wrapper 2/2和typed projected/admitted full-chain 1/1，均PASS。验收确认：
+
+- assembly image、activation、package direct/service detached、全部execution lanes、callback lifetime、single
+  dispatcher、active-generation pin与router relay retirement均由真实production owner覆盖；
+- F12/F13只修test fixture且没有建立production旁路；F14R只有一个supervised cleanup owner，最终terminal仍由
+  concrete CAS exact-once；F16 wrapper递归只存在于`eval::error` boundary；
+- compiler-no-bin导致的router 5项与checks package-store失败，以及3个fmt差异，均与main blob相同，是inherited
+  baseline；没有为制造绿灯修改compiler/Cargo/fixture；
+- stable registrations为0与Agine `/session` fail-closed没有计作PASS，精确属于Phase 05尚未完成active-assembly
+  provisioning和consumer迁移后的动态缺口。
+
+A01指出f093 epoch的Phase Rust闭集为129个文件；F16使最终diff闭集为130个文件，但F16另对3个owned文件执行
+targeted rustfmt，因此覆盖无缺口。最终无blocking issue；Phase 04允许合并`main`。
+
+Non-blocking follow-up：`runtime/eval/src/error.rs`、`program_stream.rs`、
+`assembly_execution/async_stream_cancel.rs`仍偏长，后续可在保持唯一error/cleanup/stream owner的前提下拆分；
+typed fixture builder与checker self-test虽大但仍是聚焦测试语料。Phase 05必须在完成provisioning/consumer迁移后重建
+成功业务live/chat正证据。

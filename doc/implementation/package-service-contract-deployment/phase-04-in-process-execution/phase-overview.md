@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane
 
-状态：active；详细 DAG 与验收 ownership 见 `phase-plan.md`
+状态：complete；P4-A01独立验收PASS，详细DAG、证据与残余风险见`phase-plan.md`和`phase-result.md`
 
 ## 输入
 
