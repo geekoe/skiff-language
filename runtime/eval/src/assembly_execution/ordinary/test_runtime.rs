@@ -552,6 +552,10 @@ impl TelemetryCapabilityApi for TestTelemetry {
 struct TestHttp;
 
 impl HttpClientCapabilityApi for TestHttp {
+    fn with_stream_runtime(&self, _stream_runtime: StreamRuntime) -> HttpClientCapabilityContext {
+        HttpClientCapabilityContext::new(Self)
+    }
+
     fn dispatch_http_request<'a>(&'a self, _input: &'a Value) -> HttpCapabilityFuture<'a, Value> {
         Box::pin(async {
             Err(CapabilityError::unsupported(

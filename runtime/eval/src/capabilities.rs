@@ -52,7 +52,7 @@ pub use skiff_runtime_capability_context::{
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
     StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
-    StreamRuntimeApi, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    StreamRuntimeApi, StreamRuntimeOwner, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
     TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
     WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };

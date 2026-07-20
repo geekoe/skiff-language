@@ -28,6 +28,7 @@ use super::{
 use crate::{
     assembly_execution::RuntimeExecutionProjection,
     error::{Result, RuntimeError},
+    stream_cleanup::StreamConsumerCleanup,
     type_projection::EvalTypeProjection,
 };
 
@@ -48,11 +49,12 @@ impl Interpreter {
         cancel_signals: &[StreamCancelSignal],
     ) -> Result<Flow> {
         let execution = context.execution();
+        let stream_runtime = context.stream_runtime();
+        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), &stream_value);
         loop {
             execution.add_instruction_units(1)?;
             check_cancelled(&execution, env)?;
-            let item = self
-                .stream_runtime
+            let item = stream_runtime
                 .next_with_cancellation(
                     &stream_value,
                     cancel_signals,
@@ -76,7 +78,10 @@ impl Interpreter {
                         runtime_from_wire(&item, heap)?
                     }
                 }
-                StreamPoll::End => return Ok(Flow::Continue),
+                StreamPoll::End => {
+                    cleanup.reached_end();
+                    return Ok(Flow::Continue);
+                }
             };
             let flow = self
                 .exec_program_for_in_body(
@@ -93,29 +98,14 @@ impl Interpreter {
                 .await;
             let flow = match flow {
                 Ok(flow) => flow,
-                Err(error) => {
-                    self.stream_runtime.cancel(&stream_value);
-                    return Err(error);
-                }
+                Err(error) => return Err(error),
             };
             match flow {
                 Flow::Continue | Flow::LoopContinue => continue,
-                Flow::Break => {
-                    self.stream_runtime.cancel(&stream_value);
-                    return Ok(Flow::Continue);
-                }
-                Flow::Return(value) => {
-                    self.stream_runtime.cancel(&stream_value);
-                    return Ok(Flow::Return(value));
-                }
-                Flow::Parked => {
-                    self.stream_runtime.cancel(&stream_value);
-                    return Ok(Flow::Parked);
-                }
-                Flow::ContinueConsumer => {
-                    self.stream_runtime.cancel(&stream_value);
-                    return Ok(Flow::ContinueConsumer);
-                }
+                Flow::Break => return Ok(Flow::Continue),
+                Flow::Return(value) => return Ok(Flow::Return(value)),
+                Flow::Parked => return Ok(Flow::Parked),
+                Flow::ContinueConsumer => return Ok(Flow::ContinueConsumer),
             }
         }
     }
@@ -167,12 +157,6 @@ impl Interpreter {
                 std::slice::from_ref(&cancel_signal),
             )
             .await;
-        // Whatever the consumer does (finish, break, return, error, cancel) the
-        // producer task is signalled through the stream's cancel flag/notify so
-        // it stops emitting and exits. This is the cross-task equivalent of the
-        // old inline `select!` that cancelled the producer when the consumer
-        // resolved first.
-        self.stream_runtime.cancel(&stream_value);
         consumer_result
     }
 
@@ -266,7 +250,7 @@ impl Interpreter {
         }
 
         let mut producer_env = env.clone();
-        let (stream_value, sink) = self.stream_runtime.channel_stream();
+        let (stream_value, sink) = context.stream_runtime().channel_stream();
         let cancel_signal = sink.cancel_signal();
         producer_env.stream_sink = Some(sink.clone());
         producer_env.current_stream_item_type = Some(item_type.clone());
@@ -407,6 +391,7 @@ impl Interpreter {
         cancel_signal: &StreamCancelSignal,
     ) -> StreamRuntimeResult<()> {
         let execution = context.execution();
+        let mut cleanup = StreamConsumerCleanup::new(context.stream_runtime(), stream_value);
         loop {
             match self
                 .stream_runtime
@@ -418,7 +403,10 @@ impl Interpreter {
                 .await
             {
                 Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => continue,
-                Ok(StreamPoll::End) => return Ok(()),
+                Ok(StreamPoll::End) => {
+                    cleanup.reached_end();
+                    return Ok(());
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -549,7 +537,7 @@ impl Interpreter {
             })
             .transpose()?;
         let mut producer_env = env.clone();
-        let (stream_value, sink) = self.stream_runtime.channel_stream();
+        let (stream_value, sink) = context.stream_runtime().channel_stream();
         let cancel_signal = sink.cancel_signal();
         producer_env.stream_sink = Some(sink.clone());
         producer_env.current_stream_item_type = Some(producer.item_type.clone());
@@ -778,7 +766,7 @@ fn spawn_stream_producer(
     caller_addr: ExecutableAddr,
     producer: StreamProducerExecution,
 ) {
-    let interpreter = interpreter.clone();
+    let interpreter = interpreter.clone_for_stream_producer();
     tokio::spawn(async move {
         run_stream_producer_task(&interpreter, &owned_context, &caller_addr, producer).await;
     });

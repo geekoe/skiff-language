@@ -56,7 +56,11 @@ mod websocket;
 
 use actor::{actor, RuntimeOwnedActorParts};
 use config::RuntimeConfigCapabilityContext;
-use downcast::*;
+pub(crate) use downcast::concrete_stream_runtime;
+use downcast::{
+    concrete_actor_context_from_owned, concrete_db_context, concrete_stream_cancel_signals,
+    concrete_test_double, concrete_test_effect_double_context, eval_test_double,
+};
 use effects::{RuntimeEffectDispatchContext, RuntimeTestEffectDoubleContext};
 use error::IntoEvalResult;
 use execution::RuntimeExecutionControl;

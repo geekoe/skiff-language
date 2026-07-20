@@ -41,6 +41,7 @@ pub mod service_dispatch;
 pub mod source_context;
 pub mod spawn_ops;
 pub mod stream_callback;
+mod stream_cleanup;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod type_descriptor;
@@ -227,11 +228,11 @@ impl EvalRuntimeProgramSource for EvalRuntimeProgram {
     }
 }
 
-#[derive(Clone)]
 pub struct Interpreter {
     program: Option<Arc<EvalRuntimeProgram>>,
     pub native_registry: NativeRegistry,
     pub stream_runtime: StreamRuntime,
+    _stream_runtime_owner: Option<capabilities::StreamRuntimeOwner>,
     pub http_options: HttpRuntimeOptions,
     test_effect_doubles: TestEffectDoubleContext,
     /// Stream-producer calls whose result was bound to a value (e.g. `const s =
@@ -277,10 +278,12 @@ impl Interpreter {
         let stream_runtime = runtime_factory.stream_runtime();
         let test_effect_doubles =
             runtime_factory.reusable_test_effect_doubles(HashMap::new(), &stream_runtime, false);
+        let stream_runtime_owner = stream_runtime.owner();
         Self {
             program: None,
             native_registry: NativeRegistry,
             stream_runtime,
+            _stream_runtime_owner: Some(stream_runtime_owner),
             http_options: HttpRuntimeOptions::from_env(),
             test_effect_doubles,
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
@@ -390,10 +393,12 @@ impl Interpreter {
             &stream_runtime,
             test_effects_enabled,
         );
+        let stream_runtime_owner = stream_runtime.owner();
         Self {
             program: Some(program),
             native_registry: NativeRegistry,
             stream_runtime,
+            _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
@@ -413,10 +418,12 @@ impl Interpreter {
             &stream_runtime,
             test_effects_enabled,
         );
+        let stream_runtime_owner = stream_runtime.owner();
         Self {
             program: Some(program),
             native_registry: NativeRegistry,
             stream_runtime,
+            _stream_runtime_owner: Some(stream_runtime_owner),
             http_options,
             test_effect_doubles,
             deferred_stream_producers: program_stream::DeferredStreamProducerRegistry::default(),
@@ -425,6 +432,18 @@ impl Interpreter {
 
     pub fn test_effect_double_context(&self) -> TestEffectDoubleContext {
         self.test_effect_doubles.clone()
+    }
+
+    pub(crate) fn clone_for_stream_producer(&self) -> Self {
+        Self {
+            program: self.program.clone(),
+            native_registry: self.native_registry.clone(),
+            stream_runtime: self.stream_runtime.clone(),
+            _stream_runtime_owner: None,
+            http_options: self.http_options.clone(),
+            test_effect_doubles: self.test_effect_doubles.clone(),
+            deferred_stream_producers: self.deferred_stream_producers.clone(),
+        }
     }
 
     pub fn next_test_effect_double(&self, target: &str) -> Option<TestEffectDouble> {

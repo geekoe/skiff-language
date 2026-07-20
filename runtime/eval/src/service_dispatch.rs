@@ -20,7 +20,9 @@ use skiff_runtime_model::{
 };
 
 use super::{
-    capabilities::{OutboundServiceContext, OutboundServiceRequestStart, StreamPullSource},
+    capabilities::{
+        OutboundServiceContext, OutboundServiceRequestStart, StreamPullSource, StreamRuntime,
+    },
     env::Env,
     runtime_ops::{
         runtime_coerce_required_plan, runtime_from_wire_internal_handle_required_plan,
@@ -35,6 +37,7 @@ use skiff_runtime_capability_context::RequestStartControl;
 pub async fn call_outbound_service(
     interpreter: &Interpreter,
     context: &OutboundServiceContext,
+    stream_runtime: &StreamRuntime,
     heap: &mut RequestHeap,
     env: &Env,
     caller_addr: &ExecutableAddr,
@@ -49,12 +52,22 @@ pub async fn call_outbound_service(
         symbol,
         context.service_dependencies(),
     )?;
-    send_outbound_service_request(interpreter, context, heap, env, &dispatch, args).await
+    send_outbound_service_request(
+        interpreter,
+        context,
+        stream_runtime,
+        heap,
+        env,
+        &dispatch,
+        args,
+    )
+    .await
 }
 
 pub async fn call_outbound_service_operation(
     interpreter: &Interpreter,
     context: &OutboundServiceContext,
+    stream_runtime: &StreamRuntime,
     heap: &mut RequestHeap,
     env: &Env,
     caller_addr: &ExecutableAddr,
@@ -69,12 +82,22 @@ pub async fn call_outbound_service_operation(
         operation_abi_id,
         context.service_dependencies(),
     )?;
-    send_outbound_service_request(interpreter, context, heap, env, &dispatch, args).await
+    send_outbound_service_request(
+        interpreter,
+        context,
+        stream_runtime,
+        heap,
+        env,
+        &dispatch,
+        args,
+    )
+    .await
 }
 
 async fn send_outbound_service_request(
     interpreter: &Interpreter,
     context: &OutboundServiceContext,
+    stream_runtime: &StreamRuntime,
     heap: &mut RequestHeap,
     env: &Env,
     dispatch: &OutboundServiceDispatch,
@@ -101,7 +124,7 @@ async fn send_outbound_service_request(
 
     let value = if dispatch.mode == "serverStream" {
         outbound_service_stream_value(
-            interpreter,
+            stream_runtime,
             context,
             dispatch,
             started.lease,
@@ -167,14 +190,14 @@ async fn await_outbound_response(
 }
 
 fn outbound_service_stream_value(
-    interpreter: &Interpreter,
+    stream_runtime: &StreamRuntime,
     context: &OutboundServiceContext,
     dispatch: &OutboundServiceDispatch,
     lease: OutboundRequestLease,
     receiver: OutboundResponseReceiver,
     heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
-    let stream_value = interpreter.stream_runtime.pull_stream_with_cancellation(
+    let stream_value = stream_runtime.pull_stream_with_cancellation(
         OutboundServiceStreamSource {
             lease,
             context: context.clone(),

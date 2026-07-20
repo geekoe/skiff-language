@@ -1,6 +1,4 @@
 use std::{
-    collections::HashMap,
-    fmt,
     future::Future,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -16,18 +14,26 @@ use skiff_runtime_capability_context::{
 };
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
+mod state;
+
+use state::{
+    ChannelTerminal, ChannelTerminalState, StreamEvent, StreamRegistry, StreamSource, StreamState,
+    StreamTerminalReason,
+};
+
 const STREAM_BUFFER_CAPACITY: usize = 1;
 static STREAM_RUNTIME_STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct StreamRuntime {
     next_id: Arc<AtomicU64>,
-    streams: Arc<Mutex<HashMap<String, Arc<StreamState>>>>,
+    registry: Arc<Mutex<StreamRegistry>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct StreamSink {
     sender: mpsc::Sender<StreamEvent>,
+    terminal: Arc<ChannelTerminalState>,
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
 }
@@ -38,90 +44,72 @@ pub struct StreamCancelSignal {
     cancel_notify: Arc<Notify>,
 }
 
-#[derive(Debug)]
-enum StreamEvent {
-    Item(Value),
-    InternalItem(StreamInternalItem),
-    End,
-    Error(StreamRuntimeError),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StreamTerminalReason {
-    End,
-    Error,
-    Cancelled,
-    SourceDropped,
-}
-
-struct StreamState {
-    source: StreamSource,
-    cancelled: Arc<AtomicBool>,
-    cancel_notify: Arc<Notify>,
-    cancellation: Option<CancellationToken>,
-    lifetime: Mutex<Option<StreamLifetimeGuard>>,
-    ended: AtomicBool,
-}
-
-enum StreamSource {
-    Channel(AsyncMutex<mpsc::Receiver<StreamEvent>>),
-    Pull(AsyncMutex<Box<dyn StreamPullSource>>),
-}
-
-impl fmt::Debug for StreamState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("StreamState")
-            .field("source", &self.source)
-            .field("cancelled", &self.cancelled.load(Ordering::SeqCst))
-            .field("ended", &self.ended.load(Ordering::SeqCst))
-            .finish()
-    }
-}
-
-impl fmt::Debug for StreamSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Channel(_) => formatter.write_str("Channel"),
-            Self::Pull(_) => formatter.write_str("Pull"),
-        }
-    }
-}
-
 impl StreamRuntime {
     pub fn channel_stream(&self) -> (Value, StreamSink) {
-        self.channel_stream_inner(None)
+        self.channel_stream_inner(None, None)
     }
 
     pub fn channel_stream_with_lifetime(
         &self,
         lifetime: StreamLifetimeGuard,
     ) -> (Value, StreamSink) {
-        self.channel_stream_inner(Some(lifetime))
+        self.channel_stream_inner(None, Some(lifetime))
     }
 
-    fn channel_stream_inner(&self, lifetime: Option<StreamLifetimeGuard>) -> (Value, StreamSink) {
+    pub fn channel_stream_in_scope(&self, scope: u64) -> (Value, StreamSink) {
+        self.channel_stream_inner(Some(scope), None)
+    }
+
+    pub fn channel_stream_with_lifetime_in_scope(
+        &self,
+        scope: u64,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        self.channel_stream_inner(Some(scope), Some(lifetime))
+    }
+
+    fn channel_stream_inner(
+        &self,
+        scope: Option<u64>,
+        lifetime: Option<StreamLifetimeGuard>,
+    ) -> (Value, StreamSink) {
         let id = format!("stream-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CAPACITY);
+        let terminal = Arc::new(ChannelTerminalState::default());
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_notify = Arc::new(Notify::new());
         let state = StreamState {
-            source: StreamSource::Channel(AsyncMutex::new(receiver)),
+            scope,
+            source: StreamSource::Channel {
+                receiver: AsyncMutex::new(receiver),
+                terminal: terminal.clone(),
+            },
             cancelled: cancelled.clone(),
             cancel_notify: cancel_notify.clone(),
             cancellation: None,
             lifetime: Mutex::new(lifetime),
             ended: AtomicBool::new(false),
         };
-        self.streams
-            .lock()
-            .expect("stream registry mutex poisoned")
-            .insert(id.clone(), Arc::new(state));
-        STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let state = Arc::new(state);
+        let registered = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("stream registry mutex poisoned");
+            let registered = registry.register(id.clone(), state.clone());
+            if registered {
+                STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
+            }
+            registered
+        };
+        if !registered {
+            state.finish(StreamTerminalReason::SourceDropped);
+        }
         (
             stream_value(&id),
             StreamSink {
                 sender,
+                terminal,
                 cancelled,
                 cancel_notify,
             },
@@ -141,9 +129,28 @@ impl StreamRuntime {
         source: impl StreamPullSource + 'static,
         cancellation: CancellationToken,
     ) -> Value {
+        self.pull_stream_with_cancellation_inner(source, cancellation, None)
+    }
+
+    pub fn pull_stream_with_cancellation_in_scope(
+        &self,
+        source: impl StreamPullSource + 'static,
+        cancellation: CancellationToken,
+        scope: u64,
+    ) -> Value {
+        self.pull_stream_with_cancellation_inner(source, cancellation, Some(scope))
+    }
+
+    fn pull_stream_with_cancellation_inner(
+        &self,
+        source: impl StreamPullSource + 'static,
+        cancellation: CancellationToken,
+        scope: Option<u64>,
+    ) -> Value {
         let id = format!("stream-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let cancelled = Arc::new(AtomicBool::new(false));
         let state = StreamState {
+            scope,
             source: StreamSource::Pull(AsyncMutex::new(Box::new(source))),
             cancelled,
             cancel_notify: Arc::new(Notify::new()),
@@ -151,17 +158,27 @@ impl StreamRuntime {
             lifetime: Mutex::new(None),
             ended: AtomicBool::new(false),
         };
-        self.streams
-            .lock()
-            .expect("stream registry mutex poisoned")
-            .insert(id.clone(), Arc::new(state));
-        STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        let state = Arc::new(state);
+        let registered = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("stream registry mutex poisoned");
+            let registered = registry.register(id.clone(), state.clone());
+            if registered {
+                STREAM_RUNTIME_STREAMS_ACTIVE.fetch_add(1, Ordering::AcqRel);
+            }
+            registered
+        };
+        if !registered {
+            state.finish(StreamTerminalReason::SourceDropped);
+        }
         stream_value(&id)
     }
 
     fn finish_stream(&self, id: &str, terminal: StreamTerminalReason) {
         let state = self
-            .streams
+            .registry
             .lock()
             .expect("stream registry mutex poisoned")
             .remove(id);
@@ -171,28 +188,86 @@ impl StreamRuntime {
     }
 
     fn finish_all_streams(&self, terminal: StreamTerminalReason) {
-        let states = self
-            .streams
-            .lock()
-            .expect("stream registry mutex poisoned")
-            .drain()
-            .map(|(_, state)| state)
-            .collect::<Vec<_>>();
+        let states = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("stream registry mutex poisoned");
+            registry.drain_all()
+        };
         for state in states {
             finish_stream_state(state.as_ref(), terminal);
         }
     }
 
     pub fn active_stream_count(&self) -> usize {
-        self.streams
+        self.registry
             .lock()
             .expect("stream registry mutex poisoned")
-            .len()
+            .active_count()
+    }
+
+    pub fn active_stream_count_in_scope(&self, scope: u64) -> usize {
+        self.registry
+            .lock()
+            .expect("stream registry mutex poisoned")
+            .active_count_in_scope(scope)
+    }
+
+    pub fn open_scope(&self, scope: u64) {
+        let mut registry = self
+            .registry
+            .lock()
+            .expect("stream registry mutex poisoned");
+        registry.open_scope(scope);
+    }
+
+    pub fn close_scope(&self, scope: u64) {
+        let states = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("stream registry mutex poisoned");
+            registry.close_scope(scope)
+        };
+        for state in states {
+            finish_stream_state(state.as_ref(), StreamTerminalReason::SourceDropped);
+        }
+    }
+
+    pub fn close_owner(&self) {
+        {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("stream registry mutex poisoned");
+            registry.close_owner();
+        }
+        self.finish_all_streams(StreamTerminalReason::SourceDropped);
     }
 
     #[allow(dead_code)]
     pub fn buffered_stream(&self, items: impl IntoIterator<Item = Value>) -> Value {
-        let (value, sink) = self.channel_stream();
+        self.buffered_stream_inner(items, None)
+    }
+
+    pub fn buffered_stream_in_scope(
+        &self,
+        items: impl IntoIterator<Item = Value>,
+        scope: u64,
+    ) -> Value {
+        self.buffered_stream_inner(items, Some(scope))
+    }
+
+    fn buffered_stream_inner(
+        &self,
+        items: impl IntoIterator<Item = Value>,
+        scope: Option<u64>,
+    ) -> Value {
+        let (value, sink) = match scope {
+            Some(scope) => self.channel_stream_in_scope(scope),
+            None => self.channel_stream(),
+        };
         let items = items.into_iter().collect::<Vec<_>>();
         tokio::spawn(async move {
             for item in items {
@@ -231,11 +306,10 @@ impl StreamRuntime {
         let id = stream_id(value)
             .ok_or_else(|| StreamRuntimeError::decode("for stream source is not a Stream value"))?;
         let state = self
-            .streams
+            .registry
             .lock()
             .expect("stream registry mutex poisoned")
             .get(id)
-            .cloned()
             .ok_or_else(|| StreamRuntimeError::decode("unknown Stream value"))?;
         if state.ended.load(Ordering::SeqCst) {
             self.finish_stream(id, StreamTerminalReason::Cancelled);
@@ -253,9 +327,10 @@ impl StreamRuntime {
         }
 
         match &state.source {
-            StreamSource::Channel(receiver) => {
+            StreamSource::Channel { receiver, terminal } => {
                 let event =
-                    next_channel_event(self, id, &state, receiver, signals, cancellation).await?;
+                    next_channel_event(self, id, &state, receiver, terminal, signals, cancellation)
+                        .await?;
                 match event {
                     Some(StreamEvent::Item(value)) => Ok(StreamPoll::Item(value)),
                     Some(StreamEvent::InternalItem(item)) => Ok(StreamPoll::InternalItem(item)),
@@ -307,36 +382,8 @@ fn finish_stream_state(state: &StreamState, terminal: StreamTerminalReason) {
 
 impl Drop for StreamRuntime {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.streams) == 1 {
+        if Arc::strong_count(&self.registry) == 1 {
             self.finish_all_streams(StreamTerminalReason::SourceDropped);
-        }
-    }
-}
-
-impl StreamState {
-    fn finish(&self, terminal: StreamTerminalReason) -> bool {
-        if self
-            .ended
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            self.cancelled.store(true, Ordering::SeqCst);
-            if matches!(
-                terminal,
-                StreamTerminalReason::Cancelled | StreamTerminalReason::SourceDropped
-            ) {
-                if let Some(cancellation) = &self.cancellation {
-                    cancellation.cancel();
-                }
-            }
-            self.cancel_notify.notify_waiters();
-            self.lifetime
-                .lock()
-                .expect("stream lifetime mutex poisoned")
-                .take();
-            true
-        } else {
-            false
         }
     }
 }
@@ -346,6 +393,7 @@ async fn next_channel_event(
     id: &str,
     state: &StreamState,
     receiver: &AsyncMutex<mpsc::Receiver<StreamEvent>>,
+    terminal: &ChannelTerminalState,
     signals: &[StreamCancelSignal],
     cancellation: &CancellationSignals<'_>,
 ) -> StreamRuntimeResult<Option<StreamEvent>> {
@@ -368,28 +416,48 @@ async fn next_channel_event(
             return Err(StreamRuntimeError::cancelled());
         }
     };
-    let cancel_notified = wait_for_stream_cancel(state);
-    tokio::pin!(cancel_notified);
-    let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
-    tokio::pin!(external_cancel_notified);
-    if state.cancelled.load(Ordering::SeqCst) {
-        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
-        return Err(StreamRuntimeError::cancelled());
-    }
-    if external_cancelled(signals, cancellation) {
-        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
-        return Err(StreamRuntimeError::cancelled());
-    }
-
-    tokio::select! {
-        event = receiver.recv() => Ok(event),
-        _ = &mut cancel_notified => {
+    loop {
+        let terminal_notified = terminal.notify.notified();
+        tokio::pin!(terminal_notified);
+        terminal_notified.as_mut().enable();
+        if state.cancelled.load(Ordering::SeqCst) {
             runtime.finish_stream(id, StreamTerminalReason::Cancelled);
-            Err(StreamRuntimeError::cancelled())
+            return Err(StreamRuntimeError::cancelled());
         }
-        _ = &mut external_cancel_notified => {
+        if external_cancelled(signals, cancellation) {
             runtime.finish_stream(id, StreamTerminalReason::Cancelled);
-            Err(StreamRuntimeError::cancelled())
+            return Err(StreamRuntimeError::cancelled());
+        }
+        match receiver.try_recv() {
+            Ok(event) => return Ok(Some(event)),
+            Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                return Ok(terminal.take_event());
+            }
+        }
+        if let Some(event) = terminal.take_event() {
+            return Ok(Some(event));
+        }
+        let cancel_notified = wait_for_stream_cancel(state);
+        tokio::pin!(cancel_notified);
+        let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
+        tokio::pin!(external_cancel_notified);
+        tokio::select! {
+            biased;
+            event = receiver.recv() => {
+                if let Some(event) = event {
+                    return Ok(Some(event));
+                }
+            }
+            _ = &mut terminal_notified => {}
+            _ = &mut cancel_notified => {
+                runtime.finish_stream(id, StreamTerminalReason::Cancelled);
+                return Err(StreamRuntimeError::cancelled());
+            }
+            _ = &mut external_cancel_notified => {
+                runtime.finish_stream(id, StreamTerminalReason::Cancelled);
+                return Err(StreamRuntimeError::cancelled());
+            }
         }
     }
 }
@@ -529,9 +597,10 @@ impl StreamSink {
         }
         tokio::select! {
             permit = self.sender.reserve() => {
-                permit
-                    .map_err(|_| StreamRuntimeError::cancelled())?
-                    .send(event);
+                let permit = permit.map_err(|_| StreamRuntimeError::cancelled())?;
+                if !self.terminal.send_if_open(permit, event) {
+                    return Err(StreamRuntimeError::cancelled());
+                }
                 Ok(())
             }
             _ = &mut cancel_notified => Err(StreamRuntimeError::cancelled()),
@@ -541,13 +610,13 @@ impl StreamSink {
 
     pub async fn end(&self) {
         if !self.is_cancelled() {
-            let _ = self.send_event(StreamEvent::End).await;
+            self.terminal.publish(ChannelTerminal::End);
         }
     }
 
     pub async fn fail(&self, error: StreamRuntimeError) {
         if !self.is_cancelled() {
-            let _ = self.send_event(StreamEvent::Error(error)).await;
+            self.terminal.publish(ChannelTerminal::Error(error));
         }
     }
 
@@ -569,22 +638,6 @@ impl StreamSink {
         StreamCancelSignal {
             cancelled: self.cancelled.clone(),
             cancel_notify: self.cancel_notify.clone(),
-        }
-    }
-
-    async fn send_event(&self, event: StreamEvent) -> StreamRuntimeResult<()> {
-        if self.is_cancelled() {
-            return Err(StreamRuntimeError::cancelled());
-        }
-        let cancel_notified = self.cancel_notify.notified();
-        tokio::pin!(cancel_notified);
-        cancel_notified.as_mut().enable();
-        if self.is_cancelled() {
-            return Err(StreamRuntimeError::cancelled());
-        }
-        tokio::select! {
-            result = self.sender.send(event) => result.map_err(|_| StreamRuntimeError::cancelled()),
-            _ = &mut cancel_notified => Err(StreamRuntimeError::cancelled()),
         }
     }
 }

@@ -116,7 +116,6 @@ async fn typed_execution_async_stream_cancel_detaches_declared_typed_error_with_
 
 #[tokio::test]
 async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_target() {
-    let baseline = crate::capability_context::stream_runtime_streams_active();
     {
         let fixture = TypedExecutionFixture::admit_contract(TypedExecutionContract::new(
             server_stream_contract(),
@@ -145,21 +144,68 @@ async fn typed_execution_async_stream_cancel_spawns_server_stream_from_admitted_
             .await
             .expect("server stream should reach the async lane from the admitted call target");
         assert_eq!(result, RuntimeValue::Null);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while crate::eval_capability_adapter::concrete_stream_runtime(
+                &interpreter.stream_runtime,
+            )
+            .active_stream_count()
+                != 0
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request owner must remove its concrete stream registry entry");
+        assert_eq!(
+            crate::eval_capability_adapter::concrete_stream_runtime(&interpreter.stream_runtime)
+                .active_stream_count(),
+            0,
+            "request owner must clean up before the still-live root interpreter is dropped"
+        );
+        assert_eq!(
+            crate::eval_capability_adapter::concrete_stream_runtime(&interpreter.stream_runtime)
+                .active_stream_count_in_scope(
+                    fixture.eval_target.request_activation().generation(),
+                ),
+            0,
+            "the completed request generation must have no live stream entries"
+        );
     }
+}
 
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while crate::capability_context::stream_runtime_streams_active() != baseline {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("dropping the full-chain runtime must close its stream registry and lifetime lease");
+#[tokio::test]
+async fn typed_execution_async_stream_cancel_runtime_owner_drop_wakes_unconsumed_producer_clone() {
+    let runtime = TypedExecutionRuntime::new("example.phase-four.consumer");
+    let interpreter = runtime.interpreter();
+    let producer_runtime = interpreter.stream_runtime.clone();
+    let observer_runtime = interpreter.stream_runtime.clone();
+    let (_stream, sink) = interpreter.stream_runtime.channel_stream();
+    let cancel_signal = sink.cancel_signal();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let producer = tokio::spawn(async move {
+        sink.send(serde_json::json!("unconsumed")).await.unwrap();
+        sink.end().await;
+        ready_tx.send(()).unwrap();
+        cancel_signal.wait_cancelled().await;
+        drop(producer_runtime);
+    });
+    tokio::time::timeout(std::time::Duration::from_millis(100), ready_rx)
+        .await
+        .expect("producer should publish a buffered item and terminal")
+        .expect("producer readiness sender should stay open");
+
+    drop(interpreter);
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), producer)
+        .await
+        .expect("runtime owner drop must wake the producer runtime clone")
+        .expect("producer task must not panic");
+    wait_for_stream_runtime_empty(&observer_runtime).await;
 }
 
 #[tokio::test]
 async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_and_expires_on_end()
 {
-    let baseline = crate::capability_context::stream_runtime_streams_active();
     let fixture =
         TypedExecutionFixture::admit_contract(TypedExecutionContract::callback_stream()).await;
     let provider = fixture.resolve_provider();
@@ -207,12 +253,11 @@ async fn typed_execution_async_stream_cancel_projects_callback_item_before_json_
             .unwrap_err(),
         CallbackCapabilityError::CapabilityExpired
     );
-    wait_for_stream_runtime_baseline(baseline).await;
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
 }
 
 #[tokio::test]
 async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_break() {
-    let baseline = crate::capability_context::stream_runtime_streams_active();
     let fixture =
         TypedExecutionFixture::admit_contract(TypedExecutionContract::callback_stream_cancel())
             .await;
@@ -255,7 +300,7 @@ async fn typed_execution_async_stream_cancel_expires_callback_item_on_early_brea
             .active_entry_count(),
         0
     );
-    wait_for_stream_runtime_baseline(baseline).await;
+    wait_for_stream_runtime_empty(&interpreter.stream_runtime).await;
 }
 
 #[tokio::test]
@@ -428,9 +473,11 @@ fn callback_carrier_in_heap(heap: &RequestHeap) -> CallbackCapabilityCarrier {
     panic!("consumer heap should retain the projected opaque callback carrier")
 }
 
-async fn wait_for_stream_runtime_baseline(baseline: usize) {
+async fn wait_for_stream_runtime_empty(runtime: &skiff_runtime_eval::capabilities::StreamRuntime) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while crate::capability_context::stream_runtime_streams_active() > baseline {
+        while crate::eval_capability_adapter::concrete_stream_runtime(runtime).active_stream_count()
+            != 0
+        {
             tokio::task::yield_now().await;
         }
     })

@@ -835,9 +835,11 @@ impl<'a> EvalContext<'a> {
                 }
                 let operation_abi_id = remote_slot.operation_abi_id().to_string();
                 let outbound_context = self.context.outbound_context();
+                let stream_runtime = self.context.stream_runtime();
                 super::service_dispatch::call_outbound_service_operation(
                     self.interpreter,
                     &outbound_context,
+                    &stream_runtime,
                     self.heap,
                     self.env,
                     self.addr,
@@ -982,9 +984,11 @@ impl<'a> EvalContext<'a> {
             LinkedCallTarget::ServiceDependencySymbol { symbol } => {
                 self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
                 let outbound_context = self.context.outbound_context();
+                let stream_runtime = self.context.stream_runtime();
                 super::service_dispatch::call_outbound_service(
                     self.interpreter,
                     &outbound_context,
+                    &stream_runtime,
                     self.heap,
                     self.env,
                     self.addr,

@@ -6,6 +6,15 @@ pub(super) struct RuntimeHttpClientCapabilityContext(
 );
 
 impl capability_contract::HttpClientCapabilityApi for RuntimeHttpClientCapabilityContext {
+    fn with_stream_runtime(
+        &self,
+        stream_runtime: capability_contract::StreamRuntime,
+    ) -> capability_contract::HttpClientCapabilityContext {
+        capability_contract::HttpClientCapabilityContext::new(Self(
+            self.0.with_stream_runtime(stream_runtime),
+        ))
+    }
+
     fn dispatch_http_request<'a>(
         &'a self,
         input: &'a Value,

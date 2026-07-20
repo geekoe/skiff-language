@@ -35,7 +35,7 @@ use super::{
     AssemblyExecutionLaneKind, RuntimeExecutionProjection,
 };
 use crate::{
-    capabilities::{StreamSink, StreamSinkApi},
+    capabilities::{StreamRuntimeOwner, StreamSink, StreamSinkApi},
     env::Env,
     error::{Result, RuntimeError},
     eval_context::EvalContext,
@@ -208,7 +208,7 @@ fn start_provider_stream(
     let hooks = CallbackNativeCapabilityHooks::new(&context.context);
     let provider_args =
         boundary.materialize_parameters(&args, context.heap, &mut provider_heap, &hooks)?;
-    let provider_context = provider_execution_context(&context.context, &target)?;
+    let mut provider_context = provider_execution_context(&context.context, &target)?;
     let provider_stream_item_type = provider_stream_item_execution_plan(
         context.interpreter,
         &provider_context,
@@ -217,13 +217,12 @@ fn start_provider_stream(
         context.env,
         &call.type_args,
     )?;
+    let provider_stream_runtime_owner = provider_context.take_stream_runtime_owner();
     let owned_provider = Arc::new(OwnedProgramExecutionContext::capture(&provider_context));
-    let (stream_value, concrete_sink) = context
-        .interpreter
-        .stream_runtime
-        .channel_stream_with_lifetime(StreamLifetimeGuard::new(ProviderStreamLifetime {
-            _lease: lease,
-        }));
+    let stream_runtime = context.context.stream_runtime();
+    let (stream_value, concrete_sink) = stream_runtime.channel_stream_with_lifetime(
+        StreamLifetimeGuard::new(ProviderStreamLifetime { _lease: lease }),
+    );
     let stream_cancel = concrete_sink.cancel_signal();
     let sink = StreamSink::new(BoundaryStreamSink {
         inner: concrete_sink,
@@ -236,7 +235,7 @@ fn start_provider_stream(
     let receiver_value = match runtime_from_wire(&stream_value, context.heap) {
         Ok(value) => value,
         Err(error) => {
-            context.interpreter.stream_runtime.cancel(&stream_value);
+            stream_runtime.cancel(&stream_value);
             return Err(error);
         }
     };
@@ -247,7 +246,7 @@ fn start_provider_stream(
     // remains the semantic owner and applies the canonical contract plan before publication.
     producer_env.current_stream_item_type = provider_stream_item_type;
     let producer = ProviderStreamTask {
-        interpreter: context.interpreter.clone(),
+        interpreter: context.interpreter.clone_for_stream_producer(),
         provider_context: owned_provider,
         provider_heap,
         provider_env: producer_env,
@@ -261,6 +260,7 @@ fn start_provider_stream(
         cancellation: context.execution.cancellation_token(),
         cancellation_contract: target.descriptor().contract.cancellation.clone(),
         request: target.provider_request().clone(),
+        _stream_runtime_owner: provider_stream_runtime_owner,
     };
     spawn_provider_stream(producer);
     Ok(receiver_value)
@@ -313,6 +313,7 @@ struct ProviderStreamTask {
     cancellation: CancellationToken,
     cancellation_contract: BoundaryCancellationContract,
     request: skiff_runtime_activation::RequestActivationContext,
+    _stream_runtime_owner: Option<StreamRuntimeOwner>,
 }
 
 fn spawn_provider_stream(producer: ProviderStreamTask) {

@@ -146,7 +146,7 @@ async fn stream_sink_send_blocked_by_backpressure_returns_on_cancel() {
 }
 
 #[tokio::test]
-async fn stream_sink_terminal_blocked_by_backpressure_returns_on_cancel() {
+async fn stream_sink_terminal_publication_is_independent_of_item_backpressure() {
     let runtime = StreamRuntime::default();
     let (stream, sink) = runtime.channel_stream();
     sink.send(json!("buffered")).await.unwrap();
@@ -155,17 +155,11 @@ async fn stream_sink_terminal_blocked_by_backpressure_returns_on_cancel() {
         async move { sink.end().await }
     });
 
-    tokio::task::yield_now().await;
-    assert!(
-        !pending_end.is_finished(),
-        "terminal publication should observe channel backpressure"
-    );
-    runtime.cancel(&stream);
-
-    tokio::time::timeout(std::time::Duration::from_secs(1), pending_end)
+    tokio::time::timeout(std::time::Duration::from_millis(100), pending_end)
         .await
-        .expect("stream cancel should wake blocked terminal publication")
+        .expect("terminal publication must not wait for item capacity")
         .expect("terminal publisher should not panic");
+    runtime.cancel(&stream);
     assert_eq!(runtime.active_stream_count(), 0);
 }
 
@@ -414,6 +408,95 @@ async fn stream_runtime_maps_producer_error_to_consumer_error() {
 }
 
 #[tokio::test]
+async fn stream_runtime_buffered_item_then_end_never_blocks_terminal_publication() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    sink.send(json!("accepted")).await.unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), sink.end())
+        .await
+        .expect("End publication must not wait for the capacity-one item buffer");
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::Item(value) if value == json!("accepted")
+    ));
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::End
+    ));
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_buffered_item_then_error_preserves_item_before_error() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    sink.send(json!("accepted")).await.unwrap();
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        sink.fail(StreamRuntimeError::decode("after accepted item")),
+    )
+    .await
+    .expect("Error publication must not wait for the capacity-one item buffer");
+    assert!(matches!(
+        runtime.next(&stream).await.unwrap(),
+        StreamPoll::Item(value) if value == json!("accepted")
+    ));
+    let error = runtime.next(&stream).await.unwrap_err();
+    assert!(error.to_string().contains("after accepted item"));
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_request_scope_drop_cancels_producer_clone_while_root_stays_alive() {
+    let runtime = StreamRuntime::default();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let request_generation = 41;
+    runtime.open_scope(request_generation);
+    let (stream, sink) = runtime.channel_stream_with_lifetime_in_scope(
+        request_generation,
+        StreamLifetimeGuard::new(DropProbe(Arc::clone(&drops))),
+    );
+    let producer_runtime = runtime.clone();
+    let cancel_signal = sink.cancel_signal();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let producer = tokio::spawn(async move {
+        sink.send(json!("unconsumed")).await.unwrap();
+        sink.end().await;
+        ready_tx.send(()).unwrap();
+        cancel_signal.wait_cancelled().await;
+        producer_runtime.active_stream_count()
+    });
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), ready_rx)
+        .await
+        .expect("producer must publish an item and terminal")
+        .expect("producer readiness sender must stay open");
+    runtime.close_scope(request_generation);
+    runtime.close_scope(request_generation);
+
+    assert_eq!(runtime.active_stream_count(), 0);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), producer)
+            .await
+            .expect("request owner drop must wake the producer clone")
+            .expect("producer task must not panic"),
+        0
+    );
+    let (other_stream, other_sink) = runtime.channel_stream();
+    assert_eq!(
+        runtime.active_stream_count(),
+        1,
+        "root runtime remains usable"
+    );
+    runtime.cancel(&other_stream);
+    drop(other_sink);
+    drop(stream);
+}
+
+#[tokio::test]
 async fn stream_runtime_removes_entry_on_source_drop() {
     let runtime = StreamRuntime::default();
     let (stream, sink) = runtime.channel_stream();
@@ -496,7 +579,7 @@ async fn stream_runtime_cancel_signal_wakes_without_polling_race() {
 }
 
 #[tokio::test]
-async fn unconsumed_outbound_server_stream_cleans_up_on_runtime_drop() {
+async fn unconsumed_outbound_server_stream_cleans_up_on_request_owner_drop_with_runtime_clone() {
     let registry = OutboundRequestRegistry::default();
     let (response_sender, _response_rx) = tokio::sync::mpsc::unbounded_channel();
     let (cancel_sender, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -516,25 +599,35 @@ async fn unconsumed_outbound_server_stream_cleans_up_on_runtime_drop() {
         .expect("outbound stream lease should register");
 
     let runtime = StreamRuntime::default();
-    let _stream = runtime.pull_stream_with_cancellation(
+    let request_generation = 73;
+    runtime.open_scope(request_generation);
+    let _stream = runtime.pull_stream_with_cancellation_in_scope(
         LeaseHoldingPullSource { _lease: lease },
         CancellationToken::new(),
+        request_generation,
     );
     assert_eq!(runtime.active_stream_count(), 1);
     assert_eq!(registry.pending_count(), 1);
     assert_eq!(registry.active_lease_count(), 1);
 
-    drop(runtime);
+    let producer_runtime_clone = runtime.clone();
+    runtime.close_scope(request_generation);
 
     let (request_id, reason) =
         tokio::time::timeout(std::time::Duration::from_secs(1), cancel_rx.recv())
             .await
-            .expect("runtime drop should cancel unconsumed stream")
+            .expect("request owner drop should cancel unconsumed stream")
             .expect("cancel receiver should stay open");
     assert_eq!(request_id, "request-unconsumed-stream");
     assert_eq!(reason, "stream_cancelled");
     assert_eq!(registry.pending_count(), 0);
     assert_eq!(registry.active_lease_count(), 0);
+    assert_eq!(producer_runtime_clone.active_stream_count(), 0);
+
+    let (root_stream, root_sink) = runtime.channel_stream();
+    assert_eq!(runtime.active_stream_count(), 1, "root owner remains live");
+    runtime.cancel(&root_stream);
+    drop(root_sink);
 }
 
 #[test]

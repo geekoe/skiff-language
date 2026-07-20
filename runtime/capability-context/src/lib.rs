@@ -79,7 +79,7 @@ pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
     StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
-    StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
+    StreamRuntimeOwner, StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
 };
 pub use telemetry::{TelemetryCapabilityApi, TelemetryCapabilityContext};
 pub use time::TimeCapabilityContext;
