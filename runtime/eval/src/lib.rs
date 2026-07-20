@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+mod assembly_execution;
 mod assembly_seam;
 pub mod binary_http_boundary;
 pub mod capabilities;
@@ -50,7 +51,10 @@ use env::{Env, Flow};
 use mutable_path::{apply_collection_mutation, CollectionMutation};
 use runtime_ops::*;
 
-pub use assembly_seam::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
+pub use assembly_seam::{
+    RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget,
+    RuntimeAssemblyServiceCallTarget,
+};
 pub use entrypoint::{
     EvalRequestEffectDouble, EvalRequestExecutionInput, EvalRequestExecutor,
     EvalRequestExecutorInput,

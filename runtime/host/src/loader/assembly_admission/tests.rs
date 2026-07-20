@@ -11,6 +11,7 @@ use skiff_artifact_model::{
 
 use super::*;
 
+mod execution;
 mod full_chain;
 
 #[derive(Default)]

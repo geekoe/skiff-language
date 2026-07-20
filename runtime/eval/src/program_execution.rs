@@ -34,6 +34,7 @@ use super::{
     source_context::program_source_context_frame,
     *,
 };
+use crate::{RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget};
 
 pub struct ProgramExecutionInput<'a> {
     pub execution: ExecutionControl<'a>,
@@ -70,6 +71,7 @@ pub struct ProgramExecutionContext<'a> {
     spawn: ActorCapabilityContext<'a>,
     outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
+    runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
 }
 
 impl<'a> ProgramExecutionContext<'a> {
@@ -90,7 +92,14 @@ impl<'a> ProgramExecutionContext<'a> {
             spawn: input.spawn,
             outbound: input.outbound,
             request_heap_limits: input.request_heap_limits,
+            runtime_assembly_target: None,
         }
+    }
+
+    /// Pins canonical execution to an admitted assembly and explicit request generation.
+    pub fn with_runtime_assembly_target(mut self, target: RuntimeAssemblyEvalTarget) -> Self {
+        self.runtime_assembly_target = Some(target);
+        self
     }
 
     pub fn execution(&self) -> ExecutionControl<'a> {
@@ -156,6 +165,14 @@ impl<'a> ProgramExecutionContext<'a> {
     pub fn request_heap_limits(&self) -> RequestHeapLimits {
         self.request_heap_limits.clone()
     }
+
+    pub fn runtime_assembly_target(
+        &self,
+    ) -> std::result::Result<&RuntimeAssemblyEvalTarget, RuntimeAssemblyEvalSeamError> {
+        self.runtime_assembly_target
+            .as_ref()
+            .ok_or(RuntimeAssemblyEvalSeamError::MissingExecutionTarget)
+    }
 }
 
 /// Owned, `'static` mirror of every borrow held by [`ProgramExecutionContext`].
@@ -187,6 +204,7 @@ pub struct OwnedProgramExecutionContext {
     spawn: OwnedActorCapabilityContext,
     outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
+    runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
 }
 
 impl OwnedProgramExecutionContext {
@@ -210,6 +228,7 @@ impl OwnedProgramExecutionContext {
             spawn: context.spawn.owned(),
             outbound: context.outbound.clone(),
             request_heap_limits: context.request_heap_limits.clone(),
+            runtime_assembly_target: context.runtime_assembly_target.clone(),
         }
     }
 
@@ -224,7 +243,7 @@ impl OwnedProgramExecutionContext {
         let websocket = self.websocket.borrow();
         let actor = self.actor.borrow();
         let spawn = self.spawn.borrow();
-        ProgramExecutionContext::new(ProgramExecutionInput {
+        let context = ProgramExecutionContext::new(ProgramExecutionInput {
             execution,
             config,
             db: self.db.clone(),
@@ -240,7 +259,11 @@ impl OwnedProgramExecutionContext {
             spawn,
             outbound: self.outbound.clone(),
             request_heap_limits: self.request_heap_limits.clone(),
-        })
+        });
+        match &self.runtime_assembly_target {
+            Some(target) => context.with_runtime_assembly_target(target.clone()),
+            None => context,
+        }
     }
 }
 

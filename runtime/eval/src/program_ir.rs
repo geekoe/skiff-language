@@ -130,6 +130,8 @@ pub fn program_call_target_kind(target: &LinkedCallTarget) -> &'static str {
         LinkedCallTarget::ExternalServiceSymbol { .. } => "externalServiceSymbol",
         LinkedCallTarget::ServiceDependencySymbol { .. } => "serviceDependencySymbol",
         LinkedCallTarget::PackageSymbol { .. } => "packageSymbol",
+        LinkedCallTarget::PackageDirect { .. } => "packageDirect",
+        LinkedCallTarget::ActivationRelativeService { .. } => "activationRelativeService",
         LinkedCallTarget::Native { .. } => "native",
         LinkedCallTarget::Builtin { .. } => "builtin",
         LinkedCallTarget::ReceiverBuiltin { .. } => "receiverBuiltin",
