@@ -24,9 +24,9 @@ use skiff_artifact_model::{
     ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
     ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
     ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, StateBinding, StateBindingKind, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    SlotLayout, StateBinding, StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 
@@ -126,6 +126,31 @@ impl CycleFixture {
                             dependency_ref: "helper".to_string(),
                         },
                         package_callable_id: helper_callable.clone(),
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            });
+        shared_file.executables.push(ExecutableIr {
+            kind: ExecutableKind::Function,
+            symbol: "localHelper".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::native("bool"),
+            self_type: None,
+            slots: SlotLayout::default(),
+            may_suspend: false,
+            body: ExecutableBody::default(),
+            source_span: None,
+        });
+        shared_file.executables[0]
+            .body
+            .expressions
+            .push(ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::LocalExecutable {
+                        executable_index: 1,
                     },
                     args: Vec::new(),
                     type_args: BTreeMap::new(),
@@ -624,6 +649,16 @@ fn activation_template(
 
 fn file(module_path: &str) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    file.type_table.push(TypeDeclIr {
+        name: "LocalRecord".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::new(),
+        },
+        type_params: Vec::new(),
+        discriminator: None,
+        implements: Vec::new(),
+        source_span: None,
+    });
     file.executables.push(ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: "entry".to_string(),

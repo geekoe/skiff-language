@@ -18,7 +18,7 @@ use skiff_artifact_model::{
     ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
 };
 
-use crate::PublicationResourceTable;
+use crate::{ExecutableAddr, FileAddr, PublicationResourceTable, UnitAddr};
 
 /// Loader-owned immutable inputs for one canonical package code slot.
 #[derive(Debug)]
@@ -127,6 +127,7 @@ pub struct LinkedPackageDirectCall {
     dependency_package_build_id: PackageBuildId,
     package_callable_id: PackageCallableId,
     target: OperationTargetRef,
+    executable_addr: ExecutableAddr,
 }
 
 impl LinkedPackageDirectCall {
@@ -148,6 +149,10 @@ impl LinkedPackageDirectCall {
 
     pub fn target(&self) -> &OperationTargetRef {
         &self.target
+    }
+
+    pub fn executable_addr(&self) -> &ExecutableAddr {
+        &self.executable_addr
     }
 }
 
@@ -357,6 +362,7 @@ impl SharedPackageLinkedImage {
             });
         }
         dependency.validate_callable_target(package_callable_id, &fact.target)?;
+        let executable_addr = dependency.executable_addr(&fact.target)?;
 
         Ok(LinkedPackageDirectCall {
             caller_package_build_id: caller_package_build_id.clone(),
@@ -364,6 +370,7 @@ impl SharedPackageLinkedImage {
             dependency_package_build_id: dependency.package_build_id().clone(),
             package_callable_id: package_callable_id.clone(),
             target: fact.target.clone(),
+            executable_addr,
         })
     }
 
@@ -494,6 +501,50 @@ impl SharedPackageLinkedImage {
 }
 
 impl SharedPackageCode {
+    pub fn executable_addr(
+        &self,
+        target: &OperationTargetRef,
+    ) -> SharedPackageImageResult<ExecutableAddr> {
+        let file_index = self
+            .files_by_identity
+            .get(&target.file_ref.file_ir_identity)
+            .copied()
+            .ok_or_else(|| SharedPackageImageError::ExecutableTargetFileNotLoaded {
+                package_build_id: self.package_build_id().clone(),
+                file_ir_identity: target.file_ref.file_ir_identity.clone(),
+            })?;
+        let expected_file_ref = self
+            .artifact
+            .files
+            .get(file_index)
+            .expect("hydrated files preserve artifact file order");
+        if expected_file_ref != &target.file_ref {
+            return Err(SharedPackageImageError::ExecutableTargetFileRefMismatch {
+                package_build_id: self.package_build_id().clone(),
+                expected: expected_file_ref.clone(),
+                actual: target.file_ref.clone(),
+            });
+        }
+        let file = self
+            .files
+            .get(file_index)
+            .expect("hydrated files preserve artifact file order");
+        let executable = target.executable_index as usize;
+        if executable >= file.executables.len() {
+            return Err(SharedPackageImageError::ExecutableTargetOutOfBounds {
+                package_build_id: self.package_build_id().clone(),
+                file_ir_identity: file.file_ir_identity.clone(),
+                executable_index: target.executable_index,
+                executable_count: file.executables.len(),
+            });
+        }
+        Ok(ExecutableAddr {
+            unit: UnitAddr::Package(self.code_slot.index()),
+            file: FileAddr::LoadedFileIndex(file_index),
+            executable,
+        })
+    }
+
     fn hydrate(
         code_slot: PackageCodeSlotIndex,
         expected_ref: &PackageArtifactRef,
@@ -959,6 +1010,21 @@ pub enum SharedPackageImageError {
     CallableTargetExecutableOutOfBounds {
         package_build_id: PackageBuildId,
         package_callable_id: PackageCallableId,
+        file_ir_identity: String,
+        executable_index: u32,
+        executable_count: usize,
+    },
+    ExecutableTargetFileNotLoaded {
+        package_build_id: PackageBuildId,
+        file_ir_identity: String,
+    },
+    ExecutableTargetFileRefMismatch {
+        package_build_id: PackageBuildId,
+        expected: FileIrRef,
+        actual: FileIrRef,
+    },
+    ExecutableTargetOutOfBounds {
+        package_build_id: PackageBuildId,
         file_ir_identity: String,
         executable_index: u32,
         executable_count: usize,
