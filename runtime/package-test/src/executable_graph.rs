@@ -476,6 +476,23 @@ impl<'a> PackageTestGraphValidator<'a> {
             LinkedCallTarget::Executable { addr } => {
                 self.scan_executable_addr(origin, addr, "package-test direct executable call")?;
             }
+            LinkedCallTarget::PackageDirect { call } => {
+                self.scan_executable_addr(
+                    origin,
+                    call.executable_addr(),
+                    "package-test canonical package direct call",
+                )?;
+            }
+            LinkedCallTarget::ActivationRelativeService { instruction } => {
+                anyhow::bail!(
+                    "package-test executable graph does not support activation-relative service calls: entrypoint={:?}, caller_package_build_id={:?}, service_requirement_slot={}, contract_operation_id={:?}, expected_protocol_identity={:?}",
+                    self.dispatch.entrypoint.entrypoint_id,
+                    instruction.caller_package_build_id(),
+                    instruction.service_requirement_slot(),
+                    instruction.operation_id(),
+                    instruction.expected_protocol_identity(),
+                );
+            }
             LinkedCallTarget::LocalConstReceiverExecutable {
                 const_addr,
                 executable_addr,
