@@ -1,6 +1,7 @@
 # Phase 05：Ecosystem Cutover
 
-状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS
+状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01 已合流，R01在
+`0cebf349` / tree `f37e3366` 首次验收 FAIL，P5-F01 repair 进行中，后续consumer尚未解锁
 
 ## 输入
 

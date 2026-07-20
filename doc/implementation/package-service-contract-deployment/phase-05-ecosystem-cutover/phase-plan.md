@@ -1,6 +1,7 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS。
+状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01 已合流为
+`0cebf349` / tree `f37e3366`，R01 首次验收 FAIL，P5-F01 shared checkpoint repair 进行中，Wave 2保持阻塞。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -72,6 +73,7 @@ canonical artifact schema。
 Wave 1 / Batch A：shared authoring-storage-control checkpoint
   D01 phase-plan review
     └─► T01 canonical ecosystem checkpoint ─► R01 independent checkpoint acceptance
+           FAIL@0cebf349 ─► F01 shared checkpoint repair ─► combined repair probe ─► R01窄复验
 
 Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动调度）
   T02 authoring / registry client / CLI / dev sync / watch ─┐
@@ -126,6 +128,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D01 | [Phase-plan review](tasks/P5-D01-phase-plan-review.md) | docs checkpoint | 独立只读 |
 | T01 | [Canonical ecosystem checkpoint](tasks/P5-T01-canonical-ecosystem-checkpoint.md) | D01 PASS | 高；shared schema/storage/control |
 | R01 | [Checkpoint acceptance](tasks/P5-R01-ecosystem-checkpoint-acceptance.md) | T01 exact commit | 高；独立只读 |
+| F01 | [R01 shared checkpoint repair](tasks/P5-F01-r01-shared-checkpoint-repair.md) | R01 FAIL at `0cebf349` | 高；path/control/alias shared owner repair |
 | T02 | [Authoring/tooling cutover](tasks/P5-T02-authoring-tooling-cutover.md) | R01 PASS | 高；tooling consumer |
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
@@ -157,6 +160,12 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   `artifact-model` / `artifact-identity` / `compiler input` / `deployment` / `runtime loader` / `router protocol`
   做最小public seam，但不迁移任何现有consumer、不删legacy模块。`Cargo.toml`/`Cargo.lock`
   在Wave 1归T01独占。
+- F01只关闭R01@`0cebf349`的三个shared checkpoint blocker：单射coordinate codec、tooling→router
+  activation request与Rust/TS state/control parity、dependency alias单一leaf owner。它不得实现任何
+  T02–T05 consumer。合流后主integration owner只运行
+  `cargo test -p skiff-compiler-input contract_dependencies`、
+  `cargo test -p skiff-runtime-loader runtime_assembly`与
+  `pnpm --filter @skiff/router type-check`作为一次combined repair probe；通过后才触发原R01 reviewer窄复验。
 - T02独占 `compiler/**` 的binary/authoring consumer、`scripts/skiff*.mjs`、`scripts/lib/**`中的
   build/publish/store/dev sync/watch、对应tests。不改router/runtime/test-runner，不在85k/62k旧
   大文件继续塞入新owner；新职责拆到模块。
