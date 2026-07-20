@@ -23,6 +23,8 @@ use super::{
     RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
 };
 
+mod assembly;
+
 struct RouterResponseEventSink {
     sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
 }
@@ -65,25 +67,6 @@ impl RuntimeHost {
         registration: &spawn_worker::SpawnWorkerRegistration,
     ) {
         self.spawn_request_inner(request, sender, Some(registration))
-            .await;
-    }
-
-    async fn spawn_request_inner(
-        &self,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        _registration: Option<&spawn_worker::SpawnWorkerRegistration>,
-    ) {
-        let operation_context = match self.lookup_operation_in_state(&request) {
-            Ok(operation_context) => operation_context,
-            Err(error) => {
-                self.emit_request_route_error(&request, &error);
-                self.send_request_error_response(&request, &error, &sender);
-                return;
-            }
-        };
-
-        self.spawn_resolved_request(operation_context, request, sender, "runtime.request_error")
             .await;
     }
 
@@ -386,13 +369,6 @@ impl RuntimeHost {
                     "no active assembly ingress matches {selector:?}"
                 ))
             })?;
-        if route.activation().is_none() || route.operation_descriptor().is_none() {
-            return Err(RuntimeError::Decode(format!(
-                "active assembly {} generation {} has an incomplete ingress route",
-                route.assembly_identity(),
-                route.generation()
-            )));
-        }
         Ok(route)
     }
 

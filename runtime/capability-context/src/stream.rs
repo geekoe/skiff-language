@@ -8,8 +8,12 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
-use skiff_runtime_model::type_plan::RuntimeTypePlan;
+use skiff_runtime_model::{
+    error::{RuntimeErrorPayload, TypeIdentity, WirePayload},
+    request_heap::RequestHeap,
+    runtime_value::RuntimeValue,
+    type_plan::RuntimeTypePlan,
+};
 
 use crate::{CancellationToken, ExecutionControl};
 
@@ -107,10 +111,32 @@ pub trait StreamPullSource: Send {
 #[derive(Debug)]
 pub enum StreamPoll {
     Item(Value),
+    InternalItem(StreamInternalItem),
     End,
 }
 
-pub trait StreamCancelSignalApi: Any + Send + Sync + fmt::Debug {}
+/// An in-process stream item that cannot be represented by the wire JSON carrier. The heap owns
+/// every handle reachable from `value`, so the item can cross the producer task boundary without
+/// borrowing the provider request heap.
+#[derive(Debug)]
+pub struct StreamInternalItem {
+    value: RuntimeValue,
+    heap: RequestHeap,
+}
+
+impl StreamInternalItem {
+    pub fn new(value: RuntimeValue, heap: RequestHeap) -> Self {
+        Self { value, heap }
+    }
+
+    pub fn into_parts(self) -> (RuntimeValue, RequestHeap) {
+        (self.value, self.heap)
+    }
+}
+
+pub trait StreamCancelSignalApi: Any + Send + Sync + fmt::Debug {
+    fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
 
 #[derive(Clone)]
 pub struct StreamCancelSignal {
@@ -131,6 +157,10 @@ impl StreamCancelSignal {
         let any = self.inner.as_ref() as &dyn Any;
         any.downcast_ref()
     }
+
+    pub async fn wait_cancelled(&self) {
+        self.inner.wait_cancelled().await;
+    }
 }
 
 impl fmt::Debug for StreamCancelSignal {
@@ -139,7 +169,54 @@ impl fmt::Debug for StreamCancelSignal {
     }
 }
 
+pub trait StreamLifetimeGuardApi: Any + Send + Sync + fmt::Debug {}
+
+/// Opaque request-lifetime guard retained by the concrete stream registry until the registry
+/// observes one terminal transition. It deliberately exposes no activation-specific API.
+#[derive(Clone)]
+pub struct StreamLifetimeGuard {
+    _inner: Arc<dyn StreamLifetimeGuardApi>,
+}
+
+impl StreamLifetimeGuard {
+    pub fn new<T>(inner: T) -> Self
+    where
+        T: StreamLifetimeGuardApi + 'static,
+    {
+        Self {
+            _inner: Arc::new(inner),
+        }
+    }
+}
+
+impl fmt::Debug for StreamLifetimeGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StreamLifetimeGuard")
+    }
+}
+
 pub trait StreamSinkApi: Any + Send + Sync + fmt::Debug {
+    /// Gives an in-process boundary a chance to project a non-JSON value before the ordinary emit
+    /// encoder runs. Returning `None` preserves the existing typed JSON path.
+    fn project_runtime_item(
+        &self,
+        _item: RuntimeValue,
+        _source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        Ok(None)
+    }
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        _item: StreamInternalItem,
+        _signals: &'a [StreamCancelSignal],
+        _cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async {
+            Err(StreamRuntimeError::decode(
+                "stream sink does not accept in-process runtime items",
+            ))
+        })
+    }
     fn send<'a>(
         &'a self,
         item: Value,
@@ -201,6 +278,25 @@ impl StreamSink {
     ) -> StreamRuntimeResult<()> {
         self.inner
             .send_with_cancellation(item, signals, cancel_tokens.into_iter().collect())
+            .await
+    }
+
+    pub fn project_runtime_item(
+        &self,
+        item: RuntimeValue,
+        source_heap: &RequestHeap,
+    ) -> StreamRuntimeResult<Option<StreamInternalItem>> {
+        self.inner.project_runtime_item(item, source_heap)
+    }
+
+    pub async fn send_internal_with_cancellation(
+        &self,
+        item: StreamInternalItem,
+        signals: &[StreamCancelSignal],
+        cancel_tokens: impl IntoIterator<Item = CancellationToken>,
+    ) -> StreamRuntimeResult<()> {
+        self.inner
+            .send_internal_with_cancellation(item, signals, cancel_tokens.into_iter().collect())
             .await
     }
 
@@ -266,6 +362,7 @@ impl StreamCapabilityContext {
 
 pub trait StreamRuntimeApi: Any + Send + Sync + fmt::Debug {
     fn channel_stream(&self) -> (Value, StreamSink);
+    fn channel_stream_with_lifetime(&self, lifetime: StreamLifetimeGuard) -> (Value, StreamSink);
     fn pull_stream_with_cancellation(
         &self,
         source: Box<dyn StreamPullSource>,
@@ -289,11 +386,53 @@ pub trait StreamRuntimeApi: Any + Send + Sync + fmt::Debug {
         value: &'a Value,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>>;
     fn cancel(&self, value: &Value);
+    fn open_request_scope(&self, _request_generation: u64) -> bool {
+        false
+    }
+    fn close_request_scope(&self, _request_generation: u64) {}
+    fn close_owner(&self) {}
+    fn channel_stream_in_request_scope(&self, _request_generation: u64) -> (Value, StreamSink) {
+        self.channel_stream()
+    }
+    fn channel_stream_with_lifetime_in_request_scope(
+        &self,
+        _request_generation: u64,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        self.channel_stream_with_lifetime(lifetime)
+    }
+    fn pull_stream_with_cancellation_in_request_scope(
+        &self,
+        _request_generation: u64,
+        source: Box<dyn StreamPullSource>,
+        cancellation: CancellationToken,
+    ) -> Value {
+        self.pull_stream_with_cancellation(source, cancellation)
+    }
+    fn buffered_stream_in_request_scope(
+        &self,
+        _request_generation: u64,
+        items: Vec<Value>,
+    ) -> Value {
+        self.buffered_stream(items)
+    }
 }
 
 #[derive(Clone)]
 pub struct StreamRuntime {
     inner: Arc<dyn StreamRuntimeApi>,
+    request_generation: Option<u64>,
+}
+
+pub struct StreamRuntimeOwner {
+    inner: Arc<dyn StreamRuntimeApi>,
+    target: StreamRuntimeOwnerTarget,
+}
+
+enum StreamRuntimeOwnerTarget {
+    Root,
+    Request(u64),
+    Noop,
 }
 
 impl StreamRuntime {
@@ -303,11 +442,29 @@ impl StreamRuntime {
     {
         Self {
             inner: Arc::new(inner),
+            request_generation: None,
         }
     }
 
     pub fn channel_stream(&self) -> (Value, StreamSink) {
-        self.inner.channel_stream()
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .channel_stream_in_request_scope(request_generation),
+            None => self.inner.channel_stream(),
+        }
+    }
+
+    pub fn channel_stream_with_lifetime(
+        &self,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .channel_stream_with_lifetime_in_request_scope(request_generation, lifetime),
+            None => self.inner.channel_stream_with_lifetime(lifetime),
+        }
     }
 
     pub fn pull_stream_with_cancellation(
@@ -315,12 +472,26 @@ impl StreamRuntime {
         source: impl StreamPullSource + 'static,
         cancellation: CancellationToken,
     ) -> Value {
-        self.inner
-            .pull_stream_with_cancellation(Box::new(source), cancellation)
+        match self.request_generation {
+            Some(request_generation) => self.inner.pull_stream_with_cancellation_in_request_scope(
+                request_generation,
+                Box::new(source),
+                cancellation,
+            ),
+            None => self
+                .inner
+                .pull_stream_with_cancellation(Box::new(source), cancellation),
+        }
     }
 
     pub fn buffered_stream(&self, items: impl IntoIterator<Item = Value>) -> Value {
-        self.inner.buffered_stream(items.into_iter().collect())
+        let items = items.into_iter().collect();
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .buffered_stream_in_request_scope(request_generation, items),
+            None => self.inner.buffered_stream(items),
+        }
     }
 
     pub async fn next_with_cancel(
@@ -353,9 +524,73 @@ impl StreamRuntime {
         self.inner.cancel(value);
     }
 
+    pub fn request_scope(&self, request_generation: u64) -> (Self, StreamRuntimeOwner) {
+        let opened = self.inner.open_request_scope(request_generation);
+        let scoped_generation = opened.then_some(request_generation);
+        (
+            Self {
+                inner: self.inner.clone(),
+                request_generation: scoped_generation,
+            },
+            StreamRuntimeOwner {
+                inner: self.inner.clone(),
+                target: if opened {
+                    StreamRuntimeOwnerTarget::Request(request_generation)
+                } else {
+                    StreamRuntimeOwnerTarget::Noop
+                },
+            },
+        )
+    }
+
+    pub fn owner(&self) -> StreamRuntimeOwner {
+        StreamRuntimeOwner {
+            inner: self.inner.clone(),
+            target: StreamRuntimeOwnerTarget::Root,
+        }
+    }
+
+    pub fn request_scope_generation(&self) -> Option<u64> {
+        self.request_generation
+    }
+
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         let any = self.inner.as_ref() as &dyn Any;
         any.downcast_ref()
+    }
+}
+
+impl Drop for StreamRuntimeOwner {
+    fn drop(&mut self) {
+        match self.target {
+            StreamRuntimeOwnerTarget::Root => self.inner.close_owner(),
+            StreamRuntimeOwnerTarget::Request(request_generation) => {
+                self.inner.close_request_scope(request_generation)
+            }
+            StreamRuntimeOwnerTarget::Noop => {}
+        }
+    }
+}
+
+impl fmt::Debug for StreamRuntimeOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StreamRuntimeOwner")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for StreamRuntimeOwnerTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => formatter.write_str("Root"),
+            Self::Request(request_generation) => formatter
+                .debug_tuple("Request")
+                .field(request_generation)
+                .finish(),
+            Self::Noop => formatter.write_str("Noop"),
+        }
     }
 }
 

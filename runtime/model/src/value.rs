@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, collections::BTreeMap, fmt};
 
-use crate::addr::ExecutableAddr;
+use crate::addr::{ExecutableAddr, TypeAddr};
 
 pub type RuntimeString = String;
 pub type RuntimeObjectFields = BTreeMap<RuntimeString, RuntimeValue>;
@@ -128,6 +128,13 @@ pub enum InterfaceCarrier {
         public_instance_key: RuntimeString,
         operations: RemoteOperationTable,
     },
+    /// Opaque request-scoped route back to the activation that owns a
+    /// boundary-capable interface or native adapter.
+    ///
+    /// This carrier deliberately contains no method table, native object, or
+    /// process address.  Dispatch has to resolve it through the owning
+    /// runtime's activation capability table.
+    CallbackCapability(CallbackCapabilityCarrier),
 }
 
 impl InterfaceCarrier {
@@ -135,7 +142,55 @@ impl InterfaceCarrier {
         match self {
             Self::Local { .. } => "local",
             Self::Remote { .. } => "remote",
+            Self::CallbackCapability(_) => "callback capability",
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallbackCapabilityCarrier {
+    owner_runtime_replica_id: RuntimeString,
+    owner_activation_id: RuntimeString,
+    request_generation: u64,
+    interface_or_adapter_contract: RuntimeString,
+    opaque_capability_id: RuntimeString,
+}
+
+impl CallbackCapabilityCarrier {
+    pub fn new(
+        owner_runtime_replica_id: impl Into<RuntimeString>,
+        owner_activation_id: impl Into<RuntimeString>,
+        request_generation: u64,
+        interface_or_adapter_contract: impl Into<RuntimeString>,
+        opaque_capability_id: impl Into<RuntimeString>,
+    ) -> Self {
+        Self {
+            owner_runtime_replica_id: owner_runtime_replica_id.into(),
+            owner_activation_id: owner_activation_id.into(),
+            request_generation,
+            interface_or_adapter_contract: interface_or_adapter_contract.into(),
+            opaque_capability_id: opaque_capability_id.into(),
+        }
+    }
+
+    pub fn owner_runtime_replica_id(&self) -> &str {
+        &self.owner_runtime_replica_id
+    }
+
+    pub fn owner_activation_id(&self) -> &str {
+        &self.owner_activation_id
+    }
+
+    pub const fn request_generation(&self) -> u64 {
+        self.request_generation
+    }
+
+    pub fn interface_or_adapter_contract(&self) -> &str {
+        &self.interface_or_adapter_contract
+    }
+
+    pub fn opaque_capability_id(&self) -> &str {
+        &self.opaque_capability_id
     }
 }
 
@@ -237,6 +292,13 @@ impl InterfaceMethodTable {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterfaceMethodSlot {
     slot: u32,
+    /// Exact source/interface operation name retained from admitted linked metadata.
+    /// Callback contract projection must match this name explicitly; slot order is not a mapping.
+    method_name: Option<RuntimeString>,
+    /// Exact linked execution signature. `None` is reserved for legacy/runtime
+    /// fixtures that did not originate from an admitted method table; canonical
+    /// callback projection rejects such slots.
+    signature: Option<InterfaceMethodSignature>,
     method_abi_id: RuntimeString,
     target: InterfaceMethodTarget,
 }
@@ -245,9 +307,35 @@ impl InterfaceMethodSlot {
     pub fn new(slot: u32, method_abi_id: RuntimeString, target: InterfaceMethodTarget) -> Self {
         Self {
             slot,
+            method_name: None,
+            signature: None,
             method_abi_id,
             target,
         }
+    }
+
+    pub fn from_admitted_metadata(
+        slot: u32,
+        method_name: RuntimeString,
+        method_abi_id: RuntimeString,
+        signature: InterfaceMethodSignature,
+        target: InterfaceMethodTarget,
+    ) -> Self {
+        Self {
+            slot,
+            method_name: Some(method_name),
+            signature: Some(signature),
+            method_abi_id,
+            target,
+        }
+    }
+
+    pub fn method_name(&self) -> Option<&str> {
+        self.method_name.as_deref()
+    }
+
+    pub fn signature(&self) -> Option<&InterfaceMethodSignature> {
+        self.signature.as_ref()
     }
 
     pub fn slot(&self) -> u32 {
@@ -261,6 +349,84 @@ impl InterfaceMethodSlot {
     pub fn target(&self) -> &InterfaceMethodTarget {
         &self.target
     }
+}
+
+/// Immutable, typed execution signature retained from a linked interface
+/// method-table slot. The first parameter is the receiver for
+/// `ExplicitSelfFirst` targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterfaceMethodSignature {
+    parameters: Vec<InterfaceMethodType>,
+    return_type: InterfaceMethodType,
+}
+
+impl InterfaceMethodSignature {
+    pub fn new(parameters: Vec<InterfaceMethodType>, return_type: InterfaceMethodType) -> Self {
+        Self {
+            parameters,
+            return_type,
+        }
+    }
+
+    pub fn parameters(&self) -> &[InterfaceMethodType] {
+        &self.parameters
+    }
+
+    pub fn return_type(&self) -> &InterfaceMethodType {
+        &self.return_type
+    }
+}
+
+/// Linked execution-type facts used only for typed callback projection. These
+/// variants intentionally do not carry `ContractTypeId`: contract nominal
+/// identity and local execution identity remain separate domains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InterfaceMethodType {
+    Builtin {
+        name: RuntimeString,
+        arguments: Vec<InterfaceMethodType>,
+    },
+    Nominal(TypeAddr),
+    Record(BTreeMap<RuntimeString, InterfaceMethodType>),
+    Union(Vec<InterfaceMethodType>),
+    Nullable(Box<InterfaceMethodType>),
+    Literal(InterfaceMethodLiteral),
+    AnyInterface {
+        interface_abi_id: RuntimeString,
+        canonical_type_arguments: Vec<InterfaceMethodType>,
+    },
+    Function {
+        parameters: Vec<InterfaceMethodType>,
+        return_type: Box<InterfaceMethodType>,
+    },
+    TypeParameter(RuntimeString),
+    Unresolved(InterfaceMethodUnresolvedType),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterfaceMethodUnresolvedType {
+    LocalType,
+    PublicationType,
+    ServiceSymbol,
+    PackageSymbol,
+    DbObjectSymbol,
+}
+
+impl InterfaceMethodType {
+    pub fn builtin(name: impl Into<RuntimeString>) -> Self {
+        Self::Builtin {
+            name: name.into(),
+            arguments: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InterfaceMethodLiteral {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(RuntimeString),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -524,6 +690,31 @@ mod tests {
         assert_eq!(
             operations.slots()[0].operation_abi_id(),
             "operation:reader:read"
+        );
+    }
+
+    #[test]
+    fn callback_capability_carrier_is_opaque_and_labeled() {
+        let carrier = CallbackCapabilityCarrier::new(
+            "runtime-a",
+            "activation-a",
+            17,
+            "contract:reader",
+            "capability-1",
+        );
+        let value = InterfaceValue::new(
+            "contract:reader".to_string(),
+            InterfaceCarrier::CallbackCapability(carrier.clone()),
+        );
+
+        assert_eq!(carrier.owner_runtime_replica_id(), "runtime-a");
+        assert_eq!(carrier.owner_activation_id(), "activation-a");
+        assert_eq!(carrier.request_generation(), 17);
+        assert_eq!(carrier.interface_or_adapter_contract(), "contract:reader");
+        assert_eq!(carrier.opaque_capability_id(), "capability-1");
+        assert_eq!(
+            value.diagnostic_label(),
+            "any interface contract:reader (callback capability)"
         );
     }
 }

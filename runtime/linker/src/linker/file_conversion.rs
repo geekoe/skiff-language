@@ -21,6 +21,31 @@ pub fn linked_file_unit_from_artifact(
     }
     validate_receiver_builtin_ops(unit)?;
     reject_canonical_assembly_calls(unit)?;
+    linked_file_unit_from_artifact_with_canonical_calls(unit, &|target| {
+        anyhow::bail!("canonical call target {target:?} requires a RuntimeAssembly resolver")
+    })
+}
+
+pub(crate) fn linked_file_unit_from_assembly_artifact(
+    unit: &skiff_artifact_model::FileIrUnit,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedFileUnit> {
+    if unit.required_receiver_builtin_capability_version > RECEIVER_BUILTIN_CAPABILITY_VERSION {
+        anyhow::bail!(
+            "File IR {} requires receiver builtin capability version {}, but runtime supports {}",
+            unit.file_ir_identity,
+            unit.required_receiver_builtin_capability_version,
+            RECEIVER_BUILTIN_CAPABILITY_VERSION
+        );
+    }
+    validate_receiver_builtin_ops(unit)?;
+    linked_file_unit_from_artifact_with_canonical_calls(unit, canonical_call)
+}
+
+fn linked_file_unit_from_artifact_with_canonical_calls(
+    unit: &skiff_artifact_model::FileIrUnit,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedFileUnit> {
     Ok(LinkedFileUnit {
         schema_version: unit.schema_version.clone(),
         file_ir_identity: unit.file_ir_identity.clone(),
@@ -32,8 +57,16 @@ pub fn linked_file_unit_from_artifact(
         declarations: linked_declarations(&unit.declarations),
         link_targets: linked_link_targets(&unit.link_targets),
         types: unit.type_table.iter().map(linked_type_decl).collect(),
-        constants: unit.constants.iter().map(linked_const).collect(),
-        executables: unit.executables.iter().map(linked_executable).collect(),
+        constants: unit
+            .constants
+            .iter()
+            .map(|constant| linked_const(constant, canonical_call))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        executables: unit
+            .executables
+            .iter()
+            .map(|executable| linked_executable(executable, canonical_call))
+            .collect::<anyhow::Result<Vec<_>>>()?,
         external_refs: linked_external_refs(&unit.external_refs),
     })
 }
@@ -337,13 +370,16 @@ fn linked_type_decl(declaration: &artifact::TypeDeclIr) -> TypeDeclIr {
     }
 }
 
-fn linked_const(constant: &artifact::ConstIr) -> ConstIr {
-    ConstIr {
+fn linked_const(
+    constant: &artifact::ConstIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<ConstIr> {
+    Ok(ConstIr {
         name: constant.name.clone(),
         ty: linked_type_ref(&constant.ty),
-        body: linked_body(&constant.body),
+        body: linked_body(&constant.body, canonical_call)?,
         source_span: constant.source_span.clone(),
-    }
+    })
 }
 
 fn linked_external_refs(external_refs: &artifact::ExternalRefTable) -> ExternalRefTable {
@@ -356,8 +392,11 @@ fn linked_external_refs(external_refs: &artifact::ExternalRefTable) -> ExternalR
     }
 }
 
-fn linked_executable(executable: &artifact::ExecutableIr) -> LinkedExecutable {
-    LinkedExecutable {
+fn linked_executable(
+    executable: &artifact::ExecutableIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedExecutable> {
+    Ok(LinkedExecutable {
         kind: match executable.kind {
             artifact::ExecutableKind::Function => ExecutableKind::Function,
             artifact::ExecutableKind::ImplMethod => ExecutableKind::ImplMethod,
@@ -389,8 +428,8 @@ fn linked_executable(executable: &artifact::ExecutableIr) -> LinkedExecutable {
             frame_size: executable.slots.frame_size as usize,
         },
         may_suspend: executable.may_suspend,
-        body: linked_body(&executable.body),
-    }
+        body: linked_body(&executable.body, canonical_call)?,
+    })
 }
 
 fn linked_slot_kind(kind: artifact::SlotKind) -> &'static str {
@@ -403,8 +442,11 @@ fn linked_slot_kind(kind: artifact::SlotKind) -> &'static str {
     }
 }
 
-fn linked_body(body: &artifact::ExecutableBody) -> LinkedExecutableBody {
-    LinkedExecutableBody {
+fn linked_body(
+    body: &artifact::ExecutableBody,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedExecutableBody> {
+    Ok(LinkedExecutableBody {
         blocks: body
             .blocks
             .iter()
@@ -414,8 +456,12 @@ fn linked_body(body: &artifact::ExecutableBody) -> LinkedExecutableBody {
             })
             .collect(),
         statements: body.statements.iter().map(linked_stmt).collect(),
-        expressions: body.expressions.iter().map(linked_expr).collect(),
-    }
+        expressions: body
+            .expressions
+            .iter()
+            .map(|expression| linked_expr(expression, canonical_call))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    })
 }
 
 fn linked_expr_ref(reference: &artifact::ExprRefIr) -> ExprRefIr {
@@ -531,8 +577,11 @@ fn linked_pattern(pattern: &artifact::PatternIr) -> PatternIr {
     }
 }
 
-fn linked_expr(expression: &artifact::ExprIr) -> LinkedExprIr {
-    match expression {
+fn linked_expr(
+    expression: &artifact::ExprIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<LinkedExprIr> {
+    Ok(match expression {
         artifact::ExprIr::Literal { value } => LinkedExprIr::Literal {
             value: value.clone(),
         },
@@ -573,7 +622,7 @@ fn linked_expr(expression: &artifact::ExprIr) -> LinkedExprIr {
             right: linked_expr_ref(right),
         },
         artifact::ExprIr::Call { call } => LinkedExprIr::Call {
-            call: linked_call(call),
+            call: linked_call(call, canonical_call)?,
         },
         artifact::ExprIr::Throw {
             value,
@@ -618,7 +667,7 @@ fn linked_expr(expression: &artifact::ExprIr) -> LinkedExprIr {
         artifact::ExprIr::DbLeaseRead { read } => LinkedExprIr::DbLeaseRead {
             read: linked_db_lease_read(read),
         },
-    }
+    })
 }
 
 fn linked_expr_ref_map(map: &BTreeMap<String, artifact::ExprRefIr>) -> BTreeMap<String, ExprRefIr> {
@@ -848,8 +897,11 @@ fn linked_binary_op(op: artifact::BinaryOpIr) -> BinaryOpIr {
     }
 }
 
-fn linked_call(call: &artifact::CallIr) -> CallIr {
-    CallIr {
+fn linked_call(
+    call: &artifact::CallIr,
+    canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
+) -> anyhow::Result<CallIr> {
+    Ok(CallIr {
         target: match &call.target {
             artifact::CallTargetIr::LocalExecutable { executable_index } => {
                 LinkedCallTarget::LocalExecutable {
@@ -874,9 +926,7 @@ fn linked_call(call: &artifact::CallIr) -> CallIr {
                 }
             }
             artifact::CallTargetIr::ServiceCall { .. }
-            | artifact::CallTargetIr::PackageCallable { .. } => {
-                unreachable!("canonical calls are rejected before legacy File IR conversion")
-            }
+            | artifact::CallTargetIr::PackageCallable { .. } => canonical_call(&call.target)?,
             artifact::CallTargetIr::Native { target } => LinkedCallTarget::Native {
                 target: target.clone(),
             },
@@ -901,7 +951,7 @@ fn linked_call(call: &artifact::CallIr) -> CallIr {
             .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
             .collect(),
         metadata: call.metadata.clone(),
-    }
+    })
 }
 
 fn linked_field_path(path: &artifact::FieldPathIr) -> FieldPathIr {

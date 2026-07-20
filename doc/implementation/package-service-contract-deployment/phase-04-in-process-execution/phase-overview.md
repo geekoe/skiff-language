@@ -1,10 +1,12 @@
 # Phase 04：In-Process Execution Plane
 
-状态：outline-only；Phase 03 验收后细化
+状态：complete；P4-A01独立验收PASS，详细DAG、证据与残余风险见`phase-plan.md`和`phase-result.md`
 
 ## 输入
 
 - 已解析 RuntimeAssembly、ActivationContext templates、service binding vectors 和 contract value plans。
+- Phase 02 已将当前语言尚不支持的 error/stream/callback source lane 显式标成 unsupported；本阶段执行语义的
+  正例从 canonical typed artifacts/RuntimeAssembly 生产边界开始，不在 runtime 中发明 authoring 语法。
 
 ## 完成态
 
@@ -16,9 +18,11 @@
 
 ## 预期波次
 
-1. ActivationContext、binding ABI、materialization 和 capability table kernel checkpoint。
+1. canonical assembly execution image 与 ActivationContext、binding ABI、materialization、capability table kernel
+   合成一个共享检查点。
 2. ordinary/error、async/stream/cancel、callback/native 三类 lane 并行。
-3. ingress/internal dispatcher cutover、remote path 删除、runtime gate、live smoke 与独立验收。
+3. ingress/internal dispatcher cutover、router remote relay retirement 与 checker engine 并行；合流后注册真实
+   production subjects 并要求零违规，再进入 runtime/router gate、live smoke 与独立验收。
 
 ## 阶段验收
 

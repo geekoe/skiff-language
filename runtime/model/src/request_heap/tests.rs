@@ -4,9 +4,9 @@ use crate::{
     addr::ExecutableAddr,
     error::RuntimeModelError,
     value::{
-        HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable,
-        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RuntimeMap, RuntimeObject,
-        RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
+        CallbackCapabilityCarrier, HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodSlot,
+        InterfaceMethodTable, InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue,
+        RuntimeMap, RuntimeObject, RuntimeObjectFields, RuntimeValue, RuntimeValueKey,
     },
 };
 
@@ -63,6 +63,67 @@ fn alloc_interface_stores_wrapper_and_tracks_estimated_bytes() {
     };
     assert_eq!(value.interface(), "pkg.Reader");
     assert_eq!(value.diagnostic_label(), "any interface pkg.Reader (local)");
+}
+
+#[test]
+fn callback_capability_cross_heap_clone_keeps_only_opaque_route() {
+    let mut source = RequestHeap::default();
+    let source_handle = source
+        .alloc_interface(InterfaceValue::new(
+            "contract:reader".to_string(),
+            InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                7,
+                "contract:reader",
+                "capability-1",
+            )),
+        ))
+        .expect("callback capability should allocate");
+    assert_eq!(source.recompute_stats(), source.stats());
+
+    let same_heap = deep_clone_runtime_value(&mut source, &RuntimeValue::Heap(source_handle))
+        .expect("same-heap clone should retain only the opaque callback route");
+    let RuntimeValue::Heap(same_heap_handle) = same_heap else {
+        panic!("same-heap callback clone should remain a heap value");
+    };
+    assert_ne!(same_heap_handle, source_handle);
+    let HeapNode::Interface(same_heap_value) = source.get(same_heap_handle).unwrap() else {
+        panic!("same-heap callback clone should remain an interface wrapper");
+    };
+    assert!(matches!(
+        same_heap_value.carrier(),
+        InterfaceCarrier::CallbackCapability(_)
+    ));
+
+    let mut destination = RequestHeap::default();
+    destination
+        .alloc_array(Vec::new())
+        .expect("destination fixture should reserve a distinct local handle");
+    let cloned = deep_clone_runtime_value_between_heaps(
+        &source,
+        &mut destination,
+        &RuntimeValue::Heap(source_handle),
+    )
+    .expect("opaque callback route should clone without rebuilding behavior");
+    let RuntimeValue::Heap(cloned_handle) = cloned else {
+        panic!("callback wrapper should remain a heap value");
+    };
+    assert_ne!(source_handle, cloned_handle);
+    let HeapNode::Interface(cloned) = destination
+        .get(cloned_handle)
+        .expect("cloned callback should resolve")
+    else {
+        panic!("cloned callback should remain an interface wrapper");
+    };
+    let InterfaceCarrier::CallbackCapability(carrier) = cloned.carrier() else {
+        panic!("callback clone must not become local or remote behavior");
+    };
+    assert_eq!(carrier.owner_runtime_replica_id(), "runtime-a");
+    assert_eq!(carrier.owner_activation_id(), "activation-a");
+    assert_eq!(carrier.request_generation(), 7);
+    assert_eq!(carrier.opaque_capability_id(), "capability-1");
+    assert_eq!(destination.recompute_stats(), destination.stats());
 }
 
 #[test]

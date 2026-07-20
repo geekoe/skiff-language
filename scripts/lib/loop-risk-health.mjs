@@ -89,7 +89,6 @@ export function summarizeRuntimes(runtimes, touchedRuntimeIds) {
 function validateRouterCounters(router, reasons) {
   expectCounter(router?.dispatcher?.pendingUnary, 'router.dispatcher.pendingUnary', reasons);
   expectCounter(router?.dispatcher?.pendingStream, 'router.dispatcher.pendingStream', reasons);
-  expectCounter(router?.dispatcher?.pendingForward, 'router.dispatcher.pendingForward', reasons);
   expectCounter(
     router?.httpStream?.backpressureWaiters,
     'router.httpStream.backpressureWaiters',

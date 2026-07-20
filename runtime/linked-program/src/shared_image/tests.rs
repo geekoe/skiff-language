@@ -56,7 +56,7 @@ fn empty_link_plan_builds_empty_image_and_all_lookups_fail_closed() {
 }
 
 #[test]
-fn direct_calls_are_scoped_by_caller_build_even_when_aliases_match() {
+fn assembly_execution_direct_calls_are_scoped_by_caller_build_even_when_aliases_match() {
     let callable = callable_id("ping");
     let mut caller_a_file = file("file:caller-a", "caller.a");
     add_package_call(&mut caller_a_file, "tools", callable.clone());
@@ -159,7 +159,67 @@ fn direct_calls_are_scoped_by_caller_build_even_when_aliases_match() {
 }
 
 #[test]
-fn service_calls_keep_caller_relative_tuple_and_never_select_provider_code() {
+fn assembly_execution_package_diamond_has_one_dependency_code_owner() {
+    let callable = callable_id("shared");
+    let mut left_file = file("file:left", "left.main");
+    add_package_call(&mut left_file, "shared", callable.clone());
+    let mut right_file = file("file:right", "right.main");
+    add_package_call(&mut right_file, "shared", callable.clone());
+    let dependency_file = file("file:shared", "shared.main");
+
+    let mut left = artifact("left", "left-build", "left-abi", &left_file);
+    left.package_requirements
+        .push(package_requirement("shared", "shared", "shared-abi"));
+    let mut right = artifact("right", "right-build", "right-abi", &right_file);
+    right
+        .package_requirements
+        .push(package_requirement("shared", "shared", "shared-abi"));
+    let mut dependency = artifact("shared", "shared-build", "shared-abi", &dependency_file);
+    add_callable(&mut dependency, &dependency_file, callable.clone());
+
+    let assembly = assembly(
+        vec![
+            artifact_ref(&left),
+            artifact_ref(&right),
+            artifact_ref(&dependency),
+        ],
+        vec![
+            package_binding(&left, "shared", &dependency),
+            package_binding(&right, "shared", &dependency),
+        ],
+    );
+    let image = SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly,
+        vec![
+            hydration(right, right_file),
+            hydration(dependency, dependency_file),
+            hydration(left, left_file),
+        ],
+    )
+    .unwrap();
+
+    let from_left = image
+        .resolve_package_direct_call_by_alias(&build_id("left-build"), "shared", &callable)
+        .unwrap();
+    let from_right = image
+        .resolve_package_direct_call_by_alias(&build_id("right-build"), "shared", &callable)
+        .unwrap();
+    assert_eq!(
+        from_left.dependency_code_slot(),
+        from_right.dependency_code_slot()
+    );
+    assert_eq!(image.code_slots().len(), 3);
+    let by_build = Arc::clone(image.code_by_build(&build_id("shared-build")).unwrap());
+    let by_slot = Arc::clone(
+        image
+            .code_by_slot(from_left.dependency_code_slot())
+            .unwrap(),
+    );
+    assert!(Arc::ptr_eq(&by_build, &by_slot));
+}
+
+#[test]
+fn assembly_execution_service_calls_keep_caller_relative_tuple_and_never_select_provider_code() {
     let service_call = ServiceCallRef {
         service_requirement_slot: 0,
         contract_operation_id: ContractOperationId::new("operation:echo"),
@@ -228,7 +288,7 @@ fn service_calls_keep_caller_relative_tuple_and_never_select_provider_code() {
 }
 
 #[test]
-fn one_code_owner_is_shared_without_activation_owned_state() {
+fn assembly_execution_one_code_owner_is_shared_without_activation_owned_state() {
     let package_file = file("file:shared", "shared.main");
     let package = artifact("shared", "shared-build", "shared-abi", &package_file);
     let assembly = assembly(vec![artifact_ref(&package)], Vec::new());
@@ -270,7 +330,7 @@ fn duplicate_build_with_different_content_is_rejected() {
 }
 
 #[test]
-fn wrong_expected_local_abi_is_rejected_before_image_is_returned() {
+fn assembly_execution_wrong_expected_local_abi_is_rejected_before_image_is_returned() {
     let caller_file = file("file:caller", "caller.main");
     let dependency_file = file("file:dependency", "dependency.main");
     let mut caller = artifact("caller", "caller", "caller-abi", &caller_file);
@@ -297,7 +357,7 @@ fn wrong_expected_local_abi_is_rejected_before_image_is_returned() {
 }
 
 #[test]
-fn missing_callable_is_rejected_while_validating_linked_call_sites() {
+fn assembly_execution_missing_callable_is_rejected_while_validating_linked_call_sites() {
     let missing = callable_id("missing");
     let mut caller_file = file("file:caller", "caller.main");
     add_package_call(&mut caller_file, "tools", missing.clone());
@@ -333,7 +393,52 @@ fn missing_callable_is_rejected_while_validating_linked_call_sites() {
 }
 
 #[test]
-fn wrong_service_protocol_is_rejected_without_provider_patching() {
+fn assembly_execution_tampered_callable_file_ref_and_index_fail_closed() {
+    let callable = callable_id("entry");
+    let package_file = file("file:package", "package.main");
+    let mut package = artifact("package", "package-build", "package-abi", &package_file);
+    add_callable(&mut package, &package_file, callable.clone());
+
+    let mut wrong_file_ref = package.clone();
+    wrong_file_ref
+        .callable_links
+        .get_mut(&callable)
+        .unwrap()
+        .target
+        .file_ref
+        .module_path = "tampered.module".to_string();
+    let wrong_file_assembly = assembly(vec![artifact_ref(&wrong_file_ref)], Vec::new());
+    assert!(matches!(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &wrong_file_assembly,
+            vec![hydration(wrong_file_ref, package_file.clone())],
+        ),
+        Err(SharedPackageImageError::CallableTargetFileRefMismatch { .. })
+    ));
+
+    package
+        .callable_links
+        .get_mut(&callable)
+        .unwrap()
+        .target
+        .executable_index = 99;
+    let assembly = assembly(vec![artifact_ref(&package)], Vec::new());
+    assert!(matches!(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &assembly,
+            vec![hydration(package, package_file)],
+        ),
+        Err(
+            SharedPackageImageError::CallableTargetExecutableOutOfBounds {
+                executable_index: 99,
+                ..
+            }
+        )
+    ));
+}
+
+#[test]
+fn assembly_execution_wrong_service_protocol_is_rejected_without_provider_patching() {
     let service_call = ServiceCallRef {
         service_requirement_slot: 0,
         contract_operation_id: ContractOperationId::new("operation:echo"),

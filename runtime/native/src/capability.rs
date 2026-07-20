@@ -5,7 +5,7 @@ use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
-    FileCapabilityFuture, FileChunkFuture, FileChunkSource,
+    FileCapabilityFuture, FileChunkFuture, FileChunkSource, StreamConsumerCleanup,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
 use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
@@ -90,6 +90,8 @@ pub trait NativeFileCapability: Clone + Send {
 }
 
 pub trait NativeFileSourceStreamCapability: Clone + Send {
+    fn stream_consumer_cleanup(&self, stream: &Value) -> StreamConsumerCleanup;
+
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,

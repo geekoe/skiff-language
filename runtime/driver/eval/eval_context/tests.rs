@@ -1738,12 +1738,13 @@ fn program_execution_context<'a>(
         cancelled.as_ref(),
         execution.cancel_flag(),
     );
-    let effects = eval_capabilities::effects(eval_capabilities::effect_dispatch_context_from_request(
-        request,
-        DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-        cancelled.clone(),
-        None,
-    ));
+    let effects =
+        eval_capabilities::effects(eval_capabilities::effect_dispatch_context_from_request(
+            request,
+            DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+            cancelled.clone(),
+            None,
+        ));
     let file = eval_capabilities::file_source(FileCapabilitySource::new(file_runtime))
         .context_for_request(db.clone());
     ProgramExecutionContext::new(ProgramExecutionInput {
@@ -1855,6 +1856,7 @@ fn test_request() -> RequestEnvelope {
         service_protocol_identity: String::new(),
         contract_identity: None,
         activation_identity: None,
+        ingress_selector: None,
         http_adapter: None,
         websocket_adapter: None,
         binary_http: None,

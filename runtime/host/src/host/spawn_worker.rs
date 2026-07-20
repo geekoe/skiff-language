@@ -553,6 +553,7 @@ impl SpawnWorker {
             service_protocol_identity: descriptor.service_protocol_identity.clone(),
             contract_identity: None,
             activation_identity: self.service.activation_identity.clone(),
+            ingress_selector: None,
             binary_http: None,
             http_adapter: None,
             websocket_adapter: None,

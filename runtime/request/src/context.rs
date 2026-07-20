@@ -101,6 +101,7 @@ mod tests {
             service_protocol_identity: "protocol-a".to_string(),
             contract_identity: None,
             activation_identity: None,
+            ingress_selector: None,
             binary_http: None,
             http_adapter: None,
             websocket_adapter: None,

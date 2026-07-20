@@ -51,8 +51,9 @@ pub use skiff_runtime_capability_context::{
     OutboundServiceRequestStart, OutboundStartedRequest, OwnedActorCapabilityContext,
     OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
     OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
-    StreamCancelSignalApi, StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime,
-    StreamRuntimeApi, StreamSink, StreamSinkApi, TelemetryCapabilityApi,
+    StreamCancelSignalApi, StreamCapabilityContext, StreamConsumerCleanup, StreamPoll,
+    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeOwner,
+    StreamSink, StreamSinkApi, SupervisedStreamConsumptionChild, TelemetryCapabilityApi,
     TelemetryCapabilityContext, TimeCapabilityContext, TypedStreamSink, WebsocketCapabilityApi,
     WebsocketCapabilityContext, HTTP_REQUEST_ADMIN_OVERRIDE_ENV,
 };
@@ -385,7 +386,10 @@ pub struct RuntimeNativeFileCapabilityContext<'execution>(
 pub struct RuntimeNativeFileCapability(FileCapabilityContext);
 
 #[derive(Clone)]
-pub struct RuntimeNativeFileSourceStreamCapability<'execution>(FileSourceStreamContext<'execution>);
+pub struct RuntimeNativeFileSourceStreamCapability<'execution> {
+    context: FileSourceStreamContext<'execution>,
+    supervision: Option<SupervisedStreamConsumptionChild>,
+}
 
 #[derive(Clone)]
 pub struct RuntimeNativeConfigCapabilityContext<'execution>(ConfigCapabilityContext<'execution>);
@@ -396,10 +400,41 @@ impl<'execution> RuntimeNativeFileCapabilityContext<'execution> {
         file_source_stream_context: FileSourceStreamContext<'execution>,
         request_heap_limits: RequestHeapLimits,
     ) -> Self {
+        Self::new_with_stream_supervision(
+            file_context,
+            file_source_stream_context,
+            request_heap_limits,
+            None,
+        )
+    }
+
+    pub fn new_supervised(
+        file_context: FileCapabilityContext,
+        file_source_stream_context: FileSourceStreamContext<'execution>,
+        request_heap_limits: RequestHeapLimits,
+        supervision: SupervisedStreamConsumptionChild,
+    ) -> Self {
+        Self::new_with_stream_supervision(
+            file_context,
+            file_source_stream_context,
+            request_heap_limits,
+            Some(supervision),
+        )
+    }
+
+    fn new_with_stream_supervision(
+        file_context: FileCapabilityContext,
+        file_source_stream_context: FileSourceStreamContext<'execution>,
+        request_heap_limits: RequestHeapLimits,
+        supervision: Option<SupervisedStreamConsumptionChild>,
+    ) -> Self {
         Self(
             skiff_runtime_capability_context::NativeFileCapabilityContext::new(
                 RuntimeNativeFileCapability(file_context),
-                RuntimeNativeFileSourceStreamCapability(file_source_stream_context),
+                RuntimeNativeFileSourceStreamCapability {
+                    context: file_source_stream_context,
+                    supervision,
+                },
                 request_heap_limits,
             ),
         )
@@ -740,11 +775,32 @@ impl NativeFileCapability for RuntimeNativeFileCapability {
 }
 
 impl NativeFileSourceStreamCapability for RuntimeNativeFileSourceStreamCapability<'_> {
+    fn stream_consumer_cleanup(&self, stream: &Value) -> StreamConsumerCleanup {
+        match &self.supervision {
+            Some(supervision) => supervision.consumer_cleanup(stream),
+            None => StreamConsumerCleanup::new(self.context.stream_runtime_handle(), stream),
+        }
+    }
+
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,
     ) -> FileCapabilityFuture<'a, Option<Value>> {
-        self.0.next_file_source_stream_item(stream)
+        Box::pin(async move {
+            let result = self.context.next_file_source_stream_item(stream).await;
+            if let Some(supervision) = &self.supervision {
+                match &result {
+                    Ok(None) => {
+                        supervision.observe_end(stream);
+                    }
+                    Err(FileCapabilityError::Stream(StreamRuntimeError::Producer(_))) => {
+                        supervision.observe_producer_error(stream);
+                    }
+                    Ok(Some(_)) | Err(_) => {}
+                }
+            }
+            result
+        })
     }
 }
 

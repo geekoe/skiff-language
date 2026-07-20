@@ -882,6 +882,7 @@ fn package_test_request_start_envelope(
         service_protocol_identity: header.test_build_identity.clone(),
         contract_identity: None,
         activation_identity: Some(header.activation_id.clone()),
+        ingress_selector: None,
         binary_http: None,
         http_adapter: None,
         websocket_adapter: None,

@@ -2,7 +2,10 @@ use skiff_runtime_linked_program::{ExecutableAddr, LinkedExecutable, LinkedTypeR
 use skiff_runtime_linked_type_plan::{PlanContext, RuntimeTypePlanLinkedExt};
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 
-use crate::error::{Result, RuntimeError, TypeIdentity};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection,
+    error::{Result, RuntimeError, TypeIdentity},
+};
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
@@ -13,7 +16,7 @@ use super::{
 };
 
 pub struct EvalTypeProjection<'a> {
-    program: EvalProgramProjection<'a>,
+    program: RuntimeExecutionProjection<'a>,
 }
 
 impl Interpreter {
@@ -24,6 +27,12 @@ impl Interpreter {
 
 impl<'a> EvalTypeProjection<'a> {
     pub fn new(program: EvalProgramProjection<'a>) -> Self {
+        Self {
+            program: RuntimeExecutionProjection::Legacy(program),
+        }
+    }
+
+    pub(crate) fn from_execution_projection(program: RuntimeExecutionProjection<'a>) -> Self {
         Self { program }
     }
 
@@ -90,7 +99,9 @@ impl<'a> EvalTypeProjection<'a> {
     }
 
     pub fn resolve_executable(&self, addr: &ExecutableAddr) -> Result<ResolvedEvalExecutable<'a>> {
-        self.program.resolve_executable(addr)
+        self.program
+            .legacy("public type-projection executable")?
+            .resolve_executable(addr)
     }
 
     pub fn call_type_substitutions(

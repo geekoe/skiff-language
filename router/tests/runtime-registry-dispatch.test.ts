@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
 import { ActivationLookup } from '../src/artifacts/activationLookup.js';
@@ -10,21 +10,12 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RequestCancelFrameHeader,
   type RequestStartFrameHeader,
-  type ResponseChunkFrameHeader,
-  type ResponseEndFrameHeader,
-  type ResponseErrorFrameHeader,
-  type ResponseStartFrameHeader
+  type ResponseErrorFrameHeader
 } from '../src/protocol/envelope.js';
-import {
-  RouterActiveSnapshotStore,
-  type RouterActiveSnapshot
-} from '../src/router/activeSnapshot.js';
-import { RouterControlPlane } from '../src/router/controlPlane.js';
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { closeSocket, delay, onceWithTimeout } from './helpers/events.js';
 import { findRuntime, hasRuntime, readHealth, waitForRuntimeAbsent } from './helpers/health.js';
 import { DEFAULT_TEST_BUILD_ID, loadWebSocketManifest } from './helpers/manifests.js';
-import { requestHttp } from './helpers/request.js';
 import { RouterHarness } from './helpers/routerHarness.js';
 import {
   closeTrackedResources,
@@ -225,7 +216,7 @@ describe('router runtime registry dispatch', () => {
     const currentBuild =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000030bb';
 
-    const staleRuntime = await harness.registerRuntime({
+    await harness.registerRuntime({
       runtimeId: 'runtime-prune-stale',
       revisionId: 'revision-prune-stale',
       buildId: staleBuild,
@@ -253,20 +244,6 @@ describe('router runtime registry dispatch', () => {
       active: true,
       buildId: currentBuild
     });
-    expect(() =>
-      registry.validateRuntimeRequestStartSource(
-        staleRuntime.ws,
-        serviceRequestStart({
-          requestId: 'runtime-prune-stale-source',
-          callerTarget: target,
-          target,
-          serviceId: manifest.service.id,
-          buildId: staleBuild,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        })
-      )
-    ).toThrow('runtime-originated request.start requires a registered runtime for the caller target');
-
     currentRuntime.respondWithBinaryJsonPayload({
       runtimeId: 'runtime-prune-current'
     });
@@ -878,1050 +855,106 @@ describe('router runtime registry dispatch', () => {
     });
   });
 
-  it('forwards runtime-originated unary request.start frames and routes responses to the caller request id', async () => {
+  it('rejects runtime-originated service calls before routing or pending state', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
     const runtimeRouter = trackResource(createRuntimeRouter());
     const { dispatcher, endpoint, registry } = runtimeRouter;
     const registryListen = await endpoint.listen({ port: 0 });
     const callerTarget = 'service.skiff~run~~hello.Caller.handle';
     const calleeTarget = 'service.skiff~run~~hello.Callee.handle';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-service-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-service-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-service-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-service-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded service call request'
-    );
-    const callerResponsePromise = waitForRuntimeResponseEnd(
-      caller,
-      'caller-service-request-1',
-      'forwarded service call response'
-    );
-    const requestHeader = serviceRequestStart({
-      requestId: 'caller-service-request-1',
-      callerTarget,
-      target: calleeTarget,
-      serviceId: manifest.service.id,
-      serviceProtocolIdentity: manifest.service.protocolIdentity
-    });
-
-    caller.send(encodeRuntimeFrame(requestHeader, Buffer.from('service payload')));
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header.requestId).toMatch(/^router-forward:/);
-    expect(calleeRequest.header.requestId).not.toBe('caller-service-request-1');
-    expect(calleeRequest.header).toMatchObject({
-      caller: {
-        kind: 'service',
-        target: callerTarget
-      },
-      target: calleeTarget,
-      serviceId: manifest.service.id,
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity
-    });
-    expect(Buffer.from(calleeRequest.payloadBytes).toString('utf8')).toBe('service payload');
-
-    sendRuntimeBinaryResponse(
-      callee,
-      calleeRequest.header.requestId,
-      Buffer.from('service response')
-    );
-
-    await expect(callerResponsePromise).resolves.toEqual({
-      header: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: 'caller-service-request-1',
-        payloadPresent: true
-      },
-      payload: 'service response'
-    });
-  });
-
-  it('uses activation lookup to route runtime-originated calls without explicit activationIdentity', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerServiceId = 'example.com/chat';
-    const calleeServiceId = 'example.com/remotellm';
-    const callerTarget = 'service.example~com~~chat.ChatApi.send';
-    const calleeTarget = 'service.example~com~~remotellm.RemoteLlmApi.chat';
-    const activationA = 'skiff-runtime-activation-v1:opaque:remoteLlm-stale-config';
-    const activationB = 'skiff-runtime-activation-v1:opaque:remoteLlm-current-config';
+    const staleBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000030dd';
+    const currentBuild =
+      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000030cc';
     const activationLookup = new ActivationLookup();
     activationLookup.set({
-      serviceId: calleeServiceId,
+      serviceId: manifest.service.id,
       target: calleeTarget,
-      buildId: DEFAULT_TEST_BUILD_ID,
-      activationIdentity: activationB
+      buildId: currentBuild,
+      activationIdentity: 'skiff-runtime-activation-v1:opaque:relay-must-not-resolve'
     });
     registry.setActivationLookup(activationLookup);
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-activation-lookup-caller',
-      serviceId: callerServiceId,
-      revisionId: 'revision-activation-lookup-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-remoteLlm-stale-config',
-      serviceId: calleeServiceId,
-      revisionId: 'revision-remoteLlm-shared',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      activationIdentity: activationA,
-      targets: [calleeTarget]
-    });
-    const selectedCallee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-remoteLlm-current-config',
-      serviceId: calleeServiceId,
-      revisionId: 'revision-remoteLlm-shared',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      activationIdentity: activationB,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      selectedCallee,
-      'activation lookup selected callee request'
-    );
-    const callerResponsePromise = waitForRuntimeResponseEnd(
-      caller,
-      'caller-service-request-activation-lookup',
-      'activation lookup selected callee response'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-service-request-activation-lookup',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: calleeServiceId,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header).toMatchObject({
-      caller: {
-        kind: 'service',
-        target: callerTarget
-      },
-      target: calleeTarget,
-      serviceId: calleeServiceId,
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity
-    });
-    sendRuntimeBinaryResponse(
-      selectedCallee,
-      calleeRequest.header.requestId,
-      Buffer.from('selected activation response')
-    );
-
-    await expect(callerResponsePromise).resolves.toEqual({
-      header: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: 'caller-service-request-activation-lookup',
-        payloadPresent: true
-      },
-      payload: 'selected activation response'
-    });
-  });
-
-  it('refreshes runtime activation lookup after artifact reload', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const callerServiceId = 'example.com/chat';
-    const calleeServiceId = 'example.com/remotellm';
-    const callerTarget = 'service.example~com~~chat.ChatApi.send';
-    const calleeTarget = 'service.example~com~~remotellm.RemoteLlmApi.chat';
-    const activationA = 'skiff-runtime-activation-v1:opaque:reload-stale-config';
-    const activationB = 'skiff-runtime-activation-v1:opaque:reload-current-config';
-    const activationLookup = new ActivationLookup();
-    activationLookup.set({
-      serviceId: calleeServiceId,
-      target: calleeTarget,
-      buildId: DEFAULT_TEST_BUILD_ID,
-      activationIdentity: activationB
-    });
-    const snapshotV1: RouterActiveSnapshot = {
-      activationByServiceOperation: new ActivationLookup(),
-      manifest
-    };
-    const snapshotV2: RouterActiveSnapshot = {
-      activationByServiceOperation: activationLookup,
-      manifest
-    };
-    const snapshotStore = new RouterActiveSnapshotStore(snapshotV1);
-    const controlPlane = new RouterControlPlane({
-      controlBroadcaster: endpoint,
-      dispatcher,
-      registry,
-      snapshotStore,
-      reloadArtifacts: async () => snapshotV2
-    });
-    const registryListen = await endpoint.listen({ port: 0, controlPlane });
-    const controlUrl = registryListen.url
-      .replace('ws://', 'http://')
-      .replace('/runtime', '');
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-reload-activation-caller',
-      serviceId: callerServiceId,
-      revisionId: 'revision-reload-activation-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-reload-stale-config',
-      serviceId: calleeServiceId,
-      revisionId: 'revision-reload-remoteLlm-shared',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      activationIdentity: activationA,
-      targets: [calleeTarget]
-    });
-    const selectedCallee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-reload-current-config',
-      serviceId: calleeServiceId,
-      revisionId: 'revision-reload-remoteLlm-shared',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      activationIdentity: activationB,
-      targets: [calleeTarget]
-    });
-
-    const reloadResponse = await requestHttp({
-      url: `${controlUrl}/__skiff/reload-artifacts`,
-      method: 'POST'
-    });
-    expect(reloadResponse.status).toBe(200);
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      selectedCallee,
-      'reloaded activation lookup selected callee request'
-    );
-    const callerResponsePromise = waitForRuntimeResponseEnd(
-      caller,
-      'caller-service-request-reloaded-activation-lookup',
-      'reloaded activation lookup selected callee response'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-service-request-reloaded-activation-lookup',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: calleeServiceId,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header).toMatchObject({
-      target: calleeTarget,
-      serviceId: calleeServiceId,
-      buildId: DEFAULT_TEST_BUILD_ID
-    });
-    sendRuntimeBinaryResponse(
-      selectedCallee,
-      calleeRequest.header.requestId,
-      Buffer.from('reloaded selected activation response')
-    );
-
-    await expect(callerResponsePromise).resolves.toEqual({
-      header: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: 'caller-service-request-reloaded-activation-lookup',
-        payloadPresent: true
-      },
-      payload: 'reloaded selected activation response'
-    });
-  });
-
-  it('rewrites stale version-addressed runtime-originated lazy loads to the current build id', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerServiceId = 'skiff.run/api';
-    const calleeServiceId = 'skiff.run/account';
-    const callerTarget = 'service.skiff~run~~api.ChatApi.send';
-    const calleeTarget = 'service.skiff~run~~account.AccountApi.lookup';
-    const currentBuild =
-      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000020cc';
-    const staleBuild =
-      'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000020dd';
     registry.setServiceVersionIndex(
-      new Map([[calleeServiceId, new Map([['0.1.0', { buildId: currentBuild }]])]])
+      new Map([[manifest.service.id, new Map([['0.1.0', { buildId: currentBuild }]])]])
     );
+
+    const routeLookup = vi.spyOn(registry, 'pickDispatchConnection');
+    const activationGet = vi.spyOn(activationLookup, 'get');
+    const pendingRefresh = vi.spyOn(registry, 'refreshRuntimeStatesForRequest');
+    const lazyRuntime = new WebSocket(registryListen.url);
+    trackResource({ close: () => lazyRuntime.close() });
+    await onceWithTimeout(lazyRuntime, 'open', 'lazy runtime socket open');
+    const lazyRuntimeMessage = vi.fn();
+    lazyRuntime.on('message', lazyRuntimeMessage);
 
     const caller = await openRegisteredRuntime(registryListen.url, {
       type: 'runtime.register',
-      runtimeId: 'runtime-cross-service-caller',
-      serviceId: callerServiceId,
-      revisionId: 'revision-cross-service-caller',
+      runtimeId: 'runtime-service-relay-rejected',
+      serviceId: manifest.service.id,
+      revisionId: 'revision-service-relay-rejected',
       buildId: DEFAULT_TEST_BUILD_ID,
       serviceProtocolIdentity: manifest.service.protocolIdentity,
       targets: [callerTarget]
     });
+    const beforeSnapshot = registry.snapshot();
+    const expectedError = {
+      code: 'InProcessServiceCallRequired',
+      message:
+        'runtime-originated service request.start is not supported; service calls must use an in-process binding'
+    };
 
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      caller,
-      'version-addressed lazy callee request'
-    );
-    const callerResponsePromise = waitForRuntimeResponseEnd(
-      caller,
-      'caller-service-request-current-build',
-      'version-addressed lazy callee response'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-service-request-current-build',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: calleeServiceId,
-          version: '0.1.0',
-          buildId: staleBuild,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header.requestId).toMatch(/^router-forward:/);
-    expect(calleeRequest.header).toMatchObject({
-      caller: {
-        kind: 'service',
-        target: callerTarget
-      },
-      target: calleeTarget,
-      serviceId: calleeServiceId,
-      version: '0.1.0',
-      buildId: currentBuild,
-      serviceProtocolIdentity: manifest.service.protocolIdentity
-    });
-    expect(Buffer.from(calleeRequest.payloadBytes).toString('utf8')).toBe('service payload');
-
-    sendRuntimeBinaryResponse(
-      caller,
-      calleeRequest.header.requestId,
-      Buffer.from('service response')
-    );
-
-    await expect(callerResponsePromise).resolves.toEqual({
-      header: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: 'caller-service-request-current-build',
-        payloadPresent: true
-      },
-      payload: 'service response'
-    });
-  });
-
-  it('forwards runtime-originated serverStream response frames to the caller request id', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.stream';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.stream';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-stream-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-stream-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-stream-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-stream-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded stream service call request'
-    );
-    const callerFramesPromise = collectRuntimeResponseFrames(
-      caller,
-      'caller-stream-request-1',
-      3,
-      'forwarded stream service call response frames'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-stream-request-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity,
-          mode: 'serverStream'
-        }),
-        Buffer.from('stream payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header.requestId).toMatch(/^router-forward:/);
-    expect(calleeRequest.header).toMatchObject({
-      mode: 'serverStream',
-      caller: {
-        kind: 'service',
-        target: callerTarget
-      },
-      target: calleeTarget
-    });
-
-    callee.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.start',
-        requestId: calleeRequest.header.requestId,
-        httpResponse: {
-          status: 200,
-          headers: []
-        }
-      })
-    );
-    callee.send(
-      encodeRuntimeFrame(
-        {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.chunk',
-          requestId: calleeRequest.header.requestId,
-          seq: 0
-        },
-        Buffer.from('chunk-1')
-      )
-    );
-    callee.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: calleeRequest.header.requestId,
-        payloadPresent: false
-      })
-    );
-
-    await expect(callerFramesPromise).resolves.toEqual([
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.start',
-          requestId: 'caller-stream-request-1',
-          httpResponse: {
-            status: 200,
-            headers: []
-          }
-        },
-        payload: ''
-      },
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.chunk',
-          requestId: 'caller-stream-request-1',
-          seq: 0
-        },
-        payload: 'chunk-1'
-      },
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.end',
-          requestId: 'caller-stream-request-1',
-          payloadPresent: false
-        },
-        payload: ''
-      }
-    ]);
-  });
-
-  it('does not timeout a runtime-originated serverStream after response.start', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.streamSlow';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.streamSlow';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-slow-stream-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-slow-stream-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-slow-stream-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-slow-stream-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded slow stream service call request'
-    );
-    const callerFramesPromise = collectRuntimeResponseFrames(
-      caller,
-      'caller-slow-stream-request-1',
-      3,
-      'forwarded slow stream service call response frames'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-slow-stream-request-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity,
-          mode: 'serverStream',
-          timeoutMs: 25
-        }),
-        Buffer.from('stream payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    callee.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.start',
-        requestId: calleeRequest.header.requestId,
-        httpResponse: {
-          status: 200,
-          headers: []
-        }
-      })
-    );
-    await delay(50);
-    callee.send(
-      encodeRuntimeFrame(
-        {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.chunk',
-          requestId: calleeRequest.header.requestId,
-          seq: 0
-        },
-        Buffer.from('chunk-after-timeout-window')
-      )
-    );
-    callee.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: calleeRequest.header.requestId,
-        payloadPresent: false
-      })
-    );
-
-    await expect(callerFramesPromise).resolves.toEqual([
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.start',
-          requestId: 'caller-slow-stream-request-1',
-          httpResponse: {
-            status: 200,
-            headers: []
-          }
-        },
-        payload: ''
-      },
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.chunk',
-          requestId: 'caller-slow-stream-request-1',
-          seq: 0
-        },
-        payload: 'chunk-after-timeout-window'
-      },
-      {
-        header: {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.end',
-          requestId: 'caller-slow-stream-request-1',
-          payloadPresent: false
-        },
-        payload: ''
-      }
-    ]);
-  });
-
-  it('forwards runtime-originated response.error frames to the caller request id', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.error';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.error';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-error-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-error-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-error-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-error-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded error service call request'
-    );
-    const callerErrorPromise = waitForRuntimeResponseError(
-      caller,
-      'caller-error-1',
-      'forwarded service call error'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-error-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header.requestId).toMatch(/^router-forward:/);
-    callee.send(
-      encodeRuntimeFrame({
+    for (const [requestId, mode] of [
+      ['runtime-service-unary-rejected', 'unary'],
+      ['runtime-service-stream-rejected', 'serverStream']
+    ] as const) {
+      const response = waitForRuntimeResponseError(
+        caller,
+        requestId,
+        `${mode} service relay rejection`
+      );
+      caller.send(
+        encodeRuntimeFrame(
+          serviceRequestStart({
+            requestId,
+            callerTarget,
+            target: calleeTarget,
+            mode,
+            serviceId: manifest.service.id,
+            version: '0.1.0',
+            buildId: staleBuild,
+            serviceProtocolIdentity: manifest.service.protocolIdentity
+          }),
+          Buffer.from('must not be forwarded')
+        )
+      );
+      await expect(response).resolves.toEqual({
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
         type: 'response.error',
-        requestId: calleeRequest.header.requestId,
-        error: {
-          code: 'CalleeFailed',
-          message: 'callee failed'
-        }
-      })
-    );
+        requestId,
+        error: expectedError
+      });
+    }
 
-    await expect(callerErrorPromise).resolves.toMatchObject({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'response.error',
-      requestId: 'caller-error-1',
-      error: {
-        code: 'CalleeFailed',
-        message: 'callee failed'
-      }
-    });
-    expect(findRuntime(registry.snapshot(), 'runtime-error-callee')).toMatchObject({
-      revisionState: 'active',
-      inFlightCount: 0
-    });
-  });
-
-  it('fails closed when a runtime-originated unary forward receives response.start', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.unaryStart';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.unaryStart';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-unary-start-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-unary-start-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-unary-start-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-unary-start-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded unary start request'
-    );
-    const callerErrorPromise = waitForRuntimeResponseError(
-      caller,
-      'caller-unary-start-1',
-      'unary start protocol error'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-unary-start-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    callee.send(
-      encodeRuntimeFrame({
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.start',
-        requestId: calleeRequest.header.requestId,
-        httpResponse: {
-          status: 200,
-          headers: []
-        }
-      })
-    );
-
-    await expect(callerErrorPromise).resolves.toMatchObject({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'response.error',
-      requestId: 'caller-unary-start-1',
-      error: {
-        code: 'UnexpectedStart',
-        message: 'response.start is only valid for serverStream dispatch'
-      }
-    });
-    sendRuntimeBinaryResponse(
-      callee,
-      calleeRequest.header.requestId,
-      Buffer.from('late response')
-    );
-    await delay(10);
-    expect(findRuntime(registry.snapshot(), 'runtime-unary-start-callee')).toMatchObject({
-      revisionState: 'active',
-      inFlightCount: 0
-    });
-  });
-
-  it('fails closed when a runtime-originated unary forward receives response.chunk', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.unaryChunk';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.unaryChunk';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-unary-chunk-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-unary-chunk-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-unary-chunk-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-unary-chunk-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded unary chunk request'
-    );
-    const callerErrorPromise = waitForRuntimeResponseError(
-      caller,
-      'caller-unary-chunk-1',
-      'unary chunk protocol error'
-    );
-
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-unary-chunk-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    callee.send(
-      encodeRuntimeFrame(
-        {
-          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-          type: 'response.chunk',
-          requestId: calleeRequest.header.requestId,
-          seq: 0
-        },
-        Buffer.from('chunk')
-      )
-    );
-
-    await expect(callerErrorPromise).resolves.toMatchObject({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'response.error',
-      requestId: 'caller-unary-chunk-1',
-      error: {
-        code: 'UnexpectedChunk',
-        message: 'response.chunk is only valid for serverStream dispatch'
-      }
-    });
-    sendRuntimeBinaryResponse(
-      callee,
-      calleeRequest.header.requestId,
-      Buffer.from('late response')
-    );
-    await delay(10);
-    expect(findRuntime(registry.snapshot(), 'runtime-unary-chunk-callee')).toMatchObject({
-      revisionState: 'active',
-      inFlightCount: 0
-    });
-  });
-
-  it('isolates runtime-originated request ids from router-owned pending ids on the same socket', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.handle';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.handle';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-collision-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-collision-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-collision-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-collision-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const inboundRequestPromise = waitForRuntimeRequestFrame(caller, 'shared-id');
-    const inboundDispatch = dispatcher.dispatchBinary(
-      {
-        header: {
-          ...serviceRequestStart({
-            requestId: 'shared-id',
-            callerTarget: 'gateway.skiff~run~~hello.http.test',
-            callerKind: 'gateway',
-            target: callerTarget,
-            serviceId: manifest.service.id,
-            serviceProtocolIdentity: manifest.service.protocolIdentity
-          })
-        },
-        payloadBytes: Buffer.from('gateway payload')
-      },
-      2000
-    );
-    await inboundRequestPromise;
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded same-id service request'
-    );
-    const callerResponsePromise = waitForRuntimeResponseEnd(
-      caller,
-      'shared-id',
-      'forwarded same-id service response'
-    );
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'shared-id',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    expect(calleeRequest.header.requestId).toMatch(/^router-forward:/);
-    expect(calleeRequest.header.requestId).not.toBe('shared-id');
-    sendRuntimeBinaryResponse(
-      callee,
-      calleeRequest.header.requestId,
-      Buffer.from('service response')
-    );
-    await expect(callerResponsePromise).resolves.toEqual({
-      header: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'response.end',
-        requestId: 'shared-id',
-        payloadPresent: true
-      },
-      payload: 'service response'
-    });
-
-    sendRuntimeBinaryResponse(caller, 'shared-id', Buffer.from('gateway response'));
-    await expect(inboundDispatch).resolves.toMatchObject({
-      header: {
-        requestId: 'shared-id',
-        type: 'response.end'
-      },
-      payloadBytes: Buffer.from('gateway response')
-    });
-  });
-
-  it('forwards runtime-originated cancels to the selected runtime with the router request id', async () => {
-    const manifest = await loadManifestFile('fixtures/hello/manifest.json');
-    const runtimeRouter = trackResource(createRuntimeRouter());
-    const { dispatcher, endpoint, registry } = runtimeRouter;
-    const registryListen = await endpoint.listen({ port: 0 });
-    const callerTarget = 'service.skiff~run~~hello.Caller.handle';
-    const calleeTarget = 'service.skiff~run~~hello.Callee.handle';
-
-    const caller = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-cancel-caller',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-cancel-caller',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [callerTarget]
-    });
-    const callee = await openRegisteredRuntime(registryListen.url, {
-      type: 'runtime.register',
-      runtimeId: 'runtime-cancel-callee',
-      serviceId: manifest.service.id,
-      revisionId: 'revision-cancel-callee',
-      buildId: DEFAULT_TEST_BUILD_ID,
-      serviceProtocolIdentity: manifest.service.protocolIdentity,
-      targets: [calleeTarget]
-    });
-
-    const calleeRequestPromise = waitForAnyRuntimeRequestFrame(
-      callee,
-      'forwarded cancel request'
-    );
-    caller.send(
-      encodeRuntimeFrame(
-        serviceRequestStart({
-          requestId: 'caller-cancel-1',
-          callerTarget,
-          target: calleeTarget,
-          serviceId: manifest.service.id,
-          serviceProtocolIdentity: manifest.service.protocolIdentity
-        }),
-        Buffer.from('service payload')
-      )
-    );
-
-    const calleeRequest = await calleeRequestPromise;
-    const cancelPromise = waitForRuntimeCancel(
-      callee,
-      calleeRequest.header.requestId,
-      'forwarded service cancel'
-    );
     caller.send(
       encodeRuntimeFrame({
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
         type: 'request.cancel',
-        requestId: 'caller-cancel-1',
+        requestId: 'runtime-service-stream-rejected',
         reason: 'caller_cancel'
       })
     );
+    await delay(25);
 
-    await expect(cancelPromise).resolves.toMatchObject({
-      isBinary: true,
-      message: {
-        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'request.cancel',
-        requestId: calleeRequest.header.requestId,
-        reason: 'caller_cancel'
-      }
+    expect(routeLookup).not.toHaveBeenCalled();
+    expect(activationGet).not.toHaveBeenCalled();
+    expect(pendingRefresh).not.toHaveBeenCalled();
+    expect(lazyRuntimeMessage).not.toHaveBeenCalled();
+    expect(dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
     });
+    expect(registry.snapshot()).toEqual(beforeSnapshot);
   });
-
 
   it('broadcasts router.control as binary frames', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
@@ -1977,7 +1010,6 @@ describe('router runtime registry dispatch', () => {
       expect(frame.payloadBytes.byteLength).toBe(0);
     }
   });
-
 
   it('closes binary runtime.register frames with non-empty payloads', async () => {
     const manifest = await loadManifestFile('fixtures/hello/manifest.json');
@@ -3167,73 +2199,6 @@ function serviceRequestStart(input: {
   };
 }
 
-function waitForAnyRuntimeRequestFrame(
-  ws: WebSocket,
-  label: string
-): Promise<RuntimeRequestFrame> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timed out waiting for ${label}`));
-    }, 1000);
-    const onMessage = (data: WebSocket.RawData) => {
-      let frame: ReturnType<typeof decodeRuntimeFrame>;
-      try {
-        frame = decodeRuntimeFrame(data);
-      } catch {
-        return;
-      }
-      if (frame.header.type !== 'request.start') {
-        return;
-      }
-      cleanup();
-      resolve(frame as RuntimeRequestFrame);
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.off('message', onMessage);
-    };
-    ws.on('message', onMessage);
-  });
-}
-
-function waitForRuntimeResponseEnd(
-  ws: WebSocket,
-  requestId: string,
-  label: string
-): Promise<{
-  header: ResponseEndFrameHeader;
-  payload: string;
-}> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timed out waiting for ${label}`));
-    }, 1000);
-    const onMessage = (data: WebSocket.RawData) => {
-      let frame: ReturnType<typeof decodeRuntimeFrame>;
-      try {
-        frame = decodeRuntimeFrame(data);
-      } catch {
-        return;
-      }
-      if (frame.header.type !== 'response.end' || frame.header.requestId !== requestId) {
-        return;
-      }
-      cleanup();
-      resolve({
-        header: frame.header,
-        payload: Buffer.from(frame.payloadBytes).toString('utf8')
-      });
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.off('message', onMessage);
-    };
-    ws.on('message', onMessage);
-  });
-}
-
 function waitForRuntimeResponseError(
   ws: WebSocket,
   requestId: string,
@@ -3263,55 +2228,6 @@ function waitForRuntimeResponseError(
         cleanup();
         reject(new Error(`received ${frame.header.type} before ${label}`));
       }
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.off('message', onMessage);
-    };
-    ws.on('message', onMessage);
-  });
-}
-
-function collectRuntimeResponseFrames(
-  ws: WebSocket,
-  requestId: string,
-  count: number,
-  label: string
-): Promise<Array<{
-  header: ResponseStartFrameHeader | ResponseChunkFrameHeader | ResponseEndFrameHeader;
-  payload: string;
-}>> {
-  return new Promise((resolve, reject) => {
-    const frames: Array<{
-      header: ResponseStartFrameHeader | ResponseChunkFrameHeader | ResponseEndFrameHeader;
-      payload: string;
-    }> = [];
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`timed out waiting for ${label}`));
-    }, 1000);
-    const onMessage = (data: WebSocket.RawData) => {
-      let frame: ReturnType<typeof decodeRuntimeFrame>;
-      try {
-        frame = decodeRuntimeFrame(data);
-      } catch {
-        return;
-      }
-      if (
-        frame.header.requestId !== requestId ||
-        !['response.start', 'response.chunk', 'response.end'].includes(frame.header.type)
-      ) {
-        return;
-      }
-      frames.push({
-        header: frame.header as ResponseStartFrameHeader | ResponseChunkFrameHeader | ResponseEndFrameHeader,
-        payload: Buffer.from(frame.payloadBytes).toString('utf8')
-      });
-      if (frames.length !== count) {
-        return;
-      }
-      cleanup();
-      resolve(frames);
     };
     const cleanup = () => {
       clearTimeout(timeout);

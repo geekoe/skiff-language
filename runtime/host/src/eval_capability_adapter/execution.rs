@@ -35,7 +35,7 @@ impl capability_contract::ExecutionControlApi for RuntimeExecutionControl {
     ) -> capability_contract::FileSourceStreamContext<'static> {
         capability_contract::FileSourceStreamContext::from_api(
             RuntimeOwnedFileSourceStreamContext {
-                stream_runtime: concrete_stream_runtime(&stream_runtime).clone(),
+                stream_runtime,
                 execution: self.0.clone(),
             },
         )

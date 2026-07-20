@@ -61,6 +61,9 @@ export const CHECKER_REGISTRY = Object.freeze([
       invocation('implementation:runtime:artifact-boundaries', 'runtime'),
     ],
   }),
+  checker('scripts/check-runtime-execution-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
+    invocations: [invocation('checks:runtime-execution-boundaries', 'checks')],
+  }),
   checker('scripts/check-runtime-eval-error-boundary.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:runtime-eval-error-boundary', 'checks')],
   }),

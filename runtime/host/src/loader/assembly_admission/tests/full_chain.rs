@@ -384,10 +384,10 @@ async fn projected_nonempty_assembly_admits_and_active_lookup_is_io_free() {
     let route = controller.route(&fixture.ingress).unwrap().unwrap();
     assert_eq!(route.assembly_identity(), active.identity());
     assert_eq!(
-        route.activation().unwrap().deployment_ref(),
+        &route.activation().identity().deployment,
         &fixture.consumer_deployment_ref
     );
-    assert_eq!(route.operation_descriptor().unwrap().stable_key, "check");
+    assert_eq!(route.operation_descriptor().stable_key, "check");
     let binding_wire =
         serde_json::to_string(&active.candidate().assembly().service_binding_templates).unwrap();
     assert!(!binding_wire.contains("stableKey"));

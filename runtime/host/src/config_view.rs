@@ -23,6 +23,22 @@ pub struct RuntimeConfigView {
 }
 
 impl RuntimeConfigView {
+    pub(crate) fn from_activation_literals(
+        literals: &[skiff_artifact_model::ConfigLiteralBinding],
+    ) -> Result<Self> {
+        let mut root = Map::new();
+        for literal in literals {
+            let value = serde_json::to_value(&literal.value)
+                .map_err(|error| anyhow!("activation config literal is invalid: {error}"))?;
+            insert_activation_config_literal(&mut root, &literal.path, value)?;
+        }
+        Ok(Self {
+            resolved_config: Value::Object(root),
+            _redacted_resolved_config: None,
+            config_shape: ConfigShape::empty(),
+        })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn empty() -> Self {
         Self {
@@ -146,6 +162,33 @@ impl RuntimeConfigView {
     fn get_path(&self, path: &str) -> Option<&Value> {
         config_path_value(&self.resolved_config, path)
     }
+}
+
+fn insert_activation_config_literal(
+    root: &mut Map<String, Value>,
+    path: &str,
+    value: Value,
+) -> Result<()> {
+    let segments = path_segments(path);
+    if segments.is_empty() {
+        return Err(anyhow!("activation config literal path must be non-empty"));
+    }
+    let mut current = root;
+    for segment in &segments[..segments.len() - 1] {
+        let entry = current
+            .entry((*segment).to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        current = entry.as_object_mut().ok_or_else(|| {
+            anyhow!("activation config literal path {path} conflicts with a scalar")
+        })?;
+    }
+    let leaf = segments[segments.len() - 1];
+    if current.insert(leaf.to_string(), value).is_some() {
+        return Err(anyhow!(
+            "activation config literal path {path} is duplicated"
+        ));
+    }
+    Ok(())
 }
 
 pub fn from_wire_json_plan(

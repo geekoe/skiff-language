@@ -458,6 +458,16 @@ impl NativeFileCapability for FileCapabilityContext {
 }
 
 impl<'execution> NativeFileSourceStreamCapability for FileSourceStreamContext<'execution> {
+    fn stream_consumer_cleanup(
+        &self,
+        stream: &Value,
+    ) -> skiff_runtime_capability_context::StreamConsumerCleanup {
+        let stream_runtime = FileSourceStreamContext::stream_runtime_handle(self);
+        skiff_runtime_capability_context::StreamConsumerCleanup::from_cancel(stream, move |value| {
+            stream_runtime.cancel(value)
+        })
+    }
+
     fn next_file_source_stream_item<'a>(
         &'a self,
         stream: &'a Value,

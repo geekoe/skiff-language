@@ -1,0 +1,32 @@
+# P4-R03：Entry / Remote-Retirement Acceptance
+
+## 角色与精确输入
+
+高风险只读验收Agent。输入为权威设计§6.2、§7、§12、§14、§15，`phase-plan.md`，P4-T07/T08/T09/T09R任务合同，
+T09R完成后的exact clean commit，以及R01/R02与开发证据。不得修改或预设PASS。
+
+首次验收在`5ba7273`因checker可由Rust字符串和TypeScript template string伪造required anchor/case而FAIL。复验还必须
+读取P4-F11合同与diff，独立重做host/router伪anchor mutation，不能只接受新增self-test为证据。
+
+## 必验 verdict
+
+1. **UNIFIED_ENTRY**：active-generation context set原子发布；wire严格投影selector；ingress/internal命中同一
+   dispatcher；request无legacy route/artifact I/O fallback。
+2. **NO_REMOTE_SERVICE_RELAY**：runtime canonical service call不发router帧；router在registry/lazy/forward前拒绝
+   service caller，同时gateway、actor/spawn不回归。
+3. **STRUCTURE_GATE**：checker扫描真实owner，mutation覆盖rename/move/duplicate/omission/test-only、TLS、shared/
+   recoverable callback、host fallback和router relay。
+
+按需运行便宜聚焦抽查，不重复开发完整命令。确认T07/T08无跨owner隐式补丁，T09不通过allowlist掩盖production。
+
+## 输出
+
+首行总体`PASS`或`FAIL`，分别给出三个verdict、blocking issues、non-blocking follow-up、证据命令、动态缺口和残余
+风险。PASS才允许T10冻结候选；结论锚定exact commit。
+
+## 复验结论
+
+PASS，锚定clean commit `b0d144d97ab341f90232613b7d2240160a8307ff`：`UNIFIED_ENTRY`、
+`NO_REMOTE_SERVICE_RELAY`、`STRUCTURE_GATE`全部PASS。独立复现Host普通/raw字符串伪anchor与Router template
+quasi/`${...}` interpolation伪case均被稳定违规捕获；execution self-test 30/30、Node tests 4/4、artifact checker
+self-test 16/16及production检查全部通过。无blocking issue；T10仍需真实动态链和完整gate。

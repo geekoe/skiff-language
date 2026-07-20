@@ -227,7 +227,7 @@ function zeroHealth() {
     loopRisk: {
       observedAt: '2026-07-14T00:00:00.000Z',
       router: {
-        dispatcher: { pendingUnary: 0, pendingStream: 0, pendingForward: 0 },
+        dispatcher: { pendingUnary: 0, pendingStream: 0 },
         httpStream: { backpressureWaiters: 0, backpressureCancels: 0 },
         websocketReceive: { inFlight: 0, queued: 0, abortOnClose: 0 },
       },

@@ -2,6 +2,7 @@ pub mod addr {
     pub use skiff_runtime_model::addr::*;
 }
 
+mod assembly_execution;
 pub mod boundary;
 pub mod file_unit;
 pub mod linked;
@@ -16,6 +17,10 @@ pub mod types;
 pub use addr::{
     ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, LoadedFileIndex, PackageSlot, TypeAddr,
     TypeIndex, UnitAddr,
+};
+pub use assembly_execution::{
+    AssemblyExecutable, AssemblyExecutionImage, AssemblyExecutionImageError,
+    AssemblyExecutionResult, AssemblyPackageExecutionCode,
 };
 pub use boundary::{LinkedProgramImage, RuntimeProgramIdentity};
 pub use file_unit::{FileIrRef, FileIrUnit as ArtifactFileIrUnit};

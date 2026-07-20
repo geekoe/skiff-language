@@ -48,7 +48,10 @@ use super::{
     },
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::{
+    capabilities::StreamConsumerCleanup,
+    error::{Result, RuntimeError},
+};
 
 pub struct ProgramInvocationInput<'a> {
     pub request: RequestPayloadContext<'a>,
@@ -96,6 +99,10 @@ impl<'a> ProgramInvocationContext<'a> {
 
     pub fn execution_context(&self) -> ProgramExecutionContext<'a> {
         self.execution_context.clone()
+    }
+
+    fn stream_runtime(&self) -> super::capabilities::StreamRuntime {
+        self.execution_context.stream_runtime()
     }
 
     pub fn http_response_max_bytes(&self) -> usize {
@@ -451,7 +458,7 @@ impl Interpreter {
         ))?;
 
         if executable_body_contains_emit(invocation.executable_invocation.executable) {
-            let (stream_value, sink) = self.stream_runtime.channel_stream();
+            let (stream_value, sink) = context.stream_runtime().channel_stream();
             let cancel_signal = sink.cancel_signal();
             invocation.env.stream_sink = Some(sink.clone());
             invocation.env.current_stream_item_type = Some(item_type_plan.clone());
@@ -486,10 +493,7 @@ impl Interpreter {
             tokio::pin!(consumer_future);
             return tokio::select! {
                 () = &mut producer_future => consumer_future.await,
-                result = &mut consumer_future => {
-                    self.stream_runtime.cancel(&stream_value);
-                    result
-                }
+                result = &mut consumer_future => result,
             };
         }
 
@@ -640,7 +644,7 @@ impl Interpreter {
         ))?;
 
         if executable_body_contains_emit(invocation.executable_invocation.executable) {
-            let (stream_value, sink) = self.stream_runtime.channel_stream();
+            let (stream_value, sink) = context.stream_runtime().channel_stream();
             let cancel_signal = sink.cancel_signal();
             invocation.env.stream_sink = Some(sink.clone());
             invocation.env.current_stream_item_type = Some(item_type_plan.clone());
@@ -675,10 +679,7 @@ impl Interpreter {
             tokio::pin!(consumer_future);
             return tokio::select! {
                 () = &mut producer_future => consumer_future.await,
-                result = &mut consumer_future => {
-                    self.stream_runtime.cancel(&stream_value);
-                    result
-                }
+                result = &mut consumer_future => result,
             };
         }
 
@@ -893,7 +894,7 @@ impl Interpreter {
         ))?;
 
         if executable_body_contains_emit(invocation.executable_invocation.executable) {
-            let (stream_value, sink) = self.stream_runtime.channel_stream();
+            let (stream_value, sink) = context.stream_runtime().channel_stream();
             let cancel_signal = sink.cancel_signal();
             invocation.env.stream_sink = Some(sink.clone());
             invocation.env.current_stream_item_type = Some(item_type_plan.clone());
@@ -924,10 +925,7 @@ impl Interpreter {
             tokio::pin!(consumer_future);
             return tokio::select! {
                 () = &mut producer_future => consumer_future.await,
-                result = &mut consumer_future => {
-                    self.stream_runtime.cancel(&stream_value);
-                    result
-                }
+                result = &mut consumer_future => result,
             };
         }
 
@@ -1014,10 +1012,12 @@ impl Interpreter {
         F: FnMut(Value, &RuntimeTypePlan) -> std::result::Result<(), E>,
     {
         let execution = context.execution();
+        let stream_runtime = context.stream_runtime();
+        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
             map_eval_error(execution.add_instruction_units(1))?;
             let item = map_eval_error(
-                self.stream_runtime
+                stream_runtime
                     .next_with_cancellation(
                         stream_value,
                         cancel_signals,
@@ -1025,9 +1025,15 @@ impl Interpreter {
                     )
                     .await,
             )?;
-            let item = match item {
-                StreamPoll::Item(item) => item,
-                StreamPoll::End => return Ok(()),
+            let item = match map_eval_error(Self::external_wire_stream_item(
+                item,
+                "server-stream response",
+            ))? {
+                Some(item) => item,
+                None => {
+                    cleanup.reached_end();
+                    return Ok(());
+                }
             };
             let mut heap = context.request_heap();
             let coerced = map_eval_error(runtime_from_wire_required_plan(
@@ -1059,10 +1065,12 @@ impl Interpreter {
         F: FnMut(HttpBoundaryResponseStreamEvent) -> std::result::Result<(), E>,
     {
         let execution = context.execution();
+        let stream_runtime = context.stream_runtime();
+        let mut cleanup = StreamConsumerCleanup::new(stream_runtime.clone(), stream_value);
         loop {
             map_eval_error(execution.add_instruction_units(1))?;
             let item = map_eval_error(
-                self.stream_runtime
+                stream_runtime
                     .next_with_cancellation(
                         stream_value,
                         cancel_signals,
@@ -1070,9 +1078,13 @@ impl Interpreter {
                     )
                     .await,
             )?;
-            let item = match item {
-                StreamPoll::Item(item) => item,
-                StreamPoll::End => return Ok(()),
+            let item = match map_eval_error(Self::external_wire_stream_item(item, "HTTP response"))?
+            {
+                Some(item) => item,
+                None => {
+                    cleanup.reached_end();
+                    return Ok(());
+                }
             };
             let mut heap = context.request_heap();
             let coerced = map_eval_error(runtime_from_wire_required_plan(
@@ -1092,9 +1104,18 @@ impl Interpreter {
             let callback_result = on_event(event);
             map_callback_error(callback_result)?;
             if should_stop {
-                self.stream_runtime.cancel(stream_value);
                 return Ok(());
             }
+        }
+    }
+
+    fn external_wire_stream_item(item: StreamPoll, boundary: &str) -> Result<Option<Value>> {
+        match item {
+            StreamPoll::Item(item) => Ok(Some(item)),
+            StreamPoll::End => Ok(None),
+            StreamPoll::InternalItem(_) => Err(RuntimeError::Decode(format!(
+                "in-process runtime item cannot cross a {boundary} boundary"
+            ))),
         }
     }
 
@@ -1531,6 +1552,9 @@ mod recoverable_spawn_payload_tests {
         assert!(error.to_string().contains("missing SKPV magic"));
     }
 }
+
+#[cfg(test)]
+mod stream_cleanup_tests;
 
 #[cfg(all(test, any()))]
 mod tests {

@@ -328,13 +328,13 @@ fn file_resource_limit_from_details(
 
 #[derive(Clone)]
 pub(super) struct RuntimeOwnedFileSourceStreamContext {
-    pub(super) stream_runtime: concrete::StreamRuntime,
+    pub(super) stream_runtime: capability_contract::StreamRuntime,
     pub(super) execution: skiff_runtime_request::OwnedExecutionControl,
 }
 
 impl capability_contract::FileSourceStreamApi for RuntimeOwnedFileSourceStreamContext {
     fn stream_runtime_handle(&self) -> capability_contract::StreamRuntime {
-        capability_contract::StreamRuntime::new(RuntimeStreamRuntime(self.stream_runtime.clone()))
+        self.stream_runtime.clone()
     }
 
     fn next_file_source_stream_item<'a>(
@@ -343,7 +343,7 @@ impl capability_contract::FileSourceStreamApi for RuntimeOwnedFileSourceStreamCo
     ) -> FileCapabilityFuture<'a, Option<Value>> {
         Box::pin(async move {
             concrete::FileSourceStreamContext::new(
-                self.stream_runtime.clone(),
+                concrete_stream_runtime(&self.stream_runtime).clone(),
                 self.execution.borrow(),
             )
             .next_file_source_stream_item(stream)
@@ -358,6 +358,17 @@ pub(super) struct RuntimeStreamRuntime(pub(super) concrete::StreamRuntime);
 impl capability_contract::StreamRuntimeApi for RuntimeStreamRuntime {
     fn channel_stream(&self) -> (Value, capability_contract::StreamSink) {
         let (value, sink) = self.0.channel_stream();
+        (
+            value,
+            capability_contract::StreamSink::new(RuntimeStreamSink(sink)),
+        )
+    }
+
+    fn channel_stream_with_lifetime(
+        &self,
+        lifetime: capability_contract::StreamLifetimeGuard,
+    ) -> (Value, capability_contract::StreamSink) {
+        let (value, sink) = self.0.channel_stream_with_lifetime(lifetime);
         (
             value,
             capability_contract::StreamSink::new(RuntimeStreamSink(sink)),
@@ -414,6 +425,65 @@ impl capability_contract::StreamRuntimeApi for RuntimeStreamRuntime {
     fn cancel(&self, value: &Value) {
         self.0.cancel(value);
     }
+
+    fn open_request_scope(&self, request_generation: u64) -> bool {
+        self.0.open_scope(request_generation);
+        true
+    }
+
+    fn close_request_scope(&self, request_generation: u64) {
+        self.0.close_scope(request_generation);
+    }
+
+    fn close_owner(&self) {
+        self.0.close_owner();
+    }
+
+    fn channel_stream_in_request_scope(
+        &self,
+        request_generation: u64,
+    ) -> (Value, capability_contract::StreamSink) {
+        let (value, sink) = self.0.channel_stream_in_scope(request_generation);
+        (
+            value,
+            capability_contract::StreamSink::new(RuntimeStreamSink(sink)),
+        )
+    }
+
+    fn channel_stream_with_lifetime_in_request_scope(
+        &self,
+        request_generation: u64,
+        lifetime: capability_contract::StreamLifetimeGuard,
+    ) -> (Value, capability_contract::StreamSink) {
+        let (value, sink) = self
+            .0
+            .channel_stream_with_lifetime_in_scope(request_generation, lifetime);
+        (
+            value,
+            capability_contract::StreamSink::new(RuntimeStreamSink(sink)),
+        )
+    }
+
+    fn pull_stream_with_cancellation_in_request_scope(
+        &self,
+        request_generation: u64,
+        source: Box<dyn StreamPullSource>,
+        cancellation: CancellationToken,
+    ) -> Value {
+        self.0.pull_stream_with_cancellation_in_scope(
+            BoxedStreamPullSource(source),
+            cancellation,
+            request_generation,
+        )
+    }
+
+    fn buffered_stream_in_request_scope(
+        &self,
+        request_generation: u64,
+        items: Vec<Value>,
+    ) -> Value {
+        self.0.buffered_stream_in_scope(items, request_generation)
+    }
 }
 
 struct BoxedStreamPullSource(Box<dyn StreamPullSource>);
@@ -430,6 +500,21 @@ impl StreamPullSource for BoxedStreamPullSource {
 struct RuntimeStreamSink(concrete::StreamSink);
 
 impl capability_contract::StreamSinkApi for RuntimeStreamSink {
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        item: capability_contract::StreamInternalItem,
+        signals: &'a [capability_contract::StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let signals = concrete_stream_cancel_signals(signals)?;
+            let cancellation = capability_contract::CancellationSignals::from_tokens(cancel_tokens);
+            self.0
+                .send_internal_with_stream_cancellation(item, &signals, &cancellation)
+                .await
+        })
+    }
+
     fn send<'a>(
         &'a self,
         item: Value,
@@ -495,4 +580,8 @@ impl capability_contract::StreamSinkApi for RuntimeStreamSink {
 #[derive(Debug)]
 pub(super) struct RuntimeStreamCancelSignal(pub(super) concrete::StreamCancelSignal);
 
-impl capability_contract::StreamCancelSignalApi for RuntimeStreamCancelSignal {}
+impl capability_contract::StreamCancelSignalApi for RuntimeStreamCancelSignal {
+    fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { self.0.wait_cancelled().await })
+    }
+}

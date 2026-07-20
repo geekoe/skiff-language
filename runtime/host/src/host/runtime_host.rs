@@ -116,7 +116,7 @@ impl RuntimeHost {
         let loaded_builds = Arc::new(LoadedBuildRegistry::from_build_ids(state.build_ids()));
         Ok(Self {
             router_url: config.router_url,
-            base_runtime_id: config.base_runtime_id,
+            base_runtime_id: config.base_runtime_id.clone(),
             runtime_home: config.runtime_home,
             default_http_response_max_bytes: config.http_response_max_bytes,
             http_runtime_options,
@@ -129,7 +129,9 @@ impl RuntimeHost {
                 epoch: 0,
             })),
             artifact_caches: Arc::new(RuntimeArtifactCaches::new()),
-            assembly_admission: Arc::new(AssemblyAdmissionController::default()),
+            assembly_admission: Arc::new(AssemblyAdmissionController::new(
+                config.base_runtime_id.clone(),
+            )),
             package_test_start_executor: Arc::new(
                 super::package_test_entry::PackageTestStartExecutor::default(),
             ),

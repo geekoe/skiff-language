@@ -21,6 +21,7 @@ use skiff_artifact_model::DbFieldStorageIr;
 use skiff_runtime_boundary::{
     date_value,
     json::{decode_untyped_wire_json, encode_untyped_wire_json},
+    persistent,
     recoverable::{
         RecoverableArtifactRetentionRootStore, RecoverableArtifactStore, RecoverableBehaviorHooks,
         RecoverableBoundaryCodec, RecoverableDecodePolicy,
@@ -833,6 +834,21 @@ impl DbCollectionMetadata {
         recoverable_context: Option<&mut DbRecoverableRuntimeWriteContext<'_>>,
         field_path: Option<&str>,
     ) -> Result<Bson> {
+        let fallback_expected = RuntimeRecoverableExpectedTypePlan::unresolved("DB value");
+        let expected = plan
+            .map(db_boundary::DbBoundaryValuePlanRef::recoverable_expected)
+            .unwrap_or(&fallback_expected);
+        persistent::reject_callback_capability_graph(
+            value,
+            heap,
+            &recoverable_db_context(),
+            expected,
+        )
+        .map_err(|error| {
+            db_decode_error(format!(
+                "DB value rejects request-scoped callback capability: {error}"
+            ))
+        })?;
         if let Some(plan) = plan {
             if matches!(
                 db_boundary::db_value_projection(plan),

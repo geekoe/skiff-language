@@ -12,10 +12,6 @@ import {
   type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
-import type {
-  ActorExecutionTerminalState,
-  ActorKey
-} from '../actor/index.js';
 import {
   ActorSpawnRuntimeControl,
   type ActorSpawnRuntimeControlOptions,
@@ -128,13 +124,6 @@ export interface RuntimeInFlightCounter {
 
 export interface RuntimeConnectionProvider {
   runtimeConnections(): Iterable<WebSocket>;
-}
-
-export interface RuntimeActorExecution {
-  executionId: string;
-  actorKey: ActorKey;
-  entryEpoch: number;
-  ownerLeaseId: string;
 }
 
 export interface RuntimeControlFrameResponse {
@@ -469,28 +458,6 @@ export class RuntimeRegistry {
     );
   }
 
-  validateRuntimeRequestStartSource(
-    ws: WebSocket,
-    request: RequestStartFrameHeader
-  ): void {
-    if (request.caller.kind !== 'service') {
-      throw new Error('runtime-originated request.start requires caller.kind service');
-    }
-
-    const registeredForCaller = Array.from(this.runtimes.values()).some(
-      (runtime) =>
-        runtime.ws === ws &&
-        runtime.ws.readyState === WebSocket.OPEN &&
-        runtime.revisionState !== 'retired' &&
-        runtime.targets.has(request.caller.target)
-    );
-    if (!registeredForCaller) {
-      throw new Error(
-        'runtime-originated request.start requires a registered runtime for the caller target'
-      );
-    }
-  }
-
   async handleActorSpawnRuntimeControlFrame(
     ws: WebSocket,
     header: Parameters<ActorSpawnRuntimeControl['handle']>[0],
@@ -520,25 +487,6 @@ export class RuntimeRegistry {
       header: response.header,
       payloadBytes: response.payloadBytes ?? new Uint8Array()
     };
-  }
-
-  finishActorExecution(
-    actorExecution: RuntimeActorExecution | undefined,
-    terminalState: ActorExecutionTerminalState,
-    terminalReason?: string
-  ): void {
-    if (actorExecution === undefined) {
-      return;
-    }
-    void this.actorSpawnControl.actorDispatchManager().finishExecution({
-      executionId: actorExecution.executionId,
-      actorKey: actorExecution.actorKey,
-      entryEpoch: actorExecution.entryEpoch,
-      ownerLeaseId: actorExecution.ownerLeaseId,
-      terminalState,
-      ...(terminalReason === undefined ? {} : { terminalReason }),
-      now: this.actorSpawnControl.nowDate()
-    });
   }
 
   refreshRuntimeStatesForRequest(pending: RuntimeInFlightRequest | undefined): void {

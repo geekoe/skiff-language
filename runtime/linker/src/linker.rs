@@ -8,6 +8,7 @@ use skiff_runtime_loader::ArtifactGraph;
 
 use crate::json_utils::value_sha256;
 
+pub(crate) mod call_semantic_validation;
 mod file_conversion;
 mod file_linker;
 mod image;
@@ -22,6 +23,7 @@ mod routes;
 mod type_context;
 
 pub use file_conversion::linked_file_unit_from_artifact;
+pub(crate) use file_conversion::linked_file_unit_from_assembly_artifact;
 use file_linker::RuntimeFileLinker;
 pub use image::LinkedProgramImageBuild;
 pub use input::LinkerInput;

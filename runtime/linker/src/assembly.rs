@@ -44,6 +44,9 @@ pub fn link_runtime_assembly(
     if shared_image.assembly_identity() != &assembly.assembly_identity {
         anyhow::bail!("shared package image identity does not match RuntimeAssembly");
     }
+    let execution_image =
+        crate::assembly_execution::link_assembly_execution_image(Arc::clone(&shared_image))
+            .context("failed to link the canonical assembly execution image")?;
 
     validate_contract_store(&assembly, &contracts)?;
     let activations = link_activation_templates(&hydrated, &shared_image, &contracts)?;
@@ -52,6 +55,7 @@ pub fn link_runtime_assembly(
     Ok(AssemblyLinkedCandidate {
         assembly,
         shared_image,
+        execution_image,
         contracts,
         activations,
         ingress,

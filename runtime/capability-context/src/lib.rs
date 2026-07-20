@@ -13,6 +13,7 @@ mod outbound_response;
 mod request_payload;
 mod response;
 mod stream;
+mod stream_cleanup;
 mod telemetry;
 mod time;
 mod websocket;
@@ -77,8 +78,13 @@ pub use request_payload::{
 pub use response::{HttpNameValue, HttpResponseMetadata, ResponseError};
 pub use stream::{
     HttpResponseStreamCapabilityContext, StreamCancelSignal, StreamCancelSignalApi,
-    StreamCapabilityContext, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
+    StreamCapabilityContext, StreamInternalItem, StreamLifetimeGuard, StreamLifetimeGuardApi,
+    StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
+    StreamRuntimeOwner, StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
+};
+pub use stream_cleanup::{
+    StreamConsumerCleanup, StreamConsumerEndMarker, StreamConsumptionStatus,
+    StreamConsumptionTerminal, SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
 };
 pub use telemetry::{TelemetryCapabilityApi, TelemetryCapabilityContext};
 pub use time::TimeCapabilityContext;
