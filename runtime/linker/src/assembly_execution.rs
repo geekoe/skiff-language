@@ -8,6 +8,7 @@ use skiff_runtime_linked_program::{
 use crate::linker::linked_file_unit_from_assembly_artifact;
 
 mod address_resolver;
+mod call_semantics;
 mod code_linker;
 mod indexes;
 
@@ -83,4 +84,12 @@ fn convert_canonical_files(
                 .collect::<anyhow::Result<Vec<_>>>()
         })
         .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn relink_execution_files_for_test(
+    shared: &skiff_runtime_linked_program::SharedPackageLinkedImage,
+    files: &[Vec<Arc<LinkedFileUnit>>],
+) -> anyhow::Result<Vec<Vec<Arc<LinkedFileUnit>>>> {
+    code_linker::link_execution_files(shared, files)
 }

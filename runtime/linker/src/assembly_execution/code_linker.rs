@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use skiff_runtime_linked_program::{
-    LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
-    LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr, LinkedStmtIr,
-    LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
+    executable_type_param_names, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody,
+    LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
+    LinkedInterfaceMethodTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
 };
 
-use super::address_resolver::AssemblyAddressResolver;
+use super::{
+    address_resolver::AssemblyAddressResolver, call_semantics::AssemblyCallSemanticDelegate,
+};
+use crate::linker::call_semantic_validation::validate_call_semantics;
 
 pub(super) fn link_execution_files(
     shared: &skiff_runtime_linked_program::SharedPackageLinkedImage,
@@ -21,8 +24,8 @@ pub(super) fn link_execution_files(
         .collect()
 }
 
-struct AssemblyCodeLinker<'a> {
-    addresses: AssemblyAddressResolver<'a>,
+pub(super) struct AssemblyCodeLinker<'a> {
+    pub(super) addresses: AssemblyAddressResolver<'a>,
 }
 
 impl<'a> AssemblyCodeLinker<'a> {
@@ -96,7 +99,18 @@ impl<'a> AssemblyCodeLinker<'a> {
             if let Some(self_type) = &mut executable.self_type {
                 self.link_type_ref(code_slot, file_index, self_type)?;
             }
-            self.link_body(code_slot, file_index, &mut executable.body)
+            let context = format!(
+                "package slot {code_slot} file {file_index} executable {}",
+                executable.symbol
+            );
+            let enclosing_type_params = executable_type_param_names(executable);
+            self.link_body(
+                code_slot,
+                file_index,
+                &context,
+                &enclosing_type_params,
+                &mut executable.body,
+            )
                 .with_context(|| {
                     format!(
                         "failed to link {} at package slot {code_slot} file {file_index} executable {executable_index}",
@@ -105,7 +119,11 @@ impl<'a> AssemblyCodeLinker<'a> {
                 })?;
         }
         for constant in &mut file.constants {
-            self.link_body(code_slot, file_index, &mut constant.body)?;
+            let context = format!(
+                "package slot {code_slot} file {file_index} const {}",
+                constant.name
+            );
+            self.link_body(code_slot, file_index, &context, &[], &mut constant.body)?;
         }
         self.addresses
             .validate_file_indexes(code_slot, file_index, &validation_file)
@@ -136,7 +154,7 @@ impl<'a> AssemblyCodeLinker<'a> {
         Ok(())
     }
 
-    fn link_type_ref(
+    pub(super) fn link_type_ref(
         &self,
         code_slot: usize,
         file_index: usize,
@@ -209,7 +227,7 @@ impl<'a> AssemblyCodeLinker<'a> {
         Ok(())
     }
 
-    fn link_interface(
+    pub(super) fn link_interface(
         &self,
         code_slot: usize,
         file_index: usize,
@@ -225,6 +243,8 @@ impl<'a> AssemblyCodeLinker<'a> {
         &self,
         code_slot: usize,
         file_index: usize,
+        context: &str,
+        enclosing_type_params: &[String],
         body: &mut LinkedExecutableBody,
     ) -> anyhow::Result<()> {
         for statement in &mut body.statements {
@@ -275,6 +295,13 @@ impl<'a> AssemblyCodeLinker<'a> {
                     for type_arg in call.type_args.values_mut() {
                         self.link_type_ref(code_slot, file_index, type_arg)?;
                     }
+                    validate_call_semantics(
+                        &AssemblyCallSemanticDelegate::new(self, code_slot, file_index),
+                        context,
+                        enclosing_type_params,
+                        call,
+                    )
+                    .map_err(anyhow::Error::new)?;
                 }
                 LinkedExprIr::Catch { catch_type, .. } => {
                     if let Some(catch_type) = catch_type {
@@ -378,19 +405,8 @@ impl<'a> AssemblyCodeLinker<'a> {
                 self.addresses.validate_executable_addr(addr)?;
                 None
             }
-            LinkedCallTarget::InterfaceMethod { interface, .. } => {
-                self.link_interface(code_slot, file_index, interface)?;
-                None
-            }
-            LinkedCallTarget::LocalConstReceiverExecutable {
-                const_addr,
-                executable_addr,
-                ..
-            } => {
-                self.addresses.validate_const_addr(const_addr)?;
-                self.addresses.validate_executable_addr(executable_addr)?;
-                None
-            }
+            LinkedCallTarget::InterfaceMethod { .. }
+            | LinkedCallTarget::LocalConstReceiverExecutable { .. } => None,
             LinkedCallTarget::ExternalServiceSymbol { .. }
             | LinkedCallTarget::ServiceDependencySymbol { .. }
             | LinkedCallTarget::PackageSymbol { .. } => {

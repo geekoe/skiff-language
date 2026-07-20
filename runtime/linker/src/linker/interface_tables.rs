@@ -1,38 +1,23 @@
-use std::collections::BTreeMap;
-
 use skiff_artifact_identity::canonical_interface_method_abi_id;
 #[cfg(test)]
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::PublicationAbiUnit;
 
 use super::{
+    call_semantic_validation::{
+        interface_method_slot_specs, local_interface_declaration_abi_ids, InterfaceMethodSlotSpec,
+        InterfaceSlotSignatureShape,
+    },
     file_linker::{RuntimeFileLinker, TypeRefLinkScope},
     link_diagnostics::*,
 };
 use crate::{
     program::{
         addr::{ExecutableAddr, FileAddr, PackageSlot, UnitAddr},
-        linked::{
-            InterfaceDeclIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedTypeRef, PackageRefIr,
-        },
+        linked::{InterfaceDeclIr, LinkedFileUnit, LinkedTypeRef, PackageRefIr},
     },
     resolver::{ProgramError, ProgramResult},
 };
-
-#[derive(Debug, Clone, Copy)]
-enum InterfaceSlotSignatureShape {
-    LocalReceiver,
-    RemotePublicOperation,
-}
-
-#[derive(Debug, Clone)]
-struct InterfaceMethodSlotSpec {
-    slot: u32,
-    method_name: String,
-    method_abi_id: String,
-    params: Vec<LinkedFunctionTypeParamIr>,
-    return_type: LinkedTypeRef,
-}
 
 impl<'a> RuntimeFileLinker<'a> {
     #[allow(clippy::too_many_arguments)]
@@ -530,59 +515,6 @@ impl<'a> RuntimeFileLinker<'a> {
         Ok(())
     }
 
-    pub(super) fn validate_interface_method_call_target(
-        &self,
-        context: &str,
-        unresolved_interface: &crate::program::LinkedInterfaceInstantiationRef,
-        interface: &crate::program::LinkedInterfaceInstantiationRef,
-        method_abi_id: &mut String,
-        slot: u32,
-    ) -> ProgramResult<()> {
-        if method_abi_id.is_empty() {
-            return Err(ProgramError::LinkSymbolUnresolved {
-                context: context.to_string(),
-                symbol: interface_method_call_symbol(interface, method_abi_id, slot),
-                expected_kind: "non-empty interface method call methodAbiId",
-            });
-        }
-        let expected_slots = self.interface_method_slot_specs(
-            context,
-            interface,
-            interface,
-            None,
-            InterfaceSlotSignatureShape::LocalReceiver,
-        )?;
-        let unresolved_slots = self.interface_method_slot_specs(
-            context,
-            interface,
-            unresolved_interface,
-            None,
-            InterfaceSlotSignatureShape::LocalReceiver,
-        )?;
-        let slot_index = slot as usize;
-        let expected =
-            expected_slots
-                .get(slot_index)
-                .ok_or_else(|| ProgramError::LinkSymbolUnresolved {
-                    context: context.to_string(),
-                    symbol: interface_method_call_symbol(interface, method_abi_id, slot),
-                    expected_kind: "interface method call target slot from interface declaration",
-                })?;
-        if let Some(unresolved) = unresolved_slots.get(slot_index) {
-            if method_abi_id == &unresolved.method_abi_id {
-                method_abi_id.clone_from(&expected.method_abi_id);
-            }
-        }
-        if expected.slot != slot || expected.method_abi_id != *method_abi_id {
-            return Err(ProgramError::LinkSymbolUnresolved {
-                context: context.to_string(),
-                symbol: interface_method_call_symbol(interface, method_abi_id, slot),
-                expected_kind: "interface method call target matching interface declaration",
-            });
-        }
-        Ok(())
-    }
-
     fn interface_method_slot_specs(
         &self,
         context: &str,
@@ -592,92 +524,17 @@ impl<'a> RuntimeFileLinker<'a> {
         signature_shape: InterfaceSlotSignatureShape,
     ) -> ProgramResult<Vec<InterfaceMethodSlotSpec>> {
         let declaration = self.linked_interface_declaration(context, linked_interface)?;
-        if declaration.type_params.len() != linked_interface.canonical_type_args.len() {
-            return Err(ProgramError::LinkSymbolUnresolved {
-                context: context.to_string(),
-                symbol: interface_instantiation_symbol(linked_interface),
-                expected_kind: "interface type argument arity matching declaration",
-            });
-        }
-        let substitutions = declaration
-            .type_params
-            .iter()
-            .cloned()
-            .zip(linked_interface.canonical_type_args.iter().cloned())
-            .collect::<BTreeMap<_, _>>();
-
-        declaration
-            .operations
-            .iter()
-            .enumerate()
-            .map(|(slot, operation)| {
-                if !operation.type_params.is_empty()
-                    || operation.is_native
-                    || operation.is_provider
-                    || operation.is_static
-                {
-                    return Err(ProgramError::LinkSymbolUnresolved {
-                        context: context.to_string(),
-                        symbol: format!(
-                            "{}.{}",
-                            interface_instantiation_symbol(linked_interface),
-                            operation.name
-                        ),
-                        expected_kind: "object-safe interface method declaration",
-                    });
-                }
-                validate_interface_operation_explicit_self(context, linked_interface, operation)?;
-                let params = operation
-                    .params
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(param_index, param)| {
-                        if matches!(
-                            signature_shape,
-                            InterfaceSlotSignatureShape::RemotePublicOperation
-                        ) && param_index == 0
-                            && param.name == "self"
-                        {
-                            return None;
-                        }
-                        let ty = if param.name == "self" {
-                            concrete_type.cloned().unwrap_or_else(|| param.ty.clone())
-                        } else {
-                            match substitute_interface_method_type(
-                                &param.ty,
-                                &substitutions,
-                                concrete_type,
-                            ) {
-                                Ok(ty) => ty,
-                                Err(error) => return Some(Err(error)),
-                            }
-                        };
-                        Some(Ok(LinkedFunctionTypeParamIr {
-                            name: param.name.clone(),
-                            ty,
-                        }))
-                    })
-                    .collect::<ProgramResult<Vec<_>>>()?;
-                let return_type = substitute_interface_method_type(
-                    &operation.return_type,
-                    &substitutions,
-                    concrete_type,
-                )?;
-                Ok(InterfaceMethodSlotSpec {
-                    slot: slot as u32,
-                    method_name: operation.name.clone(),
-                    method_abi_id: canonical_linked_interface_method_abi_id(
-                        method_identity_interface,
-                        &operation.name,
-                    ),
-                    params,
-                    return_type,
-                })
-            })
-            .collect()
+        interface_method_slot_specs(
+            context,
+            linked_interface,
+            method_identity_interface,
+            &declaration,
+            concrete_type,
+            signature_shape,
+        )
     }
 
-    fn linked_interface_declaration(
+    pub(super) fn linked_interface_declaration(
         &self,
         context: &str,
         interface: &crate::program::LinkedInterfaceInstantiationRef,
@@ -753,26 +610,7 @@ impl<'a> RuntimeFileLinker<'a> {
         file: &LinkedFileUnit,
         declaration_name: &str,
     ) -> ProgramResult<Vec<String>> {
-        let mut abi_ids = vec![interface_declaration_abi_id(
-            context,
-            file,
-            declaration_name,
-        )?];
-        // Publication-local direct refs address interface declarations by
-        // (module path, type index) instead of an exported symbol name, so the
-        // candidate list must also carry that form.
-        if let Some(declaration) = file.declarations.types.get(declaration_name) {
-            push_unique_candidate(
-                &mut abi_ids,
-                linked_type_ref_abi_key(
-                    context,
-                    &LinkedTypeRef::PublicationType {
-                        module_path: file.module_path.clone(),
-                        type_index: declaration.type_index,
-                    },
-                )?,
-            );
-        }
+        let mut abi_ids = local_interface_declaration_abi_ids(context, file, declaration_name)?;
 
         if let UnitAddr::Package(package_slot) = unit {
             self.extend_package_interface_declaration_abi_ids(
@@ -883,11 +721,12 @@ mod tests {
     use crate::program::{
         ExecutableKind, ExprRefIr, ExternalRefTable, FileAddr, FileDeclarations, FileLinkTargets,
         FunctionTypeParamIr, InterfaceOperationIr, LinkedBoxSourceIr, LinkedExecutable,
-        LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
-        LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodSlotSignatureIr,
-        LinkedInterfaceMethodSlotTargetIr, LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor,
-        LinkedTypeRef, PackageRefIr, PackageUnit, ParamIr, ReceiverCallAbi, RuntimeTypeContext,
-        ServiceSymbolRef, ServiceUnit, SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr, UnitAddr,
+        LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr,
+        LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
+        LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
+        LinkedInterfaceMethodTablePlanIr, LinkedTypeDescriptor, LinkedTypeRef, PackageRefIr,
+        PackageUnit, ParamIr, ReceiverCallAbi, RuntimeTypeContext, ServiceSymbolRef, ServiceUnit,
+        SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr, UnitAddr,
     };
 
     const PACKAGE_ID: &str = "example.com/io";

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, FileIrRef, FileIrUnit, PackageArtifact,
@@ -370,4 +370,335 @@ fn link_plan_abi_protocol_and_ingress_tamper_fail_closed() {
     assert!(
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut ingress_collision).is_err()
     );
+}
+
+fn relink_cycle_execution_files(
+    mutate: impl FnOnce(&mut skiff_runtime_linked_program::LinkedFileUnit),
+) -> anyhow::Result<()> {
+    let fixture = CycleFixture::new();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver).load(fixture.assembly)?;
+    let candidate = link_runtime_assembly(hydrated)?;
+    let mut files = candidate
+        .execution_image()
+        .code_slots()
+        .iter()
+        .map(|code| code.files().to_vec())
+        .collect::<Vec<_>>();
+    mutate(Arc::make_mut(&mut files[0][0]));
+    crate::assembly_execution::relink_execution_files_for_test(
+        candidate.shared_image().as_ref(),
+        &files,
+    )?;
+    Ok(())
+}
+
+fn link_identity_valid_execution_image(
+    mutate: impl FnOnce(&mut FileIrUnit),
+) -> anyhow::Result<Arc<skiff_runtime_linked_program::AssemblyExecutionImage>> {
+    let mut fixture = CycleFixture::new();
+    fixture.mutate_shared_file(mutate);
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver).load(fixture.assembly)?;
+    let candidate = link_runtime_assembly(hydrated)?;
+    Ok(Arc::clone(candidate.execution_image()))
+}
+
+fn linked_call(
+    target: skiff_runtime_linked_program::LinkedCallTarget,
+    arg_count: usize,
+) -> skiff_runtime_linked_program::CallIr {
+    use skiff_runtime_linked_program::ExprRefIr;
+
+    skiff_runtime_linked_program::CallIr {
+        target,
+        args: (0..arg_count)
+            .map(|expression| ExprRefIr {
+                expression: expression as u32,
+            })
+            .collect(),
+        type_args: BTreeMap::new(),
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn append_linked_receiver_call(
+    file: &mut skiff_runtime_linked_program::LinkedFileUnit,
+    executable: usize,
+    method_abi_id: String,
+) {
+    use skiff_artifact_model::ReceiverCallAbi;
+    use skiff_runtime_linked_program::{
+        ConstAddr, ConstIr, ExecutableAddr, FileAddr, LinkedCallTarget, LinkedExecutableBody,
+        LinkedExprIr, LinkedTypeRef, UnitAddr,
+    };
+
+    file.constants.push(ConstIr {
+        name: "receiver".to_string(),
+        ty: LinkedTypeRef::Native {
+            name: "bool".to_string(),
+            args: Vec::new(),
+        },
+        body: LinkedExecutableBody::default(),
+        source_span: None,
+    });
+    file.executables[0]
+        .body
+        .expressions
+        .push(LinkedExprIr::Call {
+            call: linked_call(
+                LinkedCallTarget::LocalConstReceiverExecutable {
+                    const_addr: ConstAddr {
+                        unit: UnitAddr::Package(0),
+                        file: FileAddr::LoadedFileIndex(0),
+                        const_index: 0,
+                    },
+                    executable_addr: ExecutableAddr::package(0, 0, executable),
+                    method_abi_id,
+                    receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+                },
+                0,
+            ),
+        });
+}
+
+#[test]
+fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
+    use skiff_artifact_model::{CallIr, CallTargetIr, ExprIr, ExprRefIr, NativeTarget, TypeRefIr};
+
+    let error = link_identity_valid_execution_image(|file| {
+        file.executables[0].body.expressions.push(ExprIr::Call {
+            call: CallIr {
+                target: CallTargetIr::Native {
+                    target: NativeTarget {
+                        namespace: "std.http".to_string(),
+                        symbol: "json".to_string(),
+                        binding_key: Some("std.http.response.json".to_string()),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                args: vec![ExprRefIr { expression: 0 }],
+                type_args: BTreeMap::from([("T0".to_string(), TypeRefIr::native("Json"))]),
+                metadata: BTreeMap::new(),
+            },
+        });
+    })
+    .expect_err("identity-valid malformed native call must fail before image creation");
+
+    assert!(
+        format!("{error:#}").contains("expected 2 args, got 1"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() {
+    use skiff_artifact_model::{
+        CallIr, CallTargetIr, ExprIr, FunctionTypeParamIr, InterfaceDeclIr,
+        InterfaceInstantiationRef, InterfaceOperationIr, ServiceSymbolRef, TypeDeclIr,
+        TypeDeclarationIr, TypeDescriptorIr, TypeRefIr,
+    };
+
+    let error = link_identity_valid_execution_image(|file| {
+        let interface_name = "Reader";
+        let interface_abi_id =
+            skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: file.module_path.clone(),
+                    symbol: interface_name.to_string(),
+                },
+            });
+        file.declarations.types.insert(
+            interface_name.to_string(),
+            TypeDeclarationIr {
+                type_index: file.type_table.len() as u32,
+                symbol: format!("{}.{}", file.module_path, interface_name),
+                source_span: None,
+            },
+        );
+        file.declarations.interfaces.insert(
+            interface_name.to_string(),
+            InterfaceDeclIr {
+                name: interface_name.to_string(),
+                type_params: Vec::new(),
+                operations: vec![InterfaceOperationIr {
+                    name: "read".to_string(),
+                    type_params: Vec::new(),
+                    params: vec![FunctionTypeParamIr {
+                        name: "self".to_string(),
+                        ty: TypeRefIr::TypeParam {
+                            name: "Self".to_string(),
+                        },
+                    }],
+                    return_type: TypeRefIr::native("string"),
+                    is_native: false,
+                    is_provider: false,
+                    is_static: false,
+                    implicit_self: None,
+                }],
+                source_span: None,
+            },
+        );
+        file.type_table.push(TypeDeclIr {
+            name: interface_name.to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            discriminator: None,
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file.executables[0].body.expressions.push(ExprIr::Call {
+            call: CallIr {
+                target: CallTargetIr::InterfaceMethod {
+                    interface: InterfaceInstantiationRef {
+                        interface_abi_id,
+                        canonical_type_args: Vec::new(),
+                    },
+                    method_abi_id: "method:tampered".to_string(),
+                    slot: 1,
+                },
+                args: Vec::new(),
+                type_args: BTreeMap::new(),
+                metadata: BTreeMap::new(),
+            },
+        });
+    })
+    .expect_err("identity-valid malformed interface call must fail before image creation");
+
+    assert!(
+        format!("{error:#}").contains("interface method call target slot"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_call_validation_rejects_receiver_target_and_abi_tamper() {
+    let error = relink_cycle_execution_files(|file| {
+        append_linked_receiver_call(file, usize::MAX, "method:reader".to_string());
+    })
+    .expect_err("assembly execution image must reject malformed receiver calls");
+
+    assert!(
+        format!("{error:#}").contains("receiver executable target"),
+        "unexpected error: {error:#}"
+    );
+
+    let error = relink_cycle_execution_files(|file| {
+        append_linked_receiver_call(file, 0, String::new());
+    })
+    .expect_err("assembly execution image must reject empty receiver method ABI");
+
+    assert!(
+        format!("{error:#}").contains("non-empty local receiver executable methodAbiId"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn assembly_execution_call_validation_accepts_builtin_native_and_interface_calls() {
+    use crate::program::linked::TypeDeclarationIr;
+    use skiff_artifact_model::{NativeTarget, ServiceSymbolRef, TypeRefIr};
+    use skiff_runtime_linked_program::{
+        FunctionTypeParamIr, InterfaceDeclIr, InterfaceOperationIr, LinkedCallTarget, LinkedExprIr,
+        LinkedInterfaceInstantiationRef, LinkedTypeDescriptor, LinkedTypeRef, TypeDeclIr,
+    };
+
+    relink_cycle_execution_files(|file| {
+        let interface_name = "Reader";
+        let interface_abi_id =
+            skiff_artifact_identity::type_ref_abi_key(&TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: file.module_path.clone(),
+                    symbol: interface_name.to_string(),
+                },
+            });
+        file.declarations.types.insert(
+            interface_name.to_string(),
+            TypeDeclarationIr {
+                type_index: file.types.len(),
+                symbol: format!("{}.{}", file.module_path, interface_name),
+                source_span: None,
+            },
+        );
+        file.declarations.interfaces.insert(
+            interface_name.to_string(),
+            InterfaceDeclIr {
+                name: interface_name.to_string(),
+                type_params: Vec::new(),
+                operations: vec![InterfaceOperationIr {
+                    name: "read".to_string(),
+                    type_params: Vec::new(),
+                    params: vec![FunctionTypeParamIr {
+                        name: "self".to_string(),
+                        ty: LinkedTypeRef::TypeParam {
+                            name: "Self".to_string(),
+                        },
+                    }],
+                    return_type: LinkedTypeRef::Native {
+                        name: "string".to_string(),
+                        args: Vec::new(),
+                    },
+                    is_native: false,
+                    is_provider: false,
+                    is_static: false,
+                    implicit_self: None,
+                }],
+                source_span: None,
+            },
+        );
+        file.types.push(TypeDeclIr {
+            name: interface_name.to_string(),
+            descriptor: LinkedTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            discriminator: None,
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let interface = LinkedInterfaceInstantiationRef {
+            interface_abi_id,
+            canonical_type_args: Vec::new(),
+        };
+        let mut native = linked_call(
+            LinkedCallTarget::Native {
+                target: NativeTarget {
+                    namespace: "std.http".to_string(),
+                    symbol: "json".to_string(),
+                    binding_key: Some("std.http.response.json".to_string()),
+                    metadata: BTreeMap::new(),
+                },
+            },
+            2,
+        );
+        native.type_args.insert(
+            "T0".to_string(),
+            LinkedTypeRef::Native {
+                name: "Json".to_string(),
+                args: Vec::new(),
+            },
+        );
+        file.executables[0].body.expressions.extend([
+            LinkedExprIr::Call {
+                call: linked_call(
+                    LinkedCallTarget::Builtin {
+                        op: "test.builtin".to_string(),
+                    },
+                    0,
+                ),
+            },
+            LinkedExprIr::Call { call: native },
+            LinkedExprIr::Call {
+                call: linked_call(
+                    LinkedCallTarget::InterfaceMethod {
+                        method_abi_id: format!("method:{}:read", interface.interface_abi_id),
+                        interface,
+                        slot: 0,
+                    },
+                    0,
+                ),
+            },
+        ]);
+    })
+    .expect("valid builtin, native, and interface calls must keep linking");
 }

@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use super::{link_diagnostics::*, package_exports::package_type_export_addr, LinkOverlay};
+use super::{
+    call_semantic_validation::{validate_call_semantics, CallSemanticValidationDelegate},
+    link_diagnostics::*,
+    package_exports::package_type_export_addr,
+    LinkOverlay,
+};
 use crate::{
     program::{
         addr::{ExecutableAddr, FileAddr, TypeAddr, UnitAddr},
@@ -14,9 +19,6 @@ use crate::{
         RuntimeTypeContext, ServiceUnit,
     },
     resolver::{ProgramError, ProgramResult},
-};
-use skiff_runtime_native_contract::{
-    native_target_name, NativeCallValidation, NativeSignatureRegistry, NativeTypeArgRef,
 };
 
 pub(super) struct TypeRefLinkScope<'a> {
@@ -297,7 +299,15 @@ impl<'a> RuntimeFileLinker<'a> {
                     for ty in call.type_args.values_mut() {
                         self.link_type_ref(&type_ref_scope, ty)?;
                     }
-                    self.validate_native_call(context, enclosing_type_params, call)?;
+                    validate_call_semantics(
+                        &LegacyCallSemanticDelegate {
+                            linker: self,
+                            current_addr,
+                        },
+                        context,
+                        enclosing_type_params,
+                        call,
+                    )?;
                 }
                 LinkedExprIr::Catch { catch_type, .. } => {
                     if let Some(ty) = catch_type.as_mut() {
@@ -325,35 +335,6 @@ impl<'a> RuntimeFileLinker<'a> {
             }
         }
         Ok(())
-    }
-
-    fn validate_native_call(
-        &self,
-        context: &str,
-        enclosing_type_params: &[String],
-        call: &crate::program::CallIr,
-    ) -> ProgramResult<()> {
-        let LinkedCallTarget::Native { target } = &call.target else {
-            return Ok(());
-        };
-        let type_args = call.type_args.iter().map(|(key, ty)| {
-            NativeTypeArgRef::new(
-                key.as_str(),
-                unresolved_type_param_name(ty, Some(enclosing_type_params)),
-            )
-        });
-        match NativeSignatureRegistry::builtins().validate_native_call_artifact(
-            target,
-            call.args.len(),
-            type_args,
-        ) {
-            NativeCallValidation::Known | NativeCallValidation::External => Ok(()),
-            NativeCallValidation::Invalid(message) => Err(ProgramError::InvalidNativeCall {
-                context: context.to_string(),
-                target: native_target_name(target),
-                message,
-            }),
-        }
     }
 
     fn link_pattern(
@@ -431,35 +412,9 @@ impl<'a> RuntimeFileLinker<'a> {
                 self.validate_executable_addr(addr)?;
                 None
             }
-            LinkedCallTarget::LocalConstReceiverExecutable {
-                const_addr,
-                executable_addr,
-                method_abi_id,
-                receiver_call_abi,
-            } => {
-                self.validate_const_addr(const_addr)?;
-                self.validate_executable_addr(executable_addr)?;
-                self.validate_local_receiver_call_abi(context, method_abi_id, *receiver_call_abi)?;
-                None
-            }
-            LinkedCallTarget::InterfaceMethod {
-                interface,
-                method_abi_id,
-                slot,
-            } => {
-                let unresolved_interface = interface.clone();
-                let type_ref_scope = TypeRefLinkScope::for_executable(context, current_addr);
-                self.link_interface_instantiation_ref(&type_ref_scope, interface)?;
-                self.validate_interface_method_call_target(
-                    context,
-                    &unresolved_interface,
-                    interface,
-                    method_abi_id,
-                    *slot,
-                )?;
-                None
-            }
-            LinkedCallTarget::Native { .. }
+            LinkedCallTarget::LocalConstReceiverExecutable { .. }
+            | LinkedCallTarget::InterfaceMethod { .. }
+            | LinkedCallTarget::Native { .. }
             | LinkedCallTarget::Builtin { .. }
             | LinkedCallTarget::ReceiverBuiltin { .. } => None,
         };
@@ -900,6 +855,40 @@ impl<'a> RuntimeFileLinker<'a> {
     }
 }
 
+struct LegacyCallSemanticDelegate<'linker, 'input> {
+    linker: &'linker RuntimeFileLinker<'input>,
+    current_addr: &'linker ExecutableAddr,
+}
+
+impl CallSemanticValidationDelegate for LegacyCallSemanticDelegate<'_, '_> {
+    fn validate_const_target(
+        &self,
+        _context: &str,
+        addr: &crate::program::ConstAddr,
+    ) -> ProgramResult<()> {
+        self.linker.validate_const_addr(addr)
+    }
+
+    fn validate_executable_target(
+        &self,
+        _context: &str,
+        addr: &ExecutableAddr,
+    ) -> ProgramResult<()> {
+        self.linker.validate_executable_addr(addr)
+    }
+
+    fn link_interface_declaration(
+        &self,
+        context: &str,
+        interface: &mut crate::program::LinkedInterfaceInstantiationRef,
+    ) -> ProgramResult<InterfaceDeclIr> {
+        let scope = TypeRefLinkScope::for_executable(context, self.current_addr);
+        self.linker
+            .link_interface_instantiation_ref(&scope, interface)?;
+        self.linker.linked_interface_declaration(context, interface)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
@@ -952,6 +941,57 @@ mod tests {
                 inner: Box::new(service_type_addr(0)),
             }
         );
+    }
+
+    #[test]
+    fn call_semantic_validation_legacy_delegate_rejects_native_signature_tamper() {
+        use skiff_artifact_model::NativeTarget;
+
+        let service = ServiceUnit::empty("svc", "dev", "protocol:test");
+        let mut file = empty_file("file:svc.native", "svc.native");
+        let mut executable = empty_executable("svc.native.entry");
+        executable.body.expressions.push(LinkedExprIr::Call {
+            call: crate::program::CallIr {
+                target: LinkedCallTarget::Native {
+                    target: NativeTarget {
+                        namespace: "std.http".to_string(),
+                        symbol: "json".to_string(),
+                        binding_key: Some("std.http.response.json".to_string()),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                args: vec![crate::program::ExprRefIr { expression: 0 }],
+                type_args: BTreeMap::from([(
+                    "T0".to_string(),
+                    LinkedTypeRef::Native {
+                        name: "Json".to_string(),
+                        args: Vec::new(),
+                    },
+                )]),
+                metadata: BTreeMap::new(),
+            },
+        });
+        file.executables.push(executable);
+        let service_files = vec![Arc::new(file)];
+        let package_files = Vec::new();
+        let packages = Vec::new();
+        let overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let linker = RuntimeFileLinker::new(
+            &service,
+            &overlay,
+            &types,
+            &packages,
+            &service_files,
+            &package_files,
+        );
+
+        let error = linker
+            .link_files(UnitAddr::Service, &service_files)
+            .expect_err("legacy traversal must delegate native signature validation");
+
+        assert!(matches!(error, ProgramError::InvalidNativeCall { .. }));
+        assert!(error.to_string().contains("expected 2 args, got 1"));
     }
 
     #[test]
