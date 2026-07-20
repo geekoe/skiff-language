@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use skiff_artifact_model::{
     BoundaryCallableProjection, CallableSemanticFacts, ContractRequirement, PackageArtifact,
-    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRequirement, PackageRuntimeRequirements, ServiceCallRef, ServiceRequirement,
+    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    PackageLocalAbiSymbol, PackageRequirement, PackageRuntimeRequirements, ServiceCallRef,
+    ServiceRequirement,
 };
 
 use crate::{
@@ -131,6 +132,16 @@ pub fn validate_package_artifact_identities(artifact: &PackageArtifact) -> Resul
         );
     }
     Ok(())
+}
+
+pub fn package_artifact_ref(artifact: &PackageArtifact) -> Result<PackageArtifactRef> {
+    validate_package_artifact_identities(artifact)?;
+    Ok(PackageArtifactRef {
+        package_id: artifact.package_id.clone(),
+        package_version: artifact.package_version.clone(),
+        package_build_id: artifact.package_build_id.clone(),
+        package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
+    })
 }
 
 fn invalid_artifact<T>(message: impl Into<String>) -> Result<T> {

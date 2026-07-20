@@ -1,0 +1,41 @@
+{
+  "authoringFields": {
+    "package.yml contracts[]": ["alias", "serviceId", "contractVersion"],
+    "contract.yml": ["schemaVersion", "serviceId", "contractVersion", "operations", "boundarySchema", "diagnosticText"],
+    "deployment.yml": ["schemaVersion", "contract", "deploymentRevision", "implementation", "operationBindings", "packageBindings", "serviceSelectors", "ingress", "configLiterals", "secretRefs", "stateBindings", "resourceBindings", "runtimeCapabilityBindings", "policy", "diagnosticText"],
+    "assembly.yml": ["environment", "rootDeployments"]
+  },
+  "recordPaths": {
+    "PackageArtifact": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/package.json",
+    "ServiceContract": "records/service-contracts/<service-id>/<contract-version>/<protocol-sha256>.json",
+    "ServiceDeployment": "records/service-deployments/<service-id>/<contract-version>/<deployment-revision>/<deployment-sha256>.json",
+    "RuntimeAssembly": "records/runtime-assemblies/<assembly-sha256>.json",
+    "FileIrUnit": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/file-ir/<file-ir-sha256>.json",
+    "staticResource": "records/package-artifacts/<package-id>/<package-version>/<package-build-sha256>/resources/<content-sha256>.blob"
+  },
+  "coordinateEncoding": {
+    ".": "~",
+    "/": "~~",
+    "~": "rejected"
+  },
+  "pointerPaths": {
+    "PackageArtifact": "pointers/package-artifacts/<package-id>/<package-version>.json",
+    "ServiceContract": "pointers/service-contracts/<service-id>/<contract-version>.json",
+    "ServiceDeployment": "pointers/service-deployments/<service-id>/<contract-version>.json",
+    "RuntimeAssembly": "pointers/runtime-assemblies/<release>.json",
+    "EnvironmentActivationState": "environments/<environment>/activation.json"
+  },
+  "activationStateFields": {
+    "state": ["schemaVersion", "environment", "committed", "pending"],
+    "committed": ["generation", "assembly"],
+    "pending": ["activationId", "expectedGeneration", "candidateGeneration", "assembly", "participantReplicaIds"]
+  },
+  "controlWireFields": {
+    "prepare": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "prepared": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "reject": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId", "reason"],
+    "commit": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "abort": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
+    "register": ["type", "environment", "generation", "assembly", "replicaId"]
+  }
+}

@@ -1,0 +1,67 @@
+[
+  {
+    "type": "prepare",
+    "environment": "test",
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a"
+  },
+  {
+    "type": "prepared",
+    "environment": "test",
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a"
+  },
+  {
+    "type": "reject",
+    "environment": "test",
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a",
+    "reason": "admission"
+  },
+  {
+    "type": "commit",
+    "environment": "test",
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a"
+  },
+  {
+    "type": "abort",
+    "environment": "test",
+    "activationId": "activation-42",
+    "expectedGeneration": 41,
+    "candidateGeneration": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a"
+  },
+  {
+    "type": "register",
+    "environment": "test",
+    "generation": 42,
+    "assembly": {
+      "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicaId": "runtime-a"
+  }
+]
