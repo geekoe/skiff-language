@@ -110,7 +110,9 @@ pub enum StreamPoll {
     End,
 }
 
-pub trait StreamCancelSignalApi: Any + Send + Sync + fmt::Debug {}
+pub trait StreamCancelSignalApi: Any + Send + Sync + fmt::Debug {
+    fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
 
 #[derive(Clone)]
 pub struct StreamCancelSignal {
@@ -131,11 +133,41 @@ impl StreamCancelSignal {
         let any = self.inner.as_ref() as &dyn Any;
         any.downcast_ref()
     }
+
+    pub async fn wait_cancelled(&self) {
+        self.inner.wait_cancelled().await;
+    }
 }
 
 impl fmt::Debug for StreamCancelSignal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("StreamCancelSignal")
+    }
+}
+
+pub trait StreamLifetimeGuardApi: Any + Send + Sync + fmt::Debug {}
+
+/// Opaque request-lifetime guard retained by the concrete stream registry until the registry
+/// observes one terminal transition. It deliberately exposes no activation-specific API.
+#[derive(Clone)]
+pub struct StreamLifetimeGuard {
+    _inner: Arc<dyn StreamLifetimeGuardApi>,
+}
+
+impl StreamLifetimeGuard {
+    pub fn new<T>(inner: T) -> Self
+    where
+        T: StreamLifetimeGuardApi + 'static,
+    {
+        Self {
+            _inner: Arc::new(inner),
+        }
+    }
+}
+
+impl fmt::Debug for StreamLifetimeGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StreamLifetimeGuard")
     }
 }
 
@@ -266,6 +298,7 @@ impl StreamCapabilityContext {
 
 pub trait StreamRuntimeApi: Any + Send + Sync + fmt::Debug {
     fn channel_stream(&self) -> (Value, StreamSink);
+    fn channel_stream_with_lifetime(&self, lifetime: StreamLifetimeGuard) -> (Value, StreamSink);
     fn pull_stream_with_cancellation(
         &self,
         source: Box<dyn StreamPullSource>,
@@ -308,6 +341,13 @@ impl StreamRuntime {
 
     pub fn channel_stream(&self) -> (Value, StreamSink) {
         self.inner.channel_stream()
+    }
+
+    pub fn channel_stream_with_lifetime(
+        &self,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        self.inner.channel_stream_with_lifetime(lifetime)
     }
 
     pub fn pull_stream_with_cancellation(
