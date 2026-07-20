@@ -210,6 +210,11 @@ impl<'a> FileSourceStreamContext<'a> {
         {
             StreamPoll::End => Ok(None),
             StreamPoll::Item(item) => Ok(Some(item)),
+            StreamPoll::InternalItem(_) => Err(
+                skiff_runtime_capability_context::FileCapabilityError::decode(
+                    "in-process runtime item cannot cross a file source stream boundary",
+                ),
+            ),
         }
     }
 }

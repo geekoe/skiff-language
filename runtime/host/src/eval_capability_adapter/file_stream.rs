@@ -441,6 +441,21 @@ impl StreamPullSource for BoxedStreamPullSource {
 struct RuntimeStreamSink(concrete::StreamSink);
 
 impl capability_contract::StreamSinkApi for RuntimeStreamSink {
+    fn send_internal_with_cancellation<'a>(
+        &'a self,
+        item: capability_contract::StreamInternalItem,
+        signals: &'a [capability_contract::StreamCancelSignal],
+        cancel_tokens: Vec<CancellationToken>,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let signals = concrete_stream_cancel_signals(signals)?;
+            let cancellation = capability_contract::CancellationSignals::from_tokens(cancel_tokens);
+            self.0
+                .send_internal_with_stream_cancellation(item, &signals, &cancellation)
+                .await
+        })
+    }
+
     fn send<'a>(
         &'a self,
         item: Value,

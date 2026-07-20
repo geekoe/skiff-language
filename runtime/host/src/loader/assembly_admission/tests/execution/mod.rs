@@ -5,5 +5,3 @@ mod ordinary;
 mod resolver;
 mod runtime;
 mod scenario;
-
-use scenario::assert_typed_execution_fixture;

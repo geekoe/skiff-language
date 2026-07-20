@@ -10,11 +10,15 @@ use std::{
 use serde_json::{json, Value};
 use skiff_runtime_capability_context::{
     CancellationSignals, CancellationToken, OutboundRequestCancelSendError,
-    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry,
+    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, StreamInternalItem,
     StreamLifetimeGuard, StreamLifetimeGuardApi, StreamPoll, StreamPullSource, StreamRuntimeError,
     StreamRuntimeResult,
 };
-use skiff_runtime_model::error::WirePayload;
+use skiff_runtime_model::{
+    error::WirePayload,
+    request_heap::RequestHeap,
+    runtime_value::{HeapNode, RuntimeValue},
+};
 
 use super::StreamRuntime;
 
@@ -43,6 +47,41 @@ async fn stream_runtime_reads_items_and_normal_end_in_order() {
         StreamPoll::End
     ));
     assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_runtime_preserves_internal_item_with_its_owned_heap() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    let mut item_heap = RequestHeap::default();
+    let handle = item_heap
+        .alloc_array(vec![RuntimeValue::String(
+            "opaque-runtime-item".to_string(),
+        )])
+        .unwrap();
+    let cancellation = CancellationSignals::none();
+
+    sink.send_internal_with_stream_cancellation(
+        StreamInternalItem::new(RuntimeValue::Heap(handle), item_heap),
+        &[],
+        &cancellation,
+    )
+    .await
+    .unwrap();
+
+    let StreamPoll::InternalItem(item) = runtime.next(&stream).await.unwrap() else {
+        panic!("internal stream item must not be converted to the JSON carrier")
+    };
+    let (value, item_heap) = item.into_parts();
+    let RuntimeValue::Heap(handle) = value else {
+        panic!("internal item should retain its owned heap handle")
+    };
+    assert!(matches!(
+        item_heap.get(handle).unwrap(),
+        HeapNode::Array(items)
+            if items == &[RuntimeValue::String("opaque-runtime-item".to_string())]
+    ));
+    runtime.cancel(&stream);
 }
 
 #[tokio::test]

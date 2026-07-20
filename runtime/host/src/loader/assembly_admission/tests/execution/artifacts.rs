@@ -13,6 +13,7 @@ use super::resolver::TypedResolver;
 const CALLBACK_INTERFACE_SYMBOL: &str = "CallbackProbe";
 const CALLBACK_INTERFACE_METHOD: &str = "invoke";
 const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
+const CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX: u32 = 2;
 
 #[derive(Clone)]
 pub(super) struct TypedExecutionContract {
@@ -20,6 +21,8 @@ pub(super) struct TypedExecutionContract {
     consumer_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
     provider_operation: BoundaryOperationContract,
     provider_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    consumer_breaks_callback_stream: bool,
+    provider_throws_typed_error: bool,
 }
 
 impl TypedExecutionContract {
@@ -32,11 +35,62 @@ impl TypedExecutionContract {
             consumer_boundary_schema: boundary_schema.clone(),
             provider_operation: operation,
             provider_boundary_schema: boundary_schema,
+            consumer_breaks_callback_stream: false,
+            provider_throws_typed_error: false,
         }
     }
 
     pub(super) fn unary() -> Self {
         Self::new(unary_contract(), BTreeMap::new())
+    }
+
+    pub(super) fn async_typed_error() -> Self {
+        let service_id = "example.phase-four.provider";
+        let contract_version = "1.0.0";
+        let stable_key = "asyncError";
+        let payload_type_id =
+            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
+                .expect("async error fixture ContractTypeId should be canonical");
+        let payload_fields = BTreeMap::from([(
+            "messages".to_string(),
+            ContractTypeRef::Builtin {
+                name: "Array".to_string(),
+                arguments: vec![ContractTypeRef::builtin("string")],
+            },
+        )]);
+        let mut operation = unary_contract();
+        operation.errors = BoundaryErrorContract::Typed {
+            payload_type: ContractTypeRef::contract(payload_type_id.clone()),
+            value_plan: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Provider,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+        };
+        operation.cancellation = BoundaryCancellationContract::Cooperative;
+        operation.may_suspend = true;
+        let provider_boundary_schema = BTreeMap::from([(
+            payload_type_id.clone(),
+            ContractSchemaType {
+                contract_type_id: payload_type_id,
+                stable_key: stable_key.to_string(),
+                shape: ContractTypeShape {
+                    nameability: ContractTypeNameability::PublicNameable,
+                    descriptor: ContractTypeDescriptor::Record {
+                        fields: payload_fields,
+                    },
+                },
+            },
+        )]);
+        Self {
+            consumer_operation: unary_contract(),
+            consumer_boundary_schema: BTreeMap::new(),
+            provider_operation: operation,
+            provider_boundary_schema,
+            consumer_breaks_callback_stream: false,
+            provider_throws_typed_error: true,
+        }
     }
 
     pub(super) fn callback() -> Self {
@@ -93,6 +147,93 @@ impl TypedExecutionContract {
             consumer_boundary_schema: BTreeMap::new(),
             provider_operation,
             provider_boundary_schema,
+            consumer_breaks_callback_stream: false,
+            provider_throws_typed_error: false,
+        }
+    }
+
+    pub(super) fn callback_stream() -> Self {
+        Self::callback_stream_with_operation_key(CALLBACK_INTERFACE_METHOD)
+    }
+
+    pub(super) fn callback_stream_cancel() -> Self {
+        let mut fixture = Self::callback_stream();
+        fixture.consumer_breaks_callback_stream = true;
+        fixture
+    }
+
+    pub(super) fn callback_stream_wrong_tuple() -> Self {
+        let mut fixture = Self::callback_stream();
+        let ContractTypeDescriptor::CallbackInterface { operations } = &mut fixture
+            .provider_boundary_schema
+            .values_mut()
+            .next()
+            .expect("callback stream schema should contain its interface")
+            .shape
+            .descriptor
+        else {
+            panic!("callback stream schema should retain its callback descriptor")
+        };
+        operations
+            .get_mut(CALLBACK_INTERFACE_METHOD)
+            .expect("callback stream descriptor should contain invoke")
+            .return_type = ContractTypeRef::builtin("string");
+        fixture
+    }
+
+    pub(super) fn callback_stream_with_operation_key(contract_operation: &str) -> Self {
+        let service_id = "example.phase-four.provider";
+        let contract_version = "1.0.0";
+        let stable_key = "callbackProbe";
+        let callback_type_id =
+            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
+                .expect("callback stream fixture ContractTypeId should be canonical");
+        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let callback_plan = BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Stream,
+        };
+        let mut provider_operation = unary_contract();
+        provider_operation.stream = BoundaryStreamContract::ServerStream {
+            item_type: callback_type,
+            item_value_plan: callback_plan,
+        };
+        provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
+            interface_type_ids: vec![callback_type_id.clone()],
+            lifetime: BoundaryCallbackLifetime::Stream,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+        };
+        provider_operation.cancellation = BoundaryCancellationContract::Cooperative;
+        provider_operation.may_suspend = true;
+        let provider_boundary_schema = BTreeMap::from([(
+            callback_type_id.clone(),
+            ContractSchemaType {
+                contract_type_id: callback_type_id,
+                stable_key: stable_key.to_string(),
+                shape: ContractTypeShape {
+                    nameability: ContractTypeNameability::PublicNameable,
+                    descriptor: ContractTypeDescriptor::CallbackInterface {
+                        operations: BTreeMap::from([(
+                            contract_operation.to_string(),
+                            BoundaryCallbackOperation {
+                                parameters: Vec::new(),
+                                return_type: ContractTypeRef::builtin("bool"),
+                                may_suspend: false,
+                            },
+                        )]),
+                    },
+                },
+            },
+        )]);
+        Self {
+            consumer_operation: unary_contract(),
+            consumer_boundary_schema: BTreeMap::new(),
+            provider_operation,
+            provider_boundary_schema,
+            consumer_breaks_callback_stream: false,
+            provider_throws_typed_error: false,
         }
     }
 }
@@ -114,6 +255,8 @@ impl ProjectedFixture {
         let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
         let provider_operation_contract = contract_fixture.provider_operation;
         let provider_boundary_schema = contract_fixture.provider_boundary_schema;
+        let consumer_breaks_callback_stream = contract_fixture.consumer_breaks_callback_stream;
+        let provider_throws_typed_error = contract_fixture.provider_throws_typed_error;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
@@ -137,6 +280,9 @@ impl ProjectedFixture {
             None,
             None,
             operation_has_callback_parameter(&provider_operation_contract),
+            operation_has_callback_stream_item(&provider_operation_contract),
+            false,
+            provider_throws_typed_error,
         );
         let provider_file_ref = file_ref(&provider_file);
         let provider_package = implementation_package(
@@ -171,6 +317,11 @@ impl ProjectedFixture {
             operation_has_callback_parameter(
                 &provider_contract.operations[&provider_operation].contract,
             ),
+            operation_has_callback_stream_item(
+                &provider_contract.operations[&provider_operation].contract,
+            ),
+            consumer_breaks_callback_stream,
+            false,
         );
         let consumer_file_ref = file_ref(&consumer_file);
         let consumer_file_ir_identity = consumer_file_ref.file_ir_identity.clone();
@@ -372,8 +523,12 @@ fn implementation_file(
     service_call: Option<ServiceCallRef>,
     package_call: Option<(String, PackageCallableId)>,
     callback_lane: bool,
+    callback_stream_lane: bool,
+    consumer_breaks_callback_stream: bool,
+    provider_throws_typed_error: bool,
 ) -> FileIrUnit {
     let mut file = FileIrUnit::empty(module_path, format!("source:{module_path}"));
+    let is_provider = service_call.is_none();
     let mut entry = ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: symbol.to_string(),
@@ -386,7 +541,15 @@ fn implementation_file(
         body: ExecutableBody::default(),
         source_span: None,
     };
-    if callback_lane && service_call.is_none() {
+    if provider_throws_typed_error && is_provider {
+        configure_async_typed_error_provider_entry(&mut file, &mut entry, module_path);
+    } else if callback_stream_lane && is_provider {
+        configure_callback_stream_provider_entry(
+            &mut entry,
+            module_path,
+            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
+        );
+    } else if callback_lane && is_provider {
         configure_callback_provider_entry(&mut entry);
     } else if let Some(service_call) = service_call {
         file.external_refs.service_call_refs.push(service_call);
@@ -407,15 +570,23 @@ fn implementation_file(
                 metadata: BTreeMap::new(),
             },
         });
-        entry.body.statements.push(StmtIr::Expr {
-            value: ExprRefIr {
-                expression: call_expression,
-            },
-        });
-        entry.body.blocks.push(BlockIr {
-            label: "entry".to_string(),
-            statements: vec![StmtRefIr { statement: 0 }],
-        });
+        if callback_stream_lane {
+            configure_callback_stream_consumer_entry(
+                &mut entry,
+                call_expression,
+                consumer_breaks_callback_stream,
+            );
+        } else {
+            entry.body.statements.push(StmtIr::Expr {
+                value: ExprRefIr {
+                    expression: call_expression,
+                },
+            });
+            entry.body.blocks.push(BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            });
+        }
     }
     file.executables.push(entry);
     if let Some((dependency_ref, package_callable_id)) = package_call {
@@ -434,11 +605,203 @@ fn implementation_file(
             },
             Vec::new(),
         ));
-        install_callback_interface_fixture(&mut file, module_path, symbol, callback_lane);
+        install_callback_interface_fixture(
+            &mut file,
+            module_path,
+            symbol,
+            callback_lane,
+            CALLBACK_OWNER_EXECUTABLE_INDEX,
+        );
+    }
+    if callback_stream_lane && is_provider {
+        install_callback_interface_fixture(
+            &mut file,
+            module_path,
+            symbol,
+            true,
+            CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX,
+        );
+        configure_callback_owner_success(
+            file.executables
+                .last_mut()
+                .expect("callback stream owner executable should be installed"),
+        );
     }
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
         .expect("fixture File IR should receive a canonical identity");
     file
+}
+
+fn configure_async_typed_error_provider_entry(
+    file: &mut FileIrUnit,
+    entry: &mut ExecutableIr,
+    module_path: &str,
+) {
+    let fields = BTreeMap::from([(
+        "messages".to_string(),
+        TypeRefIr::Native {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::native("string")],
+        },
+    )]);
+    file.declarations.types.insert(
+        "AsyncError".to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: format!("{module_path}.AsyncError"),
+            source_span: None,
+        },
+    );
+    file.type_table.push(TypeDeclIr {
+        name: "AsyncError".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: fields.clone(),
+        },
+        type_params: Vec::new(),
+        discriminator: None,
+        implements: Vec::new(),
+        source_span: None,
+    });
+    let payload_type = TypeRefIr::LocalType { type_index: 0 };
+    entry.body = ExecutableBody {
+        blocks: vec![BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        }],
+        statements: vec![StmtIr::Throw {
+            value: ExprRefIr { expression: 2 },
+            payload_type: payload_type.clone(),
+        }],
+        expressions: vec![
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "provider async typed error".to_string(),
+                },
+            },
+            ExprIr::ArrayLiteral {
+                items: vec![ExprRefIr { expression: 0 }],
+            },
+            ExprIr::Construct {
+                type_ref: payload_type,
+                fields: BTreeMap::from([("messages".to_string(), ExprRefIr { expression: 1 })]),
+            },
+        ],
+    };
+}
+
+fn configure_callback_stream_provider_entry(
+    entry: &mut ExecutableIr,
+    module_path: &str,
+    owner_executable_index: u32,
+) {
+    let callback_interface = callback_interface_ref(module_path);
+    entry.return_type = TypeRefIr::Native {
+        name: "Stream".to_string(),
+        args: vec![TypeRefIr::AnyInterface {
+            interface: callback_interface,
+        }],
+    };
+    let callback = append_callback_preimage_at(entry, module_path, owner_executable_index);
+    entry.body.statements.push(StmtIr::Emit {
+        operation: "provide".to_string(),
+        value: callback[0],
+    });
+    entry.body.blocks.push(BlockIr {
+        label: "entry".to_string(),
+        statements: vec![StmtRefIr { statement: 0 }],
+    });
+}
+
+fn configure_callback_stream_consumer_entry(
+    entry: &mut ExecutableIr,
+    stream_expression: u32,
+    break_after_item: bool,
+) {
+    let callback_interface = callback_interface_ref("phase_four.provider");
+    let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
+        &callback_interface,
+        CALLBACK_INTERFACE_METHOD,
+    );
+    let callback_expression = u32::try_from(entry.body.expressions.len())
+        .expect("fixture expression count should fit u32");
+    entry.body.expressions.push(ExprIr::LoadSlot { slot: 0 });
+    let invoke_expression = u32::try_from(entry.body.expressions.len())
+        .expect("fixture expression count should fit u32");
+    entry.body.expressions.push(ExprIr::Call {
+        call: CallIr {
+            target: CallTargetIr::InterfaceMethod {
+                interface: callback_interface.clone(),
+                method_abi_id: callback_method_abi_id,
+                slot: 0,
+            },
+            args: vec![ExprRefIr {
+                expression: callback_expression,
+            }],
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        },
+    });
+    entry.slots = SlotLayout {
+        slots: vec![SlotIr {
+            index: 0,
+            name: "callback".to_string(),
+            kind: SlotKind::Pattern,
+        }],
+        frame_size: 1,
+    };
+    entry.body.statements.extend([
+        StmtIr::ForIn {
+            item_slot: 0,
+            item_type: Some(TypeRefIr::AnyInterface {
+                interface: callback_interface,
+            }),
+            value_slot: None,
+            iterable: ExprRefIr {
+                expression: stream_expression,
+            },
+            body: "consume_callback".to_string(),
+        },
+        StmtIr::Assert {
+            condition: ExprRefIr {
+                expression: invoke_expression,
+            },
+            message: None,
+        },
+    ]);
+    let mut body_statements = vec![StmtRefIr { statement: 1 }];
+    if break_after_item {
+        let break_statement = u32::try_from(entry.body.statements.len())
+            .expect("fixture statement count should fit u32");
+        entry.body.statements.push(StmtIr::Break);
+        body_statements.push(StmtRefIr {
+            statement: break_statement,
+        });
+    }
+    entry.body.blocks.extend([
+        BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        },
+        BlockIr {
+            label: "consume_callback".to_string(),
+            statements: body_statements,
+        },
+    ]);
+}
+
+fn configure_callback_owner_success(owner: &mut ExecutableIr) {
+    owner.body = ExecutableBody {
+        blocks: vec![BlockIr {
+            label: "entry".to_string(),
+            statements: vec![StmtRefIr { statement: 0 }],
+        }],
+        statements: vec![StmtIr::Return {
+            value: Some(ExprRefIr { expression: 0 }),
+        }],
+        expressions: vec![ExprIr::Literal {
+            value: LiteralIr::Bool { value: true },
+        }],
+    };
 }
 
 fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
@@ -489,6 +852,14 @@ fn configure_callback_provider_entry(entry: &mut ExecutableIr) {
 }
 
 fn append_callback_preimage(entry: &mut ExecutableIr, module_path: &str) -> Vec<ExprRefIr> {
+    append_callback_preimage_at(entry, module_path, CALLBACK_OWNER_EXECUTABLE_INDEX)
+}
+
+fn append_callback_preimage_at(
+    entry: &mut ExecutableIr,
+    module_path: &str,
+    owner_executable_index: u32,
+) -> Vec<ExprRefIr> {
     let callback_interface = callback_interface_ref(module_path);
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
         &callback_interface,
@@ -519,7 +890,7 @@ fn append_callback_preimage(entry: &mut ExecutableIr, module_path: &str) -> Vec<
                             return_type: TypeRefIr::native("bool"),
                         },
                         target: InterfaceMethodSlotTargetIr {
-                            executable_index: CALLBACK_OWNER_EXECUTABLE_INDEX,
+                            executable_index: owner_executable_index,
                             receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
                         },
                     }],
@@ -535,6 +906,7 @@ fn install_callback_interface_fixture(
     module_path: &str,
     symbol: &str,
     include_owner_method: bool,
+    owner_executable_index: u32,
 ) {
     let callback_interface = callback_interface_ref(module_path);
     let callback_method_abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
@@ -588,7 +960,7 @@ fn install_callback_interface_fixture(
     if include_owner_method {
         assert_eq!(
             file.executables.len(),
-            CALLBACK_OWNER_EXECUTABLE_INDEX as usize,
+            owner_executable_index as usize,
             "callback fixture owner executable index must match its admitted method table"
         );
         file.executables.push(ExecutableIr {
@@ -617,6 +989,20 @@ fn operation_has_callback_parameter(operation: &BoundaryOperationContract) -> bo
             }
         )
     })
+}
+
+fn operation_has_callback_stream_item(operation: &BoundaryOperationContract) -> bool {
+    matches!(
+        operation.stream,
+        BoundaryStreamContract::ServerStream {
+            item_value_plan: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::CallbackCapability,
+                encoding: BoundaryValueEncoding::OpaqueCapability,
+                ..
+            },
+            ..
+        }
+    )
 }
 
 fn checkpoint_call_executable(
