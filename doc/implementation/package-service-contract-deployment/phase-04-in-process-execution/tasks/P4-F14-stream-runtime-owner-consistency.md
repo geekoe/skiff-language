@@ -46,3 +46,10 @@ git diff --check
 
 提交一个clean commit，回报handle ownership前后图、error precedence、terminal/cleanup反向搜索、修复前后测试与
 自验收矩阵。若修复需改变公共stream/capability API，立即报告范围扩张，不得在本任务自行决定。
+
+## 执行结论
+
+`TASK_NOT_EXECUTABLE` under original scope。same-handle诊断patch证明`program_stream.rs`内owner split已消除，但F10
+standalone consumer cleanup在同registry同步remove，outer drain无法保留producer terminal；唯一回归仍稳定返回
+consumer serviceDb错误。独立分类确认需由[P4-F14R](P4-F14R-supervised-stream-consumption.md)扩展现有共享cleanup
+primitive，禁止恢复双handle或调度竞态。
