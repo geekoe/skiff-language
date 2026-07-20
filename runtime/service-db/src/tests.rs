@@ -48,9 +48,9 @@ use skiff_runtime_model::{
     },
     request_heap::RequestHeap,
     runtime_value::{
-        HeapNode, InterfaceCarrier, InterfaceMethodSlot, InterfaceMethodTable,
-        InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue, RemoteOperationTable,
-        RuntimeObject, RuntimeObjectFields, RuntimeValue,
+        CallbackCapabilityCarrier, HeapNode, InterfaceCarrier, InterfaceMethodSlot,
+        InterfaceMethodTable, InterfaceMethodTarget, InterfaceReceiverCallAbi, InterfaceValue,
+        RemoteOperationTable, RuntimeObject, RuntimeObjectFields, RuntimeValue,
     },
 };
 use std::{
@@ -1658,6 +1658,43 @@ fn recoverable_envelope_field_roundtrips_plain_values_as_opaque_binary() {
         .business_value_from_document(document)
         .expect("recoverable-envelope field should decode");
     assert_eq!(read.as_value(), materialized.as_value());
+}
+
+#[test]
+fn callback_capability_db_write_fails_closed_before_recoverable_hooks() {
+    let binding = recoverable_envelope_metadata();
+    let mut heap = RequestHeap::default();
+    let callback = RuntimeValue::Heap(
+        heap.alloc_interface(InterfaceValue::new(
+            "contract:reader".to_string(),
+            InterfaceCarrier::CallbackCapability(CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                7,
+                "contract:reader",
+                "capability-1",
+            )),
+        ))
+        .expect("callback capability should allocate"),
+    );
+    let row = runtime_object(
+        &mut heap,
+        [
+            ("id", RuntimeValue::String("thread-1".to_string())),
+            ("title", RuntimeValue::String("Hello".to_string())),
+            ("settings", callback),
+        ],
+    );
+
+    let error = binding
+        .document_from_runtime_business_value(&row, &heap, None)
+        .expect_err("callback capability must never enter DB persistence");
+    assert!(
+        error
+            .to_string()
+            .contains("callback_capability_not_recoverable"),
+        "unexpected DB callback rejection: {error}"
+    );
 }
 
 #[test]

@@ -18,6 +18,7 @@ pub enum RecoverableBoundaryErrorCode {
     StateInvalid,
     RemoteCarrierNotPersistable,
     CrossServiceInterfaceCallbackUnavailable,
+    CallbackCapabilityNotRecoverable,
     CrossServiceRecoverableBehaviorUnavailable,
     UntrustedBehaviorPayload,
     SealedPayloadInvalid,
@@ -38,6 +39,7 @@ impl RecoverableBoundaryErrorCode {
             Self::CrossServiceInterfaceCallbackUnavailable => {
                 "cross_service_interface_callback_unavailable"
             }
+            Self::CallbackCapabilityNotRecoverable => "callback_capability_not_recoverable",
             Self::CrossServiceRecoverableBehaviorUnavailable => {
                 "cross_service_recoverable_behavior_unavailable"
             }
@@ -195,6 +197,10 @@ mod tests {
         assert_eq!(
             RecoverableBoundaryErrorCode::StateInvalid.as_str(),
             "recoverable_state_invalid"
+        );
+        assert_eq!(
+            RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable.as_str(),
+            "callback_capability_not_recoverable"
         );
     }
 

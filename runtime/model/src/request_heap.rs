@@ -748,6 +748,7 @@ impl RequestHeap {
                 self.value_contains_reachable(payload, target, visiting)
             }
             InterfaceCarrier::Remote { .. } => Ok(false),
+            InterfaceCarrier::CallbackCapability(_) => Ok(false),
         }
     }
 
@@ -937,6 +938,9 @@ impl CloneContext {
                 public_instance_key: public_instance_key.clone(),
                 operations: operations.clone(),
             },
+            InterfaceCarrier::CallbackCapability(capability) => {
+                InterfaceCarrier::CallbackCapability(capability.clone())
+            }
         };
         Ok(InterfaceValue::new(value.interface().to_string(), carrier))
     }
@@ -1061,6 +1065,9 @@ impl CrossHeapCloneContext {
                 public_instance_key: public_instance_key.clone(),
                 operations: operations.clone(),
             },
+            InterfaceCarrier::CallbackCapability(capability) => {
+                InterfaceCarrier::CallbackCapability(capability.clone())
+            }
         };
         Ok(InterfaceValue::new(value.interface().to_string(), carrier))
     }
@@ -1188,6 +1195,12 @@ fn estimate_interface_value_bytes(value: &InterfaceValue) -> usize {
             .saturating_add(dependency_ref.len())
             .saturating_add(public_instance_key.len())
             .saturating_add(estimate_remote_operation_table_bytes(operations)),
+        InterfaceCarrier::CallbackCapability(capability) => base
+            .saturating_add(capability.owner_runtime_replica_id().len())
+            .saturating_add(capability.owner_activation_id().len())
+            .saturating_add(std::mem::size_of::<u64>())
+            .saturating_add(capability.interface_or_adapter_contract().len())
+            .saturating_add(capability.opaque_capability_id().len()),
     }
 }
 
