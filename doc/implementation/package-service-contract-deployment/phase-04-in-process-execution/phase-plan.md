@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；P4-D01 PASS（审查基线`0ed310c`，其后三项原始blocker全部闭环，仅回写本状态）
+状态：active；P4-D01 PASS；首次R01在`ef14a08` FAIL，F02–F04按原owner并行返修
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
@@ -86,6 +86,8 @@ Wave 1：shared kernel checkpoint
   T01 canonical assembly execution image ───────────────┐
   T02 ActivationContext/materialization/capability core ├─► T03 kernel eval handoff ─► R01
                                                         │
+  R01 FAIL repair loop：F02 execution projection / F03 capability cleanup / F04 linker validation ─► R01 retry
+
 Wave 2：R01 PASS 后三个lane并行                         │
   T04 ordinary/error + package-direct contrast ─────────┤
   T05 async/stream/cancel ───────────────────────────────┼─► R02
@@ -112,7 +114,10 @@ checker写入域互不重叠。
 | T02 | [Activation/materialization/capability core](tasks/P4-T02-activation-boundary-kernel.md) | D01 PASS | 高；kernel checkpoint |
 | T03 | [Kernel eval handoff](tasks/P4-T03-kernel-eval-handoff.md) | T01、T02 | 高；共享 API integration |
 | F01 | [Package-test call-target exhaustiveness](tasks/P4-F01-package-test-call-target-exhaustiveness.md) | T03 host fixture compile blocker | 低；T01 API fallout repair |
-| R01 | [Kernel checkpoint acceptance](tasks/P4-R01-kernel-acceptance.md) | T03 exact commit | 高风险只读 gate |
+| F02 | [Assembly execution projection repair](tasks/P4-F02-assembly-execution-projection.md) | R01@`ef14a08` blocker 1 | 高；T03 owner repair |
+| F03 | [Capability cleanup/rollback repair](tasks/P4-F03-capability-cleanup-rollback.md) | R01@`ef14a08` blocker 2 | 高；T02 owner repair |
+| F04 | [Assembly linker call validation repair](tasks/P4-F04-assembly-linker-call-validation.md) | R01@`ef14a08` blocker 3 | 高；T01 owner repair |
+| R01 | [Kernel checkpoint acceptance](tasks/P4-R01-kernel-acceptance.md) | T03、F02–F04 exact merged commit | 高风险只读 gate |
 | T04 | [Ordinary/error execution](tasks/P4-T04-ordinary-error-execution.md) | R01 PASS | 高；lane batch |
 | T05 | [Async/stream/cancel execution](tasks/P4-T05-async-stream-cancel.md) | R01 PASS | 高；lane batch |
 | T06 | [Callback/native capability execution](tasks/P4-T06-callback-native-capability.md) | R01 PASS | 高；lane batch |
