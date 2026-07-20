@@ -12,6 +12,7 @@ use crate::assembly_execution::RuntimeExecutionProjection;
 use crate::invocation::EvalProgramProjection;
 use skiff_runtime_capability_context::{
     project_native_capability_context, NativeCapabilityContexts, NativeCapabilityProjectionSource,
+    SupervisedStreamConsumptionChild,
 };
 use skiff_runtime_native_contract::NativeRequiredContext;
 
@@ -30,6 +31,7 @@ struct RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
     context: &'context ProgramExecutionContext<'execution>,
     program: RuntimeExecutionProjection<'context>,
     stream_context: StreamCapabilityContext,
+    stream_supervision: Option<SupervisedStreamConsumptionChild>,
 }
 
 impl<'context, 'execution> RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
@@ -42,6 +44,21 @@ impl<'context, 'execution> RuntimeNativeCapabilityProjectionSource<'context, 'ex
             context,
             program,
             stream_context,
+            stream_supervision: None,
+        }
+    }
+
+    fn new_supervised(
+        context: &'context ProgramExecutionContext<'execution>,
+        program: RuntimeExecutionProjection<'context>,
+        stream_context: StreamCapabilityContext,
+        stream_supervision: SupervisedStreamConsumptionChild,
+    ) -> Self {
+        Self {
+            context,
+            program,
+            stream_context,
+            stream_supervision: Some(stream_supervision),
         }
     }
 }
@@ -82,11 +99,19 @@ impl<'context, 'execution> NativeCapabilityProjectionSource
     }
 
     fn file(&self) -> Self::File {
-        RuntimeNativeFileCapabilityContext::new(
-            self.context.file_context(),
-            self.context.file_source_stream_context(),
-            self.context.request_heap_limits(),
-        )
+        match &self.stream_supervision {
+            Some(supervision) => RuntimeNativeFileCapabilityContext::new_supervised(
+                self.context.file_context(),
+                self.context.file_source_stream_context(),
+                self.context.request_heap_limits(),
+                supervision.clone(),
+            ),
+            None => RuntimeNativeFileCapabilityContext::new(
+                self.context.file_context(),
+                self.context.file_source_stream_context(),
+                self.context.request_heap_limits(),
+            ),
+        }
     }
 
     fn time(&self) -> Self::Time {
@@ -143,5 +168,24 @@ pub(crate) fn project_runtime_execution_native_capability_context<'context, 'exe
     required_context: NativeRequiredContext,
 ) -> RuntimeNativeCapabilityContexts<'context, 'execution> {
     let source = RuntimeNativeCapabilityProjectionSource::new(context, program, stream_context);
+    project_native_capability_context(required_context, &source)
+}
+
+pub(crate) fn project_runtime_execution_native_capability_context_supervised<
+    'context,
+    'execution,
+>(
+    context: &'context ProgramExecutionContext<'execution>,
+    program: RuntimeExecutionProjection<'context>,
+    stream_context: StreamCapabilityContext,
+    required_context: NativeRequiredContext,
+    stream_supervision: SupervisedStreamConsumptionChild,
+) -> RuntimeNativeCapabilityContexts<'context, 'execution> {
+    let source = RuntimeNativeCapabilityProjectionSource::new_supervised(
+        context,
+        program,
+        stream_context,
+        stream_supervision,
+    );
     project_native_capability_context(required_context, &source)
 }

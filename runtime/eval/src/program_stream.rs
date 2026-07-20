@@ -5,7 +5,10 @@ use async_recursion::async_recursion;
 use serde_json::Value;
 use skiff_runtime_boundary::stream::stream_id;
 use skiff_runtime_boundary::type_descriptor::bare_type_name;
-use skiff_runtime_capability_context::{StreamRuntimeError, StreamRuntimeResult};
+use skiff_runtime_capability_context::{
+    StreamConsumptionTerminal, StreamRuntimeError, StreamRuntimeResult,
+    SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
+};
 use skiff_runtime_linked_program::{
     CallIr, ConstAddr, ExecutableAddr, LinkedCallTarget, LinkedExecutable, LinkedExprIr,
     LinkedFileUnit, LinkedStmtIr, LinkedTypeRef, ReceiverCallAbi,
@@ -18,7 +21,7 @@ use skiff_runtime_model::{
 
 use super::type_descriptor::TypeSubstitutions;
 use super::{
-    capabilities::{StreamCancelSignal, StreamPoll, StreamSink},
+    capabilities::{StreamCancelSignal, StreamPoll, StreamRuntime, StreamSink},
     env::{check_cancelled, Env, Flow},
     program_execution::{OwnedProgramExecutionContext, ProgramExecutionContext},
     program_ir::{program_call_target_kind, program_expression_ref},
@@ -183,19 +186,13 @@ impl Interpreter {
                 program, context, heap, env, addr, file, executable, producer,
             )
             .await?;
-        let id = stream_id(&prepared.stream_value)
-            .ok_or_else(|| {
-                RuntimeError::Decode(
-                    "deferred stream producer was not assigned a stream id".to_string(),
-                )
-            })?
-            .to_string();
+        let id = deferred_stream_id(&prepared)?;
         // Hand the consumer a stream value backed by the parked producer's
         // channel, expressed in the caller's heap.
         let stream_value = match runtime_from_wire(&prepared.stream_value, heap) {
             Ok(value) => value,
             Err(error) => {
-                self.stream_runtime.cancel(&prepared.stream_value);
+                prepared.cancel();
                 return Err(error);
             }
         };
@@ -250,11 +247,13 @@ impl Interpreter {
         }
 
         let mut producer_env = env.clone();
-        let (stream_value, sink) = context.stream_runtime().channel_stream();
+        let stream_runtime = context.stream_runtime();
+        let (stream_value, sink) = stream_runtime.channel_stream();
         let cancel_signal = sink.cancel_signal();
         producer_env.stream_sink = Some(sink.clone());
         producer_env.current_stream_item_type = Some(item_type.clone());
         let prepared = StreamProducerExecution {
+            stream_runtime,
             stream_value,
             cancel_signal,
             item_type,
@@ -268,17 +267,11 @@ impl Interpreter {
             sink,
         };
 
-        let id = stream_id(&prepared.stream_value)
-            .ok_or_else(|| {
-                RuntimeError::Decode(
-                    "deferred stream producer was not assigned a stream id".to_string(),
-                )
-            })?
-            .to_string();
+        let id = deferred_stream_id(&prepared)?;
         let stream_value = match runtime_from_wire(&prepared.stream_value, heap) {
             Ok(value) => value,
             Err(error) => {
-                self.stream_runtime.cancel(&prepared.stream_value);
+                prepared.cancel();
                 return Err(error);
             }
         };
@@ -312,7 +305,7 @@ impl Interpreter {
         self.exec_prepared_native_stream_producer_arg(
             context,
             addr,
-            PreparedNativeStreamProducer(prepared),
+            PreparedNativeStreamProducer::new(prepared),
             consumer,
         )
         .await
@@ -334,7 +327,7 @@ impl Interpreter {
             program, context, heap, env, addr, file, executable, producer,
         )
         .await
-        .map(PreparedNativeStreamProducer)
+        .map(PreparedNativeStreamProducer::new)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -348,30 +341,62 @@ impl Interpreter {
     where
         Fut: std::future::Future<Output = Result<T>>,
     {
-        let stream_value = prepared.0.stream_value.clone();
-        let cancel_signal = prepared.0.cancel_signal.clone();
+        let PreparedNativeStreamProducer {
+            producer,
+            consumption,
+        } = prepared;
+        let stream_runtime = producer.stream_runtime.clone();
+        let stream_value = producer.stream_value.clone();
+        let cancel_signal = producer.cancel_signal.clone();
         let owned_context = Arc::new(OwnedProgramExecutionContext::capture(&context));
-        spawn_stream_producer(self, owned_context, addr.clone(), prepared.0);
+        spawn_stream_producer(self, owned_context, addr.clone(), producer);
 
         tokio::pin!(consumer);
         let consumer_result = consumer.await;
         match consumer_result {
             Ok(value) => {
-                self.stream_runtime.cancel(&stream_value);
+                if consumption.status().stream_mismatch() {
+                    consumption.hard_cancel();
+                    return Err(prepared_stream_consumer_mismatch_error());
+                }
+                consumption.complete_success();
                 Ok(value)
             }
             Err(error) if error.is_cancelled() => {
-                self.stream_runtime.cancel(&stream_value);
+                consumption.hard_cancel();
                 Err(error)
             }
             Err(error) => {
+                let status = consumption.status();
+                if status.stream_mismatch() {
+                    consumption.hard_cancel();
+                    return Err(prepared_stream_consumer_mismatch_error());
+                }
+                if status.terminal() != StreamConsumptionTerminal::Open {
+                    // The native child already consumed the typed terminal. Its
+                    // error (or a post-End commit error) is the authoritative
+                    // consumer result, and a second registry lookup would lose
+                    // that information.
+                    consumption.complete_terminal();
+                    return Err(error);
+                }
                 // The consumer errored on its own (not via cancellation). Drain
                 // the producer's pending output so a trailing producer error is
-                // surfaced (preferred over the consumer error), then cancel.
+                // surfaced (preferred over the consumer error).
                 let drain_result = self
-                    .drain_stream_producer_output(context, &stream_value, &cancel_signal)
+                    .drain_stream_producer_output(
+                        context,
+                        &stream_runtime,
+                        &stream_value,
+                        &cancel_signal,
+                        &consumption,
+                    )
                     .await;
-                self.stream_runtime.cancel(&stream_value);
+                if consumption.status().terminal() == StreamConsumptionTerminal::Open {
+                    consumption.hard_cancel();
+                } else {
+                    consumption.complete_terminal();
+                }
                 Err(prepared_stream_error_after_drain(error, drain_result))
             }
         }
@@ -381,20 +406,20 @@ impl Interpreter {
         &self,
         prepared: &PreparedNativeStreamProducer,
     ) {
-        self.stream_runtime.cancel(prepared.stream_value());
+        prepared.consumption.hard_cancel();
     }
 
     async fn drain_stream_producer_output(
         &self,
         context: ProgramExecutionContext<'_>,
+        stream_runtime: &StreamRuntime,
         stream_value: &Value,
         cancel_signal: &StreamCancelSignal,
+        consumption: &SupervisedStreamConsumptionLease,
     ) -> StreamRuntimeResult<()> {
         let execution = context.execution();
-        let mut cleanup = StreamConsumerCleanup::new(context.stream_runtime(), stream_value);
         loop {
-            match self
-                .stream_runtime
+            match stream_runtime
                 .next_with_cancellation(
                     stream_value,
                     std::slice::from_ref(cancel_signal),
@@ -404,10 +429,15 @@ impl Interpreter {
             {
                 Ok(StreamPoll::Item(_) | StreamPoll::InternalItem(_)) => continue,
                 Ok(StreamPoll::End) => {
-                    cleanup.reached_end();
+                    consumption.observe_end();
                     return Ok(());
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if matches!(&error, StreamRuntimeError::Producer(_)) {
+                        consumption.observe_producer_error();
+                    }
+                    return Err(error);
+                }
             }
         }
     }
@@ -441,28 +471,26 @@ impl Interpreter {
             )),
         };
         let mut producer_heap = context.request_heap();
-        let mut arg_producers: Vec<StreamProducerExecution> = Vec::new();
+        let mut arg_producers = PreparedStreamProducerArgs::default();
         let mut args = Vec::with_capacity(producer.call.args.len());
         for arg in &producer.call.args {
             let expr = program_expression_ref(_executable, *arg)?;
-            if let Some(arg_producer) = self.resolve_stream_producer_call(
+            let arg_producer = self.resolve_stream_producer_call(
                 program.clone(),
                 addr,
                 heap,
                 env,
                 _executable,
                 expr,
-            )? {
+            )?;
+            if let Some(arg_producer) = arg_producer {
                 if !arg_producers.is_empty() {
-                    for producer in &arg_producers {
-                        self.stream_runtime.cancel(&producer.stream_value);
-                    }
                     return Err(RuntimeError::Unsupported(
                         "multiple stream-producing producer call arguments are not supported"
                             .to_string(),
                     ));
                 }
-                let nested = match self
+                let nested = self
                     .prepare_stream_producer(
                         program.clone(),
                         context.clone(),
@@ -473,31 +501,19 @@ impl Interpreter {
                         _executable,
                         arg_producer,
                     )
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(error) => {
-                        for producer in &arg_producers {
-                            self.stream_runtime.cancel(&producer.stream_value);
-                        }
-                        return Err(error.into());
-                    }
-                };
+                    .await?;
                 let stream_value = match runtime_from_wire(&nested.stream_value, &mut producer_heap)
                 {
                     Ok(value) => value,
                     Err(error) => {
-                        self.stream_runtime.cancel(&nested.stream_value);
-                        for producer in &arg_producers {
-                            self.stream_runtime.cancel(&producer.stream_value);
-                        }
-                        return Err(error.into());
+                        nested.cancel();
+                        return Err(error);
                     }
                 };
                 args.push(stream_value);
                 arg_producers.push(nested);
             } else {
-                let arg = match self
+                let arg = self
                     .eval_program_expr_ref(
                         context.clone(),
                         heap,
@@ -507,26 +523,8 @@ impl Interpreter {
                         _executable,
                         *arg,
                     )
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(error) => {
-                        for producer in &arg_producers {
-                            self.stream_runtime.cancel(&producer.stream_value);
-                        }
-                        return Err(error.into());
-                    }
-                };
-                let arg =
-                    match deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &arg) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            for producer in &arg_producers {
-                                self.stream_runtime.cancel(&producer.stream_value);
-                            }
-                            return Err(error.into());
-                        }
-                    };
+                    .await?;
+                let arg = deep_clone_runtime_value_between_heaps(heap, &mut producer_heap, &arg)?;
                 args.push(arg);
             }
         }
@@ -537,15 +535,17 @@ impl Interpreter {
             })
             .transpose()?;
         let mut producer_env = env.clone();
-        let (stream_value, sink) = context.stream_runtime().channel_stream();
+        let stream_runtime = context.stream_runtime();
+        let (stream_value, sink) = stream_runtime.channel_stream();
         let cancel_signal = sink.cancel_signal();
         producer_env.stream_sink = Some(sink.clone());
         producer_env.current_stream_item_type = Some(producer.item_type.clone());
         Ok(StreamProducerExecution {
+            stream_runtime,
             stream_value,
             cancel_signal,
             item_type: producer.item_type,
-            arg_producers,
+            arg_producers: arg_producers.into_producers(),
             producer_heap,
             producer_env,
             producer_addr: producer.addr,
@@ -632,12 +632,10 @@ impl Interpreter {
     }
 }
 
-fn prepared_stream_drain_reached_terminal(error: &StreamRuntimeError) -> bool {
-    matches!(
-        error,
-        StreamRuntimeError::Decode(message)
-            if message == "Stream value has already been consumed"
-                || message == "unknown Stream value"
+fn prepared_stream_consumer_mismatch_error() -> RuntimeError {
+    RuntimeError::Decode(
+        "supervised stream consumer used a different Stream value than its prepared producer"
+            .to_string(),
     )
 }
 
@@ -647,14 +645,6 @@ fn prepared_stream_error_after_drain(
 ) -> RuntimeError {
     match drain_result {
         Ok(()) => consumer_error,
-        // This path only receives streams created by a prepared producer. Once
-        // its consumer has resolved with an error, a missing registry entry means
-        // that consumer already observed the terminal event (including a
-        // producer error) and `StreamRuntime::next` removed the stream. Treat it
-        // as a completed internal drain so that terminal event's original error
-        // is not replaced by the follow-up lookup error. Public `next` calls keep
-        // their fail-closed unknown-id behavior.
-        Err(error) if prepared_stream_drain_reached_terminal(&error) => consumer_error,
         Err(error) => RuntimeError::from(error),
     }
 }
@@ -700,15 +690,34 @@ pub struct StreamProducerCall {
     pub item_type: RuntimeTypePlan,
 }
 
-pub struct PreparedNativeStreamProducer(StreamProducerExecution);
+pub struct PreparedNativeStreamProducer {
+    producer: StreamProducerExecution,
+    consumption: SupervisedStreamConsumptionLease,
+}
 
 impl PreparedNativeStreamProducer {
+    fn new(producer: StreamProducerExecution) -> Self {
+        let consumption = SupervisedStreamConsumptionLease::new(
+            producer.stream_runtime.clone(),
+            &producer.stream_value,
+        );
+        Self {
+            producer,
+            consumption,
+        }
+    }
+
     pub fn stream_value(&self) -> &Value {
-        &self.0.stream_value
+        &self.producer.stream_value
+    }
+
+    pub fn consumption_child(&self) -> SupervisedStreamConsumptionChild {
+        self.consumption.child()
     }
 }
 
 pub struct StreamProducerExecution {
+    stream_runtime: StreamRuntime,
     stream_value: Value,
     cancel_signal: StreamCancelSignal,
     item_type: RuntimeTypePlan,
@@ -720,6 +729,51 @@ pub struct StreamProducerExecution {
     producer_type_args: std::collections::BTreeMap<String, LinkedTypeRef>,
     producer_args: Vec<RuntimeValue>,
     sink: StreamSink,
+}
+
+impl StreamProducerExecution {
+    fn cancel(&self) {
+        self.stream_runtime.cancel(&self.stream_value);
+    }
+}
+
+#[derive(Default)]
+struct PreparedStreamProducerArgs {
+    producers: Vec<StreamProducerExecution>,
+}
+
+impl PreparedStreamProducerArgs {
+    fn is_empty(&self) -> bool {
+        self.producers.is_empty()
+    }
+
+    fn push(&mut self, producer: StreamProducerExecution) {
+        self.producers.push(producer);
+    }
+
+    fn into_producers(mut self) -> Vec<StreamProducerExecution> {
+        std::mem::take(&mut self.producers)
+    }
+}
+
+impl Drop for PreparedStreamProducerArgs {
+    fn drop(&mut self) {
+        for producer in &self.producers {
+            producer.cancel();
+        }
+    }
+}
+
+fn deferred_stream_id(producer: &StreamProducerExecution) -> Result<String> {
+    match stream_id(&producer.stream_value) {
+        Some(id) => Ok(id.to_string()),
+        None => {
+            producer.cancel();
+            Err(RuntimeError::Decode(
+                "deferred stream producer was not assigned a stream id".to_string(),
+            ))
+        }
+    }
 }
 
 /// Registry of stream producers whose result was bound to a value instead of
@@ -797,7 +851,12 @@ async fn run_stream_producer_task(
 
     let arg_streams = arg_producers
         .iter()
-        .map(|producer| producer.stream_value.clone())
+        .map(|producer| {
+            (
+                producer.stream_runtime.clone(),
+                producer.stream_value.clone(),
+            )
+        })
         .collect::<Vec<_>>();
     for arg_producer in arg_producers {
         spawn_stream_producer(
@@ -840,8 +899,8 @@ async fn run_stream_producer_task(
         Err(error) if error.is_cancelled() && sink.is_cancelled() => {}
         Err(error) => sink.fail(StreamRuntimeError::producer(error)).await,
     }
-    for stream_value in arg_streams {
-        interpreter.stream_runtime.cancel(&stream_value);
+    for (stream_runtime, stream_value) in arg_streams {
+        stream_runtime.cancel(&stream_value);
     }
 }
 
@@ -1172,7 +1231,7 @@ mod prepared_stream_drain_tests {
     use crate::error::RuntimeError;
 
     #[test]
-    fn consumed_catchable_producer_error_is_not_overwritten_by_terminal_unknown_stream() {
+    fn unknown_stream_after_consumer_error_fails_closed() {
         let error = prepared_stream_error_after_drain(
             RuntimeError::DecodeTarget {
                 target: "std.json.decode".to_string(),
@@ -1183,9 +1242,7 @@ mod prepared_stream_drain_tests {
 
         assert!(matches!(
             error,
-            RuntimeError::DecodeTarget { target, message }
-                if target == "std.json.decode"
-                    && message == "producer failed before its first event"
+            RuntimeError::Decode(message) if message == "unknown Stream value"
         ));
     }
 

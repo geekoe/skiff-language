@@ -24,7 +24,10 @@ use super::{
     env::{check_cancelled, Env, Flow},
     exceptions::{catch_err, catch_ok, exception_envelope_for_catch},
     flow_completion::FlowCompletionPolicy,
-    native_capability::project_runtime_execution_native_capability_context,
+    native_capability::{
+        project_runtime_execution_native_capability_context,
+        project_runtime_execution_native_capability_context_supervised,
+    },
     native_invocation::{
         resolve_config_builtin_type_arg_plan, resolve_runtime_execution_native_invocation,
     },
@@ -1281,12 +1284,14 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
-        let native_capability_context = project_runtime_execution_native_capability_context(
-            &self.context,
-            self.projection.clone(),
-            self.env.stream_capability_context(),
-            invocation.required_context(),
-        );
+        let native_capability_context =
+            project_runtime_execution_native_capability_context_supervised(
+                &self.context,
+                self.projection.clone(),
+                self.env.stream_capability_context(),
+                invocation.required_context(),
+                prepared.consumption_child(),
+            );
         let interpreter = self.interpreter;
         let context = self.context.clone();
         let addr = self.addr;

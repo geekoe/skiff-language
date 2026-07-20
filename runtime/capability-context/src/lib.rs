@@ -82,7 +82,10 @@ pub use stream::{
     StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError,
     StreamRuntimeOwner, StreamRuntimeResult, StreamSink, StreamSinkApi, TypedStreamSink,
 };
-pub use stream_cleanup::{StreamConsumerCleanup, StreamConsumerEndMarker};
+pub use stream_cleanup::{
+    StreamConsumerCleanup, StreamConsumerEndMarker, StreamConsumptionStatus,
+    StreamConsumptionTerminal, SupervisedStreamConsumptionChild, SupervisedStreamConsumptionLease,
+};
 pub use telemetry::{TelemetryCapabilityApi, TelemetryCapabilityContext};
 pub use time::TimeCapabilityContext;
 pub use websocket::{
