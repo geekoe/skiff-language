@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import WebSocket from 'ws';
 
 import {
@@ -12,15 +10,13 @@ import {
   type ResponseEndFrameHeader,
   type ResponseErrorFrameHeader,
   type ResponseStartFrameHeader,
-  type RouterToRuntimeFrameHeader,
-  type RuntimeErrorPayload
+  type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
 import {
   REQUEST_CANCEL_SITUATION,
   requestCancelReasonForSituation
 } from '../protocol/cancelReason.js';
 import type {
-  RuntimeActorExecution,
   RuntimeDispatchConnection,
   RuntimeDispatchFrameHeader,
   RuntimeInFlightRequest,
@@ -31,11 +27,8 @@ import {
   GatewayError,
   ProviderUnavailableError,
   RuntimeResponseError,
-  RuntimeTimeoutError,
-  toGatewayError
+  RuntimeTimeoutError
 } from './errors.js';
-
-const DEFAULT_RUNTIME_ORIGINATED_TIMEOUT_MS = 2000;
 
 export type RuntimeFrameSendCallback = (error?: Error) => void;
 
@@ -97,21 +90,10 @@ export interface RuntimeStreamInvocation extends RuntimeInvocationBase {
   closeFromPendingTerminal?(terminal: PendingTerminal): void;
 }
 
-export interface RuntimeForwardInvocation extends RuntimeInvocationBase {
-  kind: 'forward';
-  request: RequestStartFrameHeader;
-  callerRequestId: string;
-  callerWs: WebSocket;
-  streamState: StreamPendingState;
-  nextSeq: number;
-  actorExecution?: RuntimeActorExecution;
-}
-
 export type RuntimeInvocation =
   | RuntimeUnaryInvocation
   | RuntimeUnaryFrameInvocation
-  | RuntimeStreamInvocation
-  | RuntimeForwardInvocation;
+  | RuntimeStreamInvocation;
 
 export interface RuntimeBinaryDispatchResponse {
   header: ResponseEndFrameHeader;
@@ -165,12 +147,10 @@ export interface RuntimeDispatcherOptions {
 export interface RuntimeDispatcherPendingCounters {
   pendingUnary: number;
   pendingStream: number;
-  pendingForward: number;
 }
 
 export class RuntimeDispatcher {
   private readonly pending = new Map<string, RuntimeInvocation>();
-  private readonly forwardedRequestIdsByCaller = new Map<WebSocket, Map<string, string>>();
 
   constructor(private readonly options: RuntimeDispatcherOptions) {
     this.options.registry.setInFlightCounter({
@@ -403,7 +383,6 @@ export class RuntimeDispatcher {
       });
       pending.reject(new ProviderUnavailableError('Runtime registry is closing'));
     }
-    this.forwardedRequestIdsByCaller.clear();
     this.options.registry.refreshAllRuntimeStates();
   }
 
@@ -420,13 +399,10 @@ export class RuntimeDispatcher {
   pendingLifecycleCounters(): RuntimeDispatcherPendingCounters {
     const counters: RuntimeDispatcherPendingCounters = {
       pendingUnary: 0,
-      pendingStream: 0,
-      pendingForward: 0
+      pendingStream: 0
     };
     for (const pending of this.pending.values()) {
-      if (pending.kind === 'forward') {
-        counters.pendingForward += 1;
-      } else if (pending.kind === 'stream') {
+      if (pending.kind === 'stream') {
         counters.pendingStream += 1;
       } else {
         counters.pendingUnary += 1;
@@ -435,120 +411,9 @@ export class RuntimeDispatcher {
     return counters;
   }
 
-  handleRuntimeRequestStart(
-    callerWs: WebSocket,
-    request: RuntimeBinaryDispatchInput
-  ): void {
-    this.options.registry.validateRuntimeRequestStartSource(callerWs, request.header);
-    const callerRequestId = request.header.requestId;
-    if (this.forwardedRequestIdsByCaller.get(callerWs)?.has(callerRequestId)) {
-      this.sendRuntimeErrorResponse(callerWs, callerRequestId, {
-        code: 'DuplicateRequestId',
-        message: `runtime-originated request.start requestId ${callerRequestId} is already pending`
-      });
-      return;
-    }
-
-    const timeoutMs = this.resolveRuntimeOriginatedTimeoutMs(request.header);
-    const forwardedRequestId = this.createForwardedRequestId();
-    const forwardedHeader: RequestStartFrameHeader = {
-      ...request.header,
-      requestId: forwardedRequestId
-    };
-    const connection = this.options.registry.pickDispatchConnection(forwardedHeader);
-    if (connection instanceof GatewayError) {
-      this.sendRuntimeErrorResponse(callerWs, callerRequestId, connection.toPayload());
-      return;
-    }
-    if (!connection) {
-      this.sendRuntimeErrorResponse(
-        callerWs,
-        callerRequestId,
-        new ProviderUnavailableError().toPayload()
-      );
-      return;
-    }
-    const dispatchHeader = dispatchHeaderForConnection(forwardedHeader, connection);
-
-    const timeout = setTimeout(() => {
-      const pending = this.pending.get(forwardedRequestId);
-      this.finishPending(forwardedRequestId, pending, {
-        source: 'timeout',
-        kind: 'cancelled',
-        reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.timeout)
-      });
-      this.sendRuntimeErrorResponse(
-        callerWs,
-        callerRequestId,
-        new RuntimeTimeoutError(timeoutMs).toPayload()
-      );
-    }, timeoutMs);
-
-    this.trackForwardedRequest(callerWs, callerRequestId, forwardedRequestId);
-    this.pending.set(forwardedRequestId, {
-      kind: 'forward',
-      ...(connection.runtimeId !== undefined ? { runtimeId: connection.runtimeId } : {}),
-      request: dispatchHeader,
-      timeout,
-      ws: connection.ws,
-      callerRequestId,
-      callerWs,
-      streamState: 'waitingStart',
-      nextSeq: 0,
-      reject: (error: unknown) => {
-        this.sendRuntimeErrorResponse(
-          callerWs,
-          callerRequestId,
-          this.runtimeErrorPayloadFromUnknown(error)
-        );
-      }
-    });
-
-    this.options.frameSender.sendFrame(
-      connection.ws,
-      dispatchHeader,
-      request.payloadBytes,
-      (error) => {
-        if (!error) {
-          return;
-        }
-        const pending = this.pending.get(forwardedRequestId);
-        if (!pending) {
-          return;
-        }
-        const providerError = new ProviderUnavailableError(error.message);
-        this.finishPending(forwardedRequestId, pending, {
-          source: 'callback_error',
-          kind: 'failed',
-          error: providerError
-        });
-        this.sendRuntimeErrorResponse(
-          callerWs,
-          callerRequestId,
-          providerError.toPayload()
-        );
-      }
-    );
-  }
-
   handleRuntimeCancel(ws: WebSocket, envelope: RequestCancelEnvelope): void {
     if (typeof envelope.requestId !== 'string') {
       throw new Error('invalid request.cancel envelope');
-    }
-
-    const forwardedRequestId = this.forwardedRequestIdsByCaller.get(ws)?.get(envelope.requestId);
-    if (forwardedRequestId !== undefined) {
-      const pending = this.pending.get(forwardedRequestId);
-      if (!pending || pending.kind !== 'forward' || pending.callerWs !== ws) {
-        return;
-      }
-      this.finishPending(forwardedRequestId, pending, {
-        source: 'caller_abort',
-        kind: 'cancelled',
-        reason: envelope.reason
-      });
-      this.finishPendingActorExecution(pending, 'cancelled', envelope.reason);
-      return;
     }
 
     const pending = this.pending.get(envelope.requestId);
@@ -579,10 +444,6 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      return;
-    }
-    if (pending.kind === 'forward') {
-      this.forwardResponseEnd(ws, response, pending);
       return;
     }
     if (pending.kind === 'stream') {
@@ -635,20 +496,6 @@ export class RuntimeDispatcher {
     if (!this.isPendingRuntimeSocket(ws, pending)) {
       return;
     }
-    if (pending.kind === 'forward') {
-      this.finishPending(envelope.requestId, pending, {
-        source: 'runtime_response_error',
-        kind: 'failed',
-        error: envelope.error
-      });
-      this.finishPendingActorExecution(pending, 'failed', envelope.error.message);
-      this.sendRuntimeErrorResponse(
-        pending.callerWs,
-        pending.callerRequestId,
-        envelope.error
-      );
-      return;
-    }
     if (pending.kind === 'unaryFrame') {
       this.finishPending(envelope.requestId, pending, {
         source: 'runtime_response_error',
@@ -685,10 +532,6 @@ export class RuntimeDispatcher {
       return;
     }
     if (!this.isPendingRuntimeSocket(ws, pending)) {
-      return;
-    }
-    if (pending.kind === 'forward') {
-      this.forwardResponseStart(ws, response, payloadBytes, pending);
       return;
     }
     if (pending.kind !== 'stream') {
@@ -736,10 +579,6 @@ export class RuntimeDispatcher {
     if (!this.isPendingRuntimeSocket(ws, pending)) {
       return;
     }
-    if (pending.kind === 'forward') {
-      this.forwardResponseChunk(ws, response, pending);
-      return;
-    }
     if (pending.kind !== 'stream') {
       this.rejectPendingRuntimeError(ws, requestId, {
         code: 'UnexpectedChunk',
@@ -780,186 +619,10 @@ export class RuntimeDispatcher {
           kind: 'cancelled',
           reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.runtimeDisconnect)
         });
-        if (pending.kind === 'forward') {
-          this.finishPendingActorExecution(
-            pending,
-            'failed',
-            'Runtime disconnected before responding'
-          );
-        }
         pending.reject(new ProviderUnavailableError('Runtime disconnected before responding'));
         continue;
       }
-      if (pending.kind === 'forward' && pending.callerWs === ws) {
-        this.finishPending(requestId, pending, {
-          source: 'caller_abort',
-          kind: 'cancelled',
-          reason: requestCancelReasonForSituation(REQUEST_CANCEL_SITUATION.runtimeDisconnect)
-        });
-        this.finishPendingActorExecution(pending, 'cancelled', 'caller runtime disconnected');
-      }
     }
-    this.forwardedRequestIdsByCaller.delete(ws);
-  }
-
-  private resolveRuntimeOriginatedTimeoutMs(request: RequestStartFrameHeader): number {
-    if (request.deadline === undefined) {
-      return DEFAULT_RUNTIME_ORIGINATED_TIMEOUT_MS;
-    }
-    if (!Number.isFinite(request.deadline.timeoutMs) || request.deadline.timeoutMs <= 0) {
-      throw new Error('runtime-originated request.start deadline.timeoutMs must be positive');
-    }
-    const expiresAtMs = Date.parse(request.deadline.expiresAt);
-    if (!Number.isFinite(expiresAtMs)) {
-      throw new Error(
-        'runtime-originated request.start deadline.expiresAt must be an ISO timestamp'
-      );
-    }
-    return Math.max(0, Math.min(request.deadline.timeoutMs, expiresAtMs - Date.now()));
-  }
-
-  private createForwardedRequestId(): string {
-    let requestId: string;
-    do {
-      requestId = `router-forward:${randomUUID()}`;
-    } while (this.pending.has(requestId));
-    return requestId;
-  }
-
-  private trackForwardedRequest(
-    callerWs: WebSocket,
-    callerRequestId: string,
-    forwardedRequestId: string
-  ): void {
-    let requests = this.forwardedRequestIdsByCaller.get(callerWs);
-    if (!requests) {
-      requests = new Map();
-      this.forwardedRequestIdsByCaller.set(callerWs, requests);
-    }
-    requests.set(callerRequestId, forwardedRequestId);
-  }
-
-  private forwardResponseStart(
-    ws: WebSocket,
-    response: RuntimeBinaryDispatchStart,
-    payloadBytes: Uint8Array,
-    pending: RuntimeForwardInvocation
-  ): void {
-    const requestId = response.header.requestId;
-    if (pending.request.mode !== 'serverStream') {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'UnexpectedStart',
-        message: 'response.start is only valid for serverStream dispatch'
-      });
-      return;
-    }
-    if (pending.streamState !== 'waitingStart') {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'StreamProtocolError',
-        message: 'duplicate response.start frame'
-      });
-      return;
-    }
-    if (payloadBytes.byteLength !== 0) {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'StreamProtocolError',
-        message: 'response.start payload must be empty'
-      });
-      return;
-    }
-
-    const header: ResponseStartFrameHeader = {
-      ...response.header,
-      requestId: pending.callerRequestId
-    };
-    this.options.frameSender.sendFrame(pending.callerWs, header);
-    clearTimeout(pending.timeout);
-    pending.streamState = 'streaming';
-  }
-
-  private forwardResponseChunk(
-    ws: WebSocket,
-    response: RuntimeBinaryDispatchChunk,
-    pending: RuntimeForwardInvocation
-  ): void {
-    const requestId = response.header.requestId;
-    if (pending.request.mode !== 'serverStream') {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'UnexpectedChunk',
-        message: 'response.chunk is only valid for serverStream dispatch'
-      });
-      return;
-    }
-    if (pending.streamState !== 'streaming') {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'StreamProtocolError',
-        message: 'response.chunk received before response.start'
-      });
-      return;
-    }
-    if (response.header.seq !== pending.nextSeq) {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'StreamProtocolError',
-        message: `response.chunk seq ${response.header.seq} does not match expected seq ${pending.nextSeq}`
-      });
-      return;
-    }
-
-    const header: ResponseChunkFrameHeader = {
-      ...response.header,
-      requestId: pending.callerRequestId
-    };
-    this.options.frameSender.sendFrame(pending.callerWs, header, response.payloadBytes);
-    pending.nextSeq += 1;
-  }
-
-  private forwardResponseEnd(
-    ws: WebSocket,
-    response: RuntimeBinaryDispatchResponse,
-    pending: RuntimeForwardInvocation
-  ): void {
-    const requestId = response.header.requestId;
-    if (pending.request.mode === 'serverStream') {
-      if (pending.streamState !== 'streaming') {
-        this.rejectPendingRuntimeError(ws, requestId, {
-          code: 'StreamProtocolError',
-          message: 'response.end received before response.start'
-        });
-        return;
-      }
-      if (response.header.payloadPresent || response.payloadBytes.byteLength !== 0) {
-        this.rejectPendingRuntimeError(ws, requestId, {
-          code: 'StreamProtocolError',
-          message: 'streaming response.end must not include a payload'
-        });
-        return;
-      }
-      if (response.header.httpResponse !== undefined) {
-        this.rejectPendingRuntimeError(ws, requestId, {
-          code: 'StreamProtocolError',
-          message: 'streaming response.end must not include httpResponse metadata'
-        });
-        return;
-      }
-      pending.streamState = 'terminal';
-    } else if (pending.streamState !== 'waitingStart') {
-      this.rejectPendingRuntimeError(ws, requestId, {
-        code: 'StreamProtocolError',
-        message: 'response.start is not valid for unary request forwarding'
-      });
-      return;
-    }
-
-    this.finishPending(requestId, pending, {
-      source: 'runtime_response_end',
-      kind: 'completed'
-    });
-    this.finishPendingActorExecution(pending, 'completed');
-    const header: ResponseEndFrameHeader = {
-      ...response.header,
-      requestId: pending.callerRequestId
-    };
-    this.options.frameSender.sendFrame(pending.callerWs, header, response.payloadBytes);
   }
 
   private rejectPendingRuntimeError(
@@ -985,9 +648,6 @@ export class RuntimeDispatcher {
       kind: 'failed',
       error
     });
-    if (pending.kind === 'forward') {
-      this.finishPendingActorExecution(pending, 'failed', String(error));
-    }
     pending.reject(error);
   }
 
@@ -997,13 +657,10 @@ export class RuntimeDispatcher {
     }
     clearTimeout(pending.timeout);
     pending.abortCleanup?.();
-    if (pending.kind === 'stream' || pending.kind === 'forward') {
+    if (pending.kind === 'stream') {
       pending.streamState = 'terminal';
     }
     this.pending.delete(requestId);
-    if (pending.kind === 'forward') {
-      this.untrackForwardedRequest(pending.callerWs, pending.callerRequestId);
-    }
   }
 
   private finishPending(
@@ -1090,17 +747,6 @@ export class RuntimeDispatcher {
     }
   }
 
-  private untrackForwardedRequest(callerWs: WebSocket, callerRequestId: string): void {
-    const requests = this.forwardedRequestIdsByCaller.get(callerWs);
-    if (!requests) {
-      return;
-    }
-    requests.delete(callerRequestId);
-    if (requests.size === 0) {
-      this.forwardedRequestIdsByCaller.delete(callerWs);
-    }
-  }
-
   private attachAbortHandler(
     requestId: string,
     options: RuntimeBinaryDispatchOptions,
@@ -1150,26 +796,6 @@ export class RuntimeDispatcher {
     });
   }
 
-  private sendRuntimeErrorResponse(
-    ws: WebSocket,
-    requestId: string,
-    error: RuntimeErrorPayload
-  ): void {
-    this.options.frameSender.sendFrame(ws, {
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'response.error',
-      requestId,
-      error
-    });
-  }
-
-  private runtimeErrorPayloadFromUnknown(error: unknown): RuntimeErrorPayload {
-    if (error instanceof GatewayError) {
-      return error.toPayload();
-    }
-    return toGatewayError(error).toPayload();
-  }
-
   private isPendingRuntimeSocket(ws: WebSocket, pending: RuntimeInvocation): boolean {
     return pending.ws === ws;
   }
@@ -1198,18 +824,6 @@ export class RuntimeDispatcher {
       runtimeAcceptsGatewayEntry(runtime, request.gatewayEntryIdentity) &&
       (request.activationIdentity === undefined ||
         runtime.activationIdentity === request.activationIdentity)
-    );
-  }
-
-  private finishPendingActorExecution(
-    pending: RuntimeForwardInvocation,
-    terminalState: 'completed' | 'failed' | 'cancelled',
-    terminalReason?: string
-  ): void {
-    this.options.registry.finishActorExecution(
-      pending.actorExecution,
-      terminalState,
-      terminalReason
     );
   }
 }
