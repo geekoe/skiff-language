@@ -821,6 +821,17 @@ impl<'a> EvalContext<'a> {
                 )
                 .await
             }
+            InterfaceCarrier::CallbackCapability(carrier) => {
+                super::assembly_execution::dispatch_callback_capability(
+                    self,
+                    call,
+                    carrier,
+                    method_abi_id,
+                    slot,
+                    args.to_vec(),
+                )
+                .await
+            }
         }
     }
 
@@ -919,6 +930,13 @@ impl<'a> EvalContext<'a> {
                         &call.type_args,
                         values,
                     )
+                    .await
+            }
+            LinkedCallTarget::PackageDirect { call: target } => {
+                super::assembly_execution::dispatch_package_direct(self, call, target, values).await
+            }
+            LinkedCallTarget::ActivationRelativeService { instruction } => {
+                super::assembly_execution::dispatch_service_call(self, call, instruction, values)
                     .await
             }
             LinkedCallTarget::LocalExecutable { .. }
