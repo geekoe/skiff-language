@@ -19,13 +19,15 @@ use skiff_runtime_model::{
 };
 
 use super::{
+    assembly_execution::RuntimeExecutionProjection,
     capabilities::{ExecutionControl, RuntimeNativeConfigCapabilityContext},
     env::{check_cancelled, Env, Flow},
     exceptions::{catch_err, catch_ok, exception_envelope_for_catch},
     flow_completion::FlowCompletionPolicy,
-    invocation::EvalProgramProjection,
-    native_capability::project_runtime_native_capability_context,
-    native_invocation::{resolve_config_builtin_type_arg_plan, resolve_runtime_native_invocation},
+    native_capability::project_runtime_execution_native_capability_context,
+    native_invocation::{
+        resolve_config_builtin_type_arg_plan, resolve_runtime_execution_native_invocation,
+    },
     program_db::{is_db_builtin_op, program_call_db_op},
     program_execution::ProgramExecutionContext,
     program_ir::{
@@ -49,7 +51,7 @@ use skiff_runtime_native_contract::{native_target_binding_key, native_target_nam
 
 pub struct EvalContext<'a> {
     pub interpreter: &'a Interpreter,
-    program: EvalProgramProjection<'a>,
+    projection: RuntimeExecutionProjection<'a>,
     pub context: ProgramExecutionContext<'a>,
     pub execution: ExecutionControl<'a>,
     pub heap: &'a mut RequestHeap,
@@ -68,12 +70,12 @@ impl<'a> EvalContext<'a> {
         addr: &'a ExecutableAddr,
         file: &'a LinkedFileUnit,
         executable: &'a LinkedExecutable,
-    ) -> Self {
-        let program = interpreter.program.projection();
+    ) -> Result<Self> {
+        let projection = RuntimeExecutionProjection::for_context(interpreter, &context)?;
         let execution = context.execution();
-        Self {
+        Ok(Self {
             interpreter,
-            program,
+            projection,
             context,
             execution,
             heap,
@@ -81,11 +83,24 @@ impl<'a> EvalContext<'a> {
             addr,
             file,
             executable,
-        }
+        })
     }
 
     fn type_projection(&self) -> EvalTypeProjection<'a> {
-        EvalTypeProjection::new(self.program)
+        EvalTypeProjection::from_execution_projection(self.projection.clone())
+    }
+
+    pub(crate) fn execution_projection(&self) -> &RuntimeExecutionProjection<'a> {
+        &self.projection
+    }
+
+    fn ensure_legacy_service_path_allowed(&self, path: &str) -> Result<()> {
+        if self.projection.assembly().is_some() {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "assembly execution cannot use legacy {path}"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn exec_program_executable(&mut self) -> Result<Flow> {
@@ -445,7 +460,7 @@ impl<'a> EvalContext<'a> {
         let iterable_expr = program_expression_ref(self.executable, iterable_ref)?;
         if value_slot.is_none() {
             if let Some(producer) = self.interpreter.resolve_stream_producer_call(
-                self.program,
+                self.projection.clone(),
                 self.addr,
                 self.heap,
                 self.env,
@@ -455,7 +470,7 @@ impl<'a> EvalContext<'a> {
                 return self
                     .interpreter
                     .exec_program_stream_producer_for_in(
-                        self.program,
+                        self.projection.clone(),
                         self.context.clone(),
                         self.heap,
                         self.env,
@@ -677,6 +692,7 @@ impl<'a> EvalContext<'a> {
                 operations,
                 ..
             } => {
+                self.ensure_legacy_service_path_allowed("remote interface boxing")?;
                 let table = self.remote_operation_table_from_linked(
                     dependency_ref,
                     public_instance_key,
@@ -794,6 +810,7 @@ impl<'a> EvalContext<'a> {
                 operations,
                 ..
             } => {
+                self.ensure_legacy_service_path_allowed("remote interface invocation")?;
                 let slot_index = program_u32_to_usize(slot, "interfaceMethod.slot")?;
                 let Some(remote_slot) = operations.slots().get(slot_index) else {
                     return Err(RuntimeError::InvalidArtifact(format!(
@@ -890,7 +907,7 @@ impl<'a> EvalContext<'a> {
         // deferred producer and hand back the stream value; it is driven when the
         // stream is later consumed.
         if let Some(producer) = self.interpreter.resolve_stream_producer_from_call(
-            self.program,
+            self.projection.clone(),
             self.addr,
             self.heap,
             self.env,
@@ -900,7 +917,7 @@ impl<'a> EvalContext<'a> {
             let value = self
                 .interpreter
                 .prepare_deferred_stream_producer(
-                    self.program,
+                    self.projection.clone(),
                     self.context.clone(),
                     self.heap,
                     self.env,
@@ -954,6 +971,7 @@ impl<'a> EvalContext<'a> {
                 )))
             }
             LinkedCallTarget::ServiceDependencySymbol { symbol } => {
+                self.ensure_legacy_service_path_allowed("service dependency dispatch")?;
                 let outbound_context = self.context.outbound_context();
                 super::service_dispatch::call_outbound_service(
                     self.interpreter,
@@ -975,16 +993,17 @@ impl<'a> EvalContext<'a> {
                     )));
                 }
                 let native_dispatch = NativeDispatch::new();
-                let invocation = resolve_runtime_native_invocation(
+                let invocation = resolve_runtime_execution_native_invocation(
                     self.interpreter,
+                    &self.projection,
                     self.addr,
                     self.env,
                     call,
                     target,
                 )?;
-                let native_capability_context = project_runtime_native_capability_context(
+                let native_capability_context = project_runtime_execution_native_capability_context(
                     &self.context,
-                    self.program,
+                    self.projection.clone(),
                     self.env.stream_capability_context(),
                     invocation.required_context(),
                 );
@@ -1007,7 +1026,7 @@ impl<'a> EvalContext<'a> {
                     let config_context =
                         RuntimeNativeConfigCapabilityContext::new(self.context.config_context());
                     let config_type_arg_plan = resolve_config_builtin_type_arg_plan(
-                        self.program.type_view(),
+                        self.projection.type_view(),
                         self.addr,
                         self.env.type_substitutions.as_linked_map(),
                         call,
@@ -1089,7 +1108,7 @@ impl<'a> EvalContext<'a> {
         for arg in &call.args {
             let expr = program_expression_ref(self.executable, *arg)?;
             let producer = self.interpreter.resolve_stream_producer_call(
-                self.program,
+                self.projection.clone(),
                 self.addr,
                 self.heap,
                 self.env,
@@ -1108,7 +1127,7 @@ impl<'a> EvalContext<'a> {
                 let next_prepared = self
                     .interpreter
                     .prepare_native_stream_producer_arg(
-                        self.program,
+                        self.projection.clone(),
                         self.context.clone(),
                         self.heap,
                         self.env,
@@ -1182,7 +1201,7 @@ impl<'a> EvalContext<'a> {
         };
         let expr = program_expression_ref(self.executable, *first_arg)?;
         let Some(producer) = self.interpreter.resolve_stream_producer_call(
-            self.program,
+            self.projection.clone(),
             self.addr,
             self.heap,
             self.env,
@@ -1194,8 +1213,14 @@ impl<'a> EvalContext<'a> {
         };
 
         let native_dispatch = NativeDispatch::new();
-        let invocation =
-            resolve_runtime_native_invocation(self.interpreter, self.addr, self.env, call, target)?;
+        let invocation = resolve_runtime_execution_native_invocation(
+            self.interpreter,
+            &self.projection,
+            self.addr,
+            self.env,
+            call,
+            target,
+        )?;
         let stream_arg_plan = invocation.arg_plan(0)?.clone();
         if !stream_item_plans_match(&producer.item_type, &stream_arg_plan) {
             return Err(RuntimeError::Decode(format!(
@@ -1208,7 +1233,7 @@ impl<'a> EvalContext<'a> {
         let prepared = self
             .interpreter
             .prepare_native_stream_producer_arg(
-                self.program,
+                self.projection.clone(),
                 self.context.clone(),
                 self.heap,
                 self.env,
@@ -1243,9 +1268,9 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
-        let native_capability_context = project_runtime_native_capability_context(
+        let native_capability_context = project_runtime_execution_native_capability_context(
             &self.context,
-            self.program,
+            self.projection.clone(),
             self.env.stream_capability_context(),
             invocation.required_context(),
         );

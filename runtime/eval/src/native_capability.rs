@@ -8,6 +8,7 @@ use super::capabilities::{
     StreamCapabilityContext,
 };
 use super::program_execution::ProgramExecutionContext;
+use crate::assembly_execution::RuntimeExecutionProjection;
 use crate::invocation::EvalProgramProjection;
 use skiff_runtime_capability_context::{
     project_native_capability_context, NativeCapabilityContexts, NativeCapabilityProjectionSource,
@@ -27,14 +28,14 @@ type RuntimeNativeCapabilityContexts<'context, 'execution> = NativeCapabilityCon
 
 struct RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
     context: &'context ProgramExecutionContext<'execution>,
-    program: EvalProgramProjection<'context>,
+    program: RuntimeExecutionProjection<'context>,
     stream_context: StreamCapabilityContext,
 }
 
 impl<'context, 'execution> RuntimeNativeCapabilityProjectionSource<'context, 'execution> {
     fn new(
         context: &'context ProgramExecutionContext<'execution>,
-        program: EvalProgramProjection<'context>,
+        program: RuntimeExecutionProjection<'context>,
         stream_context: StreamCapabilityContext,
     ) -> Self {
         Self {
@@ -45,14 +46,14 @@ impl<'context, 'execution> RuntimeNativeCapabilityProjectionSource<'context, 'ex
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RuntimeNativeResourceCapabilityContext<'a> {
-    resources: skiff_runtime_linked_program::RuntimeProgramResourceView<'a>,
+    projection: RuntimeExecutionProjection<'a>,
 }
 
 impl<'a> RuntimeNativeResourceCapabilityContext<'a> {
-    fn new(resources: skiff_runtime_linked_program::RuntimeProgramResourceView<'a>) -> Self {
-        Self { resources }
+    fn new(projection: RuntimeExecutionProjection<'a>) -> Self {
+        Self { projection }
     }
 }
 
@@ -60,7 +61,7 @@ impl skiff_runtime_native::capability::NativeResourceCapability
     for RuntimeNativeResourceCapabilityContext<'_>
 {
     fn resources(&self) -> skiff_runtime_linked_program::RuntimeProgramResourceView<'_> {
-        self.resources
+        self.projection.resource_view()
     }
 }
 
@@ -117,13 +118,27 @@ impl<'context, 'execution> NativeCapabilityProjectionSource
     }
 
     fn resource(&self) -> Self::Resource {
-        RuntimeNativeResourceCapabilityContext::new(self.program.resource_view())
+        RuntimeNativeResourceCapabilityContext::new(self.program.clone())
     }
 }
 
 pub fn project_runtime_native_capability_context<'context, 'execution>(
     context: &'context ProgramExecutionContext<'execution>,
     program: EvalProgramProjection<'context>,
+    stream_context: StreamCapabilityContext,
+    required_context: NativeRequiredContext,
+) -> RuntimeNativeCapabilityContexts<'context, 'execution> {
+    project_runtime_execution_native_capability_context(
+        context,
+        RuntimeExecutionProjection::Legacy(program),
+        stream_context,
+        required_context,
+    )
+}
+
+pub(crate) fn project_runtime_execution_native_capability_context<'context, 'execution>(
+    context: &'context ProgramExecutionContext<'execution>,
+    program: RuntimeExecutionProjection<'context>,
     stream_context: StreamCapabilityContext,
     required_context: NativeRequiredContext,
 ) -> RuntimeNativeCapabilityContexts<'context, 'execution> {

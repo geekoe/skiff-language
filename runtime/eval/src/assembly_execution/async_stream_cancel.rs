@@ -10,7 +10,8 @@ pub(crate) async fn execute_service_call(
     _target: RuntimeAssemblyServiceCallTarget,
     _args: Vec<RuntimeValue>,
 ) -> Result<RuntimeValue> {
-    Err(AssemblyExecutionHandoffError::unavailable(
+    Err(AssemblyExecutionHandoffError::unavailable_at(
         AssemblyExecutionLaneKind::AsyncStreamCancel,
+        "service-call",
     ))
 }

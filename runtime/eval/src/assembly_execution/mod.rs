@@ -1,6 +1,7 @@
 mod async_stream_cancel;
 mod callback_native;
 mod ordinary;
+mod projection;
 
 use skiff_artifact_model::{BoundaryCancellationContract, BoundaryStreamContract};
 use skiff_runtime_linked_program::{
@@ -16,6 +17,7 @@ use crate::{
 
 #[allow(unused_imports)]
 pub(crate) use callback_native::CallbackNativeCapabilityHooks;
+pub(crate) use projection::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
 
 pub(crate) async fn dispatch_package_direct(
     context: &mut EvalContext<'_>,
@@ -100,16 +102,30 @@ impl AssemblyExecutionLaneKind {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("runtime assembly execution lane {lane} is not available at the shared kernel checkpoint")]
+#[error(
+    "runtime assembly execution hook {hook} in lane {lane} is not available at the shared kernel checkpoint"
+)]
 pub(crate) struct AssemblyExecutionHandoffError {
     lane: &'static str,
+    hook: &'static str,
 }
 
 impl AssemblyExecutionHandoffError {
     pub(crate) fn unavailable(lane: AssemblyExecutionLaneKind) -> RuntimeError {
+        Self::unavailable_at(lane, "lane")
+    }
+
+    pub(crate) fn unavailable_at(
+        lane: AssemblyExecutionLaneKind,
+        hook: &'static str,
+    ) -> RuntimeError {
         RuntimeError::ProviderUnavailable {
-            target: format!("in-process {} lane", lane.label()),
-            reason: Self { lane: lane.label() }.to_string(),
+            target: format!("in-process {} {hook}", lane.label()),
+            reason: Self {
+                lane: lane.label(),
+                hook,
+            }
+            .to_string(),
         }
     }
 }
