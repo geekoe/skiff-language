@@ -217,7 +217,7 @@ fn coordinate_segment(value: &str, label: &str) -> Result<String> {
     {
         return invalid_segment(label, value);
     }
-    Ok(value.replace('.', "~").replace('/', "~~"))
+    Ok(value.replace('.', "~d").replace('/', "~s"))
 }
 
 fn safe_segment(value: &str, label: &str) -> Result<String> {
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(
             PackageArtifactRecordPath::new(&package).unwrap().as_str(),
             format!(
-                "records/package-artifacts/example~com~~echo/1.0.0/{}/package.json",
+                "records/package-artifacts/example~dcom~secho/1.0.0/{}/package.json",
                 hash('a')
             )
         );
@@ -369,5 +369,48 @@ mod tests {
         };
         assert!(PackageArtifactRecordPath::new(&package).is_err());
         assert!(EnvironmentActivationStatePath::new("../prod").is_err());
+    }
+
+    #[test]
+    fn coordinate_codec_is_injective_for_slashes_and_adjacent_dots() {
+        assert_eq!(coordinate_segment("a.b", "fixture").unwrap(), "a~db");
+        assert_eq!(coordinate_segment("a/b", "fixture").unwrap(), "a~sb");
+        assert_eq!(coordinate_segment("a..b", "fixture").unwrap(), "a~d~db");
+        assert_eq!(
+            coordinate_segment("a.b/c/d", "fixture").unwrap(),
+            "a~db~sc~sd"
+        );
+        assert_eq!(
+            coordinate_segment("a.b/c..d", "fixture").unwrap(),
+            "a~db~sc~d~dd"
+        );
+
+        let protocol = ServiceProtocolIdentity::new(format!(
+            "{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}",
+            hash('c')
+        ));
+        let slash = ServiceContractRef {
+            service_id: "a.b/c/d".to_string(),
+            contract_version: "1.0.0".to_string(),
+            service_protocol_identity: protocol.clone(),
+        };
+        let adjacent_dots = ServiceContractRef {
+            service_id: "a.b/c..d".to_string(),
+            contract_version: "1.0.0".to_string(),
+            service_protocol_identity: protocol,
+        };
+
+        assert_ne!(
+            ServiceContractRecordPath::new(&slash).unwrap(),
+            ServiceContractRecordPath::new(&adjacent_dots).unwrap()
+        );
+        assert_ne!(
+            ServiceContractPointerPath::new(&slash.service_id, &slash.contract_version).unwrap(),
+            ServiceContractPointerPath::new(
+                &adjacent_dots.service_id,
+                &adjacent_dots.contract_version
+            )
+            .unwrap()
+        );
     }
 }
