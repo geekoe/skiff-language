@@ -1,0 +1,23 @@
+# P4-R02：Execution Lanes Acceptance
+
+## 角色与精确输入
+
+高风险只读批次验收Agent。输入为权威设计§6–§8、§12、§14，`phase-plan.md`，P4-T04/T05/T06任务合同，
+三个lane已合流的exact clean integration commit，以及R01与开发证据。不得修改或预设结论。
+
+## 三个独立 verdict
+
+1. **ORDINARY_ERROR**：package direct same-heap对照、provider context switch/receiver restore、parameter/return/error
+   detached materialization、missing provider no-router。
+2. **ASYNC_STREAM_CANCEL**：future/owned continuation显式owner、producer/consumer context、item materialization、
+   backpressure/close/cancel exact-once cleanup。
+3. **CALLBACK_NATIVE**：opaque capability owner/generation/lifetime、callback context restore、stable expiration errors、
+   native explicit adapter与recoverable拒绝。
+
+同时检查三个lane只消费R01 frozen hook，没有复制descriptor/materializer/context owner或争改中央dispatch；生产
+`tokio::spawn` user-code路径均携带owned context，无current-service TLS或router fallback。
+
+## 输出
+
+首行总体`PASS`或`FAIL`，并分别输出三个verdict。列blocking issues、non-blocking follow-up、证据命令、动态缺口和
+残余风险。任一verdict FAIL均不解锁Wave 3；结论锚定exact commit。
