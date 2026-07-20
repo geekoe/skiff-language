@@ -376,6 +376,9 @@ mod tests {
     fn assembly_execution_projection_resolves_image_owned_lookup_matrix() {
         let (image, file_identity) = projection_image();
         let projection = RuntimeAssemblyExecutionProjection::from_image(image);
+        let cloned_projection = projection.clone();
+        assert!(Arc::ptr_eq(&projection.image, &cloned_projection.image));
+        assert!(Arc::ptr_eq(&projection.storage, &cloned_projection.storage));
         let unit = UnitAddr::Package(0);
         let identity_file = FileAddr::FileIrIdentity(file_identity.clone());
         let indexed_file = FileAddr::LoadedFileIndex(0);

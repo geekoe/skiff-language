@@ -71,6 +71,22 @@ impl RuntimeAssemblyEvalTarget {
         request_activation: RequestActivationContext,
         resolver: Arc<dyn RuntimeAssemblyEvalResolver>,
     ) -> Result<Self, RuntimeAssemblyEvalSeamError> {
+        Self::validate_request_activation(&execution_image, &request_activation, &resolver)?;
+        let execution_projection =
+            RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&execution_image));
+        Ok(Self {
+            execution_image,
+            execution_projection,
+            request_activation,
+            resolver,
+        })
+    }
+
+    fn validate_request_activation(
+        execution_image: &AssemblyExecutionImage,
+        request_activation: &RequestActivationContext,
+        resolver: &Arc<dyn RuntimeAssemblyEvalResolver>,
+    ) -> Result<(), RuntimeAssemblyEvalSeamError> {
         let current = request_activation.current();
         if execution_image.assembly_identity() != &current.identity().assembly_identity {
             return Err(RuntimeAssemblyEvalSeamError::AssemblyIdentityMismatch);
@@ -86,17 +102,10 @@ impl RuntimeAssemblyEvalTarget {
             });
         }
         RuntimeAssemblyTypePlanTarget::from_execution_image(
-            &execution_image,
+            execution_image,
             current.implementation_package_build_id(),
         )?;
-        let execution_projection =
-            RuntimeAssemblyExecutionProjection::from_image(Arc::clone(&execution_image));
-        Ok(Self {
-            execution_image,
-            execution_projection,
-            request_activation,
-            resolver,
-        })
+        Ok(())
     }
 
     pub fn execution_image(&self) -> &Arc<AssemblyExecutionImage> {
@@ -133,11 +142,17 @@ impl RuntimeAssemblyEvalTarget {
         &self,
         request_activation: RequestActivationContext,
     ) -> Result<Self, RuntimeAssemblyEvalSeamError> {
-        Self::new(
-            Arc::clone(&self.execution_image),
+        Self::validate_request_activation(
+            &self.execution_image,
+            &request_activation,
+            &self.resolver,
+        )?;
+        Ok(Self {
+            execution_image: Arc::clone(&self.execution_image),
+            execution_projection: self.execution_projection.clone(),
             request_activation,
-            Arc::clone(&self.resolver),
-        )
+            resolver: Arc::clone(&self.resolver),
+        })
     }
 
     pub fn activation_by_opaque_id(&self, activation_id: &str) -> Option<Arc<ActivationContext>> {
