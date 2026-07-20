@@ -15,3 +15,6 @@ skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 thiserror = "2.0"
 time = { version = "0.3.47", features = ["formatting", "parsing"] }
+
+[dev-dependencies]
+skiff-artifact-model = { path = "../../artifact-model" }

@@ -3559,6 +3559,7 @@ fn test_invocation(target: &str) -> ProgramTestInvocation {
             service_protocol_identity: String::new(),
             contract_identity: None,
             activation_identity: None,
+            ingress_selector: None,
             http_adapter: None,
             websocket_adapter: None,
             binary_http: None,

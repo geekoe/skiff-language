@@ -10,6 +10,7 @@ use skiff_runtime_request_contract::{
     WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
 };
 
+use crate::ingress_selector::ingress_selector_from_start_frame;
 use crate::protocol::{
     RequestCancelFrameHeader, RequestStartFrameHeader, RequestTestEffectDouble,
     RuntimeGatewayAdapterArgFrameHeader, RuntimeGatewayAdapterSourceFrameHeader,
@@ -43,6 +44,7 @@ pub fn request_envelope_from_start_frame(
     if header.build_id.is_empty() {
         return Err("request.start buildId must be a non-empty string".to_string());
     }
+    let ingress_selector = ingress_selector_from_start_frame(&header)?;
     Ok(RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
@@ -54,6 +56,7 @@ pub fn request_envelope_from_start_frame(
         service_protocol_identity: header.service_protocol_identity.clone(),
         contract_identity: None,
         activation_identity: header.activation_identity.clone(),
+        ingress_selector: Some(ingress_selector),
         binary_http: binary_http_request_from_frame(header.http_request.clone(), &payload_bytes),
         http_adapter: http_adapter_from_frame(header.http_adapter.clone()),
         websocket_adapter: websocket_adapter_from_frame(header.websocket_adapter.clone()),
@@ -370,6 +373,7 @@ mod tests {
     use std::collections::HashMap;
 
     use serde_json::json;
+    use skiff_artifact_model::IngressProtocol;
 
     use super::{request_cancel_from_frame_header, request_envelope_from_start_frame};
     use crate::protocol::{
@@ -380,16 +384,11 @@ mod tests {
         RuntimeHttpNameValueFrameHeader, RuntimeHttpRequestFrameHeader,
         RuntimeTraceContextFrameHeader, RuntimeWebSocketAdapterFrameHeader,
         RuntimeWebSocketAdapterKindFrameHeader, RuntimeWebSocketConnectRequestFrameHeader,
-        RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketContextExpectationFrameHeader,
-        RuntimeWebSocketMessageEncodingFrameHeader, RuntimeWebSocketMessageFrameHeader,
-        RuntimeWebSocketMessageTagFrameHeader, RuntimeWebSocketPayloadSegmentFrameHeader,
-        RuntimeWebSocketPayloadSegmentKindFrameHeader, RuntimeWebSocketReceiveRequestFrameHeader,
         RUNTIME_FRAME_SCHEMA_VERSION,
     };
     use skiff_runtime_request_contract::{
         GatewayAdapterSource, HttpAdapterCallable, HttpAdapterKind, RuntimeClientSessionControl,
-        WebSocketAdapterKind, WebSocketContextExpectation, WebSocketMessageEncoding,
-        WebSocketMessageTag, WebSocketPayloadSegmentKind,
+        WebSocketAdapterKind,
     };
 
     #[test]
@@ -455,47 +454,7 @@ mod tests {
                         source: RuntimeGatewayAdapterSourceFrameHeader::HttpRequest,
                     }],
                 }),
-                websocket_adapter: Some(RuntimeWebSocketAdapterFrameHeader {
-                    kind: RuntimeWebSocketAdapterKindFrameHeader::Receive,
-                    adapter_args: vec![RuntimeGatewayAdapterArgFrameHeader {
-                        param: "message".to_string(),
-                        source: RuntimeGatewayAdapterSourceFrameHeader::WebSocketMessageBody,
-                    }],
-                    context_expectation: Some(
-                        RuntimeWebSocketContextExpectationFrameHeader::Typed {
-                            connect_operation_abi_id: "connect-op".to_string(),
-                            context_type_identity: "context-type".to_string(),
-                        },
-                    ),
-                    connect_request: Some(RuntimeWebSocketConnectRequestFrameHeader {
-                        connection_id: "conn-1".to_string(),
-                        url: "wss://example.com/socket".to_string(),
-                        query: vec![RuntimeHttpNameValueFrameHeader {
-                            name: "token".to_string(),
-                            value: "abc".to_string(),
-                        }],
-                        headers: Vec::new(),
-                        cookies: Vec::new(),
-                        version: Some("13".to_string()),
-                    }),
-                    receive_request: Some(RuntimeWebSocketReceiveRequestFrameHeader {
-                        connection_id: "conn-1".to_string(),
-                        business_identity: Some("business-1".to_string()),
-                        message: RuntimeWebSocketMessageFrameHeader {
-                            tag: RuntimeWebSocketMessageTagFrameHeader::Binary,
-                            encoding: RuntimeWebSocketMessageEncodingFrameHeader::Raw,
-                        },
-                        context_codec: Some(RuntimeWebSocketContextCodecFrameHeader {
-                            operation_abi_id: "context-op".to_string(),
-                            context_type_identity: "context-type".to_string(),
-                        }),
-                        payload_segments: vec![RuntimeWebSocketPayloadSegmentFrameHeader {
-                            kind: RuntimeWebSocketPayloadSegmentKindFrameHeader::Message,
-                            offset: 0,
-                            length: payload.len(),
-                        }],
-                    }),
-                }),
+                websocket_adapter: None,
                 test_effects_enabled: true,
                 test_effect_doubles: [(
                     "effect.target".to_string(),
@@ -522,6 +481,14 @@ mod tests {
         assert_eq!(request.activation_identity.as_deref(), Some("activation-1"));
         assert_eq!(request.payload_bytes, payload);
         assert!(request.contract_identity.is_none());
+        let ingress = request
+            .ingress_selector
+            .as_ref()
+            .expect("HTTP metadata should project a canonical ingress selector");
+        assert_eq!(ingress.protocol, IngressProtocol::Http);
+        assert_eq!(ingress.host, "example.com");
+        assert_eq!(ingress.method.as_deref(), Some("POST"));
+        assert_eq!(ingress.path, "/path");
 
         let binary_http = request.binary_http.expect("binary HTTP request should map");
         assert_eq!(binary_http.metadata.method, "POST");
@@ -542,29 +509,7 @@ mod tests {
             GatewayAdapterSource::HttpRequest
         );
 
-        let websocket_adapter = request
-            .websocket_adapter
-            .expect("WebSocket adapter should map");
-        assert_eq!(websocket_adapter.kind, WebSocketAdapterKind::Receive);
-        assert_eq!(
-            websocket_adapter.context_expectation,
-            Some(WebSocketContextExpectation::Typed {
-                connect_operation_abi_id: "connect-op".to_string(),
-                context_type_identity: "context-type".to_string(),
-            })
-        );
-        let receive_request = websocket_adapter
-            .receive_request
-            .expect("receive request should map");
-        assert_eq!(receive_request.message.tag, WebSocketMessageTag::Binary);
-        assert_eq!(
-            receive_request.message.encoding,
-            WebSocketMessageEncoding::Raw
-        );
-        assert_eq!(
-            receive_request.payload_segments[0].kind,
-            WebSocketPayloadSegmentKind::Message
-        );
+        assert!(request.websocket_adapter.is_none());
 
         let doubles = request
             .test_effect_doubles
@@ -584,6 +529,46 @@ mod tests {
                 .get("trace")
                 .and_then(|value| value.get("traceId")),
             Some(&json!("trace-1"))
+        );
+    }
+
+    #[test]
+    fn websocket_connect_frame_maps_with_canonical_ingress_selector() {
+        let mut header = minimal_request_start_header(
+            RUNTIME_FRAME_SCHEMA_VERSION,
+            "request.start",
+            "legacy-build-display-only",
+        );
+        header.websocket_adapter = Some(RuntimeWebSocketAdapterFrameHeader {
+            kind: RuntimeWebSocketAdapterKindFrameHeader::Connect,
+            adapter_args: Vec::new(),
+            context_expectation: None,
+            connect_request: Some(RuntimeWebSocketConnectRequestFrameHeader {
+                connection_id: "conn-1".to_string(),
+                url: "wss://socket.example.com/chat?token=opaque".to_string(),
+                query: Vec::new(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                version: Some("13".to_string()),
+            }),
+            receive_request: None,
+        });
+
+        let request = request_envelope_from_start_frame(header, Vec::new())
+            .expect("WebSocket connect should map");
+        let ingress = request
+            .ingress_selector
+            .expect("WebSocket connect should project canonical ingress");
+        assert_eq!(ingress.protocol, IngressProtocol::WebSocket);
+        assert_eq!(ingress.host, "socket.example.com");
+        assert!(ingress.method.is_none());
+        assert_eq!(ingress.path, "/chat");
+        assert_eq!(
+            request
+                .websocket_adapter
+                .expect("WebSocket adapter should map")
+                .kind,
+            WebSocketAdapterKind::Connect
         );
     }
 

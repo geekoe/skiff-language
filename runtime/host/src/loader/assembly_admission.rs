@@ -3,18 +3,23 @@ use std::sync::{Arc, RwLock};
 use anyhow::Context;
 use skiff_artifact_model::{
     AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding,
-    IngressSelector, RuntimeAssembly, ServiceContractRef, ServiceDeploymentRef,
+    IngressSelector, OperationTargetRef, RuntimeAssembly, ServiceContract, ServiceContractRef,
+    ServiceDeploymentRef,
 };
+use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
+use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linker::{
     link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate,
 };
 use skiff_runtime_loader::{
     RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, ServiceContractStore,
 };
+use skiff_runtime_request::RuntimeAssemblyRequestTarget;
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use super::active_assembly_context::ActiveAssemblyContextSet;
 use crate::host::RuntimeHost;
 
 /// Host-owned immutable assembly published after the complete candidate passes admission.
@@ -23,6 +28,7 @@ pub(crate) struct ActiveAssembly {
     generation: u64,
     admitted_at: OffsetDateTime,
     candidate: Arc<AssemblyLinkedCandidate>,
+    contexts: Arc<ActiveAssemblyContextSet>,
 }
 
 /// One request-entry route pinned to the exact active generation used for lookup.
@@ -30,6 +36,10 @@ pub(crate) struct ActiveAssembly {
 pub(crate) struct ActiveAssemblyRoute {
     active: Arc<ActiveAssembly>,
     binding: GlobalIngressBinding,
+    activation: Arc<ActivationContext>,
+    descriptor: BoundaryOperationDescriptor,
+    contract: Arc<ServiceContract>,
+    provider_target: OperationTargetRef,
 }
 
 impl ActiveAssemblyRoute {
@@ -41,13 +51,47 @@ impl ActiveAssemblyRoute {
         self.active.generation()
     }
 
-    pub(crate) fn activation(&self) -> Option<&LinkedActivationTemplate> {
-        self.active.activation(&self.binding.deployment)
+    pub(crate) fn activation(&self) -> &Arc<ActivationContext> {
+        &self.activation
     }
 
-    pub(crate) fn operation_descriptor(&self) -> Option<&BoundaryOperationDescriptor> {
-        self.active
-            .operation_descriptor(&self.binding.contract, &self.binding.contract_operation_id)
+    pub(crate) fn operation_descriptor(&self) -> &BoundaryOperationDescriptor {
+        &self.descriptor
+    }
+
+    pub(crate) fn provider_target(&self) -> &OperationTargetRef {
+        &self.provider_target
+    }
+
+    pub(crate) fn request_target(&self) -> anyhow::Result<RuntimeAssemblyRequestTarget> {
+        let request_activation = RequestActivationContext::begin(Arc::clone(&self.activation))?;
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(&self.active.contexts) as _;
+        let eval = RuntimeAssemblyEvalTarget::new(
+            Arc::clone(self.execution_image()),
+            request_activation,
+            resolver,
+        )?;
+        let boundary = eval.resolve_ingress_target(
+            &self.binding.contract,
+            &self.binding.contract_operation_id,
+            Arc::clone(&self.contract),
+            &self.provider_target,
+        )?;
+        Ok(RuntimeAssemblyRequestTarget::new(eval, boundary)?)
+    }
+
+    pub(crate) fn binding(&self) -> &GlobalIngressBinding {
+        &self.binding
+    }
+
+    pub(crate) fn context_set(&self) -> &Arc<ActiveAssemblyContextSet> {
+        &self.active.contexts
+    }
+
+    pub(crate) fn execution_image(
+        &self,
+    ) -> &Arc<skiff_runtime_linked_program::AssemblyExecutionImage> {
+        self.active.candidate.execution_image()
     }
 }
 
@@ -62,6 +106,10 @@ impl ActiveAssembly {
 
     pub(crate) fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
         &self.candidate
+    }
+
+    pub(crate) fn contexts(&self) -> &Arc<ActiveAssemblyContextSet> {
+        &self.contexts
     }
 
     pub(crate) fn contract_store(&self) -> &Arc<ServiceContractStore> {
@@ -136,13 +184,28 @@ struct AssemblyAdmissionState {
 }
 
 /// The sole owner of candidate build serialization and the active whole-assembly pointer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct AssemblyAdmissionController {
+    runtime_replica_id: String,
     reload: Mutex<()>,
     state: RwLock<AssemblyAdmissionState>,
 }
 
+impl Default for AssemblyAdmissionController {
+    fn default() -> Self {
+        Self::new("runtime-replica")
+    }
+}
+
 impl AssemblyAdmissionController {
+    pub(crate) fn new(runtime_replica_id: impl Into<String>) -> Self {
+        Self {
+            runtime_replica_id: runtime_replica_id.into(),
+            reload: Mutex::new(()),
+            state: RwLock::new(AssemblyAdmissionState::default()),
+        }
+    }
+
     /// Executes the only production whole-assembly admission path.
     ///
     /// The reload permit spans typed hydration, linking, host validation and publication. The
@@ -207,7 +270,25 @@ impl AssemblyAdmissionController {
         }
 
         self.advance_candidate(generation, AssemblyCandidateStage::Admit)?;
-        let active = self.publish(generation, identity, Arc::new(candidate))?;
+        let candidate = Arc::new(candidate);
+        let contexts = match ActiveAssemblyContextSet::from_candidate(
+            &candidate,
+            generation,
+            &self.runtime_replica_id,
+        ) {
+            Ok(contexts) => Arc::new(contexts),
+            Err(error) => {
+                self.fail_candidate(generation, &identity, AssemblyCandidateStage::Admit)?;
+                warn!(
+                    event = "runtime.assembly_admission_failed",
+                    assembly_identity = %identity,
+                    generation,
+                    stage = AssemblyCandidateStage::Admit.as_str()
+                );
+                return Err(error).context("whole-assembly activation context construction failed");
+            }
+        };
+        let active = self.publish(generation, identity, candidate, contexts)?;
         info!(
             event = "runtime.assembly_admitted",
             assembly_identity = %active.identity(),
@@ -249,10 +330,33 @@ impl AssemblyAdmissionController {
         let Some(active) = self.active()? else {
             return Ok(None);
         };
-        Ok(active
-            .ingress(selector)
+        let Some(binding) = active.ingress(selector).cloned() else {
+            return Ok(None);
+        };
+        let activation = active
+            .contexts
+            .activation_for_deployment(&binding.deployment)
+            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no activation context"))?;
+        let descriptor = active
+            .operation_descriptor(&binding.contract, &binding.contract_operation_id)
             .cloned()
-            .map(|binding| ActiveAssemblyRoute { active, binding }))
+            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no descriptor"))?;
+        let contract = active
+            .contexts
+            .contract(&binding.contract)
+            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no canonical contract"))?;
+        let provider_target = active
+            .contexts
+            .operation_target(activation.activation_id(), &binding.contract_operation_id)
+            .ok_or_else(|| anyhow::anyhow!("active assembly ingress has no provider target"))?;
+        Ok(Some(ActiveAssemblyRoute {
+            active,
+            binding,
+            activation,
+            descriptor,
+            contract,
+            provider_target,
+        }))
     }
 
     fn begin_candidate(&self, identity: AssemblyIdentity) -> anyhow::Result<u64> {
@@ -339,12 +443,14 @@ impl AssemblyAdmissionController {
         generation: u64,
         identity: AssemblyIdentity,
         candidate: Arc<AssemblyLinkedCandidate>,
+        contexts: Arc<ActiveAssemblyContextSet>,
     ) -> anyhow::Result<Arc<ActiveAssembly>> {
         let admitted_at = OffsetDateTime::now_utc();
         let active = Arc::new(ActiveAssembly {
             generation,
             admitted_at,
             candidate,
+            contexts,
         });
         let mut state = self
             .state

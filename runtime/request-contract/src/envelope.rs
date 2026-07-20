@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use skiff_artifact_model::IngressSelector;
 
 pub use skiff_runtime_capability_context::HttpNameValue;
 
@@ -18,6 +19,9 @@ pub struct RequestEnvelope {
     pub service_protocol_identity: String,
     pub contract_identity: Option<String>,
     pub activation_identity: Option<String>,
+    /// Canonical external route identity projected strictly from gateway wire metadata.
+    /// Legacy package-test/Phase 05 callers may omit it, but production ingress fails closed.
+    pub ingress_selector: Option<IngressSelector>,
     pub binary_http: Option<BinaryHttpRequest>,
     pub http_adapter: Option<HttpAdapter>,
     pub websocket_adapter: Option<WebSocketAdapter>,

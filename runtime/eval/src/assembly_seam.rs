@@ -259,6 +259,71 @@ impl RuntimeAssemblyEvalTarget {
             executable_addr: executable.addr().clone(),
         })
     }
+
+    /// Adapts one already-pinned global ingress route into the same in-process boundary target
+    /// consumed by activation-relative internal service calls.
+    ///
+    /// Host admission has already selected the activation, canonical contract and exact provider
+    /// operation target in one generation. This adapter validates those typed facts without
+    /// consulting the resolver again and never accepts build/display/ABI fallback identities.
+    pub fn resolve_ingress_target(
+        &self,
+        contract_ref: &ServiceContractRef,
+        operation: &ContractOperationId,
+        contract: Arc<ServiceContract>,
+        operation_target: &OperationTargetRef,
+    ) -> Result<RuntimeAssemblyServiceCallTarget, RuntimeAssemblyEvalSeamError> {
+        let provider = self.request_activation.current();
+        if !Arc::ptr_eq(provider, self.request_activation.receiver()) {
+            return Err(RuntimeAssemblyEvalSeamError::IngressActivationOwnerMismatch);
+        }
+        let deployment = &provider.identity().deployment;
+        if deployment.service_id != contract_ref.service_id
+            || deployment.contract_version != contract_ref.contract_version
+        {
+            return Err(RuntimeAssemblyEvalSeamError::ProviderContractMismatch {
+                activation_id: provider.activation_id().as_str().to_string(),
+                contract: contract_ref.clone(),
+            });
+        }
+        if contract.service_id != contract_ref.service_id
+            || contract.contract_version != contract_ref.contract_version
+            || contract.service_protocol_identity != contract_ref.service_protocol_identity
+        {
+            return Err(RuntimeAssemblyEvalSeamError::ContractIdentityMismatch {
+                contract: contract_ref.clone(),
+            });
+        }
+        let descriptor = contract.operations.get(operation).ok_or_else(|| {
+            RuntimeAssemblyEvalSeamError::MissingContractOperation {
+                contract: contract_ref.clone(),
+                operation: operation.clone(),
+            }
+        })?;
+        if descriptor.operation_id != *operation {
+            return Err(
+                RuntimeAssemblyEvalSeamError::ContractOperationIdentityMismatch {
+                    operation: operation.clone(),
+                },
+            );
+        }
+        let executable = self
+            .execution_image
+            .entry_executable(provider.implementation_package_build_id(), operation_target)
+            .map_err(
+                |error| RuntimeAssemblyEvalSeamError::InvalidProviderTarget {
+                    activation_id: provider.activation_id().as_str().to_string(),
+                    operation: operation.clone(),
+                    detail: error.to_string(),
+                },
+            )?;
+        Ok(RuntimeAssemblyServiceCallTarget {
+            provider_request: self.request_activation.clone(),
+            contract,
+            operation: operation.clone(),
+            executable_addr: executable.addr().clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +367,8 @@ pub enum RuntimeAssemblyEvalSeamError {
     Activation(#[from] ActivationContextError),
     #[error("assembly execution image and current activation have different assembly identities")]
     AssemblyIdentityMismatch,
+    #[error("canonical ingress target must begin with its provider as receiver/current owner")]
+    IngressActivationOwnerMismatch,
     #[error("runtime assembly resolver has no activation owner {activation_id}")]
     MissingActivationOwner { activation_id: String },
     #[error("runtime assembly resolver returned a different owner for activation {activation_id}")]

@@ -51,6 +51,14 @@ use env::{Env, Flow};
 use mutable_path::{apply_collection_mutation, CollectionMutation};
 use runtime_ops::*;
 
+pub use assembly_execution::{
+    dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use assembly_execution::{
+    start_in_process_boundary_dispatch_probe_for_test,
+    take_in_process_boundary_dispatch_records_for_test, InProcessBoundaryDispatchRecord,
+};
 pub use assembly_seam::{
     RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError, RuntimeAssemblyEvalTarget,
     RuntimeAssemblyServiceCallTarget,

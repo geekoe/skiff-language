@@ -1,3 +1,4 @@
+mod assembly_ingress;
 mod assembly_seam;
 pub mod cancellation;
 mod context;
@@ -20,6 +21,10 @@ mod runner;
 mod runtime_ingress;
 mod websocket_ingress;
 
+pub use assembly_ingress::{
+    execute_runtime_assembly_request, AssemblyRequestExecutionHandles,
+    AssemblyRequestExecutionInput,
+};
 pub use assembly_seam::{RuntimeAssemblyRequestSeamError, RuntimeAssemblyRequestTarget};
 pub use context::{
     invocation_context_from_request, request_payload_context_from_request, RequestPayloadContext,
@@ -34,7 +39,9 @@ pub use envelope::{
     WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
 };
 pub use error::{RequestError, RequestResult};
-pub use eval_adapter::{RequestEvalAdapter, RequestEvalExecutionInputParts};
+pub use eval_adapter::{
+    AssemblyRequestEvalAdapter, RequestEvalAdapter, RequestEvalExecutionInputParts,
+};
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
 pub use operation_context::{
