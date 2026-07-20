@@ -1,6 +1,6 @@
 # Phase 05：Ecosystem Cutover
 
-状态：planned；等待 P5-D01 独立文档评审
+状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS
 
 ## 输入
 

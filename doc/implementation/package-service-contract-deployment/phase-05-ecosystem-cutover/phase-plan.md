@@ -1,6 +1,6 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：planned；等待 P5-D01 独立文档评审。
+状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
