@@ -11,8 +11,8 @@ use std::{
 use serde_json::Value;
 use skiff_runtime_boundary::stream::{stream_id, stream_value};
 use skiff_runtime_capability_context::{
-    CancellationSignals, CancellationToken, StreamPoll, StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    CancellationSignals, CancellationToken, StreamLifetimeGuard, StreamPoll, StreamPullSource,
+    StreamRuntimeError, StreamRuntimeResult,
 };
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 
@@ -58,6 +58,7 @@ struct StreamState {
     cancelled: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     cancellation: Option<CancellationToken>,
+    lifetime: Mutex<Option<StreamLifetimeGuard>>,
     ended: AtomicBool,
 }
 
@@ -88,6 +89,17 @@ impl fmt::Debug for StreamSource {
 
 impl StreamRuntime {
     pub fn channel_stream(&self) -> (Value, StreamSink) {
+        self.channel_stream_inner(None)
+    }
+
+    pub fn channel_stream_with_lifetime(
+        &self,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        self.channel_stream_inner(Some(lifetime))
+    }
+
+    fn channel_stream_inner(&self, lifetime: Option<StreamLifetimeGuard>) -> (Value, StreamSink) {
         let id = format!("stream-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CAPACITY);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -97,6 +109,7 @@ impl StreamRuntime {
             cancelled: cancelled.clone(),
             cancel_notify: cancel_notify.clone(),
             cancellation: None,
+            lifetime: Mutex::new(lifetime),
             ended: AtomicBool::new(false),
         };
         self.streams
@@ -134,6 +147,7 @@ impl StreamRuntime {
             cancelled,
             cancel_notify: Arc::new(Notify::new()),
             cancellation: Some(cancellation),
+            lifetime: Mutex::new(None),
             ended: AtomicBool::new(false),
         };
         self.streams
@@ -314,6 +328,10 @@ impl StreamState {
                 }
             }
             self.cancel_notify.notify_waiters();
+            self.lifetime
+                .lock()
+                .expect("stream lifetime mutex poisoned")
+                .take();
             true
         } else {
             false
@@ -424,6 +442,21 @@ async fn next_pull_event(
             runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
+    }
+}
+
+impl StreamCancelSignal {
+    pub async fn wait_cancelled(&self) {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        let notified = self.cancel_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
     }
 }
 

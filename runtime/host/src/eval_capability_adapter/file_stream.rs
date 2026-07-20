@@ -364,6 +364,17 @@ impl capability_contract::StreamRuntimeApi for RuntimeStreamRuntime {
         )
     }
 
+    fn channel_stream_with_lifetime(
+        &self,
+        lifetime: capability_contract::StreamLifetimeGuard,
+    ) -> (Value, capability_contract::StreamSink) {
+        let (value, sink) = self.0.channel_stream_with_lifetime(lifetime);
+        (
+            value,
+            capability_contract::StreamSink::new(RuntimeStreamSink(sink)),
+        )
+    }
+
     fn pull_stream_with_cancellation(
         &self,
         source: Box<dyn StreamPullSource>,
@@ -495,4 +506,8 @@ impl capability_contract::StreamSinkApi for RuntimeStreamSink {
 #[derive(Debug)]
 pub(super) struct RuntimeStreamCancelSignal(pub(super) concrete::StreamCancelSignal);
 
-impl capability_contract::StreamCancelSignalApi for RuntimeStreamCancelSignal {}
+impl capability_contract::StreamCancelSignalApi for RuntimeStreamCancelSignal {
+    fn wait_cancelled<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { self.0.wait_cancelled().await })
+    }
+}

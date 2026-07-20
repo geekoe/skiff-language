@@ -1,10 +1,18 @@
-use std::{future::Future, pin::Pin};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use serde_json::{json, Value};
 use skiff_runtime_capability_context::{
     CancellationSignals, CancellationToken, OutboundRequestCancelSendError,
-    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, StreamPoll,
-    StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
+    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry,
+    StreamLifetimeGuard, StreamLifetimeGuardApi, StreamPoll, StreamPullSource, StreamRuntimeError,
+    StreamRuntimeResult,
 };
 use skiff_runtime_model::error::WirePayload;
 
@@ -95,6 +103,30 @@ async fn stream_sink_send_blocked_by_backpressure_returns_on_cancel() {
         .expect("send task should not panic")
         .unwrap_err();
     assert!(matches!(error, StreamRuntimeError::Cancelled));
+    assert_eq!(runtime.active_stream_count(), 0);
+}
+
+#[tokio::test]
+async fn stream_sink_terminal_blocked_by_backpressure_returns_on_cancel() {
+    let runtime = StreamRuntime::default();
+    let (stream, sink) = runtime.channel_stream();
+    sink.send(json!("buffered")).await.unwrap();
+    let pending_end = tokio::spawn({
+        let sink = sink.clone();
+        async move { sink.end().await }
+    });
+
+    tokio::task::yield_now().await;
+    assert!(
+        !pending_end.is_finished(),
+        "terminal publication should observe channel backpressure"
+    );
+    runtime.cancel(&stream);
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), pending_end)
+        .await
+        .expect("stream cancel should wake blocked terminal publication")
+        .expect("terminal publisher should not panic");
     assert_eq!(runtime.active_stream_count(), 0);
 }
 
@@ -372,6 +404,59 @@ async fn stream_runtime_repeated_terminal_is_idempotent() {
 }
 
 #[tokio::test]
+async fn stream_runtime_lifetime_guard_closes_exactly_once_on_every_terminal_path() {
+    for terminal in ["end", "cancel", "source-drop"] {
+        let runtime = StreamRuntime::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (stream, sink) = runtime
+            .channel_stream_with_lifetime(StreamLifetimeGuard::new(DropProbe(Arc::clone(&drops))));
+
+        match terminal {
+            "end" => {
+                sink.end().await;
+                assert!(matches!(
+                    runtime.next(&stream).await.unwrap(),
+                    StreamPoll::End
+                ));
+            }
+            "cancel" => {
+                runtime.cancel(&stream);
+                runtime.cancel(&stream);
+            }
+            "source-drop" => {
+                drop(sink);
+                assert!(matches!(
+                    runtime.next(&stream).await.unwrap(),
+                    StreamPoll::End
+                ));
+            }
+            _ => unreachable!(),
+        }
+
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "terminal={terminal}");
+        assert_eq!(runtime.active_stream_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn stream_runtime_cancel_signal_wakes_without_polling_race() {
+    for _ in 0..100 {
+        let runtime = StreamRuntime::default();
+        let (stream, sink) = runtime.channel_stream();
+        let signal = sink.cancel_signal();
+        let waiter = tokio::spawn(async move { signal.wait_cancelled().await });
+
+        runtime.cancel(&stream);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("stream cancellation should wake signal waiter")
+            .expect("signal waiter should not panic");
+        assert_eq!(runtime.active_stream_count(), 0);
+    }
+}
+
+#[tokio::test]
 async fn unconsumed_outbound_server_stream_cleans_up_on_runtime_drop() {
     let registry = OutboundRequestRegistry::default();
     let (response_sender, _response_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -453,6 +538,17 @@ fn stream_runtime_error_eval_fold_preserves_root_producer_wire_payload() {
 }
 
 struct PendingPullSource;
+
+#[derive(Debug)]
+struct DropProbe(Arc<AtomicUsize>);
+
+impl StreamLifetimeGuardApi for DropProbe {}
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 impl StreamPullSource for PendingPullSource {
     fn next<'a>(
