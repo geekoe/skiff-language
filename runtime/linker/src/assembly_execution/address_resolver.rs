@@ -225,11 +225,15 @@ impl<'a> AssemblyAddressResolver<'a> {
         Ok(())
     }
 
-    fn package_files(&self, code_slot: usize) -> anyhow::Result<&[Arc<LinkedFileUnit>]> {
+    pub(super) fn package_files(&self, code_slot: usize) -> anyhow::Result<&[Arc<LinkedFileUnit>]> {
         self.files
             .get(code_slot)
             .map(Vec::as_slice)
             .ok_or_else(|| anyhow::anyhow!("package code slot {code_slot} is out of bounds"))
+    }
+
+    pub(super) fn shared_image(&self) -> &skiff_runtime_linked_program::SharedPackageLinkedImage {
+        self.shared
     }
 
     fn resolve_package_ref(

@@ -8,6 +8,7 @@ use skiff_runtime_loader::ArtifactGraph;
 
 use crate::json_utils::value_sha256;
 
+pub(crate) mod call_semantic_validation;
 mod file_conversion;
 mod file_linker;
 mod image;

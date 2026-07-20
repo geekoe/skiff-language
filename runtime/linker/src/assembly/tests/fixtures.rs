@@ -386,6 +386,141 @@ impl CycleFixture {
         self.activation_a = new_reference;
         skiff_artifact_identity::assign_runtime_assembly_identity(&mut self.assembly).unwrap();
     }
+
+    pub fn mutate_shared_file(&mut self, mutate: impl FnOnce(&mut FileIrUnit)) {
+        let old_build = self.shared_build.clone();
+        let old_file_identity = self.shared_file_identity.clone();
+        let old_package_ref = self
+            .resolver
+            .packages
+            .keys()
+            .find(|reference| reference.package_build_id == old_build)
+            .cloned()
+            .unwrap();
+        let mut file = self
+            .resolver
+            .files
+            .remove(&(old_build.clone(), old_file_identity.clone()))
+            .unwrap()
+            .as_ref()
+            .clone();
+        mutate(&mut file);
+        skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
+        let new_file_ref = file_ref(&file);
+
+        let mut package = self
+            .resolver
+            .packages
+            .remove(&old_package_ref)
+            .unwrap()
+            .as_ref()
+            .clone();
+        for reference in &mut package.files {
+            if reference.file_ir_identity == old_file_identity {
+                *reference = new_file_ref.clone();
+            }
+        }
+        for callable in package.callable_links.values_mut() {
+            if callable.target.file_ref.file_ir_identity == old_file_identity {
+                callable.target.file_ref = new_file_ref.clone();
+            }
+        }
+        skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+        let new_package_ref = package_ref(&package);
+        let new_build = package.package_build_id.clone();
+        self.resolver.files.insert(
+            (new_build.clone(), file.file_ir_identity.clone()),
+            Arc::new(file.clone()),
+        );
+        self.resolver
+            .packages
+            .insert(new_package_ref.clone(), Arc::new(package));
+
+        let old_deployments = std::mem::take(&mut self.resolver.deployments);
+        let mut deployment_refs = BTreeMap::new();
+        for (old_reference, deployment) in old_deployments {
+            let mut deployment = deployment.as_ref().clone();
+            if deployment.implementation == old_package_ref {
+                deployment.implementation = new_package_ref.clone();
+            }
+            for binding in &mut deployment.package_bindings {
+                if binding.key.caller_package_build_id == old_build {
+                    binding.key.caller_package_build_id = new_build.clone();
+                }
+            }
+            for selector in &mut deployment.service_selectors {
+                if selector.key.caller_package_build_id == old_build {
+                    selector.key.caller_package_build_id = new_build.clone();
+                }
+            }
+            skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
+            let new_reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+            deployment_refs.insert(old_reference, new_reference.clone());
+            self.resolver
+                .deployments
+                .insert(new_reference, Arc::new(deployment));
+        }
+
+        for reference in &mut self.assembly.resolved_packages {
+            if reference == &old_package_ref {
+                *reference = new_package_ref.clone();
+            }
+        }
+        for slot in &mut self.assembly.package_link_plan.code_slots {
+            if slot.package == old_package_ref {
+                slot.package = new_package_ref.clone();
+            }
+        }
+        for binding in &mut self.assembly.package_link_plan.package_links {
+            if binding.key.caller_package_build_id == old_build {
+                binding.key.caller_package_build_id = new_build.clone();
+            }
+            if binding.package == old_package_ref {
+                binding.package = new_package_ref.clone();
+            }
+        }
+        for root in &mut self.assembly.roots {
+            if let Some(new_reference) = deployment_refs.get(root) {
+                *root = new_reference.clone();
+            }
+        }
+        for reference in &mut self.assembly.resolved_deployments {
+            if let Some(new_reference) = deployment_refs.get(reference) {
+                *reference = new_reference.clone();
+            }
+        }
+        for template in &mut self.assembly.service_binding_templates {
+            if let Some(new_reference) = deployment_refs.get(&template.activation) {
+                template.activation = new_reference.clone();
+            }
+            for binding in &mut template.bindings {
+                if binding.key.caller_package_build_id == old_build {
+                    binding.key.caller_package_build_id = new_build.clone();
+                }
+                if let Some(new_reference) = deployment_refs.get(&binding.provider) {
+                    binding.provider = new_reference.clone();
+                }
+            }
+        }
+        for template in &mut self.assembly.activation_templates {
+            if let Some(new_reference) = deployment_refs.get(&template.deployment) {
+                template.deployment = new_reference.clone();
+            }
+            if template.implementation_package_build_id == old_build {
+                template.implementation_package_build_id = new_build.clone();
+            }
+        }
+        for ingress in &mut self.assembly.global_ingress {
+            if let Some(new_reference) = deployment_refs.get(&ingress.deployment) {
+                ingress.deployment = new_reference.clone();
+            }
+        }
+        self.activation_a = deployment_refs[&self.activation_a].clone();
+        self.activation_b = deployment_refs[&self.activation_b].clone();
+        self.shared_build = new_build;
+        self.shared_file_identity = file.file_ir_identity;
+        skiff_artifact_identity::assign_runtime_assembly_identity(&mut self.assembly).unwrap();
+    }
 }
 
 pub(super) struct FixtureResolver {

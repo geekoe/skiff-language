@@ -4,11 +4,12 @@ use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     CanonicalPublicCallableSignature, OperationAbiRef, OperationCallableKind,
     OperationConstReceiverRef, OperationTargetRef, PackageOperationTarget, PublicationAbiUnit,
-    PublicationOperationAbi, PublicationOperationKind, ReceiverCallAbi, ServiceOperation,
+    PublicationOperationAbi, PublicationOperationKind, ServiceOperation,
     ServiceSymbolRef as ArtifactServiceSymbolRef, TypeRefIr as ArtifactTypeRefIr,
 };
 
 use super::{
+    call_semantic_validation::validate_local_receiver_call_abi,
     file_linker::{RuntimeFileLinker, TypeRefLinkScope},
     link_diagnostics::*,
 };
@@ -822,24 +823,6 @@ impl<'a> RuntimeFileLinker<'a> {
         })
     }
 
-    pub(super) fn validate_local_receiver_call_abi(
-        &self,
-        context: &str,
-        method_abi_id: &str,
-        receiver_call_abi: ReceiverCallAbi,
-    ) -> ProgramResult<()> {
-        if method_abi_id.is_empty() {
-            return Err(ProgramError::LinkSymbolUnresolved {
-                context: context.to_string(),
-                symbol: method_abi_id.to_string(),
-                expected_kind: "non-empty local receiver executable methodAbiId",
-            });
-        }
-        match receiver_call_abi {
-            ReceiverCallAbi::ExplicitSelfFirst => Ok(()),
-        }
-    }
-
     fn validate_package_operation_target_ref(
         &self,
         context: &str,
@@ -1264,11 +1247,7 @@ impl<'a> RuntimeFileLinker<'a> {
         if let Some(expected) = expected_method_abi_id {
             self.validate_local_receiver_method_abi(context, expected, &target.method_abi_id)?;
         }
-        self.validate_local_receiver_call_abi(
-            context,
-            &target.method_abi_id,
-            target.receiver_call_abi,
-        )?;
+        validate_local_receiver_call_abi(context, &target.method_abi_id, target.receiver_call_abi)?;
         let (const_addr, const_ty) =
             self.validate_const_receiver_ref(context, unit.clone(), &target.receiver)?;
         let (executable_addr, executable) = self.validate_operation_target_ref_with_executable(
