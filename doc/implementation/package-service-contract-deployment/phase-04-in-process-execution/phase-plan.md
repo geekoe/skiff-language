@@ -1,6 +1,8 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01/R02/R03 PASS；T10@`f093e921` eval error checker FAIL，F16收敛修复中
+状态：T10完成；frozen production candidate为`13b4600f` / tree `a34e103c`。Phase-scoped
+requirements/gates无blocker，可提交A01独立验收；repo `router` / `checks` selector仍有明确inherited
+baseline failures，不得记为PASS。完整证据见`phase-result.md`。
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义

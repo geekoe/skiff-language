@@ -1,5 +1,11 @@
 # P4-T10：Phase Integration Gate
 
+执行状态：**COMPLETE**。最终冻结production candidate为
+`13b4600f38ae1d0cdc6878ecb518e2b616d5e4fa` / tree
+`a34e103cb8a95f0611b380ae3a173266471fcc6d`；Phase-scoped requirements/gates无blocker，可提交P4-A01。
+Repo `router`与`checks` selector仍分别因main同源的compiler无bin baseline失败，不能写成PASS。完整分层ledger、
+stable provenance、失败分类与证据保留边界见`../phase-result.md`。
+
 ## 角色、状态与边界
 
 Phase 04唯一昂贵gate owner。权威输入为架构§2、§6–§10、§12、§14、§15，`phase-plan.md`，P4-T01–T09任务合同，
