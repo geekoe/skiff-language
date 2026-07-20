@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use serde_json::Value;
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 
-use crate::CapabilityResult;
+use crate::{CapabilityResult, StreamRuntime};
 
 pub const HTTP_REQUEST_ADMIN_OVERRIDE_ENV: &str = "SKIFF_HTTP_ADMIN_ALLOW_UNSAFE";
 
@@ -51,13 +51,14 @@ impl HttpRuntimeOptions {
     pub fn egress_proxy(&self) -> Option<&str> {
         self.egress_proxy.as_deref()
     }
-
 }
 
 pub type HttpCapabilityFuture<'a, T> =
     Pin<Box<dyn Future<Output = CapabilityResult<T>> + Send + 'a>>;
 
 pub trait HttpClientCapabilityApi: Send + Sync {
+    fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> HttpClientCapabilityContext;
+
     fn dispatch_http_request<'a>(&'a self, input: &'a Value) -> HttpCapabilityFuture<'a, Value>;
 
     fn dispatch_http_stream<'a>(
@@ -90,6 +91,10 @@ impl HttpClientCapabilityContext {
 
     pub async fn dispatch_http_request(&self, input: &Value) -> CapabilityResult<Value> {
         self.inner.dispatch_http_request(input).await
+    }
+
+    pub fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> Self {
+        self.inner.with_stream_runtime(stream_runtime)
     }
 
     pub async fn dispatch_http_stream(

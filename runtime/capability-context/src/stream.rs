@@ -386,11 +386,53 @@ pub trait StreamRuntimeApi: Any + Send + Sync + fmt::Debug {
         value: &'a Value,
     ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<StreamPoll>> + Send + 'a>>;
     fn cancel(&self, value: &Value);
+    fn open_request_scope(&self, _request_generation: u64) -> bool {
+        false
+    }
+    fn close_request_scope(&self, _request_generation: u64) {}
+    fn close_owner(&self) {}
+    fn channel_stream_in_request_scope(&self, _request_generation: u64) -> (Value, StreamSink) {
+        self.channel_stream()
+    }
+    fn channel_stream_with_lifetime_in_request_scope(
+        &self,
+        _request_generation: u64,
+        lifetime: StreamLifetimeGuard,
+    ) -> (Value, StreamSink) {
+        self.channel_stream_with_lifetime(lifetime)
+    }
+    fn pull_stream_with_cancellation_in_request_scope(
+        &self,
+        _request_generation: u64,
+        source: Box<dyn StreamPullSource>,
+        cancellation: CancellationToken,
+    ) -> Value {
+        self.pull_stream_with_cancellation(source, cancellation)
+    }
+    fn buffered_stream_in_request_scope(
+        &self,
+        _request_generation: u64,
+        items: Vec<Value>,
+    ) -> Value {
+        self.buffered_stream(items)
+    }
 }
 
 #[derive(Clone)]
 pub struct StreamRuntime {
     inner: Arc<dyn StreamRuntimeApi>,
+    request_generation: Option<u64>,
+}
+
+pub struct StreamRuntimeOwner {
+    inner: Arc<dyn StreamRuntimeApi>,
+    target: StreamRuntimeOwnerTarget,
+}
+
+enum StreamRuntimeOwnerTarget {
+    Root,
+    Request(u64),
+    Noop,
 }
 
 impl StreamRuntime {
@@ -400,18 +442,29 @@ impl StreamRuntime {
     {
         Self {
             inner: Arc::new(inner),
+            request_generation: None,
         }
     }
 
     pub fn channel_stream(&self) -> (Value, StreamSink) {
-        self.inner.channel_stream()
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .channel_stream_in_request_scope(request_generation),
+            None => self.inner.channel_stream(),
+        }
     }
 
     pub fn channel_stream_with_lifetime(
         &self,
         lifetime: StreamLifetimeGuard,
     ) -> (Value, StreamSink) {
-        self.inner.channel_stream_with_lifetime(lifetime)
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .channel_stream_with_lifetime_in_request_scope(request_generation, lifetime),
+            None => self.inner.channel_stream_with_lifetime(lifetime),
+        }
     }
 
     pub fn pull_stream_with_cancellation(
@@ -419,12 +472,26 @@ impl StreamRuntime {
         source: impl StreamPullSource + 'static,
         cancellation: CancellationToken,
     ) -> Value {
-        self.inner
-            .pull_stream_with_cancellation(Box::new(source), cancellation)
+        match self.request_generation {
+            Some(request_generation) => self.inner.pull_stream_with_cancellation_in_request_scope(
+                request_generation,
+                Box::new(source),
+                cancellation,
+            ),
+            None => self
+                .inner
+                .pull_stream_with_cancellation(Box::new(source), cancellation),
+        }
     }
 
     pub fn buffered_stream(&self, items: impl IntoIterator<Item = Value>) -> Value {
-        self.inner.buffered_stream(items.into_iter().collect())
+        let items = items.into_iter().collect();
+        match self.request_generation {
+            Some(request_generation) => self
+                .inner
+                .buffered_stream_in_request_scope(request_generation, items),
+            None => self.inner.buffered_stream(items),
+        }
     }
 
     pub async fn next_with_cancel(
@@ -457,9 +524,73 @@ impl StreamRuntime {
         self.inner.cancel(value);
     }
 
+    pub fn request_scope(&self, request_generation: u64) -> (Self, StreamRuntimeOwner) {
+        let opened = self.inner.open_request_scope(request_generation);
+        let scoped_generation = opened.then_some(request_generation);
+        (
+            Self {
+                inner: self.inner.clone(),
+                request_generation: scoped_generation,
+            },
+            StreamRuntimeOwner {
+                inner: self.inner.clone(),
+                target: if opened {
+                    StreamRuntimeOwnerTarget::Request(request_generation)
+                } else {
+                    StreamRuntimeOwnerTarget::Noop
+                },
+            },
+        )
+    }
+
+    pub fn owner(&self) -> StreamRuntimeOwner {
+        StreamRuntimeOwner {
+            inner: self.inner.clone(),
+            target: StreamRuntimeOwnerTarget::Root,
+        }
+    }
+
+    pub fn request_scope_generation(&self) -> Option<u64> {
+        self.request_generation
+    }
+
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         let any = self.inner.as_ref() as &dyn Any;
         any.downcast_ref()
+    }
+}
+
+impl Drop for StreamRuntimeOwner {
+    fn drop(&mut self) {
+        match self.target {
+            StreamRuntimeOwnerTarget::Root => self.inner.close_owner(),
+            StreamRuntimeOwnerTarget::Request(request_generation) => {
+                self.inner.close_request_scope(request_generation)
+            }
+            StreamRuntimeOwnerTarget::Noop => {}
+        }
+    }
+}
+
+impl fmt::Debug for StreamRuntimeOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StreamRuntimeOwner")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for StreamRuntimeOwnerTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => formatter.write_str("Root"),
+            Self::Request(request_generation) => formatter
+                .debug_tuple("Request")
+                .field(request_generation)
+                .finish(),
+            Self::Noop => formatter.write_str("Noop"),
+        }
     }
 }
 

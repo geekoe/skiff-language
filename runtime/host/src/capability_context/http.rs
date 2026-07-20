@@ -1,5 +1,5 @@
-use super::{EffectDispatchContext, HttpEffectContext, StreamRuntime, TestEffectDoubleContext};
-use skiff_runtime_capability_context::HttpRuntimeOptions;
+use super::{EffectDispatchContext, HttpEffectContext, TestEffectDoubleContext};
+use skiff_runtime_capability_context::{HttpRuntimeOptions, StreamRuntime};
 
 #[derive(Clone)]
 pub struct HttpClientCapabilityContext {
@@ -34,6 +34,15 @@ impl HttpClientCapabilityContext {
 
     pub fn stream_runtime(&self) -> &StreamRuntime {
         &self.stream_runtime
+    }
+
+    pub fn with_stream_runtime(&self, stream_runtime: StreamRuntime) -> Self {
+        Self {
+            effects: self.effects.clone(),
+            http_options: self.http_options.clone(),
+            stream_runtime,
+            test_effect_doubles: self.test_effect_doubles.clone(),
+        }
     }
 
     pub fn test_effect_double_context(&self) -> TestEffectDoubleContext {

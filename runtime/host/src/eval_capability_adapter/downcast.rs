@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn concrete_stream_runtime(
+pub(crate) fn concrete_stream_runtime(
     stream_runtime: &capability_contract::StreamRuntime,
 ) -> &concrete::StreamRuntime {
     &stream_runtime

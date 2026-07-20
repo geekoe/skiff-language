@@ -22,7 +22,7 @@ impl eval_capabilities::EffectDispatchApi for RuntimeEffectDispatchContext {
                 self.0
                     .http_options()
                     .with_allow_unsafe_targets(http_options.allow_unsafe_targets()),
-                concrete_stream_runtime(&stream_runtime).clone(),
+                stream_runtime,
                 concrete_test_effect_double_context(&test_effect_doubles).clone(),
             ),
         ))

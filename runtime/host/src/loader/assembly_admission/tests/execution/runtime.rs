@@ -111,6 +111,7 @@ impl TypedExecutionRuntime {
         interpreter: &Interpreter,
         target: &RuntimeAssemblyEvalTarget,
     ) -> ProgramExecutionContext<'a> {
+        let stream_runtime = interpreter.stream_runtime.clone();
         let concrete_execution = ExecutionControl::new(self.cancellation.clone(), &self.budget);
         let execution = eval_capability_adapter::execution_control(concrete_execution.clone());
         let db = eval_capability_adapter::db_context(DbCapabilityContext::from_handle(
@@ -166,7 +167,7 @@ impl TypedExecutionRuntime {
             db,
             file,
             file_source_stream: FileSourceStreamContext::new(
-                interpreter.stream_runtime.clone(),
+                stream_runtime.clone(),
                 execution.clone(),
             ),
             time: TimeCapabilityContext::new(execution),
@@ -178,7 +179,7 @@ impl TypedExecutionRuntime {
             effects: effects.clone(),
             http_client: effects.http_client_context(
                 interpreter.http_options.clone(),
-                interpreter.stream_runtime.clone(),
+                stream_runtime,
                 interpreter.test_effect_double_context(),
             ),
             test_effect_doubles: interpreter.test_effect_double_context(),

@@ -2946,6 +2946,7 @@ async fn runtime_program_service_dependency_server_stream_returns_stream_handle(
     let value = crate::eval::service_dispatch::call_outbound_service(
         &interpreter,
         &outbound_context(&frame),
+        &interpreter.stream_runtime,
         &mut heap,
         &Env::default(),
         &ExecutableAddr::service(0, 0),
@@ -3050,6 +3051,7 @@ async fn runtime_program_service_dependency_server_stream_includes_service_timeo
     let value = crate::eval::service_dispatch::call_outbound_service(
         &interpreter,
         &outbound_context(&frame),
+        &interpreter.stream_runtime,
         &mut heap,
         &Env::default(),
         &ExecutableAddr::service(0, 0),
@@ -3102,6 +3104,7 @@ async fn runtime_program_service_dependency_server_stream_chunks_use_request_hea
     let value = crate::eval::service_dispatch::call_outbound_service(
         &interpreter,
         &outbound_context(&frame),
+        &interpreter.stream_runtime,
         &mut heap,
         &Env::default(),
         &ExecutableAddr::service(0, 0),
@@ -3195,6 +3198,7 @@ async fn runtime_program_service_dependency_server_stream_decode_error_cancels_o
     let value = crate::eval::service_dispatch::call_outbound_service(
         &interpreter,
         &outbound_context(&frame),
+        &interpreter.stream_runtime,
         &mut heap,
         &Env::default(),
         &ExecutableAddr::service(0, 0),
@@ -3289,6 +3293,7 @@ async fn runtime_program_service_dependency_expired_deadline_fails_before_send()
     let error = crate::eval::service_dispatch::call_outbound_service(
         &interpreter,
         &outbound_context(&frame),
+        &interpreter.stream_runtime,
         &mut heap,
         &Env::default(),
         &ExecutableAddr::service(0, 0),

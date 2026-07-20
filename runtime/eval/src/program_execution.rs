@@ -19,8 +19,9 @@ use super::{
         EffectDispatchContext, ExecutionControl, FileCapabilityContext, FileCapabilitySource,
         FileSourceStreamContext, HttpClientCapabilityContext, OutboundServiceContext,
         OwnedActorCapabilityContext, OwnedConfigCapabilityContext, OwnedExecutionControl,
-        OwnedWebsocketCapabilityContext, StreamRuntime, TelemetryCapabilityContext,
-        TestEffectDoubleContext, TimeCapabilityContext, WebsocketCapabilityContext,
+        OwnedWebsocketCapabilityContext, StreamRuntime, StreamRuntimeOwner,
+        TelemetryCapabilityContext, TestEffectDoubleContext, TimeCapabilityContext,
+        WebsocketCapabilityContext,
     },
     error::attach_source_frame,
     eval_context::EvalContext,
@@ -55,7 +56,6 @@ pub struct ProgramExecutionInput<'a> {
     pub request_heap_limits: RequestHeapLimits,
 }
 
-#[derive(Clone)]
 pub struct ProgramExecutionContext<'a> {
     execution: ExecutionControl<'a>,
     config: ConfigCapabilityContext<'a>,
@@ -73,6 +73,31 @@ pub struct ProgramExecutionContext<'a> {
     outbound: OutboundServiceContext,
     request_heap_limits: RequestHeapLimits,
     runtime_assembly_target: Option<RuntimeAssemblyEvalTarget>,
+    _stream_runtime_owner: Option<StreamRuntimeOwner>,
+}
+
+impl<'a> Clone for ProgramExecutionContext<'a> {
+    fn clone(&self) -> Self {
+        Self {
+            execution: self.execution.clone(),
+            config: self.config.clone(),
+            db: self.db.clone(),
+            file: self.file.clone(),
+            file_source_stream: self.file_source_stream.clone(),
+            time: self.time.clone(),
+            websocket: self.websocket.clone(),
+            effects: self.effects.clone(),
+            http_client: self.http_client.clone(),
+            test_effect_doubles: self.test_effect_doubles.clone(),
+            runtime_activation: self.runtime_activation.clone(),
+            actor: self.actor.clone(),
+            spawn: self.spawn.clone(),
+            outbound: self.outbound.clone(),
+            request_heap_limits: self.request_heap_limits.clone(),
+            runtime_assembly_target: self.runtime_assembly_target.clone(),
+            _stream_runtime_owner: None,
+        }
+    }
 }
 
 impl<'a> ProgramExecutionContext<'a> {
@@ -94,11 +119,21 @@ impl<'a> ProgramExecutionContext<'a> {
             outbound: input.outbound,
             request_heap_limits: input.request_heap_limits,
             runtime_assembly_target: None,
+            _stream_runtime_owner: None,
         }
     }
 
     /// Pins canonical execution to an admitted assembly and explicit request generation.
     pub fn with_runtime_assembly_target(mut self, target: RuntimeAssemblyEvalTarget) -> Self {
+        let request_generation = target.request_activation().generation();
+        let stream_runtime = self.stream_runtime();
+        if stream_runtime.request_scope_generation() != Some(request_generation) {
+            let (stream_runtime, owner) = stream_runtime.request_scope(request_generation);
+            self.file_source_stream =
+                FileSourceStreamContext::new(stream_runtime.clone(), self.execution.clone());
+            self.http_client = self.http_client.with_stream_runtime(stream_runtime);
+            self._stream_runtime_owner = Some(owner);
+        }
         self.runtime_assembly_target = Some(target);
         self
     }
@@ -165,6 +200,14 @@ impl<'a> ProgramExecutionContext<'a> {
 
     pub fn request_heap_limits(&self) -> RequestHeapLimits {
         self.request_heap_limits.clone()
+    }
+
+    pub fn stream_runtime(&self) -> StreamRuntime {
+        self.file_source_stream.stream_runtime_handle()
+    }
+
+    pub(crate) fn take_stream_runtime_owner(&mut self) -> Option<StreamRuntimeOwner> {
+        self._stream_runtime_owner.take()
     }
 
     pub fn runtime_assembly_target(
@@ -510,12 +553,13 @@ impl Interpreter {
     /// [`RuntimeAssemblyEvalTarget`]; absence is a structured error and never selects legacy.
     pub async fn execute_runtime_assembly_addr(
         &self,
-        context: ProgramExecutionContext<'_>,
+        mut context: ProgramExecutionContext<'_>,
         heap: &mut RequestHeap,
         addr: &ExecutableAddr,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue> {
         context.runtime_assembly_target()?;
+        let _stream_runtime_owner = context.take_stream_runtime_owner();
         self.call_program_executable(
             context,
             heap,
