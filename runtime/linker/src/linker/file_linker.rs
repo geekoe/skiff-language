@@ -418,6 +418,15 @@ impl<'a> RuntimeFileLinker<'a> {
                 )?;
                 None
             }
+            LinkedCallTarget::PackageDirect { .. }
+            | LinkedCallTarget::ActivationRelativeService { .. } => {
+                return Err(ProgramError::LinkSymbolKindMismatch {
+                    context: context.to_string(),
+                    symbol: "canonical assembly call".to_string(),
+                    expected_kind: "legacy runtime-program call",
+                    actual_kind: "assembly execution call",
+                });
+            }
             LinkedCallTarget::Executable { addr } => {
                 self.validate_executable_addr(addr)?;
                 None

@@ -186,6 +186,95 @@ fn candidate_keeps_code_shared_and_service_bindings_activation_relative() {
 }
 
 #[test]
+fn assembly_execution_image_keeps_code_shared_and_call_kinds_distinct() {
+    use skiff_runtime_linked_program::{LinkedCallTarget, LinkedExprIr};
+
+    let fixture = CycleFixture::new();
+    let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)
+        .load(fixture.assembly.clone())
+        .unwrap();
+    let candidate = link_runtime_assembly(hydrated).unwrap();
+    let image = candidate.execution_image();
+
+    let shared_by_build = Arc::clone(image.code_by_build(&fixture.shared_build).unwrap());
+    let shared_by_slot = Arc::clone(
+        image
+            .code_slots()
+            .get(shared_by_build.code_slot().index())
+            .unwrap(),
+    );
+    assert!(Arc::ptr_eq(&shared_by_build, &shared_by_slot));
+    assert_eq!(
+        candidate
+            .activation(&fixture.activation_a)
+            .unwrap()
+            .implementation_code_slot(),
+        candidate
+            .activation(&fixture.activation_b)
+            .unwrap()
+            .implementation_code_slot()
+    );
+
+    let file = shared_by_build.file(&fixture.shared_file_identity).unwrap();
+    let expressions = &file.executables[0].body.expressions;
+    let LinkedExprIr::Call { call: direct } = &expressions[0] else {
+        panic!("first expression must be the canonical package call")
+    };
+    let LinkedCallTarget::PackageDirect { call: direct } = &direct.target else {
+        panic!("package call did not retain its distinct linked kind")
+    };
+    assert_eq!(direct.caller_package_build_id(), &fixture.shared_build);
+    assert_eq!(direct.dependency_package_build_id(), &fixture.helper_build);
+    assert_eq!(
+        image
+            .executable_at(direct.executable_addr())
+            .unwrap()
+            .addr(),
+        direct.executable_addr()
+    );
+
+    let LinkedExprIr::Call { call: service } = &expressions[2] else {
+        panic!("third expression must be the canonical service call")
+    };
+    let LinkedCallTarget::ActivationRelativeService { instruction } = &service.target else {
+        panic!("service call did not retain its activation-relative linked kind")
+    };
+    assert_eq!(instruction.caller_package_build_id(), &fixture.shared_build);
+    assert_eq!(instruction.service_requirement_slot(), 0);
+    let binding_a = candidate
+        .resolve_activation_relative_service_call(&fixture.activation_a, instruction)
+        .unwrap();
+    let binding_b = candidate
+        .resolve_activation_relative_service_call(&fixture.activation_b, instruction)
+        .unwrap();
+    assert_ne!(binding_a.provider(), binding_b.provider());
+
+    let LinkedExprIr::Call { call: local } = &expressions[1] else {
+        panic!("second expression must be the local executable call")
+    };
+    let LinkedCallTarget::Executable { addr: local_addr } = &local.target else {
+        panic!("local executable was not resolved to an assembly address")
+    };
+    assert_eq!(
+        local_addr.unit,
+        skiff_runtime_linked_program::UnitAddr::Package(0)
+    );
+    assert_eq!(local_addr.executable, 1);
+    assert_eq!(
+        image.executable_at(local_addr).unwrap().executable().symbol,
+        "localHelper"
+    );
+
+    let type_addr = image
+        .type_addr(&fixture.shared_build, &fixture.shared_file_identity, 0)
+        .unwrap();
+    assert_eq!(
+        image.types().declaration(&type_addr).unwrap().name,
+        "LocalRecord"
+    );
+}
+
+#[test]
 fn candidate_retains_canonical_contract_descriptor_and_typed_ingress() {
     let fixture = CycleFixture::new();
     let hydrated = RuntimeAssemblyLoader::new(&fixture.resolver)

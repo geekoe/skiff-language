@@ -1034,6 +1034,18 @@ pub enum LinkedCallTarget {
         package_ref: PackageRefIr,
         operation: OperationAbiRef,
     },
+    /// Canonical package-local-ABI call resolved inside one assembly execution image.
+    /// Runtime execution keeps this distinct from service-boundary dispatch.
+    #[serde(skip)]
+    PackageDirect {
+        call: crate::LinkedPackageDirectCall,
+    },
+    /// Canonical service call that still requires the current activation's binding vector.
+    /// It never contains a provider executable or deployment.
+    #[serde(skip)]
+    ActivationRelativeService {
+        instruction: crate::ActivationRelativeServiceCall,
+    },
     Native {
         target: NativeTarget,
     },

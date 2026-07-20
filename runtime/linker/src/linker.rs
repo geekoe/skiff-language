@@ -22,6 +22,7 @@ mod routes;
 mod type_context;
 
 pub use file_conversion::linked_file_unit_from_artifact;
+pub(crate) use file_conversion::linked_file_unit_from_assembly_artifact;
 use file_linker::RuntimeFileLinker;
 pub use image::LinkedProgramImageBuild;
 pub use input::LinkerInput;

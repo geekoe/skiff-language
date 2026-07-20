@@ -10,7 +10,8 @@ use skiff_artifact_model::{
     ServiceRequirementKey,
 };
 use skiff_runtime_linked_program::{
-    ActivationRelativeServiceCall, PackageCodeSlotIndex, SharedPackageLinkedImage,
+    ActivationRelativeServiceCall, AssemblyExecutionImage, PackageCodeSlotIndex,
+    SharedPackageLinkedImage,
 };
 use skiff_runtime_loader::ServiceContractStore;
 
@@ -143,6 +144,7 @@ impl LinkedActivationTemplate {
 pub struct AssemblyLinkedCandidate {
     pub(super) assembly: Arc<RuntimeAssembly>,
     pub(super) shared_image: Arc<SharedPackageLinkedImage>,
+    pub(super) execution_image: Arc<AssemblyExecutionImage>,
     pub(super) contracts: Arc<ServiceContractStore>,
     pub(super) activations: BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
     pub(super) ingress: BTreeMap<IngressSelector, GlobalIngressBinding>,
@@ -155,6 +157,10 @@ impl AssemblyLinkedCandidate {
 
     pub fn shared_image(&self) -> &Arc<SharedPackageLinkedImage> {
         &self.shared_image
+    }
+
+    pub fn execution_image(&self) -> &Arc<AssemblyExecutionImage> {
+        &self.execution_image
     }
 
     pub fn contract_store(&self) -> &Arc<ServiceContractStore> {

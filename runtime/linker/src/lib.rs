@@ -1,5 +1,6 @@
 mod activation_facts;
 mod assembly;
+mod assembly_execution;
 mod json_utils;
 mod linker;
 mod package_config;
