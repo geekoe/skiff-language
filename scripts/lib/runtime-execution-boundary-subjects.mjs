@@ -9,17 +9,23 @@ export const REQUIRED_RUNTIME_EXECUTION_BOUNDARY_SUBJECT_IDS = Object.freeze([
 
 export const REQUIRED_RUNTIME_EXECUTION_BOUNDARY_OWNER_ROLES = Object.freeze([
   'service-dispatcher',
+  'internal-service-call-adapter',
+  'ingress-service-call-adapter',
+  'legacy-service-path-fence',
   'activation-context',
   'request-generation',
   'callback-table',
   'callback-carrier',
   'owned-context-carrier',
+  'active-assembly-context-set',
+  'active-assembly-route',
   'host-request-entry',
+  'assembly-request-spawn',
   'recoverable-callback-encoder',
   'router-runtime-service-rejection',
 ]);
 
-export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
+export const RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
   defineRuntimeExecutionBoundaryRegistry({
     sourceRoots: [
       { id: 'runtime-rust', language: 'rust', root: 'runtime' },
@@ -32,10 +38,16 @@ export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         discoveryRoots: ['runtime/eval/src', 'runtime/host/src', 'runtime/request/src'],
         zones: {
           canonicalCallers: [
-            'runtime/eval/src/eval_context.rs',
-            'runtime/host/src/host/request_entry.rs',
+            'runtime/eval/src/assembly_execution/mod.rs',
+            'runtime/eval/src/assembly_execution/ingress.rs',
           ],
+          legacyServiceEdges: ['runtime/eval/src/eval_context.rs'],
         },
+        requiredFiles: [
+          'runtime/eval/src/assembly_execution/mod.rs',
+          'runtime/eval/src/assembly_execution/ingress.rs',
+          'runtime/eval/src/eval_context.rs',
+        ],
       },
       {
         id: 'activation-request-callback-ownership',
@@ -63,8 +75,16 @@ export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
       {
         id: 'required-host-request-entry',
         language: 'rust',
-        discoveryRoots: ['runtime/host/src/host/request_entry.rs'],
-        requiredFiles: ['runtime/host/src/host/request_entry.rs'],
+        discoveryRoots: [
+          'runtime/host/src/host/request_entry/assembly.rs',
+          'runtime/host/src/loader/active_assembly_context.rs',
+          'runtime/host/src/loader/assembly_admission.rs',
+        ],
+        requiredFiles: [
+          'runtime/host/src/host/request_entry/assembly.rs',
+          'runtime/host/src/loader/active_assembly_context.rs',
+          'runtime/host/src/loader/assembly_admission.rs',
+        ],
       },
       {
         id: 'recoverable-callback-rejection',
@@ -91,9 +111,44 @@ export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         subjectId: 'single-service-dispatcher',
         language: 'rust',
         declarationKind: 'function',
+        symbol: 'dispatch_in_process_boundary',
+        ownedRoots: ['runtime/eval/src/assembly_execution/mod.rs'],
+        requiredFile: 'runtime/eval/src/assembly_execution/mod.rs',
+        requiredAnchors: [
+          'record_in_process_boundary_dispatch',
+          'BoundaryStreamContract',
+          'BoundaryCancellationContract',
+        ],
+      },
+      {
+        role: 'internal-service-call-adapter',
+        subjectId: 'single-service-dispatcher',
+        language: 'rust',
+        declarationKind: 'function',
         symbol: 'dispatch_service_call',
         ownedRoots: ['runtime/eval/src/assembly_execution/mod.rs'],
-        requiredAnchors: ['resolve_service_call'],
+        requiredFile: 'runtime/eval/src/assembly_execution/mod.rs',
+        requiredAnchors: ['resolve_service_call', 'dispatch_in_process_boundary'],
+      },
+      {
+        role: 'ingress-service-call-adapter',
+        subjectId: 'single-service-dispatcher',
+        language: 'rust',
+        declarationKind: 'function',
+        symbol: 'dispatch_ingress_via_in_process_boundary',
+        ownedRoots: ['runtime/eval/src/assembly_execution/ingress.rs'],
+        requiredFile: 'runtime/eval/src/assembly_execution/ingress.rs',
+        requiredAnchors: ['adapt_ingress_arguments', 'dispatch_in_process_boundary'],
+      },
+      {
+        role: 'legacy-service-path-fence',
+        subjectId: 'single-service-dispatcher',
+        language: 'rust',
+        declarationKind: 'function',
+        symbol: 'ensure_legacy_service_path_allowed',
+        ownedRoots: ['runtime/eval/src/eval_context.rs'],
+        requiredFile: 'runtime/eval/src/eval_context.rs',
+        requiredAnchors: ['projection.assembly().is_some()', 'assembly execution cannot use legacy'],
       },
       {
         role: 'activation-context',
@@ -136,14 +191,60 @@ export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         ownedRoots: ['runtime/eval/src/program_execution.rs'],
       },
       {
+        role: 'active-assembly-context-set',
+        subjectId: 'required-host-request-entry',
+        language: 'rust',
+        declarationKind: 'struct',
+        symbol: 'ActiveAssemblyContextSet',
+        ownedRoots: ['runtime/host/src/loader/active_assembly_context.rs'],
+        requiredFile: 'runtime/host/src/loader/active_assembly_context.rs',
+        requiredAnchors: [
+          'activations_by_deployment',
+          'contracts',
+          'operation_targets',
+        ],
+      },
+      {
+        role: 'active-assembly-route',
+        subjectId: 'required-host-request-entry',
+        language: 'rust',
+        declarationKind: 'struct',
+        symbol: 'ActiveAssemblyRoute',
+        ownedRoots: ['runtime/host/src/loader/assembly_admission.rs'],
+        requiredFile: 'runtime/host/src/loader/assembly_admission.rs',
+        requiredAnchors: [
+          'active: Arc<ActiveAssembly>',
+          'activation: Arc<ActivationContext>',
+          'provider_target',
+        ],
+      },
+      {
         role: 'host-request-entry',
         subjectId: 'required-host-request-entry',
         language: 'rust',
         declarationKind: 'function',
         symbol: 'spawn_request_inner',
-        ownedRoots: ['runtime/host/src/host/request_entry.rs'],
-        requiredFile: 'runtime/host/src/host/request_entry.rs',
-        requiredAnchors: ['lookup_active_assembly_request_route', 'dispatch_service_call'],
+        ownedRoots: ['runtime/host/src/host/request_entry/assembly.rs'],
+        requiredFile: 'runtime/host/src/host/request_entry/assembly.rs',
+        requiredAnchors: [
+          'lookup_active_assembly_request_route',
+          'route.request_target()',
+          'spawn_assembly_request',
+        ],
+      },
+      {
+        role: 'assembly-request-spawn',
+        subjectId: 'required-host-request-entry',
+        language: 'rust',
+        declarationKind: 'function',
+        symbol: 'spawn_assembly_request',
+        ownedRoots: ['runtime/host/src/host/request_entry/assembly.rs'],
+        requiredFile: 'runtime/host/src/host/request_entry/assembly.rs',
+        requiredAnchors: [
+          '_pinned_route',
+          'AssemblyRequestExecutionInput',
+          'execute_runtime_assembly_request',
+        ],
       },
       {
         role: 'recoverable-callback-encoder',
@@ -159,10 +260,14 @@ export const PROPOSED_RUNTIME_EXECUTION_BOUNDARY_REGISTRY =
         subjectId: 'router-runtime-service-rejection',
         language: 'typescript',
         declarationKind: 'method',
-        symbol: 'rejectRuntimeServiceRequestStart',
-        ownedRoots: ['router/src/router/runtimeDispatcher.ts'],
-        requiredFile: 'router/src/router/runtimeDispatcher.ts',
-        requiredAnchors: ['RemoteServiceRelayDisabled', 'in-process binding'],
+        symbol: 'handleBinaryMessage',
+        ownedRoots: ['router/src/router/runtimeEndpoint.ts'],
+        requiredFile: 'router/src/router/runtimeEndpoint.ts',
+        requiredAnchors: [
+          "case 'request.start'",
+          'InProcessServiceCallRequired',
+          'in-process binding',
+        ],
       },
     ],
   });
