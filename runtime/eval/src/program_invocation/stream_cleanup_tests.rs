@@ -11,7 +11,7 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 
 use super::Interpreter;
-use crate::stream_cleanup::StreamConsumerCleanup;
+use crate::capabilities::StreamConsumerCleanup;
 
 #[derive(Debug)]
 struct CancelTrackingRuntime(Arc<AtomicUsize>);

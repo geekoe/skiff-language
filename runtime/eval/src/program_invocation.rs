@@ -46,10 +46,12 @@ use super::{
     stream_callback::{
         map_callback_error, map_eval_error, EvalStreamExecutionError, EvalStreamResult,
     },
-    stream_cleanup::StreamConsumerCleanup,
     Interpreter,
 };
-use crate::error::{Result, RuntimeError};
+use crate::{
+    capabilities::StreamConsumerCleanup,
+    error::{Result, RuntimeError},
+};
 
 pub struct ProgramInvocationInput<'a> {
     pub request: RequestPayloadContext<'a>,

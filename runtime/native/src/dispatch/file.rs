@@ -4,7 +4,7 @@ use skiff_runtime_boundary::file::{
     create_options_from_wire, immutable_file_from_wire, FileCreateOptions, ImmutableFileRef,
 };
 use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUse};
-use skiff_runtime_capability_context::FileCapabilityError;
+use skiff_runtime_capability_context::{FileCapabilityError, StreamConsumerCleanup};
 
 use super::{unsupported_native_target, RuntimeNativeInvocation};
 use crate::error::{Result, RuntimeError};
@@ -97,52 +97,24 @@ impl FileNativeDispatch {
             }
             "std.file.createFromStream" => {
                 let stream = stream_arg_from_plan(diagnostic_target, invocation, &args, 0, heap)?;
+                let cleanup = file_source_stream_context.stream_consumer_cleanup(&stream);
                 let options =
                     file_options_arg(diagnostic_target, invocation, &args, 1, None, heap)?;
                 let item_plan =
                     file_stream_item_plan(diagnostic_target, invocation.arg_plan(0)?)?.clone();
-                let source_context = file_source_stream_context.clone();
-                file_context
-                    .create_file_from_chunks(
-                        diagnostic_target,
+                create_file_from_stream(
+                    file_context,
+                    file_source_stream_context,
+                    diagnostic_target,
+                    CreateFileFromStreamInput {
+                        stream,
                         options,
-                        Box::new(move || {
-                            let source_context = source_context.clone();
-                            let stream = stream.clone();
-                            let item_plan = item_plan.clone();
-                            let request_heap_limits = request_heap_limits.clone();
-                            Box::pin(async move {
-                                let Some(item) =
-                                    source_context.next_file_source_stream_item(&stream).await?
-                                else {
-                                    return Ok(None);
-                                };
-                                let mut item_heap = RequestHeap::new(request_heap_limits.clone());
-                                let codec = RuntimeBoundaryContract::default().codec_for_expected(
-                                    &item_plan,
-                                    BoundaryUse::TypedJson,
-                                    "std.file.createFromStream item",
-                                );
-                                let value = codec.from_wire_json(&item, &mut item_heap).map_err(
-                                    |error| {
-                                        file_capability_error_from_native(RuntimeError::from(error))
-                                    },
-                                )?;
-                                let wire = codec.to_wire_json(&value, &mut item_heap).map_err(
-                                    |error| {
-                                        file_capability_error_from_native(RuntimeError::from(error))
-                                    },
-                                )?;
-                                let bytes = bytes_payload(&wire).ok_or_else(|| {
-                                    FileCapabilityError::Decode(
-                                        "std.file.createFromStream item must be bytes".to_string(),
-                                    )
-                                })?;
-                                Ok(Some(Bytes::from(bytes)))
-                            }) as NativeFileChunkFuture<'_>
-                        }),
-                    )
-                    .await?
+                        item_plan,
+                        request_heap_limits,
+                        cleanup,
+                    },
+                )
+                .await?
             }
             _ => return Err(unsupported_native_target(binding_key)),
         };
@@ -153,6 +125,82 @@ impl FileNativeDispatch {
             heap,
         )
     }
+}
+
+struct CreateFileFromStreamInput {
+    stream: Value,
+    options: FileCreateOptions,
+    item_plan: RuntimeTypePlan,
+    request_heap_limits: RequestHeapLimits,
+    cleanup: StreamConsumerCleanup,
+}
+
+async fn create_file_from_stream<FileContext, SourceContext>(
+    file_context: &FileContext,
+    file_source_stream_context: &SourceContext,
+    diagnostic_target: &str,
+    input: CreateFileFromStreamInput,
+) -> Result<Value>
+where
+    FileContext: NativeFileCapability,
+    SourceContext: NativeFileSourceStreamCapability,
+{
+    let CreateFileFromStreamInput {
+        stream,
+        options,
+        item_plan,
+        request_heap_limits,
+        mut cleanup,
+    } = input;
+    let end_marker = cleanup.end_marker();
+    let source_context = file_source_stream_context.clone();
+    let chunk_end_marker = end_marker.clone();
+    let output = file_context
+        .create_file_from_chunks(
+            diagnostic_target,
+            options,
+            Box::new(move || {
+                let source_context = source_context.clone();
+                let stream = stream.clone();
+                let item_plan = item_plan.clone();
+                let request_heap_limits = request_heap_limits.clone();
+                let end_marker = chunk_end_marker.clone();
+                Box::pin(async move {
+                    let Some(item) = source_context.next_file_source_stream_item(&stream).await?
+                    else {
+                        end_marker.mark_reached_end();
+                        return Ok(None);
+                    };
+                    let mut item_heap = RequestHeap::new(request_heap_limits.clone());
+                    let codec = RuntimeBoundaryContract::default().codec_for_expected(
+                        &item_plan,
+                        BoundaryUse::TypedJson,
+                        "std.file.createFromStream item",
+                    );
+                    let value = codec
+                        .from_wire_json(&item, &mut item_heap)
+                        .map_err(|error| {
+                            file_capability_error_from_native(RuntimeError::from(error))
+                        })?;
+                    let wire = codec
+                        .to_wire_json(&value, &mut item_heap)
+                        .map_err(|error| {
+                            file_capability_error_from_native(RuntimeError::from(error))
+                        })?;
+                    let bytes = bytes_payload(&wire).ok_or_else(|| {
+                        FileCapabilityError::Decode(
+                            "std.file.createFromStream item must be bytes".to_string(),
+                        )
+                    })?;
+                    Ok(Some(Bytes::from(bytes)))
+                }) as NativeFileChunkFuture<'_>
+            }),
+        )
+        .await;
+    if output.is_ok() && end_marker.has_reached_end() {
+        cleanup.disarm_after_end();
+    }
+    output
 }
 
 fn file_capability_error_from_native(error: RuntimeError) -> FileCapabilityError {
@@ -352,64 +400,4 @@ fn file_stream_item_plan<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fmt;
-
-    use skiff_runtime_model::error::{RuntimeErrorPayload, TypeIdentity, WirePayload};
-
-    #[derive(Debug)]
-    struct DummyWirePayload;
-
-    impl fmt::Display for DummyWirePayload {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("dummy producer payload")
-        }
-    }
-
-    impl std::error::Error for DummyWirePayload {}
-
-    impl WirePayload for DummyWirePayload {
-        fn payload(&self) -> RuntimeErrorPayload {
-            RuntimeErrorPayload {
-                code: "test.FileProducer".to_string(),
-                message: "dummy producer payload".to_string(),
-                status: None,
-                details: Some(serde_json::json!({ "producer": true })),
-            }
-        }
-
-        fn catch_projection(&self) -> Option<(TypeIdentity, serde_json::Value)> {
-            Some((
-                TypeIdentity::builtin("test.FileProducerCatch"),
-                serde_json::json!({ "caught": true }),
-            ))
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    #[test]
-    fn file_capability_error_from_native_preserves_opaque_producer_payload() {
-        let error =
-            file_capability_error_from_native(RuntimeError::Opaque(Box::new(DummyWirePayload)));
-
-        match error {
-            FileCapabilityError::Stream(
-                skiff_runtime_capability_context::StreamRuntimeError::Producer(error),
-            ) => {
-                assert_eq!(error.payload().code, "test.FileProducer");
-                assert_eq!(
-                    error.catch_projection(),
-                    Some((
-                        TypeIdentity::builtin("test.FileProducerCatch"),
-                        serde_json::json!({ "caught": true }),
-                    ))
-                );
-            }
-            error => panic!("expected stream producer, got {error:?}"),
-        }
-    }
-}
+mod tests;

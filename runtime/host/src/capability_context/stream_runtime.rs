@@ -349,13 +349,21 @@ impl StreamRuntime {
                 }
             }
             StreamSource::Pull(source) => {
-                let event =
-                    next_pull_event(self, id, &state, source, signals, cancellation).await?;
-                match event {
-                    Some(value) => Ok(StreamPoll::Item(value)),
-                    None => {
+                match next_pull_event(&state, source, signals, cancellation).await {
+                    Ok(Some(value)) => Ok(StreamPoll::Item(value)),
+                    Ok(None) => {
                         self.finish_stream(id, StreamTerminalReason::End);
                         Ok(StreamPoll::End)
+                    }
+                    Err(error) => {
+                        let terminal = match error {
+                            StreamRuntimeError::Cancelled => StreamTerminalReason::Cancelled,
+                            StreamRuntimeError::Decode(_) | StreamRuntimeError::Producer(_) => {
+                                StreamTerminalReason::Error
+                            }
+                        };
+                        self.finish_stream(id, terminal);
+                        Err(error)
                     }
                 }
             }
@@ -463,8 +471,6 @@ async fn next_channel_event(
 }
 
 async fn next_pull_event(
-    runtime: &StreamRuntime,
-    id: &str,
     state: &StreamState,
     source: &AsyncMutex<Box<dyn StreamPullSource>>,
     signals: &[StreamCancelSignal],
@@ -475,17 +481,14 @@ async fn next_pull_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     let mut source = tokio::select! {
         source = source.lock() => source,
         _ = &mut lock_cancel_notified => {
-            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
         _ = &mut external_cancel_notified => {
-            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             return Err(StreamRuntimeError::cancelled());
         }
     };
@@ -494,22 +497,18 @@ async fn next_pull_event(
     let external_cancel_notified = wait_for_external_cancel(signals, cancellation);
     tokio::pin!(external_cancel_notified);
     if state.cancelled.load(Ordering::SeqCst) {
-        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
     if external_cancelled(signals, cancellation) {
-        runtime.finish_stream(id, StreamTerminalReason::Cancelled);
         return Err(StreamRuntimeError::cancelled());
     }
 
     tokio::select! {
         event = source.next() => event,
         _ = &mut cancel_notified => {
-            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
         _ = &mut external_cancel_notified => {
-            runtime.finish_stream(id, StreamTerminalReason::Cancelled);
             Err(StreamRuntimeError::cancelled())
         }
     }
