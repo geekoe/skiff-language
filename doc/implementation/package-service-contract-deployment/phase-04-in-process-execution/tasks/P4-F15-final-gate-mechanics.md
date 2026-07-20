@@ -11,7 +11,7 @@ T10@`453c11f`还发现两项非语义gate seam：Phase Rust改动中
 登记；依赖安装/复用是T10 gate环境准备，不提交依赖或lockfile变化。不得修改runtime/router production语义、checker
 规则或放宽policy。
 
-- 依赖：F12–F14合流。
+- 依赖：F12、F13合流；与F14R并行，二者写入域不得重叠。
 - 解锁：新T10 stability epoch。
 - branch：`codex/p4-f15-final-gate-mechanics`。
 - worktree：`/Users/geek/workspace/skiff-p4-f15-gate-mechanics`。
@@ -23,6 +23,8 @@ T10@`453c11f`还发现两项非语义gate seam：Phase Rust改动中
 2. ledger精确登记`artifact-identity-validation.mjs`的`spawn` import、唯一调用、真实owner function/class/reason；policy
    self-test仍能检出missing/duplicate/stale/call-count，不得增加例外。
 3. 反向确认validation实现与行为不变，只有ledger/format diff；dependency目录保持ignored且不提交。
+4. 本任务只格式化当前integration中已存在的Phase Rust改动；F14R owner必须自行格式化其后续改动，二者合流后由T10
+   再做一次targeted/full check。若F14R触及本任务已格式化文件，本任务证据失效并由T10只重验该文件。
 
 ```bash
 node scripts/check-command-execution-policy.mjs

@@ -101,9 +101,9 @@ Wave 3：R02 PASS 后三个非重叠owner并行
   T09 execution boundary checker/self-test ──────────────┘
   R03 FAIL repair loop：F11 lexical/structural anchor hardening ─► R03 retry
        └─► T10 stable-candidate integration gate
-             FAIL repair wave：F12 canonical host fixture ───────┐
-                               F13 typed provider fixture ────────┼─► F15 gate mechanics ─► T10 retry
-                               F14 stream runtime owner ─► F14R ─┘
+             FAIL repair wave：F12 canonical host fixture ─┐
+                               F13 typed provider fixture ──┴─► F15 gate mechanics ─┐
+                               F14 stream runtime owner ─────► F14R ────────────────┴─► T10 retry
              └─► A01 independent stage acceptance
 ```
 
@@ -144,7 +144,7 @@ checker写入域互不重叠。
 | F13 | [Typed full-chain provider fixture completion](tasks/P4-F13-typed-full-chain-provider-fixture.md) | T10@`453c11f` typed chain blocker | 高；full-chain evidence repair |
 | F14 | [Stream runtime owner consistency](tasks/P4-F14-stream-runtime-owner-consistency.md) | T10@`453c11f` stream regression | 高；T05 production owner repair |
 | F14R | [Supervised stream consumption handoff](tasks/P4-F14R-supervised-stream-consumption.md) | F14 scope blocker/classification | 高；shared cleanup owner repair |
-| F15 | [Final gate mechanical hygiene](tasks/P4-F15-final-gate-mechanics.md) | F12、F13、F14R merged | 低；format/policy gate seam |
+| F15 | [Final gate mechanical hygiene](tasks/P4-F15-final-gate-mechanics.md) | F12、F13 merged；与F14R并行 | 低；format/policy gate seam |
 | R03 | [Entry/remote-retirement acceptance](tasks/P4-R03-entry-remote-acceptance.md) | T09R、F11 exact commit | 高风险只读 gate |
 | T10 | [Phase integration gate](tasks/P4-T10-phase-integration.md) | R01–R03 PASS | 唯一昂贵 gate owner |
 | A01 | [Independent stage acceptance](tasks/P4-A01-stage-acceptance.md) | frozen T10 candidate | 独立只读验收 |
