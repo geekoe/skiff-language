@@ -844,6 +844,7 @@ fn canonical_digest<T: Serialize>(value: &T, label: &str) -> anyhow::Result<Stri
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
         sync::{
@@ -860,27 +861,33 @@ mod tests {
         PACKAGE_TEST_BUILD_IDENTITY_PREFIX,
     };
     use skiff_artifact_model::{
-        CallIr as ArtifactCallIr, ConfigAndEffectMetadata, DbDeclarationIr, DbFieldStorageIr,
-        DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
+        AssemblyIdentity, CallIr as ArtifactCallIr, CanonicalPackageLinkPlan,
+        ConfigAndEffectMetadata, ContractOperationId, ContractRequirement, DbDeclarationIr,
+        DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr, ExecutableBody as ArtifactExecutableBody,
         ExecutableDeclarationIr as ArtifactExecutableDeclarationIr, ExecutableExport,
         ExecutableIr as ArtifactExecutableIr, ExecutableKind as ArtifactExecutableKind,
         ExecutableSignatureIr, ExprIr as ArtifactExprIr, InterfaceDeclIr, InterfaceOperationIr,
-        MetadataValue as ArtifactMetadataValue, PackageDependencyPublicLinkScope,
-        PackageProductionLinkScope, PackageTestAssemblyKind, PackageTestEntrypoint,
-        PackageTestEntrypointKind, PackageTestExecutableRef, PackageTestFileLinkScope,
-        PackageTestLinkPolicy, PackageTestRuntimeExpectedError, PackageUnit,
-        ParamIr as ArtifactParamIr, ReceiverCallAbi, ServiceSymbolRef,
-        SlotLayout as ArtifactSlotLayout, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
-        TypeRefIr,
+        MetadataValue as ArtifactMetadataValue, PackageArtifact, PackageArtifactRef,
+        PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+        PackageCodeSlot, PackageDependencyPublicLinkScope, PackageImplementationLinks,
+        PackageLocalAbi, PackageLocalAbiIdentity, PackageProductionLinkScope, PackageRefIr,
+        PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+        PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
+        PackageTestExecutableRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
+        PackageTestRuntimeExpectedError, PackageUnit, ParamIr as ArtifactParamIr, ReceiverCallAbi,
+        RuntimeAssembly, ServiceCallRef, ServiceCallRefIndex, ServiceProtocolIdentity,
+        ServiceRequirement, ServiceSymbolRef, SlotLayout as ArtifactSlotLayout, TypeDeclIr,
+        TypeDeclarationIr, TypeDescriptorIr, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
     use skiff_runtime_loader::{FileIrCache, PackageCache};
 
     use skiff_runtime_linked_program::{
-        CallIr, ConstIr, ExprRefIr, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutable,
-        LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr,
-        LinkedInterfaceInstantiationRef, LinkedInterfaceMethodSlotPlanIr,
-        LinkedInterfaceMethodSlotSignatureIr, LinkedInterfaceMethodSlotTargetIr,
-        LinkedInterfaceMethodTablePlanIr, LinkedTypeRef, LiteralIr,
+        CallIr, ConstIr, ExprRefIr, HydratedPackageCode, LinkedBoxSourceIr, LinkedCallTarget,
+        LinkedExecutable, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+        LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef,
+        LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodSlotSignatureIr,
+        LinkedInterfaceMethodSlotTargetIr, LinkedInterfaceMethodTablePlanIr, LinkedTypeRef,
+        LiteralIr, PublicationResourceTable, SharedPackageLinkedImage,
     };
 
     use super::*;
@@ -1400,6 +1407,44 @@ mod tests {
         .expect_err("dependency private executable target must fail closed");
 
         assert!(error.to_string().contains("dependency private executable"));
+    }
+
+    #[test]
+    fn executable_graph_scans_canonical_package_direct_exact_executable_edge() {
+        let (package_direct, _) = canonical_runtime_call_targets(1);
+        let (dispatch, image, production_unit, entrypoint_addr) =
+            package_test_graph_fixture(package_direct);
+
+        let error = validate_package_test_executable_graph(
+            &dispatch,
+            &image,
+            &entrypoint_addr,
+            &production_unit,
+        )
+        .expect_err("canonical package direct call to a private executable must be scanned");
+
+        assert!(error.to_string().contains("dependency private executable"));
+    }
+
+    #[test]
+    fn executable_graph_rejects_activation_relative_service_call() {
+        let (_, service_call) = canonical_runtime_call_targets(0);
+        let (dispatch, image, production_unit, entrypoint_addr) =
+            package_test_graph_fixture(service_call);
+
+        let error = validate_package_test_executable_graph(
+            &dispatch,
+            &image,
+            &entrypoint_addr,
+            &production_unit,
+        )
+        .expect_err("activation-relative service calls are outside package-test graph semantics");
+        let message = error.to_string();
+
+        assert!(message.contains("activation-relative service calls"));
+        assert!(message.contains("service_requirement_slot=0"));
+        assert!(message.contains("operation:echo"));
+        assert!(message.contains("protocol:echo"));
     }
 
     #[test]
@@ -2315,6 +2360,206 @@ mod tests {
             serde_json::to_vec_pretty(value).expect("artifact JSON should serialize"),
         )
         .expect("write artifact");
+    }
+
+    fn canonical_runtime_call_targets(
+        target_executable_index: u32,
+    ) -> (LinkedCallTarget, LinkedCallTarget) {
+        let mut dependency_file = file_ir_with_function(
+            "file:canonical-dependency",
+            "canonical.dependency",
+            "public",
+        );
+        dependency_file.executables.push(artifact_function(
+            "canonical.dependency.private",
+            TypeRefIr::native("void"),
+            ArtifactExecutableBody::default(),
+        ));
+        let mut caller_file =
+            file_ir_with_function("file:canonical-caller", "canonical.caller", "entry");
+        let service_ref = ServiceCallRef {
+            service_requirement_slot: 0,
+            contract_operation_id: ContractOperationId::new("operation:echo"),
+            expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+        };
+        caller_file
+            .external_refs
+            .service_call_refs
+            .push(service_ref.clone());
+        caller_file.executables[0]
+            .body
+            .expressions
+            .push(ArtifactExprIr::Call {
+                call: ArtifactCallIr {
+                    target: CallTargetIr::ServiceCall {
+                        service_call_ref_index: ServiceCallRefIndex::new(0),
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            });
+
+        let mut dependency = canonical_package_artifact(
+            "example.com/dep",
+            "build:canonical-dependency",
+            "abi:canonical-dependency",
+            &dependency_file,
+        );
+        let callable_id = PackageCallableId::new("callable:canonical-dependency");
+        dependency.callable_links.insert(
+            callable_id.clone(),
+            PackageCallableLinkFact {
+                callable_id: callable_id.clone(),
+                target: OperationTargetRef {
+                    file_ref: dependency.files[0].clone(),
+                    executable_index: target_executable_index,
+                    callable_abi_id: callable_id.to_string(),
+                    callable_kind: OperationCallableKind::PublicFunction,
+                },
+            },
+        );
+
+        let mut caller = canonical_package_artifact(
+            "example.com/caller",
+            "build:canonical-caller",
+            "abi:canonical-caller",
+            &caller_file,
+        );
+        caller.package_requirements.push(PackageRequirement {
+            alias: "dep".to_string(),
+            package_id: dependency.package_id.clone(),
+            exact_version: dependency.package_version.clone(),
+            expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        });
+        caller.service_call_refs.push(service_ref.clone());
+        caller.service_requirements.push(ServiceRequirement {
+            contract_requirement: ContractRequirement {
+                alias: "echo".to_string(),
+                service_id: "echo.service".to_string(),
+                contract_version: "1.0.0".to_string(),
+                expected_protocol_identity: service_ref.expected_protocol_identity.clone(),
+            },
+            service_binding_slot: 0,
+            used_operations: BTreeSet::from([service_ref.contract_operation_id.clone()]),
+        });
+
+        let dependency_ref = canonical_package_artifact_ref(&dependency);
+        let caller_ref = canonical_package_artifact_ref(&caller);
+        let assembly = RuntimeAssembly {
+            schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+            assembly_identity: AssemblyIdentity::new("assembly:package-test-call-target"),
+            roots: Vec::new(),
+            resolved_deployments: Vec::new(),
+            resolved_contracts: Vec::new(),
+            resolved_packages: vec![dependency_ref.clone(), caller_ref.clone()],
+            package_link_plan: CanonicalPackageLinkPlan {
+                code_slots: vec![
+                    PackageCodeSlot {
+                        package: dependency_ref.clone(),
+                    },
+                    PackageCodeSlot {
+                        package: caller_ref.clone(),
+                    },
+                ],
+                package_links: vec![PackageBinding {
+                    key: PackageRequirementKey {
+                        caller_package_build_id: caller.package_build_id.clone(),
+                        package_requirement_alias: "dep".to_string(),
+                    },
+                    package: dependency_ref,
+                }],
+            },
+            service_binding_templates: Vec::new(),
+            activation_templates: Vec::new(),
+            global_ingress: Vec::new(),
+        };
+        let image = SharedPackageLinkedImage::from_runtime_assembly(
+            &assembly,
+            [
+                HydratedPackageCode::new(
+                    Arc::new(caller.clone()),
+                    vec![Arc::new(caller_file.clone())],
+                    PublicationResourceTable::default(),
+                ),
+                HydratedPackageCode::new(
+                    Arc::new(dependency),
+                    vec![Arc::new(dependency_file)],
+                    PublicationResourceTable::default(),
+                ),
+            ],
+        )
+        .expect("canonical package call fixture must hydrate");
+        let package_direct = image
+            .resolve_package_direct_call(
+                &caller.package_build_id,
+                &PackageRefIr::Dependency {
+                    dependency_ref: "dep".to_string(),
+                },
+                &callable_id,
+            )
+            .expect("canonical package direct call must resolve");
+        let service_call = image
+            .resolve_activation_relative_service_call(
+                &caller.package_build_id,
+                &caller_file.file_ir_identity,
+                ServiceCallRefIndex::new(0),
+            )
+            .expect("canonical service call must remain activation relative");
+
+        (
+            LinkedCallTarget::PackageDirect {
+                call: package_direct,
+            },
+            LinkedCallTarget::ActivationRelativeService {
+                instruction: service_call,
+            },
+        )
+    }
+
+    fn canonical_package_artifact(
+        package_id: &str,
+        package_build_id: &str,
+        local_abi_identity: &str,
+        file: &FileIrUnit,
+    ) -> PackageArtifact {
+        PackageArtifact {
+            schema_version: "skiff-package-artifact-v2".to_string(),
+            package_id: package_id.to_string(),
+            package_version: "1.0.0".to_string(),
+            package_build_id: PackageBuildId::new(package_build_id),
+            files: vec![FileIrRef::new(
+                file.file_ir_identity.clone(),
+                file.module_path.clone(),
+            )],
+            static_resources: Vec::new(),
+            package_local_abi: PackageLocalAbi {
+                local_abi_identity: PackageLocalAbiIdentity::new(local_abi_identity),
+                public_symbols: BTreeMap::new(),
+            },
+            implementation_links: PackageImplementationLinks::default(),
+            callable_links: BTreeMap::new(),
+            package_requirements: Vec::new(),
+            contract_requirements: Vec::new(),
+            service_requirements: Vec::new(),
+            runtime_requirements: PackageRuntimeRequirements {
+                config: Vec::new(),
+                resources: Vec::new(),
+                runtime_capabilities: Vec::new(),
+            },
+            callable_semantic_facts: BTreeMap::new(),
+            boundary_projections: BTreeMap::new(),
+            service_call_refs: Vec::new(),
+        }
+    }
+
+    fn canonical_package_artifact_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
+        PackageArtifactRef {
+            package_id: artifact.package_id.clone(),
+            package_version: artifact.package_version.clone(),
+            package_build_id: artifact.package_build_id.clone(),
+            package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
+        }
     }
 
     fn package_test_graph_fixture(
