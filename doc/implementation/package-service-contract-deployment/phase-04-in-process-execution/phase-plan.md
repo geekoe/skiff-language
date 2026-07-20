@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；R01 PASS；R02在`484cab0`第三次复验仍FAIL，F10收口pull error与file consumer异常退出
+状态：active；R01 PASS；R02在`ae7b601`第四次独立复验PASS，Wave 3 entry/checker已解锁
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
