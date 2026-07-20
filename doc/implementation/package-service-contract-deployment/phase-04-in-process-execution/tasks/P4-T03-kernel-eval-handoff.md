@@ -37,7 +37,8 @@
    closed，不能落入legacy remote carrier/router branch。
 6.共享fixture使用真实`ServiceContract`/`PackageArtifact`、deployment projection、assembly resolver、typed
   load/link/admit构造provider/consumer execution input，不手写resolved binding/target；预声明ordinary/stream/
-  callback lane测试文件供T04–T06独占。
+  callback lane测试文件供T04–T06独占，并冻结`typed_execution_ordinary`、
+  `typed_execution_async_stream_cancel`、`typed_execution_callback_native`三个稳定测试过滤器。
 7.中央`eval_context.rs`/`program_execution.rs`与fixture root的后续写入owner冻结；T04–T06通过各自模块和lane测试
   文件实现，不再争抢match/fixture owner。
 

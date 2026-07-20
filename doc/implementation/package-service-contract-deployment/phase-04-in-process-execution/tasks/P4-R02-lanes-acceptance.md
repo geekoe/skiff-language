@@ -17,6 +17,17 @@
 同时检查三个lane只消费R01 frozen hook，没有复制descriptor/materializer/context owner或争改中央dispatch；生产
 `tokio::spawn` user-code路径均携带owned context，无current-service TLS或router fallback。
 
+必须核对三个开发commit分别在自身exact state运行并通过：
+
+```bash
+cargo test -p skiff-runtime-host typed_execution_ordinary
+cargo test -p skiff-runtime-host typed_execution_async_stream_cancel
+cargo test -p skiff-runtime-host typed_execution_callback_native
+```
+
+三个过滤器必须实际执行测试（不能是0 tests），且都复用T03 fixture经过deployment/resolver/load/link/admit；R02可在
+合流commit便宜复跑，但不能以T10完整gate替代各lane的最早证据。
+
 ## 输出
 
 首行总体`PASS`或`FAIL`，并分别输出三个verdict。列blocking issues、non-blocking follow-up、证据命令、动态缺口和

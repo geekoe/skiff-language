@@ -43,6 +43,7 @@ cargo test -p skiff-runtime-capability-context cancellation
 cargo test -p skiff-runtime-host stream_runtime
 cargo test -p skiff-runtime-eval in_process_stream
 cargo test -p skiff-runtime-eval activation_context_across_suspend
+cargo test -p skiff-runtime-host typed_execution_async_stream_cancel
 git diff --check
 ```
 

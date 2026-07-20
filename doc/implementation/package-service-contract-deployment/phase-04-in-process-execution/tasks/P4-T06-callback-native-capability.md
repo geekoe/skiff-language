@@ -44,6 +44,7 @@ cargo test -p skiff-runtime-activation callback_capability
 cargo test -p skiff-runtime-boundary callback_materialization
 cargo test -p skiff-runtime-eval in_process_callback
 cargo test -p skiff-runtime-native callback_adapter
+cargo test -p skiff-runtime-host typed_execution_callback_native
 git diff --check
 ```
 

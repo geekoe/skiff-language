@@ -48,6 +48,7 @@ compiler或shared kernel public API。
 cargo test -p skiff-runtime-eval ordinary_in_process
 cargo test -p skiff-runtime-eval service_error_boundary
 cargo test -p skiff-runtime-eval package_direct_same_heap
+cargo test -p skiff-runtime-host typed_execution_ordinary
 git diff --check
 ```
 
