@@ -5,7 +5,8 @@
 高风险只读批次验收Agent。输入为权威设计§6–§8、§12、§14，`phase-plan.md`，P4-T04/T05/T06任务合同，
 三个lane已合流的exact clean integration commit，以及R01与开发证据。不得修改或预设结论。
 
-首次验收在`ee1609c` FAIL。复验还必须阅读P4-F06/F07/F08合同与合流diff，逐项确认canonical callback映射、
+首次验收在`ee1609c` FAIL，第二次在`9809dee`因stream terminal/drop ownership环FAIL。复验还必须阅读
+P4-F06/F07/F08/F09合同与合流diff，逐项确认canonical callback映射、
 async typed error、callback stream item以及callback host合流断言已闭环；任何新production/Cargo/fixture变化都按
 新candidate重新验收。
 
@@ -26,6 +27,8 @@ async typed error、callback stream item以及callback host合流断言已闭环
    未声明/shape mismatch分类与sync一致。
 6. **STREAM_CALLBACK_ITEM**：provider local interface在JSON wire前投影为opaque capability，内部stream carrier不做
    JSON round-trip；stream lease在projection前active，close/cancel/owner exit后稳定expired且exact-once清理。
+7. **STREAM_TERMINAL_DROP**：buffer满时End/Error publication不阻塞producer或丢失顺序；未消费、外部边界拒绝、
+   consumer异常退出及runtime/request drop均打破producer/runtime clone环，task/registry/lease/capability归零。
 
 同时检查三个lane只消费R01 frozen hook，没有复制descriptor/materializer/context owner或争改中央dispatch；生产
 `tokio::spawn` user-code路径均携带owned context，无current-service TLS或router fallback。
