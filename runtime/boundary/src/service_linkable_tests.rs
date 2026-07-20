@@ -260,18 +260,21 @@ impl ServiceLinkableCapabilityHooks for RecordingCapabilityHooks {
     ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         self.callback_calls.fetch_add(1, Ordering::SeqCst);
         let rollback_calls = Arc::clone(&self.rollback_calls);
-        Ok(ServiceLinkableCapabilityProjection::new(
-            CallbackCapabilityCarrier::new(
-                "runtime-a",
-                "activation-a",
-                7,
-                "contract:reader",
-                "callback-1",
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    7,
+                    "contract:reader",
+                    "callback-1",
+                ),
+                "interface-abi:reader",
+                move || {
+                    rollback_calls.fetch_add(1, Ordering::SeqCst);
+                },
             ),
-            move || {
-                rollback_calls.fetch_add(1, Ordering::SeqCst);
-            },
-        ))
+        )
     }
 
     fn project_native_adapter_capability(
@@ -280,18 +283,21 @@ impl ServiceLinkableCapabilityHooks for RecordingCapabilityHooks {
     ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         self.native_calls.fetch_add(1, Ordering::SeqCst);
         let rollback_calls = Arc::clone(&self.rollback_calls);
-        Ok(ServiceLinkableCapabilityProjection::new(
-            CallbackCapabilityCarrier::new(
-                "runtime-a",
-                "activation-a",
-                7,
-                "adapter:file",
-                "native-1",
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    7,
+                    "adapter:file",
+                    "native-1",
+                ),
+                "interface-abi:native-file",
+                move || {
+                    rollback_calls.fetch_add(1, Ordering::SeqCst);
+                },
             ),
-            move || {
-                rollback_calls.fetch_add(1, Ordering::SeqCst);
-            },
-        ))
+        )
     }
 }
 
@@ -315,19 +321,22 @@ impl ServiceLinkableCapabilityHooks for InvalidCapabilityHooks {
     ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         let rollback_calls = Arc::clone(&self.rollback_calls);
         let payload = RollbackDropProbe(Arc::clone(&self.payload_drops));
-        Ok(ServiceLinkableCapabilityProjection::new(
-            CallbackCapabilityCarrier::new(
-                "",
-                "activation-a",
-                7,
-                "contract:reader",
-                "callback-invalid",
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                CallbackCapabilityCarrier::new(
+                    "",
+                    "activation-a",
+                    7,
+                    "contract:reader",
+                    "callback-invalid",
+                ),
+                "interface-abi:reader",
+                move || {
+                    rollback_calls.fetch_add(1, Ordering::SeqCst);
+                    drop(payload);
+                },
             ),
-            move || {
-                rollback_calls.fetch_add(1, Ordering::SeqCst);
-                drop(payload);
-            },
-        ))
+        )
     }
 
     fn project_native_adapter_capability(
@@ -350,19 +359,22 @@ impl ServiceLinkableCapabilityHooks for AllocationFailureCapabilityHooks {
     ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         let rollback_calls = Arc::clone(&self.rollback_calls);
         let payload = RollbackDropProbe(Arc::clone(&self.payload_drops));
-        Ok(ServiceLinkableCapabilityProjection::new(
-            CallbackCapabilityCarrier::new(
-                "runtime-a",
-                "activation-a",
-                7,
-                "contract:reader",
-                "callback-allocation-failure",
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                CallbackCapabilityCarrier::new(
+                    "runtime-a",
+                    "activation-a",
+                    7,
+                    "contract:reader",
+                    "callback-allocation-failure",
+                ),
+                "interface-abi:reader",
+                move || {
+                    rollback_calls.fetch_add(1, Ordering::SeqCst);
+                    drop(payload);
+                },
             ),
-            move || {
-                rollback_calls.fetch_add(1, Ordering::SeqCst);
-                drop(payload);
-            },
-        ))
+        )
     }
 
     fn project_native_adapter_capability(
@@ -464,10 +476,14 @@ fn service_linkable_callback_and_native_materialization_only_use_explicit_hooks(
     let HeapNode::Interface(callback) = destination.get(callback).unwrap() else {
         panic!("callback projection should allocate interface wrapper");
     };
-    assert!(matches!(
-        callback.carrier(),
-        InterfaceCarrier::CallbackCapability(_)
-    ));
+    assert_eq!(callback.interface(), "interface-abi:reader");
+    let InterfaceCarrier::CallbackCapability(capability) = callback.carrier() else {
+        panic!("callback projection should retain an opaque capability carrier");
+    };
+    assert_eq!(
+        capability.interface_or_adapter_contract(),
+        "contract:reader"
+    );
     assert_eq!(hooks.callback_calls.load(Ordering::SeqCst), 1);
     assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 0);
     assert_eq!(hooks.rollback_calls.load(Ordering::SeqCst), 0);

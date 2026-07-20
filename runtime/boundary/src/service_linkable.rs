@@ -122,12 +122,12 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                     hooks.project_native_adapter_capability(request)?
                 };
                 validate_projected_capability(projection.capability(), *lifetime)?;
+                if projection.receiver_interface_abi_id().is_empty() {
+                    return Err(ServiceLinkableMaterializationError::InvalidProjectedCapability);
+                }
                 let checkpoint = destination_heap.checkpoint();
                 let handle = match destination_heap.alloc_interface(InterfaceValue::new(
-                    projection
-                        .capability()
-                        .interface_or_adapter_contract()
-                        .to_string(),
+                    projection.receiver_interface_abi_id().to_string(),
                     InterfaceCarrier::CallbackCapability(projection.capability().clone()),
                 )) {
                     Ok(handle) => handle,
@@ -179,22 +179,32 @@ pub trait ServiceLinkableCapabilityHooks: Send + Sync {
 /// projection invokes the rollback exactly once.
 pub struct ServiceLinkableCapabilityProjection {
     capability: CallbackCapabilityCarrier,
+    /// Execution-facing local interface ABI used by the destination wrapper.
+    /// This is deliberately separate from the carrier's canonical callback
+    /// contract identity.
+    receiver_interface_abi_id: String,
     rollback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl ServiceLinkableCapabilityProjection {
-    pub fn new(
+    pub fn new_with_receiver_interface(
         capability: CallbackCapabilityCarrier,
+        receiver_interface_abi_id: impl Into<String>,
         rollback: impl FnOnce() + Send + 'static,
     ) -> Self {
         Self {
             capability,
+            receiver_interface_abi_id: receiver_interface_abi_id.into(),
             rollback: Some(Box::new(rollback)),
         }
     }
 
     pub fn capability(&self) -> &CallbackCapabilityCarrier {
         &self.capability
+    }
+
+    pub fn receiver_interface_abi_id(&self) -> &str {
+        &self.receiver_interface_abi_id
     }
 
     fn commit(mut self) {

@@ -1,4 +1,5 @@
 pub mod addr;
+pub mod callback_projection;
 pub mod error;
 pub mod recoverable;
 pub mod request_heap;
