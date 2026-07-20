@@ -2547,6 +2547,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "skiff-artifact-model",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
  "skiff-runtime-eval",
@@ -2563,6 +2564,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "skiff-artifact-model",
  "skiff-runtime-capability-context",
 ]
 
@@ -2600,6 +2602,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-model",
  "skiff-runtime-request-contract",
+ "url",
 ]
 
 [[package]]

@@ -41,6 +41,7 @@ use skiff_runtime_request::{
 };
 
 mod actor;
+mod assembly_request_adapter;
 mod config;
 mod downcast;
 mod effects;
@@ -69,11 +70,15 @@ use file_stream::{
     RuntimeStreamRuntime,
 };
 use http::{RuntimeHttpClientCapabilityContext, RuntimeTelemetryCapabilityContext};
-use outbound::RuntimeOutboundServiceContext;
+use outbound::{RetiredAssemblyOutboundServiceContext, RuntimeOutboundServiceContext};
 use websocket::RuntimeWebsocketCapabilityContext;
 
+pub(crate) use assembly_request_adapter::{
+    assembly_request_eval_adapter, RuntimeAssemblyRequestEvalAdapterInput,
+};
 pub(crate) use error::root_error_into_eval;
 pub(crate) use factory::actor_from_request;
+pub(crate) use factory::retired_assembly_outbound;
 #[cfg(any(test, feature = "test-support"))]
 pub use factory::TestActorCapabilityFactory;
 pub use factory::{

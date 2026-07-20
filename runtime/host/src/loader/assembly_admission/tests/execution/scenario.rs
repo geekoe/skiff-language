@@ -18,7 +18,6 @@ use skiff_runtime_model::runtime_value::{
 use super::super::super::{ActiveAssembly, AssemblyAdmissionController};
 use super::{
     artifacts::{callback_interface_ref, ProjectedFixture, TypedExecutionContract},
-    resolver::admitted_eval_resolver,
     runtime::TypedExecutionRuntime,
 };
 
@@ -44,16 +43,13 @@ impl TypedExecutionFixture {
             .admit(projected.assembly.clone(), &projected.resolver)
             .await
             .expect("typed provider/consumer assembly should load, link, validate, and admit");
-        let eval_resolver = admitted_eval_resolver(&active);
-        let consumer = eval_resolver
-            .activations
-            .values()
-            .find(|activation| activation.identity().deployment == projected.consumer_deployment)
-            .cloned()
+        let consumer = active
+            .contexts()
+            .activation_for_deployment(&projected.consumer_deployment)
             .expect("consumer ActivationContext should be built from admitted templates");
         let request = RequestActivationContext::begin(consumer)
             .expect("typed fixture request generation should be available");
-        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(eval_resolver);
+        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = active.contexts().clone();
         let eval_target = RuntimeAssemblyEvalTarget::new(
             Arc::clone(active.candidate().execution_image()),
             request,
@@ -253,4 +249,136 @@ pub(super) async fn assert_typed_execution_fixture() {
 #[tokio::test]
 async fn typed_execution_fixture_uses_projected_admitted_targets() {
     assert_typed_execution_fixture().await;
+}
+
+#[tokio::test]
+async fn active_generation_context_pins_route_across_reload_and_failed_candidate() {
+    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
+    let selector = projected
+        .assembly
+        .global_ingress
+        .first()
+        .expect("fixture should expose canonical ingress")
+        .selector
+        .clone();
+    let controller = AssemblyAdmissionController::new("active-generation-context-replica");
+    let generation_n = controller
+        .admit(projected.assembly.clone(), &projected.resolver)
+        .await
+        .expect("generation N should admit");
+    let pinned_n = controller
+        .route(&selector)
+        .expect("route lookup should be in-memory")
+        .expect("generation N should expose ingress");
+
+    assert_eq!(pinned_n.generation(), 1);
+    assert_eq!(
+        pinned_n.activation().identity().assembly_generation,
+        pinned_n.generation()
+    );
+    assert!(Arc::ptr_eq(pinned_n.context_set(), generation_n.contexts()));
+
+    let generation_n_plus_one = controller
+        .admit(projected.assembly.clone(), &projected.resolver)
+        .await
+        .expect("generation N+1 should admit");
+    let fresh = controller
+        .route(&selector)
+        .expect("route lookup should be in-memory")
+        .expect("generation N+1 should expose ingress");
+    assert_eq!(fresh.generation(), 2);
+    assert_eq!(pinned_n.generation(), 1);
+    assert_eq!(pinned_n.activation().identity().assembly_generation, 1);
+    assert_eq!(fresh.activation().identity().assembly_generation, 2);
+    assert!(!Arc::ptr_eq(pinned_n.context_set(), fresh.context_set()));
+    assert!(Arc::ptr_eq(
+        fresh.context_set(),
+        generation_n_plus_one.contexts()
+    ));
+
+    let mut invalid = projected.assembly.clone();
+    invalid.assembly_identity =
+        skiff_artifact_model::AssemblyIdentity::new("invalid-active-generation-context-candidate");
+    controller
+        .admit(invalid, &projected.resolver)
+        .await
+        .expect_err("invalid candidate must fail before publication");
+    let after_failure = controller
+        .route(&selector)
+        .expect("route lookup should remain in-memory")
+        .expect("failed reload must retain generation N+1");
+    assert_eq!(after_failure.generation(), 2);
+    assert!(Arc::ptr_eq(
+        after_failure.context_set(),
+        generation_n_plus_one.contexts()
+    ));
+}
+
+#[tokio::test]
+async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
+    let projected = ProjectedFixture::new(TypedExecutionContract::unary());
+    let selector = projected
+        .assembly
+        .global_ingress
+        .first()
+        .expect("fixture should expose canonical ingress")
+        .selector
+        .clone();
+    let controller = AssemblyAdmissionController::new("in-process-request-entry-replica");
+    controller
+        .admit(projected.assembly, &projected.resolver)
+        .await
+        .expect("typed assembly should admit");
+    let route = controller
+        .route(&selector)
+        .expect("route lookup should be in-memory")
+        .expect("canonical ingress should resolve");
+    let request_target = route
+        .request_target()
+        .expect("route should form one pinned request target");
+    let runtime = TypedExecutionRuntime::new(
+        &request_target
+            .eval()
+            .activation_context()
+            .identity()
+            .deployment
+            .service_id,
+    );
+    let interpreter = runtime.interpreter();
+    let context = runtime.context(&interpreter, request_target.eval());
+    let mut heap = context.request_heap();
+    let request = skiff_runtime_request::RequestPayloadContext::new(
+        "legacy-display-target-is-not-routing-identity",
+        &[],
+        None,
+    );
+    let request_generation = request_target.eval().request_activation().generation();
+    skiff_runtime_eval::start_in_process_boundary_dispatch_probe_for_test(request_generation);
+
+    let error = skiff_runtime_eval::dispatch_ingress_via_in_process_boundary(
+        &interpreter,
+        context,
+        &mut heap,
+        request_target.boundary().clone(),
+        &request,
+    )
+    .await
+    .expect_err("fixture provider intentionally has no entry block");
+    assert!(error
+        .to_string()
+        .contains("executable provide missing block entry"));
+
+    let records =
+        skiff_runtime_eval::take_in_process_boundary_dispatch_records_for_test(request_generation);
+    assert_eq!(
+        records.len(),
+        2,
+        "ingress plus nested internal call expected"
+    );
+    assert_eq!(records[0].origin, "ingress");
+    assert_eq!(records[1].origin, "internal");
+    assert_eq!(
+        records[1].contract_operation,
+        projected.provider_operation.as_str()
+    );
 }
