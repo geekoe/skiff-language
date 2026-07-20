@@ -12,7 +12,10 @@ pub use cache::{
     RemovedRuntimeActivationCacheEntry, RuntimeActivationCache, RuntimeActivationCacheEntry,
     RuntimeActivationCacheEvictionCandidate, RuntimeActivationCacheStats,
 };
-pub use capability::{CallbackCapabilityError, CallbackCapabilityPayload, CallbackCapabilityTable};
+pub use capability::{
+    CallbackCapabilityError, CallbackCapabilityPayload, CallbackCapabilityTable,
+    CALLBACK_CAPABILITY_TOMBSTONE_LIMIT,
+};
 pub use context::{
     ActivationContext, ActivationContextError, ActivationId, ActivationIdentity,
     ActivationOwnedBindings, ActivationServiceBinding,

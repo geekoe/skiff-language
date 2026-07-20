@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use skiff_artifact_model::{
@@ -15,7 +18,7 @@ use skiff_runtime_model::value::{
 };
 
 use super::service_linkable::*;
-use crate::request_heap::RequestHeap;
+use crate::request_heap::{RequestHeap, RequestHeapLimits};
 
 fn detached_plan(owner: BoundaryValueOwner, lifetime: BoundaryValueLifetime) -> BoundaryValuePlan {
     BoundaryValuePlan::Linkable {
@@ -247,36 +250,190 @@ fn service_linkable_materialization_rejects_wrong_owner_lifetime_and_local_inter
 struct RecordingCapabilityHooks {
     callback_calls: AtomicUsize,
     native_calls: AtomicUsize,
+    rollback_calls: Arc<AtomicUsize>,
 }
 
 impl ServiceLinkableCapabilityHooks for RecordingCapabilityHooks {
     fn project_callback_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         self.callback_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(CallbackCapabilityCarrier::new(
-            "runtime-a",
-            "activation-a",
-            7,
-            "contract:reader",
-            "callback-1",
+        let rollback_calls = Arc::clone(&self.rollback_calls);
+        Ok(ServiceLinkableCapabilityProjection::new(
+            CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                7,
+                "contract:reader",
+                "callback-1",
+            ),
+            move || {
+                rollback_calls.fetch_add(1, Ordering::SeqCst);
+            },
         ))
     }
 
     fn project_native_adapter_capability(
         &self,
         _request: ServiceLinkableCapabilityRequest<'_>,
-    ) -> Result<CallbackCapabilityCarrier, ServiceLinkableMaterializationError> {
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
         self.native_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(CallbackCapabilityCarrier::new(
-            "runtime-a",
-            "activation-a",
-            7,
-            "adapter:file",
-            "native-1",
+        let rollback_calls = Arc::clone(&self.rollback_calls);
+        Ok(ServiceLinkableCapabilityProjection::new(
+            CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                7,
+                "adapter:file",
+                "native-1",
+            ),
+            move || {
+                rollback_calls.fetch_add(1, Ordering::SeqCst);
+            },
         ))
     }
+}
+
+struct InvalidCapabilityHooks {
+    rollback_calls: Arc<AtomicUsize>,
+    payload_drops: Arc<AtomicUsize>,
+}
+
+struct RollbackDropProbe(Arc<AtomicUsize>);
+
+impl Drop for RollbackDropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl ServiceLinkableCapabilityHooks for InvalidCapabilityHooks {
+    fn project_callback_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
+        let rollback_calls = Arc::clone(&self.rollback_calls);
+        let payload = RollbackDropProbe(Arc::clone(&self.payload_drops));
+        Ok(ServiceLinkableCapabilityProjection::new(
+            CallbackCapabilityCarrier::new(
+                "",
+                "activation-a",
+                7,
+                "contract:reader",
+                "callback-invalid",
+            ),
+            move || {
+                rollback_calls.fetch_add(1, Ordering::SeqCst);
+                drop(payload);
+            },
+        ))
+    }
+
+    fn project_native_adapter_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
+        unreachable!("invalid callback fixture must not use native projection")
+    }
+}
+
+struct AllocationFailureCapabilityHooks {
+    rollback_calls: Arc<AtomicUsize>,
+    payload_drops: Arc<AtomicUsize>,
+}
+
+impl ServiceLinkableCapabilityHooks for AllocationFailureCapabilityHooks {
+    fn project_callback_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
+        let rollback_calls = Arc::clone(&self.rollback_calls);
+        let payload = RollbackDropProbe(Arc::clone(&self.payload_drops));
+        Ok(ServiceLinkableCapabilityProjection::new(
+            CallbackCapabilityCarrier::new(
+                "runtime-a",
+                "activation-a",
+                7,
+                "contract:reader",
+                "callback-allocation-failure",
+            ),
+            move || {
+                rollback_calls.fetch_add(1, Ordering::SeqCst);
+                drop(payload);
+            },
+        ))
+    }
+
+    fn project_native_adapter_capability(
+        &self,
+        _request: ServiceLinkableCapabilityRequest<'_>,
+    ) -> Result<ServiceLinkableCapabilityProjection, ServiceLinkableMaterializationError> {
+        unreachable!("allocation failure callback fixture must not use native projection")
+    }
+}
+
+#[test]
+fn callback_capability_rollback_covers_validation_and_destination_allocation_failure() {
+    let (callback_ty, callback_schema) = callback_schema();
+    let callback_value_plan = callback_plan(BoundaryValueLifetime::Request);
+    let callback_contract_plan =
+        ServiceLinkableContractPlan::new(&callback_ty, &callback_schema, &callback_value_plan)
+            .expect("callback plan should build");
+    let source = RequestHeap::default();
+    let scope = ServiceLinkableMaterializationScope {
+        owner: BoundaryValueOwner::CapabilityOwner,
+        lifetime: BoundaryValueLifetime::Request,
+    };
+
+    let invalid_rollback_calls = Arc::new(AtomicUsize::new(0));
+    let invalid_payload_drops = Arc::new(AtomicUsize::new(0));
+    let invalid_hooks = InvalidCapabilityHooks {
+        rollback_calls: Arc::clone(&invalid_rollback_calls),
+        payload_drops: Arc::clone(&invalid_payload_drops),
+    };
+    assert!(matches!(
+        callback_contract_plan.materialize(
+            &RuntimeValue::Null,
+            &source,
+            &mut RequestHeap::default(),
+            scope,
+            &invalid_hooks,
+        ),
+        Err(ServiceLinkableMaterializationError::InvalidProjectedCapability)
+    ));
+    assert_eq!(invalid_rollback_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(invalid_payload_drops.load(Ordering::SeqCst), 1);
+
+    let rollback_calls = Arc::new(AtomicUsize::new(0));
+    let payload_drops = Arc::new(AtomicUsize::new(0));
+    let hooks = AllocationFailureCapabilityHooks {
+        rollback_calls: Arc::clone(&rollback_calls),
+        payload_drops: Arc::clone(&payload_drops),
+    };
+    let limits = RequestHeapLimits {
+        max_nodes: 1,
+        ..RequestHeapLimits::default()
+    };
+    let mut destination = RequestHeap::new(limits);
+    destination
+        .alloc_array(Vec::new())
+        .expect("fixture should fill destination node capacity");
+    let checkpoint_stats = destination.stats();
+    assert!(matches!(
+        callback_contract_plan.materialize(
+            &RuntimeValue::Null,
+            &source,
+            &mut destination,
+            scope,
+            &hooks,
+        ),
+        Err(ServiceLinkableMaterializationError::RuntimeModel { .. })
+    ));
+    assert_eq!(destination.len(), 1);
+    assert_eq!(destination.stats(), checkpoint_stats);
+    assert_eq!(rollback_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -313,6 +470,7 @@ fn service_linkable_callback_and_native_materialization_only_use_explicit_hooks(
     ));
     assert_eq!(hooks.callback_calls.load(Ordering::SeqCst), 1);
     assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(hooks.rollback_calls.load(Ordering::SeqCst), 0);
 
     let native_ty = ContractTypeRef::builtin("string");
     let native_value_plan = callback_plan(BoundaryValueLifetime::Request);
@@ -334,6 +492,7 @@ fn service_linkable_callback_and_native_materialization_only_use_explicit_hooks(
         .expect("explicit native hook should project opaque capability");
     assert_eq!(hooks.callback_calls.load(Ordering::SeqCst), 1);
     assert_eq!(hooks.native_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(hooks.rollback_calls.load(Ordering::SeqCst), 0);
 
     assert!(matches!(
         callback_contract_plan.materialize(
