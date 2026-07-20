@@ -20,7 +20,7 @@ async fn typed_execution_ordinary() {
     let context = runtime.context(&interpreter, &fixture.eval_target);
 
     let mut service_heap = context.request_heap();
-    let service_error = interpreter
+    let service_result = interpreter
         .execute_runtime_assembly_addr(
             context.clone(),
             &mut service_heap,
@@ -28,16 +28,15 @@ async fn typed_execution_ordinary() {
             Vec::new(),
         )
         .await
-        .expect_err("ordinary service call must enter its exact admitted provider target");
-    assert!(
-        service_error
-            .to_string()
-            .contains("executable provide missing block entry"),
-        "service execution stopped before the admitted provider target: {service_error}"
+        .expect("ordinary service call must return from its exact admitted provider target");
+    assert_eq!(
+        service_result,
+        skiff_runtime_model::runtime_value::RuntimeValue::Bool(true),
+        "service execution must propagate the detached provider result"
     );
 
     let mut package_heap = context.request_heap();
-    let package_error = interpreter
+    let package_result = interpreter
         .execute_runtime_assembly_addr(
             context,
             &mut package_heap,
@@ -45,12 +44,11 @@ async fn typed_execution_ordinary() {
             Vec::new(),
         )
         .await
-        .expect_err("package direct call must enter its exact admitted package target");
-    assert!(
-        package_error
-            .to_string()
-            .contains("executable provide missing block entry"),
-        "package execution stopped before the admitted package target: {package_error}"
+        .expect("package direct call must return from its exact admitted package target");
+    assert_eq!(
+        package_result,
+        skiff_runtime_model::runtime_value::RuntimeValue::Bool(true),
+        "package execution must propagate the same-heap provider result"
     );
     assert_eq!(
         fixture.eval_target.activation_context().activation_id(),
