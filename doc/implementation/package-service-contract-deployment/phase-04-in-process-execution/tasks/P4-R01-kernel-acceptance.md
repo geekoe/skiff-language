@@ -8,8 +8,9 @@
 - `phase-plan.md`、P4-T01/T02/T03任务合同；
 - T01–T03已合流的exact clean integration commit及开发自验收证据。
 
-首次验收在`ef14a08` FAIL。复验还必须完整阅读P4-F02/F03/F04合同及三任务合流后的exact clean commit；原三项
-blocking issue必须逐项给`RESOLVED/UNRESOLVED`，且任何新production/Cargo/fixture变化都按新候选重新验收。
+首次验收在`ef14a08` FAIL。`9eaea40`复验确认F02/F03/F04原三项均RESOLVED，但发现eval callback shell未同步
+F03 RAII projection ABI，候选无法编译。再次复验还必须阅读P4-F05合同，重跑被阻断的eval/host过滤器，并确认
+F05不偷做T06具体lane；任何新production/Cargo/fixture变化都按新候选重新验收。
 
 不得修改文件、创建commit或预设PASS。只运行必要聚焦抽查，不重复开发Agent的完整命令。
 

@@ -1,6 +1,6 @@
 # Phase 04：In-Process Execution Plane 实现计划
 
-状态：active；P4-D01 PASS；首次R01在`ef14a08` FAIL，F02–F04按原owner并行返修
+状态：active；R01在`ef14a08`与`9eaea40`两次FAIL；原三项已闭环，F05修复合流ABI回归
 
 权威设计输入：`doc/architecture/package-service-contract-deployment.md`，重点 §2、§6、§7、§8、§9、§10、
 §12、§14、§15。本文只冻结 Phase 04 的实现 DAG、写入 ownership、候选成熟度和验收证据，不定义
@@ -117,7 +117,8 @@ checker写入域互不重叠。
 | F02 | [Assembly execution projection repair](tasks/P4-F02-assembly-execution-projection.md) | R01@`ef14a08` blocker 1 | 高；T03 owner repair |
 | F03 | [Capability cleanup/rollback repair](tasks/P4-F03-capability-cleanup-rollback.md) | R01@`ef14a08` blocker 2 | 高；T02 owner repair |
 | F04 | [Assembly linker call validation repair](tasks/P4-F04-assembly-linker-call-validation.md) | R01@`ef14a08` blocker 3 | 高；T01 owner repair |
-| R01 | [Kernel checkpoint acceptance](tasks/P4-R01-kernel-acceptance.md) | T03、F02–F04 exact merged commit | 高风险只读 gate |
+| F05 | [Eval callback projection ABI integration](tasks/P4-F05-eval-callback-projection-abi.md) | R01@`9eaea40` merge regression | 中；T03 integration repair |
+| R01 | [Kernel checkpoint acceptance](tasks/P4-R01-kernel-acceptance.md) | T03、F02–F05 exact merged commit | 高风险只读 gate |
 | T04 | [Ordinary/error execution](tasks/P4-T04-ordinary-error-execution.md) | R01 PASS | 高；lane batch |
 | T05 | [Async/stream/cancel execution](tasks/P4-T05-async-stream-cancel.md) | R01 PASS | 高；lane batch |
 | T06 | [Callback/native capability execution](tasks/P4-T06-callback-native-capability.md) | R01 PASS | 高；lane batch |
