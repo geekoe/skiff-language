@@ -1,4 +1,5 @@
 mod async_stream_cancel;
+mod boundary_materialization;
 mod callback_native;
 mod ordinary;
 mod projection;
