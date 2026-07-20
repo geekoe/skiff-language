@@ -285,9 +285,18 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
         }
         return;
       case 'request.start':
-        this.dispatcher().handleRuntimeRequestStart(ws, {
-          header,
-          payloadBytes: frame.payloadBytes
+        if (header.caller.kind !== 'service') {
+          throw new Error('runtime-originated request.start requires caller.kind service');
+        }
+        this.sendFrame(ws, {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'response.error',
+          requestId: header.requestId,
+          error: {
+            code: 'InProcessServiceCallRequired',
+            message:
+              'runtime-originated service request.start is not supported; service calls must use an in-process binding'
+          }
         });
         return;
       case 'connection.send':

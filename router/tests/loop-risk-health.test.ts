@@ -59,8 +59,7 @@ describe('loop-risk health detail', () => {
     expect(health.router).toMatchObject({
       dispatcher: {
         pendingUnary: 0,
-        pendingStream: 0,
-        pendingForward: 0
+        pendingStream: 0
       },
       httpStream: {
         backpressureWaiters: 0,
@@ -127,8 +126,7 @@ describe('loop-risk health detail', () => {
     let health = await readLoopRiskHealth(harness);
     expect(health.router.dispatcher).toMatchObject({
       pendingUnary: 1,
-      pendingStream: 0,
-      pendingForward: 0
+      pendingStream: 0
     });
 
     runtime.sendBinaryJsonResponse(frame.header.requestId, { ok: true });
@@ -141,8 +139,7 @@ describe('loop-risk health detail', () => {
     );
     expect(health.router.dispatcher).toMatchObject({
       pendingUnary: 0,
-      pendingStream: 0,
-      pendingForward: 0
+      pendingStream: 0
     });
     expect(runtimeSnapshot(health, 'runtime-loop-risk-pending').counters).toEqual(
       zeroRuntimeCounters()
@@ -301,8 +298,7 @@ describe('loop-risk health detail', () => {
     expect(health.router).toEqual({
       dispatcher: {
         pendingUnary: 0,
-        pendingStream: 0,
-        pendingForward: 0
+        pendingStream: 0
       },
       httpStream: {
         backpressureWaiters: 0,
@@ -470,7 +466,6 @@ interface LoopRiskHealthPayload {
     dispatcher: {
       pendingUnary: number;
       pendingStream: number;
-      pendingForward: number;
     };
     httpStream: {
       backpressureWaiters: number;
@@ -597,7 +592,6 @@ function routerLoopRiskCountersAreZero(health: LoopRiskHealthPayload): boolean {
   return (
     health.router.dispatcher.pendingUnary === 0 &&
     health.router.dispatcher.pendingStream === 0 &&
-    health.router.dispatcher.pendingForward === 0 &&
     health.router.httpStream.backpressureWaiters === 0 &&
     health.router.httpStream.backpressureCancels === 0 &&
     health.router.websocketReceive.inFlight === 0 &&
