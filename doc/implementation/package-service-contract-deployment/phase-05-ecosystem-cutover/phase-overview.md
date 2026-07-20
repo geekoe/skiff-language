@@ -12,7 +12,7 @@
 
 ## 完成态
 
-- strict authoring 输入、immutable storage、release pointer 和 environment active-assembly pointer 只产生/
+- strict authoring 输入、immutable storage、release pointer 和 environment activation state 只产生/
   消费四个canonical对象；没有共同aggregate、legacy adapter、dual read/write、fallback。
 - contract 可先于implementation发布；package只依赖已发布ServiceContract独立编译；deployment
   只用typed artifacts校验；assembly解析完整闭包并原子activation。
@@ -42,7 +42,7 @@
 - production source tree 不存在四对象之外的共同aggregate、旧DTO/reader/writer/converter、
   dual path、request-time artifact load或runtime fallback。
 - 平台真实支持contract-first publish、package independent compile、deployment validation、
-  complete assembly activation、CAS/stale generation fail-closed和atomic rollback-on-failed-reload。
+  complete assembly activation、prepare/commit/abort CAS、stale generation fail-closed和pre-commit reject rollback。
 - 两个runtime replica注册相同assembly，Host ingress经router到provider得到业务结果；加载失败
   不替换旧active generation。
 - Skiff、`skiff-packages`、`internals` 的production legacy 命中归零；fixture有replacement或删除证明。

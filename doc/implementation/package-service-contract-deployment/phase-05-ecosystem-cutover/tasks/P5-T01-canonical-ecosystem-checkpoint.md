@@ -25,8 +25,10 @@
   parser boundary；精确字段记录在聚焦reference/test fixture，不复制canonical artifact body。
 - PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly各自的typed immutable
   record/path/reader/writer及pointer操作；不引入common artifact-kind enum/envelope。
-- environment active-assembly pointer的generation/CAS/atomic replace与strict identity/path validation。
-- router↔runtime的exact control/register wire fixture：environment/generation/assembly/replica，无service/build target。
+- environment activation state的committed/pending、activationId、participant set、prepare/commit/abort CAS、
+  crash recovery与strict identity/path validation；它是operational record，不进入四对象artifact hierarchy。
+- router↔runtime的exact prepare/ACK/reject/commit/abort/register wire fixture：environment/activationId/
+  expected+candidate generation/assembly/replica，无service/build target。
 - production `RuntimeAssemblyContentResolver` 对四种immutable record的strict解析；不调用host admission。
 
 允许对 `artifact-model`、`artifact-identity`、compiler input/contract、`deployment`、新storage模块、
@@ -36,8 +38,9 @@ CLI/dev-sync/router dispatch/runtime host/test-runner consumer，禁止删legacy
 ## 完成态与最早探针
 
 1. 四类record往返bit-identical，unknown/missing/tampered/cross-root/duplicate 全部fail closed。
-2. active pointer只能CAS从expected generation单调替换；partial/stale/mismatched record不改旧值。
-3. cross-language golden fixture在Rust/TypeScript两端解码同一wire；mutation能检出旧
+2. prepare CAS只创建pending；任一resolver/admission reject、participant disconnect或abort保持committed
+   tuple byte-identical。全部participant exact ACK后才commit单调generation；commit后通知/重启可幂等向前收敛。
+3. cross-language golden fixture在Rust/TypeScript两端解码同一state/control wire；mutation能检出旧
    `artifactRoots/serviceConfig/serviceId/buildId/target`字段。
 4. production resolver从exact RuntimeAssembly ref闭合加载deployment/contract/package/file/resource，
    不读旧pointer/index、不修复identity、不反序列化成类型前查raw JSON。
@@ -57,5 +60,6 @@ git diff --check
 
 ## 回报
 
-提交一个commit并合入Skiff integration branch，回报exact authoring/file/path接口索引、wire字段表、生产resolver、
+提交一个commit并合入Skiff integration branch，回报exact authoring/file/path接口索引、activation
+state machine/崩溃点表、wire字段表、生产resolver、
 legacy反向搜索、测试与自验收矩阵。

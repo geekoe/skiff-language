@@ -25,14 +25,21 @@
 5. admin/config/login/importer只使用Host URL，删除`service.yml` identity reader、query selector、
    `x-skiff-service/version` header producer；不改OAuth 1455单例语义。
 6. source/package/deployment可在AIHub implementation不存在时build/validate；内部service call不经router。
+7. `codex-relay/AGENTS.md`、`service/AGENTS.md`及owned docs删除强制service/version query/header、旧
+   `service.yml`/rewrite/pointer说明，改为`codex-relay.localhost`与canonical contract/deployment workflow；
+   不新建README。
 
 ## 唯一聚焦验证 owner
 
 ```bash
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration \
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t10-cargo.XXXXXX)"
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" \
+SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
   node scripts/test-isolated-service.mjs agine.ai/codex-relay
 node --test codex-relay/admin/*.test.mjs codex-relay/lib/*.test.mjs codex-relay/scripts/*.test.mjs
 node --check codex-relay/admin/*.mjs codex-relay/lib/*.mjs codex-relay/scripts/*.mjs
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
 git diff --check
 ```
 

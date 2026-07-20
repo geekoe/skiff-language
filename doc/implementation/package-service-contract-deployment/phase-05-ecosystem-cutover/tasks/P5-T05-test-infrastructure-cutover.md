@@ -30,8 +30,9 @@ compiler/scripts production、artifact-model exports或verify接线。
 5. 旧service publish/runtime pointer writer/artifact graph helper删除或被canonical replacement完整替代；
    每组删除的旧测试说明replacement或语义整体退役。
 6. non-live isolated tests不写stable root、不调stable reload，且实际从指定Skiff checkout运行。
-7. 提供 `scripts/run-package-service-ecosystem-smoke.mjs --replicas 2` 的隔离动态入口，使用两个
-   runtime-home加载同一assembly并断言Host request最终结果、replica failover与failed reload rollback。
+7. 提供 `scripts/run-package-service-ecosystem-smoke.mjs` 隔离动态入口：`--probe skiff-cutover
+   --replicas 1`归I02，`--replicas 2`归T13。两者使用temporary runtime homes并断言Host request最终
+   结果、activation abort rollback；two-replica模式另断言replica failover。
 
 ## 探针与唯一聚焦验证 owner
 

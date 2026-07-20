@@ -26,7 +26,8 @@
 3. package contract coordinates解析已发布ServiceContract，provider不存在时consumer仍可编译。
    deployment projection只用contract/package artifacts，assembly只用root deployment closure。
 4. dev registry/watch观测package/contract/deployment roots，产生完整assembly；先写所有immutable
-   records，再CAS active pointer，最后调control reload。编译/验证/写入/reload失败不移动pointer。
+   records，再通过router control请求T01 activation prepare。tooling不直接写committed pointer；编译/验证/
+   写入/prepare/admission失败只得到reject/abort，不移动committed generation。
 5. 删除package publish的`skiff-cli-live-test-shim/packageUnitPath/packageUnitHash/abiIdentity`，旧
    `service dev`/service source authoring/pointer writer无production可达路径。
 6. CLI help/error/docs只描述四对象流程；old `--service-artifact-root`/service assembly/index参数
@@ -35,8 +36,9 @@
 ## 探针与唯一聚焦验证 owner
 
 - contract-first build正例；missing/tampered contract、duplicate alias/provider、deployment mismatch负例。
-- 用临时root执行两次sync，第二次stale generation失败且原pointer bytes不变。
-- watch batch中任一root失败时不进行reload；成功时reload只收到exact assembly generation。
+- 用临时root执行两次sync，第二次stale expected generation失败且committed tuple bytes不变。
+- watch batch中任一root失败时不发prepare；runtime reject时pending被abort且committed不变；成功时只产生
+  一次exact activation transaction。
 
 ```bash
 cargo test -p skiff-compiler

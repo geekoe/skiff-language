@@ -9,7 +9,8 @@
 - repo branch：`codex/package-service-phase-05`；integration worktree：
   `/Users/geek/workspace/skiff-packages-phase-05-integration`。task branch：`codex/p5-t07-skiff-packages`，
   worktree：`/Users/geek/workspace/skiff-packages-p5-t07`。
-- 使用主Agent记录的exact Skiff worktree/commit；五分钟内编辑`track.skiff`或harness。
+- 只读Skiff checkpoint固定为`/Users/geek/workspace/skiff-p5-r02-checkpoint`；开始与回报前核对主Agent
+  记录的exact R02 commit/tree及clean，Cargo/generated output放task临时目录。五分钟内编辑`track.skiff`或harness。
 - 当前共享状态是R02 PASS的external-consumer checkpoint；完成后只是Wave 3 partial candidate。使用新的
   开发Agent；证据对exact Skiff CLI/artifact interfaces、package source/harness/fixtures或依赖变化失效。
 

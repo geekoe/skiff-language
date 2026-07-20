@@ -3,7 +3,7 @@
 ## 权威输入与DAG
 
 - 设计：`/Users/geek/workspace/skiff/doc/architecture/package-service-contract-deployment.md` §3–§12、§14–§15。
-- 依赖：R09 PASS exact checkpoint；与T10/T11并行，解锁R03。
+- 依赖：R09 PASS exact checkpoint及T07 exact `skiff-packages` integration；与T10/T11并行，解锁T09E。
 - 风险：高；Agine API owner split、AIHub stream consumer、HTTP/WS clients、chat证据。
 - branch：`codex/p5-t12-agine-clients`；worktree：`/Users/geek/workspace/internals-p5-t12-agine`。
 - 当前共享状态是R09 PASS的contract/workflow checkpoint；完成后仍是Wave 3 partial candidate。使用新的
@@ -28,17 +28,26 @@
    session/create/chat/send/get业务链。开发任务只修脚本与静态测试，真实stable smoke归V01。
 7. `agine/client/e2e/provider-list-smoke.mjs`提供独立main-only live入口；其self-test与chat smoke self-test
    使用fake transport验证Host URL和最终断言，不连接stable。
+8. owned client/host AGENTS与README删除service/version query/header、旧gateway/rewrite说明，保留动态
+   worktree端口与浏览器约束并改为`agine.localhost`；不新建README。
 
 ## 唯一聚焦验证 owner
 
 ```bash
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration npm --prefix agine/service run type-check
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration npm --prefix agine/service test
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t12-cargo.XXXXXX)"
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
+SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
+  npm --prefix agine/service run type-check
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
+SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
+  npm --prefix agine/service test
 npm --prefix agine run type-check:client
 npm --prefix agine run type-check:host
 npm --prefix agine/client run test:logic
 node --test agine/client/e2e/provider-list-smoke.test.mjs
 node --test agine/client/e2e/api.chat-smoke.test.mjs
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
 git diff --check
 ```
 

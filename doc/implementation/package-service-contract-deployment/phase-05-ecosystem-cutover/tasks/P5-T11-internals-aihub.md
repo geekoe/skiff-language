@@ -22,18 +22,28 @@
    Codex package/deployment；operation errors/stream/cancel保持contract语义。
 4. deployment恰好映射所有contract operations，将Codex service requirement slot绑定到exact contract/
    deployment selector，ingress使用`aihub.localhost`，config/state/resource/policy完整。
-5. client HTTP/WS URL只使用AIHub Host，无service/version query/header；内部service call测试仍断言
+5. deployment以SecretRefBinding闭合`bailian/deepseek/gemini/openai/openrouter apiKey`与
+   `codexRelay.relayKey` requirements；secret值只在activation input解析，不进入ServiceDeployment、
+   RuntimeAssembly、日志或fixture snapshot。missing/unknown secret ref在admission前fail closed。
+6. client HTTP/WS URL只使用AIHub Host，无service/version query/header；内部service call测试仍断言
    router selector不存在。
-6. source/package可在Codex implementation不存在时依赖已发布contract独立compile。
+7. source/package可在Codex implementation不存在时依赖已发布contract独立compile。
+8. owned AGENTS/README/example config只描述Host ingress与SecretRef path，不保留service selector或把
+   示例secret值写入artifact；不新建README。
 
 ## 唯一聚焦验证 owner
 
 ```bash
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration npm --prefix aihub/service run type-check
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration npm --prefix aihub/service test
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t11-cargo.XXXXXX)"
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
+  npm --prefix aihub/service run type-check
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
+  npm --prefix aihub/service test
 node --test aihub/service/client-url.test.mjs
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
 git diff --check
 ```
 
 不运行build/dev/start/stable reload。提交一个commit并合入Internals integration branch，回报operation mapping、contract/package wrapper、
-dependency binding、Host route反向搜索、测试及自验收矩阵。
+dependency与secret-ref binding（只列path，不列值）、Host route反向搜索、测试及自验收矩阵。

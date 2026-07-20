@@ -26,10 +26,14 @@ implementation、package/deployment、client、package scripts或共享Internals
 
 ```bash
 P5_ARTIFACT_ROOT="$(mktemp -d /tmp/skiff-p5-t09b.XXXXXX)"
-P5_SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration
-SKIFF_ROOT="$P5_SKIFF_ROOT" node "$P5_SKIFF_ROOT/scripts/skiff.mjs" contract build aihub/service \
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t09b-cargo.XXXXXX)"
+P5_SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint
+git -C "$P5_SKIFF_ROOT" status --short
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT="$P5_SKIFF_ROOT" \
+  node "$P5_SKIFF_ROOT/scripts/skiff.mjs" contract build aihub/service \
   --artifact-root "$P5_ARTIFACT_ROOT" --json
 node --test aihub/service/contract.test.mjs
+git -C "$P5_SKIFF_ROOT" status --short
 git diff --check
 ```
 

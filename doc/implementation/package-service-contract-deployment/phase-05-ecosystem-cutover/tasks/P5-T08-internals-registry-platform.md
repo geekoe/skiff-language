@@ -21,11 +21,13 @@ generated service identity/Host route consumer。不改Codex Relay、AIHub、Agi
 ## 完成态
 
 1. registry分别存储/验证PackageArtifact、ServiceContract、ServiceDeployment、RuntimeAssembly
-   immutable records，以及各自typed release/active pointer CAS history；不有common artifact kind/domain aggregate。
+   immutable records、各自typed release pointer history及T01 environment activation transaction audit；
+   不有common artifact kind/domain aggregate。
 2. package publish trusted build产出真实PackageArtifact；删除`packageUnitPath/packageUnitHash/abiIdentity`
    read/write/view/DB owner、`PublicationIdRead`及旧build complete payload。旧DB记录strict reject，不dual-read。
 3. contract-first publish、package independent build、deployment validation、assembly activation四条API可分步执行；
-   immutable write先于pointer CAS，失败不产生partial pointer/history。
+   immutable write先于release pointer CAS；assembly activation只委托router coordinator的prepare/commit/abort，
+   失败不产生partial committed pointer/history。
 4. account与registry从旧`service.yml`迁为package/contract/deployment，HTTP callable显式进入Package API并
    完整映射contract operations；config/state/secret/runtime capability requirements有唯一binding。
 5. account/registry使用不同Host，不在client/generated config/query/header传service/version selector；`POST /ping`
@@ -34,18 +36,25 @@ generated service identity/Host route consumer。不改Codex Relay、AIHub、Agi
    stale generation、authority/authz及audit history。
 7. `skiff-platform/package-registry/registry-phase05-smoke.mjs`提供main-only live入口；其self-test使用fake
    transport断言四类publish/resolve/history最终结果，开发任务不得连接stable。
+8. owned `AGENTS.md`/README中的service.yml、service/version selector、旧publish/store指令同步改为canonical
+   Host与四对象流程；不新建README，优先合入AGENTS。
 
 ## 唯一聚焦验证 owner
 
 ```bash
 P5_ARTIFACT_ROOT="$(mktemp -d /tmp/skiff-p5-t08.XXXXXX)"
-P5_SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration
-SKIFF_ROOT="$P5_SKIFF_ROOT" node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/account \
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t08-cargo.XXXXXX)"
+P5_SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint
+git -C "$P5_SKIFF_ROOT" status --short
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT="$P5_SKIFF_ROOT" \
+  node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/account \
   --profile dev --artifact-root "$P5_ARTIFACT_ROOT" --deny-skips --require-tests
-SKIFF_ROOT="$P5_SKIFF_ROOT" node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/package-registry \
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT="$P5_SKIFF_ROOT" \
+  node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/package-registry \
   --profile dev --artifact-root "$P5_ARTIFACT_ROOT" --deny-skips --require-tests
 node --test skiff-platform/client/scripts/generate-services.test.mjs
 node --test skiff-platform/package-registry/registry-phase05-smoke.test.mjs
+git -C "$P5_SKIFF_ROOT" status --short
 git diff --check
 ```
 

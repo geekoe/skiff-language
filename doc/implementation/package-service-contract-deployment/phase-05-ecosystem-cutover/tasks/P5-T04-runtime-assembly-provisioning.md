@@ -18,10 +18,11 @@ artifact schema或verify接线。
 
 ## 完成态
 
-1. runtime startup与router.control都将exact assembly ref交给production resolver，经typed loader/linker/
-   `admit_runtime_assembly`构建candidate active context；不用`services: Vec::new()`或old service config。
-2. 只load/link/admit全部成功才原子替换active generation并注册assembly。任一失败保留
-   旧context/registration，且没有partial activation/callback/state table泄漏。
+1. runtime startup从committed record恢复；router prepare将exact candidate ref交给production resolver，经typed
+   loader/linker/`admit_runtime_assembly`构建staged context；不用`services: Vec::new()`或old service config。
+2. prepare只返回带activationId/replicaId/identity的ACK或reject，不切active、不注册。收到与durable committed
+   record一致的commit后才原子替换active generation并注册；任一pre-commit失败保留旧context/registration，
+   abort清理全部staged callback/state table。commit重放幂等，重启可从committed record恢复。
 3. replica id与AssemblyIdentity分离；多个runtime-home可加载同一assembly，各自package code
    在replica内只链接一次，activation mutable owner不跨replica/不跨deployment共享。
 4. request从active generation canonical ingress进入Phase 04 single dispatcher；整个request/stream pin住
@@ -33,7 +34,8 @@ artifact schema或verify接线。
 
 ## 最早探针与唯一验证 owner
 
-- startup加载canonical fixture后registration>0；tampered dependency/admission mismatch保留旧generation。
+- startup加载committed canonical fixture后registration>0；tampered dependency/admission mismatch返回reject并
+  保留旧generation；prepare/abort/commit重放与进程崩溃恢复无staged资源泄漏。
 - 两replica exact identity/independent owner正例；一个replica退出不影响另一个。
 - request resolver/file-open spy为零；stream结束后旧generation才可drain。
 

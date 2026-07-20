@@ -2,7 +2,7 @@
 
 ## 权威输入与DAG
 
-- 设计：`doc/architecture/package-service-contract-deployment.md` §2.6、§6.2、§10、§12–§15。
+- 设计：`doc/architecture/package-service-contract-deployment.md` §2不变量6、§5、§6.2、§10、§12–§15。
 - 依赖：R01 PASS exact checkpoint；与T02/T04/T05同级，解锁R02。
 - 风险：高；public ingress、reload atomicity、replica dispatch。
 - branch：`codex/p5-t03-router-active-assembly`。worktree：`/Users/geek/workspace/skiff-p5-t03-router`。
@@ -16,10 +16,13 @@
 
 ## 完成态
 
-1. router startup/reload只读environment active-assembly pointer及T01 typed records，构建immutable active
-   snapshot；旧service pointer/manifest/serviceAssembly projection不参与production。
-2. control广播只携带exact environment/generation/assembly ref；concurrent reload合并，candidate失败
-   保留旧snapshot/control generation。
+1. router是T01 activation transaction唯一coordinator。startup读取committed与pending state；对pending只按
+   exact activationId/participant set安全resume或abort，构建active snapshot时只读committed assembly。
+   旧service pointer/manifest/serviceAssembly projection不参与production。
+2. prepare发给当次冻结的全部healthy participant replicas；全部返回exact staged ACK且仍连接后才CAS commit。
+   reject/disconnect/timeout执行idempotent abort并保留旧snapshot/committed generation；commit通知可重放，
+   runtime重连按committed record向前收敛。commit后旧registration立即只drain in-flight；新请求只有匹配
+   committed tuple的healthy registration才可调度，不回退旧generation。
 3. runtime registry按exact assembly identity/generation管理healthy replicas；同assembly多个replica可共享
    新请求，不按service/build/target/protocol建立分离activation registry。
 4. HTTP/WS gateway用request Host/method/path直接匹配RuntimeAssembly global ingress；相同path的不同
@@ -34,7 +37,8 @@
 
 - Host collision fixture：Codex/AIHub同`GET /v1/models`、AIHub/Agine同`/ws`按Host唯一选中。
 - legacy header/query/rewrite mutation不能改变target；缺失/未知Host fail closed。
-- 两replica轮询/故障摘除、stale generation register拒绝、failed reload保留旧dispatch。
+- 两replica轮询/故障摘除、stale generation register拒绝；resolve/admit reject、prepare期间disconnect、
+  coordinator在prepare/ACK/commit各崩溃点重启均不产生pointer/dispatch分叉。
 
 ```bash
 pnpm --filter @skiff/router type-check

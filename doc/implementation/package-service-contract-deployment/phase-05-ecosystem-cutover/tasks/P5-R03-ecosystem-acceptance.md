@@ -3,8 +3,8 @@
 ## 角色与精确输入
 
 单一只读验收owner，未参与T06–T12/T09E实现。阅读权威设计 §1–§15、`phase-plan.md`、
-T06–T12与T09E任务合同/证据，以及主Agent提供的三个repo exact clean commits/trees、combined
-integration probe、legacy search ledger及gate preflight计划。
+T06–T12与T09E任务合同/证据，以及主Agent提供的三个repo exact clean commits/trees、P5-I03
+combined integration probe ledger、legacy search ledger及gate preflight计划。
 
 不得修改文件、创建commit、顺手修复或重跑仍有效的昂贵gate。可按风险做不重复的
 定向抽查；验收面较宽时可调度互不重叠的只读分片，但只由本owner输出PASS/FAIL。
@@ -15,7 +15,8 @@ integration probe、legacy search ledger及gate preflight计划。
    无common aggregate、legacy DTO/reader/writer/converter、dual path/fallback。
 2. contract-first publish、provider-less package compile、source-free deployment validation、complete closure assembly activation
    有真实入口及fail-closed负例，不只是手工构造model。
-3. active pointer CAS/atomic reload、failed candidate rollback、request generation pin、request-time artifact I/O为零；
+3. activation prepare/commit/abort CAS、pre-commit candidate rollback、crash recovery、request generation pin、
+   request-time artifact I/O为零；
    两replica exact same assembly且mutable owner独立。
 4. Host ingress区分相同path；Skiff router、platform、Codex、AIHub、Agine clients无service/version/build
    selector选择语义或rewrite fallback。
@@ -25,7 +26,7 @@ integration probe、legacy search ledger及gate preflight计划。
    stale/unauthorized/tampered operations失败不改history。
 7. Codex、AIHub、Agine contracts独立、schema自包；AIHub/Agine contract types不冒用package-local nominal
    types，显式wrapper及deployment/state/config/secret binding完整。
-8. T09E production `assembly.yml`闭合五个actual deployments；combined probe从canonical authoring/store构建
+8. T09E production `assembly.yml`闭合五个actual deployments；I03从canonical authoring/store构建
    该完整Internals assembly，经router/runtime Host ingress到
    最终业务结果；provider/list/chat的stable live执行留给V01，但self-test必须实际断言最终结果。
 9. ecosystem checker subject/mutation完整，reference/architecture/runtime/router docs与唯一设计一致。

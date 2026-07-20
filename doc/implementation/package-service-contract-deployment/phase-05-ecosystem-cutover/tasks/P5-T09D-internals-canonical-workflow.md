@@ -32,13 +32,17 @@ Codex/AIHub/Agine `.skiff`源码、contract body、deployment body或platform re
 ## 唯一聚焦验证 owner
 
 ```bash
+P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t09d-cargo.XXXXXX)"
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
 node --test \
   aihub/service/scripts/local-package-store.test.mjs \
   scripts/worktree-provenance.test.mjs \
   scripts/isolated-service-graph.test.mjs \
   scripts/test-isolated-service.test.mjs
-SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration \
+CARGO_TARGET_DIR="$P5_CARGO_TARGET" \
+SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint \
   node scripts/prepare-canonical-assembly.mjs --list --fixture-only
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
 git diff --check
 ```
 

@@ -18,7 +18,8 @@
    不迁移consumer；R01是否能独立验证strict wire、CAS、resolver及cross-language fixture。
 2. T02–T05是否从R01 exact checkpoint真实扇出，写入范围不重叠；tooling、router、runtime、
    test infrastructure是否各自包含旧consumer删除条件。
-3. Host-only ingress、single active assembly、full-assembly replica registration、failed reload rollback是否
+3. Host-only ingress、single active assembly、full-assembly replica registration、prepare/commit/abort与
+   pre-commit rollback是否
    与设计一致，没有偷渡service/version/build selector或RemoteBoundary。
 4. T06是否只在R02后删除legacy model/reader/writer；checker是否覆盖真实production subjects、
    omission/rename/move/duplicate/test-only camouflage，而不是简单字符串白名单。

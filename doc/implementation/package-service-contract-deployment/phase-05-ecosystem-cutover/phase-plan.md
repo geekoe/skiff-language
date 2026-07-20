@@ -17,12 +17,17 @@ ownership和验收证据，不改变四对象、两类调用或InProcessBoundary
 - `package.yml` 用顶层 `contracts` 声明contract compile coordinate/alias；编译时从已发布
   ServiceContract得到exact protocol identity并写入PackageArtifact。provider package也用contract-owned
   types，不用package-local nominal type伪装contract type。
-- 本地active pointer使用独立的environment记录，至少携带strict schema version、
-  environment key、单调generation和exact RuntimeAssembly identity/path。写入用CAS+原子替换；
-  stale generation、partial write、identity/path mismatch必须fail closed。
-- router control只下发active environment generation及exact assembly ref；runtime只注册
-  runtime replica id + exact assembly identity/generation。新请求在同一active assembly的healthy replicas间
-  调度，不按service/build/target分开注册。
+- 本地activation使用独立的strict `EnvironmentActivationState` operational record；它不是artifact或第五个
+  domain object。record包含唯一`committed { generation, assemblyRef }`与至多一个
+  `pending { activationId, expectedGeneration, candidateGeneration, assemblyRef, participantReplicaIds }`。
+  prepare CAS只创建pending且不移动committed；runtime全部resolve/load/link/admit到staged context并返回exact
+  ACK后，router coordinator才CAS commit。prepare/reject/disconnect时按activationId abort，committed tuple不变；
+  commit前再次确认非空participant set全部连接且staged；commit后旧replicas只drain in-flight，新请求等待/使用
+  与committed tuple一致的registration。通知可幂等重放，controller/runtime重启按exact record向前收敛，
+  不猜latest、不把新请求送回旧generation。
+- router control wire只有`prepare/prepared|reject/commit/abort/register`，携带environment、activation id、
+  expected/candidate generation、exact assembly ref与replica id；runtime只在committed generation激活并注册。
+  新请求在同一committed assembly的healthy replicas间调度，不按service/build/target分开注册。
 - ingress selector保持设计已有 `(protocol, host, method?, path)`；外部service使用唯一Host。
   `X-Skiff-Service` / `X-Skiff-Version` / query selector / rewrite-to-service在production选择路径删除；
   不改RuntimeAssembly schema来容纳legacy selector。
@@ -31,7 +36,8 @@ ownership和验收证据，不改变四对象、两类调用或InProcessBoundary
 - canonical local CLI拼写冻结为 `package|contract|deployment|assembly build <root>
   --artifact-root <dir> --json`；四对象remote write使用各自`publish`命令，environment切换只用
   `assembly activate <root> --artifact-root <dir> --expected-generation <n> --json`。旧`service`
-  build/publish/dev命令不作alias。T02负责实现这些入口，后续任务不得另造脚本级语义。
+  build/publish/dev命令不作alias。`assembly activate`只请求router coordinator执行上述transaction，不直接
+  CAS committed pointer。T02负责实现这些入口，后续任务不得另造脚本级语义。
 - 本地actual service Host固定为 `account.skiff.localhost`、`registry.skiff.localhost`、
   `codex-relay.localhost`、`aihub.localhost`、`agine.localhost`；这是现有IngressSelector字段的取值，
   不是新schema。
@@ -47,11 +53,12 @@ canonical artifact schema。
 2. `contract publish -> package compile -> deployment project -> assembly resolve -> activate` 可以分步执行；
    package compile不读provider package/deployment，deployment不读source/AST。
 3. dev sync/watch将watch registry中的package/contract/deployment roots组成一个完整assembly，先写
-   immutable records，再CAS active pointer，最后reload。任一中间失败不改active generation。
-4. router在reload时读active assembly snapshot，runtime通过production resolver加载/验证/链接/
-   admit完整assembly；只有admission成功才注册exact assembly generation。
+   immutable records，再请求router执行prepare/admit/commit transaction。任一pre-commit失败只abort pending，
+   不改committed active generation。
+4. router协调durable activation state，runtime通过production resolver加载/验证/链接/admit staged完整assembly；
+   所有participant ACK后才commit，只有观察到committed record才原子激活并注册exact assembly generation。
 5. 两个runtime replica加载相同assembly identity；Host ingress到任一replica都得到同一业务
-   结果。failed reload保留旧generation，in-flight request/stream保持原generation pin。
+   结果。pre-commit reject/abort保留旧committed generation，in-flight request/stream保持原generation pin。
 6. test-runner/package-test直接编译PackageArtifact，必要service test使用canonical contract/deployment/
    assembly fixture；不再构造PackageUnit/ServiceUnit/synthetic service assembly。
 7. `skiff-packages` 使用canonical package build/test/store resolver，没有自制publication path codec；
@@ -68,7 +75,7 @@ Wave 1 / Batch A：shared authoring-storage-control checkpoint
 
 Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动调度）
   T02 authoring / registry client / CLI / dev sync / watch ─┐
-  T03 router active-assembly + host ingress cutover       ├─► combined probe ─► R02
+  T03 router active-assembly + host ingress cutover       ├─► I02 combined probe ─► R02
   T04 runtime resolver / admission / replica registration├
   T05 test-runner / package-test / fixtures              ─┘
 
@@ -81,8 +88,8 @@ Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T09C Agine contract ─┘                                      ├─► T11 AIHub
                                                              └─► T12 Agine + clients
 
-  T06 + T07 + T08 + T10–T12 ─► T09E final Internals assembly/workflow
-    └─► cross-repo combined probe ─► R03 ─► T13 pre-merge final gate ─► A01
+  T07 + T08 + T10–T12 ─► T09E final Internals assembly/workflow
+  T06 + T09E ─► I03 cross-repo combined probe ─► R03 ─► T13 pre-merge final gate ─► A01
       └─► each repo one main merge ─► V01 post-merge stable verification ─► cleanup
 ```
 
@@ -100,6 +107,18 @@ probe通过的pre-acceptance candidate。批次之间只依赖task contract、ex
 R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运行AIHub/Agine build/dev/start，
 因此main合并后的stable provider/list/chat只由V01执行；它是部署后验证，不替代或放宽pre-merge gate。
 
+R02 PASS后，主integration owner在Skiff integration HEAD不变且clean时执行：
+
+```bash
+P5_R02_COMMIT="$(git rev-parse HEAD)"
+git worktree add --detach /Users/geek/workspace/skiff-p5-r02-checkpoint "$P5_R02_COMMIT"
+git -C /Users/geek/workspace/skiff-p5-r02-checkpoint status --short
+```
+
+并记录exact commit/tree。T07–T12/T09A–E只读该不可移动detached checkpoint，所有Cargo/generated output
+放在task临时目录；每次证据前后都核对HEAD、tree与clean。T06继续修改Skiff integration不会改变外部
+consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree。checkpoint worktree保留到V01 PASS。
+
 ## 4. 任务索引
 
 | ID | 任务 | 依赖 | 风险 / 验收组 |
@@ -111,7 +130,8 @@ R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运�
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
 | T05 | [Test infrastructure cutover](tasks/P5-T05-test-infrastructure-cutover.md) | R01 PASS | 中高；test production owner |
-| R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | T02–T05 merged + combined probe | 高；批次验收 |
+| I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
+| R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
@@ -122,9 +142,10 @@ R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运�
 | R09 | [Internals contract/workflow acceptance](tasks/P5-R09-internals-contract-acceptance.md) | T09D exact commit | 高；独立只读 |
 | T10 | [Codex Relay](tasks/P5-T10-internals-codex-relay.md) | R09 PASS | 高；service/deployment/host |
 | T11 | [AIHub](tasks/P5-T11-internals-aihub.md) | R09 PASS | 高；service boundary/schema |
-| T12 | [Agine + clients](tasks/P5-T12-internals-agine-clients.md) | R09 PASS | 高；service/chat ingress |
-| T09E | [Final Internals assembly/workflow](tasks/P5-T09E-internals-final-assembly.md) | T06–T08 + T10–T12 merged | 高；完整环境closure |
-| R03 | [Cross-repo ecosystem acceptance](tasks/P5-R03-ecosystem-acceptance.md) | T09E + combined probe | 高；单一verdict |
+| T12 | [Agine + clients](tasks/P5-T12-internals-agine-clients.md) | R09 PASS + T07 exact packages | 高；service/chat ingress |
+| T09E | [Final Internals assembly/workflow](tasks/P5-T09E-internals-final-assembly.md) | T07/T08 + T10–T12 merged | 高；完整环境closure |
+| I03 | [Cross-repo combined probe](tasks/P5-I03-cross-repo-combined-probe.md) | T06 + T09E exact trees | 主integration owner；actual assembly |
+| R03 | [Cross-repo ecosystem acceptance](tasks/P5-R03-ecosystem-acceptance.md) | I03 PASS | 高；单一verdict |
 | T13 | [Unique final gate](tasks/P5-T13-phase-integration-gate.md) | R03 PASS + frozen candidate | 唯一昂贵gate owner |
 | A01 | [Independent stage acceptance](tasks/P5-A01-stage-acceptance.md) | T13 ledger | 独立最终验收 |
 | V01 | [Post-merge stable verification](tasks/P5-V01-post-merge-stable-verification.md) | A01 PASS + one merge/repo | 唯一stable/live owner |
@@ -164,6 +185,10 @@ R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运�
 `Cargo.lock`、`scripts/verify*.mjs`、cross-system parity fixture都是串行集成面；任何并行Agent不得
 顺手修改。
 
+I02/I03由主integration owner在clean合流commit上各执行一次且不修改文件：I02只跑一replica的Skiff
+authoring→activation transaction→Host最终结果/abort rollback；I03只跑一replica的五actual-deployment
+isolated assembly。T13的two-replica generic lifecycle与完整selectors不重跑这两条命令。
+
 ## 6. 最早风险探针
 
 ### Authoring / storage / release
@@ -172,12 +197,13 @@ R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运�
   字段混入contract读取必须失败。
 - 四种artifact往返bit-identical；identity tamper、path traversal、unknown field、missing blob/ref、
   duplicate operation/provider全部fail closed。
-- active pointer stale CAS、temp/partial record、generation rollback、assembly identity/path mismatch不替换旧值。
+- activation prepare stale CAS、temp/partial record、generation rollback、assembly identity/path mismatch不创建
+  pending；reject/disconnect/abort保持committed tuple，commit后replay只向前收敛。
 
 ### Router / runtime / replica
 
-- reload candidate在resolve/load/link/admit任一步失败，router/runtime保留旧generation及注册；
-  成功后才原子替换。
+- activation candidate在resolve/load/link/admit任一步失败，router/runtime abort pending并保留旧committed
+  generation及注册；全部participant staged ACK后才commit并原子切换。prepare/ACK/commit crash点可恢复。
 - 两个独立runtime-home的replica注册同一AssemblyIdentity，共享PackageBuildId代码但
   不共享activation mutable owner；断开一个replica后新请求继续到另一个。
 - `codex-relay.localhost` / `aihub.localhost` / `agine.localhost` 等Host可区分相同path；
@@ -199,8 +225,8 @@ R03/T13/A01均在main merge前完成。Internals规则禁止linked worktree运�
 
 开发Agent只运行targeted format/static/direct tests。R01验收shared schema/storage/control边界；R02验收
 Skiff consumer合流；R09验收Internals code-free contract及schema closure；T09E关闭完整environment
-assembly的最后共享owner；R03是三仓ecosystem的单一
-pre-gate verdict。每个修复批次合流后，先由唯一integration owner运行便宜combined probe，再重验
+assembly的最后共享owner；I02/I03是两个明确的批次combined-probe owner；R03是三仓ecosystem的单一
+pre-gate verdict。每个修复批次合流后，先由对应integration owner运行便宜combined probe，再重验
 受影响边界。
 
 T13在冻结前完成命令展开、依赖/工具、worktree source provenance、隔离Cargo target、
@@ -219,6 +245,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/check-package-serv
 # 外部repo non-live
 npm --prefix /Users/geek/workspace/skiff-packages-phase-05-integration test
 SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration \
+SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
   node /Users/geek/workspace/internals-phase-05-integration/scripts/verify-phase05-ecosystem.mjs --non-live
 
 # 冻结候选的隔离动态验收

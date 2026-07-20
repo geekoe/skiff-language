@@ -32,6 +32,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-package-servic
 
 # Internals完整non-live closure与最终结果self-tests
 SKIFF_ROOT=/Users/geek/workspace/skiff-phase-05-integration \
+SKIFF_PACKAGES_ROOT=/Users/geek/workspace/skiff-packages-phase-05-integration \
   node /Users/geek/workspace/internals-phase-05-integration/scripts/verify-phase05-ecosystem.mjs --non-live
 ```
 

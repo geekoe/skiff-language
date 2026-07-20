@@ -15,7 +15,8 @@
   legacy/dual/fallback。
 - contract-first、package independent compile、deployment exact validation、complete assembly activation及
   InProcessBoundary全链成立，每层owner/identity分离。
-- active pointer CAS/atomic reload/failure rollback/request generation pin/multi-replica exact assembly动态正负例成立，
+- activation prepare/commit/abort CAS、crash recovery、pre-commit rollback、request generation pin与
+  multi-replica exact assembly动态正负例成立，
   不承诺service级隔离或扩缩。
 - Host ingress是唯一外部选择语义，request path无artifact I/O，旧service/version/build/display
   selectors不可达。
