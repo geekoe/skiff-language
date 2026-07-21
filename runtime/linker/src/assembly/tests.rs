@@ -54,6 +54,58 @@ impl RuntimeAssemblyContentResolver for NoContent {
     }
 }
 
+struct StoragefulFileRefResolver<'a, R: ?Sized> {
+    inner: &'a R,
+}
+
+impl<R> RuntimeAssemblyContentResolver for StoragefulFileRefResolver<'_, R>
+where
+    R: RuntimeAssemblyContentResolver + ?Sized,
+{
+    fn resolve_deployment(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>> {
+        self.inner.resolve_deployment(reference)
+    }
+
+    fn resolve_contract(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>> {
+        self.inner.resolve_contract(reference)
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>> {
+        let mut artifact = self.inner.resolve_package(reference)?.as_ref().clone();
+        for file in &mut artifact.files {
+            file.artifact_path = Some("records/package-artifacts/test/file-ir.json".to_string());
+        }
+        Ok(Arc::new(artifact))
+    }
+
+    fn resolve_file_ir(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &FileIrRef,
+    ) -> anyhow::Result<Arc<FileIrUnit>> {
+        let mut source_reference = reference.clone();
+        source_reference.artifact_path = None;
+        self.inner.resolve_file_ir(package, &source_reference)
+    }
+
+    fn resolve_static_resource(
+        &self,
+        package: &PackageArtifactRef,
+        reference: &PublicationResourceRef,
+    ) -> anyhow::Result<Arc<[u8]>> {
+        self.inner.resolve_static_resource(package, reference)
+    }
+}
+
 #[test]
 fn empty_assembly_links_and_all_candidate_lookups_fail_closed() {
     let mut assembly = RuntimeAssembly {
@@ -183,6 +235,33 @@ fn candidate_keeps_code_shared_and_service_bindings_activation_relative() {
         provider_operation.target().callable_abi_id,
         fixture.service_callable.as_str()
     );
+}
+
+#[test]
+fn production_assembly_linker_accepts_storageful_files_with_pathless_nested_targets() {
+    let fixture = CycleFixture::new();
+    let resolver = StoragefulFileRefResolver {
+        inner: &fixture.resolver,
+    };
+    let hydrated = RuntimeAssemblyLoader::new(&resolver)
+        .load(fixture.assembly.clone())
+        .unwrap();
+
+    let candidate = link_runtime_assembly(hydrated).unwrap();
+    let helper = candidate
+        .shared_image()
+        .code_by_build(&fixture.helper_build)
+        .unwrap();
+
+    assert!(helper.artifact().files[0].artifact_path.is_some());
+    assert!(helper
+        .callable_target(&fixture.helper_callable)
+        .unwrap()
+        .file_ref
+        .artifact_path
+        .is_none());
+    assert_eq!(candidate.shared_image().code_slots().len(), 2);
+    assert_eq!(candidate.execution_image().code_slots().len(), 2);
 }
 
 #[test]

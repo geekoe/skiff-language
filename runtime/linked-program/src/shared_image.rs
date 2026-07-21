@@ -518,17 +518,17 @@ impl SharedPackageCode {
             .files
             .get(file_index)
             .expect("hydrated files preserve artifact file order");
-        if expected_file_ref != &target.file_ref {
+        let file = self
+            .files
+            .get(file_index)
+            .expect("hydrated files preserve artifact file order");
+        if !semantic_file_ref_matches_loaded(&target.file_ref, file) {
             return Err(SharedPackageImageError::ExecutableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
                 expected: expected_file_ref.clone(),
                 actual: target.file_ref.clone(),
             });
         }
-        let file = self
-            .files
-            .get(file_index)
-            .expect("hydrated files preserve artifact file order");
         let executable = target.executable_index as usize;
         if executable >= file.executables.len() {
             return Err(SharedPackageImageError::ExecutableTargetOutOfBounds {
@@ -639,7 +639,7 @@ impl SharedPackageCode {
             .iter()
             .find(|candidate| candidate.file_ir_identity == target.file_ref.file_ir_identity)
             .expect("loaded file identities were validated from artifact refs");
-        if expected_file_ref != &target.file_ref {
+        if !semantic_file_ref_matches_loaded(&target.file_ref, file) {
             return Err(SharedPackageImageError::CallableTargetFileRefMismatch {
                 package_build_id: self.package_build_id().clone(),
                 package_callable_id: callable_id.clone(),
@@ -686,12 +686,7 @@ fn validate_file_ref(
     expected: &FileIrRef,
     file: &FileIrUnit,
 ) -> SharedPackageImageResult<()> {
-    if expected.module_path != file.module_path
-        || expected
-            .source_ast_hash
-            .as_deref()
-            .is_some_and(|hash| hash != file.source_ast_hash)
-    {
+    if !semantic_file_ref_matches_loaded(expected, file) {
         return Err(SharedPackageImageError::HydratedFileRefMismatch {
             package_build_id: package.package_build_id.clone(),
             expected: expected.clone(),
@@ -700,6 +695,16 @@ fn validate_file_ref(
         });
     }
     Ok(())
+}
+
+/// Matches semantic File IR facts; `artifact_path` remains a loader-owned record locator.
+fn semantic_file_ref_matches_loaded(reference: &FileIrRef, file: &FileIrUnit) -> bool {
+    reference.file_ir_identity == file.file_ir_identity
+        && reference.module_path == file.module_path
+        && reference
+            .source_ast_hash
+            .as_deref()
+            .is_none_or(|hash| hash == file.source_ast_hash)
 }
 
 fn validate_static_resources(

@@ -393,11 +393,88 @@ fn assembly_execution_missing_callable_is_rejected_while_validating_linked_call_
 }
 
 #[test]
-fn assembly_execution_tampered_callable_file_ref_and_index_fail_closed() {
+fn storage_locator_is_ignored_while_executable_target_semantics_stay_strict() {
     let callable = callable_id("entry");
     let package_file = file("file:package", "package.main");
     let mut package = artifact("package", "package-build", "package-abi", &package_file);
     add_callable(&mut package, &package_file, callable.clone());
+    let target = package.callable_links[&callable].target.clone();
+    package.files[0].artifact_path = Some("records/packages/package/file-ir.json".to_string());
+    let assembly = assembly(vec![artifact_ref(&package)], Vec::new());
+    let image = SharedPackageLinkedImage::from_runtime_assembly(
+        &assembly,
+        vec![hydration(package, package_file)],
+    )
+    .expect("storage locator is not part of target semantics");
+    let code = image.code_by_build(&build_id("package-build")).unwrap();
+
+    assert_eq!(
+        code.executable_addr(&target).unwrap(),
+        ExecutableAddr::package(0, 0, 0)
+    );
+
+    let mut without_source_hash = target.clone();
+    without_source_hash.file_ref.source_ast_hash = None;
+    assert_eq!(
+        code.executable_addr(&without_source_hash).unwrap(),
+        ExecutableAddr::package(0, 0, 0)
+    );
+
+    let mut wrong_identity = target.clone();
+    wrong_identity.file_ref.file_ir_identity = "file:missing".to_string();
+    assert!(matches!(
+        code.executable_addr(&wrong_identity),
+        Err(SharedPackageImageError::ExecutableTargetFileNotLoaded { .. })
+    ));
+
+    let mut wrong_module = target.clone();
+    wrong_module.file_ref.module_path = "tampered.module".to_string();
+    assert!(matches!(
+        code.executable_addr(&wrong_module),
+        Err(SharedPackageImageError::ExecutableTargetFileRefMismatch { .. })
+    ));
+
+    let mut wrong_source_hash = target.clone();
+    wrong_source_hash.file_ref.source_ast_hash = Some("source:tampered".to_string());
+    assert!(matches!(
+        code.executable_addr(&wrong_source_hash),
+        Err(SharedPackageImageError::ExecutableTargetFileRefMismatch { .. })
+    ));
+
+    let mut wrong_index = target;
+    wrong_index.executable_index = 99;
+    assert!(matches!(
+        code.executable_addr(&wrong_index),
+        Err(SharedPackageImageError::ExecutableTargetOutOfBounds {
+            executable_index: 99,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn assembly_execution_tampered_callable_identity_module_hash_and_index_fail_closed() {
+    let callable = callable_id("entry");
+    let package_file = file("file:package", "package.main");
+    let mut package = artifact("package", "package-build", "package-abi", &package_file);
+    add_callable(&mut package, &package_file, callable.clone());
+
+    let mut wrong_identity = package.clone();
+    wrong_identity
+        .callable_links
+        .get_mut(&callable)
+        .unwrap()
+        .target
+        .file_ref
+        .file_ir_identity = "file:missing".to_string();
+    let wrong_identity_assembly = assembly(vec![artifact_ref(&wrong_identity)], Vec::new());
+    assert!(matches!(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &wrong_identity_assembly,
+            vec![hydration(wrong_identity, package_file.clone())],
+        ),
+        Err(SharedPackageImageError::CallableTargetFileNotLoaded { .. })
+    ));
 
     let mut wrong_file_ref = package.clone();
     wrong_file_ref
@@ -412,6 +489,23 @@ fn assembly_execution_tampered_callable_file_ref_and_index_fail_closed() {
         SharedPackageLinkedImage::from_runtime_assembly(
             &wrong_file_assembly,
             vec![hydration(wrong_file_ref, package_file.clone())],
+        ),
+        Err(SharedPackageImageError::CallableTargetFileRefMismatch { .. })
+    ));
+
+    let mut wrong_source_hash = package.clone();
+    wrong_source_hash
+        .callable_links
+        .get_mut(&callable)
+        .unwrap()
+        .target
+        .file_ref
+        .source_ast_hash = Some("source:tampered".to_string());
+    let wrong_source_hash_assembly = assembly(vec![artifact_ref(&wrong_source_hash)], Vec::new());
+    assert!(matches!(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &wrong_source_hash_assembly,
+            vec![hydration(wrong_source_hash, package_file.clone())],
         ),
         Err(SharedPackageImageError::CallableTargetFileRefMismatch { .. })
     ));
