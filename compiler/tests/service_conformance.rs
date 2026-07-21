@@ -8,8 +8,9 @@ use skiff_artifact_model::{
     file_ir_service_call_sites, validate_file_ir_service_calls, BoundaryCallableProjection,
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
     BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractRequirement, ContractTypeDescriptor,
+    BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeDescriptor,
     ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol,
     PackageTypeRef, ServiceCallRef, ServiceRequirement,
 };
@@ -308,6 +309,127 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
 }
 
 #[test]
+fn package_direct_mutation_then_detached_contract_projects_available() {
+    let mut definition = contract_definition();
+    definition.operations.get_mut("echo").unwrap().parameters[0].ty =
+        ContractTypeRef::builtin("string");
+    let contract = compile_service_contract(definition).unwrap();
+
+    let provider = TestDir::new("skiff-compiler", "callable-effects-provider");
+    write_package(
+        &provider,
+        "example.com/callable-effects-provider",
+        "handle: main.handle\n",
+        r#"function handle(input: string) -> string {
+  if input == "helper-mutated" { return "accepted" }
+  return "rejected"
+}
+"#,
+    );
+    let provider_project =
+        compile_package_project_with_contract_dependencies(provider.path(), &BTreeMap::new())
+            .expect("branching provider should compile");
+    assert!(matches!(
+        public_callable_projection(&provider_project.package.artifact, "handle"),
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    let consumer = TestDir::new("skiff-compiler", "callable-effects-consumer");
+    consumer.write(
+        "package.yml",
+        r#"id: example.com/callable-effects-consumer
+version: 1.0.0
+packages:
+  - id: example.com/callable-effects-helper
+    version: 1.0.0
+    alias: helper
+"#,
+    );
+    consumer.write("api.yml", "run: main.run\n");
+    consumer.write(
+        "main.skiff",
+        r#"import helper
+
+type Box { value: string }
+
+function run() -> string {
+  const box = Box { value: "consumer" }
+  helper/mutate(box)
+  return payments/echo(box.value)
+}
+"#,
+    );
+    consumer.write(
+        ".skiff-packages/example~com~~callable-effects-helper/1.0.0/package.yml",
+        "id: example.com/callable-effects-helper\nversion: 1.0.0\n",
+    );
+    consumer.write(
+        ".skiff-packages/example~com~~callable-effects-helper/1.0.0/api.yml",
+        "Box: helper.Box\nmutate: helper.mutate\n",
+    );
+    consumer.write(
+        ".skiff-packages/example~com~~callable-effects-helper/1.0.0/helper.skiff",
+        r#"type Box { value: string }
+
+function mutate(input: Box) -> void {
+  input.value = "helper-mutated"
+}
+"#,
+    );
+    let dependencies = BTreeMap::from([(
+        (
+            "example.com/callable-effects-consumer".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("payments", contract)],
+    )]);
+    let project =
+        compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
+            .expect("fresh helper value followed by detached contract call should compile");
+    let helper = project
+        .dependency("example.com/callable-effects-helper", "1.0.0")
+        .expect("helper artifact must be in the canonical dependency closure");
+    let PackageLocalAbiSymbol::Callable {
+        callable_id: mutate_id,
+        ..
+    } = &helper.artifact.package_local_abi.public_symbols["mutate"]
+    else {
+        panic!("mutate must resolve to a public callable");
+    };
+    let mutate_facts = &helper.artifact.callable_semantic_facts[mutate_id];
+    assert_eq!(
+        mutate_facts.effects,
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: true,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            }
+        }
+    );
+    assert!(matches!(
+        mutate_facts.provenance,
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+    let BoundaryCallableProjection::Unavailable { reasons } =
+        &helper.artifact.boundary_projections[mutate_id]
+    else {
+        panic!("mutating helper must remain boundary unavailable");
+    };
+    assert!(reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable));
+    assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownEffect));
+    assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget));
+    assert!(matches!(
+        public_callable_projection(&project.package.artifact, "run"),
+        BoundaryCallableProjection::Available { .. }
+    ));
+}
+
+#[test]
 fn invalid_contract_type_operation_and_call_uses_fail_package_compilation() {
     let contract = compile_service_contract(contract_definition()).unwrap();
     for (name, source, expected) in [
@@ -469,6 +591,18 @@ fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
     );
     temp.write("api.yml", api);
     temp.write("main.skiff", source);
+}
+
+fn public_callable_projection<'a>(
+    artifact: &'a skiff_artifact_model::PackageArtifact,
+    public_path: &str,
+) -> &'a BoundaryCallableProjection {
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } =
+        &artifact.package_local_abi.public_symbols[public_path]
+    else {
+        panic!("{public_path} must resolve to a public callable");
+    };
+    &artifact.boundary_projections[callable_id]
 }
 
 fn assert_no_provider_binding_wire(artifact: &skiff_artifact_model::PackageArtifact) {

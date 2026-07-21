@@ -26,10 +26,17 @@ impl Evaluator<'_, '_> {
                 env.insert(name.clone(), value);
             }
             Stmt::Assign { target, value } => {
-                self.eval_expr(target, env);
+                let target_value = self.eval_expr(target, env);
                 let assigned = self.eval_expr(value, env);
                 if let crate::shared::ast::Expr::Identifier(name) = target {
                     env.insert(name.clone(), assigned);
+                } else if self.is_direct_scalar_parameter_field_store(
+                    target,
+                    &target_value,
+                    &assigned,
+                    env,
+                ) {
+                    self.state.effects.writes_caller_reachable = true;
                 } else {
                     // The current abstract environment has no heap/points-to
                     // store transfer. Updating only the syntactic owner would
@@ -146,5 +153,35 @@ impl Evaluator<'_, '_> {
         self.state.join(&CallableState::fail_closed(
             CallableProvenanceUnknownReason::UnsupportedControlFlow,
         ));
+    }
+
+    fn is_direct_scalar_parameter_field_store(
+        &self,
+        target: &crate::shared::ast::Expr,
+        target_value: &AbstractValue,
+        assigned: &AbstractValue,
+        env: &Environment,
+    ) -> bool {
+        let crate::shared::ast::Expr::Field { object, .. } = target else {
+            return false;
+        };
+        let crate::shared::ast::Expr::Identifier(name) = object.as_ref() else {
+            return false;
+        };
+        let direct_parameter = self
+            .definition
+            .function
+            .params
+            .iter()
+            .any(|parameter| parameter.name == name.as_str())
+            || (name == "self" && self.definition.function.implicit_self.is_some());
+        direct_parameter
+            && env
+                .get(name)
+                .is_some_and(|value| value.contains_caller_reference() && !value.unknown)
+            && !target_value.reference
+            && !target_value.unknown
+            && !assigned.reference
+            && !assigned.unknown
     }
 }

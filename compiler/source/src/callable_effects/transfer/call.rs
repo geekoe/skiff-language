@@ -1,4 +1,7 @@
-use skiff_artifact_model::CallableProvenanceUnknownReason;
+use skiff_artifact_model::{
+    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
+    BoundaryStreamContract, CallableProvenanceUnknownReason,
+};
 
 use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
 
@@ -15,8 +18,17 @@ impl Evaluator<'_, '_> {
         args: &[Expr],
         env: &mut Environment,
     ) -> AbstractValue {
+        let target = self.resolved_call_targets.target(call_key).cloned();
         let callee_start = self.next_index;
-        let callee_value = self.eval_expr(callee, env);
+        let callee_value = if matches!(
+            target,
+            Some(ResolvedCallTarget::DependencyPackageFunction { .. })
+                | Some(ResolvedCallTarget::ContractOperation { .. })
+        ) {
+            self.eval_exact_dependency_callee(callee, env)
+        } else {
+            self.eval_expr(callee, env)
+        };
         let receiver = receiver_object_index(callee_start, callee)
             .and_then(|index| self.value_at(index).cloned());
         let mut actuals = args
@@ -24,8 +36,6 @@ impl Evaluator<'_, '_> {
             .map(|arg| self.eval_expr(arg, env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
-        let target = self.resolved_call_targets.target(call_key).cloned();
-
         match target {
             Some(ResolvedCallTarget::LocalFunction { .. })
             | Some(ResolvedCallTarget::LocalImplMethod { .. }) => {
@@ -81,16 +91,23 @@ impl Evaluator<'_, '_> {
                     Some(package_callable_id.to_string()),
                 )
             }
-            Some(ResolvedCallTarget::ContractOperation { .. }) => {
-                // Contract target identity is known, but T02 does not own the
-                // operation descriptor/effect guarantee input. Do not infer
-                // safety from identity alone.
-                self.apply_unknown_call_with_callee(
-                    &callee_value,
-                    &actuals,
-                    return_reference,
-                    EscapeLane::External,
-                )
+            Some(ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+            }) => {
+                let Some(callee) = self
+                    .dependency_analysis
+                    .exact_contract_operation(&contract_requirement, &contract_operation_id)
+                    .and_then(detached_contract_callee)
+                else {
+                    return self.apply_unknown_call_with_callee(
+                        &callee_value,
+                        &actuals,
+                        return_reference,
+                        EscapeLane::External,
+                    );
+                };
+                self.apply_callee(&callee, &actuals, return_reference, None)
             }
             Some(ResolvedCallTarget::Unknown { .. }) | None => self.apply_unknown_call_with_callee(
                 &callee_value,
@@ -98,6 +115,33 @@ impl Evaluator<'_, '_> {
                 return_reference,
                 EscapeLane::External,
             ),
+        }
+    }
+
+    fn eval_exact_dependency_callee(
+        &mut self,
+        callee: &Expr,
+        env: &mut Environment,
+    ) -> AbstractValue {
+        // A dependency address is safe only as the syntactic callee of the
+        // exact target attached to this call key. Every other evaluation path
+        // still goes through `eval_expr` and retains its fail-closed transfer.
+        match callee {
+            Expr::DependencySourceAddress(_) => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = AbstractValue::constant(self.expression_may_be_reference(&key));
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            Expr::Generic { callee, .. } => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let value = self.eval_exact_dependency_callee(callee, env);
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
+            _ => self.eval_expr(callee, env),
         }
     }
 
@@ -214,6 +258,27 @@ impl Evaluator<'_, '_> {
         }
         returned
     }
+}
+
+fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<CallableState> {
+    let contract = &operation.contract;
+    let guarantee = contract.effect_guarantee;
+    if !matches!(contract.stream, BoundaryStreamContract::Unary)
+        || !matches!(contract.callbacks, BoundaryCallbackContract::None)
+        || !matches!(contract.errors, BoundaryErrorContract::None)
+        || !guarantee.detached_parameters
+        || !guarantee.detached_return
+        || !guarantee.detached_error
+        || !guarantee.no_caller_reachable_mutation
+        || !guarantee.no_caller_value_escape
+        || !guarantee.no_same_heap_identity
+    {
+        return None;
+    }
+    let mut state = CallableState::bottom();
+    state.effects.may_suspend = contract.may_suspend;
+    state.return_origins.insert(Origin::Fresh);
+    Some(state)
 }
 
 fn map_origins(

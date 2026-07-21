@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    BoundaryOperationDescriptor, CallableSemanticFacts, ContractRequirement, ContractTypeId,
-    PackageCallableId, PackageLocalAbiIdentity, ServiceContract,
+    BoundaryOperationDescriptor, CallableSemanticFacts, ContractOperationId, ContractRequirement,
+    ContractTypeId, PackageCallableId, PackageLocalAbiIdentity, ServiceContract,
 };
 use skiff_compiler_input::{
     ContractDependencyError, ContractDependencyIndex, ResolvedContractDependency,
@@ -155,6 +155,20 @@ impl SourceDependencyAnalysisInput {
         stable_key: &str,
     ) -> Result<&BoundaryOperationDescriptor, ContractDependencyError> {
         self.contracts.operation_by_stable_key(alias, stable_key)
+    }
+
+    pub(crate) fn exact_contract_operation(
+        &self,
+        requirement: &ContractRequirement,
+        operation_id: &ContractOperationId,
+    ) -> Option<&BoundaryOperationDescriptor> {
+        let indexed_requirement = self.contracts.requirement(&requirement.alias).ok()?;
+        if indexed_requirement != requirement {
+            return None;
+        }
+        self.contracts
+            .operation(&requirement.alias, operation_id)
+            .ok()
     }
 
     pub fn public_contract_type_id_by_stable_key(
@@ -426,6 +440,34 @@ mod tests {
                 "pkg",
                 &PackageLocalAbiIdentity::new("abi:stale"),
                 &PackageCallableId::new("callable:run"),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn exact_contract_lookup_requires_full_requirement_and_operation_identity() {
+        let contract =
+            contract_fixture("example.exact", "1.0.0", "run", "payload", "payloadClosure");
+        let exact_requirement = requirement("svc", &contract);
+        let operation_id = contract_operation_id("example.exact", "1.0.0", "run").unwrap();
+        let input = SourceDependencyAnalysisInput::new(
+            Vec::new(),
+            [ResolvedContractDependency::validated(exact_requirement.clone(), contract).unwrap()],
+        )
+        .unwrap();
+
+        assert!(input
+            .exact_contract_operation(&exact_requirement, &operation_id)
+            .is_some());
+        let mut stale_requirement = exact_requirement.clone();
+        stale_requirement.contract_version = "0.9.0".to_string();
+        assert!(input
+            .exact_contract_operation(&stale_requirement, &operation_id)
+            .is_none());
+        assert!(input
+            .exact_contract_operation(
+                &exact_requirement,
+                &contract_operation_id("example.exact", "1.0.0", "missing").unwrap(),
             )
             .is_none());
     }
