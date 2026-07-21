@@ -2,18 +2,12 @@ use std::collections::HashMap;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 use skiff_artifact_model::{AssemblyIdentity, ContractOperationId};
-use skiff_runtime_request_contract::RuntimeClientSessionControl;
 
-use crate::{
-    protocol::{
-        decode_typed_binary_frame, RequestTestEffectDouble, RuntimeDeadlineFrameHeader,
-        RuntimeHttpAdapterFrameHeader, RuntimeHttpRequestFrameHeader,
-        RuntimeTraceContextFrameHeader, RuntimeWebSocketAdapterFrameHeader,
-    },
-    BinaryFrameError,
-};
+use crate::{protocol::decode_typed_binary_frame, BinaryFrameError};
 
 mod lexical;
+mod metadata;
+mod strict_json;
 
 use lexical::{
     deserialize_assembly_identity, deserialize_contract_operation_id, deserialize_dispatch_mode,
@@ -21,42 +15,125 @@ use lexical::{
     deserialize_required_nullable_string, deserialize_runtime_assembly_routing_kind,
     deserialize_runtime_frame_schema_version, deserialize_safe_activation_generation,
 };
+pub use metadata::*;
+use metadata::{
+    deserialize_optional_activation_identity, deserialize_optional_gateway_entry_identity,
+    deserialize_optional_http_adapter, deserialize_optional_websocket_adapter,
+    deserialize_present_option, deserialize_test_effect_doubles,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "RawRuntimeAssemblyRequestStartFrameHeader"
+)]
 pub struct RuntimeAssemblyRequestStartFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
-    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
+    #[serde(rename = "type")]
     pub frame_type: String,
     pub request_id: String,
-    #[serde(deserialize_with = "deserialize_dispatch_mode")]
     pub mode: String,
     pub caller: RuntimeAssemblyRequestCallerFrameHeader,
     pub routing: RuntimeAssemblyRequestRoutingFrameHeader,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub activation_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_entry_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub business_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub websocket_entry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_session: Option<RuntimeClientSessionControl>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deadline: Option<RuntimeDeadlineFrameHeader>,
-    pub trace: RuntimeTraceContextFrameHeader,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_request: Option<RuntimeHttpRequestFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_adapter: Option<RuntimeHttpAdapterFrameHeader>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_adapter: Option<RuntimeWebSocketAdapterFrameHeader>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_request: Option<RuntimeAssemblyHttpRequestFrameHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_adapter: Option<RuntimeAssemblyHttpAdapterFrameHeader>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_adapter: Option<RuntimeAssemblyWebSocketAdapterFrameHeader>,
+    #[serde(skip_serializing_if = "is_false")]
     pub test_effects_enabled: bool,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub test_effect_doubles: HashMap<String, Vec<RequestTestEffectDouble>>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub test_effect_doubles:
+        HashMap<String, Vec<RuntimeAssemblyRequestTestEffectDoubleFrameHeader>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeAssemblyRequestStartFrameHeader {
+    #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
+    schema_version: String,
+    #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
+    frame_type: String,
+    request_id: String,
+    #[serde(deserialize_with = "deserialize_dispatch_mode")]
+    mode: String,
+    caller: RuntimeAssemblyRequestCallerFrameHeader,
+    routing: RuntimeAssemblyRequestRoutingFrameHeader,
+    #[serde(default, deserialize_with = "deserialize_optional_activation_identity")]
+    activation_identity: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_gateway_entry_identity"
+    )]
+    gateway_entry_identity: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    business_identity: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    websocket_entry_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
+    trace: RuntimeAssemblyRequestTraceFrameHeader,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    http_request: Option<RuntimeAssemblyHttpRequestFrameHeader>,
+    #[serde(default, deserialize_with = "deserialize_optional_http_adapter")]
+    http_adapter: Option<RuntimeAssemblyHttpAdapterFrameHeader>,
+    #[serde(default, deserialize_with = "deserialize_optional_websocket_adapter")]
+    websocket_adapter: Option<RuntimeAssemblyWebSocketAdapterFrameHeader>,
+    #[serde(default)]
+    test_effects_enabled: bool,
+    #[serde(default, deserialize_with = "deserialize_test_effect_doubles")]
+    test_effect_doubles: HashMap<String, Vec<RuntimeAssemblyRequestTestEffectDoubleFrameHeader>>,
+}
+
+impl TryFrom<RawRuntimeAssemblyRequestStartFrameHeader> for RuntimeAssemblyRequestStartFrameHeader {
+    type Error = String;
+
+    fn try_from(raw: RawRuntimeAssemblyRequestStartFrameHeader) -> Result<Self, Self::Error> {
+        if raw.websocket_adapter.is_some()
+            && (raw.websocket_entry_id.is_none() || raw.gateway_entry_identity.is_none())
+        {
+            return Err(
+                "websocketAdapter requires websocketEntryId and gatewayEntryIdentity".to_string(),
+            );
+        }
+        Ok(Self {
+            schema_version: raw.schema_version,
+            frame_type: raw.frame_type,
+            request_id: raw.request_id,
+            mode: raw.mode,
+            caller: raw.caller,
+            routing: raw.routing,
+            activation_identity: raw.activation_identity,
+            gateway_entry_identity: raw.gateway_entry_identity,
+            business_identity: raw.business_identity,
+            websocket_entry_id: raw.websocket_entry_id,
+            client_session: raw.client_session,
+            deadline: raw.deadline,
+            trace: raw.trace,
+            http_request: raw.http_request,
+            http_adapter: raw.http_adapter,
+            websocket_adapter: raw.websocket_adapter,
+            test_effects_enabled: raw.test_effects_enabled,
+            test_effect_doubles: raw.test_effect_doubles,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +217,7 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
 pub fn decode_runtime_assembly_request_start_frame(
     frame: &[u8],
 ) -> Result<(RuntimeAssemblyRequestStartFrameHeader, Vec<u8>), BinaryFrameError> {
+    strict_json::reject_runtime_assembly_request_header_duplicates(frame)?;
     decode_typed_binary_frame(frame)
 }
 

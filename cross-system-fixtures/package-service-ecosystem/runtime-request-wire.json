@@ -3,7 +3,7 @@
     {
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
-      "requestId": "request-http-1",
+      "requestId": "request-http-full",
       "mode": "unary",
       "caller": {
         "kind": "gateway",
@@ -12,8 +12,8 @@
       "routing": {
         "kind": "runtimeAssembly",
         "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "assemblyGeneration": 0,
-        "contractOperationId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assemblyGeneration": 7,
+        "contractOperationId": "skiff-contract-operation-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "ingress": {
           "protocol": "http",
           "host": "example.com",
@@ -21,23 +21,307 @@
           "path": "/items"
         }
       },
+      "activationIdentity": "skiff-runtime-activation-v1:opaque:http.full-1",
+      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "businessIdentity": "business-http",
+      "websocketEntryId": "unused-but-valid",
+      "clientSession": {
+        "id": "client-http"
+      },
+      "deadline": {
+        "timeoutMs": 0,
+        "expiresAt": "2030-01-01T00:00:00Z"
+      },
       "trace": {
-        "traceId": "trace-http-1",
-        "spanId": "span-http-1"
+        "traceId": "trace-http",
+        "spanId": "span-http",
+        "parentSpanId": "",
+        "sampled": false
+      },
+      "httpRequest": {
+        "method": "POST",
+        "url": "https://example.com/items?q=1&q=2",
+        "path": "/items",
+        "query": [
+          {
+            "name": "q",
+            "value": "1"
+          },
+          {
+            "name": "q",
+            "value": "2"
+          }
+        ],
+        "headers": [
+          {
+            "name": "x-repeat",
+            "value": "a"
+          },
+          {
+            "name": "x-repeat",
+            "value": "b"
+          }
+        ]
+      },
+      "httpAdapter": {
+        "kind": "typedJson",
+        "handler": {
+          "kind": "serviceFunction",
+          "modulePath": "handlers/items",
+          "symbol": "create"
+        },
+        "guard": {
+          "kind": "packageFunction",
+          "packageId": "example.com/auth",
+          "symbolPath": "guards/allow"
+        },
+        "pre": {
+          "kind": "serviceFunction",
+          "modulePath": "",
+          "symbol": ""
+        },
+        "adapterArgs": [
+          {
+            "param": "request",
+            "source": {
+              "kind": "http.request"
+            }
+          },
+          {
+            "param": "body",
+            "source": {
+              "kind": "http.body"
+            }
+          },
+          {
+            "param": "context",
+            "source": {
+              "kind": "http.context"
+            }
+          }
+        ]
+      },
+      "testEffectsEnabled": true,
+      "testEffectDoubles": {
+        "effect": [
+          {
+            "expectRequest": {
+              "nested": [
+                1,
+                true,
+                null
+              ]
+            },
+            "response": null
+          },
+          {
+            "response": {
+              "ok": true,
+              "value": -1.5
+            }
+          }
+        ]
       }
     },
     {
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
-      "requestId": "request-websocket-1",
+      "requestId": "request-ws-connect-full",
       "mode": "serverStream",
       "caller": {
         "kind": "gateway",
-        "target": "gateway-websocket"
+        "target": "gateway-webSocket"
+      },
+      "routing": {
+        "kind": "runtimeAssembly",
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "assemblyGeneration": 7,
+        "contractOperationId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ingress": {
+          "protocol": "webSocket",
+          "host": "socket.example.com",
+          "method": null,
+          "path": "/chat"
+        }
+      },
+      "activationIdentity": "skiff-runtime-activation-v1:opaque:ws.connect",
+      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "websocketEntryId": "chat-connect",
+      "clientSession": {
+        "id": "client-connect"
+      },
+      "deadline": {
+        "timeoutMs": 25,
+        "expiresAt": "2030-01-01T00:00:01Z"
+      },
+      "trace": {
+        "traceId": "trace-connect",
+        "spanId": "span-connect",
+        "parentSpanId": "parent",
+        "sampled": true
+      },
+      "websocketAdapter": {
+        "kind": "connect",
+        "adapterArgs": [
+          {
+            "param": "connect",
+            "source": {
+              "kind": "websocket.connectRequest"
+            }
+          },
+          {
+            "param": "receive",
+            "source": {
+              "kind": "websocket.receiveEvent"
+            }
+          },
+          {
+            "param": "connection",
+            "source": {
+              "kind": "websocket.connection"
+            }
+          },
+          {
+            "param": "context",
+            "source": {
+              "kind": "websocket.connectionContext"
+            }
+          },
+          {
+            "param": "message",
+            "source": {
+              "kind": "websocket.message"
+            }
+          },
+          {
+            "param": "body",
+            "source": {
+              "kind": "websocket.messageBody"
+            }
+          },
+          {
+            "param": "connectionId",
+            "source": {
+              "kind": "websocket.connectionId"
+            }
+          },
+          {
+            "param": "business",
+            "source": {
+              "kind": "websocket.businessIdentity"
+            }
+          }
+        ],
+        "contextExpectation": {
+          "kind": "typed",
+          "connectOperationAbiId": "connect-abi",
+          "contextTypeIdentity": "context-type"
+        },
+        "connectRequest": {
+          "connectionId": "connection-connect",
+          "url": "wss://socket.example.com/chat",
+          "query": [
+            {
+              "name": "room",
+              "value": "one"
+            },
+            {
+              "name": "room",
+              "value": "two"
+            }
+          ],
+          "headers": [
+            {
+              "name": "x-repeat",
+              "value": "a"
+            },
+            {
+              "name": "x-repeat",
+              "value": "b"
+            }
+          ],
+          "cookies": [
+            {
+              "name": "session",
+              "value": "a"
+            },
+            {
+              "name": "session",
+              "value": "b"
+            }
+          ],
+          "version": "13"
+        }
+      }
+    },
+    {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "request-ws-receive-text-full",
+      "mode": "serverStream",
+      "caller": {
+        "kind": "gateway",
+        "target": "gateway-webSocket"
       },
       "routing": {
         "kind": "runtimeAssembly",
         "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assemblyGeneration": 7,
+        "contractOperationId": "skiff-contract-operation-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "ingress": {
+          "protocol": "webSocket",
+          "host": "socket.example.com",
+          "method": null,
+          "path": "/chat"
+        }
+      },
+      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "websocketEntryId": "chat-receive-text",
+      "businessIdentity": "top-business",
+      "trace": {
+        "traceId": "trace-receive-text",
+        "spanId": "span-receive-text"
+      },
+      "websocketAdapter": {
+        "kind": "receive",
+        "adapterArgs": [
+          {
+            "param": "event",
+            "source": {
+              "kind": "websocket.receiveEvent"
+            }
+          }
+        ],
+        "contextExpectation": {
+          "kind": "null"
+        },
+        "receiveEvent": {
+          "connectionId": "connection-text",
+          "businessIdentity": "event-business",
+          "message": {
+            "tag": "text",
+            "encoding": "utf8"
+          },
+          "payloadSegments": [],
+          "contextCodec": {
+            "operationAbiId": "context-abi",
+            "contextTypeIdentity": "context-type"
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "request-ws-receive-binary-boundary",
+      "mode": "serverStream",
+      "caller": {
+        "kind": "gateway",
+        "target": "gateway-webSocket"
+      },
+      "routing": {
+        "kind": "runtimeAssembly",
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "assemblyGeneration": 9007199254740991,
         "contractOperationId": "skiff-contract-operation-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "ingress": {
@@ -47,9 +331,53 @@
           "path": "/chat"
         }
       },
+      "gatewayEntryIdentity": "skiff-gateway-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "websocketEntryId": "chat-receive-binary",
+      "deadline": {
+        "timeoutMs": 9007199254740991,
+        "expiresAt": ""
+      },
       "trace": {
-        "traceId": "trace-websocket-1",
-        "spanId": "span-websocket-1"
+        "traceId": "trace-receive-binary",
+        "spanId": "span-receive-binary"
+      },
+      "websocketAdapter": {
+        "kind": "receive",
+        "adapterArgs": [
+          {
+            "param": "message",
+            "source": {
+              "kind": "websocket.message"
+            }
+          }
+        ],
+        "receiveEvent": {
+          "connectionId": "connection-binary",
+          "message": {
+            "tag": "binary",
+            "encoding": "binary"
+          },
+          "payloadSegments": [
+            {
+              "kind": "websocket.context",
+              "offset": 0,
+              "length": 9007199254740991
+            },
+            {
+              "kind": "websocket.message",
+              "offset": 9007199254740991,
+              "length": 0
+            }
+          ]
+        }
+      },
+      "testEffectDoubles": {
+        "effect": [
+          {
+            "expectRequest": null,
+            "response": null
+          }
+        ]
       }
     }
   ],
@@ -233,6 +561,1347 @@
       "baseIndex": 0,
       "setPath": "trace.buildId",
       "value": "legacy-build"
+    },
+    {
+      "name": "activation identity null",
+      "baseIndex": 0,
+      "setPath": "activationIdentity",
+      "value": null
+    },
+    {
+      "name": "gateway entry identity null",
+      "baseIndex": 0,
+      "setPath": "gatewayEntryIdentity",
+      "value": null
+    },
+    {
+      "name": "business identity null",
+      "baseIndex": 0,
+      "setPath": "businessIdentity",
+      "value": null
+    },
+    {
+      "name": "websocket entry id null",
+      "baseIndex": 1,
+      "setPath": "websocketEntryId",
+      "value": null
+    },
+    {
+      "name": "client session null",
+      "baseIndex": 0,
+      "setPath": "clientSession",
+      "value": null
+    },
+    {
+      "name": "deadline null",
+      "baseIndex": 0,
+      "setPath": "deadline",
+      "value": null
+    },
+    {
+      "name": "trace parent span null",
+      "baseIndex": 0,
+      "setPath": "trace.parentSpanId",
+      "value": null
+    },
+    {
+      "name": "trace sampled null",
+      "baseIndex": 0,
+      "setPath": "trace.sampled",
+      "value": null
+    },
+    {
+      "name": "http request null",
+      "baseIndex": 0,
+      "setPath": "httpRequest",
+      "value": null
+    },
+    {
+      "name": "http adapter null",
+      "baseIndex": 0,
+      "setPath": "httpAdapter",
+      "value": null
+    },
+    {
+      "name": "http guard null",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.guard",
+      "value": null
+    },
+    {
+      "name": "http pre null",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.pre",
+      "value": null
+    },
+    {
+      "name": "http adapter args null",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs",
+      "value": null
+    },
+    {
+      "name": "websocket adapter null",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter",
+      "value": null
+    },
+    {
+      "name": "websocket adapter args null",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs",
+      "value": null
+    },
+    {
+      "name": "websocket context expectation null",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation",
+      "value": null
+    },
+    {
+      "name": "websocket connect version null",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.version",
+      "value": null
+    },
+    {
+      "name": "receive business identity null",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.businessIdentity",
+      "value": null
+    },
+    {
+      "name": "receive context codec null",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.contextCodec",
+      "value": null
+    },
+    {
+      "name": "test effects enabled null",
+      "baseIndex": 0,
+      "setPath": "testEffectsEnabled",
+      "value": null
+    },
+    {
+      "name": "test effect doubles null",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles",
+      "value": null
+    },
+    {
+      "name": "invalid activation identity",
+      "baseIndex": 0,
+      "setPath": "activationIdentity",
+      "value": "skiff-runtime-activation-v1:opaque:"
+    },
+    {
+      "name": "invalid gateway identity",
+      "baseIndex": 0,
+      "setPath": "gatewayEntryIdentity",
+      "value": "skiff-gateway-v1:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "client session unknown field",
+      "baseIndex": 0,
+      "setPath": "clientSession.unknown",
+      "value": true
+    },
+    {
+      "name": "client session missing id",
+      "baseIndex": 0,
+      "removePath": "clientSession.id"
+    },
+    {
+      "name": "client session id wrong type",
+      "baseIndex": 0,
+      "setPath": "clientSession.id",
+      "value": 1
+    },
+    {
+      "name": "deadline unknown field",
+      "baseIndex": 0,
+      "setPath": "deadline.unknown",
+      "value": true
+    },
+    {
+      "name": "deadline missing timeout",
+      "baseIndex": 0,
+      "removePath": "deadline.timeoutMs"
+    },
+    {
+      "name": "deadline missing expires",
+      "baseIndex": 0,
+      "removePath": "deadline.expiresAt"
+    },
+    {
+      "name": "deadline expires wrong type",
+      "baseIndex": 0,
+      "setPath": "deadline.expiresAt",
+      "value": 1
+    },
+    {
+      "name": "deadline above safe integer",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": 9007199254740992
+    },
+    {
+      "name": "deadline negative",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": -1
+    },
+    {
+      "name": "deadline negative zero",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": -0
+    },
+    {
+      "name": "deadline fraction",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": 1.5
+    },
+    {
+      "name": "deadline integer wrong type",
+      "baseIndex": 0,
+      "setPath": "deadline.timeoutMs",
+      "value": "1"
+    },
+    {
+      "name": "trace missing trace id",
+      "baseIndex": 0,
+      "removePath": "trace.traceId"
+    },
+    {
+      "name": "trace missing span id",
+      "baseIndex": 0,
+      "removePath": "trace.spanId"
+    },
+    {
+      "name": "trace id wrong type",
+      "baseIndex": 0,
+      "setPath": "trace.traceId",
+      "value": 1
+    },
+    {
+      "name": "trace span id wrong type",
+      "baseIndex": 0,
+      "setPath": "trace.spanId",
+      "value": 1
+    },
+    {
+      "name": "trace parent span wrong type",
+      "baseIndex": 0,
+      "setPath": "trace.parentSpanId",
+      "value": 1
+    },
+    {
+      "name": "trace sampled wrong type",
+      "baseIndex": 0,
+      "setPath": "trace.sampled",
+      "value": 1
+    },
+    {
+      "name": "http request unknown field",
+      "baseIndex": 0,
+      "setPath": "httpRequest.unknown",
+      "value": true
+    },
+    {
+      "name": "http request body forbidden",
+      "baseIndex": 0,
+      "setPath": "httpRequest.body",
+      "value": "inline"
+    },
+    {
+      "name": "http request missing method",
+      "baseIndex": 0,
+      "removePath": "httpRequest.method"
+    },
+    {
+      "name": "http request missing url",
+      "baseIndex": 0,
+      "removePath": "httpRequest.url"
+    },
+    {
+      "name": "http request missing path",
+      "baseIndex": 0,
+      "removePath": "httpRequest.path"
+    },
+    {
+      "name": "http request missing query",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query"
+    },
+    {
+      "name": "http request missing headers",
+      "baseIndex": 0,
+      "removePath": "httpRequest.headers"
+    },
+    {
+      "name": "http request method wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.method",
+      "value": 1
+    },
+    {
+      "name": "http request url wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.url",
+      "value": 1
+    },
+    {
+      "name": "http request path wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.path",
+      "value": 1
+    },
+    {
+      "name": "http query wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query",
+      "value": {}
+    },
+    {
+      "name": "http headers wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers",
+      "value": {}
+    },
+    {
+      "name": "http query item wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0",
+      "value": null
+    },
+    {
+      "name": "http query item unknown",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.unknown",
+      "value": true
+    },
+    {
+      "name": "http query item missing name",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query.0.name"
+    },
+    {
+      "name": "http query item missing value",
+      "baseIndex": 0,
+      "removePath": "httpRequest.query.0.value"
+    },
+    {
+      "name": "http query name wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.name",
+      "value": 1
+    },
+    {
+      "name": "http query value wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest.query.0.value",
+      "value": 1
+    },
+    {
+      "name": "http adapter unknown field",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.unknown",
+      "value": true
+    },
+    {
+      "name": "http handlerArgs forbidden",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handlerArgs",
+      "value": []
+    },
+    {
+      "name": "http adapter missing kind",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.kind"
+    },
+    {
+      "name": "http adapter missing handler",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.handler"
+    },
+    {
+      "name": "http adapter kind invalid",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.kind",
+      "value": "json"
+    },
+    {
+      "name": "http handler wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler",
+      "value": null
+    },
+    {
+      "name": "http handler unknown field",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler.unknown",
+      "value": true
+    },
+    {
+      "name": "http handler missing kind",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.handler.kind"
+    },
+    {
+      "name": "http handler kind invalid",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler.kind",
+      "value": "function"
+    },
+    {
+      "name": "service callable missing modulePath",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.handler.modulePath"
+    },
+    {
+      "name": "service callable missing symbol",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.handler.symbol"
+    },
+    {
+      "name": "service callable modulePath wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler.modulePath",
+      "value": 1
+    },
+    {
+      "name": "service callable symbol wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler.symbol",
+      "value": 1
+    },
+    {
+      "name": "package callable unknown field",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.guard.unknown",
+      "value": true
+    },
+    {
+      "name": "package callable missing packageId",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.guard.packageId"
+    },
+    {
+      "name": "package callable missing symbolPath",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.guard.symbolPath"
+    },
+    {
+      "name": "package callable packageId wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.guard.packageId",
+      "value": 1
+    },
+    {
+      "name": "package callable symbolPath wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.guard.symbolPath",
+      "value": 1
+    },
+    {
+      "name": "http adapter args wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs",
+      "value": {}
+    },
+    {
+      "name": "http adapter arg wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0",
+      "value": null
+    },
+    {
+      "name": "http adapter arg unknown",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.unknown",
+      "value": true
+    },
+    {
+      "name": "http adapter arg missing param",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.adapterArgs.0.param"
+    },
+    {
+      "name": "http adapter arg missing source",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.adapterArgs.0.source"
+    },
+    {
+      "name": "http adapter param wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.param",
+      "value": 1
+    },
+    {
+      "name": "http adapter param blank",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.param",
+      "value": "  \t"
+    },
+    {
+      "name": "http adapter duplicate param",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.1.param",
+      "value": "request"
+    },
+    {
+      "name": "http adapter source wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.source",
+      "value": null
+    },
+    {
+      "name": "http adapter source unknown",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.source.unknown",
+      "value": true
+    },
+    {
+      "name": "http adapter source missing kind",
+      "baseIndex": 0,
+      "removePath": "httpAdapter.adapterArgs.0.source.kind"
+    },
+    {
+      "name": "http adapter source websocket domain",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.source.kind",
+      "value": "websocket.message"
+    },
+    {
+      "name": "http adapter source invalid",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.source.kind",
+      "value": "http.unknown"
+    },
+    {
+      "name": "websocket adapter unknown field",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.unknown",
+      "value": true
+    },
+    {
+      "name": "websocket adapter missing kind",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.kind"
+    },
+    {
+      "name": "websocket adapter kind invalid",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.kind",
+      "value": "upgrade"
+    },
+    {
+      "name": "websocket adapter missing websocket entry identity",
+      "baseIndex": 1,
+      "removePath": "websocketEntryId"
+    },
+    {
+      "name": "websocket adapter missing gateway identity",
+      "baseIndex": 1,
+      "removePath": "gatewayEntryIdentity"
+    },
+    {
+      "name": "websocket adapter args wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs",
+      "value": {}
+    },
+    {
+      "name": "websocket adapter arg wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0",
+      "value": null
+    },
+    {
+      "name": "websocket adapter arg unknown",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.unknown",
+      "value": true
+    },
+    {
+      "name": "websocket adapter arg missing param",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.adapterArgs.0.param"
+    },
+    {
+      "name": "websocket adapter arg missing source",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.adapterArgs.0.source"
+    },
+    {
+      "name": "websocket adapter param wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.param",
+      "value": 1
+    },
+    {
+      "name": "websocket adapter param blank",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.param",
+      "value": " "
+    },
+    {
+      "name": "websocket adapter duplicate param",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.1.param",
+      "value": "connect"
+    },
+    {
+      "name": "websocket adapter source wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source",
+      "value": null
+    },
+    {
+      "name": "websocket adapter source unknown",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source.unknown",
+      "value": true
+    },
+    {
+      "name": "websocket adapter source missing kind",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.adapterArgs.0.source.kind"
+    },
+    {
+      "name": "websocket adapter source http domain",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
+      "value": "http.request"
+    },
+    {
+      "name": "websocket adapter source invalid",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
+      "value": "websocket.unknown"
+    },
+    {
+      "name": "context expectation wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation",
+      "value": []
+    },
+    {
+      "name": "context expectation unknown field",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation.unknown",
+      "value": true
+    },
+    {
+      "name": "context expectation missing kind",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.contextExpectation.kind"
+    },
+    {
+      "name": "context expectation invalid kind",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation.kind",
+      "value": "optional"
+    },
+    {
+      "name": "typed context missing connect abi",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.contextExpectation.connectOperationAbiId"
+    },
+    {
+      "name": "typed context missing type identity",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.contextExpectation.contextTypeIdentity"
+    },
+    {
+      "name": "typed context connect abi wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation.connectOperationAbiId",
+      "value": 1
+    },
+    {
+      "name": "typed context type identity wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation.contextTypeIdentity",
+      "value": 1
+    },
+    {
+      "name": "null context carries typed field",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.contextExpectation.connectOperationAbiId",
+      "value": "extra"
+    },
+    {
+      "name": "connect missing connect request",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest"
+    },
+    {
+      "name": "connect request explicit null",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest",
+      "value": null
+    },
+    {
+      "name": "connect carries receive event",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.receiveEvent",
+      "value": {
+        "connectionId": "connection-text",
+        "businessIdentity": "event-business",
+        "message": {
+          "tag": "text",
+          "encoding": "utf8"
+        },
+        "payloadSegments": [],
+        "contextCodec": {
+          "operationAbiId": "context-abi",
+          "contextTypeIdentity": "context-type"
+        }
+      }
+    },
+    {
+      "name": "connect request unknown field",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.unknown",
+      "value": true
+    },
+    {
+      "name": "connect request missing connectionId",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.connectionId"
+    },
+    {
+      "name": "connect request missing url",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.url"
+    },
+    {
+      "name": "connect request missing query",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.query"
+    },
+    {
+      "name": "connect request missing headers",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.headers"
+    },
+    {
+      "name": "connect request missing cookies",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.cookies"
+    },
+    {
+      "name": "connect connection id wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.connectionId",
+      "value": 1
+    },
+    {
+      "name": "connect url wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.url",
+      "value": 1
+    },
+    {
+      "name": "connect query wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.query",
+      "value": {}
+    },
+    {
+      "name": "connect headers wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.headers",
+      "value": {}
+    },
+    {
+      "name": "connect cookies wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.cookies",
+      "value": {}
+    },
+    {
+      "name": "connect name value item unknown",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.cookies.0.unknown",
+      "value": true
+    },
+    {
+      "name": "connect version wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.version",
+      "value": 1
+    },
+    {
+      "name": "receive missing receive event",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent"
+    },
+    {
+      "name": "receive event explicit null",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent",
+      "value": null
+    },
+    {
+      "name": "receive carries connect request",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.connectRequest",
+      "value": {
+        "connectionId": "connection-connect",
+        "url": "wss://socket.example.com/chat",
+        "query": [
+          {
+            "name": "room",
+            "value": "one"
+          },
+          {
+            "name": "room",
+            "value": "two"
+          }
+        ],
+        "headers": [
+          {
+            "name": "x-repeat",
+            "value": "a"
+          },
+          {
+            "name": "x-repeat",
+            "value": "b"
+          }
+        ],
+        "cookies": [
+          {
+            "name": "session",
+            "value": "a"
+          },
+          {
+            "name": "session",
+            "value": "b"
+          }
+        ],
+        "version": "13"
+      }
+    },
+    {
+      "name": "receive event unknown field",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.unknown",
+      "value": true
+    },
+    {
+      "name": "receive missing connection id",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.connectionId"
+    },
+    {
+      "name": "receive missing message",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.message"
+    },
+    {
+      "name": "receive missing payload segments",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.payloadSegments"
+    },
+    {
+      "name": "receive connection id wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.connectionId",
+      "value": 1
+    },
+    {
+      "name": "receive message wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message",
+      "value": null
+    },
+    {
+      "name": "receive message unknown field",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message.unknown",
+      "value": true
+    },
+    {
+      "name": "receive message missing tag",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.message.tag"
+    },
+    {
+      "name": "receive message missing encoding",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.message.encoding"
+    },
+    {
+      "name": "receive message tag invalid",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message.tag",
+      "value": "json"
+    },
+    {
+      "name": "receive message encoding invalid",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message.encoding",
+      "value": "base64"
+    },
+    {
+      "name": "payload segments null",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments",
+      "value": null
+    },
+    {
+      "name": "payload segment wrong type",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0",
+      "value": null
+    },
+    {
+      "name": "payload segment unknown field",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.unknown",
+      "value": true
+    },
+    {
+      "name": "payload segment missing kind",
+      "baseIndex": 3,
+      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.kind"
+    },
+    {
+      "name": "payload segment missing offset",
+      "baseIndex": 3,
+      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.offset"
+    },
+    {
+      "name": "payload segment missing length",
+      "baseIndex": 3,
+      "removePath": "websocketAdapter.receiveEvent.payloadSegments.0.length"
+    },
+    {
+      "name": "payload segment kind invalid",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.kind",
+      "value": "websocket.payload"
+    },
+    {
+      "name": "payload segment offset above safe",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
+      "value": 9007199254740992
+    },
+    {
+      "name": "payload segment length above safe",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
+      "value": 9007199254740992
+    },
+    {
+      "name": "payload segment offset negative",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
+      "value": -1
+    },
+    {
+      "name": "payload segment length negative",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
+      "value": -1
+    },
+    {
+      "name": "payload segment offset negative zero",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
+      "value": -0
+    },
+    {
+      "name": "payload segment length negative zero",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
+      "value": -0
+    },
+    {
+      "name": "payload segment offset fraction",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
+      "value": 1.5
+    },
+    {
+      "name": "payload segment length fraction",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
+      "value": 1.5
+    },
+    {
+      "name": "payload segment offset wrong type",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.offset",
+      "value": "1"
+    },
+    {
+      "name": "payload segment length wrong type",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.length",
+      "value": "1"
+    },
+    {
+      "name": "context codec wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.contextCodec",
+      "value": []
+    },
+    {
+      "name": "context codec unknown field",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.contextCodec.unknown",
+      "value": true
+    },
+    {
+      "name": "context codec missing operation abi",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.contextCodec.operationAbiId"
+    },
+    {
+      "name": "context codec missing type identity",
+      "baseIndex": 2,
+      "removePath": "websocketAdapter.receiveEvent.contextCodec.contextTypeIdentity"
+    },
+    {
+      "name": "context codec operation abi wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.contextCodec.operationAbiId",
+      "value": 1
+    },
+    {
+      "name": "context codec type identity wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.contextCodec.contextTypeIdentity",
+      "value": 1
+    },
+    {
+      "name": "test effect target empty sequence",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles.effect",
+      "value": []
+    },
+    {
+      "name": "test effect target wrong type",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles.effect",
+      "value": {}
+    },
+    {
+      "name": "test effect step null",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles.effect.0",
+      "value": null
+    },
+    {
+      "name": "test effect step missing response",
+      "baseIndex": 0,
+      "removePath": "testEffectDoubles.effect.0.response"
+    },
+    {
+      "name": "test effect step unknown field",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles.effect.0.unknown",
+      "value": true
+    },
+    {
+      "name": "missing schema version",
+      "baseIndex": 0,
+      "removePath": "schemaVersion"
+    },
+    {
+      "name": "wrong schema version",
+      "baseIndex": 0,
+      "setPath": "schemaVersion",
+      "value": "skiff-runtime-frame-v2"
+    },
+    {
+      "name": "missing frame type",
+      "baseIndex": 0,
+      "removePath": "type"
+    },
+    {
+      "name": "wrong frame type",
+      "baseIndex": 0,
+      "setPath": "type",
+      "value": "response.start"
+    },
+    {
+      "name": "missing request id",
+      "baseIndex": 0,
+      "removePath": "requestId"
+    },
+    {
+      "name": "request id wrong type",
+      "baseIndex": 0,
+      "setPath": "requestId",
+      "value": 1
+    },
+    {
+      "name": "missing mode",
+      "baseIndex": 0,
+      "removePath": "mode"
+    },
+    {
+      "name": "invalid mode",
+      "baseIndex": 0,
+      "setPath": "mode",
+      "value": "stream"
+    },
+    {
+      "name": "missing caller",
+      "baseIndex": 0,
+      "removePath": "caller"
+    },
+    {
+      "name": "caller wrong type",
+      "baseIndex": 0,
+      "setPath": "caller",
+      "value": []
+    },
+    {
+      "name": "caller missing kind",
+      "baseIndex": 0,
+      "removePath": "caller.kind"
+    },
+    {
+      "name": "caller missing target",
+      "baseIndex": 0,
+      "removePath": "caller.target"
+    },
+    {
+      "name": "caller target wrong type",
+      "baseIndex": 0,
+      "setPath": "caller.target",
+      "value": 1
+    },
+    {
+      "name": "trace wrong type",
+      "baseIndex": 0,
+      "setPath": "trace",
+      "value": []
+    },
+    {
+      "name": "activation identity wrong type",
+      "baseIndex": 0,
+      "setPath": "activationIdentity",
+      "value": 1
+    },
+    {
+      "name": "gateway entry identity wrong type",
+      "baseIndex": 0,
+      "setPath": "gatewayEntryIdentity",
+      "value": 1
+    },
+    {
+      "name": "business identity wrong type",
+      "baseIndex": 0,
+      "setPath": "businessIdentity",
+      "value": 1
+    },
+    {
+      "name": "websocket entry id wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketEntryId",
+      "value": 1
+    },
+    {
+      "name": "client session wrong type",
+      "baseIndex": 0,
+      "setPath": "clientSession",
+      "value": []
+    },
+    {
+      "name": "deadline wrong type",
+      "baseIndex": 0,
+      "setPath": "deadline",
+      "value": []
+    },
+    {
+      "name": "http request wrong type",
+      "baseIndex": 0,
+      "setPath": "httpRequest",
+      "value": []
+    },
+    {
+      "name": "http adapter wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter",
+      "value": []
+    },
+    {
+      "name": "websocket adapter wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter",
+      "value": []
+    },
+    {
+      "name": "test effects enabled wrong type",
+      "baseIndex": 0,
+      "setPath": "testEffectsEnabled",
+      "value": "true"
+    },
+    {
+      "name": "test effect doubles wrong type",
+      "baseIndex": 0,
+      "setPath": "testEffectDoubles",
+      "value": []
+    },
+    {
+      "name": "http header item unknown",
+      "baseIndex": 0,
+      "setPath": "httpRequest.headers.0.unknown",
+      "value": true
+    },
+    {
+      "name": "connect query item missing name",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.query.0.name"
+    },
+    {
+      "name": "connect header item missing value",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.connectRequest.headers.0.value"
+    },
+    {
+      "name": "connect cookie name wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.connectRequest.cookies.0.name",
+      "value": 1
+    },
+    {
+      "name": "http callable kind wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.handler.kind",
+      "value": 1
+    },
+    {
+      "name": "http source kind wrong type",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.source.kind",
+      "value": 1
+    },
+    {
+      "name": "websocket source kind wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
+      "value": 1
+    },
+    {
+      "name": "context expectation kind wrong type",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation.kind",
+      "value": 1
+    },
+    {
+      "name": "receive message tag wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message.tag",
+      "value": 1
+    },
+    {
+      "name": "receive message encoding wrong type",
+      "baseIndex": 2,
+      "setPath": "websocketAdapter.receiveEvent.message.encoding",
+      "value": 1
+    },
+    {
+      "name": "payload segment kind wrong type",
+      "baseIndex": 3,
+      "setPath": "websocketAdapter.receiveEvent.payloadSegments.0.kind",
+      "value": 1
+    },
+    {
+      "name": "http adapter param unicode blank",
+      "baseIndex": 0,
+      "setPath": "httpAdapter.adapterArgs.0.param",
+      "value": "\ufeff"
+    },
+    {
+      "name": "websocket adapter param unicode blank",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.param",
+      "value": "\ufeff"
+    }
+  ],
+  "requestStartRawMutations": [
+    {
+      "name": "raw duplicate top-level requestId",
+      "baseIndex": 0,
+      "duplicatePath": "requestId"
+    },
+    {
+      "name": "raw duplicate deadline timeoutMs",
+      "baseIndex": 0,
+      "duplicatePath": "deadline.timeoutMs"
+    },
+    {
+      "name": "raw duplicate http handler kind",
+      "baseIndex": 0,
+      "duplicatePath": "httpAdapter.handler.kind"
+    },
+    {
+      "name": "raw duplicate doubles target",
+      "baseIndex": 0,
+      "duplicatePath": "testEffectDoubles.effect"
+    },
+    {
+      "name": "raw duplicate opaque response",
+      "baseIndex": 0,
+      "duplicatePath": "testEffectDoubles.effect.0.response"
+    }
+  ],
+  "requestStartEquivalentOptionPairs": [
+    {
+      "name": "http adapter args absent equals empty",
+      "baseIndex": 0,
+      "path": "httpAdapter.adapterArgs",
+      "value": []
+    },
+    {
+      "name": "websocket adapter args absent equals empty",
+      "baseIndex": 1,
+      "path": "websocketAdapter.adapterArgs",
+      "value": []
+    },
+    {
+      "name": "test effects enabled absent equals false",
+      "baseIndex": 0,
+      "path": "testEffectsEnabled",
+      "value": false
+    },
+    {
+      "name": "test effect doubles absent equals empty",
+      "baseIndex": 0,
+      "path": "testEffectDoubles",
+      "value": {}
+    }
+  ],
+  "legacyRequestStartHeaders": [
+    {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "legacy-request-baseline",
+      "mode": "unary",
+      "caller": {
+        "kind": "gateway",
+        "target": "legacy-gateway"
+      },
+      "target": "legacy-target",
+      "operationAbiId": "legacy-operation",
+      "serviceId": "example.com/legacy",
+      "version": "1.0.0",
+      "buildId": "skiff-service-build-v1:sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "serviceProtocolIdentity": "skiff-protocol-v1:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "trace": {
+        "traceId": "legacy-trace",
+        "spanId": "legacy-span"
+      }
     }
   ]
 }
