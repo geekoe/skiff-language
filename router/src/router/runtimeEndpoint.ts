@@ -1,10 +1,21 @@
-import { createServer, type Server as HttpServer } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse
+} from 'node:http';
 import { TextDecoder } from 'node:util';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
 import {
-  decodeRuntimeFrame,
+  ASSEMBLY_ACTIVATION_FRAME_TYPE,
+  decodeAssemblyActivationFrame,
+  encodeAssemblyActivationFrame
+} from '../protocol/assemblyActivationFrame.js';
+import type { AssemblyActivationControl } from '../protocol/assemblyActivationProtocol.js';
+import {
+  decodeBinaryFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionSendEnvelope,
@@ -13,18 +24,29 @@ import {
   type RouterControlFrameHeader
 } from '../protocol/envelope.js';
 import { validateRuntimeToRouterFrameHeader } from '../protocol/runtimeProtocol.js';
-import type { RouterControlPlane } from './controlPlane.js';
+import type {
+  AssemblyActivationControlSender,
+  AssemblyActivationCoordinator
+} from './assemblyActivationCoordinator.js';
+import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import type { RuntimeDispatcher, RuntimeFrameSendCallback, RuntimeFrameSender } from './runtimeDispatcher.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export interface RuntimeEndpointListenOptions {
-  controlPlane?: RouterControlPlane;
+  controlPlane?: RuntimeEndpointControlPlane;
   control?: Omit<RouterControlEnvelope, 'type'>;
   host?: string;
   port: number;
   path?: string;
+}
+
+export interface RuntimeEndpointControlPlane {
+  handleRequestWithErrors(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<boolean>;
 }
 
 export interface RuntimeEndpointListenResult {
@@ -45,10 +67,18 @@ export interface RuntimeControlBroadcaster {
 
 export interface RuntimeEndpointOptions {
   registry: RuntimeRegistry;
+  assemblyRegistry?: AssemblyRuntimeRegistry;
 }
 
-export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSendSource, RuntimeControlBroadcaster {
+export class RuntimeEndpoint
+  implements
+    RuntimeFrameSender,
+    RuntimeConnectionSendSource,
+    RuntimeControlBroadcaster,
+    AssemblyActivationControlSender
+{
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
+  private coordinator: AssemblyActivationCoordinator | undefined;
   private control: Omit<RouterControlEnvelope, 'type'> | undefined;
   private dispatcherInstance: RuntimeDispatcher | undefined;
   private server: HttpServer | undefined;
@@ -62,6 +92,13 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
 
   setDispatcher(dispatcher: RuntimeDispatcher): void {
     this.dispatcherInstance = dispatcher;
+  }
+
+  setCoordinator(coordinator: AssemblyActivationCoordinator): void {
+    if (this.options.assemblyRegistry === undefined) {
+      throw new Error('assembly activation coordinator requires an assembly runtime registry');
+    }
+    this.coordinator = coordinator;
   }
 
   async listen(options: RuntimeEndpointListenOptions): Promise<RuntimeEndpointListenResult> {
@@ -112,13 +149,15 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
             event: 'runtime.endpoint_message_error',
             error: error instanceof Error ? error.message : String(error)
           });
-          ws.close(1011, websocketCloseReason(error));
+          ws.close(1008, websocketCloseReason(error));
         });
       });
 
       ws.on('close', () => {
         this.dispatcher().handleRuntimeDisconnect(ws);
+        const replicaId = this.options.assemblyRegistry?.removeRuntimeConnection(ws);
         this.options.registry.removeRuntimeConnection(ws);
+        this.coordinator?.handleReplicaDisconnected(replicaId);
       });
     });
 
@@ -147,6 +186,7 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
       client.close();
     }
     this.options.registry.closeRuntimeConnections();
+    this.options.assemblyRegistry?.closeRuntimeConnections();
 
     await new Promise<void>((resolve) => {
       this.webSocketServer?.close(() => resolve());
@@ -212,6 +252,17 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
     ws.send(encodeRuntimeFrame(header, payloadBytes), callback);
   }
 
+  sendAssemblyControl(ws: WebSocket, control: AssemblyActivationControl): void {
+    if (this.options.assemblyRegistry === undefined) {
+      throw new Error('assembly activation control is unavailable');
+    }
+    this.options.registry.assertRuntimeCapabilityConnection(ws, control.replicaId);
+    if (ws.readyState !== WebSocket.OPEN) {
+      throw new Error(`activation participant ${control.replicaId} is disconnected`);
+    }
+    ws.send(encodeAssemblyActivationFrame('routerToRuntime', control));
+  }
+
   private async handleMessage(
     ws: WebSocket,
     data: WebSocket.RawData,
@@ -229,13 +280,26 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
   }
 
   private async handleBinaryMessage(ws: WebSocket, data: WebSocket.RawData): Promise<void> {
-    const frame = decodeRuntimeFrame(data);
+    const frame = decodeBinaryFrame(data);
+    if (frame.header.type === ASSEMBLY_ACTIVATION_FRAME_TYPE) {
+      this.handleAssemblyControl(
+        ws,
+        decodeAssemblyActivationFrame('runtimeToRouter', data)
+      );
+      return;
+    }
     const validation = validateRuntimeToRouterFrameHeader(frame.header);
     if (!validation.ok) {
       throw new Error(validation.error);
     }
 
     const header = validation.envelope;
+    if (this.options.assemblyRegistry !== undefined && header.type !== 'runtime.capabilities') {
+      this.options.registry.assertRuntimeCapabilityConnection(
+        ws,
+        runtimeIdentityFromHeader(header)
+      );
+    }
     switch (header.type) {
       case 'runtime.register':
         if (frame.payloadBytes.byteLength !== 0) {
@@ -253,6 +317,12 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
         if (frame.payloadBytes.byteLength !== 0) {
           throw new Error('runtime.capabilities binary frame payload must be empty');
         }
+        if (
+          this.options.assemblyRegistry !== undefined &&
+          this.options.registry.runtimeCapabilityIdentityForConnection(ws) !== undefined
+        ) {
+          throw new Error('runtime.capabilities must be the first frame on a runtime connection');
+        }
         this.options.registry.registerRuntimeCapabilities(ws, {
           ...header,
           type: 'runtime.capabilities'
@@ -262,10 +332,19 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
         if (frame.payloadBytes.byteLength !== 0) {
           throw new Error('runtime.health binary frame payload must be empty');
         }
-        this.options.registry.recordRuntimeHealth(ws, {
-          ...header,
-          type: 'runtime.health'
-        });
+        if (this.options.assemblyRegistry?.replicaIdForConnection(ws) !== undefined) {
+          this.options.assemblyRegistry.recordHealth(
+            ws,
+            header.runtimeId,
+            header.observedAt,
+            header.counters
+          );
+        } else {
+          this.options.registry.recordRuntimeHealth(ws, {
+            ...header,
+            type: 'runtime.health'
+          });
+        }
         return;
       case 'actor.put.request':
       case 'actor.find.request':
@@ -369,7 +448,10 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
     ) {
       throw new Error('invalid connection.send envelope');
     }
-    if (!this.options.registry.isConnectionRegisteredForService(ws, envelope.serviceId)) {
+    if (
+      !this.options.registry.isConnectionRegisteredForService(ws, envelope.serviceId) &&
+      this.options.assemblyRegistry?.replicaIdForConnection(ws) === undefined
+    ) {
       throw new Error('connection.send requires a registered runtime for the target service');
     }
     for (const handler of this.connectionSendHandlers) {
@@ -383,6 +465,31 @@ export class RuntimeEndpoint implements RuntimeFrameSender, RuntimeConnectionSen
     }
     return this.dispatcherInstance;
   }
+
+  private handleAssemblyControl(ws: WebSocket, control: AssemblyActivationControl): void {
+    const registry = this.options.assemblyRegistry;
+    if (registry === undefined) {
+      throw new Error('assembly activation is not accepted by this runtime endpoint');
+    }
+    this.options.registry.assertRuntimeCapabilityConnection(ws, control.replicaId);
+    if (control.type === 'register') {
+      registry.register(ws, control);
+      this.coordinator?.handleReplicaRegistered(control.replicaId);
+      return;
+    }
+    if (control.type !== 'prepared' && control.type !== 'reject') {
+      throw new Error(`runtime must not send assembly activation ${control.type}`);
+    }
+    const coordinator = this.coordinator;
+    if (coordinator === undefined) {
+      throw new Error('assembly activation coordinator is unavailable');
+    }
+    coordinator.handleRuntimeControl(ws, control);
+  }
+}
+
+function runtimeIdentityFromHeader(header: { type: string; runtimeId?: string }): string | undefined {
+  return typeof header.runtimeId === 'string' ? header.runtimeId : undefined;
 }
 
 function routerControlFrameHeader(

@@ -148,6 +148,13 @@ interface RuntimeCapabilityRegistration {
   ws: WebSocket;
 }
 
+export interface RuntimeCapabilityConnectionSnapshot {
+  runtimeId: string;
+  connected: boolean;
+  registeredAt: string;
+  capabilities: RuntimeCapabilitiesMetadata;
+}
+
 interface RuntimeHealthRecord {
   sessionId: string;
   runtimeId: string;
@@ -244,6 +251,10 @@ export class RuntimeRegistry {
     if (!Array.isArray(envelope.targets) || envelope.targets.length === 0) {
       throw new Error('runtime.register.targets must be a non-empty array');
     }
+    const capability = this.runtimeCapabilitiesByConnection.get(ws);
+    if (capability !== undefined && capability.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
 
     const existing = this.runtimes.get(envelope.runtimeId);
     if (existing) {
@@ -299,12 +310,51 @@ export class RuntimeRegistry {
     ws: WebSocket,
     envelope: RuntimeCapabilitiesEnvelope
   ): void {
+    const existing = this.runtimeCapabilitiesByConnection.get(ws);
+    if (existing !== undefined && existing.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
+    const registered = Array.from(this.runtimes.values()).find((runtime) => runtime.ws === ws);
+    if (registered !== undefined && registered.runtimeId !== envelope.runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
     this.runtimeCapabilitiesByConnection.set(ws, {
       runtimeId: envelope.runtimeId,
       capabilities: envelope.capabilities,
-      registeredAt: new Date(),
+      registeredAt: existing?.registeredAt ?? new Date(),
       ws
     });
+  }
+
+  assertRuntimeCapabilityConnection(ws: WebSocket, runtimeId?: string): string {
+    const connection = this.runtimeCapabilitiesByConnection.get(ws);
+    if (connection === undefined || connection.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('runtime connection must send runtime.capabilities first');
+    }
+    if (runtimeId !== undefined && connection.runtimeId !== runtimeId) {
+      throw new Error('runtime connection cannot change runtime identity');
+    }
+    return connection.runtimeId;
+  }
+
+  runtimeCapabilityIdentityForConnection(ws: WebSocket): string | undefined {
+    return this.runtimeCapabilitiesByConnection.get(ws)?.runtimeId;
+  }
+
+  capabilityConnectionsSnapshot(): RuntimeCapabilityConnectionSnapshot[] {
+    return Array.from(this.runtimeCapabilitiesByConnection.values())
+      .map((connection) => ({
+        runtimeId: connection.runtimeId,
+        connected: connection.ws.readyState === WebSocket.OPEN,
+        registeredAt: connection.registeredAt.toISOString(),
+        capabilities: structuredClone(connection.capabilities)
+      }))
+      .sort((left, right) =>
+        Buffer.compare(
+          Buffer.from(`${left.runtimeId}\u0000${left.registeredAt}`),
+          Buffer.from(`${right.runtimeId}\u0000${right.registeredAt}`)
+        )
+      );
   }
 
   recordRuntimeHealth(ws: WebSocket, envelope: RuntimeHealthEnvelope): void {

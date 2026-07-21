@@ -1041,7 +1041,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'binary register payload close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'runtime.register binary frame payload must be empty'
     );
@@ -1074,7 +1074,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'raw register target close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'invalid runtime.register envelope: targets items must use service.skiff~run~~hello.<target suffix>'
     );
@@ -1501,7 +1501,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'invalid runtime envelope close'
     )) as [number, Buffer];
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(reason.toString()).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -1551,7 +1551,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'text response.error runtime close'
     )) as [number, Buffer];
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(reason.toString()).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -1960,7 +1960,7 @@ describe('router runtime registry dispatch', () => {
     );
 
     const [code, reason] = await onceWithTimeout(ws, 'close', 'text connection.send close');
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'text JSON runtime protocol messages are not supported; use typed binary runtime frames'
     );
@@ -2127,7 +2127,7 @@ describe('router runtime registry dispatch', () => {
       'close',
       'invalid text connection.send close'
     );
-    expect(code).toBe(1011);
+    expect(code).toBe(1008);
     expect(Buffer.from(reason as Buffer).toString('utf8')).toBe(
       'connection.send text payload must be valid UTF-8'
     );
