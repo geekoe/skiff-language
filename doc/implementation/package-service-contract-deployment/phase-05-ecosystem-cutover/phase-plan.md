@@ -1,9 +1,7 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01 已合流为
-`0cebf349` / tree `f37e3366`。F01关闭path/alias blocker后，R01在`128af4a7`第二次验收仍因
-Rust/TS token parity FAIL；P5-D02已完成同类有界审计，P5-F02一次性parity convergence进行中，
-Wave 2保持阻塞。
+状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS。T01/F01/D02/F02收敛后，
+P5-R01 已在 `c168b1dc` / tree `961998ac` 第三次窄复验 PASS；Wave 2已解锁。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -77,7 +75,7 @@ Wave 1 / Batch A：shared authoring-storage-control checkpoint
     └─► T01 canonical ecosystem checkpoint ─► R01 independent checkpoint acceptance
            FAIL@0cebf349 ─► F01 shared checkpoint repair ─► combined repair probe ─► R01窄复验
              FAIL@128af4a7 ─► D02 activation parity bounded audit ─► F02 repair wave
-               ─► combined repair probe ─► R01第三次窄复验
+               ─► combined repair probe ─► R01第三次窄复验 PASS@c168b1dc
 
 Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动调度）
   T02 authoring / registry client / CLI / dev sync / watch ─┐
