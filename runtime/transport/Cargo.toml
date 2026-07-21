@@ -8,5 +8,6 @@ publish = false
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-canonical-json = { path = "../../canonical-json" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 url = "2.5"

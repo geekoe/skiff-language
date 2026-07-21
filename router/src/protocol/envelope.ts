@@ -46,6 +46,11 @@ export interface BinaryFrame<THeader extends Record<string, unknown> = Record<st
   payloadBytes: Uint8Array;
 }
 
+export interface BinaryFrameParts {
+  headerBytes: Uint8Array;
+  payloadBytes: Uint8Array;
+}
+
 export class BinaryFrameDecodeError extends Error {
   constructor(message: string) {
     super(message);
@@ -825,6 +830,31 @@ export function encodeBinaryFrame<THeader extends Record<string, unknown>>(
 }
 
 export function decodeBinaryFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string): BinaryFrame {
+  const frame = decodeBinaryFrameParts(data);
+  const headerText = Buffer.from(
+    frame.headerBytes.buffer,
+    frame.headerBytes.byteOffset,
+    frame.headerBytes.byteLength
+  ).toString('utf8');
+  let header: unknown;
+  try {
+    header = JSON.parse(headerText);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BinaryFrameDecodeError(`invalid skiff binary frame: header is not valid JSON: ${message}`);
+  }
+  if (!isRecord(header)) {
+    throw new BinaryFrameDecodeError('invalid skiff binary frame: header must be an object');
+  }
+  return {
+    header,
+    payloadBytes: frame.payloadBytes
+  };
+}
+
+export function decodeBinaryFrameParts(
+  data: Buffer | ArrayBuffer | Buffer[] | Uint8Array | string
+): BinaryFrameParts {
   const frame = rawDataToBuffer(data);
   if (frame.byteLength < BINARY_FRAME_FIXED_HEADER_BYTES) {
     throw new BinaryFrameDecodeError('invalid skiff binary frame: frame is too short');
@@ -860,19 +890,8 @@ export function decodeBinaryFrame(data: Buffer | ArrayBuffer | Buffer[] | Uint8A
 
   const headerStart = BINARY_FRAME_FIXED_HEADER_BYTES;
   const payloadStart = headerStart + headerLength;
-  const headerText = frame.subarray(headerStart, payloadStart).toString('utf8');
-  let header: unknown;
-  try {
-    header = JSON.parse(headerText);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new BinaryFrameDecodeError(`invalid skiff binary frame: header is not valid JSON: ${message}`);
-  }
-  if (!isRecord(header)) {
-    throw new BinaryFrameDecodeError('invalid skiff binary frame: header must be an object');
-  }
   return {
-    header,
+    headerBytes: frame.subarray(headerStart, payloadStart),
     payloadBytes: frame.subarray(payloadStart)
   };
 }

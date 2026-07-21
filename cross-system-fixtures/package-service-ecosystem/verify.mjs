@@ -255,7 +255,7 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
 
   assert.equal(requestCorpus.requestStartHeaders.length, 4);
   assert.equal(requestCorpus.requestStartMutations.length, 244);
-  assert.equal(requestCorpus.requestStartRawMutations.length, 5);
+  assert.equal(requestCorpus.requestStartRawCases.length, 29);
   assert.equal(requestCorpus.requestStartEquivalentOptionPairs.length, 4);
   assert.equal(requestCorpus.legacyRequestStartHeaders.length, 1);
 
@@ -358,24 +358,25 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     }
   }
 
-  for (const rawMutation of requestCorpus.requestStartRawMutations) {
-    assert.equal(mutationNames.has(rawMutation.name), false, rawMutation.name);
-    mutationNames.add(rawMutation.name);
-    const header = requestCorpus.requestStartHeaders[rawMutation.baseIndex];
-    const rawHeader = stringifyWithDuplicatePath(
-      header,
-      rawMutation.duplicatePath.split("."),
-    );
-    assert.equal(
-      validateRuntimeAssemblyRequestStartFrameHeader(JSON.parse(rawHeader)).ok,
-      true,
-      `${rawMutation.name} generic parser collapse control`,
-    );
-    assert.throws(
-      () => decodeRuntimeAssemblyRequestStartFrame(rawBinaryFrame(rawHeader)),
-      undefined,
-      rawMutation.name,
-    );
+  for (const rawCase of requestCorpus.requestStartRawCases) {
+    assert.equal(mutationNames.has(rawCase.name), false, rawCase.name);
+    mutationNames.add(rawCase.name);
+    const frame = Buffer.from(rawCase.frameHex, "hex");
+    if (rawCase.outcome === "accept") {
+      const decoded = decodeRuntimeAssemblyRequestStartFrame(frame);
+      const response = decoded.header.testEffectDoubles.effect[0].response;
+      assert.deepEqual(response, rawCase.expectedResponse, rawCase.name);
+      if (rawCase.name === "raw negative zero normalization") {
+        assert.equal(Object.is(response, -0), false, rawCase.name);
+      }
+    } else {
+      assert.equal(rawCase.outcome, "reject", rawCase.name);
+      assert.throws(
+        () => decodeRuntimeAssemblyRequestStartFrame(frame),
+        undefined,
+        rawCase.name,
+      );
+    }
   }
 
   for (const pair of requestCorpus.requestStartEquivalentOptionPairs) {
@@ -383,14 +384,15 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     const explicit = structuredClone(absent);
     applyPath(absent, pair.path, undefined, true);
     applyPath(explicit, pair.path, pair.value, false);
+    const normalized = [];
     for (const [label, header] of [["absent", absent], ["explicit", explicit]]) {
       const result = validateRuntimeAssemblyRequestStartFrameHeader(header);
       assert.equal(result.ok, true, `${pair.name} ${label}`);
-      assert.doesNotThrow(
-        () => decodeRuntimeAssemblyRequestStartFrame(encodeBinaryFrame(header)),
-        `${pair.name} ${label} production decoder`,
+      normalized.push(
+        decodeRuntimeAssemblyRequestStartFrame(encodeBinaryFrame(header)).header,
       );
     }
+    assert.deepEqual(normalized[0], normalized[1], `${pair.name} decoded value`);
   }
 
   for (const header of requestCorpus.legacyRequestStartHeaders) {
@@ -446,7 +448,7 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       activationMutations: frameCorpus.assemblyActivationMutations.length,
       requestHeaders: requestCorpus.requestStartHeaders.length,
       requestMutations: requestCorpus.requestStartMutations.length,
-      requestRawMutations: requestCorpus.requestStartRawMutations.length,
+      requestRawCases: requestCorpus.requestStartRawCases.length,
       requestEquivalentOptionPairs:
         requestCorpus.requestStartEquivalentOptionPairs.length,
       legacyRequestHeaders: requestCorpus.legacyRequestStartHeaders.length,
@@ -470,55 +472,4 @@ function applyPath(root, path, value, remove) {
   } else {
     owner[leaf] = value;
   }
-}
-
-function stringifyWithDuplicatePath(value, path) {
-  if (path.length === 0) {
-    throw new Error("duplicate path must not be empty");
-  }
-  if (Array.isArray(value)) {
-    const [index, ...rest] = path;
-    return `[${value
-      .map((item, itemIndex) =>
-        String(itemIndex) === index
-          ? stringifyWithDuplicatePath(item, rest)
-          : JSON.stringify(item),
-      )
-      .join(",")}]`;
-  }
-  assert.equal(typeof value, "object");
-  assert.notEqual(value, null);
-  const [field, ...rest] = path;
-  const entries = [];
-  let found = false;
-  for (const [key, child] of Object.entries(value)) {
-    const encodedKey = JSON.stringify(key);
-    if (key !== field) {
-      entries.push(`${encodedKey}:${JSON.stringify(child)}`);
-      continue;
-    }
-    found = true;
-    const encodedValue =
-      rest.length === 0
-        ? JSON.stringify(child)
-        : stringifyWithDuplicatePath(child, rest);
-    const encodedEntry = `${encodedKey}:${encodedValue}`;
-    entries.push(encodedEntry);
-    if (rest.length === 0) entries.push(encodedEntry);
-  }
-  assert.equal(found, true, `duplicate path ${path.join(".")}`);
-  return `{${entries.join(",")}}`;
-}
-
-function rawBinaryFrame(headerText, payload = Buffer.alloc(0)) {
-  const header = Buffer.from(headerText, "utf8");
-  const frame = Buffer.alloc(14 + header.byteLength + payload.byteLength);
-  frame.write("SKBF", 0, "ascii");
-  frame.writeUInt8(1, 4);
-  frame.writeUInt8(1, 5);
-  frame.writeUInt32BE(header.byteLength, 6);
-  frame.writeUInt32BE(payload.byteLength, 10);
-  header.copy(frame, 14);
-  payload.copy(frame, 14 + header.byteLength);
-  return frame;
 }
