@@ -2,7 +2,8 @@
 
 状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01 已合流为
 `0cebf349` / tree `f37e3366`。F01关闭path/alias blocker后，R01在`128af4a7`第二次验收仍因
-Rust/TS token parity FAIL，已触发P5-D02有界审计；Wave 2保持阻塞。
+Rust/TS token parity FAIL；P5-D02已完成同类有界审计，P5-F02一次性parity convergence进行中，
+Wave 2保持阻塞。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -133,6 +134,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R01 | [Checkpoint acceptance](tasks/P5-R01-ecosystem-checkpoint-acceptance.md) | T01 exact commit | 高；独立只读 |
 | F01 | [R01 shared checkpoint repair](tasks/P5-F01-r01-shared-checkpoint-repair.md) | R01 FAIL at `0cebf349` | 高；path/control/alias shared owner repair |
 | D02 | [Activation parity bounded audit](tasks/P5-D02-activation-parity-bounded-audit.md) | R01 second FAIL at `128af4a7` | 独立只读；第三次verdict熔断前置 |
+| F02 | [Activation parity convergence](tasks/P5-F02-activation-parity-convergence.md) | D02 complete | 高；raw/typed codec一次修复波次 |
 | T02 | [Authoring/tooling cutover](tasks/P5-T02-authoring-tooling-cutover.md) | R01 PASS | 高；tooling consumer |
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
@@ -170,6 +172,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   `cargo test -p skiff-compiler-input contract_dependencies`、
   `cargo test -p skiff-runtime-loader runtime_assembly`与
   `pnpm --filter @skiff/router type-check`作为一次combined repair probe；通过后才触发原R01 reviewer窄复验。
+- D02不产生verdict；它在R01第二次FAIL后穷举activation request/state/control的token、generation、raw JSON、
+  required-nullable、participant与variant evidence。F02只写这些shared codec owner，不再修改path/alias或实现
+  consumer。F02合流后的唯一combined probe是：
+  `cargo check -p skiff-artifact-identity -p skiff-deployment -p skiff-runtime-loader`、
+  `pnpm --filter @skiff/router type-check`、
+  `node cross-system-fixtures/package-service-ecosystem/verify.mjs --combined-probe`和`git diff --check`；
+  全部PASS后才允许R01第三次窄复验。
 - T02独占 `compiler/**` 的binary/authoring consumer、`scripts/skiff*.mjs`、`scripts/lib/**`中的
   build/publish/store/dev sync/watch、对应tests。不改router/runtime/test-runner，不在85k/62k旧
   大文件继续塞入新owner；新职责拆到模块。
