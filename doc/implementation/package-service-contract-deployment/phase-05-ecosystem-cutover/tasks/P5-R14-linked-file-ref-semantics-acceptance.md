@@ -14,3 +14,9 @@
 
 第一行只给`R14 PASS`或`R14 FAIL`。PASS只允许exact合流后由原gate owner原样运行F04真实suite；D15临时probe、
 linker单测或日志字符串均不能替代最终Host结果。
+
+## 验收记录
+
+首次`R14 FAIL`仅因candidate越界修改test fixture。same-base F14A `629f1c815f16c366c67557dfaba01a09455207fd` /
+tree `5401add98ed9513fd495dd3eba4ac92e7ef3bce2`将构造逻辑移入允许的direct assembly test，fixture逐字恢复base；
+single clean/lock、唯一matcher三处复用、production linker正例与严格负例全部保持，窄复验`R14 PASS`。

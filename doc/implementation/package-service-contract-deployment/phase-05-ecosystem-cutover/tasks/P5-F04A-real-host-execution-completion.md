@@ -85,3 +85,7 @@ consumer与R13 combined receive；R13前F04继续未完成。
 R13 PASS后完整std 11/11执行成功，checked-in Host generation-2在业务request前因linked-program把非语义
 `artifactPath`纳入nested FileIR target相等而link reject。D15确认identity/module/hash与package/service bindings正确，
 冻结最小F14/R14；临时等价probe已见最终consumer PASS但不能替代原样gate。
+
+R14 PASS并合流`bcbdc2c`后Host gen2已prepare/commit/register，首请求仍偶发503。D16确认control socket从未断开，
+activation 2xx到new-generation healthy registration存在毫秒级空窗；冻结F15/R15只在test runtime唯一request前加入exact
+health readiness barrier，不改activation语义或重试业务请求。

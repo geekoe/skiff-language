@@ -36,3 +36,10 @@ git diff --check
 `link_runtime_assembly`完成execution image。负例覆盖wrong file identity/module/present source hash、callable/executable
 index越界。每个filter非零。回报matcher矩阵、source/commit/tree、single clean/lock、scope/reverse与extra-review；不在
 本任务运行或宣称F04最终gate。
+
+## R14 acceptance record
+
+首个candidate因修改linker test fixture被R14判FAIL；F14A从same base重建single candidate
+`629f1c815f16c366c67557dfaba01a09455207fd` / tree `5401add98ed9513fd495dd3eba4ac92e7ef3bce2`，fixture
+zero-diff且production/shared-image语义不变，独立R14窄复验PASS并合流为`bcbdc2c`。linked-program 11/11、linker
+assembly 13/13、DAG与changed-file fmt通过；lock未变。

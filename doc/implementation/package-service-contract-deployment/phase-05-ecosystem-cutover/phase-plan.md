@@ -14,7 +14,8 @@ D12/F10已在`efb2bbbe`通过R11并恢复Runtime committed bootstrap。真实pro
 source-suite缺少canonical `--bin`的直接caller并已合流`c06e115`；完整std现暴露crypto/time exact effects覆盖遗漏，
 D13/F11已在`2d74b2c`通过R12。真实std request继续暴露双端canonical unary consumer未接线，D14已冻结并行
 F12/F13并已在`02b97ff`通过combined R13；std 11/11后Host assembly暴露linked FileIR locator误比较，D15已冻结
-F14/R14。F05等待F04 narrow receive，
+F14已在`bcbdc2c`通过R14。原样gate现仅暴露activation receipt→healthy registration毫秒级空窗，D16已冻结
+F15/R15 test runtime readiness barrier。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -105,7 +106,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                 └─► D12 ─► F10 ─► R11 PASS@47d9259 ─► F04A Host FAIL@efb2bbb
           │                                                                                                                                                                      └─► F04B@c06e115 ─► D13 ─► F11 ─► R12 PASS@a9ef444
           │                                                                                                                                                                                                   └─► D14 ─► F12 Router ─┐
-          │                                                                                                                                                                                                              F13 Runtime ─┴─► R13 PASS@02b97ff ─► D15 ─► F14 ─► R14 ─► F04A Host resume ─► F04 narrow receive
+          │                                                                                                                                                                                                              F13 Runtime ─┴─► R13 PASS@02b97ff ─► D15 ─► F14 ─► R14 PASS@629f1c8
+          │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 ─► F04A Host resume ─► F04 narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -203,6 +205,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D15 | [Linked FileRef semantics audit](tasks/P5-D15-linked-file-ref-semantics-audit.md) | F04A Host link reject at `02b97ff` | 独立只读；冻结locator/semantic差异 |
 | F14 | [Linked FileRef semantics repair](tasks/P5-F14-linked-file-ref-semantics-repair.md) | D15 complete | 中；linked-program窄修复 |
 | R14 | [Linked FileRef semantics acceptance](tasks/P5-R14-linked-file-ref-semantics-acceptance.md) | F14 exact commit | 高；独立只读 |
+| D16 | [Post-commit readiness audit](tasks/P5-D16-post-commit-readiness-audit.md) | F04A first-request 503 at `bcbdc2c` | 独立只读；冻结registration空窗 |
+| F15 | [Test runtime readiness barrier](tasks/P5-F15-test-runtime-readiness-barrier.md) | D16 complete | 中；test runtime唯一request barrier |
+| R15 | [Test runtime readiness acceptance](tasks/P5-R15-test-runtime-readiness-acceptance.md) | F15 exact commit | 高；独立只读 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -299,6 +304,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - R13后的真实suite已执行std 11/11，Host assembly在linked-program把storage locator误当semantic FileIR target字段时
   fail closed。D15/F14/R14只让callable/executable target matcher忽略artifactPath，identity/module/present hash/index
   继续严格；不回改authoring/identity/loader/test normalizer/fixture。R14后由原owner原样运行唯一F04 Host gate。
+- R14后的原样gate已完成gen2 commit/register，但activation 2xx先于healthy registration可见，test runner首请求落入
+  dispatch空窗。D16/F15/R15只在test runtime的唯一业务request前等待exact active tuple、healthy replica与matching
+  capability；不改Router receipt、固定sleep或重试业务request。R15后再由原owner原样运行F04 Host gate。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
