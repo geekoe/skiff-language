@@ -1,7 +1,10 @@
 use serde_json::json;
 use skiff_artifact_model::{AssemblyActivationControl, AssemblyIdentity, RuntimeAssemblyRef};
 use skiff_runtime_transport::{
-    assembly_activation::{decode_assembly_activation_control, encode_assembly_activation_control},
+    assembly_activation::{
+        decode_assembly_activation_frame, encode_assembly_activation_frame,
+        AssemblyActivationFrameDirection,
+    },
     protocol::encode_binary_frame,
 };
 
@@ -30,12 +33,24 @@ fn two_replicas_register_one_exact_assembly_identity_independently() {
         replica_id: "runtime-b".to_string(),
     };
 
-    let first =
-        decode_assembly_activation_control(&encode_assembly_activation_control(&first).unwrap())
-            .unwrap();
-    let second =
-        decode_assembly_activation_control(&encode_assembly_activation_control(&second).unwrap())
-            .unwrap();
+    let first = decode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RuntimeToRouter,
+        &encode_assembly_activation_frame(
+            AssemblyActivationFrameDirection::RuntimeToRouter,
+            &first,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let second = decode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RuntimeToRouter,
+        &encode_assembly_activation_frame(
+            AssemblyActivationFrameDirection::RuntimeToRouter,
+            &second,
+        )
+        .unwrap(),
+    )
+    .unwrap();
 
     assert_ne!(first, second, "replica identity is not assembly identity");
     let (first_assembly, first_replica) = register_parts(first);
@@ -56,7 +71,11 @@ fn activation_control_rejects_payload_and_legacy_service_fields() {
         replica_id: "runtime-a".to_string(),
     };
     let payload_frame = encode_binary_frame(&prepare, b"legacy payload").unwrap();
-    assert!(decode_assembly_activation_control(&payload_frame).is_err());
+    assert!(decode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &payload_frame
+    )
+    .is_err());
 
     let legacy = json!({
         "type": "prepare",
@@ -75,7 +94,11 @@ fn activation_control_rejects_payload_and_legacy_service_fields() {
         "serviceConfig": []
     });
     let legacy_frame = encode_binary_frame(&legacy, &[]).unwrap();
-    assert!(decode_assembly_activation_control(&legacy_frame).is_err());
+    assert!(decode_assembly_activation_frame(
+        AssemblyActivationFrameDirection::RouterToRuntime,
+        &legacy_frame
+    )
+    .is_err());
 }
 
 fn register_parts(control: AssemblyActivationControl) -> (RuntimeAssemblyRef, String) {

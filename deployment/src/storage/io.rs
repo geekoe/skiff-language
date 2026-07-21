@@ -180,10 +180,25 @@ impl CanonicalArtifactStore {
                     }
                 }
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                    fs::create_dir(&candidate).map_err(|source| {
-                        io_error("create record directory", &candidate, source)
-                    })?;
-                    sync_directory(&resolved_parent)?;
+                    match fs::create_dir(&candidate) {
+                        Ok(()) => sync_directory(&resolved_parent)?,
+                        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                            let metadata = fs::symlink_metadata(&candidate).map_err(|source| {
+                                io_error("inspect concurrent record directory", &candidate, source)
+                            })?;
+                            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                                return Err(EcosystemStorageError::InvalidRecord {
+                                    path: candidate,
+                                    message:
+                                        "record path parent must be a real directory, not a symlink"
+                                            .to_string(),
+                                });
+                            }
+                        }
+                        Err(source) => {
+                            return Err(io_error("create record directory", &candidate, source))
+                        }
+                    }
                 }
                 Err(source) => return Err(io_error("inspect record directory", candidate, source)),
             }
