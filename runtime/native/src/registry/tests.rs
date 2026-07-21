@@ -1,7 +1,7 @@
 use serde_json::json;
 use skiff_artifact_model::{
-    NativeCallableSemantics, NativeTypeExprDef, STD_NATIVE_CALLABLE_SEMANTICS,
-    STD_NATIVE_SIGNATURES,
+    BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeTypeExprDef,
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_model::error::{TypeIdentity, WirePayload};
 
@@ -9,8 +9,8 @@ use crate::handlers::array_empty;
 
 use super::{
     table::{
-        validate_handler_entries, validate_native_callable_semantics_registry, NativeHandlerEntry,
-        NATIVE_BINDINGS,
+        validate_handler_entries, validate_native_callable_semantics_registry,
+        validate_receiver_callable_semantics_registry, NativeHandlerEntry, NATIVE_BINDINGS,
     },
     NativeRegistry,
 };
@@ -61,6 +61,48 @@ fn native_callable_semantics_registry_validates_exact_builtin_matrix() {
         NATIVE_BINDINGS,
     )
     .expect("native callable semantics registry should validate");
+}
+
+#[test]
+fn native_callable_semantics_registry_validates_exact_receiver_matrix() {
+    validate_receiver_callable_semantics_registry(
+        BUILTIN_RECEIVER_CALLABLE_SEMANTICS,
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("receiver callable semantics registry should validate");
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_duplicate_receiver_descriptor() {
+    let descriptor: BuiltinReceiverCallableSemantics =
+        BUILTIN_RECEIVER_CALLABLE_SEMANTICS[0].clone();
+    let error = validate_receiver_callable_semantics_registry(
+        &[descriptor.clone(), descriptor],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("duplicate receiver semantics should fail validation");
+    assert!(
+        error.contains("receiver:Date.isBefore@1") && error.contains("more than once"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_forged_receiver_identity() {
+    let mut descriptor = BUILTIN_RECEIVER_CALLABLE_SEMANTICS[0].clone();
+    descriptor.op.canonical_key = "receiver:Date.isAfter@1";
+    let error = validate_receiver_callable_semantics_registry(
+        &[descriptor],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("forged receiver identity should fail validation");
+    assert!(
+        error.contains("receiver:Date.isAfter@1") && error.contains("no exact native signature"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -149,7 +191,8 @@ fn native_callable_semantics_registry_rejects_capability_descriptor() {
 
     assert!(
         error.contains("std.websocket.sendTextToConnection")
-            && error.contains("capability context Websocket"),
+            && error.contains("context Websocket")
+            && error.contains("route Websocket"),
         "unexpected error: {error}"
     );
 }
@@ -171,10 +214,16 @@ fn native_callable_semantics_registry_rejects_missing_handler() {
 }
 
 #[test]
-fn native_callable_semantics_registry_keeps_crypto_unregistered() {
-    assert!(STD_NATIVE_CALLABLE_SEMANTICS
-        .iter()
-        .all(|semantics| !semantics.binding_key.starts_with("std.crypto.")));
+fn native_callable_semantics_registry_keeps_unaudited_capabilities_unregistered() {
+    for binding_key in [
+        "std.file.readText",
+        "std.http.client.request",
+        "std.websocket.sendTextToConnection",
+    ] {
+        assert!(STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .all(|semantics| semantics.binding_key != binding_key));
+    }
 }
 
 #[test]

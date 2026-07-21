@@ -238,6 +238,7 @@ fn standalone_executable_signatures(
         ctx.package_aliases,
         ctx.service_dependency_aliases,
         Some(expression_types),
+        ctx.resolved_call_targets,
     );
     let mut may_suspend = BTreeMap::new();
     for function in &ast.functions {
@@ -571,7 +572,9 @@ mod tests {
     };
 
     use crate::{
-        file_ir::{BoxSourceIr, CallTargetIr, ExecutableIr, ExprIr, PackageRefIr, TypeRefIr},
+        file_ir::{
+            BoxSourceIr, CallIr, CallTargetIr, ExecutableIr, ExprIr, PackageRefIr, TypeRefIr,
+        },
         source_unit_lowering::symbol,
     };
     use skiff_artifact_model::{
@@ -1239,6 +1242,66 @@ mod tests {
         assert!(
             matches!(receiver_arg, ExprIr::LoadSlot { .. }),
             "receiver arg should load the boxed local binding"
+        );
+    }
+
+    #[test]
+    fn exact_receiver_builtin_targets_are_consumed_from_source_facts() {
+        let unit = lowered_unit(
+            r#"
+              function isBefore(left: Date, right: Date) -> bool {
+                return left.isBefore(right)
+              }
+
+              function epoch(value: Date) -> integer {
+                return value.toEpochMilliseconds()
+              }
+
+              function millis(value: Duration) -> integer {
+                return value.toMilliseconds()
+              }
+
+              function now() -> Date {
+                return Date.now()
+              }
+
+              function sleep() -> void {
+                return std.time.sleep(Duration.milliseconds(0))
+              }
+            "#,
+        );
+        let targets = unit
+            .executables
+            .iter()
+            .flat_map(|executable| executable.body.expressions.iter())
+            .filter_map(|expression| match expression {
+                ExprIr::Call {
+                    call:
+                        CallIr {
+                            target: CallTargetIr::ReceiverBuiltin { op },
+                            ..
+                        },
+                } => Some(op.canonical_key),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            targets,
+            BTreeSet::from([
+                "receiver:Date.isBefore@1",
+                "receiver:Date.toEpochMilliseconds@1",
+                "receiver:Duration.toMilliseconds@1",
+            ])
+        );
+        for name in ["isBefore", "epoch", "millis", "now"] {
+            assert!(
+                !executable(&unit, name).may_suspend,
+                "{name} should consume exact non-suspending callable semantics"
+            );
+        }
+        assert!(
+            executable(&unit, "sleep").may_suspend,
+            "sleep should consume its exact may-suspend descriptor"
         );
     }
 

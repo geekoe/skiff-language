@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
-use skiff_artifact_model::{builtin_receiver_op_by_name, BuiltinReceiverOp, ReceiverCallAbi};
+use skiff_artifact_model::{validate_supported_receiver_builtin_op, ReceiverCallAbi};
 use skiff_compiler_source::{
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
@@ -1192,7 +1192,13 @@ impl<'a> FunctionLowerer<'a> {
                 service_call_ref_index,
             }
         } else if let Expr::Field { object, field } = callee {
-            if let Some(target) = self.lower_receiver_call_target(object, field)? {
+            if let Some(target) =
+                self.resolved_receiver_builtin_call_target(expression_key, object, field)?
+            {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                target
+            } else if let Some(target) = self.lower_receiver_call_target(object, field)? {
                 self.next_expression_key();
                 lowered_args.push(self.lower_expr(object)?);
                 target
@@ -1328,6 +1334,52 @@ impl<'a> FunctionLowerer<'a> {
         Err(package_call_resolution_error(expression_key, path, detail))
     }
 
+    fn resolved_receiver_builtin_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+        object: &Expr,
+        method_name: &str,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(target) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        let ResolvedCallTarget::ReceiverBuiltin { op } = target else {
+            return Ok(None);
+        };
+        validate_supported_receiver_builtin_op(op).map_err(|error| {
+            unsupported(format!(
+                "typed receiver target `{}` is not canonical at ExpressionKey {expression_key:?}: {error}",
+                op.canonical_key
+            ))
+        })?;
+        if op.method.as_str() != method_name {
+            return Err(unsupported(format!(
+                "typed receiver target `{}` does not match callee method `{method_name}` at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            )));
+        }
+        let (_, receiver_ty) = self.receiver_type_for_call_object(object)?.ok_or_else(|| {
+            unsupported(format!(
+                "typed receiver target `{}` has no statically known receiver type at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            ))
+        })?;
+        let receiver_root = runtime_receiver_root_from_type_ref(&receiver_ty).ok_or_else(|| {
+            unsupported(format!(
+                "typed receiver target `{}` cannot validate receiver type {receiver_ty:?} at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            ))
+        })?;
+        if receiver_root != op.receiver.as_str() {
+            return Err(unsupported(format!(
+                "typed receiver target `{}` does not match receiver root `{receiver_root}` at ExpressionKey {expression_key:?}",
+                op.canonical_key
+            )));
+        }
+        Ok(Some(CallTargetIr::ReceiverBuiltin { op: *op }))
+    }
+
     fn infer_native_call_type_args(
         &self,
         target: &CallTargetIr,
@@ -1427,10 +1479,6 @@ impl<'a> FunctionLowerer<'a> {
             self.lower_any_interface_receiver_call_target(&receiver_ty, method_name)
         {
             return Ok(Some(target));
-        }
-
-        if let Some(op) = Self::builtin_receiver_op_for_type(&receiver_ty, method_name) {
-            return Ok(Some(CallTargetIr::ReceiverBuiltin { op }));
         }
 
         if Self::is_actor_ref_receiver_type(&receiver_ty) {
@@ -1818,14 +1866,6 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn builtin_receiver_op_for_type(
-        ty: &TypeRefIr,
-        method_name: &str,
-    ) -> Option<BuiltinReceiverOp> {
-        let root = runtime_receiver_root_from_type_ref(ty)?;
-        builtin_receiver_op_by_name(&root, method_name)
-    }
-
     fn is_actor_ref_receiver_type(ty: &TypeRefIr) -> bool {
         match ty {
             TypeRefIr::Native { name, .. } if name == "ActorRef" => true,
@@ -1997,6 +2037,7 @@ fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
         ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
         ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
         ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",
+        ResolvedCallTarget::ReceiverBuiltin { .. } => "ReceiverBuiltin",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
         ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
         ResolvedCallTarget::Unknown { .. } => "Unknown",

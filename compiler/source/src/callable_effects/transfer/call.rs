@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
-    native_callable_semantics, BoundaryCallbackContract, BoundaryErrorContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, CallableProvenanceUnknownReason,
+    builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
+    BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
+    CallableProvenanceUnknownReason,
 };
 
 use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
@@ -65,6 +66,23 @@ impl Evaluator<'_, '_> {
             }
             Some(ResolvedCallTarget::NativeFunction { binding_key }) => self
                 .apply_exact_native_call(&binding_key, &callee_value, &actuals, return_reference),
+            Some(ResolvedCallTarget::ReceiverBuiltin { op }) => {
+                let Some(receiver) = receiver else {
+                    return self.apply_unknown_call_with_callee(
+                        &callee_value,
+                        &actuals,
+                        return_reference,
+                        EscapeLane::Native,
+                    );
+                };
+                self.apply_exact_receiver_call(
+                    op,
+                    &callee_value,
+                    receiver,
+                    &actuals,
+                    return_reference,
+                )
+            }
             Some(ResolvedCallTarget::DependencyPackageFunction {
                 package_requirement_alias,
                 package_callable_id,
@@ -175,6 +193,28 @@ impl Evaluator<'_, '_> {
             );
         };
         self.apply_callee(&callee, actuals, return_reference, None)
+    }
+
+    fn apply_exact_receiver_call(
+        &mut self,
+        op: BuiltinReceiverOp,
+        callee_value: &AbstractValue,
+        receiver: AbstractValue,
+        args: &[AbstractValue],
+        return_reference: bool,
+    ) -> AbstractValue {
+        let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
+        actuals.push(receiver);
+        actuals.extend_from_slice(args);
+        let Some(callee) = receiver_callable_callee(op) else {
+            return self.apply_unknown_call_with_callee(
+                callee_value,
+                &actuals,
+                return_reference,
+                EscapeLane::Native,
+            );
+        };
+        self.apply_callee(&callee, &actuals, return_reference, None)
     }
 
     fn apply_unknown_call_with_callee(
@@ -294,6 +334,16 @@ impl Evaluator<'_, '_> {
 
 fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
     let semantics = native_callable_semantics(binding_key)?;
+    let mut state = CallableState::bottom();
+    state.effects = semantics.effects;
+    state
+        .return_origins
+        .insert(Origin::from(semantics.return_provenance.clone()));
+    Some(state)
+}
+
+fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
+    let semantics = builtin_receiver_callable_semantics(op)?;
     let mut state = CallableState::bottom();
     state.effects = semantics.effects;
     state

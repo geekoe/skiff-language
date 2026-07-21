@@ -2,6 +2,8 @@ use std::fmt;
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
+use crate::{CallableMayEffects, ValueProvenance};
+
 pub const RECEIVER_BUILTIN_CAPABILITY_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -230,6 +232,62 @@ pub struct BuiltinReceiverOpSpec {
     pub public_return_type: BuiltinReceiverPublicReturnType,
     pub mutates_receiver: bool,
     pub throws: BuiltinReceiverThrowSemantics,
+}
+
+/// Audited callable semantics for an exact canonical receiver target.
+///
+/// This registry is deliberately independent from receiver support: a
+/// supported operation without an entry remains fail closed for source
+/// callable-effect analysis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinReceiverCallableSemantics {
+    pub op: BuiltinReceiverOp,
+    pub effects: CallableMayEffects,
+    pub return_provenance: ValueProvenance,
+}
+
+const fn detached_scalar_receiver(
+    receiver: BuiltinReceiverRoot,
+    method: BuiltinReceiverMethod,
+) -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver,
+            method,
+            signature_version: 1,
+            canonical_key: canonical_key(receiver, method, 1),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Fresh,
+    }
+}
+
+pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantics] = &[
+    detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::IsBefore),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Date,
+        BuiltinReceiverMethod::ToEpochMilliseconds,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Duration,
+        BuiltinReceiverMethod::ToMilliseconds,
+    ),
+];
+
+pub fn builtin_receiver_callable_semantics(
+    op: BuiltinReceiverOp,
+) -> Option<&'static BuiltinReceiverCallableSemantics> {
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.op == op)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,7 +897,50 @@ const fn canonical_key(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    #[test]
+    fn callable_semantics_registry_is_sparse_exact_and_safe() {
+        let expected = BTreeSet::from([
+            "receiver:Date.isBefore@1",
+            "receiver:Date.toEpochMilliseconds@1",
+            "receiver:Duration.toMilliseconds@1",
+        ]);
+        let actual = BUILTIN_RECEIVER_CALLABLE_SEMANTICS
+            .iter()
+            .map(|semantics| semantics.op.canonical_key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), BUILTIN_RECEIVER_CALLABLE_SEMANTICS.len());
+
+        for semantics in BUILTIN_RECEIVER_CALLABLE_SEMANTICS {
+            let op = SUPPORTED_RECEIVER_BUILTIN_OPS
+                .iter()
+                .find(|spec| spec.op == semantics.op)
+                .map(|spec| spec.op)
+                .expect("callable receiver semantics must name a supported exact op");
+            assert_eq!(builtin_receiver_callable_semantics(op), Some(semantics));
+            assert_eq!(
+                semantics.effects,
+                CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            );
+            assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+        }
+
+        let mutable_array = builtin_receiver_op_by_name("Array", "push")
+            .expect("Array.push must remain a supported runtime receiver op");
+        assert_eq!(builtin_receiver_callable_semantics(mutable_array), None);
+    }
 
     #[test]
     fn date_and_duration_receiver_ops_publish_integer_return_types() {

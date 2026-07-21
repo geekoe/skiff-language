@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    ContractOperationId, ContractRequirement, PackageCallableId, PackageLocalAbiIdentity,
+    BuiltinReceiverOp, ContractOperationId, ContractRequirement, PackageCallableId,
+    PackageLocalAbiIdentity,
 };
 
 use crate::{semantic::impl_method_declaration_name, ExpressionKey, SourceSymbolKey};
@@ -31,6 +32,9 @@ pub enum ResolvedCallTarget {
     },
     NativeFunction {
         binding_key: String,
+    },
+    ReceiverBuiltin {
+        op: BuiltinReceiverOp,
     },
     DependencyPackageFunction {
         package_requirement_alias: String,
@@ -64,6 +68,7 @@ impl ResolvedCallTarget {
                 impl_method_declaration_name(type_name, method_name),
             )),
             Self::NativeFunction { .. }
+            | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
             | Self::ContractOperation { .. }
             | Self::Unknown { .. } => None,
@@ -174,6 +179,23 @@ mod tests {
             }),
         );
 
+        let receiver = ResolvedCallTarget::ReceiverBuiltin {
+            op: skiff_artifact_model::builtin_receiver_op_by_name("Date", "isBefore")
+                .expect("Date.isBefore receiver target must exist"),
+        };
+        assert_target_wire(
+            receiver,
+            json!({
+                "kind": "receiverBuiltin",
+                "op": {
+                    "receiver": "Date",
+                    "method": "isBefore",
+                    "signatureVersion": 1,
+                    "canonicalKey": "receiver:Date.isBefore@1"
+                }
+            }),
+        );
+
         let package = ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias: "util".to_string(),
             package_callable_id: PackageCallableId::new("callable:format"),
@@ -246,6 +268,7 @@ mod tests {
                 "expectedLocalAbi": "abi:util"
             }),
             json!({ "kind": "nativeFunction" }),
+            json!({ "kind": "receiverBuiltin" }),
             json!({ "kind": "contractOperation", "contractOperationId": "op" }),
             json!({ "kind": "unknown" }),
             json!({
@@ -296,6 +319,12 @@ mod tests {
             binding_key: "std.string.truncateUtf8Bytes".to_string(),
         };
         assert_eq!(native.source_callable_key(), None);
+
+        let receiver = ResolvedCallTarget::ReceiverBuiltin {
+            op: skiff_artifact_model::builtin_receiver_op_by_name("Duration", "toMilliseconds")
+                .expect("Duration.toMilliseconds receiver target must exist"),
+        };
+        assert_eq!(receiver.source_callable_key(), None);
     }
 
     #[test]

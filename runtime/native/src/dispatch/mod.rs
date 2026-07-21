@@ -20,6 +20,7 @@ mod time;
 mod websocket;
 
 pub use adapter::NativeDispatch;
+pub(crate) use core::runtime_shared_native_route_for_validation;
 use core::{
     ensure_native_capability_context, native_capability_route_mismatch, unsupported_native_target,
 };

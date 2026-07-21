@@ -84,10 +84,10 @@ pub use expression_model::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact, ExpressionSourceMap,
 };
 pub use expression_type_model::{
-    ConstructorFieldTypeMismatch, ConstructorFieldValueSource, ConstructorProvidedField,
-    ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact, ExpressionTypeModel,
-    ExpressionTypeModelBuildError, MaterializedConstructorField, MissingConstructorField,
-    RepresentationConstructorValidation, UnknownConstructorField,
+    runtime_receiver_root_from_type_ref, ConstructorFieldTypeMismatch, ConstructorFieldValueSource,
+    ConstructorProvidedField, ConstructorValidation, DuplicateConstructorField, ExpressionTypeFact,
+    ExpressionTypeModel, ExpressionTypeModelBuildError, MaterializedConstructorField,
+    MissingConstructorField, RepresentationConstructorValidation, UnknownConstructorField,
 };
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;

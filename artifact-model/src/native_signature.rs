@@ -1,5 +1,7 @@
 use crate::{
-    builtin_receiver_ops::{BuiltinReceiverOp, SUPPORTED_RECEIVER_BUILTIN_OPS},
+    builtin_receiver_ops::{
+        validate_supported_receiver_builtin_op, BuiltinReceiverOp, SUPPORTED_RECEIVER_BUILTIN_OPS,
+    },
     CallableMayEffects, ValueProvenance,
 };
 
@@ -38,6 +40,10 @@ pub struct NativeCallableSemantics {
 }
 
 const fn detached_scalar_native(binding_key: &'static str) -> NativeCallableSemantics {
+    detached_native(binding_key, false)
+}
+
+const fn detached_native(binding_key: &'static str, may_suspend: bool) -> NativeCallableSemantics {
     NativeCallableSemantics {
         binding_key,
         effects: CallableMayEffects {
@@ -47,17 +53,27 @@ const fn detached_scalar_native(binding_key: &'static str) -> NativeCallableSema
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
+            may_suspend,
         },
         return_provenance: ValueProvenance::Fresh,
     }
 }
 
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
+    detached_scalar_native("core.date.now"),
+    detached_scalar_native("core.duration.milliseconds"),
+    detached_scalar_native("core.duration.seconds"),
+    detached_scalar_native("core.number.assertSafeInteger"),
     detached_scalar_native("std.string.isAsciiDigits"),
     detached_scalar_native("std.string.truncateUtf8Bytes"),
     detached_scalar_native("std.string.encodeQueryComponent"),
     detached_scalar_native("std.string.encodePath"),
+    detached_scalar_native("std.crypto.hmacSha1Base64"),
+    detached_scalar_native("std.crypto.sha256"),
+    detached_scalar_native("std.crypto.randomToken"),
+    detached_scalar_native("std.crypto.uuid"),
+    detached_scalar_native("std.crypto.uuidSimple"),
+    detached_native("std.time.sleep", true),
 ];
 
 pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCallableSemantics> {
@@ -762,6 +778,17 @@ pub fn is_runtime_receiver_native_binding_key(binding_key: &str) -> bool {
         })
 }
 
+pub fn native_signature_for_receiver_op(
+    op: BuiltinReceiverOp,
+) -> Option<&'static NativeSignatureDef> {
+    validate_supported_receiver_builtin_op(&op).ok()?;
+    let mut matches = STD_NATIVE_SIGNATURES
+        .iter()
+        .filter(|signature| native_signature_target_matches_receiver_op(signature.target, op));
+    let signature = matches.next()?;
+    matches.next().is_none().then_some(signature)
+}
+
 fn native_signature_target_matches_receiver_op(target: &str, op: BuiltinReceiverOp) -> bool {
     let Some(method) = target
         .strip_prefix(op.receiver.as_str())
@@ -776,20 +803,30 @@ fn native_signature_target_matches_receiver_op(target: &str, op: BuiltinReceiver
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::{CallableMayEffects, ValueProvenance};
+    use crate::{builtin_receiver_op_by_name, CallableMayEffects, ValueProvenance};
 
     use super::{
         is_runtime_receiver_native_binding_key, native_callable_semantics,
-        STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+        native_signature_for_receiver_op, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
     };
 
     #[test]
     fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         let expected = BTreeSet::from([
+            "core.date.now",
+            "core.duration.milliseconds",
+            "core.duration.seconds",
+            "core.number.assertSafeInteger",
+            "std.crypto.hmacSha1Base64",
+            "std.crypto.randomToken",
+            "std.crypto.sha256",
+            "std.crypto.uuid",
+            "std.crypto.uuidSimple",
             "std.string.encodePath",
             "std.string.encodeQueryComponent",
             "std.string.isAsciiDigits",
             "std.string.truncateUtf8Bytes",
+            "std.time.sleep",
         ]);
         let actual = STD_NATIVE_CALLABLE_SEMANTICS
             .iter()
@@ -811,7 +848,7 @@ mod tests {
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
+                    may_suspend: semantics.binding_key == "std.time.sleep",
                 }
             );
             assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
@@ -822,10 +859,8 @@ mod tests {
         }
 
         for missing in [
-            "std.crypto.sha256",
-            "core.date.now",
-            "std.time.sleep",
             "std.file.readText",
+            "std.http.client.request",
             "custom.native",
         ] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
@@ -842,5 +877,25 @@ mod tests {
         ));
         assert!(!is_runtime_receiver_native_binding_key("core.date.now"));
         assert!(!is_runtime_receiver_native_binding_key("std.time.sleep"));
+    }
+
+    #[test]
+    fn audited_receiver_identities_map_to_exact_native_signatures() {
+        for (root, method, binding_key) in [
+            ("Date", "isBefore", "core.date.isBefore"),
+            (
+                "Date",
+                "toEpochMilliseconds",
+                "core.date.toEpochMilliseconds",
+            ),
+            ("Duration", "toMilliseconds", "core.duration.toMilliseconds"),
+        ] {
+            let op = builtin_receiver_op_by_name(root, method)
+                .expect("audited receiver op should be supported");
+            assert_eq!(
+                native_signature_for_receiver_op(op).map(|signature| signature.binding_key),
+                Some(binding_key)
+            );
+        }
     }
 }
