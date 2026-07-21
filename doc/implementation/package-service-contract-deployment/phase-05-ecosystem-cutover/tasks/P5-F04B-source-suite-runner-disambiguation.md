@@ -21,3 +21,9 @@ git diff --check
 
 关键门禁仍是后一个命令真实越过std、prepare、activation、HTTP Host ingress并执行checked-in consumer exact断言；
 若暴露下一production blocker，保持本任务clean并给首个精确证据，不顺手扩大写域。
+
+## 合流记录
+
+candidate `3d06cbab8336502f543f6b4f8de9d037e91607a5` / tree
+`7a02d8c90c89e1f91c2f50d91fd26791291e051b`已合流为`c06e115`。直接Node 7/7 PASS，真实suite越过Cargo binary
+歧义并进入std；随后完整std的crypto/time exact effects覆盖不足触发D13。F04B没有修改该语义且保持clean/lock不变。

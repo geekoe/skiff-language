@@ -73,3 +73,7 @@ bootstrap/reconnect职责；R11前F04A/F04继续保持未完成。
 R11 PASS并合流`efb2bbbe`后第三次probe已越过readiness并进入`[skiff-tests] running std`，随后Cargo因
 test-runner crate同时有`skiff-test-runner`与`skiff-package-service-smoke-fixture`两个binary，而source-suite未传
 `--bin`退出101。该直接caller缺口仍属F04A写域，冻结F04B只显式选择canonical runner并原样恢复真实Host gate。
+
+F04B合流`c06e115`后真实suite已进入完整std，但crypto首个case的resolved native缺exact callable-semantics descriptor，
+被正确fail closed为`UnknownCallTarget/RequiresSameHeapIdentity`。D13确认crypto/time/date/duration/number native与
+Date/Duration receiver target facts覆盖遗漏，冻结F11/R12修production semantics；不得改runner/boundary/std fixture。
