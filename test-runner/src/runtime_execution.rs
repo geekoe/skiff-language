@@ -1,18 +1,28 @@
 use std::{
-    io::{Read, Write},
-    net::TcpStream,
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use skiff_artifact_identity::runtime_assembly_ref;
 
 use crate::{
-    canonical_fixture::CanonicalFixtureError, canonical_package::CanonicalPackageProject,
-    canonical_store::CanonicalBaseAssembly, package_test_assembly::assemble_package_test_fixture,
-    test_discovery::PackageTestCase, test_overlay::compile_package_test_overlay, SkiffTestOptions,
-    SkiffTestResult, SkiffTestSummary,
+    canonical_fixture::CanonicalFixtureError,
+    canonical_package::CanonicalPackageProject,
+    canonical_store::CanonicalBaseAssembly,
+    package_test_assembly::{assemble_package_test_fixture, CanonicalPackageTestEntrypoint},
+    test_discovery::PackageTestCase,
+    test_overlay::compile_package_test_overlay,
+    SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
 };
+
+mod http;
+mod readiness;
+mod wire;
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_HTTP_RESPONSE_BYTES: usize = 1024 * 1024;
+const HEALTH_PATH: &str = "/__router/health";
 
 pub fn run_package_cases(
     package_root: &Path,
@@ -23,6 +33,11 @@ pub fn run_package_cases(
     activation_url: &str,
     options: &SkiffTestOptions,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
+    let candidate_generation = options.expected_generation.checked_add(1).ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(
+            "assembly activation expected generation cannot advance".to_string(),
+        )
+    })?;
     let base = CanonicalBaseAssembly::load(source_artifact_root, options.base_assembly.as_deref())?;
     let overlay = compile_package_test_overlay(package_root, &project, &cases)?;
     let fixture = assemble_package_test_fixture(&project, overlay, base)?;
@@ -31,12 +46,11 @@ pub fn run_package_cases(
         .publish(source_artifact_root, runtime_artifact_root)?;
     let assembly_ref = runtime_assembly_ref(&fixture.records.assembly)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    let requested_assembly_identity = assembly_ref.assembly_identity.as_str().to_string();
     let activation_id = format!(
         "package-test-{}-{}",
         std::process::id(),
-        assembly_ref
-            .assembly_identity
-            .as_str()
+        requested_assembly_identity
             .rsplit(':')
             .next()
             .unwrap_or("assembly")
@@ -49,39 +63,70 @@ pub fn run_package_cases(
         "assembly": assembly_ref,
     }))
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let activation = send_http_request(activation_url, "POST", None, &activation_body)?;
-    if !(200..300).contains(&activation.status) {
+    let activation = http::request_url(
+        activation_url,
+        "POST",
+        None,
+        &activation_body,
+        deadline_after(HTTP_TIMEOUT)?,
+        MAX_HTTP_RESPONSE_BYTES,
+    )?;
+    if !(200..300).contains(&activation.response.status) {
         return Err(CanonicalFixtureError::InvalidInput(format!(
             "assembly activation returned HTTP {}: {}",
-            activation.status, activation.body
+            activation.response.status, activation.response.body
         )));
     }
+    let receipt = wire::decode_activation_receipt(&activation.response.body)?;
+    let target = readiness::target_from_receipt(
+        receipt,
+        &options.environment,
+        candidate_generation,
+        &requested_assembly_identity,
+    )?;
+    let readiness_deadline = deadline_after(READINESS_TIMEOUT)?;
+    readiness::poll(&target, readiness_deadline, |deadline| {
+        http::request_peer(
+            activation.peer_addr,
+            &activation.authority,
+            HEALTH_PATH,
+            "GET",
+            &[],
+            deadline,
+            MAX_HTTP_RESPONSE_BYTES,
+        )
+    })?;
+
     let ingress_url = options.ingress_url.as_deref().ok_or_else(|| {
         CanonicalFixtureError::InvalidInput(
             "canonical execution requires --ingress-url".to_string(),
         )
     })?;
-    let mut results = Vec::with_capacity(fixture.entrypoints.len());
-    for entrypoint in fixture.entrypoints {
+    Ok(execute_entrypoints(fixture.entrypoints, ingress_url))
+}
+
+fn execute_entrypoints(
+    entrypoints: Vec<CanonicalPackageTestEntrypoint>,
+    ingress_url: &str,
+) -> SkiffTestSummary {
+    let mut results = Vec::with_capacity(entrypoints.len());
+    for entrypoint in entrypoints {
         let url = format!(
             "{}{}",
             ingress_url.trim_end_matches('/'),
             entrypoint.selector.path
         );
-        let response = send_http_request(
-            &url,
-            entrypoint.selector.method.as_deref().unwrap_or("POST"),
-            Some(&entrypoint.selector.host),
-            &[],
-        );
-        let (passed, message) = match response {
-            Ok(response) if (200..300).contains(&response.status) => (true, None),
-            Ok(response) => (
-                false,
-                Some(format!("HTTP {}: {}", response.status, response.body)),
-            ),
-            Err(error) => (false, Some(error.to_string())),
-        };
+        let (passed, message) = execute_business_request_once(|| {
+            http::request_url(
+                &url,
+                entrypoint.selector.method.as_deref().unwrap_or("POST"),
+                Some(&entrypoint.selector.host),
+                &[],
+                deadline_after(HTTP_TIMEOUT)?,
+                MAX_HTTP_RESPONSE_BYTES,
+            )
+            .map(|connected| connected.response)
+        });
         results.push(SkiffTestResult {
             module_path: entrypoint.case.module_path,
             name: entrypoint.case.name,
@@ -92,75 +137,37 @@ pub fn run_package_cases(
     }
     let passed = results.iter().filter(|result| result.passed).count();
     let failed = results.len() - passed;
-    Ok(SkiffTestSummary {
+    SkiffTestSummary {
         passed,
         skipped: 0,
         failed,
         results,
-    })
+    }
 }
 
-struct HttpResponse {
-    status: u16,
-    body: String,
+fn execute_business_request_once(
+    send: impl FnOnce() -> Result<http::HttpResponse, CanonicalFixtureError>,
+) -> (bool, Option<String>) {
+    match send() {
+        Ok(response) if (200..300).contains(&response.status) => (true, None),
+        Ok(response) => (
+            false,
+            Some(format!("HTTP {}: {}", response.status, response.body)),
+        ),
+        Err(error) => (false, Some(error.to_string())),
+    }
 }
 
-fn send_http_request(
-    url: &str,
-    method: &str,
-    host_override: Option<&str>,
-    body: &[u8],
-) -> Result<HttpResponse, CanonicalFixtureError> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(format!("HTTP fixture URL must use http://: {url}"))
-    })?;
-    let (authority, path) = rest
-        .split_once('/')
-        .map(|(authority, path)| (authority, format!("/{path}")))
-        .unwrap_or((rest, "/".to_string()));
-    let mut stream = TcpStream::connect(authority).map_err(|source| CanonicalFixtureError::Io {
-        path: url.to_string(),
-        source,
-    })?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(|source| CanonicalFixtureError::Io {
-            path: url.to_string(),
-            source,
-        })?;
-    let host = host_override.unwrap_or(authority);
-    let header = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|()| stream.write_all(body))
-        .map_err(|source| CanonicalFixtureError::Io {
-            path: url.to_string(),
-            source,
-        })?;
-    let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|source| CanonicalFixtureError::Io {
-            path: url.to_string(),
-            source,
-        })?;
-    let response = String::from_utf8_lossy(&bytes);
-    let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput(format!("invalid HTTP response from {url}"))
-    })?;
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(format!("invalid HTTP status from {url}"))
-        })?;
-    Ok(HttpResponse {
-        status,
-        body: body.to_string(),
-    })
+fn deadline_after(duration: Duration) -> Result<Instant, CanonicalFixtureError> {
+    Instant::now()
+        .checked_add(duration)
+        .ok_or_else(|| CanonicalFixtureError::InvalidInput("HTTP deadline overflow".to_string()))
 }
+
+#[cfg(test)]
+#[path = "runtime_execution/tests/support.rs"]
+mod test_support;
+
+#[cfg(test)]
+#[path = "runtime_execution/tests/orchestration.rs"]
+mod tests;
