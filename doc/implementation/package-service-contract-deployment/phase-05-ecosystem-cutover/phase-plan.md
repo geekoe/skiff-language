@@ -4,7 +4,8 @@
 `f8ad689`接收审查FAIL，D04已冻结repair设计、F04在途；
 R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链。F03A已合流，R02A在
 `a7566bb`首次FAIL后完成D03/F03A1；第二次在`5715497`因raw Unicode/opaque number/default normalization
-不一致而FAIL。验收熔断D06已完成，F03A2批量修复在途，F03B/F03C仍锁定。
+不一致而FAIL。验收熔断D06已完成，F03A2批量修复在途。F04探针发现正常authoring不能产生可观测WS pin，
+D05已冻结typed unified WS ABI；F05等待F04与R02A PASS，F03B/F03C仍锁定。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -86,14 +87,16 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
   T04 runtime resolver / admission / replica registration├
   T05 test-runner / package-test / fixtures
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 integration repair ─► narrow receive
+          └─► D05 canonical WS authoring audit ───────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
     └─► F03A shared binary/request/store seam ─► R02A FAIL@a7566bb
           └─► D03 canonical optional-field parity audit ─► F03A1 bounded repair
                 └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
-                      └─► F03A2 convergence ─► request combined probe ─► R02A third narrow verdict
-                            ├─► F03B unified Router endpoint/store/pin ─┐
-                            └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
+                      └─► F03A2 convergence ─► request combined probe ─► R02A third PASS ─┐
+  F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05
+                                                                                              ├─► F03B unified Router endpoint/store/pin ─┐
+                                                                                              └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
 
 Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T06 Skiff legacy deletion + checker + canonical docs ─────┐
@@ -151,14 +154,17 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T05 | [Test infrastructure cutover](tasks/P5-T05-test-infrastructure-cutover.md) | R01 PASS | 中高；test production owner |
 | D04 | [Test infrastructure repair design](tasks/P5-D04-test-infrastructure-repair-design.md) | T05 receive FAIL at `f8ad689` | 独立只读；冻结真实执行/CLI seam |
 | F04 | [Test infrastructure integration repair](tasks/P5-F04-test-infrastructure-integration-repair.md) | D04 complete | 高；T02/T05 test seam窄修复 |
+| D05 | [Canonical WebSocket authoring audit](tasks/P5-D05-canonical-websocket-authoring-audit.md) | F04 risk probe | 独立只读；冻结production WS ABI |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
 | F03A1 | [Canonical request optional parity repair](tasks/P5-F03A1-canonical-request-optional-parity-repair.md) | D03 complete | 高；共享request codec/corpus窄修复 |
 | D06 | [Canonical request raw/normalization audit](tasks/P5-D06-canonical-request-raw-normalization-audit.md) | R02A second FAIL at `5715497` | 独立只读；第三次verdict熔断审计 |
 | F03A2 | [Canonical request raw/normalization convergence](tasks/P5-F03A2-canonical-request-raw-normalization-convergence.md) | D06 complete | 高；shared raw/typed/default一次收敛 |
-| F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R02A PASS | 高；unified endpoint/store/pin |
-| F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R02A PASS | 高；startup/admission/pin |
+| F05 | [Canonical WebSocket ingress authoring](tasks/P5-F05-canonical-websocket-ingress-authoring.md) | F04 receive + R02A PASS | 高；typed WS shared checkpoint |
+| R05 | [Canonical WebSocket ingress acceptance](tasks/P5-R05-canonical-websocket-ingress-acceptance.md) | F05 exact commit | 高；独立只读 |
+| F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R05 PASS | 高；unified endpoint/store/pin |
+| F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R05 PASS | 高；startup/admission/pin |
 | I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
 | R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
@@ -215,8 +221,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
   第二次FAIL触发D06熔断审计；F03A2只收敛raw Unicode、opaque number、decoded defaults与parser单一职责。
-  request combined probe通过且R02A第三次窄复验PASS后F03B只写Router consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有
-  repair与T05合流后才刷新Cargo.lock并运行I02，避免单侧mock再次冒充interop证据。
+  request combined probe通过且R02A第三次窄复验PASS后才允许F05扩展该shared seam；R05 PASS后F03B只写Router
+  consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有repair与T05合流后才刷新Cargo.lock并
+  运行I02，避免单侧mock再次冒充interop证据。
+- D05只读冻结normal source authoring到production WS generation pin的缺口。F05在F04/R02A完成后串行独占
+  typed unified WebSocket ABI，从std/compiler/deployment经shared request wire、runtime adapter/eval到Router
+  assembly gateway形成一个checkpoint；不改四对象schema、activation/store或F03B/F03C的endpoint/startup owner。
+  R05 PASS后F03B/F03C才可消费该ABI，后续consumer不得再回改`websocket.ingressEvent`或connect/receive规则。
 - T06在R02后独占 `artifact-model`/`artifact-identity`/runtime linked/eval的旧module删除，canonical
   ecosystem checker/verify接线、`cross-system-fixtures/**`及旧reference/architecture/runtime/router文档。
   不修改已通过R02的consumer语义。

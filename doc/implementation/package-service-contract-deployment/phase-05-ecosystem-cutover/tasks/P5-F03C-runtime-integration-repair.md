@@ -2,11 +2,11 @@
 
 ## 输入与owner
 
-- 依赖：P5-R02A PASS的exact F03A seam。与F03B并行，合流后共同解锁I02。
+- 依赖：P5-R02A PASS的exact F03A seam及P5-R05 PASS的typed unified WS checkpoint。与F03B并行，合流后共同解锁I02。
 - branch：`codex/p5-f03c-runtime-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03c-runtime-repair`。
 - 独占`runtime/driver/**`、`runtime/host/**`及必要runtime request/transport consumer tests；不得改F03A
-  shared wire、Router/compiler/test-runner。只提交task branch。
+  /F05 shared wire与WS authoring规则、Router/compiler/test-runner。只提交task branch。
 
 ## 完成态
 
