@@ -6,6 +6,11 @@ import {
   activationGeneration,
   runtimeAssemblyIdentity,
 } from "./assemblyActivationLexical.js";
+import {
+  firstMissingField,
+  firstUnsupportedField,
+  rejectUnknownObjectFields,
+} from "./runtimeAssemblyRequestStrict.js";
 
 type LegacyRoutingField =
   | "target"
@@ -88,17 +93,17 @@ export function hasRuntimeAssemblyRouting(
 export function validateRuntimeAssemblyRequestRouting(
   envelope: Record<string, unknown>,
 ): string | null {
-  const unsupportedHeader = firstUnsupported(envelope, canonicalHeaderFields);
+  const unsupportedHeader = firstUnsupportedField(envelope, canonicalHeaderFields);
   if (unsupportedHeader !== undefined) {
     return `invalid request.start runtimeAssembly envelope: ${unsupportedHeader} is not supported`;
   }
-  const callerError = rejectUnknownNestedFields(
+  const callerError = rejectUnknownObjectFields(
     envelope.caller,
     callerFields,
     "caller",
   );
   if (callerError !== null) return callerError;
-  const traceError = rejectUnknownNestedFields(
+  const traceError = rejectUnknownObjectFields(
     envelope.trace,
     traceFields,
     "trace",
@@ -108,11 +113,11 @@ export function validateRuntimeAssemblyRequestRouting(
     return "invalid request.start envelope: routing must be an object";
   }
   const routing = envelope.routing;
-  const unsupportedRouting = firstUnsupported(routing, routingFields);
+  const unsupportedRouting = firstUnsupportedField(routing, routingFields);
   if (unsupportedRouting !== undefined) {
     return `invalid request.start envelope: routing.${unsupportedRouting} is not supported`;
   }
-  const missingRouting = firstMissing(routing, routingFields);
+  const missingRouting = firstMissingField(routing, routingFields);
   if (missingRouting !== undefined) {
     return `invalid request.start envelope: routing.${missingRouting} is required`;
   }
@@ -141,27 +146,15 @@ export function validateRuntimeAssemblyRequestRouting(
   return validateIngress(routing.ingress);
 }
 
-function rejectUnknownNestedFields(
-  input: unknown,
-  allowed: ReadonlySet<string>,
-  label: string,
-): string | null {
-  if (!isRecord(input)) return null;
-  const unsupported = firstUnsupported(input, allowed);
-  return unsupported === undefined
-    ? null
-    : `invalid request.start envelope: ${label}.${unsupported} is not supported`;
-}
-
 function validateIngress(input: unknown): string | null {
   if (!isRecord(input)) {
     return "invalid request.start envelope: routing.ingress must be an object";
   }
-  const unsupported = firstUnsupported(input, ingressFields);
+  const unsupported = firstUnsupportedField(input, ingressFields);
   if (unsupported !== undefined) {
     return `invalid request.start envelope: routing.ingress.${unsupported} is not supported`;
   }
-  const missing = firstMissing(input, ingressFields);
+  const missing = firstMissingField(input, ingressFields);
   if (missing !== undefined) {
     return `invalid request.start envelope: routing.ingress.${missing} is required`;
   }
@@ -184,20 +177,4 @@ function validateIngress(input: unknown): string | null {
     return "invalid request.start envelope: routing.ingress.method does not match protocol";
   }
   return null;
-}
-
-function firstUnsupported(
-  value: Record<string, unknown>,
-  allowed: ReadonlySet<string>,
-): string | undefined {
-  return Object.keys(value).find((field) => !allowed.has(field));
-}
-
-function firstMissing(
-  value: Record<string, unknown>,
-  required: ReadonlySet<string>,
-): string | undefined {
-  return [...required].find(
-    (field) => !Object.prototype.hasOwnProperty.call(value, field),
-  );
 }

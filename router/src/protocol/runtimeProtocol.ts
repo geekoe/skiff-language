@@ -21,6 +21,7 @@ import {
   type RuntimeAssemblyRequestStartFrameHeader,
   validateRuntimeAssemblyRequestRouting
 } from './runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestMetadata } from './runtimeAssemblyRequestMetadata.js';
 
 export type RuntimeProtocolFrameHeaderName = RuntimeFrameHeaderName;
 export type RuntimeToRouterFrameHeaderName = RuntimeToRouterFrameHeader['type'];
@@ -2713,11 +2714,21 @@ function validateRequestStartFrameHeader(
   envelope: Record<string, unknown>,
   allowRuntimeAssemblyRouting: boolean
 ): string | null {
-  return (
+  const baseError =
     rejectHeaderPayloadFields(envelope, 'request.start') ??
     requireString(envelope, 'request.start', 'requestId') ??
     requireEnum(envelope, 'request.start', 'mode', ['unary', 'serverStream']) ??
-    validateCaller(envelope) ??
+    validateCaller(envelope);
+  if (baseError !== null) return baseError;
+
+  if (hasRuntimeAssemblyRouting(envelope)) {
+    return (
+      validateRuntimeAssemblyRequestMetadata(envelope) ??
+      validateRequestRoutingVariant(envelope, allowRuntimeAssemblyRouting)
+    );
+  }
+
+  return (
     optionalStringPattern(
       envelope,
       'request.start',

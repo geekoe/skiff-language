@@ -44,6 +44,12 @@ const {
   validateRuntimeAssemblyRequestStartFrameHeader,
   validateRuntimeToRouterFrameHeader,
 } = await import("../../router/src/protocol/runtimeProtocol.ts");
+const {
+  decodeRuntimeAssemblyRequestStartFrame,
+} = await import("../../router/src/protocol/runtimeAssemblyRequestFrame.ts");
+const {
+  encodeBinaryFrame,
+} = await import("../../router/src/protocol/envelope.ts");
 
 const mode = process.argv[2];
 if (
@@ -247,6 +253,12 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
   const requestCorpus = await readJson("runtime-request-wire.json");
   const storeCorpus = await readJson("ecosystem-store-cases.json");
 
+  assert.equal(requestCorpus.requestStartHeaders.length, 4);
+  assert.equal(requestCorpus.requestStartMutations.length, 244);
+  assert.equal(requestCorpus.requestStartRawMutations.length, 5);
+  assert.equal(requestCorpus.requestStartEquivalentOptionPairs.length, 4);
+  assert.equal(requestCorpus.legacyRequestStartHeaders.length, 1);
+
   assert.equal(frameCorpus.assemblyActivationFrames.length, controlMessages.length);
   for (const golden of frameCorpus.assemblyActivationFrames) {
     const control = controlMessages[golden.controlIndex];
@@ -299,13 +311,30 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     const typed = validateRuntimeAssemblyRequestStartFrameHeader(header);
     assert.equal(typed.ok, true, typed.ok ? header.requestId : typed.error);
     assert.deepEqual(typed.envelope, header);
+    const payload = Buffer.from(`payload:${header.requestId}`);
+    const decoded = decodeRuntimeAssemblyRequestStartFrame(
+      encodeBinaryFrame(header, payload),
+    );
+    assert.deepEqual(decoded.header, header, `${header.requestId} typed roundtrip`);
+    assert.deepEqual(decoded.payloadBytes, payload, `${header.requestId} payload`);
     assert.equal(
       validateRuntimeToRouterFrameHeader(header).ok,
       false,
       `${header.requestId} direction`,
     );
   }
+  const nullDouble = requestCorpus.requestStartHeaders[3]
+    .testEffectDoubles.effect[0];
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(nullDouble, "expectRequest"),
+    true,
+  );
+  assert.equal(nullDouble.expectRequest, null);
+
+  const mutationNames = new Set();
   for (const mutation of requestCorpus.requestStartMutations) {
+    assert.equal(mutationNames.has(mutation.name), false, mutation.name);
+    mutationNames.add(mutation.name);
     const header = structuredClone(
       requestCorpus.requestStartHeaders[mutation.baseIndex],
     );
@@ -316,6 +345,61 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       validateRuntimeAssemblyRequestStartFrameHeader(header).ok,
       false,
       mutation.name,
+    );
+    if (!mutation.name.includes("negative zero")) {
+      assert.throws(
+        () =>
+          decodeRuntimeAssemblyRequestStartFrame(
+            encodeBinaryFrame(header),
+          ),
+        undefined,
+        `${mutation.name} production decoder`,
+      );
+    }
+  }
+
+  for (const rawMutation of requestCorpus.requestStartRawMutations) {
+    assert.equal(mutationNames.has(rawMutation.name), false, rawMutation.name);
+    mutationNames.add(rawMutation.name);
+    const header = requestCorpus.requestStartHeaders[rawMutation.baseIndex];
+    const rawHeader = stringifyWithDuplicatePath(
+      header,
+      rawMutation.duplicatePath.split("."),
+    );
+    assert.equal(
+      validateRuntimeAssemblyRequestStartFrameHeader(JSON.parse(rawHeader)).ok,
+      true,
+      `${rawMutation.name} generic parser collapse control`,
+    );
+    assert.throws(
+      () => decodeRuntimeAssemblyRequestStartFrame(rawBinaryFrame(rawHeader)),
+      undefined,
+      rawMutation.name,
+    );
+  }
+
+  for (const pair of requestCorpus.requestStartEquivalentOptionPairs) {
+    const absent = structuredClone(requestCorpus.requestStartHeaders[pair.baseIndex]);
+    const explicit = structuredClone(absent);
+    applyPath(absent, pair.path, undefined, true);
+    applyPath(explicit, pair.path, pair.value, false);
+    for (const [label, header] of [["absent", absent], ["explicit", explicit]]) {
+      const result = validateRuntimeAssemblyRequestStartFrameHeader(header);
+      assert.equal(result.ok, true, `${pair.name} ${label}`);
+      assert.doesNotThrow(
+        () => decodeRuntimeAssemblyRequestStartFrame(encodeBinaryFrame(header)),
+        `${pair.name} ${label} production decoder`,
+      );
+    }
+  }
+
+  for (const header of requestCorpus.legacyRequestStartHeaders) {
+    const result = validateRouterToRuntimeFrameHeader(header);
+    assert.equal(result.ok, true, result.ok ? header.requestId : result.error);
+    assert.equal(
+      validateRuntimeAssemblyRequestStartFrameHeader(header).ok,
+      false,
+      `${header.requestId} must stay legacy-only`,
     );
   }
 
@@ -362,6 +446,10 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       activationMutations: frameCorpus.assemblyActivationMutations.length,
       requestHeaders: requestCorpus.requestStartHeaders.length,
       requestMutations: requestCorpus.requestStartMutations.length,
+      requestRawMutations: requestCorpus.requestStartRawMutations.length,
+      requestEquivalentOptionPairs:
+        requestCorpus.requestStartEquivalentOptionPairs.length,
+      legacyRequestHeaders: requestCorpus.legacyRequestStartHeaders.length,
       storeOperations: frozenCheckpoint.ecosystemStoreAdapter.operations.length,
     })}\n`,
   );
@@ -369,13 +457,68 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
 
 function applyMutation(root, mutation) {
   const path = mutation.setPath ?? mutation.removePath;
+  applyPath(root, path, mutation.value, mutation.removePath !== undefined);
+}
+
+function applyPath(root, path, value, remove) {
   const segments = path.split(".");
   const leaf = segments.pop();
   let owner = root;
   for (const segment of segments) owner = owner[segment];
-  if (mutation.removePath !== undefined) {
+  if (remove) {
     delete owner[leaf];
   } else {
-    owner[leaf] = mutation.value;
+    owner[leaf] = value;
   }
+}
+
+function stringifyWithDuplicatePath(value, path) {
+  if (path.length === 0) {
+    throw new Error("duplicate path must not be empty");
+  }
+  if (Array.isArray(value)) {
+    const [index, ...rest] = path;
+    return `[${value
+      .map((item, itemIndex) =>
+        String(itemIndex) === index
+          ? stringifyWithDuplicatePath(item, rest)
+          : JSON.stringify(item),
+      )
+      .join(",")}]`;
+  }
+  assert.equal(typeof value, "object");
+  assert.notEqual(value, null);
+  const [field, ...rest] = path;
+  const entries = [];
+  let found = false;
+  for (const [key, child] of Object.entries(value)) {
+    const encodedKey = JSON.stringify(key);
+    if (key !== field) {
+      entries.push(`${encodedKey}:${JSON.stringify(child)}`);
+      continue;
+    }
+    found = true;
+    const encodedValue =
+      rest.length === 0
+        ? JSON.stringify(child)
+        : stringifyWithDuplicatePath(child, rest);
+    const encodedEntry = `${encodedKey}:${encodedValue}`;
+    entries.push(encodedEntry);
+    if (rest.length === 0) entries.push(encodedEntry);
+  }
+  assert.equal(found, true, `duplicate path ${path.join(".")}`);
+  return `{${entries.join(",")}}`;
+}
+
+function rawBinaryFrame(headerText, payload = Buffer.alloc(0)) {
+  const header = Buffer.from(headerText, "utf8");
+  const frame = Buffer.alloc(14 + header.byteLength + payload.byteLength);
+  frame.write("SKBF", 0, "ascii");
+  frame.writeUInt8(1, 4);
+  frame.writeUInt8(1, 5);
+  frame.writeUInt32BE(header.byteLength, 6);
+  frame.writeUInt32BE(payload.byteLength, 10);
+  header.copy(frame, 14);
+  payload.copy(frame, 14 + header.byteLength);
+  return frame;
 }
