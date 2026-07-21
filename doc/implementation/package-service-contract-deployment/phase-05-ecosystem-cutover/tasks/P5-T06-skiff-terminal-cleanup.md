@@ -15,8 +15,10 @@
 
 独占 `artifact-model` / `artifact-identity` legacy modules/exports，runtime linked/eval中仅为旧DTO存在的
 model/converter，`cross-system-fixtures/**`，新ecosystem boundary checker/self-test/verify接线，以及
-`doc/reference/publication*.md`、`doc/architecture/release-registry.md`、runtime/router README。root Cargo/lock与
-`scripts/verify*.mjs`在本任务独占。不改T02–T05已验收的production语义。
+`doc/reference/publication*.md`、`doc/architecture/release-registry.md`、runtime/router README。另独占F04移交的
+`scripts/lib/encrypted-storage-live-harness.mjs`、`scripts/check-db-encrypted-storage-live.mjs`、
+`runtime/encrypted-storage-live/**`、`doc/architecture/test-runner-runtime-isolation.md`与相关AGENTS canonical命令。
+root Cargo/lock与`scripts/verify*.mjs`在本任务独占。不改T02–T05已验收的production语义。
 
 ## 完成态
 
@@ -32,6 +34,9 @@ model/converter，`cross-system-fixtures/**`，新ecosystem boundary checker/sel
 5. reference/architecture/runtime/router文档只描述package source、code-free contract、source-free deployment、
    complete assembly、Host ingress及replica。不保留历史兼容章节。
 6. checker在default `checks`/`verify`中恰好执行一次，不重复已有identity/runtime checker责任。
+7. encrypted-storage live harness使用四对象authoring、canonical activation/Host ingress和新test-runner CLI；删除
+   legacy service.yml、instance sync/reload、service/version selector及旧env/config flags。non-live计划测试证明
+   exact artifact/base assembly/runtime target；动态加密轮换证据由最终唯一live owner执行，不在本任务操作stable。
 
 ## 唯一聚焦验证 owner
 
@@ -40,6 +45,7 @@ cargo check --workspace
 node scripts/check-package-service-ecosystem-boundaries.mjs --self-test
 node scripts/check-package-service-ecosystem-boundaries.mjs
 node scripts/verify.mjs --only checks --list
+node --test scripts/tests/encrypted-storage-live-harness.test.mjs
 git diff --check
 ```
 

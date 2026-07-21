@@ -238,7 +238,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   R05 PASS后F03B/F03C才可消费该ABI，后续consumer不得再回改`websocket.ingressEvent`或connect/receive规则。
 - T06在R02后独占 `artifact-model`/`artifact-identity`/runtime linked/eval的旧module删除，canonical
   ecosystem checker/verify接线、`cross-system-fixtures/**`及旧reference/architecture/runtime/router文档。
-  不修改已通过R02的consumer语义。
+  不修改已通过R02的consumer语义。F04 extra-review移交的encrypted-storage live harness、legacy service fixtures、
+  test-runner isolation/AGENTS命令也归T06串行迁移到四对象与canonical CLI；它不是F04 deleted-flag兼容例外。
 - T07独占 `skiff-packages` repo。T08独占 `internals/skiff-platform/account/**`、
   `internals/skiff-platform/package-registry/**`及必要platform registry client。T09A–T09C分别只写
   各自product的code-free contract authoring/schema fixture，不改service implementation。T09D独占

@@ -20,7 +20,9 @@
 2. 一个真实consumer正例经production authoring、linker、Interpreter/Host执行helper package callee的同heap mutation，
    再通过`InProcessBoundary`调用provider，断言最终detached业务结果；direct test不得导入或手调mutation primitive。
 3. D04 CLI表在Node wrapper与Rust runner完全一致。non-live目标只由isolated harness注入，live六元目标参数完整；
-   删除选项在repo-wide caller/help/verify registry/plan/tests中零命中，不保留silent no-op/deprecated alias。
+   F04-owned caller/help/verify registry/plan/tests中的删除选项零命中，不保留silent no-op/deprecated alias。
+   extra-review发现的encrypted-storage live harness同时依赖legacy service.yml/reload/service selector，冻结为T06
+   terminal migration，不在F04做不完整flag替换。
 4. config/state只由base assembly中test-owned ServiceDeployment拥有；旧ambient config、effect double registry、
    synthetic service/package mock语义明确退役并删除。测试需要mock service时发布真实contract/package/deployment。
 5. smoke删除server-stream bridge与PackageArtifact重签，改为canonical WebSocket A连接→activate B→新请求/连接到B→
@@ -60,3 +62,10 @@ F04在R06前保留负例，精确断言service-calling test callable的projectio
 构造fresh helper Box → package direct mutate → detached payments contract call，provider按输入分支返回常量，并
 通过exact helper PackageBinding、service selector、base config与isolated Host ingress断言最终
 `provider-observed-helper-mutated`。旧负例不能作为完成态，既有eval/Host focused test也不能替代该最终结果。
+
+## Terminal live-harness handoff
+
+`scripts/lib/encrypted-storage-live-harness.mjs`、`scripts/check-db-encrypted-storage-live.mjs`及
+`runtime/encrypted-storage-live/**`是F04 reverse-search唯一允许的deferred deleted-flag/legacy caller，owner为T06。
+F04必须修复`skiff-source-test-suite.mjs`等其余直接caller，并在回报中列出该exact exception；不得把它泛化为
+legacy compatibility。`AGENTS.md`与`doc/architecture/test-runner-runtime-isolation.md`的canonical改写也归T06。
