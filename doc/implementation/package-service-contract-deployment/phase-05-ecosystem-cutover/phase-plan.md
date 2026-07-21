@@ -1,7 +1,8 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
 状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS；T01 已合流为
-`0cebf349` / tree `f37e3366`，R01 首次验收 FAIL，P5-F01 shared checkpoint repair 进行中，Wave 2保持阻塞。
+`0cebf349` / tree `f37e3366`。F01关闭path/alias blocker后，R01在`128af4a7`第二次验收仍因
+Rust/TS token parity FAIL，已触发P5-D02有界审计；Wave 2保持阻塞。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -74,6 +75,8 @@ Wave 1 / Batch A：shared authoring-storage-control checkpoint
   D01 phase-plan review
     └─► T01 canonical ecosystem checkpoint ─► R01 independent checkpoint acceptance
            FAIL@0cebf349 ─► F01 shared checkpoint repair ─► combined repair probe ─► R01窄复验
+             FAIL@128af4a7 ─► D02 activation parity bounded audit ─► F02 repair wave
+               ─► combined repair probe ─► R01第三次窄复验
 
 Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动调度）
   T02 authoring / registry client / CLI / dev sync / watch ─┐
@@ -129,6 +132,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T01 | [Canonical ecosystem checkpoint](tasks/P5-T01-canonical-ecosystem-checkpoint.md) | D01 PASS | 高；shared schema/storage/control |
 | R01 | [Checkpoint acceptance](tasks/P5-R01-ecosystem-checkpoint-acceptance.md) | T01 exact commit | 高；独立只读 |
 | F01 | [R01 shared checkpoint repair](tasks/P5-F01-r01-shared-checkpoint-repair.md) | R01 FAIL at `0cebf349` | 高；path/control/alias shared owner repair |
+| D02 | [Activation parity bounded audit](tasks/P5-D02-activation-parity-bounded-audit.md) | R01 second FAIL at `128af4a7` | 独立只读；第三次verdict熔断前置 |
 | T02 | [Authoring/tooling cutover](tasks/P5-T02-authoring-tooling-cutover.md) | R01 PASS | 高；tooling consumer |
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
