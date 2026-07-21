@@ -17,13 +17,14 @@ use crate::{
 
 #[cfg(test)]
 use super::route_registry;
+#[cfg(test)]
+use super::state::ArtifactLoadState;
 use super::{
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
     service_context::ServiceRuntimeContext,
     spawn_worker,
-    state::ArtifactLoadState,
     telemetry::{TelemetryConfig, TelemetryExporterHandle, TelemetryProducer},
     LoadedBuildRegistry, OutboundRequestRegistry, ServiceRouteState,
 };
@@ -35,6 +36,11 @@ pub struct RuntimeConfig {
     pub router_url: String,
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
+    #[cfg(not(test))]
+    pub environment: String,
+    #[cfg(not(test))]
+    pub artifact_root: PathBuf,
+    #[cfg(test)]
     pub artifact_roots: Vec<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
@@ -64,10 +70,14 @@ pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
     pub(super) runtime_home: PathBuf,
+    pub(super) environment: String,
+    pub(super) artifact_root: PathBuf,
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) db_provider: DbProviderSource,
+    #[cfg(test)]
     pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
+    #[cfg(test)]
     pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
     pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
@@ -85,6 +95,23 @@ impl RuntimeHost {
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
+        #[cfg(not(test))]
+        let (environment, artifact_root) = {
+            skiff_artifact_model::validate_activation_environment(&config.environment)
+                .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
+            if config.artifact_root.as_os_str().is_empty() {
+                anyhow::bail!("runtime artifact root must be a non-empty path");
+            }
+            (config.environment.clone(), config.artifact_root.clone())
+        };
+        #[cfg(test)]
+        let (environment, artifact_root) = (
+            "test".to_string(),
+            match config.artifact_roots.as_slice() {
+                [artifact_root] => artifact_root.clone(),
+                _ => PathBuf::new(),
+            },
+        );
         #[cfg(test)]
         let state = {
             let services = route_registry::apply_default_http_response_limits(
@@ -118,10 +145,14 @@ impl RuntimeHost {
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id.clone(),
             runtime_home: config.runtime_home,
+            environment,
+            artifact_root,
             default_http_response_max_bytes: config.http_response_max_bytes,
             http_runtime_options,
             db_provider,
+            #[cfg(test)]
             configured_artifact_roots: Arc::new(config.artifact_roots.clone()),
+            #[cfg(test)]
             artifact_load_state: Arc::new(Mutex::new(ArtifactLoadState {
                 artifact_roots: config.artifact_roots,
                 epoch: 0,
@@ -170,6 +201,19 @@ impl RuntimeHost {
         let mut limits = RequestHeapLimits::default();
         limits.max_estimated_bytes = self.artifact_caches.memory_budgets().request_heap_bytes;
         limits
+    }
+
+    pub(super) fn production_assembly_resolver(
+        &self,
+    ) -> Result<skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver> {
+        if self.artifact_root.as_os_str().is_empty() {
+            return Err(crate::error::RuntimeError::invalid_artifact(
+                "whole-assembly activation requires exactly one configured canonical artifact root"
+                    .to_string(),
+            ));
+        }
+        skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
+            .map_err(|error| crate::error::RuntimeError::invalid_artifact(error.to_string()))
     }
 
     pub(crate) fn service_snapshot(&self) -> Vec<Arc<ServiceRuntimeContext>> {

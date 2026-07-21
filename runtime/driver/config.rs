@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use skiff_artifact_model::validate_activation_environment;
 use url::Url;
 
 pub const DEFAULT_HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -38,7 +39,8 @@ pub const RUNTIME_WORKER_THREAD_STACK_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub struct RuntimeFileConfig {
     pub router: String,
     pub runtime_home: PathBuf,
-    pub artifact_roots: Vec<PathBuf>,
+    pub environment: String,
+    pub artifact_root: PathBuf,
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
@@ -50,8 +52,10 @@ struct RawRuntimeFileConfig {
     router: String,
     #[serde(alias = "runtime-home")]
     runtime_home: PathBuf,
-    #[serde(default, alias = "artifact-roots")]
-    artifact_roots: Vec<PathBuf>,
+    #[serde(default)]
+    environment: Option<String>,
+    #[serde(default)]
+    artifact_root: Option<PathBuf>,
     #[serde(default)]
     service_db: Option<RawRuntimeServiceDbConfig>,
     #[serde(default)]
@@ -81,6 +85,8 @@ impl RuntimeFileConfig {
         })?;
         reject_unsupported_top_level_key(&value, "artifact")?;
         reject_unsupported_top_level_key(&value, "artifacts")?;
+        reject_unsupported_top_level_key(&value, "artifactRoots")?;
+        reject_unsupported_top_level_key(&value, "artifact-roots")?;
         let mut raw_value = value.clone();
         remove_top_level_key(&mut raw_value, "http");
         let raw: RawRuntimeFileConfig = serde_yaml::from_value(raw_value).map_err(|error| {
@@ -91,16 +97,19 @@ impl RuntimeFileConfig {
         })?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let runtime_home = resolve_relative_path(base_dir, raw.runtime_home);
+        let environment = required_runtime_environment(raw.environment)?;
+        let artifact_root = required_runtime_artifact_root(base_dir, raw.artifact_root)?;
         if raw.services.is_some() {
             anyhow::bail!(
-                "runtime config no longer supports services; use artifactRoots for local runtime artifact load paths"
+                "runtime config no longer supports services; use exact environment and artifactRoot committed assembly recovery"
             );
         }
 
         Ok(Self {
             router: raw.router,
             runtime_home,
-            artifact_roots: resolve_relative_paths(base_dir, raw.artifact_roots)?,
+            environment,
+            artifact_root,
             service_db_encryption_keyring_file: runtime_service_db_encryption_keyring_file(
                 base_dir,
                 raw.service_db,
@@ -109,6 +118,26 @@ impl RuntimeFileConfig {
             http_egress_proxy: runtime_http_egress_proxy_from_value(&value)?,
         })
     }
+}
+
+fn required_runtime_environment(environment: Option<String>) -> anyhow::Result<String> {
+    let environment =
+        environment.ok_or_else(|| anyhow::anyhow!("runtime config environment is required"))?;
+    validate_activation_environment(&environment)
+        .map_err(|error| anyhow::anyhow!("runtime config environment is invalid: {error}"))?;
+    Ok(environment)
+}
+
+fn required_runtime_artifact_root(
+    base_dir: &Path,
+    artifact_root: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    let artifact_root =
+        artifact_root.ok_or_else(|| anyhow::anyhow!("runtime config artifactRoot is required"))?;
+    if artifact_root.as_os_str().is_empty() {
+        anyhow::bail!("runtime config artifactRoot must be a non-empty path");
+    }
+    Ok(resolve_relative_path(base_dir, artifact_root))
 }
 
 fn runtime_service_db_encryption_keyring_file(
@@ -207,7 +236,7 @@ fn reject_unsupported_top_level_key(value: &serde_yaml::Value, key: &str) -> any
     };
     if mapping.contains_key(serde_yaml::Value::String(key.to_string())) {
         anyhow::bail!(
-            "runtime config no longer supports {key}; use artifactRoots for local runtime artifact load paths"
+            "runtime config no longer supports {key}; use exact environment and singular artifactRoot"
         );
     }
     Ok(())
@@ -310,17 +339,6 @@ fn resolve_relative_path(base_dir: &Path, path: PathBuf) -> PathBuf {
     } else {
         base_dir.join(path)
     }
-}
-
-fn resolve_relative_paths(base_dir: &Path, paths: Vec<PathBuf>) -> anyhow::Result<Vec<PathBuf>> {
-    let mut resolved = Vec::new();
-    for (index, path) in paths.into_iter().enumerate() {
-        if path.as_os_str().is_empty() {
-            anyhow::bail!("runtime config artifactRoots[{index}] must be a non-empty path");
-        }
-        resolved.push(resolve_relative_path(base_dir, path));
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]

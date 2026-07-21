@@ -471,7 +471,8 @@ function runtimeConfigText(config) {
   return renderRuntimeConfig({
     routerUrl: config.urls.routerRuntime,
     runtimeHome: config.paths.runtimeHome,
-    artifactRoots: [config.paths.artifactRoot],
+    environment: config.environment,
+    artifactRoot: config.paths.artifactRoot,
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
   });
 }

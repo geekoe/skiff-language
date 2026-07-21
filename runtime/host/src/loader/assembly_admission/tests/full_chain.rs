@@ -14,11 +14,22 @@ use skiff_deployment::{
 use super::super::*;
 
 struct CountingResolver {
+    assembly: Arc<RuntimeAssembly>,
     deployments: Vec<(ServiceDeploymentRef, Arc<ServiceDeployment>)>,
     contracts: Vec<(ServiceContractRef, Arc<ServiceContract>)>,
     packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
     files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
     reads: AtomicUsize,
+}
+
+impl RuntimeAssemblyRecordResolver for CountingResolver {
+    fn resolve_runtime_assembly(
+        &self,
+        _reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<Arc<RuntimeAssembly>> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::clone(&self.assembly))
+    }
 }
 
 impl RuntimeAssemblyContentResolver for CountingResolver {
@@ -239,6 +250,7 @@ impl FullChainFixture {
         .unwrap();
         let provider_contract = Arc::new(provider_contract);
         let resolver = CountingResolver {
+            assembly: Arc::new(assembly.clone()),
             deployments: vec![
                 (
                     consumer_deployment_ref.clone(),
@@ -288,6 +300,49 @@ impl FullChainFixture {
             ingress,
         }
     }
+}
+
+#[tokio::test]
+async fn committed_recovery_nonempty_generation_survives_restart_with_exact_registration() {
+    let fixture = FullChainFixture::new();
+    let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
+
+    let first = AssemblyAdmissionController::new("runtime-a");
+    let first_active = first
+        .recover_committed("prod", 7, &reference, &fixture.resolver)
+        .await
+        .expect("non-empty committed generation must recover");
+    let first_reads = fixture.resolver.reads.load(Ordering::SeqCst);
+    assert_eq!(first_active.generation(), 7);
+    assert!(!first_active.is_empty());
+    assert!(first_reads > 1);
+    assert!(matches!(
+        first.registration().unwrap(),
+        Some(AssemblyActivationControl::Register {
+            generation: 7,
+            assembly,
+            replica_id,
+            ..
+        }) if assembly == reference && replica_id == "runtime-a"
+    ));
+
+    let restarted = AssemblyAdmissionController::new("runtime-a");
+    let restarted_active = restarted
+        .recover_committed("prod", 7, &reference, &fixture.resolver)
+        .await
+        .expect("restart must rebuild the same non-empty committed generation");
+    assert_eq!(restarted_active.generation(), 7);
+    assert_eq!(restarted_active.identity(), &reference.assembly_identity);
+    assert!(fixture.resolver.reads.load(Ordering::SeqCst) > first_reads);
+    assert!(matches!(
+        restarted.registration().unwrap(),
+        Some(AssemblyActivationControl::Register {
+            generation: 7,
+            assembly,
+            replica_id,
+            ..
+        }) if assembly == reference && replica_id == "runtime-a"
+    ));
 }
 
 #[tokio::test]

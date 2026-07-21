@@ -164,74 +164,21 @@ impl AssemblyAdmissionController {
         }
 
         let identity = transition.assembly.assembly_identity.clone();
-        self.begin_candidate_at(transition.candidate_generation, identity.clone())
+        self.begin_online_candidate(transition.candidate_generation, identity.clone())
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
         info!(
             event = "runtime.assembly_candidate_started",
             assembly_identity = %identity,
             generation = transition.candidate_generation
         );
-        let assembly = match resolver.resolve_runtime_assembly(&transition.assembly) {
-            Ok(assembly) => assembly,
-            Err(error) => {
-                self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                )
-                .map_err(|state_error| (AssemblyActivationRejectReason::Admission, state_error))?;
-                return Err((
-                    AssemblyActivationRejectReason::Resolve,
-                    error.context("exact RuntimeAssembly record resolution failed"),
-                ));
-            }
-        };
-        match skiff_artifact_identity::runtime_assembly_ref(&assembly) {
-            Ok(reference) if reference == transition.assembly => {}
-            Ok(_) => {
-                self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                )
-                .map_err(|state_error| (AssemblyActivationRejectReason::Admission, state_error))?;
-                return Err((
-                    AssemblyActivationRejectReason::Resolve,
-                    anyhow::anyhow!(
-                        "resolved RuntimeAssembly content mismatches exact candidate ref"
-                    ),
-                ));
-            }
-            Err(error) => {
-                self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                )
-                .map_err(|state_error| (AssemblyActivationRejectReason::Admission, state_error))?;
-                return Err((AssemblyActivationRejectReason::Resolve, error.into()));
-            }
-        }
-        let prepared = match self
-            .build_started_candidate(
+        let prepared = self
+            .resolve_started_exact_candidate(
                 transition.candidate_generation,
-                &identity,
-                assembly,
+                &transition.assembly,
                 resolver,
+                "exact RuntimeAssembly record resolution failed",
             )
-            .await
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let reason = self
-                    .health()
-                    .ok()
-                    .and_then(|health| health.last_outcome)
-                    .map(|outcome| reject_reason_for_stage(outcome.stage))
-                    .unwrap_or(AssemblyActivationRejectReason::Admission);
-                return Err((reason, error));
-            }
-        };
+            .await?;
         self.stage_prepared(transition.clone(), prepared)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
         info!(
@@ -270,10 +217,14 @@ impl AssemblyAdmissionController {
                     .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
                 return Ok(());
             }
-            if state.committed.is_some() {
-                return Err(admission_reject(
-                    "commit has no exact staged assembly activation",
-                ));
+            if let Some(committed) = &state.committed {
+                if committed.environment != transition.environment
+                    || committed.generation != transition.expected_generation
+                {
+                    return Err(admission_reject(
+                        "commit expected generation does not match active committed assembly",
+                    ));
+                }
             }
         }
 
@@ -295,60 +246,16 @@ impl AssemblyAdmissionController {
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
     {
         let identity = transition.assembly.assembly_identity.clone();
-        self.begin_candidate_at(transition.candidate_generation, identity.clone())
+        self.begin_online_candidate(transition.candidate_generation, identity)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))?;
-        let assembly = resolver
-            .resolve_runtime_assembly(&transition.assembly)
-            .map_err(|error| {
-                let _ = self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                );
-                (
-                    AssemblyActivationRejectReason::Resolve,
-                    error.context("committed RuntimeAssembly recovery resolution failed"),
-                )
-            })?;
-        match skiff_artifact_identity::runtime_assembly_ref(&assembly) {
-            Ok(reference) if reference == transition.assembly => {}
-            Ok(_) => {
-                let _ = self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                );
-                return Err((
-                    AssemblyActivationRejectReason::Resolve,
-                    anyhow::anyhow!("committed RuntimeAssembly content mismatches exact ref"),
-                ));
-            }
-            Err(error) => {
-                let _ = self.fail_candidate(
-                    transition.candidate_generation,
-                    &identity,
-                    AssemblyCandidateStage::Load,
-                );
-                return Err((AssemblyActivationRejectReason::Resolve, error.into()));
-            }
-        }
         let prepared = self
-            .build_started_candidate(
+            .resolve_started_exact_candidate(
                 transition.candidate_generation,
-                &identity,
-                assembly,
+                &transition.assembly,
                 resolver,
+                "committed RuntimeAssembly recovery resolution failed",
             )
-            .await
-            .map_err(|error| {
-                let reason = self
-                    .health()
-                    .ok()
-                    .and_then(|health| health.last_outcome)
-                    .map(|outcome| reject_reason_for_stage(outcome.stage))
-                    .unwrap_or(AssemblyActivationRejectReason::Admission);
-                (reason, error)
-            })?;
+            .await?;
         self.stage_prepared(transition.clone(), prepared)
             .map_err(|error| (AssemblyActivationRejectReason::Admission, error))
     }
@@ -381,34 +288,6 @@ impl AssemblyAdmissionController {
                 self.runtime_replica_id
             );
         }
-        Ok(())
-    }
-
-    fn begin_candidate_at(
-        &self,
-        generation: u64,
-        identity: AssemblyIdentity,
-    ) -> anyhow::Result<()> {
-        if generation == 0 {
-            anyhow::bail!("assembly candidate generation must be greater than zero");
-        }
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
-        if let Some(candidate) = &state.candidate {
-            anyhow::bail!(
-                "assembly admission generation {} is already building",
-                candidate.generation
-            );
-        }
-        state.next_generation = state.next_generation.max(generation);
-        state.candidate = Some(AssemblyCandidateHealth {
-            generation,
-            identity,
-            stage: AssemblyCandidateStage::Load,
-            started_at: OffsetDateTime::now_utc(),
-        });
         Ok(())
     }
 
@@ -453,7 +332,6 @@ impl AssemblyAdmissionController {
         &self,
         transition: &AssemblyTransition,
     ) -> anyhow::Result<Arc<ActiveAssembly>> {
-        let admitted_at = OffsetDateTime::now_utc();
         let mut state = self
             .state
             .write()
@@ -469,32 +347,12 @@ impl AssemblyAdmissionController {
             .staged
             .take()
             .expect("staged assembly was checked above");
-        let identity = staged
-            .prepared
-            .candidate
-            .assembly()
-            .assembly_identity
-            .clone();
-        let active = Arc::new(ActiveAssembly {
-            generation: staged.prepared.generation,
-            admitted_at,
-            candidate: staged.prepared.candidate,
-            contexts: staged.prepared.contexts,
-        });
-        state.active = Some(Arc::clone(&active));
-        state.committed = Some(CommittedAssembly {
+        let committed = CommittedAssembly {
             environment: transition.environment.clone(),
             generation: transition.candidate_generation,
             assembly: transition.assembly.clone(),
-        });
-        state.last_outcome = Some(AssemblyAdmissionOutcome {
-            generation: transition.candidate_generation,
-            identity,
-            succeeded: true,
-            stage: AssemblyCandidateStage::Admit,
-            observed_at: admitted_at,
-            error: None,
-        });
+        };
+        let active = publish_committed_locked(&mut state, staged.prepared, committed)?;
         info!(
             event = "runtime.assembly_committed",
             assembly_identity = %transition.assembly.assembly_identity,
@@ -558,14 +416,4 @@ fn admission_reject(message: impl Into<String>) -> (AssemblyActivationRejectReas
         AssemblyActivationRejectReason::Admission,
         anyhow::anyhow!(message.into()),
     )
-}
-
-fn reject_reason_for_stage(stage: AssemblyCandidateStage) -> AssemblyActivationRejectReason {
-    match stage {
-        AssemblyCandidateStage::Load => AssemblyActivationRejectReason::Load,
-        AssemblyCandidateStage::Link => AssemblyActivationRejectReason::Link,
-        AssemblyCandidateStage::Validate | AssemblyCandidateStage::Admit => {
-            AssemblyActivationRejectReason::Admission
-        }
-    }
 }

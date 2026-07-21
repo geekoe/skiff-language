@@ -13,6 +13,7 @@ use super::*;
 
 mod execution;
 mod full_chain;
+mod recovery;
 
 #[derive(Default)]
 struct NoContentResolver {

@@ -341,6 +341,8 @@ async function writeRuntimeConfig(file, remoteSkiff, options) {
   await writeFile(file, renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: `${remoteSkiff}/runtime-home`,
+    environment: 'prod',
+    artifactRoot: `${remoteSkiff}/artifacts`,
     serviceDbEncryptionKeyringFile: options.serviceDbEncryptionKeyringFile,
     httpResponseMaxBytes: 8388608,
   }));

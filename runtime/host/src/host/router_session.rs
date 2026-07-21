@@ -31,36 +31,12 @@ use skiff_runtime_transport::{
 };
 use tokio::{
     sync::mpsc,
-    time::{sleep, Duration, MissedTickBehavior},
+    time::{Duration, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use crate::error::{Result, RuntimeError};
-
-pub(super) async fn run_reconnect_loop(host: super::RuntimeHost) -> Result<()> {
-    let mut backoff = Duration::from_millis(250);
-    loop {
-        match run_once(host.clone()).await {
-            Ok(()) => {
-                backoff = Duration::from_millis(250);
-                warn!(
-                    event = "runtime.router_disconnected",
-                    reconnect_in_ms = backoff.as_millis() as u64
-                );
-            }
-            Err(error) => {
-                warn!(
-                    event = "runtime.router_connection_error",
-                    error = %error,
-                    reconnect_in_ms = backoff.as_millis() as u64
-                );
-            }
-        }
-        sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(5));
-    }
-}
 
 pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (ws, _) = connect_async(&host.router_url)
@@ -237,19 +213,6 @@ fn runtime_health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader)
         && counters.spawned_tasks_active == 0
 }
 
-fn production_assembly_resolver(
-    host: &super::RuntimeHost,
-) -> Result<skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver> {
-    let [artifact_root] = host.configured_artifact_roots.as_slice() else {
-        return Err(RuntimeError::invalid_artifact(
-            "whole-assembly activation requires exactly one configured canonical artifact root"
-                .to_string(),
-        ));
-    };
-    skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(artifact_root)
-        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))
-}
-
 #[cfg(test)]
 async fn dispatch_router_binary_frame(
     host: &super::RuntimeHost,
@@ -295,7 +258,7 @@ async fn dispatch_router_binary_frame_inner(
                 bytes,
             )
             .map_err(super::transport_error_into_runtime_error)?;
-            let resolver = production_assembly_resolver(host)?;
+            let resolver = host.production_assembly_resolver()?;
             if let Some(reply) = host
                 .apply_assembly_activation_control(control, &resolver)
                 .await

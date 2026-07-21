@@ -1,6 +1,7 @@
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
 };
@@ -9,6 +10,7 @@ use crate::error::{Result, RuntimeError};
 
 use super::{ServiceOperationContext, ServiceRuntimeContext};
 
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct ArtifactLoadState {
     pub(super) artifact_roots: Vec<PathBuf>,
