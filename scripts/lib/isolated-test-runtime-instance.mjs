@@ -50,10 +50,11 @@ export function isolatedTestRunnerEnvironment({
 }) {
   const cleanBaseEnv = { ...baseEnv };
   delete cleanBaseEnv.SKIFF_DEV_RELOAD_URL;
+  delete cleanBaseEnv.SKIFF_TEST_ARTIFACT_ROOT;
   return {
     ...cleanBaseEnv,
     SKIFF_DEV_HOME: devHome,
-    SKIFF_TEST_ARTIFACT_ROOT: join(devHome, 'artifacts'),
+    SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
     SKIFF_TEST_ACTIVATION_URL: `http://127.0.0.1:${controlPort}/__skiff/activate-assembly`,
     SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
     SKIFF_TEST_ENVIRONMENT: environment,

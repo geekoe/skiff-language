@@ -2,13 +2,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { parseVerifyArgs } from '../lib/verify-cli.mjs';
-import { parseRuntimeReloadUrl } from '../lib/runtime-reload-url.mjs';
 import {
   CHECKER_CLASSIFICATIONS,
   CHECKER_REGISTRY,
@@ -46,22 +44,40 @@ test('CLI defaults to verify and accepts a package-manager argument separator', 
 test('verify CLI rejects repeated runtime-live singleton inputs across split and inline forms', () => {
   const parsed = parseVerifyArgs([
     '--only=runtime-live',
-    '--runtime-live-config=config.json',
-    '--runtime-live-reload-url',
-    'http://router.test:4101',
+    '--runtime-live-activation-url=http://router.test:4101/__skiff/activate-assembly',
+    '--runtime-live-ingress-url',
+    'http://router.test:4100',
     '--runtime-live-artifact-root=artifacts',
+    '--runtime-live-environment=runtime-live',
+    '--runtime-live-expected-generation',
+    '7',
   ]);
-  assert.equal(parsed.runtimeLiveConfig, 'config.json');
-  assert.equal(parsed.runtimeLiveReloadUrl, 'http://router.test:4101');
+  assert.equal(
+    parsed.runtimeLiveActivationUrl,
+    'http://router.test:4101/__skiff/activate-assembly',
+  );
+  assert.equal(parsed.runtimeLiveIngressUrl, 'http://router.test:4100');
   assert.equal(parsed.runtimeLiveArtifactRoot, 'artifacts');
+  assert.equal(parsed.runtimeLiveEnvironment, 'runtime-live');
+  assert.equal(parsed.runtimeLiveExpectedGeneration, '7');
   for (const args of [
-    ['--runtime-live-config', 'one.json', '--runtime-live-config=two.json'],
     [
-      '--runtime-live-reload-url=http://router.test:4101',
-      '--runtime-live-reload-url',
-      'http://other.test:4101',
+      '--runtime-live-activation-url',
+      'http://one.test/__skiff/activate-assembly',
+      '--runtime-live-activation-url=http://two.test/__skiff/activate-assembly',
+    ],
+    [
+      '--runtime-live-ingress-url=http://router.test:4100',
+      '--runtime-live-ingress-url',
+      'http://other.test:4100',
     ],
     ['--runtime-live-artifact-root', 'one', '--runtime-live-artifact-root=two'],
+    ['--runtime-live-environment', 'one', '--runtime-live-environment=two'],
+    [
+      '--runtime-live-expected-generation=1',
+      '--runtime-live-expected-generation',
+      '2',
+    ],
     ['--list', '--dry-run'],
   ]) {
     assert.throws(() => parseVerifyArgs(args), /may be specified only once/);
@@ -230,35 +246,47 @@ test('verify checks list expands the runtime execution boundary checker once', a
   );
 });
 
-test('runtime-live lists every missing explicit input in one blocked phase', async () => {
-  const result = await runProcess(
-    process.execPath,
-    [verifyPath, '--only', 'runtime-live', '--list'],
-    { cwd: root, env: withoutRuntimeLiveConfig() },
-  );
-  assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /live:runtime:inputs/);
-  assert.match(
-    result.stdout,
-    /\[blocked: runtime-live is missing required explicit input\(s\):/,
-  );
-  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_CONFIG/);
-  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_RELOAD_URL/);
-  assert.match(result.stdout, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
-  assert.doesNotMatch(result.stdout, /\| node(?:\s|$)/);
-  assert.doesNotMatch(result.stdout, /SKIP/);
+test('canonical runtime-live plan aggregates every missing explicit input', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-missing-inputs-'));
+  try {
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
+    const plan = await buildVerifyPlan({
+      root: fixture,
+      catalogRoot: root,
+      selectors: ['runtime-live'],
+      env: {},
+    });
+    assert.equal(plan.phases.length, 1);
+    const [phase] = plan.phases;
+    assert.equal(phase.id, 'live:runtime:inputs');
+    assert.match(phase.preconditionError, /runtime-live is missing required explicit input/);
+    for (const name of [
+      'SKIFF_RUNTIME_LIVE_ACTIVATION_URL',
+      'SKIFF_RUNTIME_LIVE_INGRESS_URL',
+      'SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT',
+      'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
+      'SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION',
+    ]) {
+      assert.match(phase.preconditionError, new RegExp(name));
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
-test('runtime-live fails closed without config and never reports success', async () => {
+test('runtime-live CLI fails closed on legacy fixtures and never reports success', async () => {
   const result = await runProcess(
     process.execPath,
     [verifyPath, '--only', 'runtime-live'],
-    { cwd: root, env: withoutRuntimeLiveConfig() },
+    { cwd: root, env: withoutRuntimeLiveTarget() },
   );
   assert.notEqual(result.code, 0, result.stdout);
   assert.match(
     `${result.stderr}\n${result.stdout}`,
-    /live:runtime:inputs: runtime-live is missing required explicit input/,
+    /no canonical package\.yml owner.*terminal canonical-harness migration/,
   );
   assert.doesNotMatch(result.stdout, /All selected Skiff verification phases passed/);
   assert.doesNotMatch(result.stdout, /SKIP/);
@@ -267,14 +295,19 @@ test('runtime-live fails closed without config and never reports success', async
 test('runtime-live blocks for every nonempty subset of missing required inputs', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-missing-matrix-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
     const values = {
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101',
+      runtimeLiveActivationUrl:
+        'http://router.test:4101/__skiff/activate-assembly',
+      runtimeLiveIngressUrl: 'http://router.test:4100',
       runtimeLiveArtifactRoot: artifactRoot,
+      runtimeLiveEnvironment: 'runtime-live',
+      runtimeLiveExpectedGeneration: '0',
     };
     const keys = Object.keys(values);
     for (let mask = 1; mask < (1 << keys.length); mask += 1) {
@@ -285,7 +318,8 @@ test('runtime-live blocks for every nonempty subset of missing required inputs',
         }
       }
       const plan = await buildVerifyPlan({
-        root,
+        root: fixture,
+        catalogRoot: root,
         selectors: ['runtime-live'],
         env: {},
         ...inputs,
@@ -317,14 +351,14 @@ test('runtime-live blocker prevents an earlier selected Cargo phase from startin
       {
         cwd: root,
         env: {
-          ...withoutRuntimeLiveConfig(),
+          ...withoutRuntimeLiveTarget(),
           PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
           SKIFF_VERIFY_MARKER: marker,
         },
       },
     );
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /live:runtime:inputs/);
+    assert.match(result.stderr, /no canonical package\.yml owner/);
     await assert.rejects(access(marker), { code: 'ENOENT' });
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -334,7 +368,22 @@ test('runtime-live blocker prevents an earlier selected Cargo phase from startin
 test('runtime-live fails closed for invalid paths or missing live fixtures', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-plan-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
+    const missingArtifactRoot = join(fixture, 'missing-artifacts');
+    await assert.rejects(
+      buildVerifyPlan({
+        root: fixture,
+        catalogRoot: root,
+        selectors: ['runtime-live'],
+        ...runtimeLiveInputs(missingArtifactRoot),
+        env: { PATH: fixture },
+      }),
+      (error) => {
+        assert.match(error.message, /found no \*\.live\.test\.skiff fixtures/);
+        assert.match(error.message, /artifact root must be an existing directory/);
+        return true;
+      },
+    );
+
     const artifactRoot = join(fixture, 'artifacts');
     await mkdir(artifactRoot);
     await assert.rejects(
@@ -342,23 +391,7 @@ test('runtime-live fails closed for invalid paths or missing live fixtures', asy
         root: fixture,
         catalogRoot: root,
         selectors: ['runtime-live'],
-        runtimeLiveConfig: configPath,
-        runtimeLiveReloadUrl: 'http://router.test:4101',
-        runtimeLiveArtifactRoot: artifactRoot,
-        env: { PATH: fixture },
-      }),
-      /runtime-live config path must be an existing file/,
-    );
-
-    await writeFile(configPath, '{}\n');
-    await assert.rejects(
-      buildVerifyPlan({
-        root: fixture,
-        catalogRoot: root,
-        selectors: ['runtime-live'],
-        runtimeLiveConfig: configPath,
-        runtimeLiveReloadUrl: 'http://router.test:4101',
-        runtimeLiveArtifactRoot: artifactRoot,
+        ...runtimeLiveInputs(artifactRoot),
         env: { PATH: fixture },
       }),
       /runtime-live found no \*\.live\.test\.skiff fixtures/,
@@ -371,19 +404,18 @@ test('runtime-live fails closed for invalid paths or missing live fixtures', asy
 test('runtime-live builds executable Cargo phases when config and fixtures exist', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-positive-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
-    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
 
     const plan = await buildVerifyPlan({
       root: fixture,
       catalogRoot: root,
       selectors: ['runtime-live'],
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101/',
-      runtimeLiveArtifactRoot: artifactRoot,
+      ...runtimeLiveInputs(artifactRoot),
     });
     assert.equal(plan.phases.length, 1);
     const [{ executionPreflight, ...phase }] = plan.phases;
@@ -403,34 +435,20 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
           '--',
           join(fixture, 'runtime', 'live-tests', 'example.live.test.skiff'),
           '--live',
-          '--allow-network',
-          '--config',
-          configPath,
-          '--router-reload-url',
-          'http://router.test:4101/__skiff/reload-artifacts',
           '--artifact-root',
           artifactRoot,
+          '--activation-url',
+          'http://router.test:4101/__skiff/activate-assembly',
+          '--ingress-url',
+          'http://router.test:4100',
+          '--environment',
+          'runtime-live',
+          '--expected-generation',
+          '0',
           '--deny-skips',
           '--require-tests',
         ],
         cwd: fixture,
-        displayArgs: [
-          'run',
-          '--manifest-path',
-          'test-runner/Cargo.toml',
-          '--',
-          join(fixture, 'runtime', 'live-tests', 'example.live.test.skiff'),
-          '--live',
-          '--allow-network',
-          '--config',
-          configPath,
-          '--router-reload-url',
-          'http://router.test:4101',
-          '--artifact-root',
-          artifactRoot,
-          '--deny-skips',
-          '--require-tests',
-        ],
       },
     ]);
   } finally {
@@ -441,20 +459,26 @@ test('runtime-live builds executable Cargo phases when config and fixtures exist
 test('runtime-live execution preflight catches target TOCTOU before any command starts', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-preflight-toctou-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
-    await write(fixture, 'runtime/live-tests/first.live.test.skiff');
-    await write(fixture, 'runtime/live-tests/second.live.test.skiff');
+    const removedFixture = join(
+      fixture,
+      'runtime/live-tests/first.live.test.skiff',
+    );
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/first.live.test.skiff',
+    );
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/second.live.test.skiff',
+    );
 
     const built = await buildVerifyPlan({
       root: fixture,
       catalogRoot: root,
       selectors: ['runtime-live'],
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101',
-      runtimeLiveArtifactRoot: artifactRoot,
+      ...runtimeLiveInputs(artifactRoot),
     });
     assert.equal(built.phases.length, 2);
     assert.ok(built.phases.every((phase) => typeof phase.executionPreflight === 'function'));
@@ -490,7 +514,8 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
       ],
     };
 
-    await rm(configPath);
+    await rm(removedFixture);
+    await rm(join(fixture, 'runtime', 'live-tests', 'package.yml'));
     await rm(artifactRoot, { recursive: true });
     await writeFile(artifactRoot, 'replacement file\n');
 
@@ -500,11 +525,17 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
         for (const phase of built.phases) {
           assert.match(
             error.message,
-            new RegExp(`${escapeRegExp(phase.id)}: runtime-live config path is no longer`),
+            new RegExp(`${escapeRegExp(phase.id)}: runtime-live fixture is no longer`),
           );
           assert.match(
             error.message,
             new RegExp(`${escapeRegExp(phase.id)}: runtime-live artifact root is no longer`),
+          );
+          assert.match(
+            error.message,
+            new RegExp(
+              `${escapeRegExp(phase.id)}: runtime-live package root is no longer canonical`,
+            ),
           );
         }
         return true;
@@ -518,62 +549,22 @@ test('runtime-live execution preflight catches target TOCTOU before any command 
   }
 });
 
-test('Node reload URL parser matches the shared Rust contract fixture and redacts rejects', async () => {
-  const cases = JSON.parse(await readFile(
-    join(root, 'test-runner', 'tests', 'fixtures', 'runtime-reload-url-cases.json'),
-    'utf8',
-  ));
-  assert.equal(cases.version, 1);
-  for (const entry of cases.accepted) {
-    assert.deepEqual(parseRuntimeReloadUrl(entry.input), {
-      baseUrl: entry.display,
-      display: entry.display,
-      normalized: entry.normalized,
-    });
-  }
-  for (const entry of cases.rejected) {
-    assert.throws(
-      () => parseRuntimeReloadUrl(entry.input),
-      (error) => {
-        assert.equal(error.code, entry.reason);
-        if (entry.input) {
-          assert.doesNotMatch(error.message, new RegExp(escapeRegExp(entry.input)));
-        }
-        return true;
-      },
-    );
-  }
-});
-
-test('runtime-live rejects unsafe reload URLs and wrong artifact-root types before execution', async () => {
+test('runtime-live rejects unsafe canonical URLs and wrong artifact-root types before execution', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-invalid-input-'));
-  let connections = 0;
-  const listener = createServer((socket) => {
-    connections += 1;
-    socket.destroy();
-  });
   try {
-    await new Promise((resolvePromise, reject) => {
-      listener.once('error', reject);
-      listener.listen(0, '127.0.0.1', resolvePromise);
-    });
-    const address = listener.address();
-    assert.notEqual(address, null);
-    assert.equal(typeof address, 'object');
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactFile = join(fixture, 'not-a-directory');
-    await writeFile(configPath, '{}\n');
     await writeFile(artifactFile, 'file\n');
-    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
 
     await assert.rejects(
       buildVerifyPlan({
         root: fixture,
         catalogRoot: root,
         selectors: ['runtime-live'],
-        runtimeLiveConfig: configPath,
-        runtimeLiveReloadUrl: 'http://router.test:4101',
-        runtimeLiveArtifactRoot: artifactFile,
+        ...runtimeLiveInputs(artifactFile),
       }),
       /artifact root must be an existing directory/,
     );
@@ -585,19 +576,16 @@ test('runtime-live rejects unsafe reload URLs and wrong artifact-root types befo
         root: fixture,
         catalogRoot: root,
         selectors: ['runtime-live'],
-        runtimeLiveConfig: configPath,
-        runtimeLiveReloadUrl: `http://127.0.0.1:${address.port}/?token=${sentinel}`,
-        runtimeLiveArtifactRoot: fixture,
+        ...runtimeLiveInputs(fixture),
+        runtimeLiveActivationUrl:
+          `http://router.test:4101/__skiff/activate-assembly?token=${sentinel}`,
       });
     } catch (caught) {
       error = caught;
     }
-    assert.match(error?.message ?? '', /reload_url_query/);
+    assert.match(error?.message ?? '', /must point exactly to \/__skiff\/activate-assembly/);
     assert.doesNotMatch(error?.message ?? '', new RegExp(sentinel));
-    await new Promise((resolvePromise) => setImmediate(resolvePromise));
-    assert.equal(connections, 0);
   } finally {
-    await new Promise((resolvePromise) => listener.close(resolvePromise));
     await rm(fixture, { recursive: true, force: true });
   }
 });
@@ -605,98 +593,91 @@ test('runtime-live rejects unsafe reload URLs and wrong artifact-root types befo
 test('generic development target environment cannot unlock runtime-live', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-env-boundary-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
-    await writeFile(configPath, '{}\n');
-    await write(fixture, 'runtime/live-tests/example.live.test.skiff');
+    await writeCanonicalRuntimeLiveFixture(
+      fixture,
+      'runtime/live-tests/example.live.test.skiff',
+    );
     const plan = await buildVerifyPlan({
       root: fixture,
       catalogRoot: root,
       selectors: ['runtime-live'],
-      runtimeLiveConfig: configPath,
       env: {
-        SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/__skiff/reload-artifacts',
-        SKIFF_TEST_ARTIFACT_ROOT: '/stable/artifacts',
+        SKIFF_DEV_ACTIVATION_URL:
+          'http://127.0.0.1:4001/__skiff/activate-assembly',
+        SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/stable/artifacts',
       },
     });
     assert.equal(plan.phases.length, 1);
-    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_RELOAD_URL/);
+    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_ACTIVATION_URL/);
+    assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_INGRESS_URL/);
     assert.match(plan.phases[0].preconditionError, /SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT/);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('real runtime-live discovery renders every fixture once with strict explicit arguments', async () => {
+test('real legacy runtime-live discovery fails closed before rendering commands', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-real-plan-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
-    const plan = await buildVerifyPlan({
-      root,
-      selectors: ['runtime-live'],
-      runtimeLiveConfig: configPath,
-      runtimeLiveReloadUrl: 'http://router.test:4101',
-      runtimeLiveArtifactRoot: artifactRoot,
-    });
-    assert.equal(plan.phases.length, 4);
-    assert.equal(new Set(plan.phases.map((phase) => phase.id)).size, 4);
-    for (const phase of plan.phases) {
-      assert.equal(typeof phase.executionPreflight, 'function');
-      assert.ok(phase.args.includes('--deny-skips'));
-      assert.ok(phase.args.includes('--require-tests'));
-      assert.equal(phase.args[phase.args.indexOf('--config') + 1], configPath);
-      assert.equal(
-        phase.args[phase.args.indexOf('--router-reload-url') + 1],
-        'http://router.test:4101/__skiff/reload-artifacts',
-      );
-      assert.equal(phase.args[phase.args.indexOf('--artifact-root') + 1], artifactRoot);
-    }
+    await assert.rejects(
+      buildVerifyPlan({
+        root,
+        selectors: ['runtime-live'],
+        ...runtimeLiveInputs(artifactRoot),
+      }),
+      /runtime-live fixture\(s\) have no canonical package\.yml owner.*terminal canonical-harness migration/,
+    );
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
 });
 
-test('runtime-live CLI list uses redacted display arguments and invalid URL errors hide raw sentinels', async () => {
+test('runtime-live CLI list rejects legacy fixtures and hides invalid URL sentinels', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'skiff-runtime-live-list-display-'));
   try {
-    const configPath = join(fixture, 'runtime-live.json');
     const artifactRoot = join(fixture, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
     const listed = await runProcess(process.execPath, [
       verifyPath,
       '--only',
       'runtime-live',
-      '--runtime-live-config',
-      configPath,
-      '--runtime-live-reload-url',
-      'http://router.test:4101/__skiff/reload-artifacts',
+      '--runtime-live-activation-url',
+      'http://router.test:4101/__skiff/activate-assembly',
+      '--runtime-live-ingress-url',
+      'http://router.test:4100',
       '--runtime-live-artifact-root',
       artifactRoot,
+      '--runtime-live-environment',
+      'runtime-live',
+      '--runtime-live-expected-generation',
+      '0',
       '--list',
     ], { cwd: root });
-    assert.equal(listed.code, 0, listed.stderr);
-    assert.equal((listed.stdout.match(/live:runtime:/g) ?? []).length, 4);
-    assert.match(listed.stdout, /--router-reload-url http:\/\/router\.test:4101/);
-    assert.doesNotMatch(listed.stdout, /router\.test:4101\/__skiff\/reload-artifacts/);
+    assert.notEqual(listed.code, 0);
+    assert.match(listed.stderr, /no canonical package\.yml owner/);
+    assert.doesNotMatch(listed.stdout, /live:runtime:/);
 
     const sentinel = 'verify-runtime-url-sentinel';
     const rejected = await runProcess(process.execPath, [
       verifyPath,
       '--only',
       'runtime-live',
-      '--runtime-live-config',
-      configPath,
-      '--runtime-live-reload-url',
-      `http://router.test:4101/?token=${sentinel}`,
+      '--runtime-live-activation-url',
+      `http://router.test:4101/__skiff/activate-assembly?token=${sentinel}`,
+      '--runtime-live-ingress-url',
+      'http://router.test:4100',
       '--runtime-live-artifact-root',
       artifactRoot,
+      '--runtime-live-environment',
+      'runtime-live',
+      '--runtime-live-expected-generation',
+      '0',
       '--list',
     ], { cwd: root });
     assert.notEqual(rejected.code, 0);
-    assert.match(rejected.stderr, /reload_url_query/);
+    assert.match(rejected.stderr, /must point exactly to \/__skiff\/activate-assembly/);
     assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, new RegExp(sentinel));
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -1118,6 +1099,17 @@ async function write(rootPath, relativePath) {
   await writeFile(path, 'export {};\n');
 }
 
+async function writeCanonicalRuntimeLiveFixture(rootPath, relativePath) {
+  const path = join(rootPath, relativePath);
+  const packageRoot = join(rootPath, 'runtime', 'live-tests');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, 'test defaultRun false\n');
+  await writeFile(
+    join(packageRoot, 'package.yml'),
+    'id: example.com/runtime-live-fixture\nversion: 1.0.0\n',
+  );
+}
+
 function runProcess(command, args, { cwd, env = process.env }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, env });
@@ -1138,13 +1130,26 @@ function runProcess(command, args, { cwd, env = process.env }) {
   });
 }
 
-function withoutRuntimeLiveConfig() {
+function runtimeLiveInputs(artifactRoot) {
+  return {
+    runtimeLiveActivationUrl:
+      'http://router.test:4101/__skiff/activate-assembly',
+    runtimeLiveIngressUrl: 'http://router.test:4100',
+    runtimeLiveArtifactRoot: artifactRoot,
+    runtimeLiveEnvironment: 'runtime-live',
+    runtimeLiveExpectedGeneration: '0',
+  };
+}
+
+function withoutRuntimeLiveTarget() {
   const env = { ...process.env };
-  delete env.SKIFF_RUNTIME_LIVE_CONFIG;
-  delete env.SKIFF_RUNTIME_LIVE_RELOAD_URL;
+  delete env.SKIFF_RUNTIME_LIVE_ACTIVATION_URL;
+  delete env.SKIFF_RUNTIME_LIVE_INGRESS_URL;
   delete env.SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT;
-  delete env.SKIFF_DEV_RELOAD_URL;
-  delete env.SKIFF_TEST_ARTIFACT_ROOT;
+  delete env.SKIFF_RUNTIME_LIVE_ENVIRONMENT;
+  delete env.SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION;
+  delete env.SKIFF_DEV_ACTIVATION_URL;
+  delete env.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT;
   return env;
 }
 

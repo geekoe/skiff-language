@@ -38,14 +38,19 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
   assert.doesNotMatch(config, /400[0-7]/);
 
   const environment = isolatedTestRunnerEnvironment({
-    baseEnv: { PATH: '/bin', SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable' },
+    baseEnv: {
+      PATH: '/bin',
+      SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable',
+      SKIFF_TEST_ARTIFACT_ROOT: '/tmp/retired-artifact-root',
+    },
     devHome,
     controlPort: 46043,
     routerHttpPort: 46042,
   });
   assert.equal(environment.SKIFF_DEV_HOME, devHome);
   assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
-  assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, `${devHome}/artifacts`);
+  assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, undefined);
+  assert.equal(environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT, `${devHome}/artifacts`);
   assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46042');
 });
 
@@ -143,10 +148,11 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       baseEnv: { PATH: '/bin' },
       signalTarget: new EventEmitter(),
       dependencies,
-      runTest: async (environment) => {
+      runTest: async (environment, _signal, stack) => {
         actions.push('test');
         assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
         assert.equal(environment.SKIFF_TEST_ACTIVATION_URL.includes(':46001/'), true);
+        assert.equal(stack.sourceArtifactRoot, '/tmp/isolated-runtime-double/source-artifacts');
         if (failing) {
           throw new Error('test failed');
         }
@@ -159,7 +165,7 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       assert.equal(await operation, 'passed');
     }
     assert.deepEqual(actions, [
-      'lease', 'temp', 'config', 'bootstrap', 'spawn', 'ready', 'test',
+      'lease', 'temp', 'source-artifacts', 'config', 'bootstrap', 'spawn', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
     ]);
@@ -350,6 +356,7 @@ function lifecycleDouble(overrides = {}) {
       actions.push('temp');
       return '/tmp/isolated-runtime-double';
     },
+    createSourceArtifactRoot: async () => { actions.push('source-artifacts'); },
     writeConfig: async () => { actions.push('config'); },
     seedBootstrap: async () => { actions.push('bootstrap'); },
     spawnSupervisor: () => {

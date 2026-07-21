@@ -14,11 +14,7 @@ use skiff_artifact_model::{PackageArtifactRef, PackageCallableId, PackageLocalAb
 use skiff_compiler::{PackageCompileError, PackageSourceInput, PublishedPackageArtifact};
 use skiff_compiler_input::source_tree::SourceTreeFile;
 use skiff_compiler_input::{
-    package_config::{
-        discover_package_manifests_with_dependency_dirs, package_alias_bindings,
-        read_user_package_manifest, PackageConfigError, PackageManifest, PackageResolutionDirs,
-        PACKAGE_CONFIG_FILE,
-    },
+    package_config::{is_standard_package_id, PackageManifest},
     package_sources::{read_official_package_sources, read_package_sources},
     read_publication_resources, InputAssemblyError, ManifestOwner, PublicationApiEntry,
 };
@@ -31,7 +27,10 @@ use thiserror::Error;
 
 use crate::{
     canonical_fixture::PackageTestCase,
-    canonical_package::{compile_package_artifact, CanonicalPackageProject},
+    canonical_package::{
+        compile_package_artifact, package_aliases, read_root_package_manifest,
+        CanonicalPackageProject, CanonicalPackageProjectError,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -51,7 +50,7 @@ pub struct PublishedPackageTestOverlay {
 #[derive(Debug, Error)]
 pub enum PackageTestOverlayError {
     #[error(transparent)]
-    PackageConfig(#[from] PackageConfigError),
+    Project(#[from] CanonicalPackageProjectError),
     #[error(transparent)]
     Input(#[from] InputAssemblyError),
     #[error(transparent)]
@@ -66,7 +65,6 @@ pub fn compile_package_test_overlay(
     package_root: &Path,
     project: &CanonicalPackageProject,
     cases: &[PackageTestCase],
-    package_dirs: &[PathBuf],
 ) -> Result<PublishedPackageTestOverlay, PackageTestOverlayError> {
     if cases.is_empty() {
         return Err(PackageTestOverlayError::Invalid(
@@ -76,8 +74,7 @@ pub fn compile_package_test_overlay(
     let production = package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?;
     let (source, manifest) = build_overlay_source(package_root, cases)?;
-    let overlay =
-        compile_overlay_artifact(package_root, project, package_dirs, &manifest, &source)?;
+    let overlay = compile_overlay_artifact(project, &manifest, &source)?;
     let bindings = overlay_bindings(cases, &overlay)?;
     if package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?
@@ -98,7 +95,7 @@ fn build_overlay_source(
     package_root: &Path,
     cases: &[PackageTestCase],
 ) -> Result<(PackageSourceInput, PackageManifest), PackageTestOverlayError> {
-    let manifest = read_user_package_manifest(&package_root.join(PACKAGE_CONFIG_FILE))?;
+    let manifest = read_root_package_manifest(package_root)?;
     let raw_sources = match manifest.provenance.owner {
         ManifestOwner::CompilerStandardPackage => {
             read_official_package_sources(&manifest, package_root)?
@@ -144,13 +141,21 @@ fn build_overlay_source(
             is_test_file: false,
             byte_len: selected[0].source_text.len() as u64,
         });
+        let api_module_path = if is_standard_package_id(overlay_manifest.id.as_str()) {
+            module_path
+                .strip_prefix("std.")
+                .unwrap_or(&module_path)
+                .to_string()
+        } else {
+            module_path.clone()
+        };
         overlay_manifest
             .api
             .entries
             .extend(selected.iter().map(|case| {
                 PublicationApiEntry::for_source(
-                    public_path(case),
-                    module_path.clone(),
+                    manifest_public_path(case),
+                    api_module_path.clone(),
                     case.function_name.clone(),
                 )
             }));
@@ -171,32 +176,18 @@ fn build_overlay_source(
 }
 
 fn compile_overlay_artifact(
-    package_root: &Path,
     project: &CanonicalPackageProject,
-    package_dirs: &[PathBuf],
     manifest: &PackageManifest,
     source: &PackageSourceInput,
 ) -> Result<PublishedPackageArtifact, PackageTestOverlayError> {
-    let mut resolution_dirs = package_dirs.to_vec();
-    let local_store = package_root.join(".skiff-packages");
-    if local_store.is_dir() && !resolution_dirs.contains(&local_store) {
-        resolution_dirs.push(local_store);
-    }
-    let manifests = discover_package_manifests_with_dependency_dirs(
-        package_root,
-        &PackageResolutionDirs {
-            package_dirs: resolution_dirs,
-        },
-        &manifest.dependencies,
-    )?;
-    let aliases = package_alias_bindings(&manifest.dependencies, &manifests);
+    let aliases = package_aliases(manifest, &project.dependency_packages);
     let dependencies = manifest
         .dependencies
         .iter()
         .map(|dependency| {
             project
                 .artifact(&dependency.id, &dependency.version)
-                .map(|package| package.artifact.clone())
+                .cloned()
                 .ok_or_else(|| {
                     PackageTestOverlayError::Invalid(format!(
                         "canonical dependency {}@{} is absent from compiled project",
@@ -205,16 +196,13 @@ fn compile_overlay_artifact(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let available = project
-        .packages()
-        .map(|package| package.artifact.clone())
-        .collect::<Vec<_>>();
+    let available = project.artifacts().cloned().collect::<Vec<_>>();
     Ok(compile_package_artifact(
         source,
         &aliases,
         &dependencies,
         &available,
-        &[],
+        &project.contract_dependencies,
     )?)
 }
 
@@ -225,7 +213,7 @@ fn overlay_bindings(
     cases
         .iter()
         .map(|case| {
-            let public_path = public_path(case);
+            let public_path = artifact_public_path(&overlay.artifact.package_id, case);
             let symbol = overlay
                 .artifact
                 .package_local_abi
@@ -250,11 +238,20 @@ fn overlay_bindings(
         .collect()
 }
 
-fn public_path(case: &PackageTestCase) -> String {
+fn manifest_public_path(case: &PackageTestCase) -> String {
     format!(
         "testCases.case{}",
         case.function_name.trim_start_matches("skiffTestCase")
     )
+}
+
+fn artifact_public_path(package_id: &str, case: &PackageTestCase) -> String {
+    let public_path = manifest_public_path(case);
+    if is_standard_package_id(package_id) {
+        format!("std.{public_path}")
+    } else {
+        public_path
+    }
 }
 
 fn overlay_module_path(

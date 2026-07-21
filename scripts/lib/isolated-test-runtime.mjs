@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +95,8 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, 
   let supervisorAttempted = false;
   try {
     tempRoot = await ops.makeTempRoot();
+    const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
+    await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
     const configPath = join(instanceRoot, 'config.yml');
     const devHome = join(instanceRoot, 'dev-home');
@@ -140,6 +142,7 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, 
     console.log(`[skiff-test] isolated runtime workspace: ${tempRoot}`);
     return {
       artifactRoot,
+      sourceArtifactRoot,
       configPath,
       controlUrl,
       routerHttpUrl,
@@ -231,6 +234,7 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
       count: 3,
     }),
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
+    createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
     assertPortsClosed,
     removeTempRoot: (path) => rm(path, { recursive: true, force: true }),
     ...overrides,

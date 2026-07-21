@@ -1,8 +1,10 @@
 use std::{env, path::PathBuf, process};
 
-use skiff_test_runner::{run_skiff_tests_with_options, validate_activation_url, SkiffTestOptions};
+use skiff_test_runner::{
+    run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
+};
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> [--profile <name>] [--artifact-root <dir> --activation-url <url> --ingress-url <url>] [--environment <id> --expected-generation <n>] [--packages-dir <dir>]... [--package-test-concurrency <n>] [--live --allow-network --config <path>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() {
     if let Err(message) = run() {
@@ -21,27 +23,27 @@ fn run() -> Result<(), String> {
 
 struct CliArgs {
     input: PathBuf,
-    profile: Option<String>,
     options: SkiffTestOptions,
     deny_skips: bool,
     require_tests: bool,
 }
 
+#[derive(Default)]
+struct RawCliArgs {
+    input: Option<PathBuf>,
+    artifact_root: Option<PathBuf>,
+    base_assembly: Option<String>,
+    activation_url: Option<String>,
+    ingress_url: Option<String>,
+    environment: Option<String>,
+    expected_generation: Option<u64>,
+    live: bool,
+    deny_skips: bool,
+    require_tests: bool,
+}
+
 fn parse_args() -> Result<Option<CliArgs>, String> {
-    let mut input = None;
-    let mut profile = None;
-    let mut artifact_root = None;
-    let mut activation_url = None;
-    let mut ingress_url = None;
-    let mut environment = None;
-    let mut expected_generation = None;
-    let mut package_test_concurrency = None;
-    let mut package_dirs = Vec::new();
-    let mut config_path = None;
-    let mut live = false;
-    let mut allow_network = false;
-    let mut deny_skips = false;
-    let mut require_tests = false;
+    let mut parsed = RawCliArgs::default();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -49,86 +51,133 @@ fn parse_args() -> Result<Option<CliArgs>, String> {
                 println!("{USAGE}");
                 return Ok(None);
             }
-            "--profile" => set_once(&mut profile, next(&mut args, &arg)?, &arg)?,
-            "--artifact-root" => set_once_path(&mut artifact_root, next(&mut args, &arg)?, &arg)?,
+            "--artifact-root" => {
+                set_once_path(&mut parsed.artifact_root, next(&mut args, &arg)?, &arg)?
+            }
+            "--base-assembly" => set_once(&mut parsed.base_assembly, next(&mut args, &arg)?, &arg)?,
             "--activation-url" => {
                 let value = next(&mut args, &arg)?;
                 validate_activation_url(&value)?;
-                set_once(&mut activation_url, value, &arg)?;
+                set_once(&mut parsed.activation_url, value, &arg)?;
             }
-            "--ingress-url" => set_once(&mut ingress_url, next(&mut args, &arg)?, &arg)?,
-            "--environment" => set_once(&mut environment, next(&mut args, &arg)?, &arg)?,
+            "--ingress-url" => {
+                let value = next(&mut args, &arg)?;
+                validate_ingress_url(&value)?;
+                set_once(&mut parsed.ingress_url, value, &arg)?;
+            }
+            "--environment" => {
+                let value = next(&mut args, &arg)?;
+                validate_environment(&value)?;
+                set_once(&mut parsed.environment, value, &arg)?;
+            }
             "--expected-generation" => {
                 let value = next(&mut args, &arg)?;
-                if expected_generation
+                if parsed
+                    .expected_generation
                     .replace(parse_generation(&value, "--expected-generation")?)
                     .is_some()
                 {
                     return Err("--expected-generation was provided more than once".to_string());
                 }
             }
-            "--packages-dir" => package_dirs.push(PathBuf::from(next(&mut args, &arg)?)),
-            "--package-test-concurrency" => {
-                let value = next(&mut args, &arg)?;
-                let concurrency = value.parse::<usize>().map_err(|_| {
-                    "--package-test-concurrency must be a positive integer".to_string()
-                })?;
-                if concurrency == 0 {
-                    return Err("--package-test-concurrency must be a positive integer".to_string());
-                }
-                package_test_concurrency = Some(concurrency);
-            }
-            "--router-reload-url" => {
-                let _ = next(&mut args, &arg)?;
-                return Err(
-                    "--router-reload-url is retired; use canonical --activation-url".to_string(),
-                );
-            }
-            "--config" => set_once_path(&mut config_path, next(&mut args, &arg)?, &arg)?,
-            "--live" => live = true,
-            "--allow-network" => allow_network = true,
-            "--deny-skips" => deny_skips = true,
-            "--require-tests" => require_tests = true,
+            "--live" => set_flag(&mut parsed.live, &arg)?,
+            "--deny-skips" => set_flag(&mut parsed.deny_skips, &arg)?,
+            "--require-tests" => set_flag(&mut parsed.require_tests, &arg)?,
             value if value.starts_with('-') => return Err(format!("unknown option {value}")),
-            value => set_once_path(&mut input, value.to_string(), "input")?,
+            value => set_once_path(&mut parsed.input, value.to_string(), "input")?,
         }
     }
+    finish_args(parsed).map(Some)
+}
+
+fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
+    let RawCliArgs {
+        input,
+        artifact_root,
+        base_assembly,
+        activation_url,
+        ingress_url,
+        environment,
+        expected_generation,
+        live,
+        deny_skips,
+        require_tests,
+    } = parsed;
     let input = input.ok_or_else(|| "missing input path".to_string())?;
-    let artifact_root = artifact_root.or_else(|| env_path("SKIFF_TEST_ARTIFACT_ROOT"));
-    let activation_url = activation_url.or_else(|| env::var("SKIFF_TEST_ACTIVATION_URL").ok());
-    let ingress_url = ingress_url.or_else(|| env::var("SKIFF_TEST_INGRESS_URL").ok());
-    let environment = environment
-        .or_else(|| env::var("SKIFF_TEST_ENVIRONMENT").ok())
-        .unwrap_or_else(|| "skiff-test".to_string());
-    let expected_generation = match expected_generation {
-        Some(value) => value,
-        None => match env::var("SKIFF_TEST_EXPECTED_GENERATION") {
+    let artifact_root = artifact_root.ok_or_else(|| "missing --artifact-root".to_string())?;
+    if live
+        && (activation_url.is_none()
+            || ingress_url.is_none()
+            || environment.is_none()
+            || expected_generation.is_none())
+    {
+        return Err(
+            "--live requires --activation-url, --ingress-url, --environment and --expected-generation"
+                .to_string(),
+        );
+    }
+    if !live
+        && (activation_url.is_some()
+            || ingress_url.is_some()
+            || environment.is_some()
+            || expected_generation.is_some())
+    {
+        return Err(
+            "non-live targets are supplied only by the isolated runtime harness".to_string(),
+        );
+    }
+    let runtime_artifact_root = (!live)
+        .then(|| env_path("SKIFF_TEST_RUNTIME_ARTIFACT_ROOT"))
+        .flatten();
+    let activation_url = if live {
+        activation_url
+    } else {
+        env::var("SKIFF_TEST_ACTIVATION_URL").ok()
+    };
+    let ingress_url = if live {
+        ingress_url
+    } else {
+        env::var("SKIFF_TEST_INGRESS_URL").ok()
+    };
+    if let Some(value) = activation_url.as_deref() {
+        validate_activation_url(value)?;
+    }
+    if let Some(value) = ingress_url.as_deref() {
+        validate_ingress_url(value)?;
+    }
+    let environment = if live {
+        environment.expect("live environment was checked")
+    } else {
+        env::var("SKIFF_TEST_ENVIRONMENT").unwrap_or_else(|_| "skiff-test".to_string())
+    };
+    validate_environment(&environment)?;
+    let expected_generation = if live {
+        expected_generation.expect("live generation was checked")
+    } else {
+        match env::var("SKIFF_TEST_EXPECTED_GENERATION") {
             Ok(value) => parse_generation(&value, "SKIFF_TEST_EXPECTED_GENERATION")?,
             Err(_) => 0,
-        },
+        }
     };
-    Ok(Some(CliArgs {
+    Ok(CliArgs {
         input,
-        profile,
         options: SkiffTestOptions {
             live,
-            allow_network,
-            config_path,
-            package_dirs,
-            artifact_root,
+            artifact_root: Some(artifact_root),
+            runtime_artifact_root,
+            base_assembly,
             activation_url,
             ingress_url,
             environment,
             expected_generation,
-            package_test_concurrency,
         },
         deny_skips,
         require_tests,
-    }))
+    })
 }
 
 fn execute(args: CliArgs) -> Result<(), String> {
-    let summary = run_skiff_tests_with_options(&args.input, args.profile.as_deref(), &args.options)
+    let summary = run_skiff_tests_with_options(&args.input, &args.options)
         .map_err(|error| error.to_string())?;
     for result in &summary.results {
         let status = if result.skipped {
@@ -181,6 +230,14 @@ fn set_once_path(target: &mut Option<PathBuf>, value: String, label: &str) -> Re
     Ok(())
 }
 
+fn set_flag(target: &mut bool, label: &str) -> Result<(), String> {
+    if *target {
+        return Err(format!("{label} was provided more than once"));
+    }
+    *target = true;
+    Ok(())
+}
+
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|value| !value.is_empty())
@@ -191,4 +248,16 @@ fn parse_generation(value: &str, label: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
         .map_err(|_| format!("{label} must be an unsigned integer"))
+}
+
+fn validate_environment(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 200
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("environment must be a canonical ASCII token".to_string());
+    }
+    Ok(())
 }

@@ -9,11 +9,8 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
 use skiff_test_runner::{
-    canonical_fixture::discover_package_test_cases,
-    canonical_package::compile_package_project,
-    ecosystem_smoke_fixture::{
-        assemble_ecosystem_smoke_fixture, enable_ecosystem_smoke_server_stream,
-    },
+    canonical_fixture::discover_package_test_cases, canonical_package::compile_package_project,
+    ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
     test_overlay::compile_package_test_overlay,
 };
 
@@ -111,15 +108,16 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         .package_root
         .ok_or_else(|| anyhow::anyhow!("missing package root"))?;
 
-    let mut project = compile_package_project(&package_root, &[], &Default::default())?;
-    enable_ecosystem_smoke_server_stream(&mut project)?;
+    let project = compile_package_project(&package_root, &args.artifact_root)?;
     let cases = discover_package_test_cases(&package_root, &package_root, false)?;
     if cases.is_empty() {
         anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
     }
-    let overlay = compile_package_test_overlay(&package_root, &project, &cases, &[])?;
+    let overlay = compile_package_test_overlay(&package_root, &project, &cases)?;
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay)?;
-    fixture.records.publish(&args.artifact_root)?;
+    fixture
+        .records
+        .publish(&args.artifact_root, &args.artifact_root)?;
 
     let store = CanonicalArtifactStore::open(&args.artifact_root)?;
     let bootstrap = if args.initialize_environment {
@@ -151,16 +149,6 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
             "deployment": fixture.unary.deployment,
             "contract": fixture.unary.contract,
             "operation": fixture.unary.operation,
-        }),
-        json!({
-            "kind": "serverStream",
-            "name": "events",
-            "host": fixture.stream.selector.host,
-            "method": fixture.stream.selector.method,
-            "path": fixture.stream.selector.path,
-            "deployment": fixture.stream.deployment,
-            "contract": fixture.stream.contract,
-            "operation": fixture.stream.operation,
         }),
     ];
     println!(

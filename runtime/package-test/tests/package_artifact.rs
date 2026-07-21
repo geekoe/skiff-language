@@ -3,10 +3,6 @@ mod support;
 use std::sync::Arc;
 
 use skiff_artifact_model::{PackageRefIr, ServiceCallRefIndex};
-use skiff_runtime_model::{
-    request_heap::RequestHeap,
-    runtime_value::{HeapNode, RuntimeValue},
-};
 use skiff_runtime_package_test::{PackageTestEntrypoint, PackageTestRuntimeBuilder};
 
 use support::CanonicalFixture;
@@ -34,7 +30,7 @@ fn package_only_artifact_loads_through_the_typed_assembly_path() {
 }
 
 #[test]
-fn canonical_package_direct_mutation_keeps_the_callers_heap_identity() {
+fn canonical_package_direct_target_is_linked_into_the_shared_execution_image() {
     let fixture = CanonicalFixture::package_dependency();
     let resolver = fixture.resolver();
     let template = PackageTestRuntimeBuilder::new(&resolver)
@@ -64,29 +60,6 @@ fn canonical_package_direct_mutation_keeps_the_callers_heap_identity() {
         .execution_image()
         .executable_at(direct.executable_addr())
         .is_ok());
-
-    // Package-direct dispatch does not materialize an InProcessBoundary value graph. Exercise
-    // the real runtime mutation primitive against the exact caller handle after resolving the
-    // callee in the shared assembly image: the caller must observe the callee-side write.
-    let mut request_heap = RequestHeap::default();
-    let caller_handle = request_heap
-        .alloc_array(vec![RuntimeValue::String("caller".to_string())])
-        .expect("caller array");
-    let callee_argument = RuntimeValue::Heap(caller_handle);
-    skiff_runtime_eval::program_mutation::assign_program_index_target(
-        &mut request_heap,
-        &callee_argument,
-        &RuntimeValue::Number(0.0),
-        RuntimeValue::String("package-callee".to_string()),
-    )
-    .expect("same-heap callee mutation");
-    let HeapNode::Array(caller_items) = request_heap.get(caller_handle).unwrap() else {
-        panic!("caller handle must remain an array")
-    };
-    assert_eq!(
-        caller_items,
-        &[RuntimeValue::String("package-callee".to_string())]
-    );
 }
 
 #[test]

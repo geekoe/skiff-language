@@ -10,26 +10,29 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const skiffPath = join(root, 'scripts', 'skiff.mjs');
 const input = join(root, 'runtime', 'live-tests', 'internal', 'operation.live.test.skiff');
 
-test('skiff test --live forwards explicit runtime target and strict result flags', async () => {
+test('skiff test --live forwards the complete canonical target and strict flags', async () => {
   const fixture = await fakeCargoFixture();
   try {
-    const configPath = join(fixture.root, 'runtime-live.json');
     const artifactRoot = join(fixture.root, 'artifacts');
-    await writeFile(configPath, '{}\n');
     await mkdir(artifactRoot);
-    const reloadUrl = 'http://router.test:4101/__skiff/reload-artifacts';
+    const assembly = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
     const result = await runProcess(process.execPath, [
       skiffPath,
       'test',
       input,
-      '--live',
-      '--allow-network',
-      '--config',
-      configPath,
-      '--router-reload-url',
-      reloadUrl,
       '--artifact-root',
       artifactRoot,
+      '--base-assembly',
+      assembly,
+      '--live',
+      '--activation-url',
+      'http://router.test:4101/__skiff/activate-assembly',
+      '--ingress-url',
+      'http://router.test:4100',
+      '--environment',
+      'test-live',
+      '--expected-generation',
+      '7',
       '--deny-skips',
       '--require-tests',
     ], { env: fixture.env });
@@ -38,13 +41,18 @@ test('skiff test --live forwards explicit runtime target and strict result flags
     assert.deepEqual(args.slice(args.indexOf('--') + 1), [
       input,
       '--live',
-      '--allow-network',
-      '--config',
-      configPath,
-      '--router-reload-url',
-      reloadUrl,
       '--artifact-root',
       artifactRoot,
+      '--base-assembly',
+      assembly,
+      '--activation-url',
+      'http://router.test:4101/__skiff/activate-assembly',
+      '--ingress-url',
+      'http://router.test:4100',
+      '--environment',
+      'test-live',
+      '--expected-generation',
+      '7',
       '--deny-skips',
       '--require-tests',
     ]);
@@ -53,20 +61,20 @@ test('skiff test --live forwards explicit runtime target and strict result flags
   }
 });
 
-test('non-live skiff test rejects caller-owned runtime targets before starting Cargo', async () => {
+test('non-live skiff test rejects caller-owned live targets before Cargo', async () => {
   const fixture = await fakeCargoFixture();
   try {
     for (const option of [
-      ['--router-reload-url', 'http://router.test:4101'],
-      ['--artifact-root', fixture.root],
+      ['--activation-url', 'http://router.test:4101/__skiff/activate-assembly'],
+      ['--ingress-url', 'http://router.test:4100'],
+      ['--environment', 'caller-owned'],
+      ['--expected-generation', '1'],
     ]) {
-      const result = await runProcess(
-        process.execPath,
-        [skiffPath, 'test', input, ...option],
-        { env: fixture.env },
-      );
+      const result = await runProcess(process.execPath, [
+        skiffPath, 'test', input, '--artifact-root', fixture.root, ...option,
+      ], { env: fixture.env });
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /non-live skiff test owns an isolated runtime target/);
+      assert.match(result.stderr, /non-live skiff test owns activation, ingress, environment, and generation targets/);
       await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
     }
   } finally {
@@ -74,29 +82,23 @@ test('non-live skiff test rejects caller-owned runtime targets before starting C
   }
 });
 
-test('live skiff test rejects missing and non-directory artifact roots before starting Cargo', async () => {
+test('skiff test rejects every retired test-runner option without an alias', async () => {
   const fixture = await fakeCargoFixture();
   try {
-    const missingRoot = join(fixture.root, 'missing-artifacts');
-    const artifactFile = join(fixture.root, 'artifact-file');
-    await writeFile(artifactFile, 'not a directory\n');
-    for (const artifactRoot of [missingRoot, artifactFile]) {
-      const result = await runProcess(
-        process.execPath,
-        [
-          skiffPath,
-          'test',
-          input,
-          '--live',
-          '--router-reload-url',
-          'http://router.test:4101',
-          '--artifact-root',
-          artifactRoot,
-        ],
-        { env: fixture.env },
-      );
+    for (const option of [
+      '--profile',
+      '--service-artifact-root',
+      '--config',
+      '--package-test-concurrency',
+      '--router-reload-url',
+      '--packages-dir',
+      '--allow-network',
+    ]) {
+      const result = await runProcess(process.execPath, [
+        skiffPath, 'test', input, '--artifact-root', fixture.root, option,
+      ], { env: fixture.env });
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /skiff test --artifact-root must be an existing directory/);
+      assert.match(result.stderr, new RegExp(`unknown option ${option}`));
       await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
     }
   } finally {
@@ -104,55 +106,38 @@ test('live skiff test rejects missing and non-directory artifact roots before st
   }
 });
 
-test('live skiff test validates an explicit reload URL before starting Cargo', async () => {
+test('live skiff test requires an existing artifact root and every live target field', async () => {
   const fixture = await fakeCargoFixture();
   try {
-    const artifactRoot = join(fixture.root, 'artifacts');
-    await mkdir(artifactRoot);
-    const sentinel = 'skiff-cli-reload-secret-sentinel';
-    const result = await runProcess(
-      process.execPath,
-      [
-        skiffPath,
-        'test',
-        input,
-        '--live',
-        '--router-reload-url',
-        `http://router.test:4101/?token=${sentinel}`,
-        '--artifact-root',
-        artifactRoot,
-      ],
-      { env: fixture.env },
-    );
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /reload_url_query/);
-    assert.doesNotMatch(result.stderr, new RegExp(sentinel));
+    const missing = await runProcess(process.execPath, [
+      skiffPath, 'test', input, '--artifact-root', join(fixture.root, 'missing'), '--live',
+    ], { env: fixture.env });
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.stderr, /skiff test --artifact-root must be an existing directory/);
+
+    const incomplete = await runProcess(process.execPath, [
+      skiffPath, 'test', input, '--artifact-root', fixture.root, '--live',
+    ], { env: fixture.env });
+    assert.notEqual(incomplete.code, 0);
+    assert.match(incomplete.stderr, /live skiff test requires --activation-url/);
     await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('skiff test rejects duplicate singleton options and flags across split and inline forms', async () => {
+test('skiff test rejects duplicate singleton options and flags', async () => {
   const fixture = await fakeCargoFixture();
   try {
-    const cases = [
-      [
-        '--live',
-        '--router-reload-url',
-        'http://router.test:4101',
-        '--router-reload-url=http://other.test:4101',
-      ],
-      ['--live', '--artifact-root=one', '--artifact-root', 'two'],
-      ['--live', '--deny-skips', '--deny-skips'],
-      ['--live', '--require-tests', '--require-tests'],
-    ];
-    for (const args of cases) {
-      const result = await runProcess(
-        process.execPath,
-        [skiffPath, 'test', input, ...args],
-        { env: fixture.env },
-      );
+    for (const args of [
+      ['--artifact-root', fixture.root, '--artifact-root', fixture.root],
+      ['--artifact-root', fixture.root, '--base-assembly', 'one', '--base-assembly=two'],
+      ['--artifact-root', fixture.root, '--live', '--live'],
+      ['--artifact-root', fixture.root, '--deny-skips', '--deny-skips'],
+    ]) {
+      const result = await runProcess(process.execPath, [skiffPath, 'test', input, ...args], {
+        env: fixture.env,
+      });
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /provided more than once/);
       await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
@@ -193,12 +178,8 @@ function runProcess(command, args, { env }) {
     let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', reject);
     child.once('close', (code, signal) => {
       resolvePromise({ code, signal, stdout, stderr });

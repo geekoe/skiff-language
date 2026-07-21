@@ -110,7 +110,7 @@ skiff project paths
 }
 ```
 
-For local package development, materialize package sources under the project package store with `skiff package pull`, or pass explicit package stores with repeated `--packages-dir <dir>` on `skiff check`, `skiff test`, `skiff service dev sync`, and `skiff service dev watch`. Explicit package dirs are searched in the order provided and replace the project `packageDirs` for that command.
+For local package development, materialize package sources under the project package store with `skiff package pull`, or pass explicit package stores with repeated `--packages-dir <dir>` on `skiff check`, `skiff service dev sync`, and `skiff service dev watch`. Explicit package dirs are searched in the order provided and replace the project `packageDirs` for that command. `skiff test` instead resolves package and contract dependencies only from its canonical `--artifact-root`.
 
 The global dev watch registry is managed under the service dev registry subcommand:
 
@@ -295,27 +295,27 @@ SKIFF_PACKAGE_TEST_AUTHORITY='<organization authorityDomain>' \
 node scripts/package-live-test.mjs
 ```
 
-## HTTP Stream Transport Live Fixture
-
-The HTTP stream transport smoke now lives as a normal Skiff live test fixture instead of a host-side JavaScript script. The fixture is under `../test-runner/tests/fixtures/http-stream-live/` and defines a raw streaming route plus `http_stream_live.live.test.skiff`.
+## Canonical Package Live Tests
 
 An explicitly selected Skiff stack must already be running with a connected runtime. The command
-must name that stack's reload endpoint and existing artifact root; the runner never defaults to
-the stable 4001 endpoint or discovers a writable root from router health. Missing API keys remain
-SKIP results at the library level, while canonical/manual gating should pass `--deny-skips` and
-`--require-tests`. The config snapshot can use either `bailian.apiKey` or the old script-compatible
-`service.bailian.apiKey`; `baseUrl` supports the same two shapes and defaults to
-`https://dashscope.aliyuncs.com/compatible-mode/v1`.
+must name that stack's canonical activation endpoint, ingress origin, existing artifact root,
+environment, and expected generation. The runner never defaults to the stable instance; non-live
+execution never writes its external input artifact root. The selected `.test.skiff` file must belong
+to a canonical package root containing `package.yml`. Tests that require existing service, config,
+state, resource, or runtime-capability bindings must also select that exact runtime assembly with
+`--base-assembly`. Canonical/manual gating should pass `--deny-skips` and `--require-tests`.
 
 ```bash
 cd skiff-language
 node scripts/skiff.mjs test \
-  test-runner/tests/fixtures/http-stream-live/internal/http_stream_live.live.test.skiff \
+  /path/to/package/internal/example.live.test.skiff \
   --live \
-  --allow-network \
-  --config /path/to/config.yml \
-  --router-reload-url 'http://127.0.0.1:<control-port>/__skiff/reload-artifacts' \
   --artifact-root /path/to/that-instance/artifacts \
+  --base-assembly '<assembly-identity>' \
+  --activation-url 'http://127.0.0.1:<control-port>/__skiff/activate-assembly' \
+  --ingress-url 'http://127.0.0.1:<ingress-port>' \
+  --environment '<environment>' \
+  --expected-generation '<generation>' \
   --deny-skips \
   --require-tests
 ```

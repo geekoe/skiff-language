@@ -21,7 +21,7 @@ test('non-live runner receives canonical activation and Host-ingress targets', (
 
   assert.equal(environment.SKIFF_DEV_HOME, '/tmp/skiff-owned/dev-home');
   assert.equal(
-    environment.SKIFF_TEST_ARTIFACT_ROOT,
+    environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT,
     '/tmp/skiff-owned/dev-home/artifacts',
   );
   assert.equal(
