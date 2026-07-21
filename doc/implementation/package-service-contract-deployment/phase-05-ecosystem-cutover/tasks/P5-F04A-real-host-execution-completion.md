@@ -52,3 +52,15 @@ git diff --check
 关键证据是`run-skiff-tests`越过supervisor ready、assembly activation与HTTP ingress后，checked-in consumer test PASS；
 Rust assemble、Host compile、std PASS、self-test或源码字符串均不能替代。回报environment链、typed receipt、authoring
 顺序、最终Host结果、source/commit/tree、single commit/clean/lock、reverse-search与extra-review。
+
+## Implementation checkpoint与D11 handoff
+
+允许范围已在`031c6b8a883aa92cb395cde565aeb00e0907dac6` / tree
+`d2375116b5865acf80c7c0f7f820804ab8046bc4`形成single clean checkpoint，并由root合流为`7f368102`；lock保持
+`f3ce5457138c58aec4c84abda431afa96013e3fd`。Node 23/23、Rust integration 12/12、package artifact 5/5、
+same-heap eval、smoke self-test、strict receipt CLI与task-crate Clippy均PASS。
+
+真实probe仍为NO-GO：environment已正确进入Router配置，但production Router在Runtime首个binary
+`runtime.capabilities`关闭socket；随后binary/text activation与health还有连续不匹配。D11确认这是F03B endpoint
+职责的DAG排序遗漏并冻结F09/R10。checkpoint合流不把F04A或F04称为complete；R10 PASS后必须原样恢复本节真实
+Host gate，不能重写fixture或用Router/Host聚焦test替代。
