@@ -64,3 +64,8 @@ same-heap eval、smoke self-test、strict receipt CLI与task-crate Clippy均PASS
 `runtime.capabilities`关闭socket；随后binary/text activation与health还有连续不匹配。D11确认这是F03B endpoint
 职责的DAG排序遗漏并冻结F09/R10。checkpoint合流不把F04A或F04称为complete；R10 PASS后必须原样恢复本节真实
 Host gate，不能重写fixture或用Router/Host聚焦test替代。
+
+R10 PASS并合流`ff7a4df`后原样恢复probe，wire/capability已连通，但health始终为committed generation-0 snapshot、
+`capabilityConnections` connected、`replicas: []`，120秒readiness超时。D12确认Runtime从空admission state启动且没有
+durable committed reader，只能发送capabilities；Router正确拒绝把它当participant。F10/R11提前拆出F03C committed
+bootstrap/reconnect职责；R11前F04A/F04继续保持未完成。

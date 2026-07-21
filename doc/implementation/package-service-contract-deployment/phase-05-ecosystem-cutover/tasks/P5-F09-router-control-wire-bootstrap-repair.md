@@ -44,3 +44,10 @@ git diff --check
 payload/direction/text/bare control均1008，双向六种activation control golden frame，health两类状态独立、未注册连接
 不可dispatch，以及actor/spawn、runtime.health、response/cancel/connection.send回归。production server反搜只能实例化
 统一endpoint；回报source/commit/tree、single commit/clean/lock、完整接受矩阵与extra-review。
+
+## R10 acceptance record
+
+F09 candidate `84e33dd2cc7df98fc5a511881f2e0cedc1d540db` / tree
+`aed0fdade3547322ea85b79e2676174a35aad6b4`由独立R10判定PASS并合流为`ff7a4df`。single endpoint、capabilities-first
+identity、双向binary activation、health双状态与完整generic accepted-set均通过；聚焦104/104，真实socket新增4/4。
+full Router在base/candidate保留相同8个既有F03B/fixture失败，candidate未新增或改变失败；lock/corpus/shared codec未变。

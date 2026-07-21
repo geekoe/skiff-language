@@ -9,8 +9,8 @@ R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner
 D07已冻结F06 compiler repair；R06首次因exact callee的Field wrapper遗漏而FAIL，F06A已在`fbf634d`通过
 R06窄复验；D08/F07 exact native semantics已在`bd13867`通过R07。F04的Host证据与F03C依赖形成环，D09已冻结
 F08/R08前置Host seam修复已在`c5ec7ea`通过；F04原Host probe又发现environment丢失与helper fixture未执行，
-D10/F04A已形成`7f36810`implementation checkpoint。真实probe继续暴露Router control-wire bootstrap断链，D11已冻结
-F09/R10前置统一endpoint修复。F05等待F04 narrow receive，
+D10/F04A已形成`7f36810`implementation checkpoint。D11/F09已在`ff7a4df`通过R10并接通Router control wire；恢复
+probe继续暴露Runtime cold-start未恢复committed assembly，D12已冻结F10/R11前置bootstrap修复。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -97,7 +97,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │     D08 native-effects audit ───────────────────────────────────────────────────────────┴─► F07 exact native semantics ─► R07 PASS@bd13867
           │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 PASS@c5ec7ea
           │                                                                                                     └─► F04 Host probe NO-GO@1dc1d7a ─► D10 ─► F04A checkpoint@7f36810
-          │                                                                                                           └─► D11 ─► F09 ─► R10 ─► F04A Host resume ─► F04 narrow receive
+          │                                                                                                           └─► D11 ─► F09 ─► R10 PASS@84e33dd ─► F04A Host FAIL@ff7a4df
+          │                                                                                                                                 └─► D12 ─► F10 ─► R11 ─► F04A Host resume ─► F04 narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -181,6 +182,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D11 | [Router control-wire bootstrap audit](tasks/P5-D11-router-control-wire-bootstrap-audit.md) | F04A Host NO-GO at `031c6b8` | 独立只读；冻结endpoint/DAG缺口 |
 | F09 | [Router control-wire bootstrap repair](tasks/P5-F09-router-control-wire-bootstrap-repair.md) | D11 complete | 高；统一endpoint/session前置修复 |
 | R10 | [Router control-wire bootstrap acceptance](tasks/P5-R10-router-control-wire-bootstrap-acceptance.md) | F09 exact commit | 高；独立只读 |
+| D12 | [Runtime committed bootstrap audit](tasks/P5-D12-runtime-committed-bootstrap-audit.md) | F04A Host FAIL at `ff7a4df` | 独立只读；冻结cold-start/reconnect缺口 |
+| F10 | [Runtime committed bootstrap repair](tasks/P5-F10-runtime-committed-bootstrap-repair.md) | D12 complete | 高；F03C committed recovery前置修复 |
+| R11 | [Runtime committed bootstrap acceptance](tasks/P5-R11-runtime-committed-bootstrap-acceptance.md) | F10 exact commit | 高；独立只读 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -262,6 +266,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   capabilities并以text处理binary-only activation，且health混淆capability connection与committed registration。
   F09/R10只从F03B提前拆出统一endpoint/session/bootstrap职责；不改Runtime/shared wire/store/gateway，不提前实现
   F03C。R10 PASS仅恢复F04A真实probe；F03B其余职责仍等待R05。
+- R10后的真实probe确认Router exact committed generation-0与capability session均存在，但Runtime空admission state没有
+  durable committed reader，只发capabilities而不注册replica。D12/F10/R11只从F03C提前拆出strict Runtime config、
+  每次连接前的exact committed recovery与共享admission/publication primitive；不把capability升级为participant、不伪造
+  online transaction，也不提前实现request trust boundary/WS/drain。R11 PASS仅恢复F04A真实probe。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。

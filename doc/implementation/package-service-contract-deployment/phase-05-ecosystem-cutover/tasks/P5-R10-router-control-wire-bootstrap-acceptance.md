@@ -17,3 +17,11 @@
 
 第一行只给`R10 PASS`或`R10 FAIL`。PASS只允许在exact合流状态恢复F04A preserved isolated Host probe；真实Host
 证据仍不可由Router单测、Host单测或ready字符串替代。
+
+## 验收记录
+
+`R10 PASS`：exact candidate `84e33dd2cc7df98fc5a511881f2e0cedc1d540db` / tree
+`aed0fdade3547322ea85b79e2676174a35aad6b4`，parent `a88846410230dc2b9eb6f5f6aae2b892ed9f18b1`，single
+commit/clean/lock不变。production只有一个Runtime endpoint/dispatcher/session owner，真实socket、六类golden control、
+capability/replica双状态与generic accepted-set均PASS。base/candidate full-suite失败集合精确相同，不把8个既有失败记为
+PASS，也未要求F09越界修改F03B gateway/fixture。
