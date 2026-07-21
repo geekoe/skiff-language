@@ -49,3 +49,19 @@ git diff --check
 
 不跑完整tests/verify/live。提交一个commit并合入Skiff integration branch，回报fixture data flow、旧测试disposition、反向
 搜索及自验收矩阵。
+
+## 接收审查记录
+
+Candidate `f8ad6891b19a85d4e0d8d130ef01d60ce6152a04` / tree
+`c98259d03a2b08686adef98fb45e390ac11f3366` 的聚焦gate通过，但独立接收审查为FAIL：
+
+- runner未从canonical store接入真实contract/provider/base assembly，provider/consumer只解析binding未执行
+  `InProcessBoundary`最终结果；
+- package-direct测试只resolve target后手调mutation primitive，没有执行真实callee；
+- T02 `scripts/skiff.mjs`与新runner参数断链，若干保留选项静默未消费；
+- config/state/double只写diagnostic notes，没有形成deployment/test owner；
+- smoke手工把compiler `UnsupportedStream`改成Available并重签PackageArtifact；
+- `canonical_fixture.rs`混合discovery/assembly/store/activation/HTTP职责。
+
+该candidate不直接合入；D04/F04在包含T02的integration基线上组成replacement candidate。runtime-host的23个
+旧package-test API错误精确属于F03C，接收审查未把它们算作T05 blocker。

@@ -36,6 +36,8 @@ generated service identity/Host route consumer。不改Codex Relay、AIHub、Agi
    stale generation、authority/authz及audit history。
 7. `skiff-platform/package-registry/registry-phase05-smoke.mjs`提供main-only live入口；其self-test使用fake
    transport断言四类publish/resolve/history最终结果，开发任务不得连接stable。
+   同一脚本的`--prepare-test-assembly`模式从account/registry test-owned contract/package/deployment roots向
+   temporary artifact root写完整canonical closure，并只输出assembly identity；它不是T09E production assembly。
 8. owned `AGENTS.md`/README中的service.yml、service/version selector、旧publish/store指令同步改为canonical
    Host与四对象流程；不新建README，优先合入AGENTS。
 
@@ -46,12 +48,16 @@ P5_ARTIFACT_ROOT="$(mktemp -d /tmp/skiff-p5-t08.XXXXXX)"
 P5_CARGO_TARGET="$(mktemp -d /tmp/skiff-p5-t08-cargo.XXXXXX)"
 P5_SKIFF_ROOT=/Users/geek/workspace/skiff-p5-r02-checkpoint
 git -C "$P5_SKIFF_ROOT" status --short
+P5_TEST_ASSEMBLY_ID="$(node skiff-platform/package-registry/registry-phase05-smoke.mjs \
+  --prepare-test-assembly --artifact-root "$P5_ARTIFACT_ROOT")"
 CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT="$P5_SKIFF_ROOT" \
   node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/account \
-  --profile dev --artifact-root "$P5_ARTIFACT_ROOT" --deny-skips --require-tests
+  --artifact-root "$P5_ARTIFACT_ROOT" --base-assembly "$P5_TEST_ASSEMBLY_ID" \
+  --deny-skips --require-tests
 CARGO_TARGET_DIR="$P5_CARGO_TARGET" SKIFF_ROOT="$P5_SKIFF_ROOT" \
   node "$P5_SKIFF_ROOT/scripts/skiff.mjs" test skiff-platform/package-registry \
-  --profile dev --artifact-root "$P5_ARTIFACT_ROOT" --deny-skips --require-tests
+  --artifact-root "$P5_ARTIFACT_ROOT" --base-assembly "$P5_TEST_ASSEMBLY_ID" \
+  --deny-skips --require-tests
 node --test skiff-platform/client/scripts/generate-services.test.mjs
 node --test skiff-platform/package-registry/registry-phase05-smoke.test.mjs
 git -C "$P5_SKIFF_ROOT" status --short

@@ -1,6 +1,7 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：active；P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流、T05在途；
+状态：active；P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流；T05 candidate
+`f8ad689`接收审查FAIL，D04已冻结repair设计、F04在途；
 R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链。F03A已合流，R02A在
 `a7566bb`因canonical request optional fields的TS/Rust接受集合不一致而FAIL；D03有界审计与F03A1 repair在途。
 
@@ -82,7 +83,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
   T02 authoring / registry client / CLI / dev sync / watch ─┐
   T03 router active-assembly + host ingress cutover       ├─► I02 combined probe ─► R02
   T04 runtime resolver / admission / replica registration├
-  T05 test-runner / package-test / fixtures              ─┘
+  T05 test-runner / package-test / fixtures
+    └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 integration repair ─► narrow receive
 
   R02 pre-review@b47ddf7 findings
     └─► F03A shared binary/request/store seam ─► R02A FAIL@a7566bb
@@ -144,6 +146,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
 | T05 | [Test infrastructure cutover](tasks/P5-T05-test-infrastructure-cutover.md) | R01 PASS | 中高；test production owner |
+| D04 | [Test infrastructure repair design](tasks/P5-D04-test-infrastructure-repair-design.md) | T05 receive FAIL at `f8ad689` | 独立只读；冻结真实执行/CLI seam |
+| F04 | [Test infrastructure integration repair](tasks/P5-F04-test-infrastructure-integration-repair.md) | D04 complete | 高；T02/T05 test seam窄修复 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -198,7 +202,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - T04独占 `runtime/transport/**`、`runtime/loader/**`、`runtime/host/**`的production resolver/
   admission/generation/registration/lifecycle；不改`runtime/package-test`/test-runner/router/scripts。
 - T05独占 `test-runner/**`、`runtime/package-test/**`、test-only canonical fixture builders及isolated test
-  runtime harness；不改runtime host production、router或tooling production。
+  runtime harness；不改runtime host production、router或tooling production。T05接收FAIL后，D04只读冻结真实
+  canonical dependency/base assembly数据流与CLI disposition；F04可串行修改T05 owned paths及T02
+  `scripts/skiff.mjs`/isolated/verify直接caller，删除失效参数并接通同一canonical runner。F04不改compiler stream、
+  runtime host或shared wire；F03C仍唯一迁移runtime-host package-test consumer。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
