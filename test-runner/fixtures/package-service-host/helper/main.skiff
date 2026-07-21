@@ -1,0 +1,5 @@
+type Box { value: string }
+
+function mutate(input: Box) -> void {
+  input.value = "helper-mutated"
+}

@@ -322,6 +322,7 @@ async function writeRouterConfig(file, remoteSkiff, options) {
   await writeFile(file, renderRouterConfig({
     profile: 'prod',
     host: '127.0.0.1',
+    environment: 'prod',
     artifactRoots: [`${remoteSkiff}/artifacts`],
     identityCliPath: `${remoteSkiff}/bin/skiff-artifact-identity`,
     releaseMode: true,

@@ -1,6 +1,7 @@
 export function renderRouterConfig({
   profile,
   host,
+  environment,
   artifactRoots,
   identityCliPath,
   devReload,
@@ -13,9 +14,13 @@ export function renderRouterConfig({
   telemetryEndpoint,
   rewrite = [],
 }) {
+  if (typeof environment !== 'string' || environment.length === 0) {
+    throw new Error('router environment is required');
+  }
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
+    `environment: ${quoteYamlString(environment)}`,
     'artifactRoots:',
     ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
     `identityCliPath: ${quoteYamlString(identityCliPath)}`,

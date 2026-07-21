@@ -27,6 +27,7 @@ export function defaultInstanceConfigText() {
     '# Local Skiff instance config.',
     '# Paths are resolved relative to this config file.',
     '# This file is separate from service/package skiff.yml configuration.',
+    'environment: dev',
     'devHome: dev-home',
     'cargoTargetDir: ~/.cache/skiff/cargo-target',
     '',
@@ -92,6 +93,7 @@ export function instanceBasePaths({ configPath, repoRoot = skiffRoot }) {
 
 export function instanceSummary(config) {
   return {
+    environment: config.environment,
     configPath: config.paths.configPath,
     instanceRoot: config.paths.instanceRoot,
     devHome: config.paths.devHome,
@@ -128,6 +130,7 @@ export function instanceSummary(config) {
 }
 
 function normalizeInstanceConfig(raw, context) {
+  const environment = normalizeEnvironment(raw.environment);
   const devHome = resolveConfigPath(
     context.instanceRoot,
     readString(raw.devHome, 'devHome', 'dev-home'),
@@ -149,6 +152,7 @@ function normalizeInstanceConfig(raw, context) {
 
   return {
     schemaVersion: 'skiff-instance-v1',
+    environment,
     paths: {
       repoRoot: resolve(context.repoRoot),
       configPath: context.configPath,
@@ -186,6 +190,21 @@ function normalizeInstanceConfig(raw, context) {
       telemetry: `ws://127.0.0.1:${ports.telemetry}/telemetry`,
     },
   };
+}
+
+function normalizeEnvironment(value) {
+  if (value === undefined) {
+    return 'dev';
+  }
+  if (
+    typeof value !== 'string'
+    || !/^[A-Za-z0-9._-]{1,200}$/.test(value)
+    || value === '.'
+    || value === '..'
+  ) {
+    throw new Error('environment must be an ASCII token of 1-200 letters, digits, dots, underscores, or hyphens, excluding . and ..');
+  }
+  return value;
 }
 
 function parseInstanceConfigText(source, label) {

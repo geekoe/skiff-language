@@ -454,6 +454,7 @@ function routerConfigText(config) {
   return renderRouterConfig({
     profile: 'dev',
     host: '127.0.0.1',
+    environment: config.environment,
     artifactRoots: [config.paths.artifactRoot],
     identityCliPath: config.paths.identityCli,
     devReload: true,

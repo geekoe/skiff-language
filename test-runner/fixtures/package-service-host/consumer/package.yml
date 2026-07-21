@@ -1,0 +1,10 @@
+id: example.com/consumer
+version: 1.0.0
+packages:
+  - id: example.com/helper
+    version: 1.0.0
+    alias: helper
+contracts:
+  - alias: payments
+    serviceId: example.com/payments
+    contractVersion: 1.0.0
