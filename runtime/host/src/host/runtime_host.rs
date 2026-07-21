@@ -71,10 +71,6 @@ pub struct RuntimeHost {
     pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
     pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
-    pub(super) package_test_start_executor:
-        Arc<super::package_test_entry::PackageTestStartExecutor>,
-    pub(super) package_test_template_builds:
-        Arc<super::package_test_entry::PackageTestTemplateBuildLocks>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(crate) state: Arc<RwLock<ServiceRouteState>>,
     pub(super) loaded_builds: Arc<LoadedBuildRegistry>,
@@ -134,12 +130,6 @@ impl RuntimeHost {
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
                 config.base_runtime_id.clone(),
             )),
-            package_test_start_executor: Arc::new(
-                super::package_test_entry::PackageTestStartExecutor::default(),
-            ),
-            package_test_template_builds: Arc::new(
-                super::package_test_entry::PackageTestTemplateBuildLocks::default(),
-            ),
             blob_store: Arc::new(StdMutex::new(None)),
             state: Arc::new(RwLock::new(state)),
             loaded_builds,

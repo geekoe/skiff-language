@@ -10,13 +10,17 @@ use skiff_artifact_model::ConfigShape;
 #[cfg(test)]
 use skiff_runtime_linked_program::{package_config_shape, LinkedProgramImage};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
-use skiff_runtime_transport::protocol::{
-    encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
-    TelemetryEvent, TelemetrySource, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
-};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::{
     RouterControlEnvelope, RouterControlPackageConfig, RouterControlServiceConfig,
+};
+use skiff_runtime_transport::{
+    assembly_activation::{encode_assembly_activation_frame, AssemblyActivationFrameDirection},
+    protocol::{
+        encode_binary_frame, RuntimeCapabilitiesFrameHeader,
+        RuntimeCapabilitiesFrameHeaderMetadata, TelemetryEvent, TelemetrySource, TelemetryTopic,
+        RUNTIME_FRAME_SCHEMA_VERSION,
+    },
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -71,7 +75,6 @@ impl RuntimeHost {
             artifact_roots: artifact_roots.clone(),
             epoch,
         };
-        let cleared_package_test_templates = self.artifact_caches.package_test_templates.clear();
         info!(
             event = "runtime.artifact_loader_configured",
             artifacts = %artifact_roots
@@ -82,12 +85,6 @@ impl RuntimeHost {
             dev_reload = control.dev_reload.unwrap_or(false),
             generation = control.generation.as_deref().unwrap_or("unknown")
         );
-        if cleared_package_test_templates > 0 {
-            info!(
-                event = "runtime.package_test_template_cache_cleared",
-                entries = cleared_package_test_templates
-            );
-        }
         Ok(fingerprint)
     }
 
@@ -171,7 +168,7 @@ impl RuntimeHost {
             envelope_type: "runtime.capabilities".to_string(),
             runtime_id: self.base_runtime_id.clone(),
             capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
-                package_test_dispatch: true,
+                package_test_dispatch: false,
                 request_cancel: true,
                 ..RuntimeCapabilitiesFrameHeaderMetadata::default()
             },
@@ -188,11 +185,11 @@ impl RuntimeHost {
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
         control: &AssemblyActivationControl,
     ) -> Result<()> {
-        let frame =
-            skiff_runtime_transport::assembly_activation::encode_assembly_activation_control(
-                control,
-            )
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        let frame = encode_assembly_activation_frame(
+            AssemblyActivationFrameDirection::RuntimeToRouter,
+            control,
+        )
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
         sender
             .send(RouterWriterMessage::Binary(frame))
             .map_err(|_| RuntimeError::Decode("runtime writer channel closed".to_string()))

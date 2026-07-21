@@ -18,9 +18,10 @@ use crate::{
     telemetry::RequestTelemetryContext,
 };
 
+#[cfg(test)]
+use super::request_supervisor::CompletionTrace;
 use super::{
-    package_test_entry, request_supervisor::CompletionTrace, route_registry, spawn_worker,
-    RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
+    route_registry, spawn_worker, RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
 };
 
 mod assembly;
@@ -70,31 +71,13 @@ impl RuntimeHost {
             .await;
     }
 
-    pub(super) async fn spawn_resolved_package_test_request(
+    #[cfg(test)]
+    pub(crate) async fn spawn_resolved_request_for_test(
         &self,
         operation_context: ServiceOperationContext,
         request: RequestEnvelope,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
         error_log_event: &'static str,
-        pending_start: package_test_entry::PackageTestPendingStart,
-    ) {
-        self.spawn_resolved_request_inner(
-            operation_context,
-            request,
-            sender,
-            error_log_event,
-            Some(pending_start),
-        )
-        .await;
-    }
-
-    async fn spawn_resolved_request_inner(
-        &self,
-        operation_context: ServiceOperationContext,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        error_log_event: &'static str,
-        pending_start: Option<package_test_entry::PackageTestPendingStart>,
     ) {
         let service = operation_context.service.clone();
         let build_guard = match self.begin_build_execution(&service.build_id) {
@@ -111,31 +94,6 @@ impl RuntimeHost {
             .request_supervisor
             .begin(&request, telemetry_context.clone(), "request.start")
             .await;
-        if let Some(pending_start) = pending_start {
-            if pending_start.finish() {
-                let response_error = response_error_from_runtime_error(&RuntimeError::cancelled());
-                self.request_supervisor
-                    .complete_error(
-                        &supervised_request,
-                        "request.cancel",
-                        &response_error,
-                        CompletionTrace::RUNTIME,
-                    )
-                    .await;
-                match response_event_into_transport_message(
-                    request.request_id.clone(),
-                    ResponseEvent::Error(response_error),
-                ) {
-                    Ok(message) => {
-                        let _ = sender.send(message);
-                    }
-                    Err(error) => {
-                        error!(event = "runtime.response_encode_error", error = %error);
-                    }
-                }
-                return;
-            }
-        }
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -266,48 +224,6 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) fn submit_package_test_start(
-        &self,
-        header: skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-        payload: Vec<u8>,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        package_test_entry::spawn_package_test_start(self, header, payload, sender, None);
-    }
-
-    pub(crate) fn submit_session_package_test_start(
-        &self,
-        header: skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-        payload: Vec<u8>,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: spawn_worker::SpawnWorkerRegistration,
-    ) {
-        package_test_entry::spawn_package_test_start(
-            self,
-            header,
-            payload,
-            sender,
-            Some(registration),
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn load_package_test_runtime_program(
-        &self,
-        header: &skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-    ) -> Result<skiff_runtime_package_test::LoadedPackageTestRuntimeProgram> {
-        package_test_entry::load_package_test_runtime_program(self, header).await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn package_test_service_context(
-        &self,
-        loaded: &skiff_runtime_package_test::LoadedPackageTestRuntimeProgram,
-        header: &skiff_runtime_transport::protocol::PackageTestStartFrameHeader,
-    ) -> Result<Arc<ServiceRuntimeContext>> {
-        package_test_entry::package_test_service_context(self, loaded, header)
-    }
-
     fn lookup_operation_in_state(
         &self,
         request: &RequestEnvelope,
@@ -367,15 +283,6 @@ impl RuntimeHost {
         if self.request_supervisor.cancel(&cancel).await {
             info!(
                 event = "runtime.request_cancelled",
-                request_id = %cancel.request_id,
-                reason = cancel.reason.as_deref().unwrap_or("unknown")
-            );
-        } else if self
-            .package_test_start_executor
-            .cancel_pending(&cancel.request_id)
-        {
-            info!(
-                event = "runtime.package_test_start_cancelled",
                 request_id = %cancel.request_id,
                 reason = cancel.reason.as_deref().unwrap_or("unknown")
             );

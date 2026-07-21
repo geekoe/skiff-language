@@ -7,17 +7,21 @@ use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
+    assembly_activation::{
+        decode_assembly_activation_frame, AssemblyActivationFrameDirection,
+        ASSEMBLY_ACTIVATION_FRAME_TYPE,
+    },
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
         decode_typed_binary_frame, ActorFindResponseFrameHeader, ActorPutResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-        PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
-        ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-        ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-        RuntimeRegisteredFrameHeader, SpawnClaimResponseFrameHeader,
-        SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
-        SpawnRenewResponseFrameHeader, SpawnSubmitResponseFrameHeader, TypedEnvelope,
+        RequestCancelFrameHeader, RequestStartFrameHeader, ResponseChunkFrameHeader,
+        ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
+        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
+        SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
+        SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::{request_cancel_from_frame_header, request_envelope_from_start_frame},
     response_mapper::{
@@ -285,12 +289,12 @@ async fn dispatch_router_binary_frame_inner(
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
     match typed.envelope_type.as_str() {
-        "prepare" | "commit" | "abort" => {
-            let control =
-                skiff_runtime_transport::assembly_activation::decode_assembly_activation_control(
-                    bytes,
-                )
-                .map_err(super::transport_error_into_runtime_error)?;
+        ASSEMBLY_ACTIVATION_FRAME_TYPE => {
+            let control = decode_assembly_activation_frame(
+                AssemblyActivationFrameDirection::RouterToRuntime,
+                bytes,
+            )
+            .map_err(super::transport_error_into_runtime_error)?;
             let resolver = production_assembly_resolver(host)?;
             if let Some(reply) = host
                 .apply_assembly_activation_control(control, &resolver)
@@ -339,20 +343,6 @@ async fn dispatch_router_binary_frame_inner(
                     .await;
             } else {
                 host.spawn_request(request, sender.clone()).await;
-            }
-        }
-        "package-test.start" => {
-            let (header, payload) = decode_typed_binary_frame::<PackageTestStartFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if let Some(registration) = spawn_registration {
-                host.submit_session_package_test_start(
-                    header,
-                    payload,
-                    sender.clone(),
-                    registration.clone(),
-                );
-            } else {
-                host.submit_package_test_start(header, payload, sender.clone());
             }
         }
         "request.cancel" => {
