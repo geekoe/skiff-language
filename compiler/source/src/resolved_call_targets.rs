@@ -29,6 +29,9 @@ pub enum ResolvedCallTarget {
         type_name: String,
         method_name: String,
     },
+    NativeFunction {
+        binding_key: String,
+    },
     DependencyPackageFunction {
         package_requirement_alias: String,
         package_callable_id: PackageCallableId,
@@ -60,7 +63,8 @@ impl ResolvedCallTarget {
                 module_path,
                 impl_method_declaration_name(type_name, method_name),
             )),
-            Self::DependencyPackageFunction { .. }
+            Self::NativeFunction { .. }
+            | Self::DependencyPackageFunction { .. }
             | Self::ContractOperation { .. }
             | Self::Unknown { .. } => None,
         }
@@ -159,6 +163,17 @@ mod tests {
             }),
         );
 
+        let native = ResolvedCallTarget::NativeFunction {
+            binding_key: "std.string.truncateUtf8Bytes".to_string(),
+        };
+        assert_target_wire(
+            native,
+            json!({
+                "kind": "nativeFunction",
+                "bindingKey": "std.string.truncateUtf8Bytes"
+            }),
+        );
+
         let package = ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias: "util".to_string(),
             package_callable_id: PackageCallableId::new("callable:format"),
@@ -230,6 +245,7 @@ mod tests {
                 "packageCallableId": "callable:format",
                 "expectedLocalAbi": "abi:util"
             }),
+            json!({ "kind": "nativeFunction" }),
             json!({ "kind": "contractOperation", "contractOperationId": "op" }),
             json!({ "kind": "unknown" }),
             json!({
@@ -275,6 +291,11 @@ mod tests {
             expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
         };
         assert_eq!(dependency.source_callable_key(), None);
+
+        let native = ResolvedCallTarget::NativeFunction {
+            binding_key: "std.string.truncateUtf8Bytes".to_string(),
+        };
+        assert_eq!(native.source_callable_key(), None);
     }
 
     #[test]

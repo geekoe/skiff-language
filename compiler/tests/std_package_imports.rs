@@ -6,8 +6,9 @@ use common::{
     TestDir,
 };
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, CallableEffectSummary, ExprIr, PackageCallableId, PackageLocalAbiSymbol,
-    PackageRefIr, TypeDescriptorIr, TypeRefIr,
+    BoundaryCallableProjection, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, ExprIr, PackageCallableId, PackageLocalAbiSymbol, PackageRefIr,
+    TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::PublishedFileIrArtifact;
@@ -38,6 +39,71 @@ fn user_packages_reject_native_declarations() {
             .to_string();
         assert!(error.contains(expected), "unexpected error: {error}");
     }
+}
+
+#[test]
+fn truncate_utf8_bytes_projects_available() {
+    let temp = TestDir::new("skiff-compiler", "truncate-utf8-bytes-projection");
+    temp.write(
+        "package.yml",
+        "id: example.com/truncate-projection\nversion: 1.0.0\n",
+    );
+    temp.write("api.yml", "truncate: main.truncate\n");
+    temp.write(
+        "main.skiff",
+        r#"import std
+
+function truncate(value: string, maxBytes: number) -> string {
+  return std.string.truncateUtf8Bytes(value, maxBytes)
+}
+"#,
+    );
+
+    let project = compile_package_project(temp.path()).expect("truncate wrapper should compile");
+    let callable_id = public_callable_id(&project.package, "truncate");
+    let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
+    assert_eq!(
+        facts.effects,
+        CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                writes_caller_reachable: false,
+                returns_caller_alias: false,
+                throws_caller_alias: false,
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_suspend: false,
+            },
+        }
+    );
+    assert_eq!(
+        facts.provenance,
+        CallableProvenanceSummary::Analyzed {
+            return_origins: vec![ValueProvenance::Fresh],
+            throw_origins: Vec::new(),
+            escape_lanes: Vec::new(),
+        }
+    );
+    assert!(
+        facts.resolved_call_targets.is_empty(),
+        "native target must not add an artifact callable-target variant"
+    );
+    assert!(matches!(
+        project.package.artifact.boundary_projections[&callable_id],
+        BoundaryCallableProjection::Available { .. }
+    ));
+
+    let main = module_artifact(&project.package, "main");
+    assert!(file_contains_call(main, &|target| {
+        matches!(
+            target,
+            CallTargetIr::Native { target }
+                if target.namespace == "std.string"
+                    && target.symbol == "truncateUtf8Bytes"
+                    && target.binding_key.as_deref()
+                        == Some("std.string.truncateUtf8Bytes")
+        )
+    }));
 }
 
 #[test]

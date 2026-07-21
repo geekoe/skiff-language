@@ -118,8 +118,8 @@ pub use executable_target::{
 pub use file_ir::*;
 pub use metadata::MetadataValue;
 pub use native_signature::{
-    is_runtime_receiver_native_binding_key, NativeSignatureDef, NativeTypeExprDef,
-    STD_NATIVE_SIGNATURES,
+    is_runtime_receiver_native_binding_key, native_callable_semantics, NativeCallableSemantics,
+    NativeSignatureDef, NativeTypeExprDef, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 pub use package_artifact::{
     PackageArtifact, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
