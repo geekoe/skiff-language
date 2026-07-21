@@ -6,14 +6,12 @@ publish = false
 
 [dependencies]
 anyhow = "1.0"
-hex = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.10"
-skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-runtime-activation = { path = "../activation" }
-skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
+
+[dev-dependencies]
+skiff-artifact-identity = { path = "../../artifact-identity" }
+skiff-deployment = { path = "../../deployment" }
+skiff-runtime-eval = { path = "../eval" }
 skiff-runtime-model = { path = "../model" }

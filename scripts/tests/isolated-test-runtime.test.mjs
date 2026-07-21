@@ -12,8 +12,7 @@ import {
   shouldUseIsolatedTestRuntime,
 } from '../lib/isolated-test-runtime.mjs';
 import {
-  bootstrapDevSyncArgs,
-  bootstrapProbeRequest,
+  bootstrapCanonicalArgs,
   isolatedInstanceOperations,
   isolatedRuntimeHealthReady,
   isolatedTestInstanceConfigText,
@@ -42,32 +41,36 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
     baseEnv: { PATH: '/bin', SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable' },
     devHome,
     controlPort: 46043,
+    routerHttpPort: 46042,
   });
   assert.equal(environment.SKIFF_DEV_HOME, devHome);
-  assert.equal(
-    environment.SKIFF_DEV_RELOAD_URL,
-    'http://127.0.0.1:46043/__skiff/reload-artifacts',
-  );
+  assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
   assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, `${devHome}/artifacts`);
+  assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46042');
 });
 
-test('bootstrap comes from current checkout and uses isolated artifact/build roots without reload', () => {
-  const args = bootstrapDevSyncArgs({
+test('bootstrap comes from current checkout and writes only canonical generation zero', () => {
+  const args = bootstrapCanonicalArgs({
     skiffRoot: '/checkout/skiff',
     artifactRoot: '/tmp/isolated/dev-home/artifacts',
-    buildRoot: '/tmp/isolated/dev-home/build',
+    environment: 'isolated-test',
   });
   assert.deepEqual(args, [
-    '/checkout/skiff/scripts/skiff-dev-sync.mjs',
-    '--root',
-    '/checkout/skiff/scripts/fixtures/isolated-test-bootstrap',
+    'run',
+    '--quiet',
+    '--manifest-path',
+    '/checkout/skiff/test-runner/Cargo.toml',
+    '--bin',
+    'skiff-package-service-smoke-fixture',
+    '--',
+    '--bootstrap-only',
     '--artifact-root',
     '/tmp/isolated/dev-home/artifacts',
-    '--build-root',
-    '/tmp/isolated/dev-home/build',
-    '--no-reload',
+    '--environment',
+    'isolated-test',
   ]);
   assert.equal(args.some((value) => value.includes('.skiff-instance')), false);
+  assert.equal(args.some((value) => value.includes('reload')), false);
 });
 
 test('default owner shutdown invokes current checkout instance down command', async () => {
@@ -97,36 +100,39 @@ test('default owner shutdown invokes current checkout instance down command', as
   }
 });
 
-test('readiness requires bootstrap runtime registration, not only health and roots', () => {
-  const artifactRoot = '/tmp/isolated/dev-home/artifacts';
-  const base = { artifact: { artifactRoots: [artifactRoot] } };
-  assert.equal(isolatedRuntimeHealthReady({ ...base, runtimes: [] }, artifactRoot), false);
+test('readiness requires exact empty-assembly registration and a separate capability handshake', () => {
+  const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`;
+  const bootstrap = {
+    environment: 'skiff-test',
+    bootstrap: { generation: 0, assembly: { assemblyIdentity } },
+  };
+  const activeAssembly = {
+    environment: 'skiff-test',
+    generation: 0,
+    assemblyIdentity,
+  };
   assert.equal(
     isolatedRuntimeHealthReady({
-      ...base,
-      runtimes: [{ serviceId: 'example.com/other' }],
-    }, artifactRoot),
+      activeAssembly,
+      capabilityConnections: [],
+      replicas: [],
+    }, bootstrap),
     false,
   );
   assert.equal(
     isolatedRuntimeHealthReady({
-      ...base,
-      runtimes: [{ serviceId: 'example.com/test-runtime-bootstrap' }],
-    }, artifactRoot),
+      activeAssembly,
+      capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
+      replicas: [{
+        replicaId: 'runtime-1',
+        connected: true,
+        state: 'healthy',
+        generation: 0,
+        assemblyIdentity,
+      }],
+    }, bootstrap),
     true,
   );
-});
-
-test('bootstrap probe targets isolated HTTP route with explicit service selectors', () => {
-  assert.deepEqual(bootstrapProbeRequest('http://127.0.0.1:46000'), {
-    url: 'http://127.0.0.1:46000/__skiff/test-runtime-bootstrap',
-    options: {
-      headers: {
-        'x-skiff-service': 'example.com/test-runtime-bootstrap',
-        'x-skiff-version': '0.1.0',
-      },
-    },
-  });
 });
 
 test('success and test failure both run owner shutdown, status, ports, lease, and temp cleanup', async () => {
@@ -139,7 +145,8 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       dependencies,
       runTest: async (environment) => {
         actions.push('test');
-        assert.equal(environment.SKIFF_DEV_RELOAD_URL.includes(':46001/'), true);
+        assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
+        assert.equal(environment.SKIFF_TEST_ACTIVATION_URL.includes(':46001/'), true);
         if (failing) {
           throw new Error('test failed');
         }
