@@ -12,7 +12,8 @@ F08/R08前置Host seam修复已在`c5ec7ea`通过；F04原Host probe又发现env
 D10/F04A已形成`7f36810`implementation checkpoint。D11/F09已在`ff7a4df`通过R10并接通Router control wire；
 D12/F10已在`efb2bbbe`通过R11并恢复Runtime committed bootstrap。真实probe现已ready并进入std，F04B只修复
 source-suite缺少canonical `--bin`的直接caller并已合流`c06e115`；完整std现暴露crypto/time exact effects覆盖遗漏，
-D13已冻结F11/R12。F05等待F04 narrow receive，
+D13/F11已在`2d74b2c`通过R12。真实std request继续暴露双端canonical unary consumer未接线，D14已冻结并行
+F12/F13与combined R13。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -101,7 +102,9 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                     └─► F04 Host probe NO-GO@1dc1d7a ─► D10 ─► F04A checkpoint@7f36810
           │                                                                                                           └─► D11 ─► F09 ─► R10 PASS@84e33dd ─► F04A Host FAIL@ff7a4df
           │                                                                                                                                 └─► D12 ─► F10 ─► R11 PASS@47d9259 ─► F04A Host FAIL@efb2bbb
-          │                                                                                                                                                                      └─► F04B@c06e115 ─► D13 ─► F11 ─► R12 ─► F04A Host resume ─► F04 narrow receive
+          │                                                                                                                                                                      └─► F04B@c06e115 ─► D13 ─► F11 ─► R12 PASS@a9ef444
+          │                                                                                                                                                                                                   └─► D14 ─► F12 Router ─┐
+          │                                                                                                                                                                                                              F13 Runtime ─┴─► R13 ─► F04A Host resume ─► F04 narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -192,6 +195,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D13 | [Std exact callable effects audit](tasks/P5-D13-std-exact-callable-effects-audit.md) | F04A std boundary blocker at `c06e115` | 独立只读；冻结native/receiver覆盖 |
 | F11 | [Std exact callable effects repair](tasks/P5-F11-std-exact-callable-effects-repair.md) | D13 complete | 高；production semantics/target facts收敛 |
 | R12 | [Std exact callable effects acceptance](tasks/P5-R12-std-exact-callable-effects-acceptance.md) | F11 exact commit | 高；独立只读 |
+| D14 | [Canonical unary request consumer audit](tasks/P5-D14-canonical-unary-request-consumer-audit.md) | F04A flat-header blocker at `2d74b2c` | 独立只读；冻结双端consumer |
+| F12 | [Router canonical unary consumer](tasks/P5-F12-router-canonical-unary-consumer.md) | D14 complete | 高；Router writer/dispatch consumer |
+| F13 | [Runtime canonical unary bridge](tasks/P5-F13-runtime-canonical-unary-bridge.md) | D14 complete | 高；Runtime decoder/trust bridge |
+| R13 | [Canonical unary request acceptance](tasks/P5-R13-canonical-unary-request-acceptance.md) | F12 + F13 exact integration | 高；独立combined只读 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -282,6 +289,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - D13只读确认完整std的crypto/time/date/duration/number native与Date/Duration receiver缺exact production semantics/
   target facts；boundary按设计正确fail closed。F11/R12只扩稀疏exact registry并收敛source facts→lowering→runtime parity，
   不改std/runner/boundary/fixture，不放宽unknown/dynamic/mutable/capability native。R12后恢复F04A真实probe。
+- R12后的真实probe确认F03A2 shared request codec正确但production Router/Runtime consumer仍分别发送flat header与使用
+  legacy decoder。F12/F13从F03B/F03C并行提前拆出normal HTTP unary writer/dispatch与strict active-route bridge，R13
+  combined验收；不改shared codec，不实现WS/serverStream/httpAdapter/test doubles/drain。R13后恢复F04A真实probe。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。

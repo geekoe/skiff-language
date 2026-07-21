@@ -52,3 +52,10 @@ git diff --check
 每个exact filter必须非零。完整std探针必须恰好发现11 cases全部Available并成功assembly；负例保持forged Available、
 unknown/dynamic/mutable/file/http/websocket fail closed。最终Node命令必须真实进入Host fixture，若暴露下一blocker只报告
 首个证据、不越界。回报exact key→facts→lowering→runtime矩阵、commit/tree/lock、single clean、reverse与extra-review。
+
+## R12 acceptance record
+
+F11 candidate `a9ef444d258497224f59633e29759ee185031ee7` / tree
+`5a497262f1a2cf29f81b4e12a958edc2a729cbe1`由独立R12判定PASS并合流为`2d74b2c`。13项exact矩阵、source
+facts唯一owner/lowering parity、runtime route/context、完整std 11 Available/assembly与全部负例通过；lock不变。
+Node已越过effects blocker，但Runtime在native前拒绝Router flat request header，转交D14，不归因F11。

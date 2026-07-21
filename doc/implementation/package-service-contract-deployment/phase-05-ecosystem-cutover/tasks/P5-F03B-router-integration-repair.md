@@ -2,7 +2,8 @@
 
 ## 输入与owner
 
-- 依赖：P5-R02A PASS的exact F03A seam、P5-R10 PASS的统一endpoint bootstrap及P5-R05 PASS的typed unified WS
+- 依赖：P5-R02A PASS的exact F03A seam、P5-R10 PASS的统一endpoint bootstrap、P5-R13 PASS的canonical unary
+  consumer及P5-R05 PASS的typed unified WS
   checkpoint。与F03C并行，合流后共同解锁I02。
 - branch：`codex/p5-f03b-router-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03b-router-repair`。
@@ -30,6 +31,9 @@
 
 D11把本任务原完成态1及完成态3的bootstrap/session前半段提前拆为F09/R10，以解除F04真实Host gate的DAG环；
 R10不解锁本任务，R05 PASS后仍由F03B唯一完成store/snapshot/gateway/participant/pin剩余职责。
+
+D14把normal HTTP unary canonical writer/dispatch提前拆为F12/R13以解除F04环；本任务消费该已通过lane，不回建flat
+header、build rewrite或第二writer，R05后仍完成serverStream/WS gateway、snapshot/pin/drain等剩余职责。
 
 ## 验证
 

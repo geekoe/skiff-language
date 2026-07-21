@@ -2,7 +2,8 @@
 
 ## 输入与owner
 
-- 依赖：P5-R02A PASS的exact F03A seam、P5-R11 PASS的committed bootstrap及P5-R05 PASS的typed unified WS
+- 依赖：P5-R02A PASS的exact F03A seam、P5-R11 PASS的committed bootstrap、P5-R13 PASS的canonical unary
+  bridge及P5-R05 PASS的typed unified WS
   checkpoint。与F03B并行，合流后共同解锁I02。
 - branch：`codex/p5-f03c-runtime-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03c-runtime-repair`。
@@ -15,6 +16,9 @@
 
 F10/R11已提前完成每次连接前的exact durable committed recovery、load/link/admit、active+committed publication与
 capabilities/register bootstrap。本任务消费该唯一lifecycle/admission primitive，不回建第二startup/reconnect owner。
+
+F13/R13提前接通strict canonical HTTP unary decode与active-route trust bridge；本任务消费该lane，不恢复legacy
+RequestStart mapper或current-pointer-only lookup，R05后仍完成WS/serverStream、old-generation pin/drain与其余trust边界。
 
 1. production config明确一个environment与一个canonical artifact root。driver不再以
    `services: Vec::new()`构造旧语义；RuntimeHost启动直接读取T01 committed state，exact resolve/load/link/admit

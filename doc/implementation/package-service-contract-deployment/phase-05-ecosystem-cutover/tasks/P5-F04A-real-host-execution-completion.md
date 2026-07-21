@@ -77,3 +77,7 @@ test-runner crate同时有`skiff-test-runner`与`skiff-package-service-smoke-fix
 F04B合流`c06e115`后真实suite已进入完整std，但crypto首个case的resolved native缺exact callable-semantics descriptor，
 被正确fail closed为`UnknownCallTarget/RequiresSameHeapIdentity`。D13确认crypto/time/date/duration/number native与
 Date/Duration receiver target facts覆盖遗漏，冻结F11/R12修production semantics；不得改runner/boundary/std fixture。
+
+R12 PASS并合流`2d74b2c`后，std generation-1已prepare/commit，首请求在native执行前因Router仍发送flat hybrid header、
+Runtime仍用legacy decoder而断连。D14确认F03A2 shared codec正确，冻结并行F12 Router/F13 Runtime canonical unary
+consumer与R13 combined receive；R13前F04继续未完成。
