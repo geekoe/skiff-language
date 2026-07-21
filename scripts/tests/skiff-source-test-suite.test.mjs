@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -90,7 +90,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   assert.deepEqual(plan.map((entry) => entry.id), ['first', 'second']);
   assert.deepEqual(commands.map((entry) => entry.command), ['cargo', 'cargo', 'cargo', 'cargo']);
   assert.deepEqual(
-    [commands[0].args.at(5), commands[1].args.at(5), commands[3].args.at(5)],
+    [commands[0].args.at(7), commands[1].args.at(7), commands[3].args.at(7)],
     [
       '/checkout/skiff/fixtures/first',
       '/checkout/skiff/fixtures/second',
@@ -165,7 +165,7 @@ test('runner failure stops later entries while the isolated runtime owner retain
         }
       },
       runCommand: async (_command, args) => {
-        const root = args.at(5);
+        const root = args.at(7);
         actions.push(root);
         if (root.endsWith('/failing')) {
           throw new Error('runner failed');
@@ -183,7 +183,17 @@ test('runner failure stops later entries while the isolated runtime owner retain
   ]);
 });
 
-test('runner command targets the production test-runner manifest', () => {
+test('runner command selects the canonical binary from the multi-binary production crate', async () => {
+  const manifest = await readFile(
+    new URL('../../test-runner/Cargo.toml', import.meta.url),
+    'utf8',
+  );
+  assert.deepEqual(
+    [...manifest.matchAll(/^\[\[bin\]\]\nname = "([^"]+)"/gm)]
+      .map((match) => match[1]),
+    ['skiff-test-runner', 'skiff-package-service-smoke-fixture'],
+  );
+
   const args = skiffSourceTestRunnerCargoArgs({
     skiffRoot: '/checkout/skiff',
     root: '/checkout/skiff/std',
@@ -194,6 +204,8 @@ test('runner command targets the production test-runner manifest', () => {
     '--quiet',
     '--manifest-path',
     join('/checkout/skiff', 'test-runner', 'Cargo.toml'),
+    '--bin',
+    'skiff-test-runner',
     '--',
     '/checkout/skiff/std',
     '--artifact-root',
