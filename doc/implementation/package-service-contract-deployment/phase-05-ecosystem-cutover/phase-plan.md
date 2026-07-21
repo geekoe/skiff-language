@@ -1,7 +1,7 @@
 # Phase 05：Ecosystem Cutover 实现计划
 
-状态：active；P5-D01 已在 `838d909` / tree `617f159c` 独立评审 PASS。T01/F01/D02/F02收敛后，
-P5-R01 已在 `c168b1dc` / tree `961998ac` 第三次窄复验 PASS；Wave 2已解锁。
+状态：active；P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流、T05在途；
+R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链，F03A shared seam repair进行中。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -83,6 +83,11 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
   T04 runtime resolver / admission / replica registration├
   T05 test-runner / package-test / fixtures              ─┘
 
+  R02 pre-review@b47ddf7 findings
+    └─► F03A shared binary/request/store seam ─► R02A seam acceptance
+          ├─► F03B unified Router endpoint/store/pin ─┐
+          └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
+
 Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T06 Skiff legacy deletion + checker + canonical docs ─────┐
   T07 skiff-packages consumer cutover                  ─────├
@@ -137,6 +142,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T03 | [Router cutover](tasks/P5-T03-router-active-assembly-cutover.md) | R01 PASS | 高；control/ingress |
 | T04 | [Runtime provisioning](tasks/P5-T04-runtime-assembly-provisioning.md) | R01 PASS | 高；reload/admission/replica |
 | T05 | [Test infrastructure cutover](tasks/P5-T05-test-infrastructure-cutover.md) | R01 PASS | 中高；test production owner |
+| F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
+| R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
+| F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R02A PASS | 高；unified endpoint/store/pin |
+| F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R02A PASS | 高；startup/admission/pin |
 | I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
 | R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
@@ -186,6 +195,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   admission/generation/registration/lifecycle；不改`runtime/package-test`/test-runner/router/scripts。
 - T05独占 `test-runner/**`、`runtime/package-test/**`、test-only canonical fixture builders及isolated test
   runtime harness；不改runtime host production、router或tooling production。
+- F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
+  fixture；R02A PASS后F03B只写Router consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有
+  repair与T05合流后才刷新Cargo.lock并运行I02，避免单侧mock再次冒充interop证据。
 - T06在R02后独占 `artifact-model`/`artifact-identity`/runtime linked/eval的旧module删除，canonical
   ecosystem checker/verify接线、`cross-system-fixtures/**`及旧reference/architecture/runtime/router文档。
   不修改已通过R02的consumer语义。
