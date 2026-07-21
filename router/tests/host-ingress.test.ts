@@ -5,10 +5,11 @@ import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AssemblyWebSocketGateway } from '../src/gateway/assemblyWebSocketGateway.js';
-import type { RequestStartFrameHeader } from '../src/protocol/envelope.js';
-import { validateRouterToRuntimeFrameHeader } from '../src/protocol/runtimeProtocol.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyHttpGateway } from '../src/router/assemblyHttpGateway.js';
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
+import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -20,7 +21,7 @@ const CODEX_MODELS_OPERATION = operationIdentity('b');
 const AIHUB_MODELS_OPERATION = operationIdentity('c');
 const AIHUB_SOCKET_OPERATION = operationIdentity('d');
 const AGINE_SOCKET_OPERATION = operationIdentity('e');
-const calls: RequestStartFrameHeader[] = [];
+const calls: RuntimeAssemblyRequestStartFrameHeader[] = [];
 const resources: Array<{ close(): Promise<void> }> = [];
 
 afterEach(async () => {
@@ -40,11 +41,15 @@ describe('RuntimeAssembly Host ingress', () => {
       'x-skiff-release': 'wrong-release'
     }, '?service=also-wrong&version=also-wrong');
     expect(codex.status).toBe(200);
-    expect(calls.at(-1)).toMatchObject({ contractOperationId: CODEX_MODELS_OPERATION });
+    expect(calls.at(-1)).toMatchObject({
+      routing: { contractOperationId: CODEX_MODELS_OPERATION }
+    });
 
     const aihub = await httpGet(url, 'aihub.localhost');
     expect(aihub.status).toBe(200);
-    expect(calls.at(-1)).toMatchObject({ contractOperationId: AIHUB_MODELS_OPERATION });
+    expect(calls.at(-1)).toMatchObject({
+      routing: { contractOperationId: AIHUB_MODELS_OPERATION }
+    });
 
     const unknown = await httpGet(url, 'unknown.localhost');
     expect(unknown.status).toBe(404);
@@ -52,7 +57,7 @@ describe('RuntimeAssembly Host ingress', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('disambiguates the same WebSocket path by Host and fails closed for unknown Host', async () => {
+  it('keeps the pre-cutover WebSocket writer fail closed', async () => {
     const snapshots = snapshotStore();
     const http = new AssemblyHttpGateway({ snapshots, dispatcher: fakeDispatcher(), port: 0 });
     const httpListen = await http.listen();
@@ -66,12 +71,10 @@ describe('RuntimeAssembly Host ingress', () => {
     await websocket.listen();
     resources.push(websocket);
 
-    await openWebSocket(httpListen.url, 'aihub.localhost', '/ws?service=wrong');
-    expect(calls.at(-1)).toMatchObject({ contractOperationId: AIHUB_SOCKET_OPERATION });
-    await openWebSocket(httpListen.url, 'agine.localhost', '/ws');
-    expect(calls.at(-1)).toMatchObject({ contractOperationId: AGINE_SOCKET_OPERATION });
+    await expect(openWebSocket(httpListen.url, 'aihub.localhost', '/ws?service=wrong')).rejects.toThrow();
+    await expect(openWebSocket(httpListen.url, 'agine.localhost', '/ws')).rejects.toThrow();
     await expect(openWebSocket(httpListen.url, 'unknown.localhost', '/ws')).rejects.toThrow();
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -127,19 +130,19 @@ function binding(
 
 function fakeDispatcher(): RuntimeDispatcher {
   return {
-    dispatchBinary: async (input: { header: RequestStartFrameHeader }) => {
-      const validation = validateRouterToRuntimeFrameHeader(input.header);
+    dispatchBinary: async (input: { header: RuntimeUnaryDispatchFrameHeader }) => {
+      const validation = validateRuntimeAssemblyRequestStartFrameHeader(input.header);
       if (!validation.ok) {
         throw new Error(validation.error);
       }
-      calls.push(input.header);
+      calls.push(validation.envelope);
       return {
         header: {
           schemaVersion: 'skiff-runtime-frame-v1',
           type: 'response.end',
-          requestId: input.header.requestId,
+          requestId: validation.envelope.requestId,
           payloadPresent: false,
-          ...(input.header.websocketAdapter?.kind === 'connect'
+          ...(validation.envelope.websocketAdapter?.kind === 'connect'
             ? {
                 websocketConnect: {
                   result: 'accept' as const,

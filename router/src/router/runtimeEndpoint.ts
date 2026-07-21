@@ -16,13 +16,16 @@ import {
 import type { AssemblyActivationControl } from '../protocol/assemblyActivationProtocol.js';
 import {
   decodeBinaryFrame,
+  encodeBinaryFrame,
   encodeRuntimeFrame,
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionSendEnvelope,
   type RequestCancelEnvelope,
   type RouterControlEnvelope,
-  type RouterControlFrameHeader
+  type RouterControlFrameHeader,
+  type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeToRouterFrameHeader } from '../protocol/runtimeProtocol.js';
 import type {
   AssemblyActivationControlSender,
@@ -249,7 +252,10 @@ export class RuntimeEndpoint
       callback?.(new Error('Runtime socket is not open'));
       return;
     }
-    ws.send(encodeRuntimeFrame(header, payloadBytes), callback);
+    const frame = isRuntimeAssemblyOutboundHeader(header)
+      ? encodeBinaryFrame(header as unknown as Record<string, unknown>, payloadBytes)
+      : encodeRuntimeFrame(header, payloadBytes);
+    ws.send(frame, callback);
   }
 
   sendAssemblyControl(ws: WebSocket, control: AssemblyActivationControl): void {
@@ -486,6 +492,12 @@ export class RuntimeEndpoint
     }
     coordinator.handleRuntimeControl(ws, control);
   }
+}
+
+function isRuntimeAssemblyOutboundHeader(
+  header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameHeader
+): header is RuntimeAssemblyRequestStartFrameHeader {
+  return header.type === 'request.start' && 'routing' in header;
 }
 
 function runtimeIdentityFromHeader(header: { type: string; runtimeId?: string }): string | undefined {

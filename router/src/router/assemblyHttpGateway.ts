@@ -11,6 +11,8 @@ import {
   type HttpRequestFrameMetadata,
   type RequestStartFrameHeader
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
 import { GatewayError, toGatewayError } from './errors.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
 import {
@@ -100,7 +102,7 @@ export class AssemblyHttpGateway {
     try {
       const runtimeResponse = await this.options.dispatcher.dispatchBinary(
         {
-          header: assemblyRequestHeader({
+          header: assemblyHttpUnaryRequestHeader({
             snapshot,
             binding: selection.binding,
             requestId,
@@ -117,7 +119,6 @@ export class AssemblyHttpGateway {
         writeResponseHeaders(response, runtimeResponse.header.httpResponse.headers);
       } else {
         response.statusCode = 200;
-        response.setHeader('content-type', 'application/json; charset=utf-8');
       }
       response.end(Buffer.from(runtimeResponse.payloadBytes));
     } finally {
@@ -137,6 +138,58 @@ export class AssemblyHttpGateway {
   }
 }
 
+export function assemblyHttpUnaryRequestHeader(input: {
+  snapshot: RouterActiveAssemblySnapshot;
+  binding: RuntimeAssemblyIngressBinding;
+  requestId: string;
+  timeoutMs: number;
+  httpRequest: HttpRequestFrameMetadata;
+}): RuntimeAssemblyRequestStartFrameHeader {
+  const selector = input.binding.selector;
+  if (selector.protocol !== 'http' || selector.method === null) {
+    throw new Error('canonical HTTP unary requests require an HTTP ingress binding');
+  }
+  const candidate = {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId: input.requestId,
+    mode: 'unary',
+    caller: {
+      kind: 'gateway',
+      target: '__skiff.runtime-assembly-ingress'
+    },
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
+      assemblyGeneration: input.snapshot.generation,
+      contractOperationId: input.binding.contractOperationId,
+      ingress: {
+        protocol: 'http',
+        host: canonicalIngressHost(selector.host),
+        method: selector.method.toUpperCase(),
+        path: selector.path
+      }
+    },
+    deadline: {
+      timeoutMs: input.timeoutMs,
+      expiresAt: new Date(Date.now() + input.timeoutMs).toISOString()
+    },
+    trace: {
+      traceId: randomUUID(),
+      spanId: randomUUID()
+    },
+    httpRequest: input.httpRequest,
+    testEffectsEnabled: false,
+    testEffectDoubles: {}
+  } as const;
+  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
+  return validation.envelope;
+}
+
+/** Legacy WebSocket request writer retained until the typed WS cutover. */
 export function assemblyRequestHeader(input: {
   snapshot: RouterActiveAssemblySnapshot;
   binding: RuntimeAssemblyIngressBinding;
