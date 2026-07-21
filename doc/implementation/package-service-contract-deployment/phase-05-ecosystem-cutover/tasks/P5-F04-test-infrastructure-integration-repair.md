@@ -6,6 +6,8 @@
   replacement task worktree组合candidate；原T05 Agent只增加一个repair commit，不merge/push。
 - 五分钟内先做WS authoring与canonical store/base assembly API探针，再产生真实code edit；若WS production
   projection不可构造，报告exact compiler blocker，不得改artifact。
+- D07确认真实consumer另受compiler/source callable-effects阻断；F04不得绕过或修改compiler。只有F06合流并
+  通过R06后，F04才在该exact checkpoint恢复同一fixture的isolated正例与最终接收。
 - 独占`test-runner/**`、`runtime/package-test/**`、test-only ecosystem fixture、`scripts/skiff.mjs`、
   `scripts/lib/**`中isolated test/verify直接caller及对应tests。可删除旧live/doubles caller；不改compiler
   stream、Router、Runtime host/driver/shared wire或root lock。
@@ -51,3 +53,10 @@ service正例通过canonical isolated stack取得最终Host结果。
 另反搜D04删除参数、`enable_ecosystem_smoke_server_stream`、production artifact identity mutation、手调mutation
 primitive及旧aggregate。回报base→overlay→test assembly数据流、CLI disposition、真实执行结果、模块职责、
 exact source/commit/tree与clean/lock。原接收reviewer只窄复验六个blocker。
+
+## D07 / F06 handoff
+
+F04在R06前保留负例，精确断言service-calling test callable的projection reasons；R06 PASS后必须使用正常source
+构造fresh helper Box → package direct mutate → detached payments contract call，provider按输入分支返回常量，并
+通过exact helper PackageBinding、service selector、base config与isolated Host ingress断言最终
+`provider-observed-helper-mutated`。旧负例不能作为完成态，既有eval/Host focused test也不能替代该最终结果。
