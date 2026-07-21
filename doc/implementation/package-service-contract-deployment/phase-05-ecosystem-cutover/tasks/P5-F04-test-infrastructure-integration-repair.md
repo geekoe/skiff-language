@@ -87,3 +87,10 @@ F04→F05→F03C依赖成环，冻结F08/R08前置修复。
 该checkpoint可在不作F04 receive verdict的前提下合入integration，供root刷新shared lock并执行F08/R08；这不把
 F04称为complete。R08 PASS后必须在同一合流状态原样运行canonical activation→production Host ingress fixture并
 观察`provider-observed-helper-mutated`，再由原接收范围窄验六个blocker。F08的Host compile/test不能替代该证据。
+
+## D10 / F04A真实执行handoff
+
+R08后的首次真实probe在`1dc1d7ae037e5de45b68d8a82a2e84860f7fee15`仍为NO-GO：isolated Router配置
+丢失environment并循环退出；同时source registry只有std，helper/service场景仅project/assemble、没有被runner消费。
+其余Rust/Node/Host check/smoke/Clippy均PASS，candidate与lock clean。D10已冻结F04A一次修复environment传递与显式
+production-authoring fixture preparation；F04A真实Host PASS且原六项窄接收通过前，F04仍不完整。

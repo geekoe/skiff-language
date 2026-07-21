@@ -8,7 +8,8 @@ R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner
 产生可观测WS pin，D05已冻结typed unified WS ABI；F04真实consumer又由callable-effects过度fail-close阻断，
 D07已冻结F06 compiler repair；R06首次因exact callee的Field wrapper遗漏而FAIL，F06A已在`fbf634d`通过
 R06窄复验；D08/F07 exact native semantics已在`bd13867`通过R07。F04的Host证据与F03C依赖形成环，D09已冻结
-F08/R08前置Host seam修复已在`c5ec7ea`通过；F04原Host probe与窄接收在途。F05等待F04 narrow receive，
+F08/R08前置Host seam修复已在`c5ec7ea`通过；F04原Host probe又发现environment丢失与helper fixture未执行，
+D10已冻结F04A真实执行修复。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -93,7 +94,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 partial repair
           ├─► D07 callable-effects audit ─► F06 compiler repair ─► R06 FAIL@2982cd8 ─► F06A field repair ─► R06 PASS@fbf634d
           │     D08 native-effects audit ───────────────────────────────────────────────────────────┴─► F07 exact native semantics ─► R07 PASS@bd13867
-          │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 PASS@c5ec7ea ─► F04 Host probe/receive
+          │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 PASS@c5ec7ea
+          │                                                                                                     └─► F04 Host probe NO-GO@1dc1d7a ─► D10 ─► F04A ─► F04 narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -172,6 +174,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D09 | [Host test-runtime cycle audit](tasks/P5-D09-host-test-runtime-cycle-audit.md) | F04 Host blocker after R07 | 独立只读；冻结DAG解环 |
 | F08 | [Host test-runtime seam repair](tasks/P5-F08-host-test-runtime-seam-repair.md) | F04 implementation checkpoint + shared lock | 高；Host legacy seam删除 |
 | R08 | [Host test-runtime seam acceptance](tasks/P5-R08-host-test-runtime-seam-acceptance.md) | F08 exact commit | 高；独立只读 |
+| D10 | [F04 real Host completion audit](tasks/P5-D10-f04-real-host-completion-audit.md) | F04 Host NO-GO at `1dc1d7a` | 独立只读；冻结environment/fixture缺口 |
+| F04A | [Real Host execution completion](tasks/P5-F04A-real-host-execution-completion.md) | D10 complete | 高；environment与runnable fixture窄修复 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -246,6 +250,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   checkpoint合流后，root integration owner独占一次Cargo.lock刷新并冻结exact shared-lock commit；F08只改Host
   consumer、不得再改manifest/lock，R08 PASS后F04原fixture才可完成receive。该前置修复不实现F03C的startup、
   lifecycle、request trust boundary、drain或typed WS职责。
+- D10只读确认R08后isolated Router environment仍在script config链丢失，且helper/service场景没有进入real runner。
+  F04A只在local config/renderer caller与test infrastructure fixture/preparer内关闭两项；source registry、production
+  writer、Host/wire与WebSocket smoke保持不变。真实Host结果是F04 receive硬门禁。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
