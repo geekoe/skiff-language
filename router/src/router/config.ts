@@ -25,6 +25,7 @@ const IDENTITY_CLI_BINARY = process.platform === 'win32'
 export interface RouterConfig {
   artifactRoots?: string[];
   devReload?: boolean;
+  environment?: string;
   host: string;
   httpBodyLimitBytes?: number;
   httpPort: number;
@@ -45,6 +46,7 @@ export interface RouterConfig {
 export interface RouterConfigOverrides {
   artifactRoots?: string[];
   devReload?: boolean;
+  environment?: string;
   host?: string;
   httpBodyLimitBytes?: string;
   httpPort?: string;
@@ -61,6 +63,7 @@ export interface RouterConfigOverrides {
 interface RawRouterConfig {
   artifactRoots?: unknown;
   devReload?: unknown;
+  environment?: unknown;
   host?: unknown;
   hosts?: unknown;
   http?: {
@@ -163,6 +166,16 @@ export async function loadRouterConfig(
       '/ws'
     )
   };
+  const environment = readOptionalNonEmptyString(
+    overrides.environment ?? raw.environment,
+    'environment'
+  );
+  if (environment !== undefined) {
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(environment) || environment === '.' || environment === '..') {
+      throw new Error('router config environment is invalid');
+    }
+    config.environment = environment;
+  }
   if (artifactRoots !== undefined) {
     config.artifactRoots = artifactRoots;
   }
@@ -522,7 +535,7 @@ function rejectRemovedHosts(value: unknown): void {
     return;
   }
   throw new Error(
-    'router config hosts is no longer supported; use top-level rewrite rules'
+    'router config hosts is no longer supported; declare RuntimeAssembly globalIngress Hosts'
   );
 }
 

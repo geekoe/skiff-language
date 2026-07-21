@@ -19,9 +19,9 @@ import {
 import type {
   RuntimeDispatchConnection,
   RuntimeDispatchFrameHeader,
+  RuntimeDispatchRuntimeIdentity,
   RuntimeInFlightRequest,
-  RuntimeRegistry,
-  RuntimeRegistryRuntime
+  RuntimeRegistry
 } from './runtimeRegistry.js';
 import {
   GatewayError,
@@ -128,6 +128,8 @@ export interface RuntimeBinaryDispatchInput<
 export interface RuntimeBinaryDispatchOptions {
   signal?: AbortSignal;
   cancelReason?: RequestCancelReason;
+  /** Keep an already-established stream/connection on its selected runtime. */
+  connection?: RuntimeDispatchConnection;
 }
 
 export type RuntimeStreamRequestTerminal = (terminal: PendingTerminal) => void;
@@ -141,8 +143,16 @@ export interface RuntimeBinaryStreamHandlers {
 
 export interface RuntimeDispatcherOptions {
   frameSender: RuntimeFrameSender;
-  registry: RuntimeRegistry;
+  registry: RuntimeDispatchRegistry;
 }
+
+export type RuntimeDispatchRegistry = Pick<
+  RuntimeRegistry,
+  | 'setInFlightCounter'
+  | 'pickDispatchConnection'
+  | 'refreshAllRuntimeStates'
+  | 'refreshRuntimeStatesForRequest'
+>;
 
 export interface RuntimeDispatcherPendingCounters {
   pendingUnary: number;
@@ -175,12 +185,16 @@ export class RuntimeDispatcher {
     timeoutMs: number,
     options: RuntimeBinaryDispatchOptions = {}
   ): Promise<RuntimeBinaryDispatchResponse> {
-    const connection = this.options.registry.pickDispatchConnection(request.header);
+    const connection =
+      options.connection ?? this.options.registry.pickDispatchConnection(request.header);
     if (connection instanceof GatewayError) {
       return Promise.reject(connection);
     }
     if (!connection) {
       return Promise.reject(new ProviderUnavailableError());
+    }
+    if (connection.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new ProviderUnavailableError('Pinned runtime disconnected'));
     }
     const dispatchHeader = dispatchHeaderForConnection(request.header, connection);
 
@@ -386,7 +400,7 @@ export class RuntimeDispatcher {
     this.options.registry.refreshAllRuntimeStates();
   }
 
-  countInFlight(runtime: RuntimeRegistryRuntime): number {
+  countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number {
     let count = 0;
     for (const pending of this.pending.values()) {
       if (this.pendingBelongsToRuntime(pending, runtime)) {
@@ -802,29 +816,12 @@ export class RuntimeDispatcher {
 
   private pendingBelongsToRuntime(
     pending: RuntimeInvocation,
-    runtime: RuntimeRegistryRuntime
+    runtime: RuntimeDispatchRuntimeIdentity
   ): boolean {
     if (pending.runtimeId !== undefined) {
       return pending.runtimeId === runtime.runtimeId;
     }
-    if (pending.ws !== runtime.ws) {
-      return false;
-    }
-    const request = pending.request;
-    if (request.type === 'package-test.start') {
-      return false;
-    }
-    if (request.serviceId !== undefined && request.serviceId !== runtime.serviceId) {
-      return false;
-    }
-    return (
-      runtime.buildId === request.buildId &&
-      runtime.serviceProtocolIdentity === request.serviceProtocolIdentity &&
-      runtime.targets.has(request.target) &&
-      runtimeAcceptsGatewayEntry(runtime, request.gatewayEntryIdentity) &&
-      (request.activationIdentity === undefined ||
-        runtime.activationIdentity === request.activationIdentity)
-    );
+    return pending.ws === runtime.ws;
   }
 }
 
@@ -851,16 +848,4 @@ function dispatchHeaderForConnection(
     ...header,
     buildId: connection.dispatchBuildId
   };
-}
-
-function runtimeAcceptsGatewayEntry(
-  runtime: RuntimeRegistryRuntime,
-  gatewayEntryIdentity: string | undefined
-): boolean {
-  const hasGatewayEntryIdentityIndex = (runtime.gatewayEntryIdentities?.size ?? 0) > 0;
-  return (
-    gatewayEntryIdentity === undefined ||
-    !hasGatewayEntryIdentityIndex ||
-    runtime.gatewayEntryIdentities?.has(gatewayEntryIdentity) === true
-  );
 }

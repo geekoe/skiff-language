@@ -448,6 +448,15 @@ export interface RequestStartFrameHeader extends RuntimeFrameHeaderBase<'request
   version?: string;
   buildId: string;
   serviceProtocolIdentity: string;
+  assemblyIdentity?: string;
+  assemblyGeneration?: number;
+  contractOperationId?: string;
+  ingress?: {
+    protocol: 'http' | 'webSocket';
+    host: string;
+    method: string | null;
+    path: string;
+  };
   activationIdentity?: string;
   gatewayEntryIdentity?: string;
   businessIdentity?: string;

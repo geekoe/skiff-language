@@ -101,8 +101,14 @@ const routerToRuntimeFrameHeaderTypes = [
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
 const PROTOCOL_IDENTITY_PATTERN = /^skiff-protocol-v1:sha256:[0-9a-f]{64}$/;
+const SERVICE_PROTOCOL_IDENTITY_PATTERN =
+  /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
+const CONTRACT_OPERATION_IDENTITY_PATTERN =
+  /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const BUILD_ID_PATTERN = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
+const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
+  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_BUILD_ID_PATTERN = /^skiff-package-test-build-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN =
   /^skiff-(?:service|package-test)-build-v1:sha256:[0-9a-f]{64}$/;
@@ -437,6 +443,20 @@ const requestStartFrameProperties = {
   version: { type: 'string' },
   buildId: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
+  assemblyIdentity: { type: 'string' },
+  assemblyGeneration: { type: 'integer' },
+  contractOperationId: { type: 'string' },
+  ingress: {
+    type: 'object',
+    required: ['protocol', 'host', 'method', 'path'],
+    properties: {
+      protocol: { type: 'string', enum: ['http', 'webSocket'] },
+      host: { type: 'string' },
+      method: { type: ['string', 'null'] },
+      path: { type: 'string' }
+    },
+    additionalProperties: false
+  },
   activationIdentity: { type: 'string' },
   gatewayEntryIdentity: { type: 'string' },
   businessIdentity: { type: 'string' },
@@ -1062,6 +1082,10 @@ export const runtimeFrameHeaderSchemas = {
       serviceId: { type: 'string' },
       buildId: { type: 'string' },
       serviceProtocolIdentity: { type: 'string' },
+      assemblyIdentity: { type: 'string' },
+      assemblyGeneration: { type: 'integer' },
+      contractOperationId: { type: 'string' },
+      ingress: requestStartFrameProperties.ingress,
       activationIdentity: { type: 'string' },
       gatewayEntryIdentity: { type: 'string' },
       businessIdentity: { type: 'string' },
@@ -2662,21 +2686,9 @@ function validateRequestStartFrameHeader(envelope: Record<string, unknown>): str
     requireString(envelope, 'request.start', 'operationAbiId') ??
     optionalString(envelope, 'request.start', 'selector') ??
     optionalPublicationId(envelope, 'request.start', 'serviceId') ??
-    requireStringPattern(
-      envelope,
-      'request.start',
-      'buildId',
-      BUILD_ID_PATTERN,
-      'skiff-service-build-v1:sha256:<64 lowercase hex>'
-    ) ??
+    validateRequestBuildIdentity(envelope) ??
     requireString(envelope, 'request.start', 'serviceProtocolIdentity') ??
-    requirePattern(
-      envelope,
-      'request.start',
-      'serviceProtocolIdentity',
-      PROTOCOL_IDENTITY_PATTERN,
-      'skiff-protocol-v1:sha256:<64 lowercase hex>'
-    ) ??
+    validateRequestProtocolIdentity(envelope) ??
     optionalStringPattern(
       envelope,
       'request.start',
@@ -2701,9 +2713,111 @@ function validateRequestStartFrameHeader(envelope: Record<string, unknown>): str
     validateHttpRequestFrameMetadata(envelope) ??
     validateHttpAdapterFrameMetadata(envelope) ??
     validateWebSocketAdapterFrameMetadata(envelope) ??
+    validateAssemblyDispatchMetadata(envelope) ??
     optionalBoolean(envelope, 'request.start', 'testEffectsEnabled') ??
     validateTestEffectDoubles(envelope, 'request.start')
   );
+}
+
+function validateRequestProtocolIdentity(envelope: Record<string, unknown>): string | null {
+  const pattern = envelope.assemblyIdentity === undefined
+    ? PROTOCOL_IDENTITY_PATTERN
+    : SERVICE_PROTOCOL_IDENTITY_PATTERN;
+  const description = envelope.assemblyIdentity === undefined
+    ? 'skiff-protocol-v1:sha256:<64 lowercase hex>'
+    : 'skiff-service-protocol-v2:sha256:<64 lowercase hex>';
+  return requirePattern(
+    envelope,
+    'request.start',
+    'serviceProtocolIdentity',
+    pattern,
+    description
+  );
+}
+
+function validateRequestBuildIdentity(envelope: Record<string, unknown>): string | null {
+  const value = envelope.buildId;
+  const pattern = envelope.assemblyIdentity === undefined
+    ? BUILD_ID_PATTERN
+    : RUNTIME_ASSEMBLY_IDENTITY_PATTERN;
+  const description = envelope.assemblyIdentity === undefined
+    ? 'skiff-service-build-v1:sha256:<64 lowercase hex>'
+    : 'the exact skiff-runtime-assembly-v1:sha256:<64 lowercase hex> identity';
+  if (typeof value !== 'string' || !pattern.test(value)) {
+    return `invalid request.start envelope: buildId must be ${description}`;
+  }
+  if (envelope.assemblyIdentity !== undefined && value !== envelope.assemblyIdentity) {
+    return 'invalid request.start envelope: buildId must equal assemblyIdentity for assembly ingress';
+  }
+  return null;
+}
+
+function validateAssemblyDispatchMetadata(envelope: Record<string, unknown>): string | null {
+  const fields = [
+    'assemblyIdentity',
+    'assemblyGeneration',
+    'contractOperationId',
+    'ingress'
+  ] as const;
+  const present = fields.filter((field) => envelope[field] !== undefined);
+  if (present.length === 0) {
+    return null;
+  }
+  if (present.length !== fields.length) {
+    return 'invalid request.start envelope: assemblyIdentity, assemblyGeneration, contractOperationId, and ingress must be present together';
+  }
+  if (
+    typeof envelope.assemblyIdentity !== 'string' ||
+    !RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(envelope.assemblyIdentity)
+  ) {
+    return 'invalid request.start envelope: assemblyIdentity must be skiff-runtime-assembly-v1:sha256:<64 lowercase hex>';
+  }
+  if (
+    !Number.isSafeInteger(envelope.assemblyGeneration) ||
+    Number(envelope.assemblyGeneration) < 0
+  ) {
+    return 'invalid request.start envelope: assemblyGeneration must be a non-negative safe integer';
+  }
+  if (
+    typeof envelope.contractOperationId !== 'string' ||
+    !CONTRACT_OPERATION_IDENTITY_PATTERN.test(envelope.contractOperationId)
+  ) {
+    return 'invalid request.start envelope: contractOperationId must be skiff-contract-operation-v1:sha256:<64 lowercase hex>';
+  }
+  if (
+    envelope.target !== envelope.contractOperationId ||
+    envelope.operationAbiId !== envelope.contractOperationId
+  ) {
+    return 'invalid request.start envelope: target and operationAbiId must equal contractOperationId for assembly ingress';
+  }
+  if (!isRecord(envelope.ingress)) {
+    return 'invalid request.start envelope: ingress must be an object';
+  }
+  const supported = ['protocol', 'host', 'method', 'path'];
+  const unsupported = Object.keys(envelope.ingress).find((field) => !supported.includes(field));
+  if (unsupported !== undefined) {
+    return `invalid request.start envelope: ingress.${unsupported} is not supported`;
+  }
+  const protocol = envelope.ingress.protocol;
+  const method = envelope.ingress.method;
+  if (protocol !== 'http' && protocol !== 'webSocket') {
+    return 'invalid request.start envelope: ingress.protocol must be http or webSocket';
+  }
+  if (
+    typeof envelope.ingress.host !== 'string' ||
+    envelope.ingress.host.length === 0 ||
+    typeof envelope.ingress.path !== 'string' ||
+    !envelope.ingress.path.startsWith('/')
+  ) {
+    return 'invalid request.start envelope: ingress must carry a non-empty host and absolute path';
+  }
+  if (
+    (protocol === 'http' && (typeof method !== 'string' || method.length === 0)) ||
+    (protocol === 'webSocket' && method !== null)
+  ) {
+    return 'invalid request.start envelope: ingress method does not match protocol';
+  }
+  return null;
 }
 
 function validatePackageTestStartFrameHeader(envelope: Record<string, unknown>): string | null {
@@ -3081,9 +3195,10 @@ function validateWebSocketAdapterFrameMetadata(envelope: Record<string, unknown>
   if (contextExpectationError) {
     return contextExpectationError;
   }
-  const websocketContextError =
-    requireString(envelope, 'request.start', 'websocketEntryId') ??
-    requireString(envelope, 'request.start', 'gatewayEntryIdentity');
+  const websocketContextError = envelope.assemblyIdentity === undefined
+    ? requireString(envelope, 'request.start', 'websocketEntryId') ??
+      requireString(envelope, 'request.start', 'gatewayEntryIdentity')
+    : null;
   if (websocketContextError) {
     return websocketContextError;
   }

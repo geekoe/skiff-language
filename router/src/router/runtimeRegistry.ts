@@ -118,8 +118,13 @@ export interface RuntimeRegistryRuntime {
   ws: WebSocket;
 }
 
+export interface RuntimeDispatchRuntimeIdentity {
+  runtimeId: string;
+  ws: WebSocket;
+}
+
 export interface RuntimeInFlightCounter {
-  countInFlight(runtime: RuntimeRegistryRuntime): number;
+  countInFlight(runtime: RuntimeDispatchRuntimeIdentity): number;
 }
 
 export interface RuntimeConnectionProvider {
