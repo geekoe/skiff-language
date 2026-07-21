@@ -19,22 +19,31 @@ export const LIVE_DISCOVERIES = Object.freeze({
 });
 
 export const LIVE_INPUTS = deepFreeze({
-  runtimeConfig: {
-    option: 'runtimeLiveConfig',
-    environment: 'SKIFF_RUNTIME_LIVE_CONFIG',
-    description: 'runtime config (SKIFF_RUNTIME_LIVE_CONFIG or --runtime-live-config <path>)',
+  runtimeActivationUrl: {
+    option: 'runtimeLiveActivationUrl',
+    environment: 'SKIFF_RUNTIME_LIVE_ACTIVATION_URL',
+    description: 'assembly activation URL (SKIFF_RUNTIME_LIVE_ACTIVATION_URL or --runtime-live-activation-url <url>)',
   },
-  runtimeReloadUrl: {
-    option: 'runtimeLiveReloadUrl',
-    environment: 'SKIFF_RUNTIME_LIVE_RELOAD_URL',
-    description:
-      'router reload URL (SKIFF_RUNTIME_LIVE_RELOAD_URL or --runtime-live-reload-url <url>)',
+  runtimeIngressUrl: {
+    option: 'runtimeLiveIngressUrl',
+    environment: 'SKIFF_RUNTIME_LIVE_INGRESS_URL',
+    description: 'runtime ingress URL (SKIFF_RUNTIME_LIVE_INGRESS_URL or --runtime-live-ingress-url <url>)',
   },
   runtimeArtifactRoot: {
     option: 'runtimeLiveArtifactRoot',
     environment: 'SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT',
     description:
       'artifact root (SKIFF_RUNTIME_LIVE_ARTIFACT_ROOT or --runtime-live-artifact-root <dir>)',
+  },
+  runtimeEnvironment: {
+    option: 'runtimeLiveEnvironment',
+    environment: 'SKIFF_RUNTIME_LIVE_ENVIRONMENT',
+    description: 'activation environment (SKIFF_RUNTIME_LIVE_ENVIRONMENT or --runtime-live-environment <id>)',
+  },
+  runtimeExpectedGeneration: {
+    option: 'runtimeLiveExpectedGeneration',
+    environment: 'SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION',
+    description: 'expected generation (SKIFF_RUNTIME_LIVE_EXPECTED_GENERATION or --runtime-live-expected-generation <n>)',
   },
   loopRiskConfig: {
     option: 'loopRiskConfig',
@@ -55,15 +64,17 @@ export const LIVE_REGISTRY = deepFreeze([
       {
         selector: 'runtime-live',
         description:
-          'explicit live fixtures; requires config, reload URL, and artifact root',
+          'explicit live fixtures; requires canonical activation, ingress, artifact, environment, and generation targets',
         plan: LIVE_PLAN_TYPES.RUNTIME_FIXTURES,
         idPrefix: 'live:runtime:',
         ownership: LIVE_OWNERSHIP.EXTERNAL,
         tier: LIVE_TIERS.LIVE_MANUAL,
         requiredInputs: [
-          'runtimeConfig',
-          'runtimeReloadUrl',
+          'runtimeActivationUrl',
+          'runtimeIngressUrl',
           'runtimeArtifactRoot',
+          'runtimeEnvironment',
+          'runtimeExpectedGeneration',
         ],
         requiredExecutables: ['cargo', 'node'],
         requiredModules: [],

@@ -1,14 +1,24 @@
 import { PUBLIC_SELECTORS } from './verify-plan.mjs';
 import { renderLiveSelectorHelp } from './verify-live-registry.mjs';
 
+const runtimeLiveValueOptions = new Map([
+  ['--runtime-live-activation-url', 'runtimeLiveActivationUrl'],
+  ['--runtime-live-ingress-url', 'runtimeLiveIngressUrl'],
+  ['--runtime-live-artifact-root', 'runtimeLiveArtifactRoot'],
+  ['--runtime-live-environment', 'runtimeLiveEnvironment'],
+  ['--runtime-live-expected-generation', 'runtimeLiveExpectedGeneration'],
+]);
+
 export function parseVerifyArgs(argv) {
   const options = {
     help: false,
     list: false,
     selectors: [],
-    runtimeLiveConfig: undefined,
-    runtimeLiveReloadUrl: undefined,
+    runtimeLiveActivationUrl: undefined,
+    runtimeLiveIngressUrl: undefined,
     runtimeLiveArtifactRoot: undefined,
+    runtimeLiveEnvironment: undefined,
+    runtimeLiveExpectedGeneration: undefined,
     loopRiskConfig: undefined,
   };
 
@@ -39,61 +49,17 @@ export function parseVerifyArgs(argv) {
       options.selectors.push(...splitSelectors(arg.slice('--only='.length)));
       continue;
     }
-    if (arg === '--runtime-live-config') {
-      setSingletonOption(
-        options,
-        'runtimeLiveConfig',
-        requiredValue(argv, index, '--runtime-live-config'),
-        '--runtime-live-config',
-      );
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('--runtime-live-config=')) {
-      setSingletonOption(
-        options,
-        'runtimeLiveConfig',
-        requiredInlineValue(arg, '--runtime-live-config'),
-        '--runtime-live-config',
-      );
-      continue;
-    }
-    if (arg === '--runtime-live-reload-url') {
-      setSingletonOption(
-        options,
-        'runtimeLiveReloadUrl',
-        requiredValue(argv, index, '--runtime-live-reload-url'),
-        '--runtime-live-reload-url',
-      );
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('--runtime-live-reload-url=')) {
-      setSingletonOption(
-        options,
-        'runtimeLiveReloadUrl',
-        requiredInlineValue(arg, '--runtime-live-reload-url'),
-        '--runtime-live-reload-url',
-      );
-      continue;
-    }
-    if (arg === '--runtime-live-artifact-root') {
-      setSingletonOption(
-        options,
-        'runtimeLiveArtifactRoot',
-        requiredValue(argv, index, '--runtime-live-artifact-root'),
-        '--runtime-live-artifact-root',
-      );
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('--runtime-live-artifact-root=')) {
-      setSingletonOption(
-        options,
-        'runtimeLiveArtifactRoot',
-        requiredInlineValue(arg, '--runtime-live-artifact-root'),
-        '--runtime-live-artifact-root',
-      );
+    const equalsIndex = arg.indexOf('=');
+    const optionName = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    const optionKey = runtimeLiveValueOptions.get(optionName);
+    if (optionKey !== undefined) {
+      const value = equalsIndex === -1
+        ? requiredValue(argv, index, optionName)
+        : requiredInlineValue(arg, optionName);
+      setSingletonOption(options, optionKey, value, optionName);
+      if (equalsIndex === -1) {
+        index += 1;
+      }
       continue;
     }
     if (arg === '--loop-risk-config') {
@@ -157,11 +123,16 @@ ${renderLiveSelectorHelp()}
 options:
   --only <a,b>                 select one or more groups; may be specified once
   --list, --dry-run            print the expanded plan without executing it
-  --runtime-live-config <path> runtime-live config, relative to the repository root
-  --runtime-live-reload-url <url>
-                                explicit http://host:port router reload target
+  --runtime-live-activation-url <url>
+                                explicit canonical assembly activation target
+  --runtime-live-ingress-url <url>
+                                explicit runtime ingress origin
   --runtime-live-artifact-root <dir>
                                 explicit existing runtime artifact directory
+  --runtime-live-environment <id>
+                                explicit activation environment
+  --runtime-live-expected-generation <n>
+                                explicit non-negative expected generation
   --loop-risk-config <path>     canonical loop-risk target/runtime config
   -h, --help                   show this help
 

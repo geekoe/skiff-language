@@ -11,7 +11,7 @@ import {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
 
-export function skiffSourceTestRunnerCargoArgs({ skiffRoot, root }) {
+export function skiffSourceTestRunnerCargoArgs({ skiffRoot, root, artifactRoot }) {
   return [
     'run',
     '--quiet',
@@ -19,6 +19,8 @@ export function skiffSourceTestRunnerCargoArgs({ skiffRoot, root }) {
     join(skiffRoot, 'test-runner', 'Cargo.toml'),
     '--',
     root,
+    '--artifact-root',
+    artifactRoot,
     '--deny-skips',
     '--require-tests',
   ];
@@ -34,18 +36,25 @@ export async function runCanonicalSkiffSourceTests({
   const plan = createCanonicalSkiffSourceTestPlan({ skiffRoot, registry });
   await runtimeOwner({
     skiffRoot,
-    runTest: async (isolatedEnv, signal) => {
-      for (const entry of plan) {
+    runTest: async (isolatedEnv, signal, stack) => {
+      if (stack?.sourceArtifactRoot === undefined) {
+        throw new Error('isolated runtime owner omitted the canonical source artifact root');
+      }
+      for (const [index, entry] of plan.entries()) {
         log(`[skiff-tests] running ${entry.id}: ${entry.root}`);
         await runCommand(
           'cargo',
           skiffSourceTestRunnerCargoArgs({
             skiffRoot,
             root: entry.absoluteRoot,
+            artifactRoot: stack.sourceArtifactRoot,
           }),
           {
             cwd: skiffRoot,
-            env: isolatedEnv,
+            env: {
+              ...isolatedEnv,
+              SKIFF_TEST_EXPECTED_GENERATION: String(index),
+            },
             signal,
           },
         );

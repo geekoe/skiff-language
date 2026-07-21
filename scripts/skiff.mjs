@@ -5,7 +5,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cargoTargetDir } from './lib/cargo-target-dir.mjs';
 import { runAttachedCommand } from './lib/command-execution.mjs';
-import { parseRuntimeReloadUrl } from './lib/runtime-reload-url.mjs';
 import { runAuthoringObjectCommand } from './lib/package-service-authoring.mjs';
 import { runDevRegistryCommand } from './lib/package-service-dev-registry.mjs';
 import { devRuntimePaths } from './lib/dev-runtime-paths.mjs';
@@ -17,7 +16,6 @@ import { runOwnedCommand } from './lib/owned-command.mjs';
 import {
   defaultProjectPackageDir,
   readProjectPackageDirs,
-  resolvePackageDirsForCommand,
 } from './lib/project-config.mjs';
 import { renderRouterConfig, renderRuntimeConfig, renderTelemetryConfig } from './lib/runtime-stack-config.mjs';
 
@@ -32,7 +30,7 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file> [--profile <name>] [--live] [--allow-network] [--config <path>] [--router-reload-url <url>] [--artifact-root <dir>] [--deny-skips] [--require-tests] [--packages-dir <dir>]... [--package-test-concurrency <n>]
+  skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
@@ -191,29 +189,47 @@ async function projectPaths(rawArgs) {
 async function test(rawArgs) {
   const args = parseRootCommand(rawArgs, {
     optionsWithValues: new Set([
-      '--profile',
-      '--config',
-      '--package-test-concurrency',
-      '--router-reload-url',
       '--artifact-root',
+      '--base-assembly',
+      '--activation-url',
+      '--ingress-url',
+      '--environment',
+      '--expected-generation',
     ]),
-    repeatableOptionsWithValues: new Set(['--packages-dir']),
-    flags: new Set(['--live', '--allow-network', '--deny-skips', '--require-tests']),
+    flags: new Set(['--live', '--deny-skips', '--require-tests']),
   });
   const live = args.flags.has('--live');
-  if (!live && (args.options.routerReloadUrl || args.options.artifactRoot)) {
+  const liveTargetKeys = [
+    'activationUrl', 'ingressUrl', 'environment', 'expectedGeneration',
+  ];
+  if (!live && liveTargetKeys.some((key) => args.options[key] !== undefined)) {
     throw new Error(
-      'non-live skiff test owns an isolated runtime target; --router-reload-url and --artifact-root are only accepted with --live',
+      'non-live skiff test owns activation, ingress, environment, and generation targets',
     );
   }
-  const explicitArtifactRoot = args.options.artifactRoot === undefined
-    ? undefined
-    : resolve(args.options.artifactRoot);
-  if (live && explicitArtifactRoot !== undefined) {
-    await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
+  if (args.options.artifactRoot === undefined) {
+    throw new Error('skiff test requires --artifact-root');
   }
-  if (live && args.options.routerReloadUrl !== undefined) {
-    parseRuntimeReloadUrl(args.options.routerReloadUrl);
+  const explicitArtifactRoot = resolve(args.options.artifactRoot);
+  await requireExistingDirectory(explicitArtifactRoot, 'skiff test --artifact-root');
+  if (live) {
+    for (const key of liveTargetKeys) {
+      if (args.options[key] === undefined) {
+        throw new Error(`live skiff test requires --${key.replace(/[A-Z]/g, (value) => `-${value.toLowerCase()}`)}`);
+      }
+    }
+    if (!/^(?:0|[1-9][0-9]*)$/.test(args.options.expectedGeneration)) {
+      throw new Error('--expected-generation must be a non-negative integer');
+    }
+    validateCanonicalTestUrl(
+      args.options.activationUrl,
+      '/__skiff/activate-assembly',
+      '--activation-url',
+    );
+    validateCanonicalTestUrl(args.options.ingressUrl, '/', '--ingress-url');
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(args.options.environment)) {
+      throw new Error('--environment must be a canonical ASCII token');
+    }
   }
   const kind = await detectRootKind(args.root);
   if (kind.kind !== 'package' && kind.kind !== 'file') {
@@ -228,39 +244,26 @@ async function test(rawArgs) {
     '--',
     args.root,
   ];
-  if (args.options.profile) {
-    testArgs.push('--profile', args.options.profile);
-  }
   if (!shouldUseIsolatedTestRuntime(live)) {
     testArgs.push('--live');
   }
-  if (args.flags.has('--allow-network')) {
-    testArgs.push('--allow-network');
+  testArgs.push('--artifact-root', explicitArtifactRoot);
+  if (args.options.baseAssembly !== undefined) {
+    testArgs.push('--base-assembly', args.options.baseAssembly);
   }
-  if (args.options.config) {
-    testArgs.push('--config', args.options.config);
-  }
-  if (args.options.routerReloadUrl) {
-    testArgs.push('--router-reload-url', args.options.routerReloadUrl);
-  }
-  if (explicitArtifactRoot !== undefined) {
-    testArgs.push('--artifact-root', explicitArtifactRoot);
+  if (live) {
+    testArgs.push(
+      '--activation-url', args.options.activationUrl,
+      '--ingress-url', args.options.ingressUrl,
+      '--environment', args.options.environment,
+      '--expected-generation', args.options.expectedGeneration,
+    );
   }
   if (args.flags.has('--deny-skips')) {
     testArgs.push('--deny-skips');
   }
   if (args.flags.has('--require-tests')) {
     testArgs.push('--require-tests');
-  }
-  if (args.options.packageTestConcurrency) {
-    testArgs.push('--package-test-concurrency', args.options.packageTestConcurrency);
-  }
-  const packageDirs = await resolvePackageDirsForCommand({
-    startPath: args.root,
-    cliPackageDirs: args.options.packagesDir ?? [],
-  });
-  for (const packageDir of packageDirs) {
-    testArgs.push('--packages-dir', packageDir);
   }
   if (live) {
     await run('cargo', testArgs, skiffRoot);
@@ -274,6 +277,25 @@ async function test(rawArgs) {
       signal,
     }),
   });
+}
+
+function validateCanonicalTestUrl(value, expectedPath, option) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${option} must be an absolute http:// URL`);
+  }
+  if (
+    url.protocol !== 'http:'
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+    || url.pathname !== expectedPath
+  ) {
+    throw new Error(`${option} must point exactly to ${expectedPath}`);
+  }
 }
 
 async function devInit(rawArgs) {

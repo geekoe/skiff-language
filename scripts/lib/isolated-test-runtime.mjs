@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ export async function runInIsolatedTestRuntime({
   runTest,
   skiffRoot = defaultSkiffRoot,
   baseEnv = process.env,
+  environment = 'skiff-test',
   signalTarget = process,
   dependencies = {},
 }) {
@@ -48,10 +49,11 @@ export async function runInIsolatedTestRuntime({
     stack = await startIsolatedTestRuntime({
       skiffRoot,
       baseEnv,
+      environment,
       ops,
       signal: abortController.signal,
     });
-    value = await runTest(stack.testRunnerEnv, abortController.signal);
+    value = await runTest(stack.testRunnerEnv, abortController.signal, stack);
   } catch (error) {
     testError = error;
   }
@@ -85,7 +87,7 @@ export async function runInIsolatedTestRuntime({
   return value;
 }
 
-async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
+async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, signal }) {
   const portLease = await ops.leasePorts();
   let tempRoot;
   let supervisor;
@@ -93,25 +95,33 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
   let supervisorAttempted = false;
   try {
     tempRoot = await ops.makeTempRoot();
+    const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
+    await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
     const configPath = join(instanceRoot, 'config.yml');
     const devHome = join(instanceRoot, 'dev-home');
     const artifactRoot = join(devHome, 'artifacts');
-    const buildRoot = join(devHome, 'build');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
     const config = isolatedTestInstanceConfigText({
       devHome,
       cargoTarget: cargoTargetDir(skiffRoot, baseEnv),
       basePort,
+      environment,
     });
     await ops.writeConfig(configPath, config);
     configWritten = true;
-    const isolatedEnv = isolatedTestRunnerEnvironment({ baseEnv, devHome, controlPort });
-    await ops.seedBootstrap({
+    const isolatedEnv = isolatedTestRunnerEnvironment({
+      baseEnv,
+      devHome,
+      controlPort,
+      routerHttpPort: basePort,
+      environment,
+    });
+    const bootstrap = await ops.seedBootstrap({
       skiffRoot,
       artifactRoot,
-      buildRoot,
+      environment,
       env: isolatedEnv,
       signal,
     });
@@ -124,6 +134,7 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
       controlUrl,
       routerHttpUrl,
       artifactRoot,
+      bootstrap,
       supervisor,
       signal,
     });
@@ -131,6 +142,7 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
     console.log(`[skiff-test] isolated runtime workspace: ${tempRoot}`);
     return {
       artifactRoot,
+      sourceArtifactRoot,
       configPath,
       controlUrl,
       routerHttpUrl,
@@ -139,6 +151,7 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, ops, signal }) {
       ports: portLease.ports,
       supervisor,
       tempRoot,
+      environment,
       testRunnerEnv: isolatedEnv,
     };
   } catch (error) {
@@ -221,6 +234,7 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
       count: 3,
     }),
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
+    createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
     assertPortsClosed,
     removeTempRoot: (path) => rm(path, { recursive: true, force: true }),
     ...overrides,

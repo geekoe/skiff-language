@@ -11,14 +11,17 @@ import { captureCheckedCommand } from './command-execution.mjs';
 const STABLE_MONGO_PORT = 27017;
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
-const BOOTSTRAP_SERVICE_ID = 'example.com/test-runtime-bootstrap';
-const BOOTSTRAP_SERVICE_VERSION = '0.1.0';
-const BOOTSTRAP_ROUTE = '/__skiff/test-runtime-bootstrap';
 
-export function isolatedTestInstanceConfigText({ devHome, cargoTarget, basePort }) {
+export function isolatedTestInstanceConfigText({
+  devHome,
+  cargoTarget,
+  basePort,
+  environment = 'skiff-test',
+}) {
   return [
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
+    `environment: ${JSON.stringify(environment)}`,
     'packageDirs:',
     'ports:',
     `  base: ${basePort}`,
@@ -38,45 +41,70 @@ export function isolatedTestInstanceConfigText({ devHome, cargoTarget, basePort 
   ].join('\n');
 }
 
-export function isolatedTestRunnerEnvironment({ baseEnv, devHome, controlPort }) {
+export function isolatedTestRunnerEnvironment({
+  baseEnv,
+  devHome,
+  controlPort,
+  routerHttpPort,
+  environment = 'skiff-test',
+}) {
+  const cleanBaseEnv = { ...baseEnv };
+  delete cleanBaseEnv.SKIFF_DEV_RELOAD_URL;
+  delete cleanBaseEnv.SKIFF_TEST_ARTIFACT_ROOT;
   return {
-    ...baseEnv,
+    ...cleanBaseEnv,
     SKIFF_DEV_HOME: devHome,
-    SKIFF_DEV_RELOAD_URL: `http://127.0.0.1:${controlPort}/__skiff/reload-artifacts`,
-    SKIFF_TEST_ARTIFACT_ROOT: join(devHome, 'artifacts'),
+    SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
+    SKIFF_TEST_ACTIVATION_URL: `http://127.0.0.1:${controlPort}/__skiff/activate-assembly`,
+    SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
+    SKIFF_TEST_ENVIRONMENT: environment,
+    SKIFF_TEST_EXPECTED_GENERATION: '0',
   };
 }
 
-export function bootstrapDevSyncArgs({ skiffRoot, artifactRoot, buildRoot }) {
+export function bootstrapCanonicalArgs({
+  skiffRoot,
+  artifactRoot,
+  environment = 'skiff-test',
+}) {
   return [
-    join(skiffRoot, 'scripts', 'skiff-dev-sync.mjs'),
-    '--root',
-    join(skiffRoot, 'scripts', 'fixtures', 'isolated-test-bootstrap'),
+    'run',
+    '--quiet',
+    '--manifest-path',
+    join(skiffRoot, 'test-runner', 'Cargo.toml'),
+    '--bin',
+    'skiff-package-service-smoke-fixture',
+    '--',
+    '--bootstrap-only',
     '--artifact-root',
     artifactRoot,
-    '--build-root',
-    buildRoot,
-    '--no-reload',
+    '--environment',
+    environment,
   ];
 }
 
-export function isolatedRuntimeHealthReady(health, artifactRoot) {
-  return Array.isArray(health?.runtimes)
-    && health.runtimes.some((runtime) => runtime?.serviceId === BOOTSTRAP_SERVICE_ID)
-    && Array.isArray(health?.artifact?.artifactRoots)
-    && health.artifact.artifactRoots.includes(artifactRoot);
-}
-
-export function bootstrapProbeRequest(routerHttpUrl) {
-  return {
-    url: `${routerHttpUrl}${BOOTSTRAP_ROUTE}`,
-    options: {
-      headers: {
-        'x-skiff-service': BOOTSTRAP_SERVICE_ID,
-        'x-skiff-version': BOOTSTRAP_SERVICE_VERSION,
-      },
-    },
-  };
+export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
+  const bootstrap = bootstrapReceipt?.bootstrap;
+  const active = health?.activeAssembly;
+  if (
+    bootstrap === undefined
+    || active?.environment !== bootstrapReceipt.environment
+    || active?.generation !== bootstrap.generation
+    || active?.assemblyIdentity !== bootstrap.assembly?.assemblyIdentity
+  ) {
+    return false;
+  }
+  const capabilityConnections = health?.capabilityConnections;
+  const replicas = health?.replicas;
+  return Array.isArray(capabilityConnections)
+    && capabilityConnections.some((connection) => connection?.connected !== false)
+    && Array.isArray(replicas)
+    && replicas.some((replica) => (
+      replica?.connected !== false
+      && replica?.state === 'healthy'
+      && replica?.generation === bootstrap.generation
+      && replica?.assemblyIdentity === bootstrap.assembly.assemblyIdentity
+    ));
 }
 
 export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
@@ -85,11 +113,14 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       await mkdir(dirname(configPath), { recursive: true });
       await writeFile(configPath, config, 'utf8');
     },
-    seedBootstrap: ({ artifactRoot, buildRoot, env, signal }) => runOwnedCommand(
-      'node',
-      bootstrapDevSyncArgs({ skiffRoot, artifactRoot, buildRoot }),
-      { cwd: skiffRoot, env, signal },
-    ),
+    seedBootstrap: async ({ artifactRoot, environment, env, signal }) => {
+      const result = await captureCheckedCommand(
+        'cargo',
+        bootstrapCanonicalArgs({ skiffRoot, artifactRoot, environment }),
+        { cwd: skiffRoot, env, signal },
+      );
+      return JSON.parse(result.stdout);
+    },
     spawnSupervisor: ({ configPath, env }) => {
       // child-process-owner: isolated-supervisor
       return spawnSupervisorChild(
@@ -115,14 +146,12 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
 
 async function waitForIsolatedRuntime({
   controlUrl,
-  routerHttpUrl,
-  artifactRoot,
+  bootstrap,
   supervisor,
   signal,
 }) {
   const exit = childExit(supervisor);
   const startedAt = Date.now();
-  let bootstrapResponded = false;
   let lastError;
   while (Date.now() - startedAt < START_TIMEOUT_MS) {
     signal.throwIfAborted();
@@ -133,13 +162,8 @@ async function waitForIsolatedRuntime({
       const response = await fetch(`${controlUrl}/__router/health`, { signal });
       if (response.ok) {
         const health = await response.json();
-        if (bootstrapResponded && isolatedRuntimeHealthReady(health, artifactRoot)) {
+        if (isolatedRuntimeHealthReady(health, bootstrap)) {
           return;
-        }
-        if (health?.artifact?.artifactRoots?.includes(artifactRoot)) {
-          const probe = bootstrapProbeRequest(routerHttpUrl);
-          const probeResponse = await fetch(probe.url, { ...probe.options, signal });
-          bootstrapResponded ||= probeResponse.ok;
         }
       }
     } catch (error) {
@@ -224,7 +248,5 @@ function errorMessage(error) {
 }
 
 export const isolatedTestInstanceConstants = {
-  bootstrapServiceId: BOOTSTRAP_SERVICE_ID,
-  bootstrapServiceVersion: BOOTSTRAP_SERVICE_VERSION,
   mongoPort: STABLE_MONGO_PORT,
 };

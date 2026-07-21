@@ -466,38 +466,6 @@
     {
       "path": "syntax/src/parser.rs",
       "item": "fn parse_statement"
-    },
-    {
-      "path": "test-runner/src/main.rs",
-      "item": "fn parse_args"
-    },
-    {
-      "path": "test-runner/src/package.rs",
-      "item": "fn package_test_artifact_input_includes_all_ready_owner_files"
-    },
-    {
-      "path": "test-runner/src/package.rs",
-      "item": "fn package_test_metadata_entrypoints_reuse_dependency_publications"
-    },
-    {
-      "path": "test-runner/src/package.rs",
-      "item": "fn package_test_metadata_only_entrypoints_keep_single_case_config"
-    },
-    {
-      "path": "test-runner/src/package.rs",
-      "item": "fn run_package_tests"
-    },
-    {
-      "path": "test-runner/src/service_publish.rs",
-      "item": "fn runtime_test_publication_keeps_referenced_package_http_route_operation"
-    },
-    {
-      "path": "test-runner/src/service.rs",
-      "item": "fn run_ready_service_test_batch"
-    },
-    {
-      "path": "test-runner/src/service.rs",
-      "item": "fn run_resolved_publication_tests"
     }
   ]
 }

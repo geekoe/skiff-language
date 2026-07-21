@@ -47,7 +47,7 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   const ownerCalls = [];
   const commands = [];
   const logs = [];
-  const environment = { SKIFF_TEST_ARTIFACT_ROOT: '/tmp/isolated/artifacts' };
+  const environment = { SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/tmp/isolated/runtime-artifacts' };
   const signal = new AbortController().signal;
   const registry = [
     { id: 'first', root: 'fixtures/first' },
@@ -59,7 +59,9 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     registry,
     runtimeOwner: async (options) => {
       ownerCalls.push(options);
-      await options.runTest(environment, signal);
+      await options.runTest(environment, signal, {
+        sourceArtifactRoot: '/tmp/isolated/source-artifacts',
+      });
     },
     runCommand: async (command, args, options) => {
       commands.push({ command, args, options });
@@ -75,14 +77,21 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     commands.map((entry) => entry.args.at(5)),
     ['/checkout/skiff/fixtures/first', '/checkout/skiff/fixtures/second'],
   );
-  for (const command of commands) {
+  for (const [index, command] of commands.entries()) {
     assert.equal(command.options.cwd, '/checkout/skiff');
-    assert.equal(command.options.env, environment);
+    assert.deepEqual(command.options.env, {
+      ...environment,
+      SKIFF_TEST_EXPECTED_GENERATION: String(index),
+    });
     assert.equal(command.options.signal, signal);
     assert.equal(command.args.includes('--deny-skips'), true);
     assert.equal(command.args.includes('--require-tests'), true);
     assert.equal(command.args.includes('--live'), false);
     assert.equal(command.args.includes('--allow-network'), false);
+    assert.deepEqual(
+      command.args.slice(command.args.indexOf('--artifact-root'), command.args.indexOf('--artifact-root') + 2),
+      ['--artifact-root', '/tmp/isolated/source-artifacts'],
+    );
   }
   assert.deepEqual(logs, [
     '[skiff-tests] running first: fixtures/first',
@@ -105,7 +114,9 @@ test('runner failure stops later entries while the isolated runtime owner retain
       runtimeOwner: async ({ runTest }) => {
         actions.push('runtime-start');
         try {
-          await runTest({}, new AbortController().signal);
+          await runTest({}, new AbortController().signal, {
+            sourceArtifactRoot: '/tmp/isolated/source-artifacts',
+          });
         } finally {
           actions.push('runtime-cleanup');
         }
@@ -133,6 +144,7 @@ test('runner command targets the production test-runner manifest', () => {
   const args = skiffSourceTestRunnerCargoArgs({
     skiffRoot: '/checkout/skiff',
     root: '/checkout/skiff/std',
+    artifactRoot: '/tmp/isolated/source-artifacts',
   });
   assert.deepEqual(args, [
     'run',
@@ -141,6 +153,8 @@ test('runner command targets the production test-runner manifest', () => {
     join('/checkout/skiff', 'test-runner', 'Cargo.toml'),
     '--',
     '/checkout/skiff/std',
+    '--artifact-root',
+    '/tmp/isolated/source-artifacts',
     '--deny-skips',
     '--require-tests',
   ]);
