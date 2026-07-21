@@ -205,6 +205,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 `Cargo.lock`、`scripts/verify*.mjs`、cross-system parity fixture都是串行集成面；任何并行Agent不得
 顺手修改。
 
+Wave 2若T02的owned `compiler/Cargo.toml`新增canonical deployment依赖，task branch仍不得提交由Cargo
+机械改写的root `Cargo.lock`。T02记录exact lock diff并在提交前恢复；T02–T05全部合流后，由主integration
+owner在单一HEAD刷新一次lock，确认diff只包含owned manifest对应的dependency metadata，单独提交并重建
+compiler compile evidence。该串行metadata收口是I02前置，不制造T02到其它consumer的语义依赖。
+
 I02/I03由主integration owner在clean合流commit上各执行一次且不修改文件：I02只跑一replica的Skiff
 authoring→activation transaction→Host最终结果/abort rollback；I03只跑一replica的五actual-deployment
 isolated assembly。T13的two-replica generic lifecycle与完整selectors不重跑这两条命令。

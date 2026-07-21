@@ -17,6 +17,10 @@
 新模块，不在已有85k/62k大文件复制规则。不改router/runtime/test-runner/artifact model
 公共语义、verify接线或外部repo。
 
+若owned `compiler/Cargo.toml`依赖变化使Cargo机械更新root `Cargo.lock`，任务只记录exact lock diff并在
+提交前恢复lock；不得把共享lock纳入并行task commit。T02–T05全部合流后由主integration owner串行刷新、
+核对并提交唯一lock metadata更新，再执行I02。
+
 ## 完成态
 
 1. `package build/publish`、`contract build/publish`、`deployment build/publish`、`assembly build/activate`
