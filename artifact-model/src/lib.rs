@@ -61,13 +61,15 @@ pub use boundary::{
     CallableSemanticFacts, CallableTargetFact, ValueEscapeLane, ValueProvenance,
 };
 pub use builtin_receiver_ops::{
-    builtin_receiver_op, builtin_receiver_op_by_name, builtin_receiver_op_spec_by_name,
-    canonical_receiver_builtin_key, canonical_runtime_receiver_root, receiver_method_by_name,
-    receiver_root_by_name, validate_receiver_builtin_fields,
-    validate_supported_receiver_builtin_op, BuiltinReceiverMethod, BuiltinReceiverOp,
+    builtin_receiver_callable_semantics, builtin_receiver_op, builtin_receiver_op_by_name,
+    builtin_receiver_op_spec_by_name, canonical_receiver_builtin_key,
+    canonical_runtime_receiver_root, receiver_method_by_name, receiver_root_by_name,
+    validate_receiver_builtin_fields, validate_supported_receiver_builtin_op,
+    BuiltinReceiverCallableSemantics, BuiltinReceiverMethod, BuiltinReceiverOp,
     BuiltinReceiverOpSpec, BuiltinReceiverPublicReturnType, BuiltinReceiverRoot,
     BuiltinReceiverSupportError, BuiltinReceiverSupportStatus, BuiltinReceiverThrowSemantics,
-    RECEIVER_BUILTIN_CAPABILITY_VERSION, SUPPORTED_RECEIVER_BUILTIN_OPS,
+    BUILTIN_RECEIVER_CALLABLE_SEMANTICS, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    SUPPORTED_RECEIVER_BUILTIN_OPS,
 };
 pub use compile_identity::{
     AssemblyIdentity, ContractOperationId, ContractTypeId, DeploymentArtifactIdentity,
@@ -118,8 +120,9 @@ pub use executable_target::{
 pub use file_ir::*;
 pub use metadata::MetadataValue;
 pub use native_signature::{
-    is_runtime_receiver_native_binding_key, native_callable_semantics, NativeCallableSemantics,
-    NativeSignatureDef, NativeTypeExprDef, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+    is_runtime_receiver_native_binding_key, native_callable_semantics,
+    native_signature_for_receiver_op, NativeCallableSemantics, NativeSignatureDef,
+    NativeTypeExprDef, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 pub use package_artifact::{
     PackageArtifact, PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,

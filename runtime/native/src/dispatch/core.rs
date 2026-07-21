@@ -15,7 +15,7 @@ use crate::{
     runtime_value_facade::{RequestHeap, RuntimeValue},
 };
 use skiff_runtime_capability_context::NativeCapabilityContexts;
-use skiff_runtime_native_contract::{NativeRequiredContext, NativeSignatureRegistry};
+use skiff_runtime_native_contract::NativeRequiredContext;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeNativeRoute {
@@ -33,6 +33,13 @@ pub enum RuntimeNativeRoute {
 }
 
 pub fn runtime_shared_native_route(target: &str) -> Option<RuntimeNativeRoute> {
+    runtime_shared_native_route_for_validation(target, NativeRegistry.is_registered(target))
+}
+
+pub(crate) fn runtime_shared_native_route_for_validation(
+    target: &str,
+    native_registry_registered: bool,
+) -> Option<RuntimeNativeRoute> {
     if ActorNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Actor);
     }
@@ -60,30 +67,10 @@ pub fn runtime_shared_native_route(target: &str) -> Option<RuntimeNativeRoute> {
     if ResourceNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Resource);
     }
-    if is_runtime_receiver_native_binding_key(target) {
+    if skiff_artifact_model::is_runtime_receiver_native_binding_key(target) {
         return Some(RuntimeNativeRoute::ReceiverMethod);
     }
-    NativeRegistry
-        .is_registered(target)
-        .then_some(RuntimeNativeRoute::NativeRegistry)
-}
-
-fn is_runtime_receiver_native_binding_key(binding_key: &str) -> bool {
-    NativeSignatureRegistry::builtins()
-        .signature(binding_key)
-        .is_some_and(|signature| {
-            matches!(
-                signature.target,
-                "Date.toEpochMilliseconds"
-                    | "Date.toISOString"
-                    | "Date.addMilliseconds"
-                    | "Date.diffMilliseconds"
-                    | "Date.compare"
-                    | "Date.isBefore"
-                    | "Date.isAfter"
-                    | "Duration.toMilliseconds"
-            )
-        })
+    native_registry_registered.then_some(RuntimeNativeRoute::NativeRegistry)
 }
 
 pub(super) fn native_capability_route_mismatch(

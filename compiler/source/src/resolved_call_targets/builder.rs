@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::TypeRefIr;
+use skiff_artifact_model::{builtin_receiver_op_by_name, TypeRefIr};
 
 use crate::{
     dependency_analysis::ResolvedDependencyAnalysisTarget,
@@ -295,25 +295,27 @@ impl TargetCollector<'_> {
                     .saturating_add(receiver_object_offset(callee)),
             );
             let context = TypeResolutionContext::source(self.module_path);
-            if let Some(receiver) = self
+            let receiver_type = self
                 .expression_types
                 .fact(&object_key)
-                .and_then(|fact| fact.ty.as_ref())
+                .and_then(|fact| fact.ty.as_ref());
+            if let Some(op) = receiver_type
                 .and_then(|ty| {
-                    self.type_resolution
-                        .concrete_nominal_record_symbol(ty, &context)
+                    crate::expression_type_model::runtime_receiver_root_from_type_ref(&ty.ir)
                 })
+                .and_then(|root| builtin_receiver_op_by_name(&root, field))
             {
+                return ResolvedCallTarget::ReceiverBuiltin { op };
+            }
+            if let Some(receiver) = receiver_type.and_then(|ty| {
+                self.type_resolution
+                    .concrete_nominal_record_symbol(ty, &context)
+            }) {
                 if let Some(target) = self.local_targets.resolve_receiver(&receiver, field) {
                     return target;
                 }
             }
-            if self
-                .expression_types
-                .fact(&object_key)
-                .and_then(|fact| fact.ty.as_ref())
-                .is_some_and(|ty| matches!(ty.ir, TypeRefIr::AnyInterface { .. }))
-            {
+            if receiver_type.is_some_and(|ty| matches!(ty.ir, TypeRefIr::AnyInterface { .. })) {
                 return unknown(UnknownCallTargetReason::UnsupportedDynamicDispatch);
             }
         }

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageTypeRef,
-    TypeRefIr,
+    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
+    PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::substitute_type_params_in_type_ref_ref as substitute_type_params_in_ir;
 
@@ -3416,9 +3416,12 @@ fn builtin_receiver_call_return_projection(
     }
 }
 
-fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
+pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
     match ty {
         TypeRefIr::Native { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
+        TypeRefIr::PackageSymbol { symbol } if is_official_std_package_ref(&symbol.package) => {
+            Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
+        }
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
         } => Some("string".to_string()),
@@ -3427,6 +3430,15 @@ fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
         } => Some("number".to_string()),
         TypeRefIr::Nullable { inner } => runtime_receiver_root_from_type_ref(inner),
         _ => None,
+    }
+}
+
+fn is_official_std_package_ref(package: &PackageRefIr) -> bool {
+    match package {
+        PackageRefIr::PackageId { package_id } => {
+            package_id == crate::shared::id::SKIFF_STD_PUBLICATION_ID
+        }
+        PackageRefIr::Dependency { dependency_ref } => dependency_ref == "std",
     }
 }
 

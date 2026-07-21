@@ -409,7 +409,149 @@ fn exact_context_free_native_uses_shared_callable_semantics() {
 }
 
 #[test]
-fn missing_or_capability_native_semantics_remain_fail_closed() {
+fn std_exact_native_matrix_uses_shared_callable_semantics() {
+    let model = analyze_named(
+        r#"
+            function dateNow() -> Date {
+              return Date.now()
+            }
+
+            function durationMilliseconds() -> Duration {
+              return Duration.milliseconds(1)
+            }
+
+            function durationSeconds() -> Duration {
+              return Duration.seconds(1)
+            }
+
+            function safeInteger() -> integer {
+              return std.number.assertSafeInteger(1)
+            }
+
+            function hmac() -> string {
+              return std.crypto.hmacSha1Base64("key", "text")
+            }
+
+            function sha256() -> string {
+              return std.crypto.sha256("text")
+            }
+
+            function randomToken() -> string {
+              return std.crypto.randomToken()
+            }
+
+            function uuid() -> string {
+              return std.crypto.uuid()
+            }
+
+            function uuidSimple() -> string {
+              return std.crypto.uuidSimple()
+            }
+
+            function sleep() -> void {
+              return std.time.sleep(Duration.milliseconds(0))
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    for callable in [
+        "dateNow",
+        "durationMilliseconds",
+        "durationSeconds",
+        "safeInteger",
+        "hmac",
+        "sha256",
+        "randomToken",
+        "uuid",
+        "uuidSimple",
+    ] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            no_effects(),
+            "{callable}"
+        );
+    }
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "sleep"),
+        suspend_only_effects()
+    );
+
+    let native_keys = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::NativeFunction { binding_key } => Some(binding_key.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        native_keys,
+        std::collections::BTreeSet::from([
+            "core.date.now",
+            "core.duration.milliseconds",
+            "core.duration.seconds",
+            "core.number.assertSafeInteger",
+            "std.crypto.hmacSha1Base64",
+            "std.crypto.randomToken",
+            "std.crypto.sha256",
+            "std.crypto.uuid",
+            "std.crypto.uuidSimple",
+            "std.time.sleep",
+        ])
+    );
+}
+
+#[test]
+fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
+    let model = analyze_named(
+        r#"
+            function isBefore(left: Date, right: Date) -> bool {
+              return left.isBefore(right)
+            }
+
+            function epochMilliseconds(value: Date) -> integer {
+              return value.toEpochMilliseconds()
+            }
+
+            function durationMilliseconds(value: Duration) -> integer {
+              return value.toMilliseconds()
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    for callable in ["isBefore", "epochMilliseconds", "durationMilliseconds"] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            no_effects(),
+            "{callable}"
+        );
+    }
+    let receiver_targets = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::ReceiverBuiltin { op } => Some(op.canonical_key),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        receiver_targets,
+        std::collections::BTreeSet::from([
+            "receiver:Date.isBefore@1",
+            "receiver:Date.toEpochMilliseconds@1",
+            "receiver:Duration.toMilliseconds@1",
+        ])
+    );
+}
+
+#[test]
+fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"
             type Boxed { value: string }
@@ -422,12 +564,16 @@ fn missing_or_capability_native_semantics_remain_fail_closed() {
               return customNative(input)
             }
 
-            function cryptoWrapper(input: string) -> string {
-              return std.crypto.sha256(input)
+            function fileWrapper(file: std.file.ImmutableFile) -> string {
+              return std.file.readText(file)
             }
 
-            function capabilityWrapper() -> Date {
-              return Date.now()
+            function httpWrapper(input: std.http.HttpClientRequest) -> std.http.HttpClientResponse {
+              return std.http.request(input)
+            }
+
+            function websocketWrapper() -> void {
+              return std.websocket.sendTextToConnection("connection", "text")
             }
 
             function dynamicNativeWrapper(input: string) -> string {
@@ -442,6 +588,10 @@ fn missing_or_capability_native_semantics_remain_fail_closed() {
             function interfaceWrapper(input: any Provider) -> string {
               return input.name()
             }
+
+            function mutableReceiver(items: Array<string>) -> void {
+              return items.push("value")
+            }
         "#,
         SourceDependencyAnalysisInput::default(),
         "std.effect_test",
@@ -451,11 +601,13 @@ fn missing_or_capability_native_semantics_remain_fail_closed() {
     for callable in [
         "customNative",
         "nativeWrapper",
-        "cryptoWrapper",
-        "capabilityWrapper",
+        "fileWrapper",
+        "httpWrapper",
+        "websocketWrapper",
         "dynamicNativeWrapper",
         "dynamicWrapper",
         "interfaceWrapper",
+        "mutableReceiver",
     ] {
         let effects = effects_in(&model, "std.effect_test", callable);
         assert!(effects.invokes_unknown_target, "{callable}");
@@ -483,7 +635,11 @@ fn missing_or_capability_native_semantics_remain_fail_closed() {
             } if module_path == "std.effect_test" && function_name == "customNative"
         )
     }));
-    for binding_key in ["std.crypto.sha256", "core.date.now"] {
+    for binding_key in [
+        "std.file.readText",
+        "std.http.client.request",
+        "std.websocket.sendTextToConnection",
+    ] {
         assert!(model.resolved_call_targets().iter().any(|(_, target)| {
             matches!(
                 target,
@@ -492,6 +648,13 @@ fn missing_or_capability_native_semantics_remain_fail_closed() {
             )
         }));
     }
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:Array.push@1"
+        )
+    }));
 }
 
 #[test]

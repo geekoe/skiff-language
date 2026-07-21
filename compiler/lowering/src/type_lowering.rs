@@ -249,20 +249,7 @@ pub(super) fn canonical_runtime_receiver_root(root: &str) -> &str {
 }
 
 pub(super) fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
-    match ty {
-        TypeRefIr::Native { name, .. } => Some(canonical_runtime_receiver_root(name).to_string()),
-        TypeRefIr::PackageSymbol { symbol } if is_official_std_package_ref(&symbol.package) => {
-            Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
-        }
-        TypeRefIr::Literal {
-            value: LiteralIr::String { .. },
-        } => Some("string".to_string()),
-        TypeRefIr::Literal {
-            value: LiteralIr::Number { .. },
-        } => Some("number".to_string()),
-        TypeRefIr::Nullable { inner } => runtime_receiver_root_from_type_ref(inner),
-        _ => None,
-    }
+    skiff_compiler_source::runtime_receiver_root_from_type_ref(ty)
 }
 
 pub(super) fn is_official_std_package_ref(package: &PackageRefIr) -> bool {

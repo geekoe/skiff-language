@@ -508,17 +508,7 @@ impl DateReceiverMethods {
 }
 
 pub fn is_runtime_receiver_native_binding_key(binding_key: &str) -> bool {
-    matches!(
-        binding_key,
-        "core.date.toEpochMilliseconds"
-            | "core.date.toISOString"
-            | "core.date.addMilliseconds"
-            | "core.date.diffMilliseconds"
-            | "core.date.compare"
-            | "core.date.isBefore"
-            | "core.date.isAfter"
-            | "core.duration.toMilliseconds"
-    )
+    skiff_artifact_model::is_runtime_receiver_native_binding_key(binding_key)
 }
 
 struct DurationReceiverMethods;
@@ -685,7 +675,7 @@ mod json_object_receiver_tests {
     }
 }
 
-#[cfg(all(test, any()))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use skiff_artifact_model::builtin_receiver_op_by_name;

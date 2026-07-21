@@ -297,8 +297,8 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
     assert_eq!(project.package.artifact.package_id, "skiff.run/std");
     assert!(project.dependency_packages.is_empty());
 
-    let test_file = platform_root.join("string.test.skiff");
-    let cases = discover_package_test_cases(&test_file, &platform_root, true).unwrap();
+    let cases = discover_package_test_cases(&platform_root, &platform_root, false).unwrap();
+    assert_eq!(cases.len(), 11, "the canonical std root must stay complete");
     let overlay = compile_package_test_overlay(&platform_root, &project, &cases).unwrap();
     assert!(overlay.bindings.iter().all(|binding| matches!(
         overlay
