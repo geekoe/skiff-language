@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::Path};
 use serde::Deserialize;
 use serde_json::Value;
 use serde_yaml::Value as YamlValue;
+use skiff_artifact_model::{PackageContractAuthoring, PackageContractsAuthoring};
 
 use super::{
     is_enabled_standard_package_id, is_reserved_package_alias, is_standard_package_id,
@@ -26,6 +27,8 @@ pub(super) struct RawPackageManifest {
     exports: Option<Value>,
     #[serde(default)]
     packages: Vec<PackageDependency>,
+    #[serde(default)]
+    contracts: Vec<PackageContractAuthoring>,
     #[serde(default)]
     resources: Vec<PublicationResourceSpec>,
     requires: Option<RawPackageRequires>,
@@ -111,6 +114,21 @@ pub(super) fn validate_package_manifest(
             &mut violations,
         );
     }
+    if let Err(message) = (PackageContractsAuthoring {
+        contracts: raw.contracts.clone(),
+    })
+    .validate()
+    {
+        violations.push(message);
+    }
+    for contract in &raw.contracts {
+        if dependency_aliases.contains(&contract.alias) {
+            violations.push(format!(
+                "dependency alias {} is assigned to both a package and a contract",
+                contract.alias
+            ));
+        }
+    }
 
     if let Some(id) = id.as_ref() {
         let id = id.as_str();
@@ -167,7 +185,7 @@ pub(super) fn validate_package_manifest(
         raw.resources,
         ManifestProvenance::file(path, owner),
     );
-    Ok(PackageManifest::new(publication))
+    Ok(PackageManifest::new(publication, raw.contracts))
 }
 
 fn validate_removed_requires(requires: Option<RawPackageRequires>, violations: &mut Vec<String>) {

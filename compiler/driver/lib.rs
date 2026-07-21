@@ -1,3 +1,4 @@
+pub mod authoring;
 pub(crate) mod input;
 pub(crate) mod pipeline;
 pub(crate) mod shared;

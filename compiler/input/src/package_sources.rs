@@ -558,17 +558,20 @@ mod tests {
     }
 
     fn official_std_manifest(path: PathBuf) -> PackageManifest {
-        PackageManifest::new(PublicationManifest::new(
-            PublicationId::parse("skiff.run/std").unwrap(),
-            "1.0.0".to_string(),
-            PackageApi::from_entries(vec![PublicationApiEntry::for_source(
-                "http.request",
-                "http",
-                "request",
-            )]),
+        PackageManifest::new(
+            PublicationManifest::new(
+                PublicationId::parse("skiff.run/std").unwrap(),
+                "1.0.0".to_string(),
+                PackageApi::from_entries(vec![PublicationApiEntry::for_source(
+                    "http.request",
+                    "http",
+                    "request",
+                )]),
+                Vec::new(),
+                ManifestProvenance::file(path, ManifestOwner::CompilerStandardPackage),
+            ),
             Vec::new(),
-            ManifestProvenance::file(path, ManifestOwner::CompilerStandardPackage),
-        ))
+        )
     }
 
     struct TestDir {
