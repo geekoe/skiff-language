@@ -463,6 +463,120 @@ fn exact_dependency_callee_does_not_poison_known_target() {
 }
 
 #[test]
+fn exact_dependency_field_callee_does_not_poison_known_target() {
+    let model = analyze(
+        r#"
+            type Boxed { value: string }
+
+            function wrapper(input: Boxed) -> Boxed {
+              return dep/tools.run(input)
+            }
+
+            function genericWrapper(input: Boxed) -> Boxed {
+              return dep/tools.run<Boxed>(input)
+            }
+        "#,
+        exact_field_package_dependency(),
+    );
+
+    for callable in ["wrapper", "genericWrapper"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::DependencyPackageFunction {
+                package_requirement_alias,
+                package_callable_id,
+                expected_local_abi,
+            } if package_requirement_alias == "dep"
+                && package_callable_id
+                    == &PackageCallableId::new("pkg-callable:dep-tools-run")
+                && expected_local_abi
+                    == &PackageLocalAbiIdentity::new("pkg-local-abi:dep")
+        )
+    }));
+}
+
+#[test]
+fn exact_contract_field_callee_uses_detached_descriptor() {
+    let mut contract = contract_fixture(
+        "example.echo",
+        "1.0.0",
+        "tools.send",
+        "payload",
+        "payloadClosure",
+    );
+    contract
+        .operations
+        .values_mut()
+        .next()
+        .unwrap()
+        .contract
+        .return_value
+        .ty = ContractTypeRef::builtin("string");
+    assign_service_contract_identities(&mut contract).unwrap();
+    let dependency =
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
+    let expected_requirement = dependency.requirement().clone();
+    let expected_operation = dependency
+        .contract()
+        .operations
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let model = analyze(
+        r#"
+            function wrapper(input: echo.payload) -> string {
+              return echo/tools.send(input)
+            }
+        "#,
+        SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
+    );
+
+    assert_eq!(effects(&model, "wrapper"), no_effects());
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
+    else {
+        panic!("exact contract field callee must retain analyzed provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+            } if contract_requirement == &expected_requirement
+                && contract_operation_id == &expected_operation
+        )
+    }));
+}
+
+#[test]
+fn dependency_field_first_class_value_remains_fail_closed() {
+    let error = analyze_result(
+        r#"
+            function wrapper() -> void {
+              const callable = dep/tools.run
+            }
+        "#,
+        exact_field_package_dependency(),
+    )
+    .expect_err("dependency field outside call position must remain rejected")
+    .to_string();
+
+    assert!(
+        error.contains("dependency source address `dep/tools` is not a value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn detached_contract_target_uses_descriptor_effect_guarantees() {
     let mut contract =
         contract_fixture("example.echo", "1.0.0", "send", "payload", "payloadClosure");
@@ -566,6 +680,34 @@ fn unknown_contract_member_fails_with_source_location_and_stable_key() {
     for expected in ["api.skiff", "function `wrapper`", "`echo`", "`missing`"] {
         assert!(error.contains(expected), "unexpected error: {error}");
     }
+}
+
+fn exact_field_package_dependency() -> SourceDependencyAnalysisInput {
+    let callable = PackageDependencyCallableAnalysis::new(
+        PackageCallableId::new("pkg-callable:dep-tools-run"),
+        CallableSemanticFacts {
+            effects: CallableEffectSummary::Analyzed {
+                effects: no_effects(),
+            },
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: vec![ValueProvenance::Fresh],
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            resolved_call_targets: BTreeMap::new(),
+        },
+    );
+    SourceDependencyAnalysisInput::new(
+        BTreeMap::from([(
+            "dep".to_string(),
+            PackageDependencyAnalysisFacts::new(
+                PackageLocalAbiIdentity::new("pkg-local-abi:dep"),
+                BTreeMap::from([("tools.run".to_string(), callable)]),
+            ),
+        )]),
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 fn analyze(source: &str, dependency_analysis: SourceDependencyAnalysisInput) -> PackageSourceModel {

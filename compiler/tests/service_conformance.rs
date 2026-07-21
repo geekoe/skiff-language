@@ -354,7 +354,7 @@ type Box { value: string }
 
 function run() -> string {
   const box = Box { value: "consumer" }
-  helper/mutate(box)
+  helper/tools.mutate(box)
   return payments/echo(box.value)
 }
 "#,
@@ -365,7 +365,7 @@ function run() -> string {
     );
     consumer.write(
         ".skiff-packages/example~com~~callable-effects-helper/1.0.0/api.yml",
-        "Box: helper.Box\nmutate: helper.mutate\n",
+        "Box: helper.Box\ntools:\n  mutate: helper.mutate\n",
     );
     consumer.write(
         ".skiff-packages/example~com~~callable-effects-helper/1.0.0/helper.skiff",
@@ -392,7 +392,7 @@ function mutate(input: Box) -> void {
     let PackageLocalAbiSymbol::Callable {
         callable_id: mutate_id,
         ..
-    } = &helper.artifact.package_local_abi.public_symbols["mutate"]
+    } = &helper.artifact.package_local_abi.public_symbols["tools.mutate"]
     else {
         panic!("mutate must resolve to a public callable");
     };
