@@ -7,7 +7,8 @@
 - 五分钟内先做WS authoring与canonical store/base assembly API探针，再产生真实code edit；若WS production
   projection不可构造，报告exact compiler blocker，不得改artifact。
 - D07确认真实consumer另受compiler/source callable-effects阻断；F04不得绕过或修改compiler。只有F06合流并
-  通过R06后，F04才在该exact checkpoint恢复同一fixture的isolated正例与最终接收。
+  通过R06，且D08/F07通过R07后，F04才在这些exact checkpoint恢复同一fixture、canonical std source suite与
+  最终接收。
 - 独占`test-runner/**`、`runtime/package-test/**`、test-only ecosystem fixture、`scripts/skiff.mjs`、
   `scripts/lib/**`中isolated test/verify直接caller及对应tests。可删除旧live/doubles caller；不改compiler
   stream、Router、Runtime host/driver/shared wire或root lock。
@@ -62,6 +63,8 @@ F04在R06前保留负例，精确断言service-calling test callable的projectio
 构造fresh helper Box → package direct mutate → detached payments contract call，provider按输入分支返回常量，并
 通过exact helper PackageBinding、service selector、base config与isolated Host ingress断言最终
 `provider-observed-helper-mutated`。旧负例不能作为完成态，既有eval/Host focused test也不能替代该最终结果。
+canonical std test中`truncateUtf8Bytes`的Unknown/RequiresSameHeap负例同样只保留到R07；F04不得特判native或
+调整source registry/gate，R07后必须原样执行。
 
 ## Terminal live-harness handoff
 

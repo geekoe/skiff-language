@@ -6,7 +6,8 @@ R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner
 `a7566bb`首次FAIL后完成D03/F03A1；第二次在`5715497`因raw Unicode/opaque number/default normalization
 不一致而FAIL。验收熔断D06/F03A2已在`4df6c04`通过R02A第三次窄验收。F04探针发现正常authoring不能
 产生可观测WS pin，D05已冻结typed unified WS ABI；F04真实consumer又由callable-effects过度fail-close阻断，
-D07已冻结F06 compiler repair。F05等待F04 narrow receive，F03B/F03C仍锁定至R05 PASS。
+D07已冻结F06 compiler repair；canonical std native另由D08冻结F07 exact semantics。F05等待F04 narrow receive，
+F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -88,7 +89,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
   T04 runtime resolver / admission / replica registration├
   T05 test-runner / package-test / fixtures
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 partial repair
-          ├─► D07 callable-effects audit ─► F06 compiler repair ─► R06 ─► F04 resume ─► narrow receive
+          ├─► D07 callable-effects audit ─► F06 compiler repair ─► R06
+          │     D08 native-effects audit ─────────────────────────┴─► F07 exact native semantics ─► R07 ─► F04 resume ─► narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -160,6 +162,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D07 | [Callable effects fixture boundary audit](tasks/P5-D07-callable-effects-fixture-boundary-audit.md) | F04 real-consumer blocker | 独立只读；冻结compiler transfer缺口 |
 | F06 | [Callable effects exact dependency transfer](tasks/P5-F06-callable-effects-exact-dependency-transfer.md) | D07 complete | 高；compiler/source窄修复 |
 | R06 | [Callable effects transfer acceptance](tasks/P5-R06-callable-effects-transfer-acceptance.md) | F06 exact commit | 高；独立只读 |
+| D08 | [Exact native callable effects audit](tasks/P5-D08-exact-native-callable-effects-audit.md) | F04 std-suite blocker | 独立只读；冻结native descriptor边界 |
+| F07 | [Exact native callable effects](tasks/P5-F07-exact-native-callable-effects.md) | R06 PASS + D08 | 高；shared native semantics窄修复 |
+| R07 | [Exact native callable effects acceptance](tasks/P5-R07-exact-native-callable-effects-acceptance.md) | F07 exact commit | 高；独立只读 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -225,6 +230,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - D07只读穷举F04真实consumer被拒绝的callable-effects来源；F06串行独占compiler/source的exact dependency
   call-position、全detached contract descriptor transfer与直接标量参数字段写facts。不改projection/lowering/
   artifact/runtime。R06 PASS后F04才把同一fail-closed fixture翻为isolated最终正例，不在F04复制effects规则。
+- D08只读确认native signature有shared identity但无effects owner；F07在R06后串行建立缺省Unknown的稀疏exact
+  native semantics，只批准四个context-free string scalar，并让compiler/runtime交叉校验同一binding key。R07 PASS
+  后F04才恢复canonical std source suite；未知/crypto/capability native不因本修复放宽。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
