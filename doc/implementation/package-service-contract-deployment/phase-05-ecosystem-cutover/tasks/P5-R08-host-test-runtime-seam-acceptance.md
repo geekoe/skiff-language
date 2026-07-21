@@ -21,3 +21,13 @@ git diff --check
 
 第一行只给`R08 PASS`或`R08 FAIL`。PASS只解锁F04原isolated Host probe与窄接收；FAIL给最小source反例与
 唯一owner。
+
+## 验收记录
+
+`c5ec7ea0e7203ac8fdc83d84c5b39b1fd573e164` / tree
+`4d3771f304d6a9063b232fa5d1ef873103b02c1b` 为`R08 PASS`。23个legacy package-test consumer与2个
+activation codec错误全部关闭；Host required reverse-search为零，`packageTestDispatch=false`、normal request
+cancellation与assembly ingress保留。outer envelope使用shared `ASSEMBLY_ACTIVATION_FRAME_TYPE`，command为
+RouterToRuntime decode、reply为RuntimeToRouter encode。三crate combined locked check、outer 2/2、capability 1/1、
+active assembly 2/2、transport 2/2、package artifact 5/5与diff-check全部PASS；candidate clean且lock未漂移。
+该PASS只解锁F04原Host probe与窄接收。

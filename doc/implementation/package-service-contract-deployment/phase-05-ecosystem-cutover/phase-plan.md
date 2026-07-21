@@ -8,7 +8,7 @@ R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner
 产生可观测WS pin，D05已冻结typed unified WS ABI；F04真实consumer又由callable-effects过度fail-close阻断，
 D07已冻结F06 compiler repair；R06首次因exact callee的Field wrapper遗漏而FAIL，F06A已在`fbf634d`通过
 R06窄复验；D08/F07 exact native semantics已在`bd13867`通过R07。F04的Host证据与F03C依赖形成环，D09已冻结
-F08/R08前置Host seam修复；F04 implementation checkpoint在途合流。F05等待F04 narrow receive，
+F08/R08前置Host seam修复已在`c5ec7ea`通过；F04原Host probe与窄接收在途。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -93,7 +93,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 partial repair
           ├─► D07 callable-effects audit ─► F06 compiler repair ─► R06 FAIL@2982cd8 ─► F06A field repair ─► R06 PASS@fbf634d
           │     D08 native-effects audit ───────────────────────────────────────────────────────────┴─► F07 exact native semantics ─► R07 PASS@bd13867
-          │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 ─► F04 Host probe/receive
+          │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 PASS@c5ec7ea ─► F04 Host probe/receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings

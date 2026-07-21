@@ -20,7 +20,8 @@
 2. `runtime.capabilities`与legacy service registration不再声明`packageTestDispatch: true`；request cancellation只处理
    normal request supervisor，不保留pending package-test executor。
 3. activation reply使用`RuntimeToRouter`方向的`encode_assembly_activation_frame`；activation command使用
-   `RouterToRuntime`方向的`decode_assembly_activation_frame`。不复制codec或修改wire。
+   shared `ASSEMBLY_ACTIVATION_FRAME_TYPE`外层分派与`RouterToRuntime`方向的
+   `decode_assembly_activation_frame`。不把内层`prepare|commit|abort`误作外层type，不复制codec或修改wire。
 4. canonical assembly activation、active route与production Host ingress保持既有owner，F08不实现F03C的startup、
    lifecycle、drain或WS语义。
 
