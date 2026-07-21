@@ -5,10 +5,11 @@ import { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.j
 import { FileAssemblyActivationStateStore } from './assemblyActivationStateStore.js';
 import { AssemblyControlPlane } from './assemblyControlPlane.js';
 import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
-import { AssemblyRuntimeEndpoint } from './assemblyRuntimeEndpoint.js';
 import { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import { loadRouterConfig, type RouterConfigOverrides } from './config.js';
 import { RuntimeDispatcher } from './runtimeDispatcher.js';
+import { RuntimeEndpoint } from './runtimeEndpoint.js';
+import { RuntimeRegistry } from './runtimeRegistry.js';
 import {
   FileRuntimeAssemblySnapshotLoader,
   RouterActiveAssemblySnapshotStore
@@ -69,7 +70,11 @@ const snapshots = new RouterActiveAssemblySnapshotStore();
 const assemblyLoader = new FileRuntimeAssemblySnapshotLoader(artifactRoot);
 const stateStore = new FileAssemblyActivationStateStore(artifactRoot);
 const registry = new AssemblyRuntimeRegistry(snapshots);
-const runtimeEndpoint = new AssemblyRuntimeEndpoint({ registry });
+const runtimeRegistry = new RuntimeRegistry();
+const runtimeEndpoint = new RuntimeEndpoint({
+  registry: runtimeRegistry,
+  assemblyRegistry: registry
+});
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
   stateStore,
@@ -84,7 +89,12 @@ await coordinator.initialize();
 
 const dispatcher = new RuntimeDispatcher({ registry, frameSender: runtimeEndpoint });
 runtimeEndpoint.setDispatcher(dispatcher);
-const controlPlane = new AssemblyControlPlane({ coordinator, registry, snapshots });
+const controlPlane = new AssemblyControlPlane({
+  coordinator,
+  registry,
+  runtimeRegistry,
+  snapshots
+});
 const runtimeServer = await runtimeEndpoint.listen({
   controlPlane,
   host: config.host,

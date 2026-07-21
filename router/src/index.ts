@@ -19,7 +19,6 @@ export * from './router/runtimeAssemblySnapshot.js';
 export * from './router/assemblyActivationStateStore.js';
 export * from './router/assemblyActivationCoordinator.js';
 export * from './router/assemblyRuntimeRegistry.js';
-export * from './router/assemblyRuntimeEndpoint.js';
 export * from './router/assemblyControlPlane.js';
 export * from './router/assemblyHttpGateway.js';
 export * from './gateway/webSocketGateway.js';

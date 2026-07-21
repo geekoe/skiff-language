@@ -1,0 +1,422 @@
+import WebSocket from 'ws';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import {
+  decodeAssemblyActivationFrame,
+  encodeAssemblyActivationFrame
+} from '../src/protocol/assemblyActivationFrame.js';
+import type { AssemblyActivationControl } from '../src/protocol/assemblyActivationProtocol.js';
+import {
+  decodeRuntimeFrame,
+  encodeBinaryFrame,
+  encodeRuntimeFrame,
+  RUNTIME_FRAME_SCHEMA_VERSION,
+  type RuntimeBinaryFrame
+} from '../src/protocol/envelope.js';
+import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
+import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationCoordinator.js';
+import {
+  initialActivationState,
+  MemoryAssemblyActivationStateStore
+} from '../src/router/assemblyActivationStateStore.js';
+import { AssemblyControlPlane } from '../src/router/assemblyControlPlane.js';
+import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
+import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
+import { RuntimeEndpoint } from '../src/router/runtimeEndpoint.js';
+import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
+import {
+  MemoryRuntimeAssemblySnapshotLoader,
+  RouterActiveAssemblySnapshotStore,
+  type LoadedRuntimeAssembly
+} from '../src/router/runtimeAssemblySnapshot.js';
+
+const ASSEMBLY_A = identity('a');
+const ASSEMBLY_B = identity('b');
+const ASSEMBLY_C = identity('c');
+const RUNTIME_ID = 'runtime-assembly-a';
+const fixtures: CompositeEndpointFixture[] = [];
+
+describe('unified RuntimeEndpoint assembly bootstrap', () => {
+  afterEach(async () => {
+    while (fixtures.length > 0) {
+      await fixtures.pop()?.close();
+    }
+  });
+
+  it('keeps one socket through capabilities, all six activation controls, health, and connection.send', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    await until(() => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 1);
+    expect(fixture.assemblyRegistry.healthyParticipantReplicaIds()).toEqual([]);
+
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const prepareB = nextActivation(ws, 'prepare');
+    const activationB = fixture.coordinator.activate(activationRequest('activation-b', 1, ASSEMBLY_B));
+    expect(await prepareB).toEqual(transition('prepare', 'activation-b', 1, ASSEMBLY_B));
+    const commitBFrame = nextActivation(ws, 'commit');
+    sendActivation(ws, transition('prepared', 'activation-b', 1, ASSEMBLY_B));
+    const commitB = await commitBFrame;
+    await expect(activationB).resolves.toMatchObject({
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+    });
+    expect(commitB).toEqual(transition('commit', 'activation-b', 1, ASSEMBLY_B));
+
+    sendActivation(ws, registration(2, ASSEMBLY_B));
+    await until(() => fixture.assemblyRegistry.snapshot().some(
+      (replica) => replica.generation === 2 && replica.state === 'healthy'
+    ));
+    const prepareC = nextActivation(ws, 'prepare');
+    const activationC = fixture.coordinator.activate(activationRequest('activation-c', 2, ASSEMBLY_C));
+    const activationCRejected = expect(activationC).rejects.toThrow(
+      /rejected activation during admission/
+    );
+    expect(await prepareC).toEqual(transition('prepare', 'activation-c', 2, ASSEMBLY_C));
+    const abortCFrame = nextActivation(ws, 'abort');
+    sendActivation(ws, transition('reject', 'activation-c', 2, ASSEMBLY_C));
+    const abortC = await abortCFrame;
+    await activationCRejected;
+    expect(abortC).toEqual(transition('abort', 'activation-c', 2, ASSEMBLY_C));
+
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['runtime.health'],
+      runtimeId: RUNTIME_ID
+    }));
+    await until(() => fixture.assemblyRegistry.snapshot()[0]?.lastHealthAt !== undefined);
+
+    const connectionSend = new Promise<unknown>((resolve) => {
+      fixture.endpoint.onConnectionSend(resolve);
+    });
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['connection.send']));
+    await expect(connectionSend).resolves.toMatchObject({ type: 'connection.send' });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+
+    const health = await fetch(`${fixture.controlUrl}/__router/health`).then(async (response) => {
+      expect(response.ok).toBe(true);
+      return await response.json() as {
+        capabilityConnections: unknown[];
+        replicas: unknown[];
+      };
+    });
+    expect(health.capabilityConnections).toEqual([
+      expect.objectContaining({ runtimeId: RUNTIME_ID, connected: true })
+    ]);
+    expect(health.replicas).toEqual([
+      expect.objectContaining({
+        replicaId: RUNTIME_ID,
+        generation: 2,
+        assemblyIdentity: ASSEMBLY_B,
+        state: 'healthy',
+        connected: true
+      })
+    ]);
+  });
+
+  it('keeps the complete generic runtime switch on the composite endpoint', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    const runtimeId = runtimeFrameHeaderFixtures['runtime.register'].runtimeId;
+    sendCapabilities(ws, runtimeId);
+    const registered = nextRuntimeFrame(ws, 'runtime.registered');
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.register']));
+    await expect(registered).resolves.toMatchObject({
+      header: { type: 'runtime.registered', runtimeId }
+    });
+
+    const actorResponse = nextRuntimeFrame(ws, 'actor.find.response');
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['actor.find.request']));
+    await expect(actorResponse).resolves.toMatchObject({
+      header: { type: 'actor.find.response' }
+    });
+
+    const spawnResponse = nextRuntimeFrame(ws, 'spawn.submit.error');
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['spawn.submit.request']));
+    await expect(spawnResponse).resolves.toMatchObject({
+      header: { type: 'spawn.submit.error' }
+    });
+
+    const serviceRequestResponse = nextRuntimeFrame(ws, 'response.error');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['request.start'],
+      caller: {
+        kind: 'service',
+        target: runtimeFrameHeaderFixtures['request.start'].caller.target
+      }
+    }));
+    await expect(serviceRequestResponse).resolves.toMatchObject({
+      header: {
+        type: 'response.error',
+        error: { code: 'InProcessServiceCallRequired' }
+      }
+    });
+
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['runtime.health']));
+    await until(() => fixture.runtimeRegistry.loopRiskRuntimeHealthSnapshot().length === 1);
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['response.end']));
+    ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['request.cancel']));
+    await nextTurn();
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
+  });
+
+  it('keeps capability sessions separate from committed registrations and clears both on disconnect', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    await until(() => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 1);
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
+    expect(fixture.assemblyRegistry.healthyParticipantReplicaIds()).toEqual([]);
+
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.snapshot().length === 1);
+    ws.close();
+    await waitForClose(ws);
+    await until(() => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 0);
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([
+      expect.objectContaining({ replicaId: RUNTIME_ID, state: 'disconnected', connected: false })
+    ]);
+  });
+
+  it('fails closed with 1008 before session mutation for invalid bootstrap frames', async () => {
+    const fixture = await createFixture();
+    await expectPolicyClose(fixture.url, (ws) => sendActivation(ws, registration(1, ASSEMBLY_A)));
+    await expectPolicyClose(fixture.url, (ws) => {
+      ws.send(encodeRuntimeFrame({
+        ...runtimeFrameHeaderFixtures['runtime.capabilities'],
+        runtimeId: RUNTIME_ID
+      }, new Uint8Array([1])));
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      sendActivation(ws, { ...registration(1, ASSEMBLY_A), replicaId: 'runtime-other' });
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      sendCapabilities(ws, 'runtime-other');
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      ws.send(encodeAssemblyActivationFrame(
+        'routerToRuntime',
+        transition('prepare', 'wrong-direction', 1, ASSEMBLY_B)
+      ));
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      ws.send(JSON.stringify(registration(1, ASSEMBLY_A)));
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      ws.send(encodeBinaryFrame(registration(1, ASSEMBLY_A)));
+    });
+    await expectPolicyClose(fixture.url, (ws) => {
+      sendCapabilities(ws, RUNTIME_ID);
+      ws.send(encodeBinaryFrame({
+        schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+        type: 'assembly.activation',
+        control: registration(1, ASSEMBLY_A)
+      }, new Uint8Array([1])));
+    });
+    await until(() => fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 0);
+    expect(fixture.runtimeRegistry.capabilityConnectionsSnapshot()).toEqual([]);
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([]);
+  });
+});
+
+interface CompositeEndpointFixture {
+  assemblyRegistry: AssemblyRuntimeRegistry;
+  controlUrl: string;
+  coordinator: AssemblyActivationCoordinator;
+  endpoint: RuntimeEndpoint;
+  runtimeRegistry: RuntimeRegistry;
+  url: string;
+  close(): Promise<void>;
+}
+
+async function createFixture(): Promise<CompositeEndpointFixture> {
+  const snapshots = new RouterActiveAssemblySnapshotStore();
+  const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
+  const runtimeRegistry = new RuntimeRegistry();
+  const endpoint = new RuntimeEndpoint({ registry: runtimeRegistry, assemblyRegistry });
+  const coordinator = new AssemblyActivationCoordinator({
+    environment: 'test',
+    stateStore: new MemoryAssemblyActivationStateStore(initialActivationState({
+      environment: 'test',
+      generation: 1,
+      assemblyIdentity: ASSEMBLY_A
+    })),
+    assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
+      assembly(ASSEMBLY_A),
+      assembly(ASSEMBLY_B),
+      assembly(ASSEMBLY_C)
+    ]),
+    snapshots,
+    registry: assemblyRegistry,
+    controlSender: endpoint,
+    prepareTimeoutMs: 1000
+  });
+  endpoint.setCoordinator(coordinator);
+  await coordinator.initialize();
+  const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
+  endpoint.setDispatcher(dispatcher);
+  const controlPlane = new AssemblyControlPlane({
+    coordinator,
+    registry: assemblyRegistry,
+    runtimeRegistry,
+    snapshots
+  });
+  const listening = await endpoint.listen({ controlPlane, port: 0 });
+  const fixture = {
+    assemblyRegistry,
+    controlUrl: `http://${listening.host}:${listening.port}`,
+    coordinator,
+    endpoint,
+    runtimeRegistry,
+    url: listening.url,
+    close: () => endpoint.close()
+  };
+  fixtures.push(fixture);
+  return fixture;
+}
+
+function sendCapabilities(ws: WebSocket, runtimeId: string): void {
+  ws.send(encodeRuntimeFrame({
+    ...runtimeFrameHeaderFixtures['runtime.capabilities'],
+    runtimeId
+  }));
+}
+
+function sendActivation(ws: WebSocket, control: AssemblyActivationControl): void {
+  ws.send(encodeAssemblyActivationFrame('runtimeToRouter', control));
+}
+
+function registration(generation: number, assemblyIdentity: string): AssemblyActivationControl {
+  return {
+    type: 'register',
+    environment: 'test',
+    generation,
+    assembly: { assemblyIdentity },
+    replicaId: RUNTIME_ID
+  };
+}
+
+function activationRequest(activationId: string, expectedGeneration: number, assemblyIdentity: string) {
+  return {
+    schemaVersion: 'skiff-assembly-activation-request-v1' as const,
+    environment: 'test',
+    activationId,
+    expectedGeneration,
+    assembly: { assemblyIdentity }
+  };
+}
+
+function transition(
+  type: 'prepare' | 'prepared' | 'reject' | 'commit' | 'abort',
+  activationId: string,
+  expectedGeneration: number,
+  assemblyIdentity: string
+): AssemblyActivationControl {
+  const base = {
+    environment: 'test',
+    activationId,
+    expectedGeneration,
+    candidateGeneration: expectedGeneration + 1,
+    assembly: { assemblyIdentity },
+    replicaId: RUNTIME_ID
+  };
+  return type === 'reject'
+    ? { ...base, type, reason: 'admission' }
+    : { ...base, type };
+}
+
+function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
+  return { schemaVersion: 'skiff-runtime-assembly-v1', assemblyIdentity, globalIngress: [] };
+}
+
+function identity(character: string): string {
+  return `skiff-runtime-assembly-v1:sha256:${character.repeat(64)}`;
+}
+
+async function openSocket(url: string): Promise<WebSocket> {
+  const ws = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  return ws;
+}
+
+async function nextActivation(
+  ws: WebSocket,
+  type: AssemblyActivationControl['type']
+): Promise<AssemblyActivationControl> {
+  const data = await nextBinaryMessage(ws);
+  const control = decodeAssemblyActivationFrame('routerToRuntime', data);
+  expect(control.type).toBe(type);
+  return control;
+}
+
+async function nextRuntimeFrame(ws: WebSocket, type: string): Promise<RuntimeBinaryFrame> {
+  const data = await nextBinaryMessage(ws);
+  const frame = decodeRuntimeFrame(data);
+  expect(frame.header.type).toBe(type);
+  return frame;
+}
+
+async function nextBinaryMessage(ws: WebSocket): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out waiting for binary frame')), 1000);
+    ws.once('message', (data, isBinary) => {
+      clearTimeout(timeout);
+      if (!isBinary) {
+        reject(new Error('expected binary runtime frame'));
+        return;
+      }
+      resolve(rawDataBuffer(data));
+    });
+  });
+}
+
+async function expectPolicyClose(url: string, send: (ws: WebSocket) => void): Promise<void> {
+  const ws = await openSocket(url);
+  const closed = waitForClose(ws);
+  send(ws);
+  const [code] = await closed;
+  expect(code).toBe(1008);
+}
+
+async function waitForClose(ws: WebSocket): Promise<[number, Buffer]> {
+  return await new Promise<[number, Buffer]>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out waiting for socket close')), 1000);
+    ws.once('close', (code, reason) => {
+      clearTimeout(timeout);
+      resolve([code, Buffer.from(reason)]);
+    });
+  });
+}
+
+function rawDataBuffer(data: WebSocket.RawData): Buffer {
+  if (Array.isArray(data)) {
+    return Buffer.concat(data);
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data));
+  }
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+}
+
+async function until(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await nextTurn();
+  }
+  throw new Error('condition was not reached');
+}
+
+async function nextTurn(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}

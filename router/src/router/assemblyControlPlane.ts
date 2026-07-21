@@ -5,6 +5,7 @@ import { decodeRawAssemblyActivationRequest } from '../protocol/assemblyActivati
 import type { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.js';
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import { toGatewayError } from './errors.js';
+import type { RuntimeRegistry } from './runtimeRegistry.js';
 import type { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapshot.js';
 
 const ACTIVATION_PATH = ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT.slice('POST '.length);
@@ -12,6 +13,7 @@ const ACTIVATION_PATH = ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT.slice('POST '.lengt
 export interface AssemblyControlPlaneOptions {
   coordinator: AssemblyActivationCoordinator;
   registry: AssemblyRuntimeRegistry;
+  runtimeRegistry: Pick<RuntimeRegistry, 'capabilityConnectionsSnapshot'>;
   snapshots: RouterActiveAssemblySnapshotStore;
 }
 
@@ -42,6 +44,7 @@ export class AssemblyControlPlane {
           ingressCount: snapshot.ingress.values().length
         },
         pendingActivation: state.pending,
+        capabilityConnections: this.options.runtimeRegistry.capabilityConnectionsSnapshot(),
         replicas: this.options.registry.snapshot()
       });
       return true;
