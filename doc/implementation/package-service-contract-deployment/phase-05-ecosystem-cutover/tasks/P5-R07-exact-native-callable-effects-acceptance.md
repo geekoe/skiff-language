@@ -13,3 +13,13 @@
 - canonical truncate std package projection正例真实通过，恶意负例非fixture symbol特判；`extra-review`无重复registry。
 
 第一行只给`R07 PASS`或`R07 FAIL`。PASS只解锁F04恢复完整source suite/接收；FAIL给最小native反例与owner。
+
+## 验收记录
+
+`bd13867e865ab552932fb9fcda0af8beda5b75cc` / tree
+`40649723a72d158af3e323bbf55c7eb1ceda4aa0` 为`R07 PASS`。shared registry恰含四个exact string
+binding key；compiler仅由真实prelude native symbol与shared key交集生成`NativeFunction`，descriptor缺失、
+crypto、capability、custom/raw/dynamic均fail closed。compiled projection不输出新artifact fact，lowering仍使用
+既有native binding；runtime validator的unknown/duplicate/signature/context/handler恶意矩阵与真实handler映射均通过。
+六个合同filters为`1/1、1/1、1/1、1/1、8/8、2/2`；候选及父节点无manifest/lock差异，工作树clean。
+该PASS只解锁F04恢复完整source suite与窄接收。
