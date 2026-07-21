@@ -2185,6 +2185,7 @@ dependencies = [
  "skiff-compiler-projection",
  "skiff-compiler-projection-input",
  "skiff-compiler-source",
+ "skiff-deployment",
  "skiff-syntax",
  "thiserror",
 ]
@@ -2545,17 +2546,11 @@ name = "skiff-runtime-package-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hex",
- "serde",
- "serde_json",
- "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-runtime-activation",
- "skiff-runtime-linked-program",
+ "skiff-deployment",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
- "skiff-runtime-model",
 ]
 
 [[package]]
@@ -2618,6 +2613,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-runtime-request-contract",
  "url",
 ]
@@ -2635,16 +2631,14 @@ dependencies = [
 name = "skiff-test-runner"
 version = "0.1.0"
 dependencies = [
- "base64",
- "libc",
- "serde",
+ "anyhow",
  "serde_json",
- "serde_yaml",
- "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler",
- "skiff-compiler-core",
+ "skiff-compiler-input",
+ "skiff-compiler-source",
+ "skiff-deployment",
  "skiff-syntax",
  "thiserror",
 ]
