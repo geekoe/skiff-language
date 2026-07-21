@@ -7,7 +7,10 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
-use crate::{HydratedRuntimeAssembly, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
+use crate::{
+    HydratedRuntimeAssembly, RuntimeAssemblyContentResolver, RuntimeAssemblyLoader,
+    RuntimeAssemblyRecordResolver,
+};
 
 /// Production filesystem resolver for the canonical four-record store.
 ///
@@ -38,8 +41,7 @@ impl FilesystemRuntimeAssemblyContentResolver {
         &self,
         reference: &RuntimeAssemblyRef,
     ) -> anyhow::Result<HydratedRuntimeAssembly> {
-        let assembly = self.store.read_runtime_assembly(reference)?;
-        RuntimeAssemblyLoader::new(self).load(assembly)
+        RuntimeAssemblyLoader::new(self).load_ref(reference)
     }
 }
 
@@ -79,5 +81,14 @@ impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver
         reference: &PublicationResourceRef,
     ) -> anyhow::Result<Arc<[u8]>> {
         Ok(self.store.read_static_resource(package, reference)?)
+    }
+}
+
+impl RuntimeAssemblyRecordResolver for FilesystemRuntimeAssemblyContentResolver {
+    fn resolve_runtime_assembly(
+        &self,
+        reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::RuntimeAssembly>> {
+        Ok(self.store.read_runtime_assembly(reference)?)
     }
 }

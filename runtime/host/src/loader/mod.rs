@@ -1,5 +1,6 @@
 mod active_assembly_context;
 pub(crate) mod assembly_admission;
+#[cfg(test)]
 mod fingerprint;
 pub(crate) mod identity;
 pub(crate) mod linker;
@@ -14,6 +15,7 @@ mod service_http;
 mod test_artifacts;
 mod utils;
 
+#[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use fingerprint::artifact_roots_control_fingerprint;
 #[allow(unused_imports)]
