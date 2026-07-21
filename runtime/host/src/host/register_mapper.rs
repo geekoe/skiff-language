@@ -101,7 +101,7 @@ fn runtime_register_envelope_from_projection(
         artifact_identity,
         capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
             dispatch_modes: runtime_image_dispatch_modes(image),
-            package_test_dispatch: true,
+            package_test_dispatch: false,
             request_cancel: true,
             runtime_program: true,
         },
@@ -253,7 +253,7 @@ mod tests {
             value["capabilities"],
             json!({
                 "dispatchModes": ["unary"],
-                "packageTestDispatch": true,
+                "packageTestDispatch": false,
                 "requestCancel": true,
                 "runtimeProgram": true
             })

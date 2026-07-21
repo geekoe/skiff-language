@@ -375,14 +375,6 @@ pub(super) fn runtime_service_selector_build_id(service: &RuntimeServiceConfig) 
     service.runtime_program_identity.dynamic_build_id.as_str()
 }
 
-pub(super) fn package_test_revision_id(test_build_identity: &str) -> String {
-    test_build_identity
-        .strip_prefix("skiff-package-test-build-v1:sha256:")
-        .filter(|hash| is_bare_sha256(hash))
-        .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
-        .to_string()
-}
-
 fn is_bare_sha256(value: &str) -> bool {
     value.len() == 64
         && value

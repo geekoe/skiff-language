@@ -148,8 +148,13 @@ async fn spawn_resolved_host_test_request(
     let operation_context = host
         .lookup_request_operation(&request)
         .expect("host test request operation should resolve");
-    host.spawn_resolved_request(operation_context, request, sender, "runtime.request_error")
-        .await;
+    host.spawn_resolved_request_for_test(
+        operation_context,
+        request,
+        sender,
+        "runtime.request_error",
+    )
+    .await;
 }
 
 fn set_request_string_arg(request: &mut RequestEnvelope, name: &str, value: &str) {
@@ -351,7 +356,7 @@ async fn runtime_capabilities_registers_without_loaded_services() {
     assert_eq!(capabilities.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
     assert_eq!(capabilities.envelope_type, "runtime.capabilities");
     assert_eq!(capabilities.runtime_id, "runtime-base");
-    assert!(capabilities.capabilities.package_test_dispatch);
+    assert!(!capabilities.capabilities.package_test_dispatch);
     assert!(capabilities.capabilities.request_cancel);
     assert!(
         receiver.try_recv().is_err(),
@@ -1776,7 +1781,7 @@ async fn runtime_program_service_routes_registers_and_executes() {
     assert_eq!(capabilities.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
     assert_eq!(capabilities.envelope_type, "runtime.capabilities");
     assert_eq!(capabilities.runtime_id, "runtime-base");
-    assert!(capabilities.capabilities.package_test_dispatch);
+    assert!(!capabilities.capabilities.package_test_dispatch);
     assert!(capabilities.capabilities.request_cancel);
     let register_frame = router_binary(
         register_receiver
@@ -1797,7 +1802,7 @@ async fn runtime_program_service_routes_registers_and_executes() {
         .as_ref()
         .expect("runtime.register capabilities should be present");
     assert!(register_capabilities.runtime_program);
-    assert!(register_capabilities.package_test_dispatch);
+    assert!(!register_capabilities.package_test_dispatch);
 
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let mut request = request(BUILD_A, "program.target");

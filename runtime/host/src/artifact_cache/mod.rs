@@ -7,7 +7,6 @@ use std::{
 };
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use skiff_runtime_linked_program::{
     ArtifactFileIrUnit as FileIrUnit, LinkedProgramImage, PackageUnit,
 };
@@ -16,7 +15,6 @@ use skiff_runtime_loader::{
     RemovedArtifactCacheEntry,
 };
 pub use skiff_runtime_loader::{FileIrCache, PackageCache};
-use skiff_runtime_package_test::{PackageTestBuildSelection, PackageTestRuntimeTemplate};
 
 pub use skiff_runtime_activation::RuntimeActivationCache;
 use skiff_runtime_activation::{
@@ -38,7 +36,6 @@ pub struct RuntimeArtifactCaches {
     pub packages: PackageCache,
     pub images: LinkedProgramImageCache,
     pub activation_cache: RuntimeActivationCache,
-    pub package_test_templates: PackageTestRuntimeTemplateCache,
     budgets: RuntimeMemoryBudgets,
 }
 
@@ -67,7 +64,6 @@ impl RuntimeArtifactCaches {
             packages: PackageCache::new(),
             images: LinkedProgramImageCache::new(),
             activation_cache: RuntimeActivationCache::new(),
-            package_test_templates: PackageTestRuntimeTemplateCache::new(),
             budgets,
         }
     }
@@ -81,19 +77,16 @@ impl RuntimeArtifactCaches {
         let packages = RuntimeArtifactCacheBucketStats::from(self.packages.stats());
         let images = self.images.stats();
         let activation_cache = RuntimeArtifactCacheBucketStats::from(self.activation_cache.stats());
-        let package_test_templates = self.package_test_templates.stats();
         RuntimeArtifactCacheStats {
             files,
             packages,
             images,
             activation_cache,
-            package_test_templates,
             total_estimated_size_bytes: files
                 .estimated_size_bytes
                 .saturating_add(packages.estimated_size_bytes)
                 .saturating_add(images.estimated_size_bytes)
-                .saturating_add(activation_cache.estimated_size_bytes)
-                .saturating_add(package_test_templates.estimated_size_bytes),
+                .saturating_add(activation_cache.estimated_size_bytes),
             artifact_cache_budget_bytes: self.budgets.artifact_cache_bytes,
             request_heap_budget_bytes: self.budgets.request_heap_bytes,
         }
@@ -126,9 +119,6 @@ impl RuntimeArtifactCaches {
                     .activation_cache
                     .remove(&candidate.identity)
                     .map(Into::into),
-                RuntimeArtifactCacheKind::PackageTestRuntimeTemplate => {
-                    self.package_test_templates.remove(&candidate.identity)
-                }
             };
             let Some(removed) = removed else {
                 remaining = self.total_estimated_size_bytes();
@@ -156,7 +146,6 @@ impl RuntimeArtifactCaches {
             self.activation_cache
                 .oldest_candidate()
                 .map(EvictionCandidate::from),
-            self.package_test_templates.oldest_candidate(),
         ]
         .into_iter()
         .flatten()
@@ -214,7 +203,6 @@ pub enum RuntimeArtifactCacheKind {
     Package,
     LinkedImage,
     RuntimeActivation,
-    PackageTestRuntimeTemplate,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -229,7 +217,6 @@ pub struct RuntimeArtifactCacheStats {
     pub packages: RuntimeArtifactCacheBucketStats,
     pub images: RuntimeArtifactCacheBucketStats,
     pub activation_cache: RuntimeArtifactCacheBucketStats,
-    pub package_test_templates: RuntimeArtifactCacheBucketStats,
     pub total_estimated_size_bytes: usize,
     pub artifact_cache_budget_bytes: usize,
     pub request_heap_budget_bytes: usize,
@@ -275,127 +262,6 @@ pub struct LinkedProgramImageCache {
 impl Default for LinkedProgramImageCache {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Debug)]
-pub struct PackageTestRuntimeTemplateCache {
-    entries: RwLock<HashMap<String, CacheEntry<PackageTestRuntimeTemplate>>>,
-}
-
-impl Default for PackageTestRuntimeTemplateCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PackageTestRuntimeTemplateCache {
-    pub fn new() -> Self {
-        Self {
-            entries: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn cache_key(
-        artifact_roots: &[std::path::PathBuf],
-        selection: &PackageTestBuildSelection,
-    ) -> String {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct KeyPayload<'a> {
-            schema_version: &'static str,
-            package_id: &'a str,
-            package_version: &'a str,
-            test_build_identity: &'a str,
-            artifact_roots: Vec<String>,
-        }
-
-        let payload = KeyPayload {
-            schema_version: "skiff-package-test-runtime-template-cache-key-v1",
-            package_id: &selection.package_id,
-            package_version: &selection.package_version,
-            test_build_identity: &selection.test_build_identity,
-            artifact_roots: artifact_roots
-                .iter()
-                .map(|root| root.display().to_string())
-                .collect(),
-        };
-        let bytes = serde_json::to_vec(&payload)
-            .expect("package-test runtime template cache key should serialize");
-        format!(
-            "skiff-package-test-runtime-template-cache-v1:sha256:{}",
-            hex::encode(Sha256::digest(bytes))
-        )
-    }
-
-    pub fn get(&self, identity: impl AsRef<str>) -> Option<Arc<PackageTestRuntimeTemplate>> {
-        self.entries
-            .write()
-            .expect("package-test runtime template cache lock poisoned")
-            .get_mut(identity.as_ref())
-            .map(CacheEntry::touch)
-    }
-
-    pub fn insert_arc(
-        &self,
-        identity: impl Into<String>,
-        template: Arc<PackageTestRuntimeTemplate>,
-    ) -> Arc<PackageTestRuntimeTemplate> {
-        let estimated_size_bytes = template.estimated_size_bytes();
-        let identity = identity.into();
-        let mut entries = self
-            .entries
-            .write()
-            .expect("package-test runtime template cache lock poisoned");
-        if let Some(existing) = entries.get_mut(&identity) {
-            return existing.touch();
-        }
-        entries.insert(
-            identity,
-            CacheEntry::new(Arc::clone(&template), estimated_size_bytes),
-        );
-        template
-    }
-
-    pub fn clear(&self) -> usize {
-        let mut entries = self
-            .entries
-            .write()
-            .expect("package-test runtime template cache lock poisoned");
-        let removed = entries.len();
-        entries.clear();
-        removed
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries
-            .read()
-            .expect("package-test runtime template cache lock poisoned")
-            .len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn stats(&self) -> RuntimeArtifactCacheBucketStats {
-        bucket_stats(&self.entries, "package-test runtime template cache")
-    }
-
-    fn remove(&self, identity: &str) -> Option<RemovedCacheEntry> {
-        remove_entry(
-            &self.entries,
-            identity,
-            "package-test runtime template cache",
-        )
-    }
-
-    fn oldest_candidate(&self) -> Option<EvictionCandidate> {
-        oldest_candidate(
-            &self.entries,
-            RuntimeArtifactCacheKind::PackageTestRuntimeTemplate,
-            "package-test runtime template cache",
-        )
     }
 }
 
