@@ -15,3 +15,12 @@
 
 第一行只给`R06 PASS`或`R06 FAIL`。PASS只解锁F04恢复真实consumer isolated正例；FAIL给最小source反例、
 facts差异和唯一owner。
+
+## 首次验收记录
+
+`2982cd8d5182384d8debb2a5fa55dbfe4f5e979a` / tree
+`642892b6e03b86ed737cde20462411c4769df043` 的7条冻结gate全部通过，但验收为`R06 FAIL`：合法的
+`alias/public.method()` exact callee解析为`Field(DependencySourceAddress, method)`；F06只对裸
+`DependencySourceAddress`与`Generic`走精确callee求值，`Field`回退到普通表达式求值后仍注入
+same-heap、unknown-target、suspend与Unknown provenance。descriptor、store、canonical facts、scope及lock证据
+均已关闭；P5-F06A只修复该callee wrapper遍历并增加canonical field回归，下一次R06仅窄复验此失败面。
