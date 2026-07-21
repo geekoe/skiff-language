@@ -1,17 +1,37 @@
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::{
-    AssemblyIdentity, ConfigLiteralBinding, ContractOperationId, DeploymentIngressBinding,
-    DeploymentPolicy, IngressSelector, PackageArtifactRef, PackageBinding, PackageBuildId,
-    ResourceBinding, SecretRefBinding, ServiceContractRef, ServiceDeploymentRef,
-    ServiceRequirementKey, StateBinding,
+    validate_runtime_assembly_identity, AssemblyIdentity, ConfigLiteralBinding,
+    ContractOperationId, DeploymentIngressBinding, DeploymentPolicy, IngressSelector,
+    PackageArtifactRef, PackageBinding, PackageBuildId, ResourceBinding, SecretRefBinding,
+    ServiceContractRef, ServiceDeploymentRef, ServiceRequirementKey, StateBinding,
 };
 
 /// Exact reference to one immutable RuntimeAssembly record.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAssemblyRef {
     pub assembly_identity: AssemblyIdentity,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawRuntimeAssemblyRef {
+    assembly_identity: AssemblyIdentity,
+}
+
+impl<'de> Deserialize<'de> for RuntimeAssemblyRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRuntimeAssemblyRef::deserialize(deserializer)?;
+        validate_runtime_assembly_identity(raw.assembly_identity.as_str())
+            .map_err(de::Error::custom)?;
+        Ok(Self {
+            assembly_identity: raw.assembly_identity,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

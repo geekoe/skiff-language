@@ -9,9 +9,7 @@ use skiff_artifact_model::{
 
 use super::{
     error::{EcosystemStorageError, StorageResult},
-    io::{
-        canonical_bytes, read_locked_bytes, strict_value, typed_from_value, CanonicalArtifactStore,
-    },
+    io::{canonical_bytes, read_locked_bytes, CanonicalArtifactStore},
 };
 
 pub const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION: &str =
@@ -46,6 +44,7 @@ pub struct EnvironmentActivationState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawCommittedActivation {
+    #[serde(deserialize_with = "skiff_artifact_model::deserialize_activation_generation")]
     generation: u64,
     assembly: RuntimeAssemblyRef,
 }
@@ -54,7 +53,9 @@ struct RawCommittedActivation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawPendingActivation {
     activation_id: String,
+    #[serde(deserialize_with = "skiff_artifact_model::deserialize_activation_generation")]
     expected_generation: u64,
+    #[serde(deserialize_with = "skiff_artifact_model::deserialize_activation_generation")]
     candidate_generation: u64,
     assembly: RuntimeAssemblyRef,
     participant_replica_ids: Vec<String>,
@@ -66,7 +67,22 @@ struct RawEnvironmentActivationState {
     schema_version: String,
     environment: String,
     committed: RawCommittedActivation,
-    pending: Option<RawPendingActivation>,
+    pending: RequiredNullable<RawPendingActivation>,
+}
+
+#[derive(Debug)]
+struct RequiredNullable<T>(Option<T>);
+
+impl<'de, T> Deserialize<'de> for RequiredNullable<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Self)
+    }
 }
 
 impl<'de> Deserialize<'de> for EnvironmentActivationState {
@@ -82,7 +98,7 @@ impl<'de> Deserialize<'de> for EnvironmentActivationState {
                 generation: raw.committed.generation,
                 assembly: raw.committed.assembly,
             },
-            pending: raw.pending.map(|pending| PendingActivation {
+            pending: raw.pending.0.map(|pending| PendingActivation {
                 activation_id: pending.activation_id,
                 expected_generation: pending.expected_generation,
                 candidate_generation: pending.candidate_generation,
@@ -432,8 +448,12 @@ impl CanonicalArtifactStore {
 }
 
 fn parse_state(path: &Path, bytes: &[u8]) -> StorageResult<EnvironmentActivationState> {
-    let value = strict_value(path, bytes)?;
-    let state = typed_from_value::<EnvironmentActivationState>(path, value)?;
+    let state = serde_json::from_slice::<EnvironmentActivationState>(bytes).map_err(|source| {
+        EcosystemStorageError::Json {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
     state.validate()?;
     if canonical_bytes(&state)? != bytes {
         return invalid(path, "activation state bytes are not canonical JSON");
@@ -490,3 +510,7 @@ fn invalid<T>(path: impl AsRef<Path>, message: impl Into<String>) -> StorageResu
         message: message.into(),
     })
 }
+
+#[cfg(test)]
+#[path = "activation/tests.rs"]
+mod tests;
