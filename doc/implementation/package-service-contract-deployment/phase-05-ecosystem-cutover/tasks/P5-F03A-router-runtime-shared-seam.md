@@ -15,6 +15,9 @@
 
 - `router/src/protocol/**`、`runtime/transport/**`中共享frame/header codec及直接tests；
 - `compiler/driver/**`与`compiler/driver/bin/skiff-compiler.rs`中的strict internal ecosystem-store adapter；
+- `deployment/src/storage/io.rs`及其直接tests中一处canonical store并发目录创建修复：仅容忍
+  `create_dir`竞态返回的`AlreadyExists`，随后必须重新检查目标是真实目录、不是symlink，并继续执行
+  root containment校验；不得把path、identity、lock或CAS规则复制到adapter；
 - `cross-system-fixtures/package-service-ecosystem/**`的TS/Rust golden/mutation corpus；
 - 必要public导出。除非已有manifest不能编译，不改root Cargo/lock。
 
@@ -56,6 +59,10 @@
    请求/响应均`deny_unknown_fields`、stdin/stdout单JSON、stderr稳定错误，不引入artifact kind/common envelope。
 4. golden corpus覆盖binary frame bytes、全部control variant/direction、payload/text/unknown mutation、canonical
    request routing与legacy-field collision，以及bootstrap/read/CAS/snapshot adapter正负例。
+
+并发bootstrap测试在实现中真实暴露`CanonicalArtifactStore::prepare_destination`的TOCTOU：两个调用者同时
+观察到父目录缺失后，后创建者会收到`AlreadyExists`。该底层最小修复属于本任务显式授权范围；验收必须
+证明并发调用收敛到同一generation-0 state，同时symlink/non-directory与越界路径仍fail closed。
 
 ## 完成态与验证
 
