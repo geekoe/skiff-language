@@ -7,6 +7,8 @@
 - worktree：`/Users/geek/workspace/skiff-p5-f03c-runtime-repair`。
 - 独占`runtime/driver/**`、`runtime/host/**`及必要runtime request/transport consumer tests；不得改F03A
   /F05 shared wire与WS authoring规则、Router/compiler/test-runner。只提交task branch。
+- D09已把legacy Host package-test consumer/template cache与两个activation codec旧调用拆给F08/R08前置关闭；
+  F03C不得恢复这些seam。其余startup/admission/request/drain/typed WS职责不变。
 
 ## 完成态
 

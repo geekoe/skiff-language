@@ -76,3 +76,14 @@ legacy compatibility。`AGENTS.md`与`doc/architecture/test-runner-runtime-isola
 `verify runtime-live`的新CLI parser/plan字段与拒绝矩阵归F04，但现有`runtime/live-tests/**`只有legacy
 `service.yml`且需要config/DB/file/http capability与base assembly，完整语义fixture也归T06。F04不得用孤立
 `package.yml`或synthetic base assembly伪装可执行live phase；回报必须把它列为第二个exact terminal owner。
+
+## D09 / F08 Host解环handoff
+
+R07后F04已形成`fed409ba374a85891dc9834179a7cc8bee4ae258` / tree
+`b65ef0b67e13dea4a690671b7a5b4b7bc8b3efd0` implementation checkpoint：自身Rust/Node/smoke/Clippy gate通过，
+但isolated supervisor编译Host时被23个legacy package-test consumer与2个activation codec旧调用阻断。D09确认原
+F04→F05→F03C依赖成环，冻结F08/R08前置修复。
+
+该checkpoint可在不作F04 receive verdict的前提下合入integration，供root刷新shared lock并执行F08/R08；这不把
+F04称为complete。R08 PASS后必须在同一合流状态原样运行canonical activation→production Host ingress fixture并
+观察`provider-observed-helper-mutated`，再由原接收范围窄验六个blocker。F08的Host compile/test不能替代该证据。

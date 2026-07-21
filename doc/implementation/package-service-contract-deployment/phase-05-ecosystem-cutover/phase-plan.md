@@ -7,7 +7,8 @@ R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner
 不一致而FAIL。验收熔断D06/F03A2已在`4df6c04`通过R02A第三次窄验收。F04探针发现正常authoring不能
 产生可观测WS pin，D05已冻结typed unified WS ABI；F04真实consumer又由callable-effects过度fail-close阻断，
 D07已冻结F06 compiler repair；R06首次因exact callee的Field wrapper遗漏而FAIL，F06A已在`fbf634d`通过
-R06窄复验；D08/F07 exact native semantics已在`bd13867`通过R07，F04恢复在途。F05等待F04 narrow receive，
+R06窄复验；D08/F07 exact native semantics已在`bd13867`通过R07。F04的Host证据与F03C依赖形成环，D09已冻结
+F08/R08前置Host seam修复；F04 implementation checkpoint在途合流。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -91,7 +92,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
   T05 test-runner / package-test / fixtures
     └─► RECEIVE FAIL@f8ad689 ─► D04 bounded design ─► F04 partial repair
           ├─► D07 callable-effects audit ─► F06 compiler repair ─► R06 FAIL@2982cd8 ─► F06A field repair ─► R06 PASS@fbf634d
-          │     D08 native-effects audit ───────────────────────────────────────────────────────────┴─► F07 exact native semantics ─► R07 PASS@bd13867 ─► F04 resume ─► narrow receive
+          │     D08 native-effects audit ───────────────────────────────────────────────────────────┴─► F07 exact native semantics ─► R07 PASS@bd13867
+          │                                                                                               └─► F04 implementation checkpoint ─► shared lock ─► F08 ─► R08 ─► F04 Host probe/receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -167,6 +169,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D08 | [Exact native callable effects audit](tasks/P5-D08-exact-native-callable-effects-audit.md) | F04 std-suite blocker | 独立只读；冻结native descriptor边界 |
 | F07 | [Exact native callable effects](tasks/P5-F07-exact-native-callable-effects.md) | R06 PASS + D08 | 高；shared native semantics窄修复 |
 | R07 | [Exact native callable effects acceptance](tasks/P5-R07-exact-native-callable-effects-acceptance.md) | F07 exact commit | 高；独立只读 |
+| D09 | [Host test-runtime cycle audit](tasks/P5-D09-host-test-runtime-cycle-audit.md) | F04 Host blocker after R07 | 独立只读；冻结DAG解环 |
+| F08 | [Host test-runtime seam repair](tasks/P5-F08-host-test-runtime-seam-repair.md) | F04 implementation checkpoint + shared lock | 高；Host legacy seam删除 |
+| R08 | [Host test-runtime seam acceptance](tasks/P5-R08-host-test-runtime-seam-acceptance.md) | F08 exact commit | 高；独立只读 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -228,13 +233,19 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   runtime harness；不改runtime host production、router或tooling production。T05接收FAIL后，D04只读冻结真实
   canonical dependency/base assembly数据流与CLI disposition；F04可串行修改T05 owned paths及T02
   `scripts/skiff.mjs`/isolated/verify直接caller，删除失效参数并接通同一canonical runner。F04不改compiler stream、
-  runtime host或shared wire；F03C仍唯一迁移runtime-host package-test consumer。
+  runtime host或shared wire。D09确认该consumer与F04 receive形成依赖环；F04 implementation checkpoint可先合入但
+  不作receive verdict，由root唯一刷新shared lock后，F08删除runtime-host legacy package-test consumer及两个旧codec
+  caller，R08 PASS后F04才运行真实Host probe。F03C不得恢复该seam。
 - D07只读穷举F04真实consumer被拒绝的callable-effects来源；F06串行独占compiler/source的exact dependency
   call-position、全detached contract descriptor transfer与直接标量参数字段写facts。不改projection/lowering/
   artifact/runtime。R06 PASS后F04才把同一fail-closed fixture翻为isolated最终正例，不在F04复制effects规则。
 - D08只读确认native signature有shared identity但无effects owner；F07在R06后串行建立缺省Unknown的稀疏exact
   native semantics，只批准四个context-free string scalar，并让compiler/runtime交叉校验同一binding key。R07 PASS
   后F04才恢复canonical std source suite；未知/crypto/capability native不因本修复放宽。
+- D09只读确认F04 Host证据与F03C依赖成环，并冻结F08删除legacy Host package-test seam。F04 implementation
+  checkpoint合流后，root integration owner独占一次Cargo.lock刷新并冻结exact shared-lock commit；F08只改Host
+  consumer、不得再改manifest/lock，R08 PASS后F04原fixture才可完成receive。该前置修复不实现F03C的startup、
+  lifecycle、request trust boundary、drain或typed WS职责。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
