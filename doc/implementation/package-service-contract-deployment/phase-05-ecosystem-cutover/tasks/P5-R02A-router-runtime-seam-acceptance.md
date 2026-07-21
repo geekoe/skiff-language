@@ -21,3 +21,12 @@ R02预审报告与权威设计。不得修改文件、创建commit、实现consu
 assembly `request.start` 的optional fields在TS/Rust存在不同接受集合。已确认反例包括identity pattern与
 `deadline` unknown/负数/小数；现有31个mutation未证明全部optional/nested字段精确一致。下一次只在D03矩阵、
 F03A1 exact repair commit与失效的request parity gate上窄复验；frame/store证据不因该repair机械失效。
+
+## 第二次验收与熔断记录
+
+`571549739239ca16b04d09cd7be1716125dc1982` / tree
+`971fa7ad9a63c4b2296b0f7b9ae8e164bcbd02ee` 的既有6个Rust tests、Router type-check、4 accepted / 244 typed
+reject / 5 raw duplicate / 4 equivalent / 1 legacy self-test均通过，但验收仍为FAIL：raw lone surrogate在TS接受、
+Rust拒绝；opaque unsafe integer发生TS精度丢失；四组absent/default虽双端接受，decoded typed result未统一
+materialize。按验收熔断规则，D06已对剩余raw lexical、opaque number与default normalization做有界审计；
+F03A2合流并通过request combined probe前不得发起第三次verdict或解锁F03B/F03C。

@@ -3,7 +3,8 @@
 状态：active；P5-R01 已在 `c168b1dc` / tree `961998ac` PASS。T02/T03/T04已合流；T05 candidate
 `f8ad689`接收审查FAIL，D04已冻结repair设计、F04在途；
 R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链。F03A已合流，R02A在
-`a7566bb`因canonical request optional fields的TS/Rust接受集合不一致而FAIL；D03有界审计与F03A1 repair在途。
+`a7566bb`首次FAIL后完成D03/F03A1；第二次在`5715497`因raw Unicode/opaque number/default normalization
+不一致而FAIL。验收熔断D06已完成，F03A2批量修复在途，F03B/F03C仍锁定。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -88,9 +89,11 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
 
   R02 pre-review@b47ddf7 findings
     └─► F03A shared binary/request/store seam ─► R02A FAIL@a7566bb
-          └─► D03 canonical optional-field parity audit ─► F03A1 bounded repair ─► R02A narrow reverify
-                ├─► F03B unified Router endpoint/store/pin ─┐
-                └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
+          └─► D03 canonical optional-field parity audit ─► F03A1 bounded repair
+                └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
+                      └─► F03A2 convergence ─► request combined probe ─► R02A third narrow verdict
+                            ├─► F03B unified Router endpoint/store/pin ─┐
+                            └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
 
 Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T06 Skiff legacy deletion + checker + canonical docs ─────┐
@@ -152,6 +155,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
 | F03A1 | [Canonical request optional parity repair](tasks/P5-F03A1-canonical-request-optional-parity-repair.md) | D03 complete | 高；共享request codec/corpus窄修复 |
+| D06 | [Canonical request raw/normalization audit](tasks/P5-D06-canonical-request-raw-normalization-audit.md) | R02A second FAIL at `5715497` | 独立只读；第三次verdict熔断审计 |
+| F03A2 | [Canonical request raw/normalization convergence](tasks/P5-F03A2-canonical-request-raw-normalization-convergence.md) | D06 complete | 高；shared raw/typed/default一次收敛 |
 | F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R02A PASS | 高；unified endpoint/store/pin |
 | F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R02A PASS | 高；startup/admission/pin |
 | I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
@@ -209,7 +214,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
-  R02A窄复验PASS后F03B只写Router consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有
+  第二次FAIL触发D06熔断审计；F03A2只收敛raw Unicode、opaque number、decoded defaults与parser单一职责。
+  request combined probe通过且R02A第三次窄复验PASS后F03B只写Router consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有
   repair与T05合流后才刷新Cargo.lock并运行I02，避免单侧mock再次冒充interop证据。
 - T06在R02后独占 `artifact-model`/`artifact-identity`/runtime linked/eval的旧module删除，canonical
   ecosystem checker/verify接线、`cross-system-fixtures/**`及旧reference/architecture/runtime/router文档。
