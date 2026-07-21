@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use skiff_artifact_model::{AssemblyIdentity, ContractOperationId};
 
-use crate::{protocol::decode_typed_binary_frame, BinaryFrameError};
+use crate::{BinaryFrameError, TransportError};
 
 mod lexical;
 mod metadata;
@@ -217,8 +217,13 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
 pub fn decode_runtime_assembly_request_start_frame(
     frame: &[u8],
 ) -> Result<(RuntimeAssemblyRequestStartFrameHeader, Vec<u8>), BinaryFrameError> {
-    strict_json::reject_runtime_assembly_request_header_duplicates(frame)?;
-    decode_typed_binary_frame(frame)
+    let (header, payload) = strict_json::decode_runtime_assembly_request_json_frame(frame)?;
+    let header = serde_json::from_value(header).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid skiff binary frame: header failed typed decode: {error}"
+        ))
+    })?;
+    Ok((header, payload))
 }
 
 fn is_false(value: &bool) -> bool {

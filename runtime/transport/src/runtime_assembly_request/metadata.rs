@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
+use skiff_canonical_json::canonical_json_number;
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -381,6 +382,7 @@ pub struct RuntimeAssemblyRequestTestEffectDoubleFrameHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub expect_request: Option<Value>,
+    #[serde(deserialize_with = "deserialize_canonical_json_value")]
     pub response: Value,
 }
 
@@ -479,7 +481,50 @@ fn deserialize_present_json_value<'de, D>(deserializer: D) -> Result<Option<Valu
 where
     D: Deserializer<'de>,
 {
-    Value::deserialize(deserializer).map(Some)
+    deserialize_canonical_json_value(deserializer).map(Some)
+}
+
+fn deserialize_canonical_json_value<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    normalize_opaque_json(Value::deserialize(deserializer)?).map_err(de::Error::custom)
+}
+
+fn normalize_opaque_json(value: Value) -> Result<Value, String> {
+    match value {
+        Value::Array(values) => values
+            .into_iter()
+            .map(normalize_opaque_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(object) => {
+            let mut normalized = Map::new();
+            for (key, value) in object {
+                normalized.insert(key, normalize_opaque_json(value)?);
+            }
+            Ok(Value::Object(normalized))
+        }
+        Value::Number(number) => {
+            let normalized = canonical_json_number(&number);
+            if normalized
+                .as_i64()
+                .is_some_and(|value| value.unsigned_abs() > MAX_SAFE_INTEGER)
+                || normalized
+                    .as_u64()
+                    .is_some_and(|value| value > MAX_SAFE_INTEGER)
+                || normalized.as_f64().is_some_and(|value| {
+                    value.is_finite()
+                        && value.fract() == 0.0
+                        && value.abs() > MAX_SAFE_INTEGER as f64
+                })
+            {
+                return Err("JSON integer exceeds Number.MAX_SAFE_INTEGER".to_string());
+            }
+            Ok(normalized)
+        }
+        value => Ok(value),
+    }
 }
 
 fn deserialize_safe_unsigned_integer<'de, D>(deserializer: D) -> Result<u64, D::Error>

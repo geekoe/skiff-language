@@ -21,7 +21,10 @@ import {
   type RuntimeAssemblyRequestStartFrameHeader,
   validateRuntimeAssemblyRequestRouting
 } from './runtimeAssemblyRequest.js';
-import { validateRuntimeAssemblyRequestMetadata } from './runtimeAssemblyRequestMetadata.js';
+import {
+  normalizeRuntimeAssemblyRequestMetadata,
+  validateRuntimeAssemblyRequestMetadata
+} from './runtimeAssemblyRequestMetadata.js';
 
 export type RuntimeProtocolFrameHeaderName = RuntimeFrameHeaderName;
 export type RuntimeToRouterFrameHeaderName = RuntimeToRouterFrameHeader['type'];
@@ -1970,7 +1973,7 @@ export function validateRuntimeAssemblyRequestStartFrameHeader(
   return error === null
     ? {
         ok: true,
-        envelope: envelope as unknown as RuntimeAssemblyRequestStartFrameHeader
+        envelope: normalizeRuntimeAssemblyRequestMetadata(envelope)
       }
     : { ok: false, error };
 }

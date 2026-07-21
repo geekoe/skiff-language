@@ -1,4 +1,5 @@
 import { isRecord } from "./envelope.js";
+import type { RuntimeAssemblyRequestStartFrameHeader } from "./runtimeAssemblyRequest.js";
 
 const ACTIVATION_IDENTITY_PATTERN =
   /^skiff-runtime-activation-v1:opaque:[A-Za-z0-9._:-]+$/;
@@ -55,6 +56,29 @@ export function validateRuntimeAssemblyRequestMetadata(
     }
     throw error;
   }
+}
+
+export function normalizeRuntimeAssemblyRequestMetadata(
+  envelope: Record<string, unknown>,
+): RuntimeAssemblyRequestStartFrameHeader {
+  const normalized: Record<string, unknown> = {
+    ...envelope,
+    testEffectsEnabled: envelope.testEffectsEnabled ?? false,
+    testEffectDoubles: normalizeTestEffectDoubles(envelope.testEffectDoubles),
+  };
+  if (isRecord(envelope.httpAdapter)) {
+    normalized.httpAdapter = {
+      ...envelope.httpAdapter,
+      adapterArgs: envelope.httpAdapter.adapterArgs ?? [],
+    };
+  }
+  if (isRecord(envelope.websocketAdapter)) {
+    normalized.websocketAdapter = {
+      ...envelope.websocketAdapter,
+      adapterArgs: envelope.websocketAdapter.adapterArgs ?? [],
+    };
+  }
+  return normalized as unknown as RuntimeAssemblyRequestStartFrameHeader;
 }
 
 function validateClientSession(envelope: Record<string, unknown>): void {
@@ -322,7 +346,9 @@ function validateJsonValue(value: unknown, label: string): void {
     value === null ||
     typeof value === "string" ||
     typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value))
+    (typeof value === "number" &&
+      Number.isFinite(value) &&
+      (!Number.isInteger(value) || Number.isSafeInteger(value)))
   ) {
     return;
   }
@@ -340,6 +366,33 @@ function validateJsonValue(value: unknown, label: string): void {
     return;
   }
   fail(`${label} must be a JSON value`);
+}
+
+function normalizeTestEffectDoubles(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).map(([target, sequence]) => [
+      target,
+      (sequence as Record<string, unknown>[]).map((step) => ({
+        ...step,
+        ...(has(step, "expectRequest")
+          ? { expectRequest: normalizeJsonValue(step.expectRequest) }
+          : {}),
+        response: normalizeJsonValue(step.response),
+      })),
+    ]),
+  );
+}
+
+function normalizeJsonValue(value: unknown): unknown {
+  if (typeof value === "number") return Object.is(value, -0) ? 0 : value;
+  if (Array.isArray(value)) return value.map(normalizeJsonValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, normalizeJsonValue(child)]),
+    );
+  }
+  return value;
 }
 
 function exactObject(

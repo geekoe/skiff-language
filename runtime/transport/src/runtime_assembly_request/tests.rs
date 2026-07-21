@@ -9,7 +9,7 @@ use crate::protocol::{encode_binary_frame, RequestStartFrameHeader};
 struct Corpus {
     request_start_headers: Vec<Value>,
     request_start_mutations: Vec<Mutation>,
-    request_start_raw_mutations: Vec<RawMutation>,
+    request_start_raw_cases: Vec<RawCase>,
     request_start_equivalent_option_pairs: Vec<EquivalentOptionPair>,
     legacy_request_start_headers: Vec<Value>,
 }
@@ -27,10 +27,11 @@ struct Mutation {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawMutation {
+struct RawCase {
     name: String,
-    base_index: usize,
-    duplicate_path: String,
+    outcome: String,
+    frame_hex: String,
+    expected_response: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -47,7 +48,7 @@ fn runtime_assembly_request_start_corpus_is_exhaustive() {
     let corpus = corpus();
     assert_eq!(corpus.request_start_headers.len(), 4);
     assert_eq!(corpus.request_start_mutations.len(), 244);
-    assert_eq!(corpus.request_start_raw_mutations.len(), 5);
+    assert_eq!(corpus.request_start_raw_cases.len(), 29);
     assert_eq!(corpus.request_start_equivalent_option_pairs.len(), 4);
     assert_eq!(corpus.legacy_request_start_headers.len(), 1);
 }
@@ -60,10 +61,14 @@ fn runtime_assembly_request_start_normalizes_equivalent_optional_defaults() {
         let mut explicit = absent.clone();
         apply_path(&mut absent, &pair.path, &Value::Null, true);
         apply_path(&mut explicit, &pair.path, &pair.value, false);
-        let absent: RuntimeAssemblyRequestStartFrameHeader = serde_json::from_value(absent)
-            .unwrap_or_else(|error| panic!("{} absent: {error}", pair.name));
-        let explicit: RuntimeAssemblyRequestStartFrameHeader = serde_json::from_value(explicit)
-            .unwrap_or_else(|error| panic!("{} explicit: {error}", pair.name));
+        let absent_frame = encode_binary_frame(&absent, &[]).unwrap();
+        let explicit_frame = encode_binary_frame(&explicit, &[]).unwrap();
+        let absent = decode_runtime_assembly_request_start_frame(&absent_frame)
+            .unwrap_or_else(|error| panic!("{} absent: {error}", pair.name))
+            .0;
+        let explicit = decode_runtime_assembly_request_start_frame(&explicit_frame)
+            .unwrap_or_else(|error| panic!("{} explicit: {error}", pair.name))
+            .0;
         assert_eq!(absent, explicit, "{}", pair.name);
     }
 }
@@ -73,7 +78,10 @@ fn runtime_assembly_request_start_decodes_shared_headers() {
     for value in corpus().request_start_headers {
         let expected: RuntimeAssemblyRequestStartFrameHeader =
             serde_json::from_value(value.clone()).expect("canonical request header");
-        assert_eq!(serde_json::to_value(&expected).unwrap(), value);
+        let serialized = serde_json::to_value(&expected).unwrap();
+        let reparsed: RuntimeAssemblyRequestStartFrameHeader =
+            serde_json::from_value(serialized).unwrap();
+        assert_eq!(reparsed, expected);
         let payload = b"opaque request payload";
         let frame = encode_binary_frame(&expected, payload).unwrap();
         let (decoded, decoded_payload) =
@@ -107,24 +115,32 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_request_start_rejects_raw_duplicate_keys() {
+fn runtime_assembly_request_start_normalizes_raw_json() {
     let corpus = corpus();
-    for mutation in corpus.request_start_raw_mutations {
-        let value = &corpus.request_start_headers[mutation.base_index];
-        let path = mutation.duplicate_path.split('.').collect::<Vec<_>>();
-        let raw_header = stringify_with_duplicate_path(value, &path);
-        let collapsed: Value = serde_json::from_str(&raw_header).unwrap();
-        assert!(
-            serde_json::from_value::<RuntimeAssemblyRequestStartFrameHeader>(collapsed).is_ok(),
-            "{} generic parser collapse control",
-            mutation.name
-        );
-        let frame = raw_binary_frame(raw_header.as_bytes(), &[]);
-        assert!(
-            decode_runtime_assembly_request_start_frame(&frame).is_err(),
-            "{}",
-            mutation.name
-        );
+    for raw_case in corpus.request_start_raw_cases {
+        let frame = decode_hex(&raw_case.frame_hex);
+        match raw_case.outcome.as_str() {
+            "accept" => {
+                let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame)
+                    .unwrap_or_else(|error| panic!("{}: {error}", raw_case.name));
+                let response = &decoded.test_effect_doubles["effect"][0].response;
+                assert_eq!(
+                    response,
+                    raw_case
+                        .expected_response
+                        .as_ref()
+                        .expect("expected response"),
+                    "{}",
+                    raw_case.name
+                );
+            }
+            "reject" => assert!(
+                decode_runtime_assembly_request_start_frame(&frame).is_err(),
+                "{}",
+                raw_case.name
+            ),
+            outcome => panic!("unknown raw outcome {outcome}"),
+        }
     }
 }
 
@@ -185,64 +201,14 @@ fn apply_path(root: &mut Value, path: &str, value: &Value, remove: bool) {
     }
 }
 
-fn stringify_with_duplicate_path(value: &Value, path: &[&str]) -> String {
-    assert!(!path.is_empty(), "duplicate path must not be empty");
-    match value {
-        Value::Array(array) => {
-            let index = path[0].parse::<usize>().expect("duplicate array index");
-            let entries = array
-                .iter()
-                .enumerate()
-                .map(|(item_index, item)| {
-                    if item_index == index {
-                        stringify_with_duplicate_path(item, &path[1..])
-                    } else {
-                        serde_json::to_string(item).unwrap()
-                    }
-                })
-                .collect::<Vec<_>>();
-            format!("[{}]", entries.join(","))
-        }
-        Value::Object(object) => {
-            let field = path[0];
-            let mut found = false;
-            let mut entries = Vec::new();
-            for (key, child) in object {
-                let encoded_key = serde_json::to_string(key).unwrap();
-                if key != field {
-                    entries.push(format!(
-                        "{encoded_key}:{}",
-                        serde_json::to_string(child).unwrap()
-                    ));
-                    continue;
-                }
-                found = true;
-                let encoded_value = if path.len() == 1 {
-                    serde_json::to_string(child).unwrap()
-                } else {
-                    stringify_with_duplicate_path(child, &path[1..])
-                };
-                let encoded_entry = format!("{encoded_key}:{encoded_value}");
-                entries.push(encoded_entry.clone());
-                if path.len() == 1 {
-                    entries.push(encoded_entry);
-                }
-            }
-            assert!(found, "duplicate field {field}");
-            format!("{{{}}}", entries.join(","))
-        }
-        _ => panic!("duplicate path owner must be an object or array"),
-    }
-}
-
-fn raw_binary_frame(header: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(14 + header.len() + payload.len());
-    frame.extend_from_slice(b"SKBF");
-    frame.push(1);
-    frame.push(1);
-    frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    frame.extend_from_slice(header);
-    frame.extend_from_slice(payload);
-    frame
+fn decode_hex(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0);
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(pair, 16).unwrap()
+        })
+        .collect()
 }

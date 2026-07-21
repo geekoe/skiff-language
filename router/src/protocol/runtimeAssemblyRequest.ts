@@ -1,6 +1,8 @@
 import {
+  type HttpAdapterFrameMetadata,
   isRecord,
   type RequestStartFrameHeader,
+  type WebSocketAdapterFrameMetadata,
 } from "./envelope.js";
 import {
   activationGeneration,
@@ -12,7 +14,7 @@ import {
   rejectUnknownObjectFields,
 } from "./runtimeAssemblyRequestStrict.js";
 
-type LegacyRoutingField =
+type CanonicalReplacedField =
   | "target"
   | "operationAbiId"
   | "selector"
@@ -23,7 +25,11 @@ type LegacyRoutingField =
   | "assemblyIdentity"
   | "assemblyGeneration"
   | "contractOperationId"
-  | "ingress";
+  | "ingress"
+  | "httpAdapter"
+  | "websocketAdapter"
+  | "testEffectsEnabled"
+  | "testEffectDoubles";
 
 export interface RuntimeAssemblyRequestRoutingFrameHeader {
   kind: "runtimeAssembly";
@@ -40,13 +46,24 @@ export interface RuntimeAssemblyRequestRoutingFrameHeader {
 
 export type RuntimeAssemblyRequestStartFrameHeader = Omit<
   RequestStartFrameHeader,
-  LegacyRoutingField
+  CanonicalReplacedField
 > & {
   caller: {
     kind: "gateway";
     target: string;
   };
   routing: RuntimeAssemblyRequestRoutingFrameHeader;
+  httpAdapter?: Omit<HttpAdapterFrameMetadata, "adapterArgs"> & {
+    adapterArgs: NonNullable<HttpAdapterFrameMetadata["adapterArgs"]>;
+  };
+  websocketAdapter?: Omit<WebSocketAdapterFrameMetadata, "adapterArgs"> & {
+    adapterArgs: WebSocketAdapterFrameMetadata["adapterArgs"];
+  };
+  testEffectsEnabled: boolean;
+  testEffectDoubles: Record<
+    string,
+    Array<{ expectRequest?: unknown; response: unknown }>
+  >;
 };
 
 const CONTRACT_OPERATION_IDENTITY_PATTERN =
