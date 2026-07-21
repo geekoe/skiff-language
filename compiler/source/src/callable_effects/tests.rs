@@ -352,17 +352,87 @@ fn stream_spawn_database_and_callback_escape_lanes_are_explicit() {
 }
 
 #[test]
-fn native_and_unresolved_dynamic_targets_fail_closed() {
+fn exact_context_free_native_uses_shared_callable_semantics() {
+    let model = analyze(
+        r#"
+            function digits(input: string) -> bool {
+              return std.string.isAsciiDigits(input)
+            }
+
+            function truncate(input: string, maxBytes: number) -> string {
+              return std.string.truncateUtf8Bytes(input, maxBytes)
+            }
+
+            function query(input: string) -> string {
+              return std.string.encodeQueryComponent(input)
+            }
+
+            function path(input: string) -> string {
+              return std.string.encodePath(input)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["digits", "truncate", "query", "path"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        let CallableProvenanceSummary::Analyzed {
+            return_origins,
+            throw_origins,
+            escape_lanes,
+        } = provenance(&model, callable)
+        else {
+            panic!("{callable} should retain exact native provenance");
+        };
+        assert_eq!(return_origins, &vec![ValueProvenance::Fresh], "{callable}");
+        assert!(throw_origins.is_empty(), "{callable}");
+        assert!(escape_lanes.is_empty(), "{callable}");
+    }
+
+    let native_keys = model
+        .resolved_call_targets()
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ResolvedCallTarget::NativeFunction { binding_key } => Some(binding_key.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        native_keys,
+        std::collections::BTreeSet::from([
+            "std.string.encodePath",
+            "std.string.encodeQueryComponent",
+            "std.string.isAsciiDigits",
+            "std.string.truncateUtf8Bytes",
+        ])
+    );
+}
+
+#[test]
+fn missing_or_capability_native_semantics_remain_fail_closed() {
     let model = analyze_named(
         r#"
             type Boxed { value: string }
             interface Provider {
               function name(self: Self) -> string
             }
-            native function host(input: Boxed) -> Boxed
+            native function customNative(input: Boxed) -> Boxed
 
             function nativeWrapper(input: Boxed) -> Boxed {
-              return host(input)
+              return customNative(input)
+            }
+
+            function cryptoWrapper(input: string) -> string {
+              return std.crypto.sha256(input)
+            }
+
+            function capabilityWrapper() -> Date {
+              return Date.now()
+            }
+
+            function dynamicNativeWrapper(input: string) -> string {
+              const callable = std.string.encodePath
+              return callable(input)
             }
 
             function dynamicWrapper(input: Boxed) -> string {
@@ -378,7 +448,15 @@ fn native_and_unresolved_dynamic_targets_fail_closed() {
         crate::shared::id::SKIFF_STD_PUBLICATION_ID,
     );
 
-    for callable in ["nativeWrapper", "dynamicWrapper", "interfaceWrapper"] {
+    for callable in [
+        "customNative",
+        "nativeWrapper",
+        "cryptoWrapper",
+        "capabilityWrapper",
+        "dynamicNativeWrapper",
+        "dynamicWrapper",
+        "interfaceWrapper",
+    ] {
         let effects = effects_in(&model, "std.effect_test", callable);
         assert!(effects.invokes_unknown_target, "{callable}");
         assert!(effects.requires_same_heap_identity, "{callable}");
@@ -395,6 +473,25 @@ fn native_and_unresolved_dynamic_targets_fail_closed() {
         effects_in(&model, "std.effect_test", "interfaceWrapper"),
         all_effects()
     );
+
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::LocalFunction {
+                module_path,
+                function_name,
+            } if module_path == "std.effect_test" && function_name == "customNative"
+        )
+    }));
+    for binding_key in ["std.crypto.sha256", "core.date.now"] {
+        assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+            matches!(
+                target,
+                ResolvedCallTarget::NativeFunction { binding_key: actual }
+                    if actual == binding_key
+            )
+        }));
+    }
 }
 
 #[test]

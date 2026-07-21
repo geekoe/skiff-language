@@ -1996,6 +1996,7 @@ fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
     match target {
         ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
         ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
+        ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
         ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
         ResolvedCallTarget::Unknown { .. } => "Unknown",

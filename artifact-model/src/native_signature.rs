@@ -1,4 +1,7 @@
-use crate::builtin_receiver_ops::{BuiltinReceiverOp, SUPPORTED_RECEIVER_BUILTIN_OPS};
+use crate::{
+    builtin_receiver_ops::{BuiltinReceiverOp, SUPPORTED_RECEIVER_BUILTIN_OPS},
+    CallableMayEffects, ValueProvenance,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeSignatureDef {
@@ -19,6 +22,48 @@ pub enum NativeTypeExprDef {
     Nullable(&'static NativeTypeExprDef),
     Stream(&'static NativeTypeExprDef),
     ActorRef(&'static NativeTypeExprDef),
+}
+
+/// Audited callable semantics for an exact native binding.
+///
+/// This registry is intentionally sparse: absence means that source effect
+/// analysis must fail closed. Signature shape, required context, and runtime
+/// handler presence are validated by their respective consumers rather than
+/// inferred as a safety guarantee.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeCallableSemantics {
+    pub binding_key: &'static str,
+    pub effects: CallableMayEffects,
+    pub return_provenance: ValueProvenance,
+}
+
+const fn detached_scalar_native(binding_key: &'static str) -> NativeCallableSemantics {
+    NativeCallableSemantics {
+        binding_key,
+        effects: CallableMayEffects {
+            writes_caller_reachable: false,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Fresh,
+    }
+}
+
+pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
+    detached_scalar_native("std.string.isAsciiDigits"),
+    detached_scalar_native("std.string.truncateUtf8Bytes"),
+    detached_scalar_native("std.string.encodeQueryComponent"),
+    detached_scalar_native("std.string.encodePath"),
+];
+
+pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCallableSemantics> {
+    STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == binding_key)
 }
 
 const T0: NativeTypeExprDef = NativeTypeExprDef::TypeParam(0);
@@ -729,7 +774,63 @@ fn native_signature_target_matches_receiver_op(target: &str, op: BuiltinReceiver
 
 #[cfg(test)]
 mod tests {
-    use super::is_runtime_receiver_native_binding_key;
+    use std::collections::BTreeSet;
+
+    use crate::{CallableMayEffects, ValueProvenance};
+
+    use super::{
+        is_runtime_receiver_native_binding_key, native_callable_semantics,
+        STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+    };
+
+    #[test]
+    fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
+        let expected = BTreeSet::from([
+            "std.string.encodePath",
+            "std.string.encodeQueryComponent",
+            "std.string.isAsciiDigits",
+            "std.string.truncateUtf8Bytes",
+        ]);
+        let actual = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .map(|semantics| semantics.binding_key)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), STD_NATIVE_CALLABLE_SEMANTICS.len());
+        for semantics in STD_NATIVE_CALLABLE_SEMANTICS {
+            assert!(STD_NATIVE_SIGNATURES
+                .iter()
+                .any(|signature| signature.binding_key == semantics.binding_key));
+            assert_eq!(
+                semantics.effects,
+                CallableMayEffects {
+                    writes_caller_reachable: false,
+                    returns_caller_alias: false,
+                    throws_caller_alias: false,
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_suspend: false,
+                }
+            );
+            assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+            assert_eq!(
+                native_callable_semantics(semantics.binding_key),
+                Some(semantics)
+            );
+        }
+
+        for missing in [
+            "std.crypto.sha256",
+            "core.date.now",
+            "std.time.sleep",
+            "std.file.readText",
+            "custom.native",
+        ] {
+            assert_eq!(native_callable_semantics(missing), None, "{missing}");
+        }
+    }
 
     #[test]
     fn runtime_receiver_native_binding_keys_are_derived_from_receiver_registry() {

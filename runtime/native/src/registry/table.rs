@@ -1,7 +1,11 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use skiff_runtime_native_contract::NativeSignatureRegistry;
+use skiff_artifact_model::{
+    NativeCallableSemantics, NativeSignatureDef, STD_NATIVE_CALLABLE_SEMANTICS,
+    STD_NATIVE_SIGNATURES,
+};
+use skiff_runtime_native_contract::{NativeRequiredContext, NativeSignatureRegistry};
 
 use crate::error::Result;
 use crate::handlers::{
@@ -32,7 +36,12 @@ pub(super) fn handler_entries() -> &'static [NativeHandlerEntry] {
 }
 
 pub(super) fn validate_builtin_handlers() -> RegistryValidationResult {
-    validate_handler_entries(NATIVE_BINDINGS, REQUIRED_HANDLER_KEYS)
+    validate_handler_entries(NATIVE_BINDINGS, REQUIRED_HANDLER_KEYS)?;
+    validate_native_callable_semantics_registry(
+        STD_NATIVE_CALLABLE_SEMANTICS,
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
 }
 
 pub(super) fn validate_handler_entries(
@@ -63,6 +72,81 @@ pub(super) fn validate_handler_entries(
             return Err(format!(
                 "native handler registry is missing required handler {required_key}"
             ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn validate_native_callable_semantics_registry(
+    semantics_entries: &[NativeCallableSemantics],
+    signatures: &[NativeSignatureDef],
+    handler_entries: &[NativeHandlerEntry],
+) -> RegistryValidationResult {
+    let mut registered_keys = BTreeSet::new();
+
+    for semantics in semantics_entries {
+        let binding_key = semantics.binding_key;
+        if !registered_keys.insert(binding_key) {
+            return Err(format!(
+                "native callable semantics entry {binding_key} is registered more than once"
+            ));
+        }
+
+        let Some(canonical_signature) = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == binding_key)
+        else {
+            return Err(format!(
+                "native callable semantics entry {binding_key} has an unknown binding key"
+            ));
+        };
+        let mut matching_signatures = signatures
+            .iter()
+            .filter(|signature| signature.binding_key == binding_key);
+        let Some(signature) = matching_signatures.next() else {
+            return Err(format!(
+                "native callable semantics entry {binding_key} is missing from the native signatures"
+            ));
+        };
+        if matching_signatures.next().is_some() {
+            return Err(format!(
+                "native callable semantics entry {binding_key} does not have a unique native signature"
+            ));
+        }
+        if signature != canonical_signature {
+            return Err(format!(
+                "native callable semantics entry {binding_key} does not match the exact shared native signature"
+            ));
+        }
+
+        let Some(required_context) = NativeRequiredContext::for_binding_key(binding_key) else {
+            return Err(format!(
+                "native callable semantics entry {binding_key} has no known required context"
+            ));
+        };
+        if required_context != NativeRequiredContext::None {
+            return Err(format!(
+                "native callable semantics entry {binding_key} requires capability context {required_context:?}"
+            ));
+        }
+
+        match handler_entries
+            .iter()
+            .filter(|entry| entry.binding_key == binding_key)
+            .count()
+        {
+            1 => {}
+            0 => {
+                return Err(format!(
+                    "native callable semantics entry {binding_key} is missing a runtime handler"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "native callable semantics entry {binding_key} has more than one runtime handler"
+                ));
+            }
         }
     }
 

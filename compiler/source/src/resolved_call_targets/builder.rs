@@ -5,6 +5,7 @@ use skiff_artifact_model::TypeRefIr;
 use crate::{
     dependency_analysis::ResolvedDependencyAnalysisTarget,
     parsed_sources::ParsedCompilerSource,
+    prelude_registry::prelude_registry,
     shared::{
         ast::{Expr, ForBinding, FunctionDecl, Pattern, Stmt},
         ast_utils::{
@@ -192,6 +193,11 @@ impl TargetCollector<'_> {
             let path_root_is_local = self.local_value_names.contains(path_root);
             if !path_root_is_local {
                 let local_target = self.local_targets.resolve_path(self.module_path, &path);
+                if let Some(binding_key) = prelude_registry().native_binding_key(&path) {
+                    return ResolvedCallTarget::NativeFunction {
+                        binding_key: binding_key.to_string(),
+                    };
+                }
                 match self.dependencies.resolve_path(&path) {
                     ResolvedDependencyAnalysisTarget::Package {
                         alias,

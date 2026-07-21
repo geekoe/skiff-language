@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryErrorContract, BoundaryOperationDescriptor,
-    BoundaryStreamContract, CallableProvenanceUnknownReason,
+    native_callable_semantics, BoundaryCallbackContract, BoundaryErrorContract,
+    BoundaryOperationDescriptor, BoundaryStreamContract, CallableProvenanceUnknownReason,
 };
 
 use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
@@ -63,6 +63,8 @@ impl Evaluator<'_, '_> {
                 });
                 self.apply_callee(&callee, &actuals, return_reference, None)
             }
+            Some(ResolvedCallTarget::NativeFunction { binding_key }) => self
+                .apply_exact_native_call(&binding_key, &callee_value, &actuals, return_reference),
             Some(ResolvedCallTarget::DependencyPackageFunction {
                 package_requirement_alias,
                 package_callable_id,
@@ -155,6 +157,24 @@ impl Evaluator<'_, '_> {
             }
             _ => self.eval_expr(callee, env),
         }
+    }
+
+    fn apply_exact_native_call(
+        &mut self,
+        binding_key: &str,
+        callee_value: &AbstractValue,
+        actuals: &[AbstractValue],
+        return_reference: bool,
+    ) -> AbstractValue {
+        let Some(callee) = native_callable_callee(binding_key) else {
+            return self.apply_unknown_call_with_callee(
+                callee_value,
+                actuals,
+                return_reference,
+                EscapeLane::Native,
+            );
+        };
+        self.apply_callee(&callee, actuals, return_reference, None)
     }
 
     fn apply_unknown_call_with_callee(
@@ -270,6 +290,16 @@ impl Evaluator<'_, '_> {
         }
         returned
     }
+}
+
+fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
+    let semantics = native_callable_semantics(binding_key)?;
+    let mut state = CallableState::bottom();
+    state.effects = semantics.effects;
+    state
+        .return_origins
+        .insert(Origin::from(semantics.return_provenance.clone()));
+    Some(state)
 }
 
 fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<CallableState> {

@@ -1,12 +1,25 @@
 use serde_json::json;
+use skiff_artifact_model::{
+    NativeCallableSemantics, NativeTypeExprDef, STD_NATIVE_CALLABLE_SEMANTICS,
+    STD_NATIVE_SIGNATURES,
+};
 use skiff_runtime_model::error::{TypeIdentity, WirePayload};
 
 use crate::handlers::array_empty;
 
 use super::{
-    table::{validate_handler_entries, NativeHandlerEntry, NATIVE_BINDINGS},
+    table::{
+        validate_handler_entries, validate_native_callable_semantics_registry, NativeHandlerEntry,
+        NATIVE_BINDINGS,
+    },
     NativeRegistry,
 };
+
+fn detached_native_semantics(binding_key: &'static str) -> NativeCallableSemantics {
+    let mut semantics = STD_NATIVE_CALLABLE_SEMANTICS[0].clone();
+    semantics.binding_key = binding_key;
+    semantics
+}
 
 fn assert_decode_target_projection(
     error: crate::error::RuntimeError,
@@ -38,6 +51,130 @@ fn assert_decode_target_projection(
 fn native_handler_registry_builtin_table_validates_against_signature_contract() {
     NativeRegistry::validate_builtin_handlers()
         .expect("native handler registry table should validate");
+}
+
+#[test]
+fn native_callable_semantics_registry_validates_exact_builtin_matrix() {
+    validate_native_callable_semantics_registry(
+        STD_NATIVE_CALLABLE_SEMANTICS,
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("native callable semantics registry should validate");
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_unknown_descriptor() {
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics("std.unknown.safe")],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("unknown semantics binding should fail validation");
+
+    assert!(
+        error.contains("std.unknown.safe") && error.contains("unknown binding key"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_duplicate_descriptor() {
+    let descriptor = detached_native_semantics("std.string.truncateUtf8Bytes");
+    let error = validate_native_callable_semantics_registry(
+        &[descriptor.clone(), descriptor],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("duplicate semantics binding should fail validation");
+
+    assert!(
+        error.contains("std.string.truncateUtf8Bytes") && error.contains("more than once"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_missing_signature() {
+    let signatures = STD_NATIVE_SIGNATURES
+        .iter()
+        .copied()
+        .filter(|signature| signature.binding_key != "std.string.truncateUtf8Bytes")
+        .collect::<Vec<_>>();
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics("std.string.truncateUtf8Bytes")],
+        &signatures,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("descriptor without matching signature should fail validation");
+
+    assert!(
+        error.contains("std.string.truncateUtf8Bytes")
+            && error.contains("missing from the native signatures"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_signature_mismatch() {
+    let mut signature = *STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "std.string.truncateUtf8Bytes")
+        .expect("truncate signature should exist");
+    signature.return_type = NativeTypeExprDef::Builtin("number");
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics("std.string.truncateUtf8Bytes")],
+        &[signature],
+        NATIVE_BINDINGS,
+    )
+    .expect_err("mismatched exact signature should fail validation");
+
+    assert!(
+        error.contains("std.string.truncateUtf8Bytes")
+            && error.contains("does not match the exact shared native signature"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_capability_descriptor() {
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics(
+            "std.websocket.sendTextToConnection",
+        )],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect_err("contextful descriptor should fail validation");
+
+    assert!(
+        error.contains("std.websocket.sendTextToConnection")
+            && error.contains("capability context Websocket"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_missing_handler() {
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics("std.string.truncateUtf8Bytes")],
+        STD_NATIVE_SIGNATURES,
+        &[],
+    )
+    .expect_err("descriptor without runtime handler should fail validation");
+
+    assert!(
+        error.contains("std.string.truncateUtf8Bytes")
+            && error.contains("missing a runtime handler"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_keeps_crypto_unregistered() {
+    assert!(STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .all(|semantics| !semantics.binding_key.starts_with("std.crypto.")));
 }
 
 #[test]
