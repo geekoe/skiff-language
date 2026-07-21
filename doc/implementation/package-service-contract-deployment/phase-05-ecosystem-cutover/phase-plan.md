@@ -4,8 +4,8 @@
 `f8ad689`接收审查FAIL，D04已冻结repair设计、F04在途；
 R02预审在`b47ddf7`发现T03/T04真实wire/startup/request/pin/storage双owner断链。F03A已合流，R02A在
 `a7566bb`首次FAIL后完成D03/F03A1；第二次在`5715497`因raw Unicode/opaque number/default normalization
-不一致而FAIL。验收熔断D06已完成，F03A2批量修复在途。F04探针发现正常authoring不能产生可观测WS pin，
-D05已冻结typed unified WS ABI；F05等待F04与R02A PASS，F03B/F03C仍锁定。
+不一致而FAIL。验收熔断D06/F03A2已在`4df6c04`通过R02A第三次窄验收。F04探针发现正常authoring不能
+产生可观测WS pin，D05已冻结typed unified WS ABI；F05等待F04 narrow receive，F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入

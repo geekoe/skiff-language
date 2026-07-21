@@ -30,3 +30,11 @@ reject / 5 raw duplicate / 4 equivalent / 1 legacy self-test均通过，但验�
 Rust拒绝；opaque unsafe integer发生TS精度丢失；四组absent/default虽双端接受，decoded typed result未统一
 materialize。按验收熔断规则，D06已对剩余raw lexical、opaque number与default normalization做有界审计；
 F03A2合流并通过request combined probe前不得发起第三次verdict或解锁F03B/F03C。
+
+## 第三次验收记录
+
+`4df6c04fe23e34f60c795ff577406cf547b127ba` / tree
+`a2ee0c38fee896ea372f49a1c411c5f198fec131` 为 `R02A PASS`。29个raw cases、opaque number normalization、
+四组decoded defaults、TS单次strict parse与legacy non-regression均通过；Rust 6/6、Router type-check、wire
+self-test `4/244/29/4/1`、protocol 41/41全绿，candidate前后clean。该PASS冻结F03A2 shared request基线并
+解锁F05；按当前DAG，F03B/F03C还必须等待F05的R05 PASS，不表示R02最终通过。
