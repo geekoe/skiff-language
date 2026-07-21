@@ -1,0 +1,39 @@
+schemaVersion: skiff-service-contract-definition-v1
+serviceId: example.com/payments
+contractVersion: 1.0.0
+operations:
+  echo:
+    parameters:
+      - name: input
+        ty: { kind: builtin, name: string, arguments: [] }
+        valuePlan:
+          kind: linkable
+          carrier: detachedValueGraph
+          encoding: canonicalValue
+          owner: caller
+          lifetime: call
+    returnValue:
+      ty: { kind: builtin, name: string, arguments: [] }
+      valuePlan:
+        kind: linkable
+        carrier: detachedValueGraph
+        encoding: canonicalValue
+        owner: provider
+        lifetime: call
+    errors: { kind: none }
+    stream: { kind: unary }
+    cancellation: { kind: notCancellable }
+    callbacks: { kind: none }
+    maySuspend: false
+    effectGuarantee:
+      detachedParameters: true
+      detachedReturn: true
+      detachedError: true
+      noCallerReachableMutation: true
+      noCallerValueEscape: true
+      noSameHeapIdentity: true
+boundarySchema: {}
+diagnosticText:
+  service: Payments
+  operations: { echo: Echo }
+  types: {}

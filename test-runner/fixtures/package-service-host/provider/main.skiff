@@ -1,0 +1,4 @@
+function handle(input: string) -> string {
+  if input == "helper-mutated" { return "provider-observed-helper-mutated" }
+  return "provider-rejected-unmutated"
+}

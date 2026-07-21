@@ -1,0 +1,3 @@
+test "provider observes helper mutation" {
+  assert root.main.run() == "provider-observed-helper-mutated"
+}

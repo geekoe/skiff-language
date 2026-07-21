@@ -11,10 +11,11 @@ use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationSta
 use skiff_test_runner::{
     canonical_fixture::discover_package_test_cases, canonical_package::compile_package_project,
     ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
+    package_service_host_fixture::prepare_package_service_host_fixture,
     test_overlay::compile_package_test_overlay,
 };
 
-const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only) --artifact-root <dir> --environment <id>";
+const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id>";
 
 fn main() {
     if let Err(error) = run() {
@@ -29,6 +30,23 @@ fn run() -> anyhow::Result<()> {
     if args.bootstrap_only {
         return emit_bootstrap(&args.artifact_root, &args.environment);
     }
+    if let Some(fixture_root) = args.prepare_host_base.as_deref() {
+        let receipt = prepare_package_service_host_fixture(
+            fixture_root,
+            args.work_root
+                .as_deref()
+                .expect("prepare mode requires work root"),
+            &args.artifact_root,
+            &args.environment,
+        )?;
+        receipt.write(
+            args.receipt
+                .as_deref()
+                .expect("prepare mode requires receipt path"),
+        )?;
+        println!("{}", serde_json::to_string(&receipt.to_json())?);
+        return Ok(());
+    }
     publish_candidate(args)
 }
 
@@ -38,6 +56,9 @@ struct FixtureArgs {
     environment: String,
     initialize_environment: bool,
     bootstrap_only: bool,
+    prepare_host_base: Option<PathBuf>,
+    work_root: Option<PathBuf>,
+    receipt: Option<PathBuf>,
 }
 
 fn parse_args() -> anyhow::Result<FixtureArgs> {
@@ -46,6 +67,9 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     let mut environment = None;
     let mut initialize_environment = false;
     let mut bootstrap_only = false;
+    let mut prepare_host_base = None;
+    let mut work_root = None;
+    let mut receipt = None;
     let mut args = env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -71,6 +95,27 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
                 }
                 bootstrap_only = true;
             }
+            "--prepare-host-base" => {
+                set_once(
+                    &mut prepare_host_base,
+                    PathBuf::from(next(&mut args, &argument)?),
+                    &argument,
+                )?;
+            }
+            "--work-root" => {
+                set_once(
+                    &mut work_root,
+                    PathBuf::from(next(&mut args, &argument)?),
+                    &argument,
+                )?;
+            }
+            "--receipt" => {
+                set_once(
+                    &mut receipt,
+                    PathBuf::from(next(&mut args, &argument)?),
+                    &argument,
+                )?;
+            }
             value if value.starts_with('-') => anyhow::bail!("unknown option {value}"),
             value => set_once(&mut package_root, PathBuf::from(value), "package root")?,
         }
@@ -80,12 +125,27 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
             "--bootstrap-only does not accept a package root or --initialize-environment"
         );
     }
+    if prepare_host_base.is_some() {
+        if bootstrap_only || package_root.is_some() || initialize_environment {
+            anyhow::bail!(
+                "--prepare-host-base is mutually exclusive with package, bootstrap, and initialization modes"
+            );
+        }
+        if work_root.is_none() || receipt.is_none() {
+            anyhow::bail!("--prepare-host-base requires --work-root and --receipt");
+        }
+    } else if work_root.is_some() || receipt.is_some() {
+        anyhow::bail!("--work-root and --receipt require --prepare-host-base");
+    }
     Ok(FixtureArgs {
         package_root,
         artifact_root: artifact_root.ok_or_else(|| anyhow::anyhow!("missing --artifact-root"))?,
         environment: environment.ok_or_else(|| anyhow::anyhow!("missing --environment"))?,
         initialize_environment,
         bootstrap_only,
+        prepare_host_base,
+        work_root,
+        receipt,
     })
 }
 

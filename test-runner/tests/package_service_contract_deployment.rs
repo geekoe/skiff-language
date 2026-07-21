@@ -6,23 +6,17 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde_json::json;
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCancellationContract,
-    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter,
-    BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, ContractTypeRef,
-    PackageArtifactRef, PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef,
+    BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, PackageArtifactRef, PackageLocalAbiSymbol,
+    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     ManifestOwner, ManifestProvenance, PackageSourceInput, PublicationManifest,
-    PublicationSourceGraph, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
-    SourceTree,
+    PublicationSourceGraph, SourceTree,
 };
-use skiff_deployment::storage::{CanonicalArtifactStore, ServiceContractPointer};
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_test_runner::{
     canonical_fixture::{
         assemble_package_test_fixture, discover_package_test_cases, CanonicalBaseAssembly,
@@ -30,6 +24,9 @@ use skiff_test_runner::{
     },
     canonical_package::compile_package_project,
     ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
+    package_service_host_fixture::{
+        prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
+    },
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
     SkiffTestError, SkiffTestOptions,
@@ -105,6 +102,41 @@ fn runner_cli_exposes_only_the_canonical_test_target() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains(expected));
         assert!(!stderr.contains(sentinel));
+    }
+}
+
+#[test]
+fn host_fixture_cli_rejects_ambiguous_prepare_modes() {
+    let binary = env!("CARGO_BIN_EXE_skiff-package-service-smoke-fixture");
+    for (args, expected) in [
+        (
+            vec![
+                "consumer",
+                "--prepare-host-base",
+                "fixture",
+                "--work-root",
+                "work",
+                "--receipt",
+                "receipt.json",
+            ],
+            "--prepare-host-base is mutually exclusive",
+        ),
+        (
+            vec!["--work-root", "work", "--receipt", "receipt.json"],
+            "--work-root and --receipt require --prepare-host-base",
+        ),
+        (
+            vec!["--prepare-host-base", "fixture", "--work-root", "work"],
+            "--prepare-host-base requires --work-root and --receipt",
+        ),
+    ] {
+        let output = Command::new(binary)
+            .args(args)
+            .args(["--artifact-root", "artifacts", "--environment", "host-test"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8(output.stderr).unwrap().contains(expected));
     }
 }
 
@@ -680,212 +712,59 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     let root = TestRoot::new("base-assembly");
     let artifacts = root.child("artifacts");
     let runtime = root.child("runtime-artifacts");
-    create_store(&artifacts);
-    let payments_contract = publish_contract(&artifacts);
-    let consumer_contract = publish_contract_named(&artifacts, "example.com/consumer", "consumer");
-    let helper_package = publish_base_helper(&root, &artifacts);
-    let (_, provider_deployment) = publish_base_provider(&root, &artifacts, &payments_contract);
-    let (consumer, consumer_deployment) = publish_base_consumer(
-        &root,
-        &artifacts,
-        &helper_package,
-        &payments_contract,
-        &consumer_contract,
-    );
-    let base_assembly_ref = publish_assembly(
-        &root.child("base-assembly"),
+    let fixture_root = package_service_host_fixture_root();
+    let consumer = fixture_root.join("consumer");
+    let receipt = prepare_package_service_host_fixture(
+        &fixture_root,
+        &root.child("authoring"),
         &artifacts,
         "base-test",
-        std::slice::from_ref(&consumer_deployment),
+    )
+    .unwrap();
+    let receipt_json = receipt.to_json();
+    assert_eq!(
+        receipt_json["schemaVersion"],
+        PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION
     );
+    assert_json_keys(
+        &receipt_json,
+        &[
+            "baseAssembly",
+            "contracts",
+            "deployments",
+            "environment",
+            "packages",
+            "schemaVersion",
+        ],
+    );
+    assert_json_keys(&receipt_json["contracts"], &["consumer", "payments"]);
+    assert_json_keys(
+        &receipt_json["packages"],
+        &["consumer", "helper", "provider"],
+    );
+    assert_json_keys(&receipt_json["deployments"], &["consumer", "provider"]);
+    assert_json_keys(&receipt_json["baseAssembly"], &["assemblyIdentity"]);
     let base = CanonicalBaseAssembly::load(
         &artifacts,
-        Some(base_assembly_ref.assembly_identity.as_str()),
+        Some(receipt.base_assembly.assembly_identity.as_str()),
     )
     .unwrap();
     assert!(base.deployments.iter().any(
         |deployment| skiff_artifact_identity::service_deployment_ref(deployment)
-            == provider_deployment
+            == receipt.provider_deployment
     ));
     BaseAssemblyScenario {
         _root: root,
         artifacts,
         runtime,
         consumer,
-        helper_package,
-        payments_contract,
-        provider_deployment,
-        consumer_deployment,
-        base_assembly_ref,
+        helper_package: receipt.helper_package,
+        payments_contract: receipt.payments_contract,
+        provider_deployment: receipt.provider_deployment,
+        consumer_deployment: receipt.consumer_deployment,
+        base_assembly_ref: receipt.base_assembly,
         base,
     }
-}
-
-fn publish_base_helper(root: &TestRoot, artifacts: &Path) -> PackageArtifactRef {
-    let helper = root.child("helper");
-    write_package(
-        &helper,
-        "id: example.com/helper\nversion: 1.0.0\n",
-        Some("Box: main.Box\ntools:\n  mutate: main.mutate\n"),
-        Some(
-            r#"type Box { value: string }
-
-function mutate(input: Box) -> void {
-  input.value = "helper-mutated"
-}
-"#,
-        ),
-    );
-    publish_package(&helper, artifacts)
-}
-
-fn publish_base_provider(
-    root: &TestRoot,
-    artifacts: &Path,
-    payments_contract: &ServiceContractRef,
-) -> (PackageArtifactRef, ServiceDeploymentRef) {
-    let provider = root.child("provider");
-    write_package(
-        &provider,
-        "id: example.com/provider\nversion: 1.0.0\n",
-        Some("handle: main.handle\n"),
-        Some(
-            r#"function handle(input: string) -> string {
-  if input == "helper-mutated" { return "provider-observed-helper-mutated" }
-  return "provider-rejected-unmutated"
-}
-"#,
-        ),
-    );
-    let provider_package = publish_package(&provider, artifacts);
-    let provider_operation = contract_operation(artifacts, payments_contract);
-    let provider_deployment = publish_deployment(
-        &root.child("provider-deployment"),
-        artifacts,
-        json!({
-            "schemaVersion": "skiff-service-deployment-input-v1",
-            "contract": payments_contract,
-            "deploymentRevision": "provider-r1",
-            "implementation": provider_package,
-            "operationBindings": [{
-                "contractOperationId": provider_operation,
-                "packagePublicPath": "handle"
-            }],
-            "packageBindings": [],
-            "serviceSelectors": [],
-            "ingress": [],
-            "configLiterals": [],
-            "secretRefs": [],
-            "stateBindings": [],
-            "resourceBindings": [],
-            "runtimeCapabilityBindings": [],
-            "policy": deployment_policy("service:provider"),
-            "diagnosticText": { "displayName": "Provider", "notes": {} }
-        }),
-    );
-    (provider_package, provider_deployment)
-}
-
-fn publish_base_consumer(
-    root: &TestRoot,
-    artifacts: &Path,
-    helper_package: &PackageArtifactRef,
-    payments_contract: &ServiceContractRef,
-    consumer_contract: &ServiceContractRef,
-) -> (PathBuf, ServiceDeploymentRef) {
-    let consumer = root.child("consumer");
-    write_package(
-        &consumer,
-        r#"id: example.com/consumer
-version: 1.0.0
-packages:
-  - id: example.com/helper
-    version: 1.0.0
-    alias: helper
-contracts:
-  - alias: payments
-    serviceId: example.com/payments
-    contractVersion: 1.0.0
-"#,
-        Some("owner: main.owner\nrun: main.run\n"),
-        Some(
-            r#"import helper
-
-type Box { value: string }
-
-function owner(input: string) -> string { return "owner" }
-
-function configured() -> string {
-  return config.require<string>("app.token")
-}
-
-function run() -> string {
-  const box = Box { value: "consumer" }
-  helper/tools.mutate(box)
-  return payments/echo(box.value)
-}
-"#,
-        ),
-    );
-    fs::write(
-        consumer.join("main.test.skiff"),
-        r#"test "provider observes helper mutation" {
-  assert root.main.run() == "provider-observed-helper-mutated"
-}
-"#,
-    )
-    .unwrap();
-    let consumer_package = publish_package(&consumer, artifacts);
-    let artifact = CanonicalArtifactStore::open(artifacts)
-        .unwrap()
-        .read_package_artifact(&consumer_package)
-        .unwrap();
-    let requirement = artifact
-        .service_requirements
-        .first()
-        .expect("published consumer service requirement");
-    let package_requirement = artifact
-        .package_requirements
-        .first()
-        .expect("published consumer helper requirement");
-    let consumer_operation = contract_operation(artifacts, consumer_contract);
-    let consumer_deployment = publish_deployment(
-        &root.child("consumer-deployment"),
-        artifacts,
-        json!({
-            "schemaVersion": "skiff-service-deployment-input-v1",
-            "contract": consumer_contract,
-            "deploymentRevision": "consumer-r1",
-            "implementation": consumer_package,
-            "operationBindings": [{
-                "contractOperationId": consumer_operation,
-                "packagePublicPath": "owner"
-            }],
-            "packageBindings": [{
-                "key": {
-                    "callerPackageBuildId": consumer_package.package_build_id,
-                    "packageRequirementAlias": package_requirement.alias
-                },
-                "package": helper_package
-            }],
-            "serviceSelectors": [{
-                "key": {
-                    "callerPackageBuildId": consumer_package.package_build_id,
-                    "serviceRequirementSlot": requirement.service_binding_slot
-                },
-                "contract": payments_contract
-            }],
-            "ingress": [],
-            "configLiterals": [{ "path": "app.token", "value": "owned-by-base" }],
-            "secretRefs": [],
-            "stateBindings": [],
-            "resourceBindings": [],
-            "runtimeCapabilityBindings": [],
-            "policy": deployment_policy("service:consumer"),
-            "diagnosticText": { "displayName": "Consumer", "notes": {} }
-        }),
-    );
-    (consumer, consumer_deployment)
 }
 
 fn publish_package(root: &Path, artifacts: &Path) -> PackageArtifactRef {
@@ -896,133 +775,32 @@ fn publish_package(root: &Path, artifacts: &Path) -> PackageArtifactRef {
 }
 
 fn publish_contract(artifacts: &Path) -> ServiceContractRef {
-    publish_contract_named(artifacts, "example.com/payments", "payments")
+    let output = build_authoring_object(
+        AuthoringObject::Contract,
+        &package_service_host_fixture_root().join("payments-contract"),
+        artifacts,
+        true,
+    )
+    .expect("production contract authoring should publish pointer and record");
+    serde_json::from_value(output["serviceContractReceipt"]["contract"].clone())
+        .expect("typed contract authoring receipt")
 }
 
-fn publish_contract_named(
-    artifacts: &Path,
-    service_id: &str,
-    diagnostic_name: &str,
-) -> ServiceContractRef {
-    let contract = skiff_compiler::compile_contract(ServiceContractDefinition {
-        service_id: service_id.to_string(),
-        contract_version: "1.0.0".to_string(),
-        operations: BTreeMap::from([("echo".to_string(), string_operation())]),
-        boundary_schema: BTreeMap::new(),
-        diagnostic_text: ServiceContractDefinitionDiagnosticText {
-            service: diagnostic_name.to_string(),
-            operations: BTreeMap::new(),
-            types: BTreeMap::new(),
-        },
-    })
-    .unwrap();
-    let store = CanonicalArtifactStore::open(artifacts).unwrap();
-    store.write_service_contract(&contract).unwrap();
-    let reference = skiff_artifact_identity::service_contract_ref(&contract).unwrap();
-    let pointer = ServiceContractPointer::new(reference.clone()).unwrap();
-    store
-        .compare_and_swap_service_contract_pointer(None, &pointer)
-        .unwrap();
-    reference
+fn package_service_host_fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/package-service-host")
 }
 
-fn contract_operation(
-    artifacts: &Path,
-    contract: &ServiceContractRef,
-) -> skiff_artifact_model::ContractOperationId {
-    CanonicalArtifactStore::open(artifacts)
-        .unwrap()
-        .read_service_contract(contract)
-        .unwrap()
-        .operations
+fn assert_json_keys(value: &serde_json::Value, expected: &[&str]) {
+    let mut actual = value
+        .as_object()
+        .expect("receipt section must be an object")
         .keys()
-        .next()
-        .expect("contract operation")
-        .clone()
-}
-
-fn publish_deployment(
-    root: &Path,
-    artifacts: &Path,
-    deployment: serde_json::Value,
-) -> ServiceDeploymentRef {
-    fs::create_dir_all(root).unwrap();
-    fs::write(
-        root.join("deployment.yml"),
-        serde_json::to_string_pretty(&deployment).unwrap(),
-    )
-    .unwrap();
-    let output = build_authoring_object(AuthoringObject::Deployment, root, artifacts, true)
-        .expect("production deployment authoring");
-    serde_json::from_value(output["serviceDeploymentReceipt"]["deployment"].clone())
-        .expect("typed deployment authoring receipt")
-}
-
-fn publish_assembly(
-    root: &Path,
-    artifacts: &Path,
-    environment: &str,
-    roots: &[ServiceDeploymentRef],
-) -> RuntimeAssemblyRef {
-    fs::create_dir_all(root).unwrap();
-    fs::write(
-        root.join("assembly.yml"),
-        serde_json::to_string_pretty(&json!({
-            "environment": environment,
-            "rootDeployments": roots
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let output = build_authoring_object(AuthoringObject::Assembly, root, artifacts, true)
-        .expect("production assembly authoring");
-    serde_json::from_value(output["runtimeAssemblyReceipt"]["assembly"].clone())
-        .expect("typed assembly authoring receipt")
-}
-
-fn deployment_policy(principal: &str) -> serde_json::Value {
-    json!({
-        "timeoutMs": 1_000,
-        "resources": { "cpuMillis": 100, "memoryBytes": 1_048_576 },
-        "activation": { "maxConcurrency": 1, "idleTimeoutMs": null },
-        "principal": principal
-    })
-}
-
-fn string_operation() -> BoundaryOperationContract {
-    BoundaryOperationContract {
-        parameters: vec![BoundaryParameter {
-            name: "input".to_string(),
-            ty: ContractTypeRef::builtin("string"),
-            value_plan: detached_plan(BoundaryValueOwner::Caller),
-        }],
-        return_value: BoundaryReturn {
-            ty: ContractTypeRef::builtin("string"),
-            value_plan: detached_plan(BoundaryValueOwner::Provider),
-        },
-        errors: BoundaryErrorContract::None,
-        stream: BoundaryStreamContract::Unary,
-        cancellation: BoundaryCancellationContract::NotCancellable,
-        callbacks: BoundaryCallbackContract::None,
-        may_suspend: false,
-        effect_guarantee: BoundaryEffectGuarantee {
-            detached_parameters: true,
-            detached_return: true,
-            detached_error: true,
-            no_caller_reachable_mutation: true,
-            no_caller_value_escape: true,
-            no_same_heap_identity: true,
-        },
-    }
-}
-
-fn detached_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
-    BoundaryValuePlan::Linkable {
-        carrier: BoundaryValueCarrier::DetachedValueGraph,
-        encoding: BoundaryValueEncoding::CanonicalValue,
-        owner,
-        lifetime: BoundaryValueLifetime::Call,
-    }
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut expected = expected.to_vec();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
 }
 
 fn write_package(root: &Path, manifest: &str, api: Option<&str>, source: Option<&str>) {

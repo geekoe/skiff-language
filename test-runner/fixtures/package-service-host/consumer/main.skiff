@@ -1,0 +1,15 @@
+import helper
+
+type Box { value: string }
+
+function owner(input: string) -> string { return "owner" }
+
+function configured() -> string {
+  return config.require<string>("app.token")
+}
+
+function run() -> string {
+  const box = Box { value: "consumer" }
+  helper/tools.mutate(box)
+  return payments/echo(box.value)
+}

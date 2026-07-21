@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -8,8 +10,13 @@ import {
 } from '../lib/skiff-source-test-registry.mjs';
 import {
   runCanonicalSkiffSourceTests,
+  packageServiceHostFixturePaths,
+  packageServiceHostFixturePrepareCargoArgs,
+  readPackageServiceHostFixtureReceipt,
   skiffSourceTestRunnerCargoArgs,
 } from '../lib/skiff-source-test-suite.mjs';
+
+const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
 
 test('canonical registry starts with the checked-in std test root', () => {
   assert.deepEqual(canonicalSkiffSourceTestRegistry, [{ id: 'std', root: 'std' }]);
@@ -47,7 +54,10 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   const ownerCalls = [];
   const commands = [];
   const logs = [];
-  const environment = { SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/tmp/isolated/runtime-artifacts' };
+  const environment = {
+    SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: '/tmp/isolated/runtime-artifacts',
+    SKIFF_TEST_ENVIRONMENT: 'skiff-test',
+  };
   const signal = new AbortController().signal;
   const registry = [
     { id: 'first', root: 'fixtures/first' },
@@ -61,10 +71,16 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       ownerCalls.push(options);
       await options.runTest(environment, signal, {
         sourceArtifactRoot: '/tmp/isolated/source-artifacts',
+        tempRoot: '/tmp/isolated',
       });
     },
     runCommand: async (command, args, options) => {
       commands.push({ command, args, options });
+    },
+    readHostReceipt: async (path, expectedEnvironment) => {
+      assert.equal(path, '/tmp/isolated/package-service-host-receipt.json');
+      assert.equal(expectedEnvironment, 'skiff-test');
+      return hostFixtureReceipt();
     },
     log: (message) => logs.push(message),
   });
@@ -72,12 +88,16 @@ test('one isolated runtime owner executes every registry entry with strict non-l
   assert.equal(ownerCalls.length, 1);
   assert.equal(ownerCalls[0].skiffRoot, '/checkout/skiff');
   assert.deepEqual(plan.map((entry) => entry.id), ['first', 'second']);
-  assert.deepEqual(commands.map((entry) => entry.command), ['cargo', 'cargo']);
+  assert.deepEqual(commands.map((entry) => entry.command), ['cargo', 'cargo', 'cargo', 'cargo']);
   assert.deepEqual(
-    commands.map((entry) => entry.args.at(5)),
-    ['/checkout/skiff/fixtures/first', '/checkout/skiff/fixtures/second'],
+    [commands[0].args.at(5), commands[1].args.at(5), commands[3].args.at(5)],
+    [
+      '/checkout/skiff/fixtures/first',
+      '/checkout/skiff/fixtures/second',
+      '/checkout/skiff/test-runner/fixtures/package-service-host/consumer',
+    ],
   );
-  for (const [index, command] of commands.entries()) {
+  for (const [index, command] of commands.slice(0, 2).entries()) {
     assert.equal(command.options.cwd, '/checkout/skiff');
     assert.deepEqual(command.options.env, {
       ...environment,
@@ -93,9 +113,32 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       ['--artifact-root', '/tmp/isolated/source-artifacts'],
     );
   }
+  assert.deepEqual(commands[2].options, {
+    cwd: '/checkout/skiff',
+    env: environment,
+    signal,
+  });
+  assert.deepEqual(
+    commands[2].args,
+    packageServiceHostFixturePrepareCargoArgs({
+      skiffRoot: '/checkout/skiff',
+      fixtureRoot: '/checkout/skiff/test-runner/fixtures/package-service-host',
+      artifactRoot: '/tmp/isolated/source-artifacts',
+      workRoot: '/tmp/isolated/package-service-host-work',
+      receipt: '/tmp/isolated/package-service-host-receipt.json',
+      environment: 'skiff-test',
+    }),
+  );
+  assert.equal(commands[3].args.includes('--base-assembly'), true);
+  assert.deepEqual(commands[3].options.env, {
+    ...environment,
+    SKIFF_TEST_EXPECTED_GENERATION: '2',
+  });
   assert.deepEqual(logs, [
     '[skiff-tests] running first: fixtures/first',
     '[skiff-tests] running second: fixtures/second',
+    '[skiff-tests] preparing package-service-host: /checkout/skiff/test-runner/fixtures/package-service-host',
+    '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
   ]);
 });
 
@@ -159,3 +202,96 @@ test('runner command targets the production test-runner manifest', () => {
     '--require-tests',
   ]);
 });
+
+test('package-service host paths are fixed inside the checkout and temp runtime workspace', () => {
+  assert.deepEqual(
+    packageServiceHostFixturePaths({
+      skiffRoot: '/checkout/skiff',
+      tempRoot: '/tmp/isolated',
+    }),
+    {
+      fixtureRoot: '/checkout/skiff/test-runner/fixtures/package-service-host',
+      consumerRoot: '/checkout/skiff/test-runner/fixtures/package-service-host/consumer',
+      workRoot: '/tmp/isolated/package-service-host-work',
+      receipt: '/tmp/isolated/package-service-host-receipt.json',
+    },
+  );
+});
+
+test('package-service host receipt has one strict schema and canonical assembly identity', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-host-receipt-'));
+  const path = join(root, 'receipt.json');
+  try {
+    const valid = hostFixtureReceipt();
+    await writeFile(path, JSON.stringify(valid));
+    assert.deepEqual(
+      await readPackageServiceHostFixtureReceipt(path, 'skiff-test'),
+      valid,
+    );
+
+    for (const [mutate, expected] of [
+      [(value) => { value.legacy = true; }, /must contain exactly/],
+      [(value) => { value.schemaVersion = 'legacy'; }, /schemaVersion/],
+      [(value) => { value.environment = 'other'; }, /environment/],
+      [(value) => { value.baseAssembly.assemblyIdentity = 'not-canonical'; }, /must be canonical/],
+      [(value) => { delete value.packages.helper.packageBuildId; }, /helper package must contain exactly/],
+    ]) {
+      const invalid = structuredClone(valid);
+      mutate(invalid);
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(
+        readPackageServiceHostFixtureReceipt(path, 'skiff-test'),
+        expected,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function hostFixtureReceipt() {
+  return {
+    schemaVersion: 'skiff-package-service-host-fixture-v1',
+    environment: 'skiff-test',
+    contracts: {
+      payments: contractRef('payments'),
+      consumer: contractRef('consumer'),
+    },
+    packages: {
+      helper: packageRef('helper'),
+      provider: packageRef('provider'),
+      consumer: packageRef('consumer'),
+    },
+    deployments: {
+      provider: deploymentRef('provider'),
+      consumer: deploymentRef('consumer'),
+    },
+    baseAssembly: { assemblyIdentity },
+  };
+}
+
+function contractRef(name) {
+  return {
+    serviceId: `example.com/${name}`,
+    contractVersion: '1.0.0',
+    serviceProtocolIdentity: `protocol-${name}`,
+  };
+}
+
+function packageRef(name) {
+  return {
+    packageId: `example.com/${name}`,
+    packageVersion: '1.0.0',
+    packageBuildId: `build-${name}`,
+    packageLocalAbiIdentity: `abi-${name}`,
+  };
+}
+
+function deploymentRef(name) {
+  return {
+    serviceId: `example.com/${name}`,
+    contractVersion: '1.0.0',
+    deploymentRevision: `${name}-r1`,
+    deploymentArtifactIdentity: `deployment-${name}`,
+  };
+}

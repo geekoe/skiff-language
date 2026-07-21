@@ -678,6 +678,7 @@ function routerDevConfig(options) {
   return renderRouterConfig({
     profile: 'dev',
     host: '0.0.0.0',
+    environment: 'dev',
     artifactRoots: [options.artifactRoot],
     identityCliPath: options.identityCliPath,
     devReload: true,
