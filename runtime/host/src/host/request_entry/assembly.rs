@@ -12,37 +12,18 @@ use super::{
 };
 use crate::{
     error::{Result, RuntimeError},
-    host::{request_supervisor::CompletionTrace, spawn_worker, RuntimeHost},
+    host::{request_supervisor::CompletionTrace, RuntimeHost},
     loader::assembly_admission::ActiveAssemblyRoute,
     telemetry::RequestTelemetryContext,
 };
 
 impl RuntimeHost {
-    pub(super) async fn spawn_request_inner(
+    pub(super) async fn spawn_request_on_active_assembly_route(
         &self,
+        route: ActiveAssemblyRoute,
         request: RequestEnvelope,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        _registration: Option<&spawn_worker::SpawnWorkerRegistration>,
     ) {
-        let selector = match request.ingress_selector.as_ref() {
-            Some(selector) => selector,
-            None => {
-                let error = RuntimeError::Unsupported(
-                    "request.start canonical ingress selector is required".to_string(),
-                );
-                self.emit_request_route_error(&request, &error);
-                self.send_request_error_response(&request, &error, &sender);
-                return;
-            }
-        };
-        let route = match self.lookup_active_assembly_request_route(selector) {
-            Ok(route) => route,
-            Err(error) => {
-                self.emit_request_route_error(&request, &error);
-                self.send_request_error_response(&request, &error, &sender);
-                return;
-            }
-        };
         let target = match route.request_target() {
             Ok(target) => target,
             Err(error) => {

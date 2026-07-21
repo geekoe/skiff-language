@@ -16,18 +16,19 @@ use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, ActorFindResponseFrameHeader, ActorPutResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-        RequestCancelFrameHeader, RequestStartFrameHeader, ResponseChunkFrameHeader,
-        ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
-        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
+        ResponseErrorFrameHeader, ResponseStartFrameHeader, RuntimeErrorFramePayload,
+        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
         SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
         SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
         SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
-    request_mapper::{request_cancel_from_frame_header, request_envelope_from_start_frame},
+    request_mapper::request_cancel_from_frame_header,
     response_mapper::{
         response_chunk_to_outbound, response_end_to_outbound, response_error_to_outbound,
         response_start_to_outbound,
     },
+    runtime_assembly_request::decode_runtime_assembly_request_start_frame,
 };
 use tokio::{
     sync::mpsc,
@@ -78,7 +79,6 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                                 &host,
                                 &bytes,
                                 &sender,
-                                &spawn_registration,
                                 &mut health_reporter,
                             )
                             .await?;
@@ -222,31 +222,22 @@ async fn dispatch_router_binary_frame(
     artifact_fingerprint: &mut Option<String>,
 ) -> Result<()> {
     let _ = (control, artifact_fingerprint);
-    dispatch_router_binary_frame_inner(host, bytes, sender, None, None).await
+    dispatch_router_binary_frame_inner(host, bytes, sender, None).await
 }
 
 async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    spawn_registration: &super::spawn_worker::SpawnWorkerRegistration,
     health_reporter: &mut RuntimeHealthReporter,
 ) -> Result<()> {
-    dispatch_router_binary_frame_inner(
-        host,
-        bytes,
-        sender,
-        Some(spawn_registration),
-        Some(health_reporter),
-    )
-    .await
+    dispatch_router_binary_frame_inner(host, bytes, sender, Some(health_reporter)).await
 }
 
 async fn dispatch_router_binary_frame_inner(
     host: &super::RuntimeHost,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    spawn_registration: Option<&super::spawn_worker::SpawnWorkerRegistration>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
@@ -297,16 +288,10 @@ async fn dispatch_router_binary_frame_inner(
             ));
         }
         "request.start" => {
-            let (header, payload) = decode_typed_binary_frame::<RequestStartFrameHeader>(bytes)
+            let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            let request =
-                request_envelope_from_start_frame(header, payload).map_err(RuntimeError::Decode)?;
-            if let Some(registration) = spawn_registration {
-                host.spawn_session_request(request, sender.clone(), registration)
-                    .await;
-            } else {
-                host.spawn_request(request, sender.clone()).await;
-            }
+            host.spawn_runtime_assembly_request(header, payload, sender.clone())
+                .await;
         }
         "request.cancel" => {
             let (header, payload) = decode_typed_binary_frame::<RequestCancelFrameHeader>(bytes)
