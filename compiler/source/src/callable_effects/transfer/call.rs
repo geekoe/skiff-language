@@ -141,6 +141,18 @@ impl Evaluator<'_, '_> {
                 self.values.insert(key.preorder_index(), value.clone());
                 value
             }
+            Expr::Field { object, .. } => {
+                let key = self.current_key();
+                self.next_index = self.next_index.saturating_add(1);
+                let reference = self.expression_may_be_reference(&key);
+                let mut value = self.eval_exact_dependency_callee(object, env);
+                value.reference = reference;
+                if !reference {
+                    value.caller_references.clear();
+                }
+                self.values.insert(key.preorder_index(), value.clone());
+                value
+            }
             _ => self.eval_expr(callee, env),
         }
     }
