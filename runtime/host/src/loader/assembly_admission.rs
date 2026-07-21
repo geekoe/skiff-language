@@ -24,7 +24,9 @@ use tracing::{info, warn};
 use super::active_assembly_context::ActiveAssemblyContextSet;
 use crate::host::RuntimeHost;
 
+mod candidate;
 mod provisioning;
+mod recovery;
 
 /// Host-owned immutable assembly published after the complete candidate passes admission.
 #[derive(Debug)]
@@ -241,10 +243,9 @@ impl AssemblyAdmissionController {
         }
     }
 
-    /// Executes the only production whole-assembly admission path.
-    ///
-    /// The reload permit spans typed hydration, linking, host validation and publication. The
-    /// active pointer is changed only by `publish`, after all fallible candidate work completed.
+    /// Test-only direct admission for focused loader/linker coverage. Production activation
+    /// publishes only through durable committed recovery or Router prepare/commit.
+    #[cfg(test)]
     pub(crate) async fn admit<R>(
         &self,
         assembly: impl Into<Arc<RuntimeAssembly>>,
@@ -414,6 +415,7 @@ impl AssemblyAdmissionController {
         }))
     }
 
+    #[cfg(test)]
     fn begin_candidate(&self, identity: AssemblyIdentity) -> anyhow::Result<u64> {
         let mut state = self
             .state
@@ -493,6 +495,7 @@ impl AssemblyAdmissionController {
         Ok(())
     }
 
+    #[cfg(test)]
     fn publish(
         &self,
         generation: u64,
@@ -548,21 +551,6 @@ impl RuntimeHost {
         &self,
     ) -> anyhow::Result<Option<AssemblyActivationControl>> {
         self.assembly_admission.registration()
-    }
-
-    /// Builds and atomically admits one complete typed runtime assembly.
-    pub async fn admit_runtime_assembly<R>(
-        &self,
-        assembly: impl Into<Arc<RuntimeAssembly>>,
-        resolver: &R,
-    ) -> anyhow::Result<AssemblyIdentity>
-    where
-        R: RuntimeAssemblyContentResolver + Sync + ?Sized,
-    {
-        self.assembly_admission
-            .admit(assembly, resolver)
-            .await
-            .map(|active| active.identity().clone())
     }
 
     #[allow(dead_code)] // Phase 04 execution consumes an immutable active-generation snapshot.
@@ -629,6 +617,53 @@ fn ensure_current_candidate(
         );
     }
     Ok(())
+}
+
+/// The sole committed publication primitive shared by online commit and durable recovery.
+/// Callers hold the admission state write lock, so active context and committed tuple become
+/// visible atomically.
+fn publish_committed_locked(
+    state: &mut AssemblyAdmissionState,
+    prepared: PreparedAssembly,
+    committed: CommittedAssembly,
+) -> anyhow::Result<Arc<ActiveAssembly>> {
+    let admitted_at = OffsetDateTime::now_utc();
+    let identity = prepared.candidate.assembly().assembly_identity.clone();
+    if prepared.generation != committed.generation
+        || identity != committed.assembly.assembly_identity
+    {
+        anyhow::bail!("prepared assembly does not match committed publication tuple");
+    }
+    let active = Arc::new(ActiveAssembly {
+        generation: prepared.generation,
+        admitted_at,
+        candidate: prepared.candidate,
+        contexts: prepared.contexts,
+    });
+    state.next_generation = state.next_generation.max(committed.generation);
+    state.active = Some(Arc::clone(&active));
+    state.committed = Some(committed);
+    state.staged = None;
+    state.candidate = None;
+    state.last_outcome = Some(AssemblyAdmissionOutcome {
+        generation: active.generation(),
+        identity,
+        succeeded: true,
+        stage: AssemblyCandidateStage::Admit,
+        observed_at: admitted_at,
+        error: None,
+    });
+    Ok(active)
+}
+
+fn reject_reason_for_stage(stage: AssemblyCandidateStage) -> AssemblyActivationRejectReason {
+    match stage {
+        AssemblyCandidateStage::Load => AssemblyActivationRejectReason::Load,
+        AssemblyCandidateStage::Link => AssemblyActivationRejectReason::Link,
+        AssemblyCandidateStage::Validate | AssemblyCandidateStage::Admit => {
+            AssemblyActivationRejectReason::Admission
+        }
+    }
 }
 
 fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()> {

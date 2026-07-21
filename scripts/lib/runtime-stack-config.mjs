@@ -70,20 +70,23 @@ export function renderRouterConfig({
 export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
-  artifactRoots,
+  environment,
+  artifactRoot,
   serviceDbEncryptionKeyringFile,
   httpResponseMaxBytes,
 }) {
+  if (typeof environment !== 'string' || environment.trim().length === 0) {
+    throw new Error('runtime environment is required');
+  }
+  if (typeof artifactRoot !== 'string' || artifactRoot.trim().length === 0) {
+    throw new Error('runtime artifactRoot is required');
+  }
   const lines = [
     `router: ${quoteYamlString(routerUrl)}`,
     `runtime-home: ${quoteYamlString(runtimeHome)}`,
+    `environment: ${quoteYamlString(environment)}`,
+    `artifactRoot: ${quoteYamlString(artifactRoot)}`,
   ];
-  if ((artifactRoots?.length ?? 0) > 0) {
-    lines.push(
-      'artifactRoots:',
-      ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
-    );
-  }
   if (serviceDbEncryptionKeyringFile !== undefined) {
     lines.push(
       'serviceDb:',

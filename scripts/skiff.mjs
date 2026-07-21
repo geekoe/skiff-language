@@ -699,7 +699,8 @@ function runtimeDevConfig(options) {
   return renderRuntimeConfig({
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: options.runtimeHome,
-    artifactRoots: [options.artifactRoot],
+    environment: 'dev',
+    artifactRoot: options.artifactRoot,
   });
 }
 

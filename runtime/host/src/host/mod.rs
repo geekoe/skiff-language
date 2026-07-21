@@ -31,10 +31,11 @@ pub(crate) use service_context::{ServiceOperationContext, ServiceRuntimeContext}
 pub use skiff_runtime_request::{
     OutboundRequestRegistry, OutboundResponseReceiver, RouterWriterMessage,
 };
+#[cfg(test)]
+pub(crate) use state::ArtifactLoadState;
 pub(crate) use state::{
-    ArtifactLoadState, BuildExecutionGuard, BuildOperationAbiRouteKey, BuildSelectorRouteKey,
-    LoadedBuildRegistry, ReleaseIdleBuildsReport, RuntimeMemoryMaintenanceReport,
-    ServiceRouteState,
+    BuildExecutionGuard, BuildOperationAbiRouteKey, BuildSelectorRouteKey, LoadedBuildRegistry,
+    ReleaseIdleBuildsReport, RuntimeMemoryMaintenanceReport, ServiceRouteState,
 };
 
 #[cfg(test)]

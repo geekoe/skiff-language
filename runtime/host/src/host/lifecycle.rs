@@ -1,6 +1,6 @@
 use std::{collections::HashSet, env, time::Duration};
 
-use tokio::time::MissedTickBehavior;
+use tokio::time::{sleep, MissedTickBehavior};
 use tracing::{info, warn};
 
 use crate::error::{Result, RuntimeError};
@@ -23,7 +23,65 @@ impl RuntimeHost {
     }
 
     async fn run_reconnect_loop(self) -> Result<()> {
-        router_session::run_reconnect_loop(self).await
+        let mut backoff = Duration::from_millis(250);
+        loop {
+            match self.run_router_session_once().await {
+                Ok(()) => {
+                    backoff = Duration::from_millis(250);
+                    warn!(
+                        event = "runtime.router_disconnected",
+                        reconnect_in_ms = backoff.as_millis() as u64
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        event = "runtime.router_connection_error",
+                        error = %error,
+                        reconnect_in_ms = backoff.as_millis() as u64
+                    );
+                }
+            }
+            sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(5));
+        }
+    }
+
+    async fn run_router_session_once(&self) -> Result<()> {
+        self.recover_durable_committed().await?;
+        router_session::run_once(self.clone()).await
+    }
+
+    async fn recover_durable_committed(&self) -> Result<()> {
+        self.assembly_admission
+            .discard_transient_for_reconnect()
+            .map_err(|error| {
+                RuntimeError::invalid_artifact(format!(
+                    "committed recovery staging reset failed: {error}"
+                ))
+            })?;
+        let resolver = self.production_assembly_resolver()?;
+        let state = resolver
+            .store()
+            .read_environment_activation(&self.environment)
+            .map_err(|error| {
+                RuntimeError::invalid_artifact(format!(
+                    "committed activation recovery failed: {error}"
+                ))
+            })?;
+        self.assembly_admission
+            .recover_committed(
+                &state.environment,
+                state.committed.generation,
+                &state.committed.assembly,
+                &resolver,
+            )
+            .await
+            .map_err(|error| {
+                RuntimeError::invalid_artifact(format!(
+                    "committed assembly admission failed: {error}"
+                ))
+            })?;
+        Ok(())
     }
 
     async fn run_memory_maintenance_loop(self) -> Result<()> {
@@ -123,3 +181,6 @@ fn duration_from_env_seconds(name: &str, default: Duration) -> Duration {
         .map(Duration::from_secs)
         .unwrap_or(default)
 }
+
+#[cfg(test)]
+mod tests;

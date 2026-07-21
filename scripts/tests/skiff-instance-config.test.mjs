@@ -28,7 +28,7 @@ test('instance config defaults environment to dev and exposes it in the summary'
   assert.equal(instanceSummary(config).environment, 'dev');
 });
 
-test('instance init writes the configured environment into router.yml', async () => {
+test('instance init writes the configured environment and root into router/runtime YAML', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-instance-environment-'));
   const configPath = join(root, 'config.yml');
   const devHome = join(root, 'dev-home');
@@ -49,6 +49,13 @@ test('instance init writes the configured environment into router.yml', async ()
       await readFile(join(devHome, 'router.yml'), 'utf8'),
       /^environment: "f04-host-test"$/m,
     );
+    const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
+    assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);
+    assert.match(
+      runtimeConfig,
+      new RegExp(`^artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'),
+    );
+    assert.doesNotMatch(runtimeConfig, /^artifactRoots:/m);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
