@@ -1,15 +1,18 @@
 use std::{collections::BTreeMap, path::Path, path::PathBuf};
 
+use skiff_artifact_identity::assign_service_contract_identities;
 use skiff_artifact_model::{
     CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane, ValueProvenance,
+    ContractTypeRef, PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane, ValueProvenance,
 };
+use skiff_compiler_input::ResolvedContractDependency;
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    contract_dependency_test_fixture::resolved_contract_fixture,
-    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
+    contract_dependency_test_fixture::{contract_fixture, requirement, resolved_contract_fixture},
+    parsed_sources::parse_publication_sources,
+    source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
     PackageDependencyCallableAnalysis, PackageSourceModel, ResolvedCallTarget,
     SourceDependencyAnalysisInput, SourceSymbolKey,
@@ -173,7 +176,7 @@ fn unsupported_heap_store_fail_closed_state_propagates_through_callers_and_scc()
 }
 
 #[test]
-fn direct_and_transitive_parameter_write_propagate() {
+fn direct_scalar_parameter_field_store_has_only_write_effect() {
     let model = analyze(
         r#"
             type Boxed { value: string }
@@ -199,10 +202,55 @@ fn direct_and_transitive_parameter_write_propagate() {
         SourceDependencyAnalysisInput::default(),
     );
 
-    assert!(effects(&model, "mutate").writes_caller_reachable);
-    assert!(effects(&model, "wrapper").writes_caller_reachable);
-    assert!(effects(&model, "Boxed.clear").writes_caller_reachable);
-    assert!(effects(&model, "methodWrapper").writes_caller_reachable);
+    for callable in ["mutate", "wrapper", "Boxed.clear", "methodWrapper"] {
+        assert_eq!(
+            effects(&model, callable),
+            write_only_effects(),
+            "{callable}"
+        );
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+}
+
+#[test]
+fn nested_or_reference_heap_store_remains_fail_closed() {
+    let model = analyze(
+        r#"
+            interface Provider {
+              function value(self: Self) -> string
+            }
+
+            type Child { value: string }
+            type Holder { child: Child }
+
+            function nested(input: Holder) -> void {
+              input.child.value = "changed"
+            }
+
+            function reference(input: Holder, child: Child) -> void {
+              input.child = child
+            }
+
+            function unknownRhs(input: Child, provider: any Provider) -> void {
+              input.value = provider.value()
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["nested", "reference"] {
+        assert_heap_store_fail_closed(&model, callable);
+    }
+    assert_eq!(effects(&model, "unknownRhs"), all_effects());
+    assert!(matches!(
+        provenance(&model, "unknownRhs"),
+        CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+        }
+    ));
 }
 
 #[test]
@@ -350,7 +398,7 @@ fn native_and_unresolved_dynamic_targets_fail_closed() {
 }
 
 #[test]
-fn canonical_package_facts_import_effects_and_stable_target_identity() {
+fn exact_dependency_callee_does_not_poison_known_target() {
     let dependency_effects = CallableMayEffects {
         writes_caller_reachable: true,
         returns_caller_alias: true,
@@ -395,9 +443,11 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
         dependency_input,
     );
 
-    let wrapper = effects(&model, "wrapper");
-    assert!(wrapper.writes_caller_reachable);
-    assert!(wrapper.returns_caller_alias);
+    assert_eq!(effects(&model, "wrapper"), dependency_effects);
+    assert!(matches!(
+        provenance(&model, "wrapper"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -413,9 +463,15 @@ fn canonical_package_facts_import_effects_and_stable_target_identity() {
 }
 
 #[test]
-fn contract_target_carries_full_requirement_while_effects_fail_closed() {
+fn detached_contract_target_uses_descriptor_effect_guarantees() {
+    let mut contract =
+        contract_fixture("example.echo", "1.0.0", "send", "payload", "payloadClosure");
+    let operation = contract.operations.values_mut().next().unwrap();
+    operation.contract.return_value.ty = ContractTypeRef::builtin("string");
+    operation.contract.may_suspend = true;
+    assign_service_contract_identities(&mut contract).unwrap();
     let dependency =
-        resolved_contract_fixture("echo", "example.echo", "send", "payload", "payloadClosure");
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
     let expected_requirement = dependency.requirement().clone();
     let expected_operation = dependency
         .contract()
@@ -427,19 +483,19 @@ fn contract_target_carries_full_requirement_while_effects_fail_closed() {
     let dependency_input = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
     let model = analyze(
         r#"
-            function wrapper(input: echo.payload) -> void {
-              echo/send(input)
+            function wrapper(input: echo.payload) -> string {
+              return echo/send(input)
             }
         "#,
         dependency_input,
     );
 
-    assert!(effects(&model, "wrapper").invokes_unknown_target);
-    assert!(effects(&model, "wrapper").escapes_caller_value);
-    assert!(matches!(
-        provenance(&model, "wrapper"),
-        CallableProvenanceSummary::Unknown { .. }
-    ));
+    assert_eq!(effects(&model, "wrapper"), suspend_only_effects());
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "wrapper")
+    else {
+        panic!("detached contract target must retain analyzed provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,
@@ -450,6 +506,45 @@ fn contract_target_carries_full_requirement_while_effects_fail_closed() {
                 && contract_operation_id == &expected_operation
         )
     }));
+}
+
+#[test]
+fn non_detached_or_unsupported_contract_remains_fail_closed() {
+    let mut contract =
+        contract_fixture("example.echo", "1.0.0", "send", "payload", "payloadClosure");
+    contract
+        .operations
+        .values_mut()
+        .next()
+        .unwrap()
+        .contract
+        .effect_guarantee
+        .no_caller_value_escape = false;
+    assign_service_contract_identities(&mut contract).unwrap();
+    let dependency =
+        ResolvedContractDependency::validated(requirement("echo", &contract), contract).unwrap();
+    let model = analyze(
+        r#"
+            function wrapper(input: echo.payload) -> void {
+              echo/send(input)
+            }
+        "#,
+        SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap(),
+    );
+
+    let effects = effects(&model, "wrapper");
+    assert!(effects.writes_caller_reachable);
+    assert!(effects.throws_caller_alias);
+    assert!(effects.escapes_caller_value);
+    assert!(effects.requires_same_heap_identity);
+    assert!(effects.invokes_unknown_target);
+    assert!(effects.may_suspend);
+    assert!(matches!(
+        provenance(&model, "wrapper"),
+        CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::UnknownCallTarget
+        }
+    ));
 }
 
 #[test]
@@ -607,6 +702,20 @@ fn no_effects() -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_suspend: false,
+    }
+}
+
+fn write_only_effects() -> CallableMayEffects {
+    CallableMayEffects {
+        writes_caller_reachable: true,
+        ..no_effects()
+    }
+}
+
+fn suspend_only_effects() -> CallableMayEffects {
+    CallableMayEffects {
+        may_suspend: true,
+        ..no_effects()
     }
 }
 
