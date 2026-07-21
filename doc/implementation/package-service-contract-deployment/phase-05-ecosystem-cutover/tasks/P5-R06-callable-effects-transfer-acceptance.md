@@ -24,3 +24,12 @@ facts差异和唯一owner。
 `DependencySourceAddress`与`Generic`走精确callee求值，`Field`回退到普通表达式求值后仍注入
 same-heap、unknown-target、suspend与Unknown provenance。descriptor、store、canonical facts、scope及lock证据
 均已关闭；P5-F06A只修复该callee wrapper遍历并增加canonical field回归，下一次R06仅窄复验此失败面。
+
+## 第二次窄验收记录
+
+`fbf634d15f042eae2eca5c6942b2a62a8394effd` / tree
+`57f7b0d1430a13b39b23ac78b8552a5d4b5be8e6` 为`R06 PASS`。exact package Field、
+Generic(Field)与全detached contract member均保留精确facts；first-class/nonexact仍fail closed，真实
+`helper/tools.mutate(box)` consumer projection为Available。F06A仅在`call.rs`增加12行callee wrapper transfer，
+Cargo.lock、descriptor/store/projection/lowering/artifact/runtime均无diff；3个新增source filters、service
+conformance、原7条gate与focused 19/19全部PASS。该PASS只解锁F07，不解锁F04。
