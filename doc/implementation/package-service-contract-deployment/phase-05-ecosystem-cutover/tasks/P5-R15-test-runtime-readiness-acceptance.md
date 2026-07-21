@@ -14,3 +14,7 @@
 
 第一行只给`R15 PASS`或`R15 FAIL`。PASS只允许exact合流后由原F04 gate owner在新隔离环境原样跑完整suite；D16临时
 barrier、direct tests或健康字符串不能替代最终Host结果。
+
+首次`R15 FAIL`冻结四项复验：DNS/I/O deadline、canonical pending invariant、strict UTF-8与模块职责边界。F15A必须
+从原base重建single candidate；正式窄复验还需确认其余已通过state/request-once矩阵未回归，并消费root唯一combined
+package-service test证据。

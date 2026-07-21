@@ -36,3 +36,9 @@ direct tests覆盖commit receipt→draining→healthy序列、pending、capabili
 malformed/non-2xx、deadline，以及成功/失败均不重复业务request。每个filter非零。Clippy/fmt若base失败必须精确
 base/candidate归因且changed files通过。回报health状态矩阵、commit/tree/lock、single clean、reverse与extra-review；
 不在本任务宣称F04 verdict。
+
+## R15 first receive
+
+candidate `b7e0f4fc0a8d36550936b4b546ade809c6ce8786`被独立R15判FAIL：同步DNS可越过deadline，pending未调用
+canonical activation validator，HTTP使用lossy UTF-8，且单文件膨胀到1273行并混合多职责。D17/F15A从原base重建；
+不得把首次candidate合流或局部修补后继续验收。
