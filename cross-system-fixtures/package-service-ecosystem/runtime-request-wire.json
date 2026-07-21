@@ -1,0 +1,238 @@
+{
+  "requestStartHeaders": [
+    {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "request-http-1",
+      "mode": "unary",
+      "caller": {
+        "kind": "gateway",
+        "target": "gateway-http"
+      },
+      "routing": {
+        "kind": "runtimeAssembly",
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "assemblyGeneration": 0,
+        "contractOperationId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ingress": {
+          "protocol": "http",
+          "host": "example.com",
+          "method": "POST",
+          "path": "/items"
+        }
+      },
+      "trace": {
+        "traceId": "trace-http-1",
+        "spanId": "span-http-1"
+      }
+    },
+    {
+      "schemaVersion": "skiff-runtime-frame-v1",
+      "type": "request.start",
+      "requestId": "request-websocket-1",
+      "mode": "serverStream",
+      "caller": {
+        "kind": "gateway",
+        "target": "gateway-websocket"
+      },
+      "routing": {
+        "kind": "runtimeAssembly",
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "assemblyGeneration": 9007199254740991,
+        "contractOperationId": "skiff-contract-operation-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "ingress": {
+          "protocol": "webSocket",
+          "host": "socket.example.com",
+          "method": null,
+          "path": "/chat"
+        }
+      },
+      "trace": {
+        "traceId": "trace-websocket-1",
+        "spanId": "span-websocket-1"
+      }
+    }
+  ],
+  "requestStartMutations": [
+    {
+      "name": "target collision",
+      "baseIndex": 0,
+      "setPath": "target",
+      "value": "legacy-target"
+    },
+    {
+      "name": "buildId collision",
+      "baseIndex": 0,
+      "setPath": "buildId",
+      "value": "legacy-build"
+    },
+    {
+      "name": "serviceProtocolIdentity collision",
+      "baseIndex": 0,
+      "setPath": "serviceProtocolIdentity",
+      "value": "legacy-protocol"
+    },
+    {
+      "name": "serviceId collision",
+      "baseIndex": 0,
+      "setPath": "serviceId",
+      "value": "example.com/legacy"
+    },
+    {
+      "name": "version collision",
+      "baseIndex": 0,
+      "setPath": "version",
+      "value": "1.0.0"
+    },
+    {
+      "name": "selector collision",
+      "baseIndex": 0,
+      "setPath": "selector",
+      "value": "legacy-selector"
+    },
+    {
+      "name": "operationAbiId collision",
+      "baseIndex": 0,
+      "setPath": "operationAbiId",
+      "value": "legacy-operation"
+    },
+    {
+      "name": "old top-level assembly collision",
+      "baseIndex": 0,
+      "setPath": "assemblyIdentity",
+      "value": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "unknown routing field",
+      "baseIndex": 0,
+      "setPath": "routing.unknown",
+      "value": true
+    },
+    {
+      "name": "missing explicit method",
+      "baseIndex": 0,
+      "removePath": "routing.ingress.method"
+    },
+    {
+      "name": "http null method",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.method",
+      "value": null
+    },
+    {
+      "name": "websocket string method",
+      "baseIndex": 1,
+      "setPath": "routing.ingress.method",
+      "value": "GET"
+    },
+    {
+      "name": "generation above safe integer",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": 9007199254740992
+    },
+    {
+      "name": "generation fraction",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": 1.5
+    },
+    {
+      "name": "generation negative",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": -1
+    },
+    {
+      "name": "generation negative zero",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyGeneration",
+      "value": -0
+    },
+    {
+      "name": "invalid assembly identity",
+      "baseIndex": 0,
+      "setPath": "routing.assemblyIdentity",
+      "value": "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "invalid contract operation identity",
+      "baseIndex": 0,
+      "setPath": "routing.contractOperationId",
+      "value": "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "numeric method",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.method",
+      "value": 1
+    },
+    {
+      "name": "boolean method",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.method",
+      "value": true
+    },
+    {
+      "name": "missing routing kind",
+      "baseIndex": 0,
+      "removePath": "routing.kind"
+    },
+    {
+      "name": "missing assembly identity",
+      "baseIndex": 0,
+      "removePath": "routing.assemblyIdentity"
+    },
+    {
+      "name": "missing assembly generation",
+      "baseIndex": 0,
+      "removePath": "routing.assemblyGeneration"
+    },
+    {
+      "name": "missing contract operation identity",
+      "baseIndex": 0,
+      "removePath": "routing.contractOperationId"
+    },
+    {
+      "name": "missing ingress",
+      "baseIndex": 0,
+      "removePath": "routing.ingress"
+    },
+    {
+      "name": "unknown ingress field",
+      "baseIndex": 0,
+      "setPath": "routing.ingress.buildId",
+      "value": "legacy-build"
+    },
+    {
+      "name": "wrong routing kind",
+      "baseIndex": 0,
+      "setPath": "routing.kind",
+      "value": "legacy"
+    },
+    {
+      "name": "non-gateway caller",
+      "baseIndex": 0,
+      "setPath": "caller.kind",
+      "value": "service"
+    },
+    {
+      "name": "unknown top-level field",
+      "baseIndex": 0,
+      "setPath": "artifactKind",
+      "value": "RuntimeAssembly"
+    },
+    {
+      "name": "unknown caller field",
+      "baseIndex": 0,
+      "setPath": "caller.serviceId",
+      "value": "example.com/legacy"
+    },
+    {
+      "name": "unknown trace field",
+      "baseIndex": 0,
+      "setPath": "trace.buildId",
+      "value": "legacy-build"
+    }
+  ]
+}

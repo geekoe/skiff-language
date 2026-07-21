@@ -16,6 +16,11 @@ import {
 } from './cancelReason.js';
 import { CONFIG_SHAPE_VALUE_TYPES, isConfigShapeValueType } from '../config/index.js';
 import { isPublicationId, publicationStorageSegment } from '../publicationId.js';
+import {
+  hasRuntimeAssemblyRouting,
+  type RuntimeAssemblyRequestStartFrameHeader,
+  validateRuntimeAssemblyRequestRouting
+} from './runtimeAssemblyRequest.js';
 
 export type RuntimeProtocolFrameHeaderName = RuntimeFrameHeaderName;
 export type RuntimeToRouterFrameHeaderName = RuntimeToRouterFrameHeader['type'];
@@ -103,12 +108,8 @@ const routerToRuntimeFrameHeaderTypes = [
 const PROTOCOL_IDENTITY_PATTERN = /^skiff-protocol-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
-const CONTRACT_OPERATION_IDENTITY_PATTERN =
-  /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const BUILD_ID_PATTERN = /^skiff-service-build-v1:sha256:[0-9a-f]{64}$/;
-const RUNTIME_ASSEMBLY_IDENTITY_PATTERN =
-  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_TEST_BUILD_ID_PATTERN = /^skiff-package-test-build-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN =
   /^skiff-(?:service|package-test)-build-v1:sha256:[0-9a-f]{64}$/;
@@ -443,17 +444,31 @@ const requestStartFrameProperties = {
   version: { type: 'string' },
   buildId: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
-  assemblyIdentity: { type: 'string' },
-  assemblyGeneration: { type: 'integer' },
-  contractOperationId: { type: 'string' },
-  ingress: {
+  routing: {
     type: 'object',
-    required: ['protocol', 'host', 'method', 'path'],
+    required: [
+      'kind',
+      'assemblyIdentity',
+      'assemblyGeneration',
+      'contractOperationId',
+      'ingress'
+    ],
     properties: {
-      protocol: { type: 'string', enum: ['http', 'webSocket'] },
-      host: { type: 'string' },
-      method: { type: ['string', 'null'] },
-      path: { type: 'string' }
+      kind: { type: 'string', enum: ['runtimeAssembly'] },
+      assemblyIdentity: { type: 'string' },
+      assemblyGeneration: { type: 'integer' },
+      contractOperationId: { type: 'string' },
+      ingress: {
+        type: 'object',
+        required: ['protocol', 'host', 'method', 'path'],
+        properties: {
+          protocol: { type: 'string', enum: ['http', 'webSocket'] },
+          host: { type: 'string' },
+          method: { type: ['string', 'null'] },
+          path: { type: 'string' }
+        },
+        additionalProperties: false
+      }
     },
     additionalProperties: false
   },
@@ -1064,10 +1079,6 @@ export const runtimeFrameHeaderSchemas = {
       'requestId',
       'mode',
       'caller',
-      'target',
-      'operationAbiId',
-      'buildId',
-      'serviceProtocolIdentity',
       'trace'
     ],
     properties: {
@@ -1082,10 +1093,7 @@ export const runtimeFrameHeaderSchemas = {
       serviceId: { type: 'string' },
       buildId: { type: 'string' },
       serviceProtocolIdentity: { type: 'string' },
-      assemblyIdentity: { type: 'string' },
-      assemblyGeneration: { type: 'integer' },
-      contractOperationId: { type: 'string' },
-      ingress: requestStartFrameProperties.ingress,
+      routing: requestStartFrameProperties.routing,
       activationIdentity: { type: 'string' },
       gatewayEntryIdentity: { type: 'string' },
       businessIdentity: { type: 'string' },
@@ -1845,7 +1853,7 @@ export function validateRuntimeToRouterFrameHeader(
       : type === 'spawn.fail.request'
         ? validateSpawnFailRequest(envelope)
       : type === 'request.start'
-        ? validateRequestStartFrameHeader(envelope)
+        ? validateRequestStartFrameHeader(envelope, false)
       : type === 'request.cancel'
         ? validateRequestCancel(envelope)
         : type === 'connection.send'
@@ -1917,7 +1925,7 @@ export function validateRouterToRuntimeFrameHeader(
       : type === 'spawn.fail.error'
         ? validateRuntimeControlError(envelope, 'spawn.fail.error')
       : type === 'request.start'
-        ? validateRequestStartFrameHeader(envelope)
+        ? validateRequestStartFrameHeader(envelope, true)
       : type === 'package-test.start'
         ? validatePackageTestStartFrameHeader(envelope)
       : type === 'request.cancel'
@@ -1939,6 +1947,31 @@ export function validateRouterToRuntimeFrameHeader(
     ok: true,
     envelope: envelope as unknown as RouterToRuntimeFrameHeader
   };
+}
+
+export function validateRuntimeAssemblyRequestStartFrameHeader(
+  value: unknown
+): EnvelopeValidationResult<RuntimeAssemblyRequestStartFrameHeader> {
+  const typeResult = validateEnvelopeType(value, ['request.start'], 'runtimeAssembly frame header');
+  if (!typeResult.ok) {
+    return typeResult;
+  }
+  const { envelope } = typeResult;
+  if (!hasRuntimeAssemblyRouting(envelope)) {
+    return {
+      ok: false,
+      error: 'invalid request.start runtimeAssembly envelope: routing is required'
+    };
+  }
+  const error =
+    validateFrameHeaderBase(envelope, 'request.start') ??
+    validateRequestStartFrameHeader(envelope, true);
+  return error === null
+    ? {
+        ok: true,
+        envelope: envelope as unknown as RuntimeAssemblyRequestStartFrameHeader
+      }
+    : { ok: false, error };
 }
 
 function validateEnvelopeType<const TType extends string>(
@@ -2676,19 +2709,15 @@ function fieldLeaf(field: string): string {
   return dot === -1 ? field : field.slice(dot + 1);
 }
 
-function validateRequestStartFrameHeader(envelope: Record<string, unknown>): string | null {
+function validateRequestStartFrameHeader(
+  envelope: Record<string, unknown>,
+  allowRuntimeAssemblyRouting: boolean
+): string | null {
   return (
     rejectHeaderPayloadFields(envelope, 'request.start') ??
     requireString(envelope, 'request.start', 'requestId') ??
     requireEnum(envelope, 'request.start', 'mode', ['unary', 'serverStream']) ??
     validateCaller(envelope) ??
-    requireString(envelope, 'request.start', 'target') ??
-    requireString(envelope, 'request.start', 'operationAbiId') ??
-    optionalString(envelope, 'request.start', 'selector') ??
-    optionalPublicationId(envelope, 'request.start', 'serviceId') ??
-    validateRequestBuildIdentity(envelope) ??
-    requireString(envelope, 'request.start', 'serviceProtocolIdentity') ??
-    validateRequestProtocolIdentity(envelope) ??
     optionalStringPattern(
       envelope,
       'request.start',
@@ -2713,111 +2742,71 @@ function validateRequestStartFrameHeader(envelope: Record<string, unknown>): str
     validateHttpRequestFrameMetadata(envelope) ??
     validateHttpAdapterFrameMetadata(envelope) ??
     validateWebSocketAdapterFrameMetadata(envelope) ??
-    validateAssemblyDispatchMetadata(envelope) ??
     optionalBoolean(envelope, 'request.start', 'testEffectsEnabled') ??
-    validateTestEffectDoubles(envelope, 'request.start')
+    validateTestEffectDoubles(envelope, 'request.start') ??
+    validateRequestRoutingVariant(envelope, allowRuntimeAssemblyRouting)
   );
 }
 
-function validateRequestProtocolIdentity(envelope: Record<string, unknown>): string | null {
-  const pattern = envelope.assemblyIdentity === undefined
-    ? PROTOCOL_IDENTITY_PATTERN
-    : SERVICE_PROTOCOL_IDENTITY_PATTERN;
-  const description = envelope.assemblyIdentity === undefined
-    ? 'skiff-protocol-v1:sha256:<64 lowercase hex>'
-    : 'skiff-service-protocol-v2:sha256:<64 lowercase hex>';
-  return requirePattern(
-    envelope,
-    'request.start',
-    'serviceProtocolIdentity',
-    pattern,
-    description
+function validateRequestRoutingVariant(
+  envelope: Record<string, unknown>,
+  allowRuntimeAssemblyRouting: boolean
+): string | null {
+  if (hasRuntimeAssemblyRouting(envelope)) {
+    if (!allowRuntimeAssemblyRouting) {
+      return 'invalid runtime-to-router request.start envelope: runtimeAssembly routing is not supported';
+    }
+    if (!isRecord(envelope.caller) || envelope.caller.kind !== 'gateway') {
+      return 'invalid request.start runtimeAssembly envelope: caller.kind must be gateway';
+    }
+    return validateRuntimeAssemblyRequestRouting(envelope);
+  }
+  return validateLegacyRequestRouting(envelope);
+}
+
+function validateLegacyRequestRouting(envelope: Record<string, unknown>): string | null {
+  return (
+    rejectUnsupportedLegacyAssemblyRouting(envelope) ??
+    requireString(envelope, 'request.start', 'target') ??
+    requireString(envelope, 'request.start', 'operationAbiId') ??
+    optionalString(envelope, 'request.start', 'selector') ??
+    optionalPublicationId(envelope, 'request.start', 'serviceId') ??
+    requireStringPattern(
+      envelope,
+      'request.start',
+      'buildId',
+      BUILD_ID_PATTERN,
+      'skiff-service-build-v1:sha256:<64 lowercase hex>'
+    ) ??
+    requireString(envelope, 'request.start', 'serviceProtocolIdentity') ??
+    validateRequestProtocolIdentity(envelope)
   );
 }
 
-function validateRequestBuildIdentity(envelope: Record<string, unknown>): string | null {
-  const value = envelope.buildId;
-  const pattern = envelope.assemblyIdentity === undefined
-    ? BUILD_ID_PATTERN
-    : RUNTIME_ASSEMBLY_IDENTITY_PATTERN;
-  const description = envelope.assemblyIdentity === undefined
-    ? 'skiff-service-build-v1:sha256:<64 lowercase hex>'
-    : 'the exact skiff-runtime-assembly-v1:sha256:<64 lowercase hex> identity';
-  if (typeof value !== 'string' || !pattern.test(value)) {
-    return `invalid request.start envelope: buildId must be ${description}`;
-  }
-  if (envelope.assemblyIdentity !== undefined && value !== envelope.assemblyIdentity) {
-    return 'invalid request.start envelope: buildId must equal assemblyIdentity for assembly ingress';
-  }
-  return null;
-}
-
-function validateAssemblyDispatchMetadata(envelope: Record<string, unknown>): string | null {
-  const fields = [
+function rejectUnsupportedLegacyAssemblyRouting(
+  envelope: Record<string, unknown>
+): string | null {
+  for (const field of [
     'assemblyIdentity',
     'assemblyGeneration',
     'contractOperationId',
     'ingress'
-  ] as const;
-  const present = fields.filter((field) => envelope[field] !== undefined);
-  if (present.length === 0) {
-    return null;
-  }
-  if (present.length !== fields.length) {
-    return 'invalid request.start envelope: assemblyIdentity, assemblyGeneration, contractOperationId, and ingress must be present together';
-  }
-  if (
-    typeof envelope.assemblyIdentity !== 'string' ||
-    !RUNTIME_ASSEMBLY_IDENTITY_PATTERN.test(envelope.assemblyIdentity)
-  ) {
-    return 'invalid request.start envelope: assemblyIdentity must be skiff-runtime-assembly-v1:sha256:<64 lowercase hex>';
-  }
-  if (
-    !Number.isSafeInteger(envelope.assemblyGeneration) ||
-    Number(envelope.assemblyGeneration) < 0
-  ) {
-    return 'invalid request.start envelope: assemblyGeneration must be a non-negative safe integer';
-  }
-  if (
-    typeof envelope.contractOperationId !== 'string' ||
-    !CONTRACT_OPERATION_IDENTITY_PATTERN.test(envelope.contractOperationId)
-  ) {
-    return 'invalid request.start envelope: contractOperationId must be skiff-contract-operation-v1:sha256:<64 lowercase hex>';
-  }
-  if (
-    envelope.target !== envelope.contractOperationId ||
-    envelope.operationAbiId !== envelope.contractOperationId
-  ) {
-    return 'invalid request.start envelope: target and operationAbiId must equal contractOperationId for assembly ingress';
-  }
-  if (!isRecord(envelope.ingress)) {
-    return 'invalid request.start envelope: ingress must be an object';
-  }
-  const supported = ['protocol', 'host', 'method', 'path'];
-  const unsupported = Object.keys(envelope.ingress).find((field) => !supported.includes(field));
-  if (unsupported !== undefined) {
-    return `invalid request.start envelope: ingress.${unsupported} is not supported`;
-  }
-  const protocol = envelope.ingress.protocol;
-  const method = envelope.ingress.method;
-  if (protocol !== 'http' && protocol !== 'webSocket') {
-    return 'invalid request.start envelope: ingress.protocol must be http or webSocket';
-  }
-  if (
-    typeof envelope.ingress.host !== 'string' ||
-    envelope.ingress.host.length === 0 ||
-    typeof envelope.ingress.path !== 'string' ||
-    !envelope.ingress.path.startsWith('/')
-  ) {
-    return 'invalid request.start envelope: ingress must carry a non-empty host and absolute path';
-  }
-  if (
-    (protocol === 'http' && (typeof method !== 'string' || method.length === 0)) ||
-    (protocol === 'webSocket' && method !== null)
-  ) {
-    return 'invalid request.start envelope: ingress method does not match protocol';
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(envelope, field)) {
+      return `invalid request.start legacy envelope: ${field} is not supported; use routing`;
+    }
   }
   return null;
+}
+
+function validateRequestProtocolIdentity(envelope: Record<string, unknown>): string | null {
+  return requirePattern(
+    envelope,
+    'request.start',
+    'serviceProtocolIdentity',
+    PROTOCOL_IDENTITY_PATTERN,
+    'skiff-protocol-v1:sha256:<64 lowercase hex>'
+  );
 }
 
 function validatePackageTestStartFrameHeader(envelope: Record<string, unknown>): string | null {

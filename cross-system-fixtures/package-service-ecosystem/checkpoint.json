@@ -46,5 +46,23 @@
     "commit": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
     "abort": ["type", "environment", "activationId", "expectedGeneration", "candidateGeneration", "assembly", "replicaId"],
     "register": ["type", "environment", "generation", "assembly", "replicaId"]
+  },
+  "runtimeAssemblyFrame": {
+    "schemaVersion": "skiff-runtime-frame-v1",
+    "type": "assembly.activation",
+    "headerFields": ["schemaVersion", "type", "control"],
+    "payloadBytes": 0,
+    "routerToRuntime": ["prepare", "commit", "abort"],
+    "runtimeToRouter": ["prepared", "reject", "register"]
+  },
+  "runtimeAssemblyRequestRouting": {
+    "kind": "runtimeAssembly",
+    "fields": ["kind", "assemblyIdentity", "assemblyGeneration", "contractOperationId", "ingress"],
+    "ingressFields": ["protocol", "host", "method", "path"],
+    "forbiddenLegacyFields": ["target", "operationAbiId", "buildId", "serviceProtocolIdentity", "serviceId", "version", "selector"]
+  },
+  "ecosystemStoreAdapter": {
+    "argv": ["__ecosystem-store", "--artifact-root", "<artifact-root>"],
+    "operations": ["ensureEnvironmentBootstrap", "readEnvironment", "prepareEnvironment", "abortEnvironment", "commitEnvironment", "readRouterSnapshot"]
   }
 }

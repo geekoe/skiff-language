@@ -35,13 +35,26 @@ const {
   decodeRawAssemblyActivationRequest,
   decodeRawEnvironmentActivationState,
 } = await import("../../router/src/protocol/assemblyActivationRawCodec.ts");
+const {
+  decodeAssemblyActivationFrame,
+  encodeAssemblyActivationFrame,
+} = await import("../../router/src/protocol/assemblyActivationFrame.ts");
+const {
+  validateRouterToRuntimeFrameHeader,
+  validateRuntimeAssemblyRequestStartFrameHeader,
+  validateRuntimeToRouterFrameHeader,
+} = await import("../../router/src/protocol/runtimeProtocol.ts");
 
 const mode = process.argv[2];
 if (
   process.argv.length !== 3 ||
-  (mode !== "--self-test" && mode !== "--combined-probe")
+  (mode !== "--self-test" &&
+    mode !== "--combined-probe" &&
+    mode !== "--runtime-wire-self-test")
 ) {
-  throw new Error("usage: node verify.mjs <--self-test|--combined-probe>");
+  throw new Error(
+    "usage: node verify.mjs <--self-test|--combined-probe|--runtime-wire-self-test>",
+  );
 }
 
 const fixtureRoot = new URL("./", import.meta.url);
@@ -50,6 +63,11 @@ const stateWire = await readJson("activation-state.json");
 const controlWire = await readJson("control-wire.json");
 const rawCases = await loadActivationRawCases();
 const checkpoint = await readJson("checkpoint.json");
+
+if (mode === "--runtime-wire-self-test") {
+  await runRuntimeWireSelfTest(controlWire, checkpoint);
+  process.exit(0);
+}
 
 if (mode === "--combined-probe") {
   runCombinedProbe(rawCases, requestWire, stateWire);
@@ -222,4 +240,142 @@ function productionRawDecoder(target) {
   if (target === "state") return decodeRawEnvironmentActivationState;
   if (target === "control") return decodeRawAssemblyActivationControl;
   throw new Error(`unknown raw activation target ${target}`);
+}
+
+async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
+  const frameCorpus = await readJson("runtime-wire.json");
+  const requestCorpus = await readJson("runtime-request-wire.json");
+  const storeCorpus = await readJson("ecosystem-store-cases.json");
+
+  assert.equal(frameCorpus.assemblyActivationFrames.length, controlMessages.length);
+  for (const golden of frameCorpus.assemblyActivationFrames) {
+    const control = controlMessages[golden.controlIndex];
+    assert.equal(control.type, golden.name);
+    const encoded = encodeAssemblyActivationFrame(golden.direction, control);
+    assert.equal(encoded.toString("hex"), golden.frameHex, golden.name);
+    assert.deepEqual(
+      decodeAssemblyActivationFrame(
+        golden.direction,
+        Buffer.from(golden.frameHex, "hex"),
+      ),
+      control,
+      golden.name,
+    );
+    const reverseDirection =
+      golden.direction === "routerToRuntime"
+        ? "runtimeToRouter"
+        : "routerToRuntime";
+    assert.throws(
+      () => encodeAssemblyActivationFrame(reverseDirection, control),
+      undefined,
+      `${golden.name} reverse encode direction`,
+    );
+    assert.throws(
+      () =>
+        decodeAssemblyActivationFrame(
+          reverseDirection,
+          Buffer.from(golden.frameHex, "hex"),
+        ),
+      undefined,
+      `${golden.name} reverse decode direction`,
+    );
+  }
+  for (const mutation of frameCorpus.assemblyActivationMutations) {
+    assert.match(mutation.input, /^(?:[0-9a-f]{2})+$/);
+    assert.throws(
+      () =>
+        decodeAssemblyActivationFrame(
+          mutation.direction,
+          Buffer.from(mutation.input, "hex"),
+        ),
+      undefined,
+      mutation.name,
+    );
+  }
+
+  for (const header of requestCorpus.requestStartHeaders) {
+    const result = validateRouterToRuntimeFrameHeader(header);
+    assert.equal(result.ok, true, result.ok ? header.requestId : result.error);
+    const typed = validateRuntimeAssemblyRequestStartFrameHeader(header);
+    assert.equal(typed.ok, true, typed.ok ? header.requestId : typed.error);
+    assert.deepEqual(typed.envelope, header);
+    assert.equal(
+      validateRuntimeToRouterFrameHeader(header).ok,
+      false,
+      `${header.requestId} direction`,
+    );
+  }
+  for (const mutation of requestCorpus.requestStartMutations) {
+    const header = structuredClone(
+      requestCorpus.requestStartHeaders[mutation.baseIndex],
+    );
+    applyMutation(header, mutation);
+    const result = validateRouterToRuntimeFrameHeader(header);
+    assert.equal(result.ok, false, mutation.name);
+    assert.equal(
+      validateRuntimeAssemblyRequestStartFrameHeader(header).ok,
+      false,
+      mutation.name,
+    );
+  }
+
+  assert.deepEqual(frozenCheckpoint.runtimeAssemblyFrame.routerToRuntime, [
+    "prepare",
+    "commit",
+    "abort",
+  ]);
+  assert.deepEqual(frozenCheckpoint.runtimeAssemblyFrame.runtimeToRouter, [
+    "prepared",
+    "reject",
+    "register",
+  ]);
+  assert.deepEqual(
+    storeCorpus.argv,
+    frozenCheckpoint.ecosystemStoreAdapter.argv,
+  );
+  assert.deepEqual(
+    storeCorpus.workflow.map((request) => request.operation),
+    [
+      "ensureEnvironmentBootstrap",
+      "readEnvironment",
+      "prepareEnvironment",
+      "abortEnvironment",
+      "prepareEnvironment",
+      "commitEnvironment",
+      "ensureEnvironmentBootstrap",
+      "readRouterSnapshot",
+    ],
+  );
+  assert.ok(storeCorpus.invalidRequests.length >= 5);
+  assert.equal(
+    Object.values(storeCorpus).some((value) =>
+      JSON.stringify(value).includes('"latest"'),
+    ),
+    false,
+  );
+
+  process.stdout.write(
+    `${JSON.stringify({
+      ok: true,
+      probe: "runtime-wire",
+      activationFrames: frameCorpus.assemblyActivationFrames.length,
+      activationMutations: frameCorpus.assemblyActivationMutations.length,
+      requestHeaders: requestCorpus.requestStartHeaders.length,
+      requestMutations: requestCorpus.requestStartMutations.length,
+      storeOperations: frozenCheckpoint.ecosystemStoreAdapter.operations.length,
+    })}\n`,
+  );
+}
+
+function applyMutation(root, mutation) {
+  const path = mutation.setPath ?? mutation.removePath;
+  const segments = path.split(".");
+  const leaf = segments.pop();
+  let owner = root;
+  for (const segment of segments) owner = owner[segment];
+  if (mutation.removePath !== undefined) {
+    delete owner[leaf];
+  } else {
+    owner[leaf] = mutation.value;
+  }
 }

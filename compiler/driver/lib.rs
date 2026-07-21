@@ -1,4 +1,6 @@
 pub mod authoring;
+#[doc(hidden)]
+pub mod ecosystem_store;
 pub(crate) mod input;
 pub(crate) mod pipeline;
 pub(crate) mod shared;
