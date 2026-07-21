@@ -36,7 +36,7 @@ node --test \
   scripts/tests/runtime-stack-config.test.mjs \
   scripts/tests/skiff-instance-config.test.mjs \
   scripts/tests/isolated-test-runtime.test.mjs
-cargo test --locked --manifest-path runtime/driver/Cargo.toml
+cargo test --locked --manifest-path runtime/Cargo.toml
 cargo test --locked -p skiff-runtime-host --test active_runtime_assembly
 cargo test --locked -p skiff-runtime-host committed_recovery
 cargo clippy --locked -p skiff-runtime-host --all-targets --no-deps -- -D warnings
@@ -50,3 +50,11 @@ capabilities后register → Router health同时出现capability connection与匹
 测试还必须覆盖non-empty N restart、pending只恢复committed、全类store/ref失败时零次连接、reconnect N→N+1，以及
 recovered gen0后的prepare gen1→prepared但仍register gen0、abort保持gen0、commit后register gen1。回报配置矩阵、
 recovery/online primitive复用、frame顺序、source/commit/tree、single commit/clean/lock、reverse-search与extra-review。
+
+## R11 acceptance record
+
+F10 candidate `47d92595cc346cdbbee184ebb467f3bc2aecb01d` / tree
+`70d3c8d31c2a748ff642c99f2f3c29947bf181c2`由独立R11判定PASS并合流为`efb2bbbe`。strict config、每connect
+exact committed recovery、共享admission/publication、pending/reconnect/gen0语义及真实ready-only probe均通过；
+Node 24/24、Runtime 277/277、recovery 4/4、active 2/2、reconnect 1/1。Clippy仍为既有基线失败且候选错误数下降，
+新增recovery/lifecycle文件无诊断；lock未变。

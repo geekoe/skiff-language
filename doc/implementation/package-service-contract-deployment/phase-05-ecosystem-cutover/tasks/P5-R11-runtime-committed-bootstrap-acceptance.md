@@ -19,3 +19,10 @@
 
 第一行只给`R11 PASS`或`R11 FAIL`。PASS只允许在exact合流状态恢复F04A真实Host probe；ready-only、Runtime单测或
 register字符串不能替代后续F04 checked-in consumer Host结果。
+
+## 验收记录
+
+`R11 PASS`：exact candidate `47d92595cc346cdbbee184ebb467f3bc2aecb01d` / tree
+`70d3c8d31c2a748ff642c99f2f3c29947bf181c2`，parent `028154dcdb18fde954e0e8b8a42052419d128133`，single
+commit/clean/lock不变。真实ready-only health同时出现exact gen0 active、capability connection与healthy replica。
+required Clippy不记PASS：base/candidate均有既有warnings，candidate总数下降且F10新模块无诊断。

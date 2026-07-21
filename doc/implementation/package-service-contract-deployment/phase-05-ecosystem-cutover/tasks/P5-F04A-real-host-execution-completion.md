@@ -69,3 +69,7 @@ R10 PASS并合流`ff7a4df`后原样恢复probe，wire/capability已连通，但h
 `capabilityConnections` connected、`replicas: []`，120秒readiness超时。D12确认Runtime从空admission state启动且没有
 durable committed reader，只能发送capabilities；Router正确拒绝把它当participant。F10/R11提前拆出F03C committed
 bootstrap/reconnect职责；R11前F04A/F04继续保持未完成。
+
+R11 PASS并合流`efb2bbbe`后第三次probe已越过readiness并进入`[skiff-tests] running std`，随后Cargo因
+test-runner crate同时有`skiff-test-runner`与`skiff-package-service-smoke-fixture`两个binary，而source-suite未传
+`--bin`退出101。该直接caller缺口仍属F04A写域，冻结F04B只显式选择canonical runner并原样恢复真实Host gate。
