@@ -20,11 +20,10 @@ use crate::{
 
 #[cfg(test)]
 use super::request_supervisor::CompletionTrace;
-use super::{
-    route_registry, spawn_worker, RuntimeHost, ServiceOperationContext, ServiceRuntimeContext,
-};
+use super::{route_registry, RuntimeHost, ServiceOperationContext, ServiceRuntimeContext};
 
 mod assembly;
+mod assembly_wire;
 
 struct RouterResponseEventSink {
     sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
@@ -53,24 +52,6 @@ impl ResponseEventSink for RouterResponseEventSink {
 }
 
 impl RuntimeHost {
-    pub(crate) async fn spawn_request(
-        &self,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        self.spawn_request_inner(request, sender, None).await;
-    }
-
-    pub(crate) async fn spawn_session_request(
-        &self,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        registration: &spawn_worker::SpawnWorkerRegistration,
-    ) {
-        self.spawn_request_inner(request, sender, Some(registration))
-            .await;
-    }
-
     #[cfg(test)]
     pub(crate) async fn spawn_resolved_request_for_test(
         &self,
@@ -252,10 +233,9 @@ impl RuntimeHost {
 
     /// Resolves a canonical ingress only from one immutable active assembly generation.
     ///
-    /// Router wire mapping into `IngressSelector` remains outside Phase 03. Once supplied, this
-    /// entry performs no artifact access or candidate mutation and returns the activation template
-    /// plus descriptor pinned by `ActiveAssemblyRoute`.
-    #[allow(dead_code)]
+    /// The canonical wire bridge supplies the selector. This entry performs no artifact access or
+    /// candidate mutation and returns the activation template plus descriptor pinned by
+    /// `ActiveAssemblyRoute`.
     pub(crate) fn lookup_active_assembly_request_route(
         &self,
         selector: &IngressSelector,

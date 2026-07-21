@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use skiff_runtime_loader::RuntimeAssemblyContentResolver;
 use skiff_runtime_transport::{
     assembly_activation::{
         decode_assembly_activation_frame, encode_assembly_activation_frame,
@@ -14,6 +15,8 @@ use skiff_runtime_transport::{
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
+
+mod runtime_assembly_request;
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
