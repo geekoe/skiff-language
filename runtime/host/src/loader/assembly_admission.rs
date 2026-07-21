@@ -2,8 +2,9 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding,
-    IngressSelector, OperationTargetRef, RuntimeAssembly, ServiceContract, ServiceContractRef,
+    AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyIdentity,
+    BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding, IngressSelector,
+    OperationTargetRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract, ServiceContractRef,
     ServiceDeploymentRef,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
@@ -12,7 +13,8 @@ use skiff_runtime_linker::{
     link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate,
 };
 use skiff_runtime_loader::{
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, ServiceContractStore,
+    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
+    ServiceContractStore,
 };
 use skiff_runtime_request::RuntimeAssemblyRequestTarget;
 use time::OffsetDateTime;
@@ -22,6 +24,8 @@ use tracing::{info, warn};
 use super::active_assembly_context::ActiveAssemblyContextSet;
 use crate::host::RuntimeHost;
 
+mod provisioning;
+
 /// Host-owned immutable assembly published after the complete candidate passes admission.
 #[derive(Debug)]
 pub(crate) struct ActiveAssembly {
@@ -29,6 +33,35 @@ pub(crate) struct ActiveAssembly {
     admitted_at: OffsetDateTime,
     candidate: Arc<AssemblyLinkedCandidate>,
     contexts: Arc<ActiveAssemblyContextSet>,
+}
+
+#[derive(Debug)]
+struct PreparedAssembly {
+    generation: u64,
+    candidate: Arc<AssemblyLinkedCandidate>,
+    contexts: Arc<ActiveAssemblyContextSet>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssemblyTransition {
+    environment: String,
+    activation_id: String,
+    expected_generation: u64,
+    candidate_generation: u64,
+    assembly: RuntimeAssemblyRef,
+}
+
+#[derive(Debug)]
+struct StagedAssembly {
+    transition: AssemblyTransition,
+    prepared: PreparedAssembly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommittedAssembly {
+    environment: String,
+    generation: u64,
+    assembly: RuntimeAssemblyRef,
 }
 
 /// One request-entry route pinned to the exact active generation used for lookup.
@@ -179,6 +212,8 @@ pub(crate) struct AssemblyAdmissionHealth {
 struct AssemblyAdmissionState {
     next_generation: u64,
     active: Option<Arc<ActiveAssembly>>,
+    committed: Option<CommittedAssembly>,
+    staged: Option<StagedAssembly>,
     candidate: Option<AssemblyCandidateHealth>,
     last_outcome: Option<AssemblyAdmissionOutcome>,
 }
@@ -228,10 +263,32 @@ impl AssemblyAdmissionController {
             generation
         );
 
+        let prepared = self
+            .build_started_candidate(generation, &identity, assembly, resolver)
+            .await?;
+        let active = self.publish(generation, identity, prepared)?;
+        info!(
+            event = "runtime.assembly_admitted",
+            assembly_identity = %active.identity(),
+            generation = active.generation()
+        );
+        Ok(active)
+    }
+
+    async fn build_started_candidate<R>(
+        &self,
+        generation: u64,
+        identity: &AssemblyIdentity,
+        assembly: Arc<RuntimeAssembly>,
+        resolver: &R,
+    ) -> anyhow::Result<PreparedAssembly>
+    where
+        R: RuntimeAssemblyContentResolver + Sync + ?Sized,
+    {
         let hydrated = match RuntimeAssemblyLoader::new(resolver).load(assembly) {
             Ok(hydrated) => hydrated,
             Err(error) => {
-                self.fail_candidate(generation, &identity, AssemblyCandidateStage::Load)?;
+                self.fail_candidate(generation, identity, AssemblyCandidateStage::Load)?;
                 warn!(
                     event = "runtime.assembly_admission_failed",
                     assembly_identity = %identity,
@@ -246,7 +303,7 @@ impl AssemblyAdmissionController {
         let candidate = match link_runtime_assembly(hydrated) {
             Ok(candidate) => candidate,
             Err(error) => {
-                self.fail_candidate(generation, &identity, AssemblyCandidateStage::Link)?;
+                self.fail_candidate(generation, identity, AssemblyCandidateStage::Link)?;
                 warn!(
                     event = "runtime.assembly_admission_failed",
                     assembly_identity = %identity,
@@ -259,7 +316,7 @@ impl AssemblyAdmissionController {
 
         self.advance_candidate(generation, AssemblyCandidateStage::Validate)?;
         if let Err(error) = validate_candidate(&candidate) {
-            self.fail_candidate(generation, &identity, AssemblyCandidateStage::Validate)?;
+            self.fail_candidate(generation, identity, AssemblyCandidateStage::Validate)?;
             warn!(
                 event = "runtime.assembly_admission_failed",
                 assembly_identity = %identity,
@@ -278,7 +335,7 @@ impl AssemblyAdmissionController {
         ) {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {
-                self.fail_candidate(generation, &identity, AssemblyCandidateStage::Admit)?;
+                self.fail_candidate(generation, identity, AssemblyCandidateStage::Admit)?;
                 warn!(
                     event = "runtime.assembly_admission_failed",
                     assembly_identity = %identity,
@@ -288,13 +345,11 @@ impl AssemblyAdmissionController {
                 return Err(error).context("whole-assembly activation context construction failed");
             }
         };
-        let active = self.publish(generation, identity, candidate, contexts)?;
-        info!(
-            event = "runtime.assembly_admitted",
-            assembly_identity = %active.identity(),
-            generation = active.generation()
-        );
-        Ok(active)
+        Ok(PreparedAssembly {
+            generation,
+            candidate,
+            contexts,
+        })
     }
 
     pub(crate) fn active(&self) -> anyhow::Result<Option<Arc<ActiveAssembly>>> {
@@ -442,15 +497,14 @@ impl AssemblyAdmissionController {
         &self,
         generation: u64,
         identity: AssemblyIdentity,
-        candidate: Arc<AssemblyLinkedCandidate>,
-        contexts: Arc<ActiveAssemblyContextSet>,
+        prepared: PreparedAssembly,
     ) -> anyhow::Result<Arc<ActiveAssembly>> {
         let admitted_at = OffsetDateTime::now_utc();
         let active = Arc::new(ActiveAssembly {
             generation,
             admitted_at,
-            candidate,
-            contexts,
+            candidate: prepared.candidate,
+            contexts: prepared.contexts,
         });
         let mut state = self
             .state
@@ -474,6 +528,28 @@ impl AssemblyAdmissionController {
 }
 
 impl RuntimeHost {
+    /// Applies one router-coordinated activation transition through the exact
+    /// production record resolver boundary.
+    pub async fn apply_assembly_activation_control<R>(
+        &self,
+        control: AssemblyActivationControl,
+        resolver: &R,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+    {
+        self.assembly_admission
+            .apply_activation_control(control, resolver)
+            .await
+    }
+
+    /// Returns only the currently committed whole-assembly registration.
+    pub fn active_assembly_registration(
+        &self,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>> {
+        self.assembly_admission.registration()
+    }
+
     /// Builds and atomically admits one complete typed runtime assembly.
     pub async fn admit_runtime_assembly<R>(
         &self,

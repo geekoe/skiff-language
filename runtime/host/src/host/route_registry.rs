@@ -22,7 +22,7 @@ use super::{
 };
 
 impl RuntimeHost {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn replace_services(
         &self,
         services: Vec<RuntimeServiceConfig>,
@@ -47,50 +47,6 @@ impl RuntimeHost {
         self.loaded_builds.replace_builds(build_ids);
         info!(event = "runtime.services_replaced", service_count);
         Ok(())
-    }
-
-    pub(super) fn add_services(
-        &self,
-        services: Vec<RuntimeServiceConfig>,
-    ) -> anyhow::Result<Vec<Arc<ServiceRuntimeContext>>> {
-        let services =
-            apply_default_http_response_limits(services, self.default_http_response_max_bytes);
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| anyhow::anyhow!("runtime service route state lock is poisoned"))?;
-        let mut contexts = state.services.iter().cloned().collect::<Vec<_>>();
-        let mut operation_routes = (*state.route_by_build_and_operation_abi_id).clone();
-        let mut selector_routes = (*state.operation_abi_id_by_build_and_selector).clone();
-        let mut runtime_ids = contexts
-            .iter()
-            .map(|service| service.runtime_id.clone())
-            .collect::<HashSet<_>>();
-        let mut added = Vec::new();
-
-        for service in services {
-            let context = service_context_from_config(service, &self.db_provider)?;
-            if !runtime_ids.insert(context.runtime_id.clone()) {
-                continue;
-            }
-            insert_service_context_routes(&mut operation_routes, &mut selector_routes, &context)?;
-            contexts.push(context.clone());
-            added.push(context);
-        }
-        validate_route_activation_uniqueness(&operation_routes)?;
-
-        state.services = Arc::new(contexts);
-        state.route_by_build_and_operation_abi_id = Arc::new(operation_routes);
-        state.operation_abi_id_by_build_and_selector = Arc::new(selector_routes);
-        self.loaded_builds
-            .upsert_builds(added.iter().map(|service| service.build_id.clone()));
-        if !added.is_empty() {
-            info!(
-                event = "runtime.services_added",
-                service_count = added.len()
-            );
-        }
-        Ok(added)
     }
 }
 

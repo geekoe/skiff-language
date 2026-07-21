@@ -6,6 +6,7 @@ pub(crate) mod http_client_runtime;
 pub(crate) mod http_runtime;
 mod lifecycle;
 mod package_test_entry;
+#[cfg(test)]
 mod register_mapper;
 mod request_entry;
 mod request_supervisor;

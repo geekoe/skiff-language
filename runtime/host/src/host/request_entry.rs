@@ -70,23 +70,6 @@ impl RuntimeHost {
             .await;
     }
 
-    pub(super) async fn spawn_resolved_request(
-        &self,
-        operation_context: ServiceOperationContext,
-        request: RequestEnvelope,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        error_log_event: &'static str,
-    ) {
-        self.spawn_resolved_request_inner(
-            operation_context,
-            request,
-            sender,
-            error_log_event,
-            None,
-        )
-        .await;
-    }
-
     pub(super) async fn spawn_resolved_package_test_request(
         &self,
         operation_context: ServiceOperationContext,

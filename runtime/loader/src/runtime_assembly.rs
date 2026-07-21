@@ -6,8 +6,9 @@ use std::{
 use anyhow::Context;
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, ContractOperationId, FileIrRef, FileIrUnit, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PublicationResourceRef, RuntimeAssembly, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PackageArtifactRef, PackageBuildId, PublicationResourceRef, RuntimeAssembly,
+    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef,
 };
 
 mod content_validation;
@@ -53,6 +54,17 @@ pub trait RuntimeAssemblyContentResolver {
         package: &PackageArtifactRef,
         reference: &PublicationResourceRef,
     ) -> anyhow::Result<Arc<[u8]>>;
+}
+
+/// Production resolver boundary for the root immutable assembly record.
+///
+/// Keeping the root lookup typed prevents control-plane code from recovering an
+/// assembly through a display coordinate, pointer graph, or artifact-root scan.
+pub trait RuntimeAssemblyRecordResolver: RuntimeAssemblyContentResolver {
+    fn resolve_runtime_assembly(
+        &self,
+        reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<Arc<RuntimeAssembly>>;
 }
 
 /// Immutable canonical contract store retained after assembly hydration.
@@ -222,6 +234,24 @@ where
 {
     pub fn new(resolver: &'a R) -> Self {
         Self { resolver }
+    }
+
+    /// Resolve and hydrate one exact immutable assembly reference.
+    pub fn load_ref(
+        &self,
+        reference: &RuntimeAssemblyRef,
+    ) -> anyhow::Result<HydratedRuntimeAssembly>
+    where
+        R: RuntimeAssemblyRecordResolver,
+    {
+        let assembly = self
+            .resolver
+            .resolve_runtime_assembly(reference)
+            .with_context(|| format!("failed to resolve runtime assembly {reference:?}"))?;
+        if &skiff_artifact_identity::runtime_assembly_ref(&assembly)? != reference {
+            anyhow::bail!("runtime assembly content mismatches exact ref {reference:?}");
+        }
+        self.load(assembly)
     }
 
     /// Hydrate an already typed assembly atomically. No partially hydrated

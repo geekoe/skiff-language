@@ -10,18 +10,17 @@ use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
 use crate::{
-    artifact_cache::RuntimeArtifactCaches,
-    config::skiff_file_tmp_dir,
-    config_view::RuntimeConfigView,
-    error::Result,
-    loader::{assembly_admission::AssemblyAdmissionController, ArtifactLoadOptions},
+    artifact_cache::RuntimeArtifactCaches, config::skiff_file_tmp_dir,
+    config_view::RuntimeConfigView, error::Result,
+    loader::assembly_admission::AssemblyAdmissionController,
 };
 
+#[cfg(test)]
+use super::route_registry;
 use super::{
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
-    route_registry,
     service_context::ServiceRuntimeContext,
     spawn_worker,
     state::ArtifactLoadState,
@@ -90,15 +89,20 @@ impl RuntimeHost {
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
-        let services = route_registry::apply_default_http_response_limits(
-            config.services,
-            config.http_response_max_bytes,
-        );
-        let state = route_registry::build_service_route_state(
-            services,
-            config.http_response_max_bytes,
-            &db_provider,
-        )?;
+        #[cfg(test)]
+        let state = {
+            let services = route_registry::apply_default_http_response_limits(
+                config.services,
+                config.http_response_max_bytes,
+            );
+            route_registry::build_service_route_state(
+                services,
+                config.http_response_max_bytes,
+                &db_provider,
+            )?
+        };
+        #[cfg(not(test))]
+        let state = ServiceRouteState::default();
         let producer_id = format!(
             "{}:proc:{}",
             config.base_runtime_id,
@@ -124,8 +128,6 @@ impl RuntimeHost {
             configured_artifact_roots: Arc::new(config.artifact_roots.clone()),
             artifact_load_state: Arc::new(Mutex::new(ArtifactLoadState {
                 artifact_roots: config.artifact_roots,
-                load_options: ArtifactLoadOptions::release(),
-                service_config: Vec::new(),
                 epoch: 0,
             })),
             artifact_caches: Arc::new(RuntimeArtifactCaches::new()),

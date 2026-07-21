@@ -5,20 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_runtime_transport::protocol::RouterControlServiceConfig;
-
-use crate::{
-    error::{Result, RuntimeError},
-    loader::ArtifactLoadOptions,
-};
+use crate::error::{Result, RuntimeError};
 
 use super::{ServiceOperationContext, ServiceRuntimeContext};
 
 #[derive(Clone)]
 pub(crate) struct ArtifactLoadState {
     pub(super) artifact_roots: Vec<PathBuf>,
-    pub(super) load_options: ArtifactLoadOptions,
-    pub(super) service_config: Vec<RouterControlServiceConfig>,
     pub(super) epoch: u64,
 }
 
@@ -127,27 +120,6 @@ impl LoadedBuildRegistry {
                     releasing: false,
                 },
             );
-        }
-    }
-
-    pub(super) fn upsert_builds(&self, build_ids: impl IntoIterator<Item = String>) {
-        let now = Instant::now();
-        let mut builds = self
-            .builds
-            .lock()
-            .expect("loaded build registry lock poisoned");
-        for build_id in build_ids {
-            builds
-                .entry(build_id)
-                .and_modify(|state| {
-                    state.last_used = now;
-                    state.releasing = false;
-                })
-                .or_insert(LoadedBuildLifecycle {
-                    last_used: now,
-                    active_executions: 0,
-                    releasing: false,
-                });
         }
     }
 

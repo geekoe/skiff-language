@@ -4,6 +4,8 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use skiff_runtime_request::{OutboundResponse, ResponseError};
+#[cfg(test)]
+use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
@@ -12,11 +14,10 @@ use skiff_runtime_transport::{
         ActorRemoveResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
         PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
         ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-        ResponseStartFrameHeader, RouterControlEnvelope, RouterControlFrameHeader,
-        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
-        SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
-        SpawnSubmitResponseFrameHeader, TypedEnvelope,
+        ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+        RuntimeRegisteredFrameHeader, SpawnClaimResponseFrameHeader,
+        SpawnCompleteResponseFrameHeader, SpawnFailResponseFrameHeader,
+        SpawnRenewResponseFrameHeader, SpawnSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::{request_cancel_from_frame_header, request_envelope_from_start_frame},
     response_mapper::{
@@ -31,10 +32,7 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use crate::{
-    error::{Result, RuntimeError},
-    loader::artifact_roots_control_fingerprint,
-};
+use crate::error::{Result, RuntimeError};
 
 pub(super) async fn run_reconnect_loop(host: super::RuntimeHost) -> Result<()> {
     let mut backoff = Duration::from_millis(250);
@@ -71,17 +69,13 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (writer, mut reader) = ws.split();
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
 
-    host.queue_registers(sender.clone())?;
+    host.queue_connection_registration(sender.clone())?;
     let spawn_registration = super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
 
     let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
 
     let session_result = async {
-        let mut control: Option<RouterControlEnvelope> = None;
-        let mut artifact_fingerprint: Option<String> = None;
         let mut health_reporter = RuntimeHealthReporter::default();
-        let mut reload_interval = tokio::time::interval(Duration::from_secs(1));
-        reload_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut health_interval = tokio::time::interval(Duration::from_secs(1));
         health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
@@ -105,19 +99,12 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                                 &bytes,
                                 &sender,
                                 &spawn_registration,
-                                &mut control,
-                                &mut artifact_fingerprint,
                                 &mut health_reporter,
                             )
                             .await?;
                         }
                         _ => {}
                     }
-                }
-                _ = reload_interval.tick(), if control.as_ref().is_some_and(|control| control.dev_reload.unwrap_or(false)) => {
-                    let control_ref = control.as_ref().expect("control should be present");
-                    maybe_reload_dev_artifacts(&host, &sender, control_ref, &mut artifact_fingerprint)
-                        .await;
                 }
                 _ = health_interval.tick(), if health_reporter.has_registered_runtimes() => {
                     health_reporter.send_periodic(&host, &sender).await?;
@@ -246,6 +233,19 @@ fn runtime_health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader)
         && counters.spawned_tasks_active == 0
 }
 
+fn production_assembly_resolver(
+    host: &super::RuntimeHost,
+) -> Result<skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver> {
+    let [artifact_root] = host.configured_artifact_roots.as_slice() else {
+        return Err(RuntimeError::invalid_artifact(
+            "whole-assembly activation requires exactly one configured canonical artifact root"
+                .to_string(),
+        ));
+    };
+    skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(artifact_root)
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))
+}
+
 #[cfg(test)]
 async fn dispatch_router_binary_frame(
     host: &super::RuntimeHost,
@@ -254,16 +254,8 @@ async fn dispatch_router_binary_frame(
     control: &mut Option<RouterControlEnvelope>,
     artifact_fingerprint: &mut Option<String>,
 ) -> Result<()> {
-    dispatch_router_binary_frame_inner(
-        host,
-        bytes,
-        sender,
-        None,
-        control,
-        artifact_fingerprint,
-        None,
-    )
-    .await
+    let _ = (control, artifact_fingerprint);
+    dispatch_router_binary_frame_inner(host, bytes, sender, None, None).await
 }
 
 async fn dispatch_router_binary_frame_with_health(
@@ -271,8 +263,6 @@ async fn dispatch_router_binary_frame_with_health(
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     spawn_registration: &super::spawn_worker::SpawnWorkerRegistration,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
     health_reporter: &mut RuntimeHealthReporter,
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
@@ -280,8 +270,6 @@ async fn dispatch_router_binary_frame_with_health(
         bytes,
         sender,
         Some(spawn_registration),
-        control,
-        artifact_fingerprint,
         Some(health_reporter),
     )
     .await
@@ -292,13 +280,26 @@ async fn dispatch_router_binary_frame_inner(
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     spawn_registration: Option<&super::spawn_worker::SpawnWorkerRegistration>,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
     match typed.envelope_type.as_str() {
+        "prepare" | "commit" | "abort" => {
+            let control =
+                skiff_runtime_transport::assembly_activation::decode_assembly_activation_control(
+                    bytes,
+                )
+                .map_err(super::transport_error_into_runtime_error)?;
+            let resolver = production_assembly_resolver(host)?;
+            if let Some(reply) = host
+                .apply_assembly_activation_control(control, &resolver)
+                .await
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            {
+                super::RuntimeHost::queue_assembly_activation(sender.clone(), &reply)?;
+            }
+        }
         "runtime.registered" => {
             let (header, payload) =
                 decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
@@ -323,21 +324,10 @@ async fn dispatch_router_binary_frame_inner(
             }
         }
         "router.control" => {
-            let (header, payload) = decode_typed_binary_frame::<RouterControlFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !payload.is_empty() {
-                return Err(RuntimeError::Decode(
-                    "router.control binary frame payload must be empty".to_string(),
-                ));
-            }
-            handle_router_control(
-                host,
-                router_control_typed_envelope_from_frame_header(header),
-                sender,
-                control,
-                artifact_fingerprint,
-            )
-            .await?;
+            return Err(RuntimeError::Decode(
+                "router.control artifactRoots/serviceConfig reload is not supported; use exact assembly activation control"
+                    .to_string(),
+            ));
         }
         "request.start" => {
             let (header, payload) = decode_typed_binary_frame::<RequestStartFrameHeader>(bytes)
@@ -710,56 +700,6 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
     }
 }
 
-fn router_control_typed_envelope_from_frame_header(
-    header: RouterControlFrameHeader,
-) -> TypedEnvelope {
-    let mut rest = serde_json::Map::new();
-    rest.insert(
-        "artifactRoots".to_string(),
-        Value::Array(
-            header
-                .artifact_roots
-                .into_iter()
-                .map(|root| Value::String(root.to_string_lossy().into_owned()))
-                .collect(),
-        ),
-    );
-    if let Some(dev_reload) = header.dev_reload {
-        rest.insert("devReload".to_string(), Value::Bool(dev_reload));
-    }
-    if let Some(mode) = header.mode {
-        rest.insert("mode".to_string(), Value::String(mode));
-    }
-    if let Some(generation) = header.generation {
-        rest.insert("generation".to_string(), Value::String(generation));
-    }
-    if let Some(fingerprint) = header.fingerprint {
-        rest.insert("fingerprint".to_string(), Value::String(fingerprint));
-    }
-    if !header.service_config.is_empty() {
-        rest.insert(
-            "serviceConfig".to_string(),
-            serde_json::to_value(header.service_config).unwrap_or(Value::Null),
-        );
-    }
-    if let Some(telemetry) = header.telemetry {
-        rest.insert(
-            "telemetry".to_string(),
-            serde_json::to_value(telemetry).unwrap_or(Value::Null),
-        );
-    }
-    if let Some(file_backend) = header.file_backend {
-        rest.insert(
-            "fileBackend".to_string(),
-            serde_json::to_value(file_backend).unwrap_or(Value::Null),
-        );
-    }
-    TypedEnvelope {
-        envelope_type: "router.control".to_string(),
-        rest,
-    }
-}
-
 async fn run_writer_loop<S>(
     mut writer: S,
     mut receiver: mpsc::UnboundedReceiver<super::RouterWriterMessage>,
@@ -795,64 +735,6 @@ fn reject_router_text_message(_text: &str) -> Result<()> {
         "text protocol messages are not supported on runtime WebSocket; use binary runtime frames"
             .to_string(),
     ))
-}
-
-async fn handle_router_control(
-    host: &super::RuntimeHost,
-    typed: TypedEnvelope,
-    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    control: &mut Option<RouterControlEnvelope>,
-    artifact_fingerprint: &mut Option<String>,
-) -> Result<()> {
-    let next_control: RouterControlEnvelope = serde_json::from_value(Value::Object(typed.rest))?;
-    match host
-        .reload_from_control(&next_control, sender.clone())
-        .await
-    {
-        Ok(fingerprint) => {
-            *artifact_fingerprint = Some(fingerprint);
-            *control = Some(next_control);
-        }
-        Err(error) => {
-            warn!(event = "runtime.router_control_load_failed", error = %error);
-        }
-    }
-    Ok(())
-}
-
-async fn maybe_reload_dev_artifacts(
-    host: &super::RuntimeHost,
-    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    control: &RouterControlEnvelope,
-    artifact_fingerprint: &mut Option<String>,
-) {
-    let artifact_roots = match control.ordered_artifact_roots() {
-        Ok(artifact_roots) => artifact_roots,
-        Err(error) => {
-            warn!(
-                event = "runtime.artifact_reload_fingerprint_error",
-                error = %error
-            );
-            return;
-        }
-    };
-    match artifact_roots_control_fingerprint(&artifact_roots, control.dev_reload) {
-        Ok(fingerprint) if artifact_fingerprint.as_deref() == Some(fingerprint.as_str()) => {}
-        Ok(_) => match host.reload_from_control(control, sender.clone()).await {
-            Ok(next_fingerprint) => {
-                *artifact_fingerprint = Some(next_fingerprint);
-            }
-            Err(error) => {
-                warn!(event = "runtime.artifact_reload_failed", error = %error);
-            }
-        },
-        Err(error) => {
-            warn!(
-                event = "runtime.artifact_reload_fingerprint_error",
-                error = %error
-            );
-        }
-    }
 }
 
 #[cfg(test)]

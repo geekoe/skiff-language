@@ -24,7 +24,8 @@ pub use pointer_files::{
 };
 pub use runtime_assembly::{
     HydratedPackageCodeSlot, HydratedRuntimeAssembly, HydratedStaticResource,
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, ServiceContractStore,
+    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
+    ServiceContractStore,
 };
 pub use types::{
     ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile, ServiceAssemblyPointer,

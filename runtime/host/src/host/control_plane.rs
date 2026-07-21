@@ -1,35 +1,49 @@
+#[cfg(test)]
 use std::{collections::HashSet, sync::Arc};
 
-use serde_json::{json, Map, Value};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::{json, Map};
+use skiff_artifact_model::AssemblyActivationControl;
+#[cfg(test)]
 use skiff_artifact_model::ConfigShape;
+#[cfg(test)]
 use skiff_runtime_linked_program::{package_config_shape, LinkedProgramImage};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
 use skiff_runtime_transport::protocol::{
-    encode_binary_frame, RouterControlEnvelope, RouterControlPackageConfig,
-    RouterControlServiceConfig, RuntimeCapabilitiesFrameHeader,
-    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeRegisterFrameHeader, TelemetryEvent,
-    TelemetrySource, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
+    encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
+    TelemetryEvent, TelemetrySource, TelemetryTopic, RUNTIME_FRAME_SCHEMA_VERSION,
+};
+#[cfg(test)]
+use skiff_runtime_transport::protocol::{
+    RouterControlEnvelope, RouterControlPackageConfig, RouterControlServiceConfig,
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::{
-    capability_context::{response_error_from_runtime_error, DbProviderConfig},
-    config_view::RuntimeConfigView,
+    capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
-    loader::{artifact_roots_control_fingerprint, ArtifactLoadOptions},
     telemetry::{telemetry_event, telemetry_timestamp_now, RequestTelemetryContext},
 };
-
-use super::telemetry::{TelemetryExporter, EXPORTER_SHUTDOWN_FLUSH_TIMEOUT};
-use super::{
-    blob_store::{blob_store_from_control, BlobStore},
-    register_mapper::runtime_register_envelope_from_program_layers,
-    request_trace, route_registry, ArtifactLoadState, RuntimeHost, RuntimeServiceConfig,
-    ServiceRuntimeContext,
+#[cfg(test)]
+use crate::{
+    capability_context::DbProviderConfig, config_view::RuntimeConfigView,
+    loader::artifact_roots_control_fingerprint,
 };
 
+#[cfg(test)]
+use super::telemetry::TelemetryExporter;
+use super::telemetry::EXPORTER_SHUTDOWN_FLUSH_TIMEOUT;
+#[cfg(test)]
+use super::{
+    blob_store::{blob_store_from_control, BlobStore},
+    route_registry, ArtifactLoadState, RuntimeServiceConfig,
+};
+use super::{request_trace, RuntimeHost, ServiceRuntimeContext};
+
 impl RuntimeHost {
+    #[cfg(test)]
     pub(super) async fn reload_from_control(
         &self,
         control: &RouterControlEnvelope,
@@ -46,7 +60,6 @@ impl RuntimeHost {
             .map_err(RuntimeError::invalid_artifact)?;
         let fingerprint = router_control_fingerprint(control)
             .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
-        let load_options = ArtifactLoadOptions::from_control(control.dev_reload);
         let artifact_roots = if self.configured_artifact_roots.is_empty() {
             control_artifact_roots.clone()
         } else {
@@ -56,8 +69,6 @@ impl RuntimeHost {
         let epoch = state.epoch.wrapping_add(1);
         *state = ArtifactLoadState {
             artifact_roots: artifact_roots.clone(),
-            load_options,
-            service_config: control.service_config.clone(),
             epoch,
         };
         let cleared_package_test_templates = self.artifact_caches.package_test_templates.clear();
@@ -80,6 +91,7 @@ impl RuntimeHost {
         Ok(fingerprint)
     }
 
+    #[cfg(test)]
     fn apply_file_backend_control(&self, control: &RouterControlEnvelope) -> Result<()> {
         let backend = control.file_backend.as_ref().map(|config| {
             if config.local.is_some() {
@@ -105,6 +117,7 @@ impl RuntimeHost {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn apply_telemetry_control(&self, control: &RouterControlEnvelope) {
         let telemetry = control.telemetry.as_ref();
         let Some(config) = telemetry.filter(|config| config.enabled) else {
@@ -127,13 +140,26 @@ impl RuntimeHost {
         }
     }
 
-    pub(crate) fn queue_registers(
+    pub(crate) fn queue_connection_registration(
         &self,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<()> {
         self.queue_runtime_capabilities(sender.clone())?;
-        let services = self.service_snapshot();
-        self.queue_service_registers(sender, &services)
+        if let Some(register) = self
+            .active_assembly_registration()
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+        {
+            Self::queue_assembly_activation(sender, &register)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_registers(
+        &self,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<()> {
+        self.queue_connection_registration(sender)
     }
 
     fn queue_runtime_capabilities(
@@ -158,43 +184,18 @@ impl RuntimeHost {
         Ok(())
     }
 
-    pub(super) fn queue_service_registers(
-        &self,
+    pub(crate) fn queue_assembly_activation(
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        services: &[Arc<ServiceRuntimeContext>],
+        control: &AssemblyActivationControl,
     ) -> Result<()> {
-        for service in services {
-            let register = runtime_register_envelope_from_program_layers(
-                service.runtime_id.clone(),
-                &service.runtime_program_identity,
-                service.linked_image.as_ref(),
-                service.runtime_activation.as_ref(),
-                service.revision_id.clone(),
-                service.contract_identity.clone(),
-                service.implementation_identity.clone(),
-                service.artifact_identity.clone(),
-                service.activation_identity.clone(),
-            )?;
-            info!(
-                event = "runtime.registering",
-                runtime_id = %service.runtime_id,
-                service_id = %service.service_id,
-                version = %register.version,
-                build_id = %service.build_id,
-                dynamic_build_id = %service.runtime_program_identity.dynamic_build_id,
-                linked_image_identity = %service.runtime_program_identity.linked_image_identity,
-                contract_identity = %service.contract_identity,
-                implementation_identity = %service.implementation_identity
-            );
-            self.emit_service_trace(service, "runtime.register", None, None, None);
-            let header = RuntimeRegisterFrameHeader::from(register);
-            let frame = encode_binary_frame(&header, &[])
-                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-            sender
-                .send(RouterWriterMessage::Binary(frame))
-                .map_err(|_| RuntimeError::Decode("runtime writer channel closed".to_string()))?;
-        }
-        Ok(())
+        let frame =
+            skiff_runtime_transport::assembly_activation::encode_assembly_activation_control(
+                control,
+            )
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        sender
+            .send(RouterWriterMessage::Binary(frame))
+            .map_err(|_| RuntimeError::Decode("runtime writer channel closed".to_string()))
     }
 
     pub(super) fn log_registered(&self, rest: &serde_json::Map<String, Value>) {
@@ -220,6 +221,7 @@ impl RuntimeHost {
         }
     }
 
+    #[cfg(test)]
     fn emit_runtime_control_reload(&self, control: &RouterControlEnvelope) {
         let mut attrs = serde_json::Map::new();
         if let Ok(artifact_roots) = control.ordered_artifact_roots() {
@@ -326,6 +328,7 @@ impl RuntimeHost {
     }
 }
 
+#[cfg(test)]
 fn router_control_fingerprint(control: &RouterControlEnvelope) -> anyhow::Result<String> {
     if control.dev_reload.unwrap_or(false) {
         return artifact_roots_control_fingerprint(
@@ -345,6 +348,7 @@ fn router_control_fingerprint(control: &RouterControlEnvelope) -> anyhow::Result
         .unwrap_or_else(|| "release-control".to_string()))
 }
 
+#[cfg(test)]
 pub(crate) fn apply_control_config(
     services: Vec<RuntimeServiceConfig>,
     service_config: &[RouterControlServiceConfig],
@@ -415,6 +419,7 @@ pub(crate) fn apply_control_config(
     Ok(expanded)
 }
 
+#[cfg(test)]
 fn apply_package_control_config(
     service: &RuntimeServiceConfig,
     config: &RouterControlServiceConfig,
@@ -488,6 +493,7 @@ fn apply_package_control_config(
     Ok(package_configs)
 }
 
+#[cfg(test)]
 fn package_config_shape_for_slot(
     linked_image: &LinkedProgramImage,
     slot: usize,
@@ -500,6 +506,7 @@ fn package_config_shape_for_slot(
         .map(|shape| shape.unwrap_or_else(ConfigShape::empty))
 }
 
+#[cfg(test)]
 fn resolve_control_package_slot(
     service: &RuntimeServiceConfig,
     package_config: &RouterControlPackageConfig,
@@ -550,6 +557,7 @@ fn resolve_control_package_slot(
     Ok(slot)
 }
 
+#[cfg(test)]
 fn merge_config_object_overlay(base: Value, overlay: Value, label: &str) -> anyhow::Result<Value> {
     let mut base = match base {
         Value::Null => Map::new(),
@@ -565,6 +573,7 @@ fn merge_config_object_overlay(base: Value, overlay: Value, label: &str) -> anyh
     Ok(Value::Object(base))
 }
 
+#[cfg(test)]
 fn overlay_config_map(target: &mut Map<String, Value>, overlay: Map<String, Value>) {
     for (key, value) in overlay {
         if value.is_null() {
