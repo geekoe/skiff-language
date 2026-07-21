@@ -13,3 +13,11 @@ R02预审报告与权威设计。不得修改文件、创建commit、实现consu
 - `extra-review`检查codec、store adapter、fixture是否出现重复parser、巨型混合职责或反向依赖。
 
 第一行`PASS`/`FAIL`。PASS只解锁F03B/F03C，不表示R02通过。
+
+## 首次验收记录
+
+`a7566bb2619ea43f88683ce2f83b4fc4bb441c94` / tree
+`b7b09ffada78952ede641469db817d6ba29478c3` 的限定gate全部通过，但验收为FAIL：canonical
+assembly `request.start` 的optional fields在TS/Rust存在不同接受集合。已确认反例包括identity pattern与
+`deadline` unknown/负数/小数；现有31个mutation未证明全部optional/nested字段精确一致。下一次只在D03矩阵、
+F03A1 exact repair commit与失效的request parity gate上窄复验；frame/store证据不因该repair机械失效。
