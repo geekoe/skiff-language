@@ -15,7 +15,9 @@ source-suite缺少canonical `--bin`的直接caller并已合流`c06e115`；完整
 D13/F11已在`2d74b2c`通过R12。真实std request继续暴露双端canonical unary consumer未接线，D14已冻结并行
 F12/F13并已在`02b97ff`通过combined R13；std 11/11后Host assembly暴露linked FileIR locator误比较，D15已冻结
 F14已在`bcbdc2c`通过R14。原样gate现仅暴露activation receipt→healthy registration毫秒级空窗，D16已冻结
-F15 readiness barrier首次被R15拒绝，D17已冻结F15A bounded transport/strict schema/模块化重建。F05等待F04 narrow receive，
+F15 readiness barrier首次被R15拒绝，D17/F15A已在`e3a0d78`通过R15窄复验。F04原样gate随后在`40ed693`
+暴露共享Cargo target复用编译期platform绝对路径；D18已以双worktree镜像实验冻结F16A shared context及F16B/F16C
+transport扇出，I16/R16后恢复F04 receive。次生FileHandle teardown由D19并行审计。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -107,7 +109,10 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                      └─► F04B@c06e115 ─► D13 ─► F11 ─► R12 PASS@a9ef444
           │                                                                                                                                                                                                   └─► D14 ─► F12 Router ─┐
           │                                                                                                                                                                                                              F13 Runtime ─┴─► R13 PASS@02b97ff ─► D15 ─► F14 ─► R14 PASS@629f1c8
-          │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 FAIL@b7e0f4f ─► D17 ─► F15A ─► R15 narrow receive ─► F04A Host resume ─► F04 narrow receive
+          │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 FAIL@b7e0f4f ─► D17 ─► F15A ─► R15 PASS@e3a0d78 ─► F04 Host FAIL@40ed693
+          │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
+          │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┴─► I16 ─► R16 ─► F04 narrow receive
+          │                                                                                                                                                                                                                                                                                                                                                 └─► D19 teardown audit ─► close / conditional F17 ───────────────┘
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -210,6 +215,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R15 | [Test runtime readiness acceptance](tasks/P5-R15-test-runtime-readiness-acceptance.md) | F15 exact commit | 高；独立只读 |
 | D17 | [Readiness hardening audit](tasks/P5-D17-readiness-hardening-audit.md) | R15 FAIL at `b7e0f4f` | 独立只读；冻结deadline/schema/模块边界 |
 | F15A | [Readiness hardening repair](tasks/P5-F15A-readiness-hardening-repair.md) | D17 complete | 中；same-base单一重建 |
+| D18 | [Canonical platform source trust audit](tasks/P5-D18-canonical-platform-source-trust-audit.md) | F04 Host reserved-id at `40ed693` | 独立双owner只读；冻结shared trust root |
+| F16A | [Compiler platform source context](tasks/P5-F16A-compiler-platform-source-context.md) | D18 complete | 高；shared compiler trust checkpoint |
+| F16B | [Compiler platform source transport](tasks/P5-F16B-compiler-platform-source-transport.md) | F16A checkpoint | 高；authoring consumer |
+| F16C | [Test runner platform source transport](tasks/P5-F16C-test-runner-platform-source-transport.md) | F16A checkpoint | 高；test production consumer |
+| I16 | [Platform source shared-target probe](tasks/P5-I16-platform-source-shared-target-probe.md) | F16B + F16C merged | 唯一shared-target/Host gate owner |
+| R16 | [Platform source trust acceptance](tasks/P5-R16-platform-source-trust-acceptance.md) | I16 PASS | 高；独立只读 |
+| D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -312,6 +324,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - R15首次拒绝F15的无界DNS、宽松pending/UTF-8与1273行混合职责。D17/F15A从原base重建，复用activation连接
   peer实现barrier内零DNS和absolute I/O deadline，以production activation validate收敛pending invariants，并拆分HTTP/
   readiness/wire模块。F15A checkpoint只由root跑一次combined test，R15窄复验后才恢复F04 gate。
+- R15 PASS后的原样gate在编译std前暴露编译期platform path被共享Cargo target跨worktree复用。D18确认root/cwd/argv/
+  registry均正确，禁止以clean cache、隔离target或reserved-id放宽修复。F16A唯一建立显式canonical
+  `CompilerPlatformSources`并移除input/source/prelude的ambient path；F16B与F16C只迁移各自transport consumer，不得
+  各造resolver。二者合流后I16唯一执行A-built/Fresh-B shared-target矩阵和完整Host gate，R16只读验收并把同一Host
+  ledger交F04 receive，候选不变时不得重复昂贵gate。
+- 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只用便宜supervisor失败注入冻结或关闭
+  lifecycle finding；不重跑Host、不阻塞F16A/B/C。若需源码repair，必须新建F17且在I16冻结前合流。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
@@ -423,6 +442,8 @@ T13必须从 `verify --list`及新checker registry确认去重后再记ledger。
 ## 8. 候选成熟度与证据失效
 
 - T01/R01只是shared implementation checkpoint，不是pre-acceptance candidate。
+- F16A/B/C会使`40ed693`的F04 source-suite/Host证据失效，但不使R15 readiness代码验收失效；只有I16 exact
+  shared-target/Host ledger与R16 PASS可恢复F04 receive。D19若产生production cleanup repair，必须在I16前合流。
 - R02 PASS表示Skiff production consumers已合流，可供外部repo编译；T06旧模型删除与外部
   迁移仍在途，不得冻结最终候选。
 - T06–T12与T09E合流、combined probe PASS、无在途写入/设计问题，且阶段标准已映射到
