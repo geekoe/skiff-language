@@ -69,3 +69,7 @@ F04在R06前保留负例，精确断言service-calling test callable的projectio
 `runtime/encrypted-storage-live/**`是F04 reverse-search唯一允许的deferred deleted-flag/legacy caller，owner为T06。
 F04必须修复`skiff-source-test-suite.mjs`等其余直接caller，并在回报中列出该exact exception；不得把它泛化为
 legacy compatibility。`AGENTS.md`与`doc/architecture/test-runner-runtime-isolation.md`的canonical改写也归T06。
+
+`verify runtime-live`的新CLI parser/plan字段与拒绝矩阵归F04，但现有`runtime/live-tests/**`只有legacy
+`service.yml`且需要config/DB/file/http capability与base assembly，完整语义fixture也归T06。F04不得用孤立
+`package.yml`或synthetic base assembly伪装可执行live phase；回报必须把它列为第二个exact terminal owner。

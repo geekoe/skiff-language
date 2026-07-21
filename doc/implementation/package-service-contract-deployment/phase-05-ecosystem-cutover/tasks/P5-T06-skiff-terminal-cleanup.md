@@ -17,7 +17,8 @@
 model/converter，`cross-system-fixtures/**`，新ecosystem boundary checker/self-test/verify接线，以及
 `doc/reference/publication*.md`、`doc/architecture/release-registry.md`、runtime/router README。另独占F04移交的
 `scripts/lib/encrypted-storage-live-harness.mjs`、`scripts/check-db-encrypted-storage-live.mjs`、
-`runtime/encrypted-storage-live/**`、`doc/architecture/test-runner-runtime-isolation.md`与相关AGENTS canonical命令。
+`runtime/encrypted-storage-live/**`、`runtime/live-tests/**`、verify runtime-live semantic fixture/plan、
+`doc/architecture/test-runner-runtime-isolation.md`与相关AGENTS canonical命令。
 root Cargo/lock与`scripts/verify*.mjs`在本任务独占。不改T02–T05已验收的production语义。
 
 ## 完成态
@@ -37,6 +38,8 @@ root Cargo/lock与`scripts/verify*.mjs`在本任务独占。不改T02–T05已�
 7. encrypted-storage live harness使用四对象authoring、canonical activation/Host ingress和新test-runner CLI；删除
    legacy service.yml、instance sync/reload、service/version selector及旧env/config flags。non-live计划测试证明
    exact artifact/base assembly/runtime target；动态加密轮换证据由最终唯一live owner执行，不在本任务操作stable。
+8. runtime-live tests迁为package/contract/deployment/assembly fixture，verify传exact base assembly与
+   config/DB/file/http capability bindings；legacy `service.yml`与“只有新flags、无package root”的半迁移状态归零。
 
 ## 唯一聚焦验证 owner
 
@@ -46,6 +49,7 @@ node scripts/check-package-service-ecosystem-boundaries.mjs --self-test
 node scripts/check-package-service-ecosystem-boundaries.mjs
 node scripts/verify.mjs --only checks --list
 node --test scripts/tests/encrypted-storage-live-harness.test.mjs
+node --test scripts/tests/verify-runtime-live-canonical.test.mjs
 git diff --check
 ```
 
