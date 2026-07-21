@@ -1,1795 +1,487 @@
 #!/usr/bin/env node
 
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import http from 'node:http';
-import https from 'node:https';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { cargoBuildEnv, cargoTargetDir } from './lib/cargo-target-dir.mjs';
+
 import {
-  assertArtifactReferencesMatchValidated,
-  validateArtifactClosureBatch,
-} from './lib/artifact-identity-validation.mjs';
-import { assertValidatedArtifactClosureFiles } from './lib/artifact-identity-dev-sync-paths.mjs';
-import { runAttachedCommand } from './lib/command-execution.mjs';
-import { isPublicationId, publicationStorageSegment } from './lib/publication-id.mjs';
-import { discoverDeclaredResourceFiles } from './lib/publication-resources.mjs';
-import { readProjectPackageDirs } from './lib/project-config.mjs';
-import { startRecoveringPoll, withOwnedDirectoryLock } from './lib/dev-sync-recovery.mjs';
+  defaultAssemblyActivationUrl,
+  maxExpectedAssemblyGeneration,
+  requestAssemblyActivation,
+  runCompilerAuthoring,
+} from './lib/package-service-authoring.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const skiffRoot = resolve(scriptDir, '..');
-const defaultDevHome = join(skiffRoot, '.skiff-instance', 'dev-home');
-const defaultWritableDevHome = resolveDevHome(process.env.SKIFF_DEV_HOME);
-const defaultArtifactRoot = join(defaultWritableDevHome, 'artifacts');
-const defaultBuildRoot = join(defaultWritableDevHome, 'build');
-const defaultReloadUrl = 'http://127.0.0.1:4001/__skiff/reload-artifacts';
-const defaultCompilerManifest = join(skiffRoot, 'compiler', 'Cargo.toml');
-const defaultSharedInputs = [join(skiffRoot, 'prelude'), join(skiffRoot, 'std')];
-const defaultPollIntervalMs = 500;
-const lockTimeoutMs = 120_000;
-const artifactRootContentDirs = new Set(['assemblies', 'bundles', 'contracts', 'files', 'resources', 'units']);
-const generatedArtifactRootEntries = new Set(['indexes', ...artifactRootContentDirs]);
-const rootConfigSourcePattern = /^config(?:\.[A-Za-z_][A-Za-z0-9_-]*)?(?:\.secret)?\.yml$/;
-const artifactIdentityBinary = process.platform === 'win32'
-  ? 'skiff-artifact-identity.exe'
-  : 'skiff-artifact-identity';
-let artifactIdentityCliPromise;
+const skiffRoot = dirname(scriptDir);
+const defaultDevHome = resolve(process.env.SKIFF_DEV_HOME ?? join(skiffRoot, '.skiff-instance', 'dev-home'));
+const defaultRegistryPath = join(defaultDevHome, 'watch.json');
+const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
+const registrySchemaVersion = 'skiff-package-service-dev-registry-v1';
+const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
 
-const cli = parseCli(process.argv.slice(2));
+const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package|contract|deployment-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--expected-generation <n>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
-if ([cli.watch, cli.check, cli.checkSync].filter(Boolean).length > 1) {
-  throw new Error('--watch, --check and --check-sync cannot be used together');
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await main(process.argv.slice(2));
+  } catch (error) {
+    console.error(`error: ${formatError(error)}`);
+    process.exitCode = 1;
+  }
 }
 
-const config = await loadConfig(cli);
-
-if (cli.watch) {
-  await watch(cli, config, cli.pollIntervalMs);
-} else if (cli.check) {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-check-'));
-  try {
-    await buildAll(config, {
-      syncShared: false,
-      reloadRouter: false,
-      targetDirForService: (service) => join(temp, publicationStorageSegment(service.serviceId)),
-    });
-  } finally {
-    await rm(temp, { recursive: true, force: true });
+export async function main(rawArgs, dependencies = {}) {
+  const options = parseDevSyncArgs(rawArgs);
+  if (options.help) {
+    return null;
   }
-} else if (cli.checkSync) {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-build-check-'));
-  const artifactRoot = await mkdtemp(join(tmpdir(), 'skiff-dev-sync-artifact-check-'));
-  try {
-    await seedSyncCheckRoot(artifactRoot, config.services);
-    await buildAll(config, {
-      syncShared: true,
-      reloadRouter: false,
-      syncRoot: artifactRoot,
-      targetDirForService: (service) => join(temp, publicationStorageSegment(service.serviceId)),
-    });
-    const syncCheckConfig = {
-      ...config,
-      artifactRoot,
-    };
-    await seedMissingDevReloadPointer(artifactRoot, config.services);
-    await assertBrokenConfiguredServiceOutput(syncCheckConfig, 'missing dev reload pointer');
-    await buildAllUntilStable(syncCheckConfig, {
-      syncShared: true,
-      reloadRouter: false,
-      targetDirForService: (service) => join(temp, publicationStorageSegment(service.serviceId)),
-    });
-    await assertSyncCheckRoot(artifactRoot, config.services);
-  } finally {
-    await rm(temp, { recursive: true, force: true });
-    await rm(artifactRoot, { recursive: true, force: true });
+  const registry = await readDevRegistry(options.config, { allowMissing: options.roots.length > 0 });
+  const roots = await normalizedRoots([...registry.roots, ...options.roots]);
+  const environment = options.environment ?? registry.environment;
+  const run = () => runDevSyncOnce({
+    roots,
+    environment,
+    artifactRoot: options.artifactRoot,
+    activationUrl: options.activationUrl,
+    activationId: options.activationId,
+    expectedGeneration: options.expectedGeneration,
+    buildOnly: options.buildOnly,
+    skiffRoot: dependencies.skiffRoot ?? skiffRoot,
+    fetchImpl: dependencies.fetchImpl ?? fetch,
+    compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+  });
+
+  if (!options.watch) {
+    const result = await run();
+    printResult(result, options.json);
+    return result;
   }
-} else {
-  await buildAll(config, { syncShared: true, reloadRouter: !cli.noReload });
-}
 
-async function watch(cli, initialConfig, pollIntervalMs) {
-  let config = initialConfig;
-  let fingerprint;
+  let expectedGeneration = options.expectedGeneration;
+  let fingerprint = await rootsFingerprint(roots);
+  let initial = await runDevSyncOnce({
+    roots,
+    environment,
+    artifactRoot: options.artifactRoot,
+    activationUrl: options.activationUrl,
+    activationId: options.activationId,
+    expectedGeneration,
+    buildOnly: options.buildOnly,
+    skiffRoot: dependencies.skiffRoot ?? skiffRoot,
+    fetchImpl: dependencies.fetchImpl ?? fetch,
+    compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
+  });
+  expectedGeneration = nextExpectedGeneration(initial, expectedGeneration);
+  printResult(initial, options.json);
 
-  console.log(`[skiff-dev-sync] watching ${config.services.length} service(s)`);
-
-  await startRecoveringPoll({
-    pollIntervalMs,
-    async runCycle() {
-      const nextConfig = await loadConfig(cli);
-      const currentFingerprint = await inputFingerprint(nextConfig);
-      if (fingerprint !== undefined && currentFingerprint === fingerprint) {
-        return;
-      }
-      const stable = await buildWatchedConfigUntilStable(cli, nextConfig, {
-        syncShared: true,
-        reloadRouter: !cli.noReload,
-        initialFingerprint: currentFingerprint,
-        pruneServiceIds: removedServiceIds(config.services, nextConfig.services),
+  for (;;) {
+    await delay(options.pollIntervalMs);
+    const next = await rootsFingerprint(roots);
+    if (next === fingerprint) {
+      continue;
+    }
+    fingerprint = next;
+    try {
+      const result = await runDevSyncOnce({
+        roots,
+        environment,
+        artifactRoot: options.artifactRoot,
+        activationUrl: options.activationUrl,
+        activationId: undefined,
+        expectedGeneration,
+        buildOnly: options.buildOnly,
+        skiffRoot: dependencies.skiffRoot ?? skiffRoot,
+        fetchImpl: dependencies.fetchImpl ?? fetch,
+        compilerRunner: dependencies.compilerRunner ?? runCompilerAuthoring,
       });
-      config = stable.config;
-      fingerprint = stable.fingerprint;
-    },
-    onError(error) {
-      console.error(`[skiff-dev-sync] rebuild failed: ${formatError(error)}`);
-    },
-  });
-}
-
-async function buildWatchedConfigUntilStable(cli, initialConfig, options) {
-  let config = initialConfig;
-  let beforeBuild = options.initialFingerprint ?? await inputFingerprint(config);
-  let pruneServiceIds = options.pruneServiceIds ?? [];
-  while (true) {
-    await buildAll(config, {
-      ...options,
-      pruneServiceIds,
-    });
-    const afterBuild = await inputFingerprint(config);
-    if (afterBuild === beforeBuild) {
-      return { config, fingerprint: afterBuild };
+      expectedGeneration = nextExpectedGeneration(result, expectedGeneration);
+      printResult(result, options.json);
+    } catch (error) {
+      console.error(`dev sync rejected: ${formatError(error)}`);
     }
-    const previousConfig = config;
-    config = await loadConfig(cli);
-    pruneServiceIds = removedServiceIds(previousConfig.services, config.services);
-    beforeBuild = await inputFingerprint(config);
-    console.log('[skiff-dev-sync] inputs changed during build; rebuilding');
   }
 }
 
-async function buildAllUntilStable(config, options) {
-  let beforeBuild = options.initialFingerprint ?? await inputFingerprint(config);
-  while (true) {
-    await buildAll(config, options);
-    const afterBuild = await inputFingerprint(config);
-    if (afterBuild === beforeBuild) {
-      return afterBuild;
-    }
-    beforeBuild = afterBuild;
-    console.log('[skiff-dev-sync] inputs changed during build; rebuilding');
+export async function runDevSyncOnce({
+  roots,
+  environment,
+  artifactRoot,
+  activationUrl = defaultAssemblyActivationUrl,
+  activationId,
+  expectedGeneration,
+  buildOnly = false,
+  skiffRoot: compilerRoot = skiffRoot,
+  fetchImpl = fetch,
+  compilerRunner = runCompilerAuthoring,
+}) {
+  assertEnvironment(environment);
+  if (
+    !buildOnly
+    && (
+      !Number.isSafeInteger(expectedGeneration)
+      || Object.is(expectedGeneration, -0)
+      || expectedGeneration < 0
+      || expectedGeneration > maxExpectedAssemblyGeneration
+    )
+  ) {
+    throw new Error(
+      `dev sync activation expected generation must be between 0 and ${maxExpectedAssemblyGeneration}`,
+    );
   }
-}
+  const classified = await normalizedRoots(roots);
+  if (!classified.some(({ kind }) => kind === 'deployment')) {
+    throw new Error('dev sync requires at least one deployment root to form RuntimeAssembly roots');
+  }
+  await mkdir(artifactRoot, { recursive: true });
 
-async function buildAll(config, options) {
-  const syncRoot = options.syncRoot ?? config.artifactRoot;
-  const results = [];
-  for (const service of config.services) {
-    const targetDir = options.targetDirForService?.(service) ?? defaultServiceBuildDir(config, service);
-    results.push(await buildService(config, service, targetDir, {
-      syncRoot,
-    }));
-  }
-  let validated = new Map();
-  if (options.syncShared && results.length > 0) {
-    validated = await validateBuiltServiceClosures(results);
-    for (const result of results) {
-      await syncArtifactRoot(
-        result.service,
-        result.artifactRoot,
-        syncRoot,
-        validated.get(result.service.serviceId),
-      );
-      const assemblyHash = identityHash(result.serviceAssembly.service.assemblyIdentity);
-      console.log(`[skiff-dev-sync] synced ${result.service.serviceId} ${assemblyHash.slice(0, 12)} to ${syncRoot}`);
-    }
-  }
-  if (options.syncShared && options.pruneServiceIds?.length > 0) {
-    await removeDevReloadPointers(syncRoot, options.pruneServiceIds);
-  }
-  if (options.syncShared) {
-    await assertConfiguredServiceOutputs(syncRoot, config.services, validated);
-  }
-  if (options.syncShared && options.reloadRouter) {
-    const reloaded = await reloadRouter(config.reloadUrl);
-    if (reloaded) {
-      await pruneRouterRuntimes(config.reloadUrl);
-    }
-  }
-  return results;
-}
+  const serviceContractReceipts = [];
+  const packageArtifactReceipts = [];
+  const serviceDeploymentReceipts = [];
+  const coordinateOwners = new Map();
 
-async function buildService(config, service, targetDir, options) {
-  return withBuildLock(service, `${targetDir}.lock`, async () => {
-    await rm(targetDir, { recursive: true, force: true });
-    await mkdir(targetDir, { recursive: true });
-
-    const serviceAssemblyPath = join(targetDir, 'service-assembly.json');
-    const manifestPath = join(targetDir, 'router-manifest.json');
-    const artifactRoot = join(targetDir, 'artifacts');
-
-    await run('cargo', [
-      ...compilerCargoPrefix(config),
-      ...compilerBuildArgs(config, service, {
+  for (const kind of ['contract', 'package', 'deployment']) {
+    for (const entry of classified.filter((root) => root.kind === kind)) {
+      const receipt = await compilerRunner({
+        skiffRoot: compilerRoot,
+        kind,
+        action: 'publish',
+        root: entry.root,
         artifactRoot,
-        manifestPath,
-        serviceAssemblyPath,
-        serviceArtifactRoot: options.syncRoot,
-      }),
-    ], service.root, cargoBuildEnv(skiffRoot));
-
-    const serviceAssembly = JSON.parse(await readFile(serviceAssemblyPath, 'utf8'));
-    assertServiceAssembly(serviceAssembly, service.serviceId);
-    await assertGeneratedArtifactRoot(artifactRoot);
-
-    const assemblyHash = identityHash(serviceAssembly.service.assemblyIdentity);
-    console.log(`[skiff-dev-sync] compiled ${service.serviceId} ${assemblyHash.slice(0, 12)} to ${targetDir}`);
-
-    return {
-      artifactRoot,
-      service,
-      serviceAssembly,
-    };
-  });
-}
-
-async function validateBuiltServiceClosures(results) {
-  const candidates = [];
-  for (const result of results) {
-    const [index] = await serviceIndexFiles(result.artifactRoot, result.service.serviceId);
-    candidates.push(identityValidationCandidate(
-      result.artifactRoot,
-      result.service.serviceId,
-      index,
-    ));
+      });
+      if (kind === 'contract') {
+        rejectDuplicateCoordinate(
+          coordinateOwners,
+          `contract:${coordinate(receipt.serviceContractReceipt?.contract, ['serviceId', 'contractVersion'])}`,
+          entry.root,
+        );
+        serviceContractReceipts.push(receipt.serviceContractReceipt);
+      } else if (kind === 'package') {
+        rejectDuplicateCoordinate(
+          coordinateOwners,
+          `package:${coordinate(receipt.packageArtifactReceipt?.artifact, ['packageId', 'packageVersion'])}`,
+          entry.root,
+        );
+        packageArtifactReceipts.push(receipt.packageArtifactReceipt);
+      } else {
+        serviceDeploymentReceipts.push(receipt.serviceDeploymentReceipt);
+      }
+    }
   }
-  const identityCliPath = await ensureArtifactIdentityCli();
-  return validateArtifactClosureBatch(identityCliPath, candidates);
-}
 
-function identityValidationCandidate(artifactRoot, serviceId, index) {
-  const references = artifactReferences(
-    index,
-    `${index.path} artifact references`,
-  );
+  const rootDeployments = serviceDeploymentReceipts.map((receipt) => receipt?.deployment);
+  if (rootDeployments.some((reference) => !isPlainObject(reference))) {
+    throw new Error('deployment publish did not return an exact ServiceDeployment reference');
+  }
+  const temporary = await mkdtemp(join(tmpdir(), 'skiff-runtime-assembly-'));
+  let assemblyReceipt;
+  try {
+    await writeFile(join(temporary, 'assembly.yml'), `${JSON.stringify({
+      environment,
+      rootDeployments,
+    }, null, 2)}\n`);
+    const result = await compilerRunner({
+      skiffRoot: compilerRoot,
+      kind: 'assembly',
+      action: 'build',
+      root: temporary,
+      artifactRoot,
+    });
+    assemblyReceipt = result.runtimeAssemblyReceipt;
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+  if (!isPlainObject(assemblyReceipt?.assembly)) {
+    throw new Error('assembly build did not return an exact RuntimeAssembly reference');
+  }
+
+  const result = {
+    serviceContractReceipts,
+    packageArtifactReceipts,
+    serviceDeploymentReceipts,
+    runtimeAssemblyReceipt: assemblyReceipt,
+  };
+  if (buildOnly) {
+    return result;
+  }
+  const activation = await requestAssemblyActivation({
+    fetchImpl,
+    activationUrl,
+    activationId,
+    expectedGeneration,
+    environment,
+    assembly: assemblyReceipt.assembly,
+  });
   return {
-    key: serviceId,
-    artifactRoot,
-    serviceId,
-    ...references,
+    ...result,
+    assemblyActivationReceipt: activation,
   };
 }
 
-function ensureArtifactIdentityCli() {
-  artifactIdentityCliPromise ??= ensureArtifactIdentityCliInner();
-  return artifactIdentityCliPromise;
-}
-
-async function ensureArtifactIdentityCliInner() {
-  const configured = process.env.SKIFF_ARTIFACT_IDENTITY_CLI?.trim();
-  if (configured) {
-    const configuredPath = resolve(configured);
-    if (!await isFile(configuredPath)) {
-      throw new Error(`SKIFF_ARTIFACT_IDENTITY_CLI is not a file: ${configuredPath}`);
+export async function readDevRegistry(path = defaultRegistryPath, { allowMissing = false } = {}) {
+  const registryPath = resolve(path);
+  let value;
+  try {
+    value = JSON.parse(await readFile(registryPath, 'utf8'));
+  } catch (error) {
+    if (allowMissing && error?.code === 'ENOENT') {
+      return { schemaVersion: registrySchemaVersion, environment: 'dev', roots: [] };
     }
-    return configuredPath;
+    throw new Error(`failed to read dev registry ${registryPath}: ${formatError(error)}`);
   }
-  await run(
-    'cargo',
-    ['build', '--manifest-path', join(skiffRoot, 'artifact-identity', 'Cargo.toml'), '--bin', 'skiff-artifact-identity'],
-    skiffRoot,
-    cargoBuildEnv(skiffRoot),
-  );
-  const builtPath = join(cargoTargetDir(skiffRoot), 'debug', artifactIdentityBinary);
-  if (!await isFile(builtPath)) {
-    throw new Error(`artifact identity CLI build did not produce ${builtPath}`);
+  if (!isPlainObject(value)) {
+    throw new Error(`${registryPath} must contain a JSON object`);
   }
-  return builtPath;
+  const fields = Object.keys(value).sort();
+  const expected = ['environment', 'roots', 'schemaVersion'];
+  if (JSON.stringify(fields) !== JSON.stringify(expected)) {
+    throw new Error(`${registryPath} fields must be exactly ${expected.join(', ')}`);
+  }
+  if (value.schemaVersion !== registrySchemaVersion) {
+    throw new Error(`${registryPath} schemaVersion must be ${registrySchemaVersion}`);
+  }
+  assertEnvironment(value.environment);
+  if (!Array.isArray(value.roots)) {
+    throw new Error(`${registryPath} roots must be an array`);
+  }
+  return {
+    schemaVersion: registrySchemaVersion,
+    environment: value.environment,
+    roots: await normalizedRoots(value.roots, registryPath),
+  };
 }
 
-function compilerCargoPrefix(config) {
-  return [
-    'run',
-    '--quiet',
-    '--manifest-path',
-    config.compilerManifest,
-    '--',
+export async function writeDevRegistry(path, registry) {
+  const registryPath = resolve(path);
+  const roots = await normalizedRoots(registry.roots, registryPath);
+  assertEnvironment(registry.environment);
+  await mkdir(dirname(registryPath), { recursive: true });
+  await writeFile(registryPath, `${JSON.stringify({
+    schemaVersion: registrySchemaVersion,
+    environment: registry.environment,
+    roots,
+  }, null, 2)}\n`);
+}
+
+export async function classifyAuthoringRoot(root) {
+  const absolute = resolve(root);
+  const candidates = [
+    ['package', 'package.yml'],
+    ['contract', 'contract.yml'],
+    ['deployment', 'deployment.yml'],
   ];
-}
-
-function compilerBuildArgs(config, service, paths) {
-  const args = [
-    service.root,
-    '--out',
-    paths.serviceAssemblyPath,
-    '--manifest-out',
-    paths.manifestPath,
-    '--artifact-root',
-    paths.artifactRoot,
-    '--service-id',
-    service.serviceId,
-    '--profile',
-    service.profile,
-  ];
-  if (paths.serviceArtifactRoot !== undefined) {
-    args.push('--service-artifact-root', paths.serviceArtifactRoot);
-  }
-  for (const serviceArtifactRoot of config.serviceArtifactRoots) {
-    args.push('--service-artifact-root', serviceArtifactRoot);
-  }
-  appendPackagesDirArgs(args, effectivePackageDirs(config, service));
-  return args;
-}
-
-function effectivePackageDirs(config, service) {
-  // Keep instance defaults as the last fallback: CLI > service config > project config > dev config default > instance default.
-  if (config.packageDirSource === 'cli') {
-    return config.packageDirs;
-  }
-  if ((service.packageDirs?.length ?? 0) > 0) {
-    return service.packageDirs;
-  }
-  const projectPackageDirs = service.projectPackageDirs ?? [];
-  if (projectPackageDirs.length > 0) {
-    return projectPackageDirs;
-  }
-  if (config.configPackageDirs.length > 0) {
-    return config.configPackageDirs;
-  }
-  return config.defaultPackageDirs;
-}
-
-async function withBuildLock(service, lockDir, action) {
-  return withOwnedDirectoryLock({
-    lockDir,
-    owner: { serviceId: service.serviceId },
-    action,
-    timeoutMs: lockTimeoutMs,
-    sleep,
-    onReclaim(path) {
-      console.warn(`[skiff-dev-sync] reclaimed dead-owner build lock ${path}`);
-    },
-  });
-}
-
-async function syncArtifactRoot(service, sourceRoot, targetRoot, validated) {
-  if (validated === undefined) {
-    throw new Error(`missing validated artifact closure for ${service.serviceId}`);
-  }
-  await assertGeneratedArtifactRoot(sourceRoot);
-  await mkdir(targetRoot, { recursive: true });
-  await copyContentAddressedArtifacts(sourceRoot, targetRoot);
-  await copyMutableTreeIfPresent(join(sourceRoot, 'indexes'), join(targetRoot, 'indexes'));
-  await syncServiceConfigSources(service, targetRoot);
-
-  const [sourceIndex] = await serviceIndexFiles(sourceRoot, service.serviceId);
-  const sourceIndexPath = sourceIndex.path;
-  const indexBytes = await readFile(sourceIndexPath);
-  const targetIndexPath = join(targetRoot, sourceIndex.artifactPath);
-  await mkdir(dirname(targetIndexPath), { recursive: true });
-  const tempIndexPath = await writeStagedFile(targetIndexPath, indexBytes);
-  await rename(tempIndexPath, targetIndexPath);
-
-  await removeStaleServiceIndexFiles(targetRoot, service.serviceId, new Set([sourceIndex.artifactPath]));
-  await writeDevReloadPointer(
-    targetRoot,
-    service,
-    devReloadPointerFromIndex(service, sourceIndex, validated),
-  );
-}
-
-async function syncServiceConfigSources(service, targetRoot) {
-  await removeRootConfigSourceCopies(targetRoot);
-  for (const spec of defaultConfigSourceSpecs(service.profile)) {
-    const sourcePath = join(service.root, spec.path);
-    const targetPath = serviceConfigSourcePath(targetRoot, service.serviceId, spec.path);
-    let sourceInfo;
+  const matches = [];
+  for (const [kind, file] of candidates) {
     try {
-      sourceInfo = await stat(sourcePath);
+      const metadata = await stat(join(absolute, file));
+      if (metadata.isFile()) {
+        matches.push(kind);
+      }
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         throw error;
       }
-      await rm(targetPath, { force: true });
-      continue;
-    }
-    if (!sourceInfo.isFile()) {
-      await rm(targetPath, { force: true });
-      continue;
-    }
-    const bytes = await readFile(sourcePath);
-    await mkdir(dirname(targetPath), { recursive: true });
-    const tempPath = await writeStagedFile(targetPath, bytes);
-    await rename(tempPath, targetPath);
-  }
-}
-
-function defaultConfigSourceSpecs(profile) {
-  const specs = ['config.yml'];
-  if (profile !== undefined && profile.length > 0) {
-    assertConfigPathSegment(profile, `profile ${profile}`);
-    specs.push(`config.${profile}.yml`);
-    specs.push(`config.${profile}.secret.yml`);
-  }
-  return specs.map((path) => ({ path }));
-}
-
-function serviceConfigSourcePath(root, serviceId, configPath) {
-  return join(root, 'configs', 'services', ...serviceIdPathSegments(serviceId), configPath);
-}
-
-function serviceIdPathSegments(serviceId) {
-  if (!isPublicationId(serviceId)) {
-    throw new Error(`service id ${serviceId} must be a publication id`);
-  }
-  return [publicationStorageSegment(serviceId)];
-}
-
-function defaultServiceBuildDir(config, service) {
-  return join(config.buildRoot, publicationStorageSegment(service.serviceId));
-}
-
-function serviceIdJsonPath(root, prefixSegments, serviceId) {
-  const segments = serviceIdPathSegments(serviceId);
-  const fileName = segments.pop();
-  return join(root, ...prefixSegments, ...segments, `${fileName}.json`);
-}
-
-function serviceIdDirectoryPath(root, prefixSegments, serviceId) {
-  return join(root, ...prefixSegments, ...serviceIdPathSegments(serviceId));
-}
-
-function serviceScopedHashJsonPath(root, prefixSegments, serviceId, hash) {
-  return join(serviceIdDirectoryPath(root, prefixSegments, serviceId), `${hash}.json`);
-}
-
-function toArtifactPath(path) {
-  return path.split('\\').join('/');
-}
-
-async function removeRootConfigSourceCopies(targetRoot) {
-  let entries;
-  try {
-    entries = await readdir(targetRoot, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    throw error;
-  }
-  await Promise.all(entries.map(async (entry) => {
-    if (!entry.isFile() || !rootConfigSourcePattern.test(entry.name)) {
-      return;
-    }
-    await rm(join(targetRoot, entry.name), { force: true });
-  }));
-}
-
-function assertConfigPathSegment(segment, label) {
-  if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(segment) === false) {
-    throw new Error(label);
-  }
-}
-
-async function copyContentAddressedArtifacts(sourceRoot, targetRoot) {
-  const entries = await readdir(sourceRoot, { withFileTypes: true });
-  await Promise.all(entries
-    .filter((entry) => entry.isDirectory() && artifactRootContentDirs.has(entry.name))
-    .map((entry) => copyContentAddressedTree(
-      join(sourceRoot, entry.name),
-      join(targetRoot, entry.name),
-    )));
-}
-
-async function copyContentAddressedTree(sourcePath, targetPath) {
-  const info = await stat(sourcePath);
-  if (info.isDirectory()) {
-    await mkdir(targetPath, { recursive: true });
-    const entries = await readdir(sourcePath, { withFileTypes: true });
-    await Promise.all(entries.map((entry) => copyContentAddressedTree(
-      join(sourcePath, entry.name),
-      join(targetPath, entry.name),
-    )));
-    return;
-  }
-  if (!info.isFile()) {
-    return;
-  }
-  await copyContentAddressedFile(sourcePath, targetPath);
-}
-
-async function copyMutableTreeIfPresent(sourcePath, targetPath) {
-  let info;
-  try {
-    info = await stat(sourcePath);
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    throw error;
-  }
-  if (!info.isDirectory()) {
-    return;
-  }
-  await copyMutableTree(sourcePath, targetPath);
-}
-
-async function copyMutableTree(sourcePath, targetPath) {
-  const info = await stat(sourcePath);
-  if (info.isDirectory()) {
-    await mkdir(targetPath, { recursive: true });
-    const entries = await readdir(sourcePath, { withFileTypes: true });
-    await Promise.all(entries.map((entry) => copyMutableTree(
-      join(sourcePath, entry.name),
-      join(targetPath, entry.name),
-    )));
-    return;
-  }
-  if (!info.isFile()) {
-    return;
-  }
-  const bytes = await readFile(sourcePath);
-  await mkdir(dirname(targetPath), { recursive: true });
-  const tempPath = await writeStagedFile(targetPath, bytes);
-  await rename(tempPath, targetPath);
-}
-
-async function copyContentAddressedFile(sourcePath, targetPath) {
-  const source = await readFile(sourcePath);
-  try {
-    const existing = await readFile(targetPath);
-    if (Buffer.compare(source, existing) === 0) {
-      return;
-    }
-    throw new Error(`content-addressed artifact conflict at ${targetPath}`);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw error;
     }
   }
-
-  await mkdir(dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(tempPath, source);
-    await rename(tempPath, targetPath);
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-}
-
-async function writeDevReloadPointer(root, service, pointer) {
-  const pointerPath = serviceIdJsonPath(root, ['dev', 'services'], service.serviceId);
-  await mkdir(dirname(pointerPath), { recursive: true });
-  const tempPath = await writeStagedFile(
-    pointerPath,
-    Buffer.from(`${JSON.stringify(pointer, null, 2)}\n`),
-  );
-  await rename(tempPath, pointerPath);
-}
-
-async function removeDevReloadPointers(root, serviceIds) {
-  for (const serviceId of serviceIds) {
-    const pointerPath = serviceIdJsonPath(root, ['dev', 'services'], serviceId);
-    await rm(pointerPath, { force: true });
-    console.log(`[skiff-dev-sync] removed ${serviceId} dev reload pointer from ${root}`);
-  }
-}
-
-async function readDevReloadPointer(root, service) {
-  const pointerPath = serviceIdJsonPath(root, ['dev', 'services'], service.serviceId);
-  try {
-    return JSON.parse(await readFile(pointerPath, 'utf8'));
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      throw new Error(`missing dev reload pointer for ${service.serviceId}`);
-    }
-    if (error instanceof SyntaxError) {
-      throw new Error(`invalid dev reload pointer JSON for ${service.serviceId}`);
-    }
-    throw error;
-  }
-}
-
-async function assertDevReloadPointerContract(root, service, pointer, validated) {
-  if (!isRecord(pointer)) {
-    throw new Error(`dev reload pointer for ${service.serviceId} must be an object`);
-  }
-  if (pointer.serviceId !== service.serviceId) {
-    throw new Error(`dev reload pointer serviceId mismatch for ${service.serviceId}`);
-  }
-  assertBuildId(pointer.buildId, `dev reload pointer for ${service.serviceId} buildId`);
-  const label = `dev reload pointer for ${service.serviceId}`;
-  const references = artifactReferences(pointer, label);
-  await assertValidatedArtifactClosureFiles({
-    root,
-    references,
-    validated,
-    label,
-  });
-}
-
-function removedServiceIds(previousServices, nextServices) {
-  const nextServiceIds = new Set(nextServices.map((service) => service.serviceId));
-  return [...new Set(previousServices
-    .map((service) => service.serviceId)
-    .filter((serviceId) => !nextServiceIds.has(serviceId)))]
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function devReloadPointerFromIndex(service, indexValue, validated) {
-  const serviceId = stringValue(indexValue?.serviceId);
-  if (serviceId !== service.serviceId) {
-    throw new Error(`synced index service id must be ${service.serviceId}`);
-  }
-  const protocolIdentity = stringValue(indexValue.contractIdentity);
-  if (protocolIdentity === undefined) {
-    throw new Error(`synced index for ${service.serviceId} is missing protocolIdentity`);
-  }
-  const protocolHash = protocolIdentityHash(
-    protocolIdentity,
-    `synced index for ${service.serviceId} contractIdentity`,
-  );
-  const validatedProtocolIdentity = requiredString(
-    validated?.serviceAssembly?.content?.value?.service?.protocolIdentity,
-    `validated service assembly for ${service.serviceId} protocolIdentity`,
-  );
-  if (protocolIdentity !== validatedProtocolIdentity) {
-    throw new Error(`synced index for ${service.serviceId} contractIdentity does not match validated service assembly`);
-  }
-  const contractHash = `sha256:${protocolHash}`;
-  const label = `synced index for ${service.serviceId}`;
-  const references = artifactReferences(indexValue, label);
-  const trustedReferences = assertArtifactReferencesMatchValidated(
-    references,
-    validated,
-    label,
-  );
-  const serviceAssembly = trustedReferences.serviceAssembly;
-  const buildId = serviceBuildIdFromAssemblyIdentity(serviceAssembly.assemblyIdentity);
-  return {
-    mode: 'dev',
-    serviceId: service.serviceId,
-    profile: service.profile,
-    buildId,
-    contractHash,
-    protocolIdentity,
-    serviceAssembly: {
-      assemblyIdentity: serviceAssembly.assemblyIdentity,
-      assemblyPath: serviceAssembly.assemblyPath,
-    },
-    serviceUnit: trustedReferences.serviceUnit,
-    packageUnits: trustedReferences.packageUnits,
-  };
-}
-
-function artifactReferences(value, label) {
-  return {
-    serviceAssembly: serviceAssemblyPointer(
-      value?.serviceAssembly,
-      `${label} serviceAssembly`,
-    ),
-    serviceUnit: serviceUnitPointer(
-      value?.serviceUnit,
-      `${label} serviceUnit`,
-    ),
-    packageUnits: packageUnitPointers(
-      value?.packageUnits,
-      `${label} packageUnits`,
-    ),
-  };
-}
-
-function packageUnitPointers(value, collectionLabel = 'packageUnits') {
-  if (!Array.isArray(value)) {
-    throw new Error(`${collectionLabel} must be an array`);
-  }
-  return value.map((item, index) => {
-    const label = `${collectionLabel}[${index}]`;
-    if (!isRecord(item)) {
-      throw new Error(`${label} must be an object`);
-    }
-    rejectUnknownKeys(
-      item,
-      ['schemaVersion', 'packageId', 'version', 'buildIdentity', 'abiIdentity', 'unitHash', 'unitPath'],
-      label,
-    );
-    const schemaVersion = requiredString(item.schemaVersion, `${label}.schemaVersion`);
-    if (schemaVersion !== 'skiff-package-unit-v1') {
-      throw new Error(`${label}.schemaVersion must be skiff-package-unit-v1`);
-    }
-    return {
-      schemaVersion,
-      packageId: requiredString(item.packageId, `${label}.packageId`),
-      version: requiredString(item.version, `${label}.version`),
-      buildIdentity: requiredString(item.buildIdentity, `${label}.buildIdentity`),
-      abiIdentity: requiredString(item.abiIdentity, `${label}.abiIdentity`),
-      unitHash: requiredString(item.unitHash, `${label}.unitHash`),
-      unitPath: requiredString(item.unitPath, `${label}.unitPath`),
-    };
-  });
-}
-
-function serviceUnitPointer(value, label = 'serviceUnit') {
-  if (!isRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  rejectUnknownKeys(value, ['schemaVersion', 'unitIdentity', 'unitHash', 'unitPath'], label);
-  const schemaVersion = requiredString(value.schemaVersion, `${label}.schemaVersion`);
-  if (schemaVersion !== 'skiff-service-unit-v1') {
-    throw new Error(`${label}.schemaVersion must be skiff-service-unit-v1`);
-  }
-  return {
-    schemaVersion,
-    unitIdentity: requiredString(value.unitIdentity, `${label}.unitIdentity`),
-    unitHash: requiredString(value.unitHash, `${label}.unitHash`),
-    unitPath: requiredString(value.unitPath, `${label}.unitPath`),
-  };
-}
-
-async function removeStaleServiceIndexFiles(targetRoot, serviceId, keepArtifactPaths) {
-  const indexDir = join(targetRoot, 'indexes');
-  const indexPaths = await listJsonFiles(indexDir).catch((error) => {
-    if (error?.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  });
-
-  await Promise.all(indexPaths.map(async (indexPath) => {
-    const artifactPath = toArtifactPath(relative(targetRoot, indexPath));
-    if (keepArtifactPaths.has(artifactPath)) {
-      return;
-    }
-    const value = JSON.parse(await readFile(indexPath, 'utf8'));
-    if (stringValue(value?.serviceId) === serviceId) {
-      await rm(indexPath, { force: true });
-    }
-  }));
-}
-
-async function reloadRouter(reloadUrl) {
-  if (reloadUrl === undefined) {
-    return false;
-  }
-  try {
-    const response = await postReload(reloadUrl);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      console.warn(`[skiff-dev-sync] warning: router reload returned HTTP ${response.statusCode}${response.body ? `: ${response.body}` : ''}`);
-      return false;
-    }
-    console.log(`[skiff-dev-sync] requested router reload at ${reloadUrl}`);
-    return true;
-  } catch (error) {
-    console.warn(`[skiff-dev-sync] warning: router reload unavailable at ${reloadUrl}: ${formatError(error)}`);
-    return false;
-  }
-}
-
-function postReload(reloadUrl) {
-  return postControlJson(reloadUrl, undefined, 'router reload', 500);
-}
-
-async function pruneRouterRuntimes(reloadUrl) {
-  const pruneUrl = controlUrlFromReloadUrl(reloadUrl, '/__router/prune-runtimes');
-  try {
-    const response = await postControlJson(pruneUrl, undefined, 'router runtime prune', 1_000_000);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      console.warn(`[skiff-dev-sync] warning: router runtime prune returned HTTP ${response.statusCode}${response.body ? `: ${response.body}` : ''}`);
-      return;
-    }
-    const deletedCount = pruneDeletedCount(response.body);
-    if (deletedCount != null) {
-      console.log(`[skiff-dev-sync] pruned ${deletedCount} stale runtime(s) at ${pruneUrl}`);
-    } else {
-      console.log(`[skiff-dev-sync] requested router runtime prune at ${pruneUrl}`);
-    }
-  } catch (error) {
-    console.warn(`[skiff-dev-sync] warning: router runtime prune unavailable at ${pruneUrl}: ${formatError(error)}`);
-  }
-}
-
-function postControlJson(targetUrl, body, label, maxBodyBytes) {
-  return new Promise((resolvePromise, reject) => {
-    const url = new URL(targetUrl);
-    const transport = url.protocol === 'https:' ? https : http;
-    const payload = body === undefined ? '' : JSON.stringify(body);
-    const request = transport.request(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload).toString(),
-      },
-    }, (response) => {
-      let body = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => {
-        body += chunk;
-      });
-      response.on('end', () => {
-        resolvePromise({
-          statusCode: response.statusCode ?? 0,
-          body: body.slice(0, maxBodyBytes),
-        });
-      });
-    });
-    request.setTimeout(2_000, () => {
-      request.destroy(new Error(`${label} request timed out`));
-    });
-    request.on('error', reject);
-    request.end(payload);
-  });
-}
-
-function controlUrlFromReloadUrl(reloadUrl, pathname) {
-  const url = new URL(reloadUrl);
-  url.pathname = pathname;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-function pruneDeletedCount(body) {
-  try {
-    const value = JSON.parse(body);
-    return typeof value?.deletedCount === 'number' ? value.deletedCount : null;
-  } catch {
-    return null;
-  }
-}
-
-async function assertGeneratedArtifactRoot(root) {
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!generatedArtifactRootEntries.has(entry.name) || !entry.isDirectory()) {
-      throw new Error(`artifact root ${root} contains unsupported top-level entry ${entry.name}`);
-    }
-  }
-}
-
-async function serviceIndexFiles(root, serviceId) {
-  const indexDir = join(root, 'indexes');
-  const matches = [];
-  for (const indexPath of await listJsonFiles(indexDir)) {
-    const value = JSON.parse(await readFile(indexPath, 'utf8'));
-    if (stringValue(value?.serviceId) === serviceId) {
-      matches.push(parseCanonicalArtifactIndex(value, root, indexPath, serviceId));
-    }
-  }
-  matches.sort((left, right) => left.path.localeCompare(right.path));
   if (matches.length !== 1) {
-    throw new Error(`artifact root must contain exactly one index pointer for ${serviceId}; found ${matches.length}`);
+    throw new Error(`${absolute} must contain exactly one of package.yml, contract.yml, or deployment.yml`);
   }
-  return matches;
+  return { kind: matches[0], root: absolute };
 }
 
-async function listJsonFiles(root) {
-  const entries = await readdir(root, { withFileTypes: true });
-  const paths = [];
-  for (const entry of entries) {
-    const entryPath = join(root, entry.name);
-    if (entry.isDirectory()) {
-      paths.push(...await listJsonFiles(entryPath));
-    } else if (entry.isFile() && entry.name.endsWith('.json')) {
-      paths.push(entryPath);
+export function parseDevSyncArgs(rawArgs) {
+  const result = {
+    roots: [],
+    config: defaultRegistryPath,
+    artifactRoot: defaultArtifactRoot,
+    activationUrl: defaultAssemblyActivationUrl,
+    expectedGeneration: undefined,
+    activationId: undefined,
+    environment: undefined,
+    pollIntervalMs: 500,
+    watch: false,
+    buildOnly: false,
+    json: false,
+  };
+  const flags = new Map([
+    ['--watch', 'watch'],
+    ['--build-only', 'buildOnly'],
+    ['--json', 'json'],
+  ]);
+  const valued = new Map([
+    ['--root', 'roots'],
+    ['--config', 'config'],
+    ['--artifact-root', 'artifactRoot'],
+    ['--activation-url', 'activationUrl'],
+    ['--activation-id', 'activationId'],
+    ['--environment', 'environment'],
+    ['--expected-generation', 'expectedGeneration'],
+    ['--poll-interval-ms', 'pollIntervalMs'],
+  ]);
+  const seen = new Set();
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const argument = rawArgs[index];
+    if (argument === '-h' || argument === '--help') {
+      console.log(usage);
+      return { ...result, help: true };
     }
-  }
-  return paths.sort((left, right) => left.localeCompare(right));
-}
-
-async function seedSyncCheckRoot(root, services) {
-  await mkdir(join(root, 'indexes', 'services'), { recursive: true });
-  await mkdir(join(root, 'assemblies', 'services'), { recursive: true });
-  await mkdir(join(root, 'bundles'), { recursive: true });
-  await mkdir(join(root, 'contracts'), { recursive: true });
-  await mkdir(join(root, 'files'), { recursive: true });
-  await mkdir(join(root, 'units'), { recursive: true });
-  await mkdir(join(root, 'dev', 'services'), { recursive: true });
-
-  const otherServiceId = 'skiff.run/retained';
-  const otherServicePath = publicationStorageSegment(otherServiceId);
-  const otherProtocolHash = '1'.repeat(64);
-  const otherAssemblyHash = '2'.repeat(64);
-  const otherProtocolIdentity = `skiff-protocol-v1:sha256:${otherProtocolHash}`;
-  const otherAssemblyIdentity = `skiff-service-assembly-v1:sha256:${otherAssemblyHash}`;
-  await writeJson(join(root, 'indexes', 'services', ...serviceIdPathSegments(otherServiceId), `${otherProtocolHash}.json`), {
-    schemaVersion: 'skiff-artifact-index-v1',
-    serviceId: otherServiceId,
-    contractIdentity: otherProtocolIdentity,
-    service: {
-      id: otherServiceId,
-      revisionId: '9'.repeat(64),
-      protocolIdentity: otherProtocolIdentity,
-    },
-    serviceAssembly: {
-      assemblyIdentity: otherAssemblyIdentity,
-      assemblyPath: `assemblies/services/${otherServicePath}/${otherAssemblyHash}.json`,
-    },
-    files: [
-      {
-        artifactPath: 'files/other-retained.json',
-      },
-    ],
-  });
-  await writeJson(join(root, 'assemblies', 'services', ...serviceIdPathSegments(otherServiceId), `${otherAssemblyHash}.json`), {
-    schemaVersion: 'skiff-assembly-v1',
-    kind: 'service',
-    service: {
-      id: otherServiceId,
-      assemblyIdentity: otherAssemblyIdentity,
-      protocolIdentity: otherProtocolIdentity,
-    },
-  });
-  await writeJson(join(root, 'contracts', `${otherProtocolHash}.json`), {
-    schemaVersion: 'skiff-contract-schema-v1',
-    serviceId: otherServiceId,
-    protocolIdentity: otherProtocolIdentity,
-  });
-  await writeJson(join(root, 'files', 'other-retained.json'), {
-    serviceId: otherServiceId,
-    retained: true,
-  });
-  await writeJson(serviceIdJsonPath(root, ['dev', 'services'], otherServiceId), {
-    mode: 'dev',
-    serviceId: otherServiceId,
-    profile: 'dev',
-    buildId: `skiff-service-build-v1:sha256:${otherAssemblyHash}`,
-    contractHash: `sha256:${otherProtocolHash}`,
-    protocolIdentity: otherProtocolIdentity,
-    serviceAssembly: {
-      assemblyIdentity: otherAssemblyIdentity,
-      assemblyPath: `assemblies/services/${otherServicePath}/${otherAssemblyHash}.json`,
-    },
-  });
-
-  for (const service of services) {
-    for (const spec of defaultConfigSourceSpecs(service.profile)) {
-      await writeFile(join(root, spec.path), `stale ${service.serviceId} ${spec.path}\n`);
-    }
-    const staleIndexPath = serviceScopedHashJsonPath(root, ['indexes', 'services'], service.serviceId, 'stale');
-    await writeJson(staleIndexPath, {
-      serviceId: service.serviceId,
-      stale: true,
-    });
-  }
-}
-
-async function seedMissingDevReloadPointer(root, services) {
-  const [service] = services;
-  if (service === undefined) {
-    return;
-  }
-  await rm(serviceIdJsonPath(root, ['dev', 'services'], service.serviceId), { force: true });
-}
-
-async function assertSyncCheckRoot(root, services) {
-  for (const service of services) {
-    await readDevReloadPointer(root, service);
-    await assertMissing(serviceScopedHashJsonPath(root, ['indexes', 'services'], service.serviceId, 'stale'));
-  }
-
-  await assertExists(join(root, 'indexes', 'services', 'skiff~run~~retained', `${'1'.repeat(64)}.json`));
-  await assertExists(join(root, 'assemblies', 'services', 'skiff~run~~retained', `${'2'.repeat(64)}.json`));
-  await assertExists(join(root, 'contracts', `${'1'.repeat(64)}.json`));
-  await assertExists(join(root, 'files', 'other-retained.json'));
-  await assertExists(join(root, 'dev', 'services', 'skiff~run~~retained.json'));
-}
-
-async function assertConfiguredServiceOutputs(root, services, validated = undefined) {
-  validated ??= await validateBuiltServiceClosures(
-    services.map((service) => ({ artifactRoot: root, service })),
-  );
-  const pointers = new Map();
-  for (const service of services) {
-    const pointer = await readDevReloadPointer(root, service);
-    await assertDevReloadPointerContract(
-      root,
-      service,
-      pointer,
-      validated.get(service.serviceId),
-    );
-    pointers.set(service.serviceId, pointer);
-  }
-  for (const service of services) {
-    await assertSyncedService(
-      root,
-      service,
-      pointers.get(service.serviceId),
-      validated.get(service.serviceId),
-    );
-  }
-}
-
-async function assertBrokenConfiguredServiceOutput(config, expectedMessage) {
-  try {
-    await assertConfiguredServiceOutputs(config.artifactRoot, config.services);
-  } catch (error) {
-    if (formatError(error).includes(expectedMessage)) {
-      return;
-    }
-    throw error;
-  }
-  throw new Error(`expected configured service output contract check to fail with ${expectedMessage}`);
-}
-
-async function assertSyncedService(root, service, pointer = undefined, validated = undefined) {
-  const [index] = await serviceIndexFiles(root, service.serviceId);
-  const indexPath = index.path;
-  const pointerPath = serviceIdJsonPath(root, ['dev', 'services'], service.serviceId);
-  pointer ??= await readDevReloadPointer(root, service);
-  const expectedPointer = devReloadPointerFromIndex(service, index, validated);
-  assertDeepEqual(pointer, expectedPointer, `${pointerPath} dev reload pointer`);
-  assertBuildId(pointer.buildId, `${pointerPath} buildId`);
-
-  const contractSchemaPath = canonicalContractSchemaPath(index, indexPath);
-  const contract = JSON.parse(await readFile(join(root, contractSchemaPath), 'utf8'));
-  if (contract.schemaVersion !== 'skiff-contract-schema-v1') {
-    throw new Error(`${contractSchemaPath} schemaVersion must be skiff-contract-schema-v1`);
-  }
-  if (contract.protocolIdentity !== expectedPointer.protocolIdentity) {
-    throw new Error(`${contractSchemaPath} protocolIdentity must match dev reload pointer`);
-  }
-
-  await assertSyncedConfigSources(root, service);
-}
-
-function canonicalContractSchemaPath(index, indexPath) {
-  const protocolIdentity = requiredString(
-    index.contractIdentity,
-    `${indexPath} contractIdentity`,
-  );
-  const protocolHash = protocolIdentityHash(
-    protocolIdentity,
-    `${indexPath} contractIdentity`,
-  );
-  const expectedPath = `contracts/${protocolHash}.json`;
-  if (!isRecord(index.contract)) {
-    throw new Error(`${indexPath} contract must be an object`);
-  }
-  const declaredPath = requiredString(
-    index.contract.schemaPath,
-    `${indexPath} contract.schemaPath`,
-  );
-  if (declaredPath !== expectedPath) {
-    throw new Error(`${indexPath} contract.schemaPath must be ${expectedPath}`);
-  }
-  const declaredIdentity = requiredString(
-    index.contract.protocolIdentity,
-    `${indexPath} contract.protocolIdentity`,
-  );
-  if (declaredIdentity !== protocolIdentity) {
-    throw new Error(`${indexPath} contract.protocolIdentity must match contractIdentity`);
-  }
-  const declaredHash = requiredString(
-    index.contract.contractHash,
-    `${indexPath} contract.contractHash`,
-  );
-  if (declaredHash !== protocolHash) {
-    throw new Error(`${indexPath} contract.contractHash must be ${protocolHash}`);
-  }
-  return expectedPath;
-}
-
-async function assertSyncedConfigSources(root, service) {
-  for (const spec of defaultConfigSourceSpecs(service.profile)) {
-    const sourcePath = join(service.root, spec.path);
-    const targetPath = serviceConfigSourcePath(root, service.serviceId, spec.path);
-    await assertMissing(join(root, spec.path));
-    const sourceInfo = await stat(sourcePath).catch((error) => {
-      if (error?.code === 'ENOENT') {
-        return undefined;
+    if (flags.has(argument)) {
+      if (seen.has(argument)) {
+        throw new Error(`${argument} was provided more than once`);
       }
-      throw error;
-    });
-    if (!sourceInfo?.isFile()) {
-      await assertMissing(targetPath);
+      seen.add(argument);
+      result[flags.get(argument)] = true;
       continue;
     }
-    await assertExists(targetPath);
-    const sourceBytes = await readFile(sourcePath);
-    const targetBytes = await readFile(targetPath);
-    if (Buffer.compare(sourceBytes, targetBytes) !== 0) {
-      throw new Error(`expected ${targetPath} to match service config source ${spec.path}`);
+    const equals = argument.indexOf('=');
+    const option = equals === -1 ? argument : argument.slice(0, equals);
+    if (!valued.has(option)) {
+      throw new Error(`unknown option ${argument}\n${usage}`);
+    }
+    if (option !== '--root' && seen.has(option)) {
+      throw new Error(`${option} was provided more than once`);
+    }
+    seen.add(option);
+    const value = equals === -1 ? rawArgs[index + 1] : argument.slice(equals + 1);
+    if (!value || value.startsWith('--')) {
+      throw new Error(`${option} requires a value`);
+    }
+    if (equals === -1) {
+      index += 1;
+    }
+    const field = valued.get(option);
+    if (field === 'roots') {
+      result.roots.push({ root: resolve(value) });
+    } else {
+      result[field] = value;
     }
   }
+  result.config = resolve(result.config);
+  result.artifactRoot = resolve(result.artifactRoot);
+  result.expectedGeneration = parseNonNegativeInteger(result.expectedGeneration, '--expected-generation');
+  if (result.expectedGeneration > maxExpectedAssemblyGeneration) {
+    throw new Error(`--expected-generation must not exceed ${maxExpectedAssemblyGeneration}`);
+  }
+  result.pollIntervalMs = parsePositiveInteger(result.pollIntervalMs, '--poll-interval-ms');
+  if (!result.buildOnly && result.expectedGeneration === undefined) {
+    throw new Error('--expected-generation is required unless --build-only is used');
+  }
+  return result;
 }
 
-function parseCanonicalArtifactIndex(value, root, indexPath, expectedServiceId) {
-  if (!isRecord(value)) {
-    throw new Error(`${indexPath} artifact index must be an object`);
+async function normalizedRoots(values, label = 'dev registry') {
+  const roots = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!isPlainObject(value)) {
+      throw new Error(`${label} root ${index} must be an object`);
+    }
+    const fields = Object.keys(value).sort();
+    if (fields.some((field) => field !== 'kind' && field !== 'root') || !fields.includes('root')) {
+      throw new Error(`${label} root ${index} fields must be root and optional kind`);
+    }
+    const detected = await classifyAuthoringRoot(value.root);
+    if (value.kind !== undefined && value.kind !== detected.kind) {
+      throw new Error(`${value.root} is ${detected.kind}, not declared kind ${value.kind}`);
+    }
+    roots.push(detected);
   }
-  if (value.schemaVersion !== 'skiff-artifact-index-v1') {
-    throw new Error(`${indexPath} schemaVersion must be skiff-artifact-index-v1`);
+  roots.sort((left, right) => left.kind.localeCompare(right.kind) || left.root.localeCompare(right.root));
+  for (let index = 1; index < roots.length; index += 1) {
+    if (roots[index - 1].root === roots[index].root) {
+      throw new Error(`dev registry contains duplicate root ${roots[index].root}`);
+    }
   }
-  const serviceId = requiredString(value.serviceId, `${indexPath} serviceId`);
-  if (serviceId !== expectedServiceId) {
-    throw new Error(`${indexPath} serviceId must be ${expectedServiceId}`);
-  }
-  const contractIdentity = requiredString(value.contractIdentity, `${indexPath} contractIdentity`);
-  const protocolHash = identityHash(contractIdentity);
-  const artifactPath = toArtifactPath(relative(root, indexPath));
-  const expectedArtifactPath = toArtifactPath(relative(root, serviceScopedHashJsonPath(root, ['indexes', 'services'], serviceId, protocolHash)));
-  if (artifactPath !== expectedArtifactPath) {
-    throw new Error(`${indexPath} must use canonical artifact index path ${expectedArtifactPath}`);
-  }
-  const serviceAssembly = serviceAssemblyPointer(
-    value.serviceAssembly,
-    `${indexPath} serviceAssembly`,
-  );
-  const index = {
-    ...value,
-    serviceAssembly,
-  };
-  Object.defineProperty(index, 'path', {
-    enumerable: false,
-    value: indexPath,
-  });
-  Object.defineProperty(index, 'artifactPath', {
-    enumerable: false,
-    value: artifactPath,
-  });
-  return index;
+  return roots;
 }
 
-async function inputFingerprint(config) {
+async function rootsFingerprint(roots) {
   const hash = createHash('sha256');
-  const watchInputs = await discoverWatchInputs(config);
-  for (const inputPath of watchInputs) {
-    hash.update(inputPath);
-    hash.update('\0');
-    let info;
-    try {
-      info = await stat(inputPath);
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        hash.update('missing');
-        hash.update('\0');
-        continue;
-      }
-      throw error;
-    }
-    hash.update(String(info.mtimeMs));
-    hash.update('\0');
-    hash.update(String(info.size));
-    hash.update('\0');
+  for (const { kind, root } of roots) {
+    hash.update(`${kind}\0${root}\0`);
+    await hashTree(root, root, hash);
   }
   return hash.digest('hex');
 }
 
-async function discoverWatchInputs(config) {
-  const inputs = config.configPath === undefined ? [] : [config.configPath];
-  for (const service of config.services) {
-    inputs.push(...await listFilesIfDirectory(service.root, isServiceWatchInput));
-    inputs.push(...await discoverDeclaredResourceFiles(service.root, new Set(['service.yml'])));
-    for (const projectConfigPath of service.projectConfigPaths ?? []) {
-      inputs.push(projectConfigPath);
+async function hashTree(root, current, hash) {
+  const entries = await readdir(current, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) {
+      continue;
     }
-    for (const packageDir of effectivePackageDirs(config, service)) {
-      inputs.push(...await listFilesIfDirectory(packageDir, isSharedWatchInput));
-      inputs.push(...await discoverDeclaredResourceFiles(packageDir, new Set(['package.yml'])));
-    }
-  }
-  for (const sharedInputRoot of config.sharedInputs) {
-    inputs.push(...await listFiles(sharedInputRoot, isSharedWatchInput));
-  }
-  return [...new Set(inputs)].sort((left, right) => left.localeCompare(right));
-}
-
-async function listFilesIfDirectory(root, includeFile) {
-  if (!await isDirectory(root)) {
-    return [];
-  }
-  return listFiles(root, includeFile);
-}
-
-async function listFiles(root, includeFile) {
-  const files = [];
-  const visitedDirectories = new Set();
-
-  async function visit(directory) {
-    const directoryKey = await realpath(directory).catch(() => resolve(directory));
-    if (visitedDirectories.has(directoryKey)) {
-      return;
-    }
-    visitedDirectories.add(directoryKey);
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      const entryPath = join(directory, entry.name);
-      let entryInfo;
-      if (entry.isSymbolicLink()) {
-        try {
-          entryInfo = await stat(entryPath);
-        } catch (error) {
-          if (error?.code === 'ENOENT') {
-            continue;
-          }
-          throw error;
-        }
-      }
-      const isDirectory = entry.isDirectory() || entryInfo?.isDirectory();
-      const isFile = entry.isFile() || entryInfo?.isFile();
-      if (isDirectory) {
-        if (shouldSkipDirectory(entry.name)) {
-          continue;
-        }
-        await visit(entryPath);
-      } else if (isFile && includeFile(entry.name, entryPath)) {
-        files.push(entryPath);
-      }
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) {
+      await hashTree(root, path, hash);
+    } else if (entry.isFile()) {
+      hash.update(path.slice(root.length));
+      hash.update(await readFile(path));
     }
   }
-
-  await visit(root);
-  return files;
 }
 
-function isServiceWatchInput(name) {
-  return (name.startsWith('service') && name.endsWith('.yml'))
-    || (name.startsWith('config') && name.endsWith('.yml'))
-    || name.endsWith('.skiff');
-}
-
-function isSharedWatchInput(name) {
-  return name.endsWith('.skiff')
-    || name.endsWith('.yml')
-    || name.endsWith('.yaml')
-    || name.endsWith('.json');
-}
-
-function shouldSkipDirectory(name) {
-  // Build output now lives under the dev home, not the service tree. `build`
-  // and `build.lock` remain skipped so stale in-tree directories left by older
-  // builds don't re-enter the watch fingerprint and trigger rebuild loops.
-  return name === 'node_modules'
-    || name === 'build'
-    || name === 'build.lock'
-    || name === '.skiff-build'
-    || name === '.git'
-    || name === 'target';
-}
-
-async function loadConfig(cli) {
-  const configPath = resolveDevConfigPath(cli.config);
-  const raw = configPath === undefined
-    ? { __exists: false }
-    : await readOptionalJsonConfig(configPath, !cli.watch);
-  const configDir = configPath === undefined ? process.cwd() : dirname(configPath);
-  const configLabel = configPath ?? 'dev config';
-  const profile = cli.profile ?? optionalString(raw.profile, `${configLabel} profile`) ?? 'dev';
-  const services = await readConfiguredServices({
-    cli,
-    configPath,
-    configDir,
-    configLabel,
-    profile,
-    raw,
-  });
-  const artifactRootValue =
-    cli.artifactRoot ??
-    process.env.SKIFF_ARTIFACT_ROOT ??
-    optionalString(raw.artifactRoot, `${configLabel} artifactRoot`) ??
-    defaultArtifactRoot;
-  const artifactRoot = artifactRootValue === undefined
-    ? undefined
-    : resolveConfigPath(cli.artifactRoot !== undefined || process.env.SKIFF_ARTIFACT_ROOT !== undefined ? process.cwd() : configDir, artifactRootValue);
-  const buildRootValue =
-    cli.buildRoot ??
-    optionalString(raw.buildRoot, `${configLabel} buildRoot`) ??
-    defaultBuildRoot;
-  const buildRoot = resolveConfigPath(cli.buildRoot !== undefined ? process.cwd() : configDir, buildRootValue);
-  const compilerManifestValue =
-    cli.compilerManifest ??
-    optionalString(raw.compilerManifest, `${configLabel} compilerManifest`) ??
-    defaultCompilerManifest;
-  const sharedInputs = [
-    ...defaultSharedInputs,
-    ...readSharedInputs(raw, configLabel, configDir),
-  ];
-  const cliPackageDirs = cli.packageDirs.map((path) => resolve(process.cwd(), path));
-  const defaultPackageDirs = uniquePaths(cli.defaultPackageDirs.map((path) => resolve(process.cwd(), path)));
-  const configPackageDirs = readPackageDirs(raw, configLabel, configDir);
-  const packageDirSource = cliPackageDirs.length > 0 ? 'cli' : 'project';
-  if (packageDirSource !== 'cli') {
-    await defaultProjectPackageDirsForServices(services);
+function coordinate(reference, fields) {
+  if (!isPlainObject(reference) || fields.some((field) => typeof reference[field] !== 'string')) {
+    throw new Error(`authoring publish did not return coordinates ${fields.join(', ')}`);
   }
-  const packageDirs = uniquePaths(packageDirSource === 'cli' ? cliPackageDirs : []);
-  const cliServiceArtifactRoots = cli.serviceArtifactRoots.map((path) => resolve(process.cwd(), path));
-  const configServiceArtifactRoots = readServiceArtifactRoots(raw, configLabel, configDir);
-  const serviceArtifactRoots = uniquePaths(cliServiceArtifactRoots.length > 0
-    ? cliServiceArtifactRoots
-    : configServiceArtifactRoots);
-  return {
-    artifactRoot,
-    buildRoot,
-    compilerManifest: resolveConfigPath(cli.compilerManifest !== undefined ? process.cwd() : configDir, compilerManifestValue),
-    configPath,
-    configPackageDirs,
-    defaultPackageDirs,
-    packageDirSource,
-    packageDirs,
-    reloadUrl: cli.reloadUrl ?? process.env.SKIFF_DEV_RELOAD_URL ?? optionalString(raw.reloadUrl, `${configLabel} reloadUrl`) ?? defaultReloadUrl,
-    services,
-    serviceArtifactRoots,
-    sharedInputs,
-  };
+  return fields.map((field) => reference[field]).join('@');
 }
 
-async function readConfiguredServices(input) {
-  if (input.cli.root !== undefined || input.cli.serviceId !== undefined) {
-    return [await readSingleCliService(input)];
+function rejectDuplicateCoordinate(owners, key, root) {
+  const existing = owners.get(key);
+  if (existing !== undefined && existing !== root) {
+    throw new Error(`dev registry roots ${existing} and ${root} publish duplicate coordinate ${key}`);
   }
-
-  if (input.configPath !== undefined && input.raw.__exists === false) {
-    return [];
-  }
-
-  if (input.raw.services !== undefined) {
-    return readConfigServices(input);
-  }
-
-  return [await readSingleCliService(input)];
+  owners.set(key, root);
 }
 
-async function readSingleCliService({ cli, profile }) {
-  const root = resolve(process.cwd(), cli.root ?? '.');
-  const serviceId = cli.serviceId ?? await readServiceId(root);
-  assertServiceId(serviceId, `service id ${serviceId}`);
-  return {
-    serviceId,
-    root,
-    profile,
-  };
+function nextExpectedGeneration(result, fallback) {
+  const response = result?.assemblyActivationReceipt?.response;
+  const candidates = [response?.committed?.generation, response?.generation, response?.candidateGeneration];
+  return candidates.find((value) => Number.isSafeInteger(value) && value >= 0) ?? fallback;
 }
 
-async function readConfigServices({ raw, configDir, configLabel, profile }) {
-  if (!Array.isArray(raw.services)) {
-    throw new Error(`${configLabel} services must be an array`);
-  }
-  const services = [];
-  const seenServiceIds = new Set();
-  for (const [index, value] of raw.services.entries()) {
-    const label = `${configLabel} services[${index}]`;
-    if (!isRecord(value)) {
-      throw new Error(`${label} must be an object`);
-    }
-    const rootValue = requiredString(value.root, `${label}.root`);
-    const root = resolveConfigPath(configDir, rootValue);
-    const serviceId = optionalString(value.serviceId, `${label}.serviceId`) ?? await readServiceId(root);
-    assertServiceId(serviceId, `${label}.serviceId`);
-    if (seenServiceIds.has(serviceId)) {
-      throw new Error(`${configLabel} services contains duplicate serviceId ${serviceId}`);
-    }
-    seenServiceIds.add(serviceId);
-    services.push({
-      serviceId,
-      root,
-      profile: optionalString(value.profile, `${label}.profile`) ?? profile,
-      packageDirs: value.packageDirs === undefined
-        ? undefined
-        : readPathList(value.packageDirs, `${label}.packageDirs`, configDir),
-    });
-  }
-  services.sort((left, right) =>
-    left.serviceId.localeCompare(right.serviceId)
-    || left.root.localeCompare(right.root)
-    || left.profile.localeCompare(right.profile));
-  return services;
-}
-
-function assertServiceId(serviceId, label) {
-  if (!isPublicationId(serviceId)) {
-    throw new Error(`${label} must be a publication id`);
-  }
-}
-
-async function readOptionalJsonConfig(path, required) {
-  try {
-    const value = JSON.parse(await readFile(path, 'utf8'));
-    if (!isRecord(value)) {
-      throw new Error(`${path} must be a JSON object`);
-    }
-    value.__exists = true;
-    return value;
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      if (required) {
-        throw new Error(`failed to read dev config ${path}`);
-      }
-      return { __exists: false };
-    }
-    throw error;
-  }
-}
-
-function readSharedInputs(raw, configPath, configDir) {
-  return readPathList(raw.sharedInputs, `${configPath} sharedInputs`, configDir);
-}
-
-function readPackageDirs(raw, configPath, configDir) {
-  return readPathList(raw.packageDirs, `${configPath} packageDirs`, configDir);
-}
-
-function readServiceArtifactRoots(raw, configPath, configDir) {
-  return readPathList(raw.serviceArtifactRoots, `${configPath} serviceArtifactRoots`, configDir);
-}
-
-function readPathList(value, label, configDir) {
+function parseNonNegativeInteger(value, label) {
   if (value === undefined) {
-    return [];
+    return undefined;
   }
-  if (!Array.isArray(value)) {
-    throw new Error(`${label} must be an array`);
+  if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`${label} must be a non-negative integer`);
   }
-  return value.map((item, index) =>
-    resolveConfigPath(configDir, requiredString(item, `${label}[${index}]`)));
-}
-
-async function defaultProjectPackageDirsForServices(services) {
-  if (services.length === 0) {
-    return (await readProjectPackageDirs(process.cwd())).packageDirs;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${label} exceeds the safe integer range`);
   }
-  const packageDirs = [];
-  for (const service of services) {
-    const project = await readProjectPackageDirs(service.root);
-    service.projectConfigPaths = project.configPaths;
-    service.projectPackageDirs = project.packageDirs;
-    packageDirs.push(...project.packageDirs);
-  }
-  return packageDirs;
-}
-
-async function isDirectory(path) {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function uniquePaths(paths) {
-  return [...new Set(paths.map((path) => resolve(path)))];
-}
-
-function appendPackagesDirArgs(targetArgs, packageDirs) {
-  for (const packageDir of packageDirs) {
-    targetArgs.push('--packages-dir', packageDir);
-  }
-}
-
-async function readServiceId(root) {
-  const serviceConfigPath = await serviceConfigPathFor(root);
-  const source = await readFile(serviceConfigPath, 'utf8');
-  const match = source.match(/^id:\s*([a-z0-9_./-]+)\s*$/m);
-  if (!match) {
-    throw new Error(`${serviceConfigPath} must declare top-level id`);
-  }
-  return match[1];
-}
-
-async function serviceConfigPathFor(root) {
-  const defaultPath = join(root, 'service.yml');
-  if (await isFile(defaultPath)) {
-    return defaultPath;
-  }
-  throw new Error(`${root} must contain service.yml`);
-}
-
-async function isFile(path) {
-  try {
-    return (await stat(path)).isFile();
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function resolveConfigPath(configDir, path) {
-  return isAbsolute(path) ? path : resolve(configDir, path);
-}
-
-function resolveDevHome(envValue) {
-  if (envValue) {
-    const trimmed = envValue.trim();
-    if (trimmed.length > 0) {
-      return resolve(trimmed);
-    }
-  }
-  return defaultDevHome;
-}
-
-function resolveDevConfigPath(cliConfig) {
-  const config = cliConfig ?? process.env.SKIFF_DEV_CONFIG ?? process.env.SKIFF_DEV_SYNC_CONFIG;
-  return config === undefined ? undefined : resolve(process.cwd(), config);
-}
-
-function parseCli(args) {
-  const result = {
-    check: false,
-    checkSync: false,
-    config: undefined,
-    artifactRoot: undefined,
-    buildRoot: undefined,
-    compilerManifest: undefined,
-    defaultPackageDirs: [],
-    noReload: false,
-    packageDirs: [],
-    profile: undefined,
-    pollIntervalMs: defaultPollIntervalMs,
-    reloadUrl: undefined,
-    root: undefined,
-    serviceArtifactRoots: [],
-    serviceId: undefined,
-    watch: false,
-  };
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === '--watch') {
-      result.watch = true;
-    } else if (arg === '--check') {
-      result.check = true;
-    } else if (arg === '--check-sync') {
-      result.checkSync = true;
-    } else if (arg === '--no-reload') {
-      result.noReload = true;
-    } else if (arg === '--config') {
-      result.config = requireNextArg(args, index, '--config');
-      index += 1;
-    } else if (arg.startsWith('--config=')) {
-      result.config = arg.slice('--config='.length);
-    } else if (arg === '--root') {
-      result.root = requireNextArg(args, index, '--root');
-      index += 1;
-    } else if (arg.startsWith('--root=')) {
-      result.root = arg.slice('--root='.length);
-    } else if (arg === '--profile') {
-      result.profile = requireNextArg(args, index, '--profile');
-      index += 1;
-    } else if (arg.startsWith('--profile=')) {
-      result.profile = arg.slice('--profile='.length);
-    } else if (arg === '--service' || arg === '--service-id') {
-      result.serviceId = requireNextArg(args, index, arg);
-      index += 1;
-    } else if (arg.startsWith('--service=')) {
-      result.serviceId = arg.slice('--service='.length);
-    } else if (arg.startsWith('--service-id=')) {
-      result.serviceId = arg.slice('--service-id='.length);
-    } else if (arg === '--artifact-root') {
-      result.artifactRoot = requireNextArg(args, index, '--artifact-root');
-      index += 1;
-    } else if (arg.startsWith('--artifact-root=')) {
-      result.artifactRoot = arg.slice('--artifact-root='.length);
-    } else if (arg === '--build-root') {
-      result.buildRoot = requireNextArg(args, index, '--build-root');
-      index += 1;
-    } else if (arg.startsWith('--build-root=')) {
-      result.buildRoot = arg.slice('--build-root='.length);
-    } else if (arg === '--reload-url') {
-      result.reloadUrl = requireNextArg(args, index, '--reload-url');
-      index += 1;
-    } else if (arg.startsWith('--reload-url=')) {
-      result.reloadUrl = arg.slice('--reload-url='.length);
-    } else if (arg === '--compiler-manifest') {
-      result.compilerManifest = requireNextArg(args, index, '--compiler-manifest');
-      index += 1;
-    } else if (arg.startsWith('--compiler-manifest=')) {
-      result.compilerManifest = arg.slice('--compiler-manifest='.length);
-    } else if (arg === '--packages-dir') {
-      result.packageDirs.push(requireNextArg(args, index, '--packages-dir'));
-      index += 1;
-    } else if (arg.startsWith('--packages-dir=')) {
-      result.packageDirs.push(arg.slice('--packages-dir='.length));
-    } else if (arg === '--default-packages-dir') {
-      result.defaultPackageDirs.push(requireNextArg(args, index, '--default-packages-dir'));
-      index += 1;
-    } else if (arg.startsWith('--default-packages-dir=')) {
-      result.defaultPackageDirs.push(arg.slice('--default-packages-dir='.length));
-    } else if (arg === '--service-artifact-root') {
-      result.serviceArtifactRoots.push(requireNextArg(args, index, '--service-artifact-root'));
-      index += 1;
-    } else if (arg.startsWith('--service-artifact-root=')) {
-      result.serviceArtifactRoots.push(arg.slice('--service-artifact-root='.length));
-    } else if (arg === '--poll-interval-ms') {
-      result.pollIntervalMs = parsePositiveInteger(requireNextArg(args, index, '--poll-interval-ms'), '--poll-interval-ms');
-      index += 1;
-    } else if (arg.startsWith('--poll-interval-ms=')) {
-      result.pollIntervalMs = parsePositiveInteger(arg.slice('--poll-interval-ms='.length), '--poll-interval-ms');
-    } else if (arg === '-h' || arg === '--help') {
-      printUsage();
-      process.exit(0);
-    } else if (!arg.startsWith('-')) {
-      if (result.root !== undefined) {
-        throw new Error(`unexpected argument ${arg}`);
-      }
-      result.root = arg;
-    } else {
-      throw new Error(`unknown option ${arg}`);
-    }
-  }
-
-  return result;
-}
-
-function requireNextArg(args, index, optionName) {
-  const value = args[index + 1];
-  if (value === undefined || value.startsWith('-')) {
-    throw new Error(`${optionName} requires a value`);
-  }
-  return value;
+  return parsed;
 }
 
 function parsePositiveInteger(value, label) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  const parsed = typeof value === 'number' ? value : parseNonNegativeInteger(value, label);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`${label} must be a positive integer`);
   }
   return parsed;
 }
 
-function printUsage() {
-  console.log('usage: node skiff-dev-sync.mjs [root] [--watch|--check|--check-sync] [--root <service-dir>] [--profile <name>] [--artifact-root <dir>] [--build-root <dir>] [--service-artifact-root <dir>]... [--reload-url <url>] [--no-reload] [--config <path>] [--packages-dir <dir>]... [--default-packages-dir <dir>]... [--poll-interval-ms <ms>]');
-}
-
-function run(command, runArgs, cwd, env = process.env) {
-  return runAttachedCommand(command, runArgs, { cwd, env });
-}
-
-async function writeStagedFile(targetPath, contents) {
-  const tempPath = join(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.${randomUUID()}.next`);
-  try {
-    await writeFile(tempPath, contents);
-    return tempPath;
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
+function assertEnvironment(value) {
+  if (typeof value !== 'string' || !/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/.test(value)) {
+    throw new Error('environment must use only letters, digits, dot, dash, or underscore');
   }
 }
 
-async function writeJson(path, value) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+function printResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(JSON.stringify(result));
 }
 
-async function assertExists(path) {
-  try {
-    await stat(path);
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      throw new Error(`expected ${path} to exist`);
-    }
-    throw error;
-  }
-}
-
-async function assertMissing(path) {
-  try {
-    await stat(path);
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return;
-    }
-    throw error;
-  }
-  throw new Error(`expected ${path} to be removed`);
-}
-
-function assertServiceAssembly(value, serviceId) {
-  if (value?.schemaVersion !== 'skiff-assembly-v1') {
-    throw new Error('service assembly schemaVersion must be skiff-assembly-v1');
-  }
-  if (value.kind !== 'service') {
-    throw new Error('service assembly kind must be service');
-  }
-  if (value.service?.id !== serviceId) {
-    throw new Error(`service assembly service.id must be ${serviceId}`);
-  }
-  if (typeof value.service?.assemblyIdentity !== 'string') {
-    throw new Error('service assembly is missing service.assemblyIdentity');
-  }
-  if (typeof value.service?.protocolIdentity !== 'string') {
-    throw new Error('service assembly is missing service.protocolIdentity');
-  }
-}
-
-function assertDeepEqual(actual, expected, label) {
-  const actualJson = JSON.stringify(actual);
-  const expectedJson = JSON.stringify(expected);
-  if (actualJson !== expectedJson) {
-    throw new Error(`${label} mismatch\nexpected: ${expectedJson}\nactual: ${actualJson}`);
-  }
-}
-
-function identityHash(identity) {
-  const marker = ':sha256:';
-  const index = identity.lastIndexOf(marker);
-  if (index === -1) {
-    throw new Error(`identity must include ${marker}`);
-  }
-  const hash = identity.slice(index + marker.length);
-  if (hash.length === 0) {
-    throw new Error('identity sha256 hash must not be empty');
-  }
-  return hash;
-}
-
-function protocolIdentityHash(identity, label) {
-  const prefix = 'skiff-protocol-v1:sha256:';
-  if (!identity.startsWith(prefix)) {
-    throw new Error(`${label} must start with ${prefix}`);
-  }
-  const hash = identity.slice(prefix.length);
-  assertSha256Hex(hash, `${label} hash`);
-  return hash;
-}
-
-function serviceBuildIdFromAssemblyIdentity(assemblyIdentity) {
-  const hash = identityHash(assemblyIdentity);
-  assertSha256Hex(hash, 'service assembly identity sha256 hash');
-  return `skiff-service-build-v1:sha256:${hash}`;
-}
-
-function assertBuildId(value, label) {
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  const prefix = 'skiff-service-build-v1:sha256:';
-  if (!value.startsWith(prefix)) {
-    throw new Error(`${label} must start with ${prefix}`);
-  }
-  assertSha256Hex(value.slice(prefix.length), label);
-}
-
-function assertSha256Hex(value, label) {
-  if (!/^[0-9a-f]{64}$/.test(value)) {
-    throw new Error(`${label} must be 64 lowercase hex characters`);
-  }
-}
-
-function serviceAssemblyPointer(value, label = 'serviceAssembly') {
-  if (!isRecord(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  const keys = Object.keys(value).sort();
-  const expectedKeys = ['assemblyIdentity', 'assemblyPath'];
-  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
-    throw new Error(`${label} must contain only assemblyIdentity and assemblyPath`);
-  }
-  return {
-    assemblyIdentity: requiredString(value.assemblyIdentity, `${label}.assemblyIdentity`),
-    assemblyPath: requiredString(value.assemblyPath, `${label}.assemblyPath`),
-  };
-}
-
-function rejectUnknownKeys(value, allowed, label) {
-  const allowedKeys = new Set(allowed);
-  const unknown = Object.keys(value).filter((key) => !allowedKeys.has(key));
-  if (unknown.length > 0) {
-    throw new Error(`${label} does not support ${unknown.join(', ')}`);
-  }
-}
-
-function requiredString(value, label) {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
-  }
-  return value;
-}
-
-function optionalString(value, label) {
-  if (value === undefined) {
-    return undefined;
-  }
-  return requiredString(value, label);
-}
-
-function stringValue(value) {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value) {
+function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function sleep(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 function formatError(error) {

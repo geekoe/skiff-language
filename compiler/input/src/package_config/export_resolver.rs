@@ -342,20 +342,23 @@ mod tests {
             config: serde_json::json!({}),
             collection_name_mapping: BTreeMap::new(),
         };
-        let manifest = PackageManifest::new(PublicationManifest::new(
-            PublicationId::parse("example.com/llm").unwrap(),
-            "0.1.0".to_string(),
-            PublicationApiSpec::from_public_instances(vec![
-                PublicationApiPublicInstanceEntry::for_source(
-                    "managedLlm",
-                    "root.llm.managedLlm",
-                    ["root.llm.ManagedLlm"],
-                )
-                .unwrap(),
-            ]),
+        let manifest = PackageManifest::new(
+            PublicationManifest::new(
+                PublicationId::parse("example.com/llm").unwrap(),
+                "0.1.0".to_string(),
+                PublicationApiSpec::from_public_instances(vec![
+                    PublicationApiPublicInstanceEntry::for_source(
+                        "managedLlm",
+                        "root.llm.managedLlm",
+                        ["root.llm.ManagedLlm"],
+                    )
+                    .unwrap(),
+                ]),
+                Vec::new(),
+                ManifestProvenance::synthetic("package.yml", ManifestOwner::UserOrBuiltinPackage),
+            ),
             Vec::new(),
-            ManifestProvenance::synthetic("package.yml", ManifestOwner::UserOrBuiltinPackage),
-        ));
+        );
         let available = BTreeMap::from([(
             package_manifest_key(&dependency.id, &dependency.version),
             manifest,

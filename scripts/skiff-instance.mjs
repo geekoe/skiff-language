@@ -16,7 +16,7 @@ import {
   runAttachedCommand,
 } from './lib/command-execution.mjs';
 import {
-  devSyncCheckFlags,
+  devSyncFlags,
   instanceDevSyncOptions,
   parseDevSyncArgs,
   renderDevSyncArgs,
@@ -58,7 +58,6 @@ const instanceCommands = new Set([
   'supervise',
   'run',
   'down',
-  'reload',
   'sync',
   'watch',
 ]);
@@ -75,9 +74,8 @@ const usage = `usage:
   skiff instance supervise <config>
   skiff instance run <config>  # deprecated alias for supervise
   skiff instance down <config>
-  skiff instance reload <config>
-  skiff instance sync <config> [root] [--profile <name>] [--service-id <id>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--check|--check-sync]
-  skiff instance watch <config> [root] [--profile <name>] [--service-id <id>] [--packages-dir <dir>]... [--service-artifact-root <dir>]... [--poll-interval-ms <ms>]`;
+  skiff instance sync <config> [root] --expected-generation <n> [--environment <name>] [--activation-id <id>] [--build-only] [--json]
+  skiff instance watch <config> [root] --expected-generation <n> [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 try {
   await main(process.argv.slice(2));
@@ -130,9 +128,6 @@ export async function main(rawArgs) {
       return;
     case 'down':
       await downInstance(args, configPath);
-      return;
-    case 'reload':
-      await reloadInstance(args, configPath);
       return;
     case 'sync':
       await syncInstance(args, configPath, false);
@@ -396,26 +391,9 @@ async function repairInstance(rawArgs, configPath) {
   console.log(JSON.stringify({ repaired, status: await instanceStatus(config) }, null, 2));
 }
 
-async function reloadInstance(rawArgs, configPath) {
-  const args = parseFlags(rawArgs, { flags: new Set() });
-  if (args.positionals.length !== 0) {
-    throw new Error(`unexpected argument ${args.positionals[0]}`);
-  }
-  const config = await loadInstance(configPath);
-  const response = await fetch(config.urls.routerReload, { method: 'POST' });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`router reload returned HTTP ${response.status}${body ? `: ${body}` : ''}`);
-  }
-  console.log(`requested router reload at ${config.urls.routerReload}`);
-  if (body.trim()) {
-    console.log(body.trim());
-  }
-}
-
 async function syncInstance(rawArgs, configPath, watch) {
   const args = parseDevSyncArgs(rawArgs, {
-    flags: devSyncCheckFlags,
+    flags: devSyncFlags,
     options: instanceDevSyncOptions,
     resolve,
     allowEmptyEquals: true,
@@ -429,9 +407,8 @@ async function syncInstance(rawArgs, configPath, watch) {
       prefix: watch ? ['--watch'] : [],
       injectOptions: {
         artifactRoot: config.paths.artifactRoot,
-        buildRoot: config.paths.serviceBuildRoot,
-        reloadUrl: config.urls.routerReload,
-        defaultPackagesDir: config.packageDirs,
+        activationUrl: `${config.urls.routerControl}/__skiff/activate-assembly`,
+        config: config.paths.watchConfig,
       },
     }),
   ], process.cwd());
@@ -604,11 +581,10 @@ function managedProcessSpecs(config) {
             config.paths.watchConfig,
             '--artifact-root',
             config.paths.artifactRoot,
-            '--build-root',
-            config.paths.serviceBuildRoot,
-            '--reload-url',
-            config.urls.routerReload,
-            ...config.packageDirs.flatMap((dir) => ['--default-packages-dir', dir]),
+            '--activation-url',
+            `${config.urls.routerControl}/__skiff/activate-assembly`,
+            '--expected-generation',
+            '0',
           ],
           cwd: skiffRoot,
           ports: [],

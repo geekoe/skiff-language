@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde_json::Value;
+use skiff_artifact_model::PackageContractAuthoring;
 use thiserror::Error;
 
 use crate::{
@@ -39,11 +40,15 @@ pub struct PackageResolutionDirs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageManifest {
     pub publication: PublicationManifest,
+    pub contracts: Vec<PackageContractAuthoring>,
 }
 
 impl PackageManifest {
-    pub fn new(publication: PublicationManifest) -> Self {
-        Self { publication }
+    pub fn new(publication: PublicationManifest, contracts: Vec<PackageContractAuthoring>) -> Self {
+        Self {
+            publication,
+            contracts,
+        }
     }
 
     pub fn into_publication(self) -> PublicationManifest {
