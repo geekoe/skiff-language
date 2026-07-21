@@ -12,6 +12,7 @@ import {
   type ResponseStartFrameHeader,
   type RouterToRuntimeFrameHeader
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import {
   REQUEST_CANCEL_SITUATION,
   requestCancelReasonForSituation
@@ -21,8 +22,10 @@ import type {
   RuntimeDispatchFrameHeader,
   RuntimeDispatchRuntimeIdentity,
   RuntimeInFlightRequest,
-  RuntimeRegistry
+  RuntimeRegistry,
+  RuntimeUnaryDispatchFrameHeader
 } from './runtimeRegistry.js';
+import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import {
   GatewayError,
   ProviderUnavailableError,
@@ -55,7 +58,7 @@ export type PendingTerminal =
 export interface RuntimeFrameSender {
   sendFrame(
     ws: WebSocket,
-    header: RouterToRuntimeFrameHeader,
+    header: RouterToRuntimeFrameHeader | RuntimeAssemblyRequestStartFrameHeader,
     payloadBytes?: Uint8Array,
     callback?: RuntimeFrameSendCallback
   ): void;
@@ -69,7 +72,7 @@ interface RuntimeInvocationBase extends RuntimeInFlightRequest {
 
 export interface RuntimeUnaryInvocation extends RuntimeInvocationBase {
   kind: 'unary';
-  request: RequestStartFrameHeader;
+  request: RuntimeUnaryDispatchFrameHeader;
   resolve(response: RuntimeBinaryDispatchResponse): void;
 }
 
@@ -119,7 +122,7 @@ export interface RuntimeBinaryDispatchChunk {
 }
 
 export interface RuntimeBinaryDispatchInput<
-  THeader extends RuntimeDispatchFrameHeader = RequestStartFrameHeader
+  THeader extends RuntimeDispatchFrameHeader = RuntimeUnaryDispatchFrameHeader
 > {
   header: THeader;
   payloadBytes: Uint8Array;
@@ -181,7 +184,7 @@ export class RuntimeDispatcher {
   }
 
   dispatchBinary(
-    request: RuntimeBinaryDispatchInput<RequestStartFrameHeader>,
+    request: RuntimeBinaryDispatchInput<RuntimeUnaryDispatchFrameHeader>,
     timeoutMs: number,
     options: RuntimeBinaryDispatchOptions = {}
   ): Promise<RuntimeBinaryDispatchResponse> {
@@ -830,6 +833,10 @@ function dispatchHeaderForConnection(
   connection: RuntimeDispatchConnection
 ): RequestStartFrameHeader;
 function dispatchHeaderForConnection(
+  header: RuntimeUnaryDispatchFrameHeader,
+  connection: RuntimeDispatchConnection
+): RuntimeUnaryDispatchFrameHeader;
+function dispatchHeaderForConnection(
   header: RuntimeDispatchFrameHeader,
   connection: RuntimeDispatchConnection
 ): RuntimeDispatchFrameHeader;
@@ -837,6 +844,9 @@ function dispatchHeaderForConnection(
   header: RuntimeDispatchFrameHeader,
   connection: RuntimeDispatchConnection
 ): RuntimeDispatchFrameHeader {
+  if (isRuntimeAssemblyRequestDispatchHeader(header)) {
+    return header;
+  }
   if (
     header.type !== 'request.start' ||
     connection.dispatchBuildId === undefined ||

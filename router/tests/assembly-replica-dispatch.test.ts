@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import { expect, it, vi } from 'vitest';
 
-import { assemblyRequestHeader } from '../src/router/assemblyHttpGateway.js';
-import { validateRouterToRuntimeFrameHeader } from '../src/protocol/runtimeProtocol.js';
+import { assemblyHttpUnaryRequestHeader } from '../src/router/assemblyHttpGateway.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
   ProviderUnavailableError,
@@ -43,11 +43,12 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   const socketB = fakeSocket();
   register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
   register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
-  const request = assemblyRequestHeader({
+  const request = assemblyHttpUnaryRequestHeader({
     snapshot: snapshots.get(),
     binding,
     requestId: 'request-1',
-    timeoutMs: 1000
+    timeoutMs: 1000,
+    httpRequest: httpRequest()
   });
 
   expect(registry.pickDispatchConnection(request)).toMatchObject({ runtimeId: 'replica-a' });
@@ -64,13 +65,14 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   registry.activate(snapshots.get());
   const staleRequest = registry.pickDispatchConnection(request);
   expect(staleRequest).toBeInstanceOf(ServiceProtocolBoundaryError);
-  const currentRequest = assemblyRequestHeader({
+  const currentRequest = assemblyHttpUnaryRequestHeader({
     snapshot: snapshots.get(),
     binding,
     requestId: 'request-2',
-    timeoutMs: 1000
+    timeoutMs: 1000,
+    httpRequest: httpRequest()
   });
-  expect(validateRouterToRuntimeFrameHeader(currentRequest)).toMatchObject({ ok: true });
+  expect(validateRuntimeAssemblyRequestStartFrameHeader(currentRequest)).toMatchObject({ ok: true });
   expect(registry.pickDispatchConnection(currentRequest)).toBeInstanceOf(
     ProviderUnavailableError
   );
@@ -87,6 +89,16 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   expect(registry.snapshot()[0]).not.toHaveProperty('buildId');
   expect(registry.snapshot()[0]).not.toHaveProperty('target');
 });
+
+function httpRequest() {
+  return {
+    method: 'GET',
+    url: 'http://api.localhost/v1/models',
+    path: '/v1/models',
+    query: [],
+    headers: []
+  };
+}
 
 function snapshot(generation: number, assemblyIdentity: string): RouterActiveAssemblySnapshot {
   return {

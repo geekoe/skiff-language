@@ -12,6 +12,7 @@ import {
   type RuntimeHealthEnvelope,
   type RuntimeRegisterEnvelope
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import {
   ActorSpawnRuntimeControl,
   type ActorSpawnRuntimeControlOptions,
@@ -83,7 +84,13 @@ export interface RuntimeLoopRiskHealthSnapshot {
   counters: RuntimeHealthCounters;
 }
 
-export type RuntimeDispatchFrameHeader = RequestStartFrameHeader | PackageTestStartFrameHeader;
+export type RuntimeUnaryDispatchFrameHeader =
+  | RequestStartFrameHeader
+  | RuntimeAssemblyRequestStartFrameHeader;
+
+export type RuntimeDispatchFrameHeader =
+  | RuntimeUnaryDispatchFrameHeader
+  | PackageTestStartFrameHeader;
 
 export interface RuntimeDispatchConnection {
   runtimeId?: string;
@@ -479,6 +486,11 @@ export class RuntimeRegistry {
   ): RuntimeDispatchConnection | null | GatewayError {
     if (request.type === 'package-test.start') {
       return this.pickPackageTestDispatchConnection(request);
+    }
+    if (isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ServiceProtocolBoundaryError(
+        'runtimeAssembly request.start requires the committed assembly registry'
+      );
     }
 
     const effectiveBuildId = this.resolveEffectiveBuildId(request);
@@ -1050,6 +1062,9 @@ export class RuntimeRegistry {
     if (request.type === 'package-test.start') {
       return false;
     }
+    if (isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return false;
+    }
     if (request.serviceId !== undefined && request.serviceId !== runtime.serviceId) {
       return false;
     }
@@ -1131,6 +1146,12 @@ export class RuntimeRegistry {
     record.connected = false;
     record.disconnectedAtMs = Date.now();
   }
+}
+
+export function isRuntimeAssemblyRequestDispatchHeader(
+  header: RuntimeDispatchFrameHeader
+): header is RuntimeAssemblyRequestStartFrameHeader {
+  return header.type === 'request.start' && 'routing' in header;
 }
 
 function runtimeBuildKey(serviceId: string, buildId: string): string {

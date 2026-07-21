@@ -4,10 +4,12 @@ import type {
   AssemblyActivationControl
 } from '../protocol/assemblyActivationProtocol.js';
 import type {
-  RequestStartFrameHeader,
   RuntimeHealthCounters
 } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
 import { ProviderUnavailableError, ServiceProtocolBoundaryError } from './errors.js';
+import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import type {
   RuntimeDispatchConnection,
   RuntimeDispatchFrameHeader,
@@ -198,6 +200,11 @@ export class AssemblyRuntimeRegistry {
         'package test dispatch is not part of the active RuntimeAssembly registry'
       );
     }
+    if (!isRuntimeAssemblyRequestDispatchHeader(request)) {
+      return new ServiceProtocolBoundaryError(
+        'active RuntimeAssembly dispatch requires canonical nested routing'
+      );
+    }
     const active = this.snapshots.get();
     const mismatch = validateAssemblyRequest(request, active);
     if (mismatch !== undefined) {
@@ -273,49 +280,73 @@ function matchesActiveSnapshot(
 }
 
 function validateAssemblyRequest(
-  request: RequestStartFrameHeader,
+  candidate: RuntimeAssemblyRequestStartFrameHeader,
   active: RouterActiveAssemblySnapshot
 ): ServiceProtocolBoundaryError | undefined {
+  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  if (!validation.ok) {
+    return new ServiceProtocolBoundaryError(validation.error);
+  }
+  const request = validation.envelope;
   if (
-    request.assemblyIdentity !== active.assembly.assemblyIdentity ||
-    request.assemblyGeneration !== active.generation ||
-    request.ingress === undefined ||
-    request.contractOperationId === undefined
+    request.mode !== 'unary' ||
+    request.routing.ingress.protocol !== 'http' ||
+    request.httpRequest === undefined ||
+    request.httpAdapter !== undefined ||
+    request.websocketAdapter !== undefined ||
+    request.testEffectsEnabled !== false ||
+    Object.keys(request.testEffectDoubles).length !== 0
+  ) {
+    return new ServiceProtocolBoundaryError(
+      'active RuntimeAssembly dispatch only accepts canonical HTTP unary requests'
+    );
+  }
+  if (
+    request.routing.assemblyIdentity !== active.assembly.assemblyIdentity ||
+    request.routing.assemblyGeneration !== active.generation
   ) {
     return new ServiceProtocolBoundaryError(
       'request does not carry the exact committed RuntimeAssembly generation and ingress identity'
     );
   }
-  let canonicalIngress: typeof request.ingress;
+  let canonicalIngress: typeof request.routing.ingress;
   try {
     canonicalIngress = {
-      ...request.ingress,
-      host: canonicalIngressHost(request.ingress.host),
+      ...request.routing.ingress,
+      host: canonicalIngressHost(request.routing.ingress.host),
       method:
-        request.ingress.method === null ? null : request.ingress.method.toUpperCase()
+        request.routing.ingress.method === null
+          ? null
+          : request.routing.ingress.method.toUpperCase()
     };
     if (
-      canonicalIngress.host !== request.ingress.host ||
-      canonicalIngress.method !== request.ingress.method
+      canonicalIngress.host !== request.routing.ingress.host ||
+      canonicalIngress.method !== request.routing.ingress.method
     ) {
       throw new Error('request ingress is not canonical');
     }
     runtimeAssemblyIngressKey(canonicalIngress);
+    const requestUrl = new URL(request.httpRequest.url);
+    if (
+      request.httpRequest.method !== canonicalIngress.method ||
+      request.httpRequest.path !== canonicalIngress.path ||
+      requestUrl.pathname !== canonicalIngress.path ||
+      canonicalIngressHost(requestUrl.host) !== canonicalIngress.host
+    ) {
+      throw new Error('HTTP request metadata does not match routing ingress');
+    }
   } catch {
     return new ServiceProtocolBoundaryError(
-      'request does not carry a canonical RuntimeAssembly ingress identity'
+      'request does not carry matching canonical RuntimeAssembly HTTP ingress metadata'
     );
   }
   const binding = active.ingress.get(canonicalIngress);
   if (
     binding === undefined ||
-    binding.contractOperationId !== request.contractOperationId ||
-    request.target !== request.contractOperationId ||
-    request.operationAbiId !== request.contractOperationId ||
-    binding.contract.serviceProtocolIdentity !== request.serviceProtocolIdentity
+    binding.contractOperationId !== request.routing.contractOperationId
   ) {
     return new ServiceProtocolBoundaryError(
-      `request canonical ingress ${runtimeAssemblyIngressKey(request.ingress)} does not match the committed assembly`
+      `request canonical ingress ${runtimeAssemblyIngressKey(request.routing.ingress)} does not match the committed assembly`
     );
   }
   return undefined;
