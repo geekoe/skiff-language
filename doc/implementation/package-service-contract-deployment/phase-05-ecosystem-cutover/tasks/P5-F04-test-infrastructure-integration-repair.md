@@ -33,7 +33,6 @@
 cargo test -p skiff-test-runner --test package_service_contract_deployment
 cargo test -p skiff-runtime-package-test --test package_artifact
 cargo test -p skiff-runtime-eval package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mutation
-cargo test -p skiff-runtime-host in_process_request_entry_and_internal_call_share_dispatcher_symbol
 node --test \
   scripts/tests/package-service-authoring.test.mjs \
   scripts/tests/package-service-store.test.mjs \
@@ -44,6 +43,10 @@ node --test \
 node scripts/run-package-service-ecosystem-smoke.mjs --replicas 2 --self-test
 git diff --check
 ```
+
+`runtime-host`在T05 API删除后有已记录且仅位于F03C scope的编译断链；F04不得为运行host test添加兼容层或
+修改host。F03C迁移完成后由其聚焦gate与I02证明`InProcessBoundary` production Host路径；F04自己的真实
+service正例通过canonical isolated stack取得最终Host结果。
 
 另反搜D04删除参数、`enable_ecosystem_smoke_server_stream`、production artifact identity mutation、手调mutation
 primitive及旧aggregate。回报base→overlay→test assembly数据流、CLI disposition、真实执行结果、模块职责、
