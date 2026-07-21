@@ -1,13 +1,12 @@
 use skiff_artifact_model::{
-    FileIrRef, PackageArtifactRef, PublicationResourceRef, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef,
+    runtime_assembly_identity_hash, FileIrRef, PackageArtifactRef, PublicationResourceRef,
+    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 
 use crate::{
-    ArtifactIdentityError, ArtifactRelativePath, Result, ASSEMBLY_IDENTITY_PREFIX,
-    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
-    SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    ArtifactIdentityError, ArtifactRelativePath, Result, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+    FILE_IR_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX, SERVICE_PROTOCOL_IDENTITY_PREFIX,
 };
 
 macro_rules! typed_path {
@@ -136,11 +135,11 @@ impl ServiceDeploymentRecordPath {
 
 impl RuntimeAssemblyRecordPath {
     pub fn new(reference: &RuntimeAssemblyRef) -> Result<Self> {
-        let identity = identity_hash(
-            reference.assembly_identity.as_str(),
-            ASSEMBLY_IDENTITY_PREFIX,
-            "assemblyIdentity",
-        )?;
+        let identity = runtime_assembly_identity_hash(reference.assembly_identity.as_str())
+            .map_err(|_| ArtifactIdentityError::InvalidArtifactSegment {
+                label: "assemblyIdentity".to_string(),
+                value: reference.assembly_identity.to_string(),
+            })?;
         relative(format!("records/runtime-assemblies/{identity}.json")).map(Self)
     }
 }
@@ -286,6 +285,7 @@ fn invalid_segment<T>(label: &str, value: &str) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ASSEMBLY_IDENTITY_PREFIX;
     use skiff_artifact_model::{
         AssemblyIdentity, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
         PackageLocalAbiIdentity, ServiceProtocolIdentity,
@@ -369,6 +369,28 @@ mod tests {
         };
         assert!(PackageArtifactRecordPath::new(&package).is_err());
         assert!(EnvironmentActivationStatePath::new("../prod").is_err());
+    }
+
+    #[test]
+    fn runtime_assembly_path_consumes_model_identity_leaf() {
+        let valid = RuntimeAssemblyRef {
+            assembly_identity: AssemblyIdentity::new(format!(
+                "{ASSEMBLY_IDENTITY_PREFIX}:{}",
+                hash('a')
+            )),
+        };
+        assert!(RuntimeAssemblyRecordPath::new(&valid).is_ok());
+
+        for invalid in [
+            format!("{ASSEMBLY_IDENTITY_PREFIX}:{}", hash('A')),
+            format!("{ASSEMBLY_IDENTITY_PREFIX}:short"),
+            format!("skiff-service-protocol-v2:sha256:{}", hash('a')),
+        ] {
+            let reference = RuntimeAssemblyRef {
+                assembly_identity: AssemblyIdentity::new(invalid),
+            };
+            assert!(RuntimeAssemblyRecordPath::new(&reference).is_err());
+        }
     }
 
     #[test]

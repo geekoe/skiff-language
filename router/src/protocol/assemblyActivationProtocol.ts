@@ -1,12 +1,17 @@
+import {
+  activationEnvironment,
+  activationGeneration,
+  activationToken,
+  expectedActivationGeneration,
+  runtimeAssemblyIdentity,
+} from "./assemblyActivationLexical.js";
+
 export const ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT =
   "POST /__skiff/activate-assembly" as const;
 export const ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION =
   "skiff-assembly-activation-request-v1" as const;
 export const ENVIRONMENT_ACTIVATION_STATE_SCHEMA_VERSION =
   "skiff-environment-activation-state-v1" as const;
-
-const runtimeAssemblyIdentityPattern =
-  /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/u;
 
 export type RuntimeAssemblyRef = Readonly<{
   assemblyIdentity: string;
@@ -119,7 +124,10 @@ export function decodeAssemblyActivationRequest(
     schemaVersion,
     environment: requiredEnvironment(value, "environment"),
     activationId: requiredToken(value, "activationId"),
-    expectedGeneration: requiredGeneration(value, "expectedGeneration"),
+    expectedGeneration: requiredExpectedGeneration(
+      value,
+      "expectedGeneration",
+    ),
     assembly: decodeAssemblyRef(value.assembly),
   };
 }
@@ -236,7 +244,10 @@ function decodePendingActivation(input: unknown): PendingActivation {
     ],
     "pending activation",
   );
-  const expectedGeneration = requiredGeneration(value, "expectedGeneration");
+  const expectedGeneration = requiredExpectedGeneration(
+    value,
+    "expectedGeneration",
+  );
   const candidateGeneration = requiredGeneration(value, "candidateGeneration");
   requireCandidateGeneration(expectedGeneration, candidateGeneration);
   return {
@@ -254,7 +265,10 @@ function decodeTransition<T extends TransitionType | "reject">(
   value: Record<string, unknown>,
   type: T,
 ) {
-  const expectedGeneration = requiredGeneration(value, "expectedGeneration");
+  const expectedGeneration = requiredExpectedGeneration(
+    value,
+    "expectedGeneration",
+  );
   const candidateGeneration = requiredGeneration(value, "candidateGeneration");
   requireCandidateGeneration(expectedGeneration, candidateGeneration);
   return {
@@ -271,18 +285,18 @@ function decodeTransition<T extends TransitionType | "reject">(
 function decodeAssemblyRef(input: unknown): RuntimeAssemblyRef {
   const value = exactObject(input, "runtime assembly ref");
   exactFields(value, ["assemblyIdentity"], "runtime assembly ref");
-  const assemblyIdentity = requiredString(value, "assemblyIdentity");
-  if (!runtimeAssemblyIdentityPattern.test(assemblyIdentity)) {
-    throw new Error(
-      "assemblyIdentity must be skiff-runtime-assembly-v1:sha256:<64 lowercase hex>",
-    );
-  }
+  const assemblyIdentity = runtimeAssemblyIdentity(value.assemblyIdentity);
   return { assemblyIdentity };
 }
 
 function decodeParticipantReplicaIds(input: unknown): readonly string[] {
   if (!Array.isArray(input) || input.length === 0) {
     throw new Error("participantReplicaIds must be a non-empty array");
+  }
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) {
+      throw new Error("participantReplicaIds must be a dense array");
+    }
   }
   const replicaIds = input.map((value, index) =>
     canonicalToken(value, `participantReplicaIds[${index}]`),
@@ -342,50 +356,28 @@ function requiredToken(value: Record<string, unknown>, field: string): string {
 }
 
 function canonicalToken(value: unknown, label: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value !== value.trim() ||
-    Buffer.byteLength(value, "utf8") > 200 ||
-    /\p{Cc}/u.test(value)
-  ) {
-    throw new Error(
-      `${label} must be non-empty, have no surrounding whitespace or control characters, and be at most 200 bytes`,
-    );
-  }
-  return value;
+  return activationToken(value, label);
 }
 
 function requiredEnvironment(
   value: Record<string, unknown>,
   field: string,
 ): string {
-  const environment = requiredToken(value, field);
-  if (
-    environment === "." ||
-    environment === ".." ||
-    !/^[A-Za-z0-9._-]+$/u.test(environment)
-  ) {
-    throw new Error(
-      `${field} must use only letters, digits, dot, dash, or underscore`,
-    );
-  }
-  return environment;
+  return activationEnvironment(value[field], field);
 }
 
 function requiredGeneration(
   value: Record<string, unknown>,
   field: string,
 ): number {
-  const fieldValue = value[field];
-  if (
-    typeof fieldValue !== "number" ||
-    !Number.isSafeInteger(fieldValue) ||
-    fieldValue < 0
-  ) {
-    throw new Error(`${field} must be a non-negative safe integer`);
-  }
-  return fieldValue;
+  return activationGeneration(value[field], field);
+}
+
+function requiredExpectedGeneration(
+  value: Record<string, unknown>,
+  field: string,
+): number {
+  return expectedActivationGeneration(value[field], field);
 }
 
 function requireCandidateGeneration(

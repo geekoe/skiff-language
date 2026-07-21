@@ -22,7 +22,6 @@ pub const DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-deployment-artifact-identity-v1";
 pub const DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX: &str = "skiff-deployment-artifact-v1:sha256";
 pub const ASSEMBLY_IDENTITY_SCHEMA_MARKER: &str = "skiff-runtime-assembly-identity-v1";
-pub const ASSEMBLY_IDENTITY_PREFIX: &str = "skiff-runtime-assembly-v1:sha256";
 pub const PACKAGE_IMPLEMENTATION_LINKS_IDENTITY_PREFIX: &str =
     "skiff-package-implementation-links-v1:sha256";
 pub const OPERATION_ABI_IDENTITY_PREFIX: &str = "skiff-operation-abi-v1:sha256";
@@ -34,3 +33,4 @@ pub const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v
 pub const PACKAGE_TEST_ENTRYPOINT_LOCAL_ID_PREFIX: &str =
     "skiff-package-test-entrypoint-local-v1:sha256";
 pub const PACKAGE_TEST_ENTRYPOINT_ID_PREFIX: &str = "skiff-package-test-entrypoint-v1:sha256";
+pub use skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX as ASSEMBLY_IDENTITY_PREFIX;

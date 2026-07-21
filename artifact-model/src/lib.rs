@@ -6,6 +6,7 @@ pub use abi_identity::{
     DescriptorHash, ExternalDeclarationAnchor, PublishedDeclarationId, SchemaRevision, StdSymbolId,
     TypeNameability,
 };
+mod activation_lexical;
 pub mod assembly_activation_control;
 pub mod boundary;
 pub mod builtin_receiver_ops;
@@ -37,12 +38,16 @@ pub mod symbols;
 pub mod targets;
 pub mod types;
 
-pub use assembly_activation_control::{
+pub use activation_lexical::{
+    deserialize_activation_generation, runtime_assembly_identity_hash,
     validate_activation_environment, validate_activation_generation, validate_activation_token,
-    validate_runtime_assembly_ref, validate_transition_generations, AssemblyActivationControl,
-    AssemblyActivationRejectReason, AssemblyActivationRequest,
-    ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION, MAX_SAFE_ACTIVATION_GENERATION,
-    RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
+    validate_expected_activation_generation, validate_runtime_assembly_identity,
+    validate_transition_generations, MAX_EXPECTED_ACTIVATION_GENERATION,
+    MAX_SAFE_ACTIVATION_GENERATION, RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
+};
+pub use assembly_activation_control::{
+    validate_runtime_assembly_ref, AssemblyActivationControl, AssemblyActivationRejectReason,
+    AssemblyActivationRequest, ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,

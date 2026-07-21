@@ -1,32 +1,62 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import {
+  loadActivationRawCases,
+  rawActivationInput,
+} from "./activationRawCorpus.mjs";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (
+      specifier.startsWith(".") &&
+      specifier.endsWith(".js") &&
+      context.parentURL?.startsWith("file:")
+    ) {
+      const sourceUrl = new URL(`${specifier.slice(0, -3)}.ts`, context.parentURL);
+      if (existsSync(sourceUrl)) return nextResolve(sourceUrl.href, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const {
   ASSEMBLY_ACTIVATION_CONTROL_ENDPOINT,
   decodeAssemblyActivationControl,
   decodeAssemblyActivationControls,
   decodeAssemblyActivationRequest,
   decodeEnvironmentActivationState,
-} from "../../router/src/protocol/assemblyActivationProtocol.ts";
+} = await import("../../router/src/protocol/assemblyActivationProtocol.ts");
+const {
+  decodeRawAssemblyActivationControl,
+  decodeRawAssemblyActivationRequest,
+  decodeRawEnvironmentActivationState,
+} = await import("../../router/src/protocol/assemblyActivationRawCodec.ts");
 
-if (process.argv.length !== 3 || process.argv[2] !== "--self-test") {
-  throw new Error("usage: node verify.mjs --self-test");
+const mode = process.argv[2];
+if (
+  process.argv.length !== 3 ||
+  (mode !== "--self-test" && mode !== "--combined-probe")
+) {
+  throw new Error("usage: node verify.mjs <--self-test|--combined-probe>");
 }
 
 const fixtureRoot = new URL("./", import.meta.url);
 const requestWire = await readJson("activation-request.json");
 const stateWire = await readJson("activation-state.json");
 const controlWire = await readJson("control-wire.json");
-const mutations = await readJson("activation-mutations.json");
+const rawCases = await loadActivationRawCases();
 const checkpoint = await readJson("checkpoint.json");
 
-for (const fixture of ["request", "state", "control"]) {
-  const overlong = mutations[fixture].find((mutation) =>
-    mutation.name.startsWith("overlong"),
+if (mode === "--combined-probe") {
+  runCombinedProbe(rawCases, requestWire, stateWire);
+  process.stdout.write(
+    `${JSON.stringify({ ok: true, probe: "activation-parity" })}\n`,
   );
-  const token = Array.isArray(overlong.value) ? overlong.value[0] : overlong.value;
-  assert.equal(Buffer.byteLength(token, "utf8"), 201);
+  process.exit(0);
 }
 
 const request = decodeAssemblyActivationRequest(requestWire);
@@ -53,27 +83,50 @@ assert.deepEqual(
   ["prepare", "prepared", "reject", "commit", "abort", "register"],
 );
 
-const decoderByFixture = {
+const typedDecoderByTarget = {
   request: decodeAssemblyActivationRequest,
   state: decodeEnvironmentActivationState,
   control: decodeAssemblyActivationControl,
 };
-const goldenByFixture = {
-  request: requestWire,
-  state: stateWire,
-  control: controlWire[0],
+const productionRawDecoderByTarget = {
+  request: decodeRawAssemblyActivationRequest,
+  state: decodeRawEnvironmentActivationState,
+  control: decodeRawAssemblyActivationControl,
 };
-let mutationCount = 0;
-for (const fixture of ["request", "state", "control"]) {
-  for (const mutation of mutations[fixture]) {
-    assert.throws(
-      () => decoderByFixture[fixture](applyMutation(goldenByFixture[fixture], mutation)),
-      undefined,
-      `${fixture} mutation ${mutation.name} must fail closed`,
-    );
-    mutationCount += 1;
+const seenNames = new Set();
+for (const rawCase of rawCases) {
+  assert.equal(seenNames.has(rawCase.name), false, `duplicate case ${rawCase.name}`);
+  seenNames.add(rawCase.name);
+  assert.ok(rawCase.target in productionRawDecoderByTarget, rawCase.name);
+  assert.ok(rawCase.outcome === "accept" || rawCase.outcome === "reject");
+  const decode = productionRawDecoderByTarget[rawCase.target];
+  if (rawCase.outcome === "accept") {
+    assert.doesNotThrow(() => decode(rawActivationInput(rawCase)), rawCase.name);
+  } else {
+    assert.throws(() => decode(rawActivationInput(rawCase)), undefined, rawCase.name);
   }
 }
+assert.ok(rawCases.length >= 50, "raw corpus must stay exhaustive");
+
+const negativeZeroRequest = structuredClone(requestWire);
+negativeZeroRequest.expectedGeneration = -0;
+assert.ok(Object.is(negativeZeroRequest.expectedGeneration, -0));
+assert.throws(
+  () => typedDecoderByTarget.request(negativeZeroRequest),
+  undefined,
+  "typed request decoder must reject Object.is(-0)",
+);
+
+const sparseState = structuredClone(stateWire);
+const sparseParticipants = new Array(3);
+sparseParticipants[0] = "runtime-a";
+sparseParticipants[2] = "runtime-b";
+sparseState.pending.participantReplicaIds = sparseParticipants;
+assert.throws(
+  () => typedDecoderByTarget.state(sparseState),
+  undefined,
+  "typed state decoder must reject sparse participant arrays",
+);
 
 assert.deepEqual(checkpoint.authoringFields["package.yml contracts[]"], [
   "alias",
@@ -130,7 +183,7 @@ process.stdout.write(
       new URL("activation-request.json", fixtureRoot),
     ),
     controls: controls.length,
-    mutations: mutationCount,
+    rawCases: rawCases.length,
   })}\n`,
 );
 
@@ -138,28 +191,35 @@ async function readJson(name) {
   return JSON.parse(await readFile(new URL(name, fixtureRoot), "utf8"));
 }
 
-function applyMutation(base, mutation) {
-  const candidate = structuredClone(base);
-  const path = mutation.path;
-  assert.ok(path.length > 0, "mutation path must not be empty");
-  let parent = candidate;
-  for (const segment of path.slice(0, -1)) {
-    assert.equal(typeof parent, "object");
-    assert.notEqual(parent, null);
-    parent = parent[segment];
+function runCombinedProbe(cases, typedRequest, typedState) {
+  const requiredRejects = [
+    "token FEFF",
+    "duplicate request top key",
+    "generation rounding",
+    "state missing pending",
+  ];
+  for (const name of requiredRejects) {
+    const rawCase = cases.find((candidate) => candidate.name === name);
+    assert.ok(rawCase, `combined probe case ${name}`);
+    assert.equal(rawCase.outcome, "reject");
+    const decode = productionRawDecoder(rawCase.target);
+    assert.throws(() => decode(rawActivationInput(rawCase)), undefined, name);
   }
-  const field = path.at(-1);
-  if (mutation.operation === "replace") {
-    assert.ok(Object.hasOwn(parent, field), "replace path must exist");
-    parent[field] = mutation.value;
-  } else if (mutation.operation === "remove") {
-    assert.ok(Object.hasOwn(parent, field), "remove path must exist");
-    delete parent[field];
-  } else if (mutation.operation === "add") {
-    assert.equal(Object.hasOwn(parent, field), false, "add path must be new");
-    parent[field] = mutation.value;
-  } else {
-    throw new Error(`unknown mutation operation ${mutation.operation}`);
-  }
-  return candidate;
+
+  const negativeZero = structuredClone(typedRequest);
+  negativeZero.expectedGeneration = -0;
+  assert.throws(() => decodeAssemblyActivationRequest(negativeZero));
+
+  const sparseState = structuredClone(typedState);
+  const sparseParticipants = new Array(2);
+  sparseParticipants[1] = "runtime-a";
+  sparseState.pending.participantReplicaIds = sparseParticipants;
+  assert.throws(() => decodeEnvironmentActivationState(sparseState));
+}
+
+function productionRawDecoder(target) {
+  if (target === "request") return decodeRawAssemblyActivationRequest;
+  if (target === "state") return decodeRawEnvironmentActivationState;
+  if (target === "control") return decodeRawAssemblyActivationControl;
+  throw new Error(`unknown raw activation target ${target}`);
 }
