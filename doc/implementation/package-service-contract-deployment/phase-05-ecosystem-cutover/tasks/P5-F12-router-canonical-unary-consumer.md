@@ -38,3 +38,9 @@ git diff --check
 真实socket test必须用shared validator独立核验nested bytes，覆盖零payload、HTTP交叉校验、legacy/flat/unknown、stream/
 adapter、response/cancel ownership。回报header矩阵、commit/tree/lock、single clean、scope/reverse与extra-review；不得用
 mock registry直接调用替代writer→dispatcher→socket证据。
+
+## R13 acceptance record
+
+candidate `7966491e6b7c7850cb76e5b9291b848f1fed4e9e` / tree
+`ea024d177110e20c3d91b37a5abe7e903b7469af`与F13合流后由独立R13判定PASS。Router nested writer、opaque/zero
+payload、HTTP cross-check、terminal/cancel ownership与真实socket通过；shared codec/corpus/lock未变。

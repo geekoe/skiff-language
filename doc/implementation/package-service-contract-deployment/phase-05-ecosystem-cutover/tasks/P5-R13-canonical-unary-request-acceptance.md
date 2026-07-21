@@ -20,3 +20,10 @@
 
 第一行只给`R13 PASS`或`R13 FAIL`。PASS只允许exact合流后恢复F04真实Host suite；组件正例、std assembly或日志字符串
 不能替代checked-in consumer最终Host结果。
+
+## 验收记录
+
+`R13 PASS`：exact combined integration `02b97ffe1c3cb4232894dc23d16ad3d61f2c2ba6` / tree
+`1bc4c9d9d6bbae171cc6c6fa7c838c6e6b7f8f8f`，只含F12/F13两个同基线single candidates。两端门禁、F03A2
+corpus与真实Router→Runtime动态端口probe均PASS，std 11/11 normal unary执行成功；packageTest capability保持false。
+随后Host generation-2在request前link reject，转交D15，不归因F12/F13。

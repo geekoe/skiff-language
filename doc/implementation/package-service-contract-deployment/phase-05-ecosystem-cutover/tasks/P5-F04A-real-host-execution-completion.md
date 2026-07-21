@@ -81,3 +81,7 @@ Date/Duration receiver target facts覆盖遗漏，冻结F11/R12修production sem
 R12 PASS并合流`2d74b2c`后，std generation-1已prepare/commit，首请求在native执行前因Router仍发送flat hybrid header、
 Runtime仍用legacy decoder而断连。D14确认F03A2 shared codec正确，冻结并行F12 Router/F13 Runtime canonical unary
 consumer与R13 combined receive；R13前F04继续未完成。
+
+R13 PASS后完整std 11/11执行成功，checked-in Host generation-2在业务request前因linked-program把非语义
+`artifactPath`纳入nested FileIR target相等而link reject。D15确认identity/module/hash与package/service bindings正确，
+冻结最小F14/R14；临时等价probe已见最终consumer PASS但不能替代原样gate。

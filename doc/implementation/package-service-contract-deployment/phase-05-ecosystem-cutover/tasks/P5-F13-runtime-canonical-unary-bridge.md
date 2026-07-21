@@ -38,3 +38,9 @@ git diff --check
 负例覆盖legacy/flat/duplicate/unknown、错identity/generation/operation/HTTP、test effects、adapter/stream、route activation
 竞态与cancel/terminal ownership。回报decode→route→envelope→response矩阵、commit/tree/lock、single clean、reverse与
 extra-review。
+
+## R13 acceptance record
+
+candidate `7cebf4cd85df9ce404ad66ced6bdd3cc8b6683ad` / tree
+`040fdbc6cb04dda8e16205cdcd735f5a6251074e`与F12合流为`02b97ff`后由独立R13判定PASS。Runtime strict decode、
+active-route exact trust/Arc pin、route-owned envelope、response/cancel通过；真实combined probe完成11个HTTP unary PASS。
