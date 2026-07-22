@@ -14,6 +14,12 @@ pub use skiff_runtime_model::type_plan::{
 #[cfg(any(test, feature = "test-support"))]
 use crate::error::Result;
 use crate::error::RuntimeError;
+#[cfg(any(test, feature = "test-support"))]
+use crate::websocket_shape_descriptor::canonical_websocket_descriptor_plan;
+#[cfg(any(test, feature = "test-support"))]
+use skiff_artifact_model::websocket_ingress::{
+    canonical_websocket_shape_spec, WebSocketContractBuiltin, WebSocketShapeId,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum RuntimeTypeNameError {
@@ -943,11 +949,6 @@ fn std_record_plan(name: &str, fields: Vec<RuntimeRecordFieldPlan>) -> RuntimeTy
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn std_union_plan(name: &str, items: Vec<RuntimeTypePlan>) -> RuntimeTypePlan {
-    builtin_plan(name, RuntimeTypeNode::Union(items))
-}
-
-#[cfg(any(test, feature = "test-support"))]
 fn std_nullable_plan(inner: RuntimeTypePlan) -> RuntimeTypePlan {
     RuntimeTypePlan {
         label: "nullable".to_string(),
@@ -965,16 +966,6 @@ fn std_array_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
 #[cfg(any(test, feature = "test-support"))]
 fn std_stream_plan(item: RuntimeTypePlan) -> RuntimeTypePlan {
     builtin_plan("Stream", RuntimeTypeNode::Stream(Box::new(item)))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_literal_string_plan(value: &str) -> RuntimeTypePlan {
-    RuntimeTypePlan {
-        label: "literal".to_string(),
-        named_type_name: None,
-        identity: RuntimeTypeIdentityPlan::default(),
-        node: RuntimeTypeNode::LiteralString(value.to_string()),
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1027,153 +1018,70 @@ fn std_http_client_stream_handle_plan() -> RuntimeTypePlan {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnection",
-        vec![
-            std_field("id", leaf_string_plan()),
-            std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-            std_field("context", context),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_text_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.TextConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("text")),
-            std_field("text", leaf_string_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_binary_message_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.BinaryConnectionMessage",
-        vec![
-            std_field("tag", std_literal_string_plan("binary")),
-            std_field("base64", leaf_string_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_message_plan() -> RuntimeTypePlan {
-    builtin_plan(
-        "std.websocket.ConnectionMessage",
-        RuntimeTypeNode::Representation {
-            type_name: "std.websocket.ConnectionMessage".to_string(),
-            payload: Box::new(std_union_plan(
-                "std.websocket.ConnectionMessage",
-                vec![
-                    std_websocket_text_message_plan(),
-                    std_websocket_binary_message_plan(),
-                ],
-            )),
+fn std_websocket_runtime_builtin_node(
+    root_name: &str,
+    bare: &str,
+    args: &[Value],
+) -> Option<Result<RuntimeTypeNode>> {
+    let shape_spec = canonical_websocket_shape_spec();
+    let event = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
+    let result = shape_spec.contract_builtin(WebSocketContractBuiltin::Result);
+    let (shape_id, context_index) = match bare {
+        "ConnectionMessage"
+            if args.is_empty() && root_name == WebSocketShapeId::Message.canonical_name() =>
+        {
+            (WebSocketShapeId::Message, None)
+        }
+        "WebSocketConnection"
+            if args.len() == 1
+                && matches!(
+                    root_name,
+                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
+                ) =>
+        {
+            (WebSocketShapeId::Connection, Some(0))
+        }
+        "WebSocketConnectResult"
+            if result.context_arity() == 1
+                && args.len() == result.context_arity()
+                && (root_name == "WebSocketConnectResult" || root_name == result.name()) =>
+        {
+            (result.shape(), Some(0))
+        }
+        "WebSocketIngressEvent"
+            if event.context_arity() == 1
+                && args.len() == event.context_arity()
+                && (root_name == "WebSocketIngressEvent" || root_name == event.name()) =>
+        {
+            (event.shape(), Some(0))
+        }
+        "WebSocketReceiveEvent"
+            if args.len() == 1
+                && matches!(
+                    root_name,
+                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
+                ) =>
+        {
+            (WebSocketShapeId::ReceiveEvent, Some(0))
+        }
+        _ => return None,
+    };
+    let context = match context_index {
+        Some(index) => match RuntimeTypePlan::from_descriptor(&args[index]) {
+            Ok(plan) => Some(plan),
+            Err(error) => return Some(Err(error)),
         },
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connect_result_plan(name: &str, context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_union_plan(
-        name,
-        vec![
-            std_record_plan(
-                "std.websocket.WebSocketConnectAccept",
-                vec![
-                    std_field("tag", std_literal_string_plan("accept")),
-                    std_field("context", context),
-                    std_field("businessIdentity", std_nullable_plan(leaf_string_plan())),
-                    std_field(
-                        "connectionPolicy",
-                        std_nullable_plan(std_websocket_connection_policy_plan()),
-                    ),
-                ],
-            ),
-            std_record_plan(
-                "std.websocket.WebSocketConnectReject",
-                vec![
-                    std_field("tag", std_literal_string_plan("reject")),
-                    std_field("code", leaf_integer_plan()),
-                    std_field("reason", leaf_string_plan()),
-                ],
-            ),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connection_policy_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnectionPolicy",
-        vec![
-            std_field("maxConnections", leaf_integer_plan()),
-            std_field(
-                "overflow",
-                std_union_plan(
-                    "std.websocket.WebSocketConnectionPolicy.overflow",
-                    vec![
-                        std_literal_string_plan("close-oldest"),
-                        std_literal_string_plan("reject-new"),
-                    ],
-                ),
-            ),
-            std_field("closeCode", std_nullable_plan(leaf_integer_plan())),
-            std_field("closeReason", std_nullable_plan(leaf_string_plan())),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_receive_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketReceiveEvent",
-        vec![
-            std_field("connection", std_websocket_connection_plan(context)),
-            std_field("message", std_websocket_connection_message_plan()),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_connect_request_plan() -> RuntimeTypePlan {
-    std_record_plan(
-        "std.websocket.WebSocketConnectRequest",
-        vec![
-            std_field("connectionId", leaf_string_plan()),
-            std_field("url", leaf_string_plan()),
-            std_field("query", std_array_plan(std_http_header_plan())),
-            std_field("headers", std_array_plan(std_http_header_plan())),
-            std_field("cookies", std_array_plan(std_http_header_plan())),
-            std_field("version", std_nullable_plan(leaf_string_plan())),
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn std_websocket_ingress_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
-    std_union_plan(
-        "std.websocket.WebSocketIngressEvent",
-        vec![
-            std_record_plan(
-                "std.websocket.WebSocketIngressConnectEvent",
-                vec![
-                    std_field("tag", std_literal_string_plan("connect")),
-                    std_field("connectRequest", std_websocket_connect_request_plan()),
-                ],
-            ),
-            std_record_plan(
-                "std.websocket.WebSocketIngressReceiveEvent",
-                vec![
-                    std_field("tag", std_literal_string_plan("receive")),
-                    std_field("receiveEvent", std_websocket_receive_event_plan(context)),
-                ],
-            ),
-        ],
+        None => None,
+    };
+    Some(
+        canonical_websocket_descriptor_plan(shape_id, context.as_ref())
+            .map(|plan| plan.node)
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(format!(
+                    "canonical WebSocket shape {} requires a missing Context or is cyclic",
+                    shape_id.canonical_name()
+                ))
+            }),
     )
 }
 
@@ -1182,6 +1090,9 @@ fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result
     let (root, args) = generic_type_parts(descriptor)?;
     let root_name = type_name_root(&root);
     let bare = bare_type_name(root_name);
+    if let Some(node) = std_websocket_runtime_builtin_node(root_name, bare, &args) {
+        return Some(node);
+    }
     let node = match bare {
         "HttpClientRequest" if args.is_empty() && root_name == "std.http.HttpClientRequest" => {
             std_http_client_request_plan().node
@@ -1193,63 +1104,6 @@ fn std_runtime_builtin_node_from_descriptor(descriptor: &Value) -> Option<Result
             if args.is_empty() && root_name == "std.http.HttpClientStreamHandle" =>
         {
             std_http_client_stream_handle_plan().node
-        }
-        "ConnectionMessage"
-            if args.is_empty() && root_name == "std.websocket.ConnectionMessage" =>
-        {
-            std_websocket_connection_message_plan().node
-        }
-        "WebSocketConnection"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketConnection" | "std.websocket.WebSocketConnection"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connection_plan(context).node
-        }
-        "WebSocketConnectResult"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketConnectResult" | "std.websocket.WebSocketConnectResult"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_connect_result_plan(root_name, context).node
-        }
-        "WebSocketIngressEvent"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketIngressEvent" | "std.websocket.WebSocketIngressEvent"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_ingress_event_plan(context).node
-        }
-        "WebSocketReceiveEvent"
-            if args.len() == 1
-                && matches!(
-                    root_name,
-                    "WebSocketReceiveEvent" | "std.websocket.WebSocketReceiveEvent"
-                ) =>
-        {
-            let context = match RuntimeTypePlan::from_descriptor(&args[0]) {
-                Ok(plan) => plan,
-                Err(error) => return Some(Err(error)),
-            };
-            std_websocket_receive_event_plan(context).node
         }
         _ => return None,
     };

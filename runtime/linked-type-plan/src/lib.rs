@@ -3,6 +3,9 @@ pub mod error;
 pub mod http_plan;
 pub mod native_call_plan;
 pub mod type_plan;
+mod websocket_shape;
+#[cfg(all(test, feature = "test-support"))]
+mod websocket_shape_parity_tests;
 
 pub use assembly_seam::{RuntimeAssemblyTypePlanSeamError, RuntimeAssemblyTypePlanTarget};
 pub use error::{Error, Result};

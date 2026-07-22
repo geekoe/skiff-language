@@ -20,6 +20,8 @@ pub mod service_value_plan;
 pub mod stream;
 pub mod type_descriptor;
 pub mod value;
+#[cfg(any(test, feature = "test-support"))]
+pub mod websocket_shape_descriptor;
 
 pub use error::{Result, RuntimeError};
 
