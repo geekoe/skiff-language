@@ -26,3 +26,16 @@ test-supervisor cleanup，不改变production runtime语义。
 当前baseline没有real-handle test，因此`AUDIT CLOSED`不是允许输出。第一行只给`DESIGN GO`或`AUDIT BLOCKED`；
 `DESIGN GO`必须冻结精确file/symbol、单一幂等可等待close owner、primary/cleanup传播、真实FileHandle+短命child至少
 20次交错测试及F17不重叠写集。`skiff-instance.mjs`已>1000行，repair必须提取lifecycle owner，禁止继续内联补丁。
+
+## 结果ledger
+
+`DESIGN GO`于`f15c210` / tree `b07de45`完成，production相关blob相对D18 `40ed693`未变。baseline double为
+`1 pass / 0 fail`，但没有ChildProcess/FileHandle/exit/rejection，只证明上层cleanup顺序。
+
+静态owner确认：`startManagedProcess`打开真实stdout/stderr handles；supervised child exit先删除running entry，再
+fire-and-forget两个`close()`及group/PID async cleanup；restart不等log close。`stopAll`只等managed process stop后立即
+`process.exit(0)`，signal handler又丢弃`stopAll` Promise。isolated caller已正确保留primary并在cleanup失败时按
+primary-first聚合，故F17不得修改它。
+
+F17唯一owner/API、acquisition handoff、restart/shutdown顺序和20轮交错矩阵已写入F17合同；写集不触及F16C路径。
+本审计未编辑源码、启动runtime/Host/stable或给F04 verdict。

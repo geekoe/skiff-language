@@ -18,16 +18,46 @@ owner限`scripts/skiff-instance.mjs`的supervise entry/stop signal接线、新�
 `scripts/tests/skiff-instance-supervisor-lifecycle.test.mjs`。不得修改`isolated-test-runtime*`、F16 paths、Router、Runtime、
 compiler、fixture或manifest/lock。
 
+新模块唯一导出：
+
+```text
+createSupervisedEntryLifecycle({
+  component,
+  child,
+  pgid,
+  stdoutHandle,
+  stderrHandle,
+  stopProcessGroup,
+  isProcessGroupAlive,
+  removePidMetadata,
+}) -> {
+  exit,
+  completion,
+  recordPrimary(error),
+  finish(),
+  stop(reason),
+}
+```
+
+不得增加第二factory/close helper或让caller重新组合raw handles。
+
 - 每个supervised child只有一个幂等、可等待的log-handle close Promise；child exit与shutdown并发只关闭一次，所有
   rejection被owner捕获并带component context传播。
-- exit handler先从running owner取走entry，再await stdout/stderr close与process-group/pid cleanup；restart只在该
-  lifecycle完成且非stopping时调度。
+- lifecycle在spawn成功后、首个后续`await`前接管handles；接管前的open/spawn失败由acquisition owner await关闭，
+  接管后`skiff-instance.mjs`不得直接close。`recordPrimary`只保存第一个primary。
+- exit handler以entry identity从running取走owner，再顺序收口residual process group、child exit、stdout/stderr与PID
+  metadata；restart只在memoized `completion`完成且非stopping时调度。`finish()`、`stop()`、child exit全部汇入同一
+  completion，内部唯一`closeLogsOnce`。
 - SIGINT/SIGTERM shutdown设置stopping、取消restart、停止components并await全部entry lifecycle；不用
   fire-and-forget close或立即`process.exit(0)`截断异步cleanup，使用自然退出/`process.exitCode`。
-- primary failure与cleanup failure分别保留；cleanup不得覆盖primary。无double close、close-after-exit unhandled
-  rejection、timer/process leak或第二lifecycle owner。
-- 新专用测试用真实`FileHandle`和真实短命child，把child exit与shutdown交错至少20次；strict unhandled-rejection
-  capture断言零`ERR_INVALID_STATE`，主错误标记保留，handles/PID/temp files全部收口。不得用纯action-list double冒充。
+- cleanup用`allSettled`后带component/stream/step context聚合；仅primary时原样传播，primary+cleanup的cause顺序固定为
+  `[primary, ...cleanupErrors]`，cleanup-only失败阻止restart并令supervisor非零退出。无double close、timer/process leak
+  或第二lifecycle owner。
+- 新专用测试用真实`FileHandle`和`process.execPath`启动ready-handshake短命IPC child，精确20轮：5轮
+  exit-before-stop、5轮stop-before-exit、5轮同一turn exit-first、5轮同一turn stop-first。重复`stop()`/`finish()`必须
+  返回同一completion；每个delegated real close计数1、`fd === -1`、PID/IPC/temp全部收口。primary+注入cleanup failure
+  子例断言原对象/marker为cause第一项，cleanup带component/step；strict unhandled-rejection下零`ERR_INVALID_STATE`。
+  不得用纯action-list double冒充。
 - `skiff-instance.mjs`已>1000行；新生命周期必须提取，不继续内联扩张。应用extra-review。
 
 ## 唯一聚焦验证

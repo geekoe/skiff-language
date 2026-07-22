@@ -17,7 +17,8 @@ F12/F13并已在`02b97ff`通过combined R13；std 11/11后Host assembly暴露lin
 F14已在`bcbdc2c`通过R14。原样gate现仅暴露activation receipt→healthy registration毫秒级空窗，D16已冻结
 F15 readiness barrier首次被R15拒绝，D17/F15A已在`e3a0d78`通过R15窄复验。F04原样gate随后在`40ed693`
 暴露共享Cargo target复用编译期platform绝对路径；D18已以双worktree镜像实验冻结F16A shared context及F16B/F16C
-transport扇出，I16/R16后恢复F04 receive。次生FileHandle teardown由D19/F17并行收敛。F05等待F04 narrow receive，
+transport扇出，I16/R16后恢复F04 receive。次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17可与
+F16 consumer并行。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
