@@ -238,9 +238,12 @@ async function test(rawArgs) {
 
   const testArgs = [
     'run',
+    '--locked',
     '--quiet',
     '--manifest-path',
     join(skiffRoot, 'test-runner', 'Cargo.toml'),
+    '--bin',
+    'skiff-test-runner',
     '--',
     args.root,
   ];

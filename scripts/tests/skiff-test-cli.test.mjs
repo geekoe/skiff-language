@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, delimiter, join, resolve } from 'node:path';
+import { dirname, delimiter, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -10,54 +10,78 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const skiffPath = join(root, 'scripts', 'skiff.mjs');
 const input = join(root, 'runtime', 'live-tests', 'internal', 'operation.live.test.skiff');
 
-test('skiff test --live forwards the complete canonical target and strict flags', async () => {
+test('skiff test selects the canonical binary once for absolute and relative roots', async () => {
+  const manifestPath = join(root, 'test-runner', 'Cargo.toml');
+  const manifest = await readFile(manifestPath, 'utf8');
+  assert.deepEqual(
+    [...manifest.matchAll(/^\[\[bin\]\]\nname = "([^"]+)"/gm)].map((match) => match[1]),
+    ['skiff-test-runner', 'skiff-package-service-smoke-fixture'],
+  );
+  assert.doesNotMatch(manifest, /^default-run\s*=/m);
+
   const fixture = await fakeCargoFixture();
   try {
     const artifactRoot = join(fixture.root, 'artifacts');
     await mkdir(artifactRoot);
     const assembly = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-    const result = await runProcess(process.execPath, [
-      skiffPath,
-      'test',
-      input,
-      '--artifact-root',
-      artifactRoot,
-      '--base-assembly',
-      assembly,
-      '--live',
-      '--activation-url',
-      'http://router.test:4101/__skiff/activate-assembly',
-      '--ingress-url',
-      'http://router.test:4100',
-      '--environment',
-      'test-live',
-      '--expected-generation',
-      '7',
-      '--deny-skips',
-      '--require-tests',
-    ], { env: fixture.env });
-    assert.equal(result.code, 0, result.stderr);
-    const args = JSON.parse(await readFile(fixture.marker, 'utf8'));
-    assert.deepEqual(args.slice(args.indexOf('--') + 1), [
-      input,
-      '--live',
-      '--artifact-root',
-      artifactRoot,
-      '--platform-source-root',
-      root,
-      '--base-assembly',
-      assembly,
-      '--activation-url',
-      'http://router.test:4101/__skiff/activate-assembly',
-      '--ingress-url',
-      'http://router.test:4100',
-      '--environment',
-      'test-live',
-      '--expected-generation',
-      '7',
-      '--deny-skips',
-      '--require-tests',
-    ]);
+    for (const testRoot of [input, relative(root, input)]) {
+      const result = await runProcess(process.execPath, [
+        skiffPath,
+        'test',
+        testRoot,
+        '--artifact-root',
+        artifactRoot,
+        '--base-assembly',
+        assembly,
+        '--live',
+        '--activation-url',
+        'http://router.test:4101/__skiff/activate-assembly',
+        '--ingress-url',
+        'http://router.test:4100',
+        '--environment',
+        'test-live',
+        '--expected-generation',
+        '7',
+        '--deny-skips',
+        '--require-tests',
+      ], {
+        env: {
+          ...fixture.env,
+          SKIFF_TEST_RUNNER_BIN: 'hostile-environment-fallback',
+        },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const args = JSON.parse(await readFile(fixture.marker, 'utf8'));
+      assert.equal(args.filter((arg) => arg === '--bin').length, 1);
+      assert.deepEqual(args, [
+        'run',
+        '--locked',
+        '--quiet',
+        '--manifest-path',
+        manifestPath,
+        '--bin',
+        'skiff-test-runner',
+        '--',
+        input,
+        '--live',
+        '--artifact-root',
+        artifactRoot,
+        '--platform-source-root',
+        root,
+        '--base-assembly',
+        assembly,
+        '--activation-url',
+        'http://router.test:4101/__skiff/activate-assembly',
+        '--ingress-url',
+        'http://router.test:4100',
+        '--environment',
+        'test-live',
+        '--expected-generation',
+        '7',
+        '--deny-skips',
+        '--require-tests',
+      ]);
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
