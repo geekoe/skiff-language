@@ -1,7 +1,7 @@
 # P5-R16：F04 Production Path Narrow Acceptance
 
-使用未参与F16A/B/C/F17/F18A–J/F19A/B实现、D20/D25审计/修复、I16或窄验收的全新独立只读Agent。输入为闭合矩阵与
-十二个repair ledger、同一exact clean commit/tree上的I16 combined PASS、R15B/compiler trust/Router CAS/resource
+使用未参与F16A/B/C/F17/F18A–J/F19A/B/F20A/B实现、D20/D25/D26审计/修复、I16或窄验收的全新独立只读Agent。输入为闭合矩阵与
+十四个repair ledger、P26S PASS、同一exact clean commit/tree上的I16 combined PASS、R15B/compiler trust/Router CAS/resource
 lifecycle窄验收PASS及H18 focused-negative PASS；不得编辑、提交、修复、操作stable或运行完整
 source-suite/Host，也不作F04/R02总体verdict。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6。
@@ -13,6 +13,8 @@ source-suite/Host，也不作F04/R02总体verdict。权威设计为
 - F18A–J/F19A/B各自exclusive owner无越界；F18J关闭authoring pre-store IO；F19A关闭full artifact/evidence状态机，
   F19B关闭inner workspace no-clobber；R15B关闭候选Clippy，Router file CAS跨实例竞争与process/gate resource
   no-clobber由独立窄验收关闭；H18真实观察false assertion→Runtime diagnostic→Router non-2xx→runner exit1且请求一次。
+- F20A使Host非零保留bounded/redacted phase diagnostic且v5 validator重算；F20B只关闭`skiff test`显式binary caller；
+  P26S已分别关闭cold isolated ready、helper mutation assembly与std-only 11/11，第三次full只剩std→Host sequencing/final value。
 - F16A是唯一platform trust owner；library、binary authoring、runner、smoke fixture、source-suite、`skiff test`显式消费
   同一个root；无cwd/env/executable/`CARGO_MANIFEST_DIR` production fallback、第二helper、dual path或clean-cache依赖。
   只允许ignored Rust identity probe读取`SKIFF_TEST_PLATFORM_SOURCE_ROOT`；`__ecosystem-store`无源码action不构造context。

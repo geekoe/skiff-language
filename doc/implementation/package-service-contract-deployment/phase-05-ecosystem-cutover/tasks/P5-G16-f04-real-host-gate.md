@@ -6,9 +6,9 @@
 combined PASS、R16 PASS且三者锚定同一exact clean candidate/tree/lock；不得编辑、提交、修复或操作stable。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6。
 
-`10746a2`上的第一次full-mode调用在Host前因harness artifact comparator失败，D25已审计且F19A/B须先关闭；实际
-`run-skiff-tests.mjs`累计仍为0。新candidate的Gate是当前周期第二次、原则上的最后一次full-mode调用。第三次前必须
-重新执行剩余范围审计并向用户说明为什么仍需运行，不能把Host前失败或candidate变化当作自动重试理由。
+`10746a2`上的第一次full-mode调用在Host前因artifact comparator失败；`f82282c`上的第二次artifact PASS、Host child
+code1，但v4丢失bounded diagnostic。D25/D26及F19/F20/P26S关闭后，新candidate的Gate是当前周期第三次且唯一剩余
+full-mode调用。它不得重试；若失败不允许第四次，必须建立新的审计/combined周期并向用户说明。
 
 ## 唯一命令与冻结行为
 
@@ -33,7 +33,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
   --json
 ```
 
-`--mode full`必须拒绝candidate/tree/lock/golden或v4 combined ledger不一致；不得重跑merge-only fixture、local test或完整
+`--mode full`必须拒绝candidate/tree/lock/golden或v5 combined ledger不一致；不得重跑merge-only fixture、local test或完整
 combined矩阵。它只建立复用同类shared target的A-origin artifacts，验证B-root消费仍为Fresh，然后从任务临时目录调用
 B的absolute `scripts/run-skiff-tests.mjs`一次。任何primary失败立即停止且不自动重试；cleanup secondary单独保留。
 

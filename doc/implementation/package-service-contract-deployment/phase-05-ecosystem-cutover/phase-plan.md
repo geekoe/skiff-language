@@ -23,7 +23,9 @@ transport扇出。因同一F04真实入口已连续暴露多个跨层blocker，�
 authoring guard前仍创建store；F18J已作为同owner窄后继修复合流。旧I16/R15B随候选失效，新candidate只重跑一次
 cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调用在Host前被root-sensitive Cargo dep-info误判，
 且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计冻结的F19A/B已
-作为两个clean commit合流；下一步重建v4 combined/窄证据，再执行本周期第二次且原则上最后一次full-mode gate，最后由全新reviewer接收F04。
+作为两个clean commit合流；v4 combined/窄证据PASS后，第二次full artifact gate通过但真实Host child在结果行前code1，
+且bounded diagnostic未保留。D26三路审计已冻结P26S/F20A/B与唯一第三次full条件；P20A official std exact已PASS。
+全部合流并重建v5证据后，才由第三次full与全新reviewer接收F04。
 次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
@@ -121,7 +123,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
           │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┤
           │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► F17 ───────────────────────┤
-          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F audit@e786671 ─► F18A–I ─► I16 PASS ─► R18A FAIL ─► F18J ─► I16/R15/R18/H18/R16 PASS ─► G16 pre-Host FAIL ─► D25 ─► F19A/B ─► replacement evidence ─► second G16 ─► new F04 receive
+          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F@e786671 ─► F18A–J ─► evidence PASS ─► G16 pre-Host FAIL ─► D25/F19 ─► v4 evidence PASS ─► G16 Host code1 ─► D26 ─► P26S+F20A/B ─► v5 evidence ─► third G16 ─► new F04 receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -255,6 +257,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F19B | [Isolated workspace ownership](tasks/P5-F19B-isolated-workspace-ownership.md) | D25 complete | 高；inner no-clobber owner |
 | R19A | [Gate evidence acceptance](tasks/P5-R19A-gate-evidence-acceptance.md) | v4 I16 PASS | 高；独立只读 |
 | R19B | [Isolated workspace acceptance](tasks/P5-R19B-isolated-workspace-acceptance.md) | v4 I16 PASS | 高；独立只读 |
+| G16B | [V4 real Host gate result](tasks/P5-G16B-v4-real-host-gate-result.md) | second full-mode call | FAIL；Host code1且diagnostic丢失 |
+| D26 | [Third gate closure audit result](tasks/P5-D26-third-gate-closure-audit-result.md) | G16B FAIL | 三路只读；冻结唯一第三次条件 |
+| P26S | [Source diagnostic batch](tasks/P5-P26S-source-diagnostic-batch.md) | D26 complete | 只读cold/helper/std-only；不跑Host |
+| F20A | [Gate bounded diagnostic retention](tasks/P5-F20A-gate-bounded-diagnostic-retention.md) | D26 complete | 高；v5 evidence owner |
+| F20B | [`skiff test` explicit binary](tasks/P5-F20B-skiff-test-explicit-binary.md) | D26 complete | 低；公开caller精确修复 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
@@ -367,8 +374,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   F18J作为同owner窄后继关闭；新candidate重新执行一次compiler merge probe与A-built/Fresh-B shared-target cheap combined；
   全新R15B与三组窄验收及H18均PASS后启动新R16，G16再运行一次完整Host并把
   同一ledger交新的F04 reviewer。首次G16在Host前因gate comparator假阴性FAIL，D25A–C已闭合Cargo artifact、
-  full evidence state machine与inner workspace ownership；F19A/B并行合流后必须重建v4 combined及受影响窄证据，
-  才能执行本周期第二次full-mode gate。第三次前必须重新审计剩余范围并说明原因。
+  full evidence state machine与inner workspace ownership；F19A/B并行合流并重建v4证据后，第二次G16在真实Host child
+  code1但因diagnostic只存hash无法分类。D26A–C已重审剩余范围，P20A关闭official std assembly；P26S、F20A/B全部
+  PASS并重建v5 combined/窄验收/R16后，才允许本周期第三次且唯一剩余full。失败不得第四次重试。
 - 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只读冻结真实handle owner；F17在
   `skiff-instance`提取单一幂等可等待lifecycle并用真实FileHandle/短命child交错验证。不重跑Host、不阻塞F16A/B/C，
   但F17是I16硬前置且写集不得与F16C重叠。
