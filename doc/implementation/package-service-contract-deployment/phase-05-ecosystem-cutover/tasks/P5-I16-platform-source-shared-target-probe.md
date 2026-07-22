@@ -2,10 +2,10 @@
 
 ## 角色、输入与证据复用
 
-使用未参与F16A/B/C/F17/F18A–J/F19A/B/F20A/B/F21A/B/C实现、D20/D25/D26/D27/D28审计、P27S/P27R探针、
-R21/R21C验收或后续验收的全新Combined Probe owner会话。输入为D27/D28闭合矩阵已汇总、F18A–J至F21A/B/C
-全部合流、P27R为PASS且无在途写入的exact clean integration commit/tree；R21C与本任务是P27R间接解锁的两个独立
-后继，可以并行，不互为前置。不得编辑、提交、修复、操作stable或运行完整source-suite/Host。权威设计为
+使用未参与F16A/B/C/F17/F18A–J/F19A/B/F20A/B/F21A/B/C/F22A实现、D20/D25/D26/D27/D28/D30/D31审计、
+P27S/P27R探针、R21/R21C/R22验收或后续验收的全新Combined Probe owner会话。输入为D27/D30闭合矩阵已汇总、
+F18A–J至F22A全部合流、P27R与R22均为PASS且无在途写入的exact clean integration commit/tree。R22是本任务硬前置，
+不得把二者并行或用旧R21替代。不得编辑、提交、修复、操作stable或运行完整source-suite/Host。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6；动态矩阵只
 验证既有设计，不增加新的trust、CLI或业务语义。
 
@@ -26,22 +26,25 @@ blocker；F19A/B修改gate/isolated surface后该v3 ledger及全部窄验收再�
 从B cwd运行`pnpm --dir router install --frozen-lockfile --offline`，再运行B-local
 `router/node_modules/.bin/tsx --version`。因此v5只作历史失效证据，不得被R16、新G16或本任务消费。
 
-integration当前未跟踪的`.p5-i16-combined-ledger.json`正是上述v5历史ledger：candidate为`7bb6c2a`，文件SHA-256为
-`244c921ab4efea2bbd3bf20e4f480f7d12af5d535a3b31ab87d722d727a37519`，内部digest为
-`937ff2ecba2e1292e5476f7c9d9c1a8c673d94ecb5f1d90b71df5deabbdaae38`。root须在冻结实际运行candidate前核对这些
-身份并将其移到repo外历史归档，确认production ledger路径不存在；归档动作不改变其失效状态。P27R的PASS只证明
-F21C dependency preparation到B-root readiness/callback的窄边界，并间接解锁fresh R21C与本replacement v6 combined，
-不直接解锁full。
+`7bb6c2a`的v5历史ledger已归档为repo外
+`/Users/geek/workspace/skiff-phase-05-evidence/p5-i16-7bb6c2a-v5-combined-ledger.json`，文件SHA-256仍为
+`244c921ab4efea2bbd3bf20e4f480f7d12af5d535a3b31ab87d722d727a37519`。`3ceb1cf`上的replacement v6 combined也曾
+PASS，但G16D证明Host evidence把runtime module错误硬编码为fixture文件名；D30定位test-only false negative，F22A抽出
+单一Host evidence owner并改变Gate source。因此该v6 ledger虽未运行Host也因candidate/Gate surface变化而失效，已归档为
+`/Users/geek/workspace/skiff-phase-05-evidence/p5-i16-3ceb1cf-v6-combined-ledger.json`，文件SHA-256为
+`52bd4b04db92e95fbcb646d6c26656b4bcd4c25034dd500e7fc767ce9b01b05d`，内部digest为
+`5196d144123a1a217d2bafb067bdeabb2cbe4bd27da2009f424ca73d0b3bda41`。root须确认production ledger路径不存在。
+P27R/R21C只继续证明未被F22触碰的dependency/startup边界；R22负责接收新Host evidence owner。三者均不直接解锁full。
 
 开始前只核对并消费开发任务的exact commit/tree/lock、自验收矩阵、D19/F17 lifecycle ledger、D20/D27/D28闭合矩阵、
-F21A/B batch combined及P27R PASS持久证据，不重复仍有效的absolute/symlink/missing/cross-root/reserved/omitted/relative/
+F21A/B batch combined、P27R PASS、F22A cheap combined及R22 PASS证据，不重复仍有效的absolute/symlink/missing/cross-root/reserved/omitted/relative/
 context-mismatch聚焦测试。唯一merge-only cheap probe与A/B动态矩阵由F16C后续经F19A/F21A/C收敛的
 `run-platform-source-shared-target-probe.mjs --mode combined`拥有。候选和环境不变时，R16与后续新G16必须复用本ledger。
 
 ## 唯一命令组
 
-Combined Probe owner先核对`git status --short`为空、旧v5已归档且production ledger路径不存在、相关repair ledger、
-P26S/P27S/P27R与仍有效的窄结果。在同一候选上先执行一次19项merge-only接线组；不得重复开发者行为矩阵：
+Combined Probe owner先核对`git status --short`为空、旧v5/v6均已归档且production ledger路径不存在、相关repair ledger、
+P26S/P27S/P27R、F22A与R22窄结果。在同一候选上先执行一次20项merge-only接线组；不得重复开发者行为矩阵：
 
 ```bash
 cargo test --locked -p skiff-test-runner --lib \
@@ -56,6 +59,7 @@ node --check scripts/lib/managed-pid-metadata.mjs
 node --check scripts/skiff-instance.mjs
 node --check scripts/lib/platform-source-probe-ownership.mjs
 node --check scripts/lib/platform-source-probe-evidence.mjs
+node --check scripts/lib/platform-source-probe-host-evidence.mjs
 node --check scripts/lib/platform-source-probe-diagnostic.mjs
 node --check scripts/lib/platform-source-probe-node-dependencies.mjs
 node --check scripts/lib/platform-source-probe-support.mjs
@@ -92,8 +96,8 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
 
 ## Combined harness冻结行为
 
-脚本及其command-double test属于F16C/F19A/F21A/C checkpoint；source-suite marker属于F21B checkpoint；isolated owner属于
-F19B checkpoint；I16不得修改。`--mode combined`必须：
+脚本及其command-double test属于F16C/F19A/F21A/C/F22A checkpoint；source-suite marker属于F21B checkpoint；isolated
+owner属于F19B checkpoint；I16不得修改。`--mode combined`必须：
 
 1. 复验integration exact commit/tree/lock/clean、A/B路径不存在、无同名worktree。容量门槛为任务target预计占用：
    existing shared Cargo target allocated bytes加2 GiB；若无可测shared target则要求至少8 GiB free。创建
@@ -128,17 +132,17 @@ I16证据bundle由两项共同组成，任何一项缺失都不是PASS：
    clean crate、artifact枚举、hash/mtime/dep-info、Fresh crate列表、4次probe的8个golden值、structure/registry、首错及
    worktree/temp/PID/port/registry/ownership清理证明，明确`fullProbeRuns: 0`、`hostAttempt: null`、`sourceSuite: null`且own
    `nodeDependencies`字段不存在；不得要求combined ledger含Host diagnostics，不得事后修改或扩schema。
-2. Combined Probe owner在最终回报中给出immutable `p5-i16-command-group-v2` report：同一candidate/tree/lock、clean
-   before/after、上述19条前置命令的exact argv/exit/result，以及combined production dependency helper/install/tsx调用
+2. Combined Probe owner在最终回报中给出immutable `p5-i16-command-group-v3` report：同一candidate/tree/lock、clean
+   before/after、上述20条前置命令的exact argv/exit/result，以及combined production dependency helper/install/tsx调用
    count分别为0。merge-only Rust test必须是`1 passed / 0 failed / 0 ignored`，不能以exit 0、0-run或ignored冒充；Node
    checks/type-check/no-run也必须逐项列出。
 
-PASS只建立该candidate的replacement v6 combined证据；它与fresh R21C是P27R后的并列后继，任一缺失都不能解除后续
-新G16。候选、F18A–J/F19A/B/F20A/B/F21A/B/C任一相关production/test surface、Gate contract/script/schema、dependency
+PASS只建立该candidate的F22后replacement v6 combined证据；它只能在fresh R22 PASS后执行，二者任一缺失都不能解除
+G16E。候选、F18A–J/F19A/B/F20A/B/F21A/B/C/F22A任一相关production/test surface、Gate contract/script/schema、dependency
 helper、source-suite marker、Router package manifest/lock或依赖物化方式、platform source、Cargo/lock、A/B/shared target隔离
 环境变化会使全部I16证据失效。
 
-本任务保持`fullProbeRuns: 0`，不消耗新的完整探针周期。交给后续新G16合同时，历史累计仍为3次full-mode调用、2次真实
-Host attempt、0次完整positive Host；D27/F21/P27R/R21C/replacement v6 combined闭合后建立的新周期从0计数，下一次
-full是该新周期第1次且默认最多2次。具体full命令、候选冻结与预算只能由新的G16合同定义，本合同不得直接运行或
-解锁full。
+本任务保持`fullProbeRuns: 0`，不消耗完整探针预算。历史累计为4次full-mode调用、3次真实Host attempt、0次完整
+positive Host；D27/F21/P27R/R21C建立的新周期已经执行G16D第1次，F22/R22/本replacement combined闭合后，G16E是
+该新周期第2次、历史第5次，也是本周期预算上限。具体full命令、候选冻结与失败交接只能由G16E合同定义，本合同不得
+直接运行或解锁full。

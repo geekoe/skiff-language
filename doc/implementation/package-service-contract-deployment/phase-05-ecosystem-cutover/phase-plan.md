@@ -123,7 +123,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
           │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┤
           │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► F17 ───────────────────────┤
-          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F@e786671 ─► F18A–J ─► evidence PASS ─► G16 pre-Host FAIL ─► D25/F19 ─► v4 evidence PASS ─► G16 Host code1 ─► D26 ─► P26S+F20A/B ─► v5 evidence ─► third G16 ─► new F04 receive
+          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F@e786671 ─► F18A–J ─► evidence PASS ─► G16 pre-Host FAIL ─► D25/F19 ─► v4 evidence PASS ─► G16 Host code1 ─► D26 ─► P26S+F20A/B ─► v5 evidence ─► third G16 ─► D27/F21 ─► G16D Host evidence FAIL ─► D30/F22A ─► R22 ─► replacement I16 ─► G16E ─► R23 F04 receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -264,6 +264,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F20B | [`skiff test` explicit binary](tasks/P5-F20B-skiff-test-explicit-binary.md) | D26 complete | 低；公开caller精确修复 |
 | R20A | [Gate diagnostic acceptance](tasks/P5-R20A-gate-diagnostic-acceptance.md) | v5 I16 PASS | 高；独立只读 |
 | R20B | [`skiff test` binary acceptance](tasks/P5-R20B-skiff-test-binary-acceptance.md) | v5 I16 PASS | 高；独立只读 |
+| D30 | [Host PASS identity closure audit result](tasks/P5-D30-host-pass-identity-closure-audit-result.md) | G16D FAIL | 三路只读；定位test-only evidence hardcode |
+| F22A | [Host result evidence identity](tasks/P5-F22A-host-result-evidence-identity.md) | D30 complete | 中；单一Host evidence owner |
+| R22 | [Host result evidence acceptance](tasks/P5-R22-host-result-evidence-acceptance.md) | F22A exact candidate | 高；独立只读，不跑Host |
+| G16E | [V6 real Host gate](tasks/P5-G16E-v6-real-host-gate.md) | R22 + replacement I16 PASS | 唯一full；新周期第2次/预算上限 |
+| R23 | [F04 original six-blocker acceptance](tasks/P5-R23-f04-original-six-blocker-acceptance.md) | G16E PASS | 原六项独立窄接收；PASS只解锁F05 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
