@@ -32,10 +32,14 @@ cargo test --locked -p skiff-compiler --tests --no-run
 pnpm --filter @skiff/router type-check
 node --check scripts/lib/isolated-test-runtime-instance.mjs
 node --check scripts/lib/isolated-test-runtime.mjs
+node --check scripts/lib/isolated-test-runtime-workspace.mjs
 node --check scripts/lib/supervised-entry-lifecycle.mjs
 node --check scripts/lib/managed-pid-metadata.mjs
 node --check scripts/skiff-instance.mjs
 node --check scripts/lib/platform-source-probe-ownership.mjs
+node --check scripts/lib/platform-source-probe-evidence.mjs
+node --check scripts/lib/platform-source-probe-support.mjs
+node --check scripts/lib/platform-source-probe-contract.mjs
 node --check scripts/lib/platform-source-shared-target-probe.mjs
 node --check scripts/lib/package-service-host-negative-probe.mjs
 node --check scripts/run-package-service-host-negative-probe.mjs
@@ -67,7 +71,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
 
 ## Combined harness冻结行为
 
-脚本及其command-double test属于F16C checkpoint；I16不得修改。`--mode combined`必须：
+脚本及其command-double test属于F16C/F19A checkpoint；isolated owner属于F19B checkpoint；I16不得修改。`--mode combined`必须：
 
 1. 复验integration exact commit/tree/lock/clean、A/B路径不存在、无同名worktree。容量门槛为任务target预计占用：
    existing shared Cargo target allocated bytes加2 GiB；若无可测shared target则要求至少8 GiB free。创建

@@ -22,8 +22,8 @@ transport扇出。因同一F04真实入口已连续暴露多个跨层blocker，�
 审计/预读节点闭合14跳矩阵，并把余项批量冻结为F18A–F18I九个互斥写owner。首次I16与R15B PASS后，R18A发现
 authoring guard前仍创建store；F18J已作为同owner窄后继修复合流。旧I16/R15B随候选失效，新candidate只重跑一次
 cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调用在Host前被root-sensitive Cargo dep-info误判，
-且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计已冻结并行F19A/B；
-合流后重建combined/窄证据，再执行本周期第二次且原则上最后一次full-mode gate，最后由全新reviewer接收F04。
+且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计冻结的F19A/B已
+作为两个clean commit合流；下一步重建v4 combined/窄证据，再执行本周期第二次且原则上最后一次full-mode gate，最后由全新reviewer接收F04。
 次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
@@ -253,6 +253,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D25 | [G16 pre-Host closure audit result](tasks/P5-D25-g16-pre-host-closure-audit-result.md) | G16 FAIL | 三个全新只读审计；闭合被遮挡范围 |
 | F19A | [Gate artifact/evidence convergence](tasks/P5-F19A-gate-artifact-evidence-convergence.md) | D25 complete | 高；test-only gate evidence owner |
 | F19B | [Isolated workspace ownership](tasks/P5-F19B-isolated-workspace-ownership.md) | D25 complete | 高；inner no-clobber owner |
+| R19A | [Gate evidence acceptance](tasks/P5-R19A-gate-evidence-acceptance.md) | v4 I16 PASS | 高；独立只读 |
+| R19B | [Isolated workspace acceptance](tasks/P5-R19B-isolated-workspace-acceptance.md) | v4 I16 PASS | 高；独立只读 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
