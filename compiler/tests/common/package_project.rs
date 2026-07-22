@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skiff_compiler::{
     PackageCompileError, PackageContractCompileDependency, PublishedPackageArtifact,
@@ -10,7 +13,7 @@ use skiff_compiler_input::{
         discover_package_manifests_with_dependency_dirs, read_user_package_manifest,
         PackageConfigError, PackageManifestKey, PackageResolutionDirs, PACKAGE_CONFIG_FILE,
     },
-    InputAssemblyError,
+    CompilerPlatformSources, CompilerPlatformSourcesError, InputAssemblyError,
 };
 use skiff_compiler_source::SourceCompileError;
 use thiserror::Error;
@@ -57,6 +60,8 @@ impl PublishedPackageProject {
 
 #[derive(Debug, Error)]
 pub enum PackageProjectCompileError {
+    #[error(transparent)]
+    PlatformSources(#[from] CompilerPlatformSourcesError),
     #[error(transparent)]
     PackageConfig(#[from] PackageConfigError),
     #[error(transparent)]
@@ -127,14 +132,16 @@ fn compile_package_project_with_dirs_and_contract_dependencies(
     package_dirs: &PackageResolutionDirs,
     contract_dependencies: &BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
 ) -> Result<PublishedPackageProject, PackageProjectCompileError> {
+    let platform_sources = repository_platform_sources()?;
     let root_manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
     let root_key = (root_manifest.id.to_string(), root_manifest.version.clone());
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &platform_sources,
         root,
         package_dirs,
         &root_manifest.dependencies,
     )?;
-    let mut graph = PackageGraphCompiler::new(manifests, contract_dependencies);
+    let mut graph = PackageGraphCompiler::new(&platform_sources, manifests, contract_dependencies);
     graph.compile_platform_std()?;
     let package = graph.compile(&root_key)?;
     let dependency_packages = graph.compiled_dependency_closure(&package)?;
@@ -142,4 +149,12 @@ fn compile_package_project_with_dirs_and_contract_dependencies(
         package,
         dependency_packages,
     })
+}
+
+fn repository_platform_sources() -> Result<CompilerPlatformSources, CompilerPlatformSourcesError> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate manifest directory should have a repository parent")
+        .to_path_buf();
+    CompilerPlatformSources::new(&root)
 }

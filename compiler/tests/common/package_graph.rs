@@ -14,13 +14,14 @@ use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::{
     package_config::{package_alias_bindings, PackageManifest, PackageManifestKey},
     package_sources::{read_official_package_sources, read_package_sources},
-    read_publication_resources, ManifestOwner,
+    read_publication_resources, CompilerPlatformSources, ManifestOwner,
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 
 use super::package_project::PackageProjectCompileError;
 
 pub(super) struct PackageGraphCompiler<'a> {
+    platform_sources: &'a CompilerPlatformSources,
     manifests: BTreeMap<PackageManifestKey, PackageManifest>,
     contract_dependencies: &'a BTreeMap<PackageManifestKey, Vec<PackageContractCompileDependency>>,
     published: BTreeMap<PackageManifestKey, PublishedPackageArtifact>,
@@ -30,6 +31,7 @@ pub(super) struct PackageGraphCompiler<'a> {
 
 impl<'a> PackageGraphCompiler<'a> {
     pub(super) fn new(
+        platform_sources: &'a CompilerPlatformSources,
         manifests: BTreeMap<PackageManifestKey, PackageManifest>,
         contract_dependencies: &'a BTreeMap<
             PackageManifestKey,
@@ -37,6 +39,7 @@ impl<'a> PackageGraphCompiler<'a> {
         >,
     ) -> Self {
         Self {
+            platform_sources,
             manifests,
             contract_dependencies,
             published: BTreeMap::new(),
@@ -130,7 +133,7 @@ impl<'a> PackageGraphCompiler<'a> {
             dependency_artifacts.push(self.compile(&key)?.artifact);
         }
 
-        let package = read_package_source_input(manifest)?;
+        let package = read_package_source_input(self.platform_sources, manifest)?;
         let package_id = manifest.id.to_string();
         let aliases = package_alias_bindings(&manifest.dependencies, &self.manifests);
         let available_artifacts = self
@@ -143,19 +146,23 @@ impl<'a> PackageGraphCompiler<'a> {
             .get(&(package_id.clone(), manifest.version.clone()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let input = PackageCompileInput::new(&package, &aliases, &package_id)
-            .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
-            .with_available_canonical_packages(&available_artifacts);
+        let input =
+            PackageCompileInput::new(self.platform_sources, &package, &aliases, &package_id)
+                .with_canonical_dependencies(&dependency_artifacts, contract_dependencies)
+                .with_available_canonical_packages(&available_artifacts);
         Ok(compile_package(input)?)
     }
 }
 
 fn read_package_source_input(
+    platform_sources: &CompilerPlatformSources,
     manifest: &PackageManifest,
 ) -> Result<PackageSourceInput, PackageProjectCompileError> {
     let root = package_root(manifest)?;
     let raw_sources = match manifest.provenance.owner {
-        ManifestOwner::CompilerStandardPackage => read_official_package_sources(manifest, &root)?,
+        ManifestOwner::CompilerStandardPackage => {
+            read_official_package_sources(platform_sources, manifest)?
+        }
         ManifestOwner::UserOrBuiltinPackage => read_package_sources(manifest, &root)?,
     };
     let source_tree = raw_sources.source_tree();
