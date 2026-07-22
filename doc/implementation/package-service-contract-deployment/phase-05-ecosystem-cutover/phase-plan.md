@@ -29,8 +29,9 @@ P26S三步已PASS且F20A/B两个clean commit已合流；D27/F21关闭真实Route
 result identity后，replacement I16在`411f9b6`通过。G16E只运行一次预算上限full并首次完整PASS，R23六项原始blocker
 窄验收也在同一候选PASS，F04 receive现已关闭。F05初版已在`c277e45`合流但R05 FAIL；D33三路熔断审计确认
 Router lifecycle/response/runtime generation与验收DAG环，冻结F23A–E、F23D convergence和R24 checkpoint。次生
-F23A/B/C/F23F已合流，F23D Router convergence形成checkpoint；首次真实smoke在Runtime builtin materialization失败，
-D35闭合Event/Result/nominal Context及完整contract value范围并冻结F24A–D、R25、I24、R26。FileHandle teardown已由
+F23A/B/C/F23F已合流，F23D Router convergence形成checkpoint；首次真实smoke在Runtime Event materialization失败，
+D35/F24A–D/R25/I24关闭该层。R26唯一smoke前进到ConnectResult return后FAIL；D36定位compiler target-typed object仍降为
+Map并冻结F25A/B、R27、I25、R28。FileHandle teardown已由
 D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -135,7 +136,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
                 └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
                       └─► F03A2 convergence ─► request combined probe ─► R02A third PASS ─┐
   F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05 FAIL ─► D33
-                                                                                               D33 ─► F23A/B/C+F23F ─► F23D checkpoint ─► D35 ─► F24A ─► R25 ─► F24B/C/D ─► I24 ─► R26 ─► R24 ─► F23E ─┐
+                                                                                               D33 ─► F23A/B/C+F23F ─► F23D checkpoint ─► D35 ─► F24A ─► R25 ─► F24B/C/D ─► I24 ─► R26 FAIL ─► D36 ─► F25A ─► F25B ─► R27 ─► I25 ─► R28 ─► R24 ─► F23E ─┐
                                                                                                                         ├─► F03B Router pin ─┐
                                                                                                                         └─► F03C Runtime pin├─► final R05 ─► lock refresh ─► I02 ─► R02
 
@@ -292,6 +293,12 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F24D | [WS shape consumer parity](tasks/P5-F24D-websocket-shape-parity.md) | R25 PASS | 中；linked/test-support parity |
 | I24 | [WS materialization combined](tasks/P5-I24-websocket-materialization-combined.md) | F24B/C/D merged | cheap combined；不跑real smoke |
 | R26 | [F23D real smoke reacceptance](tasks/P5-R26-f23d-real-smoke-reacceptance.md) | I24 PASS | 唯一真实smoke owner |
+| D36 | [WS Result materialization audit](tasks/P5-D36-websocket-result-materialization-audit-result.md) | R26 FAIL | compiler source/lowering闭合审计 |
+| F25A | [Target-typed object facts](tasks/P5-F25A-target-typed-object-materialization.md) | D36 complete | 高；compiler source唯一fact owner |
+| F25B | [Object Construct lowering](tasks/P5-F25B-object-construct-lowering.md) | F25A merged | 高；lowering consumer |
+| R27 | [Object materialization acceptance](tasks/P5-R27-object-materialization-acceptance.md) | F25A/B exact | 高；独立只读 |
+| I25 | [WS Result combined refresh](tasks/P5-I25-websocket-result-combined-refresh.md) | R27 PASS | cheap affected evidence refresh |
+| R28 | [F23D real smoke second reacceptance](tasks/P5-R28-f23d-real-smoke-second-reacceptance.md) | I25 PASS | 唯一真实smoke owner |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
