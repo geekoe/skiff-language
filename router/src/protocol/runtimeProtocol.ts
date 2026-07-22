@@ -3102,6 +3102,12 @@ function validateConfigShape(value: unknown, label: string): string | null {
 function validateResponseChunkFrameHeader(envelope: Record<string, unknown>): string | null {
   return (
     rejectHeaderPayloadFields(envelope, 'response.chunk') ??
+    rejectUnsupportedFrameHeaderFields(envelope, 'response.chunk', [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'seq'
+    ]) ??
     requireString(envelope, 'response.chunk', 'requestId') ??
     requireInteger(envelope, 'response.chunk', 'seq')
   );
@@ -3110,7 +3116,16 @@ function validateResponseChunkFrameHeader(envelope: Record<string, unknown>): st
 function validateResponseStartFrameHeader(envelope: Record<string, unknown>): string | null {
   return (
     rejectHeaderPayloadFields(envelope, 'response.start') ??
+    rejectUnsupportedFrameHeaderFields(envelope, 'response.start', [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'httpResponse'
+    ]) ??
     requireString(envelope, 'response.start', 'requestId') ??
+    (envelope.httpResponse === undefined
+      ? 'invalid response.start envelope: httpResponse is required'
+      : null) ??
     validateHttpResponseFrameMetadata(envelope, 'response.start')
   );
 }
@@ -3118,11 +3133,33 @@ function validateResponseStartFrameHeader(envelope: Record<string, unknown>): st
 function validateResponseEndFrameHeader(envelope: Record<string, unknown>): string | null {
   return (
     rejectHeaderPayloadFields(envelope, 'response.end') ??
+    rejectUnsupportedFrameHeaderFields(envelope, 'response.end', [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'payloadPresent',
+      'httpResponse',
+      'websocketConnect'
+    ]) ??
     requireString(envelope, 'response.end', 'requestId') ??
     requireBoolean(envelope, 'response.end', 'payloadPresent') ??
     validateHttpResponseFrameMetadata(envelope, 'response.end') ??
-    validateWebSocketConnectResponseFrameMetadata(envelope)
+    validateWebSocketConnectResponseFrameMetadata(envelope) ??
+    validateResponseEndVariant(envelope)
   );
+}
+
+function validateResponseEndVariant(envelope: Record<string, unknown>): string | null {
+  if (envelope.httpResponse !== undefined && envelope.websocketConnect !== undefined) {
+    return 'invalid response.end envelope: HTTP and WebSocket response metadata cannot be mixed';
+  }
+  if (
+    isRecord(envelope.websocketConnect) &&
+    envelope.payloadPresent !== envelope.websocketConnect.contextPayloadPresent
+  ) {
+    return 'invalid response.end envelope: payloadPresent must match websocketConnect.contextPayloadPresent';
+  }
+  return null;
 }
 
 function validateHttpRequestFrameMetadata(envelope: Record<string, unknown>): string | null {
@@ -3357,6 +3394,24 @@ function validateOptionalContextCodec(value: unknown, field: string): string | n
   );
 }
 
+function validateOptionalResponseContextCodec(value: unknown): string | null {
+  const field = 'websocketConnect.contextCodec';
+  if (value === undefined) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return `invalid response.end envelope: ${field} must be an object`;
+  }
+  return (
+    rejectUnsupportedObjectFields(value, 'response.end', field, [
+      'operationAbiId',
+      'contextTypeIdentity'
+    ]) ??
+    requireString(value, 'response.end', 'operationAbiId') ??
+    requireString(value, 'response.end', 'contextTypeIdentity')
+  );
+}
+
 function validateWebSocketConnectResponseFrameMetadata(
   envelope: Record<string, unknown>
 ): string | null {
@@ -3367,16 +3422,43 @@ function validateWebSocketConnectResponseFrameMetadata(
     return 'invalid response.end envelope: websocketConnect must be an object';
   }
   const metadata = envelope.websocketConnect;
-  const baseError =
+  const resultError =
     requireEnum(envelope, 'response.end', 'websocketConnect.result', ['accept', 'reject']) ??
-    requireBoolean(envelope, 'response.end', 'websocketConnect.contextPayloadPresent') ??
-    optionalString(envelope, 'response.end', 'websocketConnect.businessIdentity') ??
-    optionalPositiveInteger(envelope, 'response.end', 'websocketConnect.code') ??
-    optionalString(envelope, 'response.end', 'websocketConnect.reason') ??
-    validateOptionalContextCodec(metadata.contextCodec, 'websocketConnect.contextCodec') ??
-    validateWebSocketConnectionPolicy(metadata.connectionPolicy);
-  if (baseError) {
-    return baseError;
+    requireBoolean(envelope, 'response.end', 'websocketConnect.contextPayloadPresent');
+  if (resultError) {
+    return resultError;
+  }
+  if (metadata.result === 'accept') {
+    const acceptError =
+      rejectUnsupportedObjectFields(metadata, 'response.end', 'websocketConnect accept', [
+        'result',
+        'businessIdentity',
+        'connectionPolicy',
+        'contextCodec',
+        'contextPayloadPresent'
+      ]) ??
+      optionalString(envelope, 'response.end', 'websocketConnect.businessIdentity') ??
+      validateOptionalResponseContextCodec(metadata.contextCodec) ??
+      validateWebSocketConnectionPolicy(metadata.connectionPolicy);
+    if (acceptError) {
+      return acceptError;
+    }
+  } else {
+    const rejectError =
+      rejectUnsupportedObjectFields(metadata, 'response.end', 'websocketConnect reject', [
+        'result',
+        'contextPayloadPresent',
+        'code',
+        'reason'
+      ]) ??
+      optionalPositiveInteger(envelope, 'response.end', 'websocketConnect.code') ??
+      optionalString(envelope, 'response.end', 'websocketConnect.reason');
+    if (rejectError) {
+      return rejectError;
+    }
+    if (metadata.contextPayloadPresent !== false) {
+      return 'invalid response.end envelope: websocketConnect reject must set contextPayloadPresent to false';
+    }
   }
   if (metadata.contextPayloadPresent === true && metadata.contextCodec === undefined) {
     return 'invalid response.end envelope: websocketConnect.contextCodec is required when contextPayloadPresent is true';
@@ -3396,6 +3478,15 @@ function validateWebSocketConnectionPolicy(value: unknown): string | null {
   }
   if (Object.prototype.hasOwnProperty.call(value, 'scope')) {
     return 'invalid response.end envelope: websocketConnect.connectionPolicy.scope is not supported';
+  }
+  const unsupported = rejectUnsupportedObjectFields(value, 'response.end', 'websocketConnect.connectionPolicy', [
+    'maxConnections',
+    'overflow',
+    'closeCode',
+    'closeReason'
+  ]);
+  if (unsupported !== null) {
+    return unsupported;
   }
   const policy = value as Record<string, unknown>;
   if (!Number.isInteger(policy.maxConnections) || Number(policy.maxConnections) <= 0) {
@@ -3426,6 +3517,13 @@ function validateHttpResponseFrameMetadata(
   if (Object.prototype.hasOwnProperty.call(envelope.httpResponse, 'body')) {
     return `invalid ${envelopeType} frame header: httpResponse.body is not supported; use binary frame payload bytes`;
   }
+  const unsupported = rejectUnsupportedObjectFields(envelope.httpResponse, envelopeType, 'httpResponse', [
+    'status',
+    'headers'
+  ]);
+  if (unsupported !== null) {
+    return unsupported;
+  }
   const status = envelope.httpResponse.status;
   if (!Number.isInteger(status) || Number(status) < 100 || Number(status) > 599) {
     return `invalid ${envelopeType} envelope: httpResponse.status must be an integer between 100 and 599`;
@@ -3455,12 +3553,29 @@ function validateNameValueArray(
     if (typeof item.value !== 'string') {
       return `invalid ${envelopeType} envelope: ${field}[${index}].value must be a string`;
     }
+    const unsupported = rejectUnsupportedObjectFields(item, envelopeType, `${field}[${index}]`, [
+      'name',
+      'value'
+    ]);
+    if (unsupported !== null) {
+      return unsupported;
+    }
   }
   return null;
 }
 
 function validateResponseError(envelope: Record<string, unknown>): string | null {
-  return validateErrorPayload(envelope, 'response.error');
+  return (
+    rejectHeaderPayloadFields(envelope, 'response.error') ??
+    rejectUnsupportedFrameHeaderFields(envelope, 'response.error', [
+      'schemaVersion',
+      'type',
+      'requestId',
+      'error'
+    ]) ??
+    requireString(envelope, 'response.error', 'requestId') ??
+    validateErrorPayload(envelope, 'response.error')
+  );
 }
 
 function validateErrorPayload(
@@ -3475,6 +3590,12 @@ function validateErrorPayload(
     return `invalid ${envelopeType} envelope: error must be an object`;
   }
   return (
+    rejectUnsupportedObjectFields(envelope.error, envelopeType, 'error', [
+      'code',
+      'message',
+      'status',
+      'details'
+    ]) ??
     requireString(envelope, envelopeType, 'error.code') ??
     requireString(envelope, envelopeType, 'error.message') ??
     validateRuntimeErrorStatus(envelope.error, envelopeType)
@@ -3504,6 +3625,15 @@ function validateRequestCancel(envelope: Record<string, unknown>): string | null
 function validateConnectionSendFrameHeader(envelope: Record<string, unknown>): string | null {
   return (
     rejectHeaderPayloadFields(envelope, 'connection.send') ??
+    rejectUnsupportedFrameHeaderFields(envelope, 'connection.send', [
+      'schemaVersion',
+      'type',
+      'serviceId',
+      'websocketEntryId',
+      'businessIdentity',
+      'connectionId',
+      'payloadKind'
+    ]) ??
     requireString(envelope, 'connection.send', 'serviceId') ??
     optionalString(envelope, 'connection.send', 'websocketEntryId') ??
     validateConnectionSendTarget(envelope) ??
@@ -3579,6 +3709,19 @@ function rejectUnsupportedFrameHeaderFields(
   return unsupported === undefined
     ? null
     : `invalid ${envelopeType} frame header envelope: ${unsupported} is not supported`;
+}
+
+function rejectUnsupportedObjectFields(
+  value: Record<string, unknown>,
+  envelopeType: string,
+  field: string,
+  allowedFields: readonly string[]
+): string | null {
+  const allowed = new Set(allowedFields);
+  const unsupported = Object.keys(value).find((key) => !allowed.has(key));
+  return unsupported === undefined
+    ? null
+    : `invalid ${envelopeType} envelope: ${field}.${unsupported} is not supported`;
 }
 
 function validateCaller(

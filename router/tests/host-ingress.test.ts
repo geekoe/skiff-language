@@ -14,6 +14,7 @@ import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/run
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyHttpGateway } from '../src/router/assemblyHttpGateway.js';
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
+import type { ConnectionSendHandler } from '../src/router/runtimeEndpoint.js';
 import type {
   RuntimeDispatchConnection,
   RuntimeUnaryDispatchFrameHeader
@@ -389,16 +390,16 @@ function webSocketResource(ws: WebSocket): { close(): Promise<void> } {
 }
 
 function connectionSendSource() {
-  let handler: ((message: ConnectionSendEnvelope) => void) | undefined;
+  let handler: ConnectionSendHandler | undefined;
   return {
-    onConnectionSend(next: (message: ConnectionSendEnvelope) => void) {
+    onConnectionSend(next: ConnectionSendHandler) {
       handler = next;
       return () => {
         if (handler === next) handler = undefined;
       };
     },
     emit(message: ConnectionSendEnvelope) {
-      handler?.(message);
+      handler?.(message, {} as WebSocket);
     }
   };
 }

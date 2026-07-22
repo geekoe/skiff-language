@@ -8,6 +8,7 @@ import type {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import { ProviderUnavailableError, ServiceProtocolBoundaryError } from './errors.js';
 import { isRuntimeAssemblyRequestDispatchHeader } from './runtimeRegistry.js';
 import type {
@@ -21,7 +22,8 @@ import {
   canonicalIngressHost,
   RouterActiveAssemblySnapshotStore,
   runtimeAssemblyIngressKey,
-  type RouterActiveAssemblySnapshot
+  type RouterActiveAssemblySnapshot,
+  type RuntimeAssemblyIngressBinding
 } from './runtimeAssemblySnapshot.js';
 
 type AssemblyRegisterControl = Extract<AssemblyActivationControl, { type: 'register' }>;
@@ -51,6 +53,15 @@ export interface AssemblyReplicaSnapshot {
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
 }
+
+export interface CanonicalAssemblyWebSocketIngressIdentity {
+  websocketEntryId: string;
+  gatewayEntryIdentity: string;
+}
+
+const CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS = [
+  { param: 'event', source: { kind: 'websocket.ingressEvent' } }
+] as const;
 
 export class AssemblyRuntimeRegistry {
   private readonly replicas = new Map<string, AssemblyReplica>();
@@ -195,6 +206,26 @@ export class AssemblyRuntimeRegistry {
   pickDispatchConnection(
     request: RuntimeDispatchFrameHeader
   ): RuntimeDispatchConnection | ProviderUnavailableError | ServiceProtocolBoundaryError {
+    const requestError = this.validateDispatchRequest(request);
+    if (requestError !== undefined) {
+      return requestError;
+    }
+    const candidates = this.dispatchCandidates();
+    if (candidates.length === 0) {
+      return new ProviderUnavailableError(
+        'No healthy replica matches the committed RuntimeAssembly generation'
+      );
+    }
+    const replica = candidates[this.nextReplicaCursor % candidates.length];
+    this.nextReplicaCursor += 1;
+    return replica === undefined
+      ? new ProviderUnavailableError()
+      : { runtimeId: replica.replicaId, ws: replica.ws };
+  }
+
+  validateDispatchRequest(
+    request: RuntimeDispatchFrameHeader
+  ): ProviderUnavailableError | ServiceProtocolBoundaryError | undefined {
     if (request.type === 'package-test.start') {
       return new ProviderUnavailableError(
         'package test dispatch is not part of the active RuntimeAssembly registry'
@@ -210,17 +241,7 @@ export class AssemblyRuntimeRegistry {
     if (mismatch !== undefined) {
       return mismatch;
     }
-    const candidates = this.dispatchCandidates();
-    if (candidates.length === 0) {
-      return new ProviderUnavailableError(
-        'No healthy replica matches the committed RuntimeAssembly generation'
-      );
-    }
-    const replica = candidates[this.nextReplicaCursor % candidates.length];
-    this.nextReplicaCursor += 1;
-    return replica === undefined
-      ? new ProviderUnavailableError()
-      : { runtimeId: replica.replicaId, ws: replica.ws };
+    return undefined;
   }
 
   refreshAllRuntimeStates(): void {
@@ -290,15 +311,11 @@ function validateAssemblyRequest(
   const request = validation.envelope;
   if (
     request.mode !== 'unary' ||
-    request.routing.ingress.protocol !== 'http' ||
-    request.httpRequest === undefined ||
-    request.httpAdapter !== undefined ||
-    request.websocketAdapter !== undefined ||
     request.testEffectsEnabled !== false ||
     Object.keys(request.testEffectDoubles).length !== 0
   ) {
     return new ServiceProtocolBoundaryError(
-      'active RuntimeAssembly dispatch only accepts canonical HTTP unary requests'
+      'active RuntimeAssembly dispatch only accepts canonical unary ingress requests'
     );
   }
   if (
@@ -326,18 +343,9 @@ function validateAssemblyRequest(
       throw new Error('request ingress is not canonical');
     }
     runtimeAssemblyIngressKey(canonicalIngress);
-    const requestUrl = new URL(request.httpRequest.url);
-    if (
-      request.httpRequest.method !== canonicalIngress.method ||
-      request.httpRequest.path !== canonicalIngress.path ||
-      requestUrl.pathname !== canonicalIngress.path ||
-      canonicalIngressHost(requestUrl.host) !== canonicalIngress.host
-    ) {
-      throw new Error('HTTP request metadata does not match routing ingress');
-    }
   } catch {
     return new ServiceProtocolBoundaryError(
-      'request does not carry matching canonical RuntimeAssembly HTTP ingress metadata'
+      'request does not carry canonical RuntimeAssembly ingress metadata'
     );
   }
   const binding = active.ingress.get(canonicalIngress);
@@ -349,5 +357,89 @@ function validateAssemblyRequest(
       `request canonical ingress ${runtimeAssemblyIngressKey(request.routing.ingress)} does not match the committed assembly`
     );
   }
+  return canonicalIngress.protocol === 'http'
+    ? validateAssemblyHttpRequest(request, canonicalIngress)
+    : validateAssemblyWebSocketRequest(request, binding);
+}
+
+function validateAssemblyHttpRequest(
+  request: RuntimeAssemblyRequestStartFrameHeader,
+  ingress: RuntimeAssemblyRequestStartFrameHeader['routing']['ingress']
+): ServiceProtocolBoundaryError | undefined {
+  if (
+    request.httpRequest === undefined ||
+    request.httpAdapter !== undefined ||
+    request.websocketAdapter !== undefined
+  ) {
+    return new ServiceProtocolBoundaryError(
+      'canonical RuntimeAssembly HTTP unary dispatch requires only HTTP request metadata'
+    );
+  }
+  try {
+    const requestUrl = new URL(request.httpRequest.url);
+    if (
+      request.httpRequest.method !== ingress.method ||
+      request.httpRequest.path !== ingress.path ||
+      requestUrl.pathname !== ingress.path ||
+      canonicalIngressHost(requestUrl.host) !== ingress.host
+    ) {
+      throw new Error('HTTP request metadata does not match routing ingress');
+    }
+  } catch {
+    return new ServiceProtocolBoundaryError(
+      'request does not carry matching canonical RuntimeAssembly HTTP ingress metadata'
+    );
+  }
   return undefined;
+}
+
+function validateAssemblyWebSocketRequest(
+  request: RuntimeAssemblyRequestStartFrameHeader,
+  binding: RuntimeAssemblyIngressBinding
+): ServiceProtocolBoundaryError | undefined {
+  if (
+    request.websocketAdapter === undefined ||
+    request.httpRequest !== undefined ||
+    request.httpAdapter !== undefined
+  ) {
+    return new ServiceProtocolBoundaryError(
+      'canonical RuntimeAssembly WebSocket unary dispatch requires only WebSocket adapter metadata'
+    );
+  }
+  const expectedIdentity = canonicalAssemblyWebSocketIngressIdentity(binding);
+  if (
+    request.websocketEntryId !== expectedIdentity.websocketEntryId ||
+    request.gatewayEntryIdentity !== expectedIdentity.gatewayEntryIdentity
+  ) {
+    return new ServiceProtocolBoundaryError(
+      'request WebSocket entry and gateway identities do not match the committed assembly ingress'
+    );
+  }
+  return undefined;
+}
+
+export function canonicalAssemblyWebSocketIngressIdentity(
+  binding: RuntimeAssemblyIngressBinding
+): CanonicalAssemblyWebSocketIngressIdentity {
+  const selector = binding.selector;
+  if (selector.protocol !== 'webSocket' || selector.method !== null) {
+    throw new Error('canonical WebSocket identity requires a WebSocket ingress binding');
+  }
+  const body = {
+    adapterArgs: CANONICAL_ASSEMBLY_WEBSOCKET_INGRESS_ARGS,
+    contractOperationId: binding.contractOperationId,
+    selector: {
+      protocol: 'webSocket',
+      host: canonicalIngressHost(selector.host),
+      method: null,
+      path: selector.path
+    },
+    serviceId: binding.contract.serviceId,
+    serviceProtocolIdentity: binding.contract.serviceProtocolIdentity
+  };
+  const digest = sha256Hex(stableStringify(body));
+  return {
+    websocketEntryId: `skiff-websocket-entry-v1:sha256:${digest}`,
+    gatewayEntryIdentity: `skiff-gateway-v1:sha256:${digest}`
+  };
 }

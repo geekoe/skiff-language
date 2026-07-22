@@ -58,7 +58,48 @@ export interface RuntimeEndpointListenResult {
   url: string;
 }
 
-export type ConnectionSendHandler = (message: ConnectionSendEnvelope) => void;
+export type ConnectionSendProtocolViolationReason =
+  | 'service-mismatch'
+  | 'websocket-entry-mismatch'
+  | 'runtime-sender-mismatch';
+
+export type ConnectionSendDisposition =
+  | { kind: 'delivered'; deliveries: number }
+  | {
+      kind: 'delivery-miss';
+      reason: 'connection-closed';
+      connectionId: string;
+    }
+  | {
+      kind: 'protocol-violation';
+      reason: ConnectionSendProtocolViolationReason;
+      connectionId?: string;
+      expected?: Readonly<Record<string, string>>;
+      received?: Readonly<Record<string, string>>;
+    };
+
+export type ConnectionSendHandler = (
+  message: ConnectionSendEnvelope,
+  sender: WebSocket
+) => ConnectionSendDisposition | void;
+
+export type RuntimeConnectionSendObservation =
+  | {
+      event: 'runtime.connection_send_delivery_miss';
+      reason: 'connection-closed';
+      connectionId: string;
+      serviceId: string;
+      websocketEntryId?: string;
+    }
+  | {
+      event: 'runtime.connection_send_protocol_violation';
+      reason: ConnectionSendProtocolViolationReason;
+      connectionId?: string;
+      serviceId: string;
+      websocketEntryId?: string;
+      expected?: Readonly<Record<string, string>>;
+      received?: Readonly<Record<string, string>>;
+    };
 
 export interface RuntimeConnectionSendSource {
   onConnectionSend(handler: ConnectionSendHandler): () => void;
@@ -71,6 +112,7 @@ export interface RuntimeControlBroadcaster {
 export interface RuntimeEndpointOptions {
   registry: RuntimeRegistry;
   assemblyRegistry?: AssemblyRuntimeRegistry;
+  observeConnectionSend?(observation: RuntimeConnectionSendObservation): void;
 }
 
 export class RuntimeEndpoint
@@ -414,6 +456,9 @@ export class RuntimeEndpoint
         });
         return;
       case 'response.error':
+        if (frame.payloadBytes.byteLength !== 0) {
+          throw new Error('response.error binary frame payload must be empty');
+        }
         this.dispatcher().rejectRequest(ws, {
           requestId: header.requestId,
           error: header.error
@@ -464,7 +509,41 @@ export class RuntimeEndpoint
       throw new Error('connection.send requires a registered runtime for the target service');
     }
     for (const handler of this.connectionSendHandlers) {
-      handler(envelope);
+      const disposition = handler(envelope, ws);
+      if (disposition === undefined || disposition.kind === 'delivered') {
+        continue;
+      }
+      if (disposition.kind === 'delivery-miss') {
+        const observation = {
+          event: 'runtime.connection_send_delivery_miss',
+          reason: disposition.reason,
+          connectionId: disposition.connectionId,
+          serviceId: envelope.serviceId,
+          ...(envelope.websocketEntryId !== undefined
+            ? { websocketEntryId: envelope.websocketEntryId }
+            : {})
+        } as const satisfies RuntimeConnectionSendObservation;
+        this.options.observeConnectionSend?.(observation);
+        console.warn(observation);
+        continue;
+      }
+      const observation = {
+        event: 'runtime.connection_send_protocol_violation',
+        reason: disposition.reason,
+        serviceId: envelope.serviceId,
+        ...(envelope.websocketEntryId !== undefined
+          ? { websocketEntryId: envelope.websocketEntryId }
+          : {}),
+        ...(disposition.connectionId !== undefined
+          ? { connectionId: disposition.connectionId }
+          : {}),
+        ...(disposition.expected !== undefined ? { expected: disposition.expected } : {}),
+        ...(disposition.received !== undefined ? { received: disposition.received } : {})
+      } as const satisfies RuntimeConnectionSendObservation;
+      this.options.observeConnectionSend?.(observation);
+      console.error(observation);
+      ws.close(1008, 'connection.send protocol violation');
+      return;
     }
   }
 
