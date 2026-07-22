@@ -29,7 +29,14 @@ export async function runInIsolatedTestRuntime({
   signalTarget = process,
   dependencies = {},
 }) {
-  const ops = isolatedRuntimeOperations(dependencies, skiffRoot, baseEnv);
+  const absoluteSkiffRoot = resolve(skiffRoot);
+  const absoluteCargoTarget = cargoTargetDir(absoluteSkiffRoot, baseEnv);
+  const isolatedBaseEnv = {
+    ...baseEnv,
+    CARGO_TARGET_DIR: absoluteCargoTarget,
+    SKIFF_TEST_PLATFORM_SOURCE_ROOT: absoluteSkiffRoot,
+  };
+  const ops = isolatedRuntimeOperations(dependencies, absoluteSkiffRoot, isolatedBaseEnv);
   const abortController = new AbortController();
   let stack;
   let interruptedBy;
@@ -47,8 +54,9 @@ export async function runInIsolatedTestRuntime({
   let testError;
   try {
     stack = await startIsolatedTestRuntime({
-      skiffRoot,
-      baseEnv,
+      skiffRoot: absoluteSkiffRoot,
+      cargoTarget: absoluteCargoTarget,
+      baseEnv: isolatedBaseEnv,
       environment,
       ops,
       signal: abortController.signal,
@@ -87,7 +95,14 @@ export async function runInIsolatedTestRuntime({
   return value;
 }
 
-async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, signal }) {
+async function startIsolatedTestRuntime({
+  skiffRoot,
+  cargoTarget,
+  baseEnv,
+  environment,
+  ops,
+  signal,
+}) {
   const portLease = await ops.leasePorts();
   let tempRoot;
   let supervisor;
@@ -105,7 +120,7 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, 
     const controlPort = basePort + 1;
     const config = isolatedTestInstanceConfigText({
       devHome,
-      cargoTarget: cargoTargetDir(skiffRoot, baseEnv),
+      cargoTarget,
       basePort,
       environment,
     });
@@ -113,6 +128,8 @@ async function startIsolatedTestRuntime({ skiffRoot, baseEnv, environment, ops, 
     configWritten = true;
     const isolatedEnv = isolatedTestRunnerEnvironment({
       baseEnv,
+      skiffRoot,
+      cargoTarget,
       devHome,
       controlPort,
       routerHttpPort: basePort,

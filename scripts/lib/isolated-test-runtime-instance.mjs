@@ -43,6 +43,8 @@ export function isolatedTestInstanceConfigText({
 
 export function isolatedTestRunnerEnvironment({
   baseEnv,
+  skiffRoot,
+  cargoTarget,
   devHome,
   controlPort,
   routerHttpPort,
@@ -53,12 +55,14 @@ export function isolatedTestRunnerEnvironment({
   delete cleanBaseEnv.SKIFF_TEST_ARTIFACT_ROOT;
   return {
     ...cleanBaseEnv,
+    CARGO_TARGET_DIR: cargoTarget,
     SKIFF_DEV_HOME: devHome,
     SKIFF_TEST_RUNTIME_ARTIFACT_ROOT: join(devHome, 'artifacts'),
     SKIFF_TEST_ACTIVATION_URL: `http://127.0.0.1:${controlPort}/__skiff/activate-assembly`,
     SKIFF_TEST_INGRESS_URL: `http://127.0.0.1:${routerHttpPort}`,
     SKIFF_TEST_ENVIRONMENT: environment,
     SKIFF_TEST_EXPECTED_GENERATION: '0',
+    SKIFF_TEST_PLATFORM_SOURCE_ROOT: skiffRoot,
   };
 }
 
@@ -87,25 +91,40 @@ export function bootstrapCanonicalArgs({
 
 export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
   const bootstrap = bootstrapReceipt?.bootstrap;
+  const environment = bootstrapReceipt?.environment;
+  const generation = bootstrap?.generation;
+  const assemblyIdentity = bootstrap?.assembly?.assemblyIdentity;
   const active = health?.activeAssembly;
   if (
     bootstrap === undefined
-    || active?.environment !== bootstrapReceipt.environment
-    || active?.generation !== bootstrap.generation
-    || active?.assemblyIdentity !== bootstrap.assembly?.assemblyIdentity
+    || typeof environment !== 'string'
+    || environment.length === 0
+    || !Number.isSafeInteger(generation)
+    || generation < 0
+    || typeof assemblyIdentity !== 'string'
+    || assemblyIdentity.length === 0
+    || active?.environment !== environment
+    || active?.generation !== generation
+    || active?.assemblyIdentity !== assemblyIdentity
   ) {
     return false;
   }
   const capabilityConnections = health?.capabilityConnections;
   const replicas = health?.replicas;
   return Array.isArray(capabilityConnections)
-    && capabilityConnections.some((connection) => connection?.connected !== false)
     && Array.isArray(replicas)
     && replicas.some((replica) => (
-      replica?.connected !== false
+      typeof replica?.replicaId === 'string'
+      && replica.replicaId.length > 0
+      && replica.connected === true
       && replica?.state === 'healthy'
-      && replica?.generation === bootstrap.generation
-      && replica?.assemblyIdentity === bootstrap.assembly.assemblyIdentity
+      && replica?.environment === environment
+      && replica?.generation === generation
+      && replica?.assemblyIdentity === assemblyIdentity
+      && capabilityConnections.some((connection) => (
+        connection?.connected === true
+        && connection?.runtimeId === replica.replicaId
+      ))
     ));
 }
 

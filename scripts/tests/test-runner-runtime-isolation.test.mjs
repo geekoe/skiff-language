@@ -12,7 +12,13 @@ const root = resolve(import.meta.dirname, '..', '..');
 
 test('non-live runner receives canonical activation and Host-ingress targets', () => {
   const environment = isolatedTestRunnerEnvironment({
-    baseEnv: { PATH: '/bin' },
+    baseEnv: {
+      PATH: '/bin',
+      CARGO_TARGET_DIR: 'hostile-relative-target',
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
+    },
+    skiffRoot: '/checkout/skiff',
+    cargoTarget: '/checkout/cargo-target',
     devHome: '/tmp/skiff-owned/dev-home',
     controlPort: 46101,
     routerHttpPort: 46100,
@@ -31,6 +37,8 @@ test('non-live runner receives canonical activation and Host-ingress targets', (
   assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46100');
   assert.equal(environment.SKIFF_TEST_ENVIRONMENT, 'test-environment');
   assert.equal(environment.SKIFF_TEST_EXPECTED_GENERATION, '0');
+  assert.equal(environment.CARGO_TARGET_DIR, '/checkout/cargo-target');
+  assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout/skiff');
   assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
 });
 

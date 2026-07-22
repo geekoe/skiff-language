@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 
@@ -40,9 +40,13 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
   const environment = isolatedTestRunnerEnvironment({
     baseEnv: {
       PATH: '/bin',
+      CARGO_TARGET_DIR: 'hostile-relative-target',
       SKIFF_DEV_RELOAD_URL: 'http://127.0.0.1:4001/stable',
       SKIFF_TEST_ARTIFACT_ROOT: '/tmp/retired-artifact-root',
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
     },
+    skiffRoot: '/checkout',
+    cargoTarget: '/checkout/build/cargo-target',
     devHome,
     controlPort: 46043,
     routerHttpPort: 46042,
@@ -50,8 +54,10 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
   assert.equal(environment.SKIFF_DEV_HOME, devHome);
   assert.equal(environment.SKIFF_DEV_RELOAD_URL, undefined);
   assert.equal(environment.SKIFF_TEST_ARTIFACT_ROOT, undefined);
+  assert.equal(environment.CARGO_TARGET_DIR, '/checkout/build/cargo-target');
   assert.equal(environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT, `${devHome}/artifacts`);
   assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46042');
+  assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout');
 });
 
 test('bootstrap comes from current checkout and writes only canonical generation zero', () => {
@@ -107,39 +113,135 @@ test('default owner shutdown invokes current checkout instance down command', as
   }
 });
 
-test('readiness requires exact empty-assembly registration and a separate capability handshake', () => {
+test('readiness requires one exact connected replica and its own capability handshake', () => {
   const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`;
   const bootstrap = {
     environment: 'skiff-test',
     bootstrap: { generation: 0, assembly: { assemblyIdentity } },
   };
-  const activeAssembly = {
-    environment: 'skiff-test',
-    generation: 0,
-    assemblyIdentity,
+  const readyHealth = {
+    activeAssembly: {
+      environment: 'skiff-test',
+      generation: 0,
+      assemblyIdentity,
+    },
+    capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
+    replicas: [{
+      replicaId: 'runtime-1',
+      environment: 'skiff-test',
+      connected: true,
+      state: 'healthy',
+      generation: 0,
+      assemblyIdentity,
+    }],
   };
   assert.equal(
     isolatedRuntimeHealthReady({
-      activeAssembly,
+      activeAssembly: readyHealth.activeAssembly,
       capabilityConnections: [],
       replicas: [],
     }, bootstrap),
     false,
   );
+  assert.equal(isolatedRuntimeHealthReady(readyHealth, bootstrap), true);
+
+  const healthMutations = [
+    ['active environment differs', (health) => { health.activeAssembly.environment = 'other'; }],
+    ['active environment is missing', (health) => { delete health.activeAssembly.environment; }],
+    ['active generation differs', (health) => { health.activeAssembly.generation = 1; }],
+    ['active generation is missing', (health) => { delete health.activeAssembly.generation; }],
+    ['active assembly differs', (health) => { health.activeAssembly.assemblyIdentity = 'other'; }],
+    ['active assembly is missing', (health) => { delete health.activeAssembly.assemblyIdentity; }],
+    ['replica id differs', (health) => { health.replicas[0].replicaId = 'runtime-2'; }],
+    ['replica id is missing', (health) => { delete health.replicas[0].replicaId; }],
+    ['replica environment differs', (health) => { health.replicas[0].environment = 'other'; }],
+    ['replica environment is missing', (health) => { delete health.replicas[0].environment; }],
+    ['replica connected is false', (health) => { health.replicas[0].connected = false; }],
+    ['replica connected is missing', (health) => { delete health.replicas[0].connected; }],
+    ['replica state is not healthy', (health) => { health.replicas[0].state = 'draining'; }],
+    ['replica state is missing', (health) => { delete health.replicas[0].state; }],
+    ['replica generation differs', (health) => { health.replicas[0].generation = 1; }],
+    ['replica generation is missing', (health) => { delete health.replicas[0].generation; }],
+    ['replica assembly differs', (health) => { health.replicas[0].assemblyIdentity = 'other'; }],
+    ['replica assembly is missing', (health) => { delete health.replicas[0].assemblyIdentity; }],
+    ['capability runtime differs', (health) => { health.capabilityConnections[0].runtimeId = 'runtime-2'; }],
+    ['capability runtime is missing', (health) => { delete health.capabilityConnections[0].runtimeId; }],
+    ['capability connected is false', (health) => { health.capabilityConnections[0].connected = false; }],
+    ['capability connected is missing', (health) => { delete health.capabilityConnections[0].connected; }],
+  ];
+  for (const [scenario, mutate] of healthMutations) {
+    const health = structuredClone(readyHealth);
+    mutate(health);
+    assert.equal(isolatedRuntimeHealthReady(health, bootstrap), false, scenario);
+  }
+
+  const splitRuntimeHealth = structuredClone(readyHealth);
+  splitRuntimeHealth.capabilityConnections[0].runtimeId = 'runtime-2';
+  splitRuntimeHealth.replicas.push({
+    ...structuredClone(readyHealth.replicas[0]),
+    replicaId: 'runtime-2',
+    environment: 'other',
+  });
   assert.equal(
-    isolatedRuntimeHealthReady({
-      activeAssembly,
-      capabilityConnections: [{ runtimeId: 'runtime-1', connected: true }],
-      replicas: [{
-        replicaId: 'runtime-1',
-        connected: true,
-        state: 'healthy',
-        generation: 0,
-        assemblyIdentity,
-      }],
-    }, bootstrap),
+    isolatedRuntimeHealthReady(splitRuntimeHealth, bootstrap),
+    false,
+    'exact replica and connected capability belong to different runtimes',
+  );
+
+  const receiptMutations = [
+    ['bootstrap environment is missing', (receipt) => { delete receipt.environment; }],
+    ['bootstrap generation is missing', (receipt) => { delete receipt.bootstrap.generation; }],
+    ['bootstrap assembly is missing', (receipt) => { delete receipt.bootstrap.assembly; }],
+  ];
+  for (const [scenario, mutate] of receiptMutations) {
+    const receipt = structuredClone(bootstrap);
+    mutate(receipt);
+    assert.equal(isolatedRuntimeHealthReady(readyHealth, receipt), false, scenario);
+  }
+});
+
+test('one absolute checkout and Cargo target flow through config, bootstrap, supervisor, and runner', async () => {
+  const observed = {};
+  const relativeSkiffRoot = 'relative-skiff-checkout';
+  const relativeCargoTarget = 'relative-cargo-target';
+  const expectedSkiffRoot = resolve(relativeSkiffRoot);
+  const expectedCargoTarget = resolve(relativeCargoTarget);
+  const { dependencies } = lifecycleDouble({
+    writeConfig: async (_configPath, config) => { observed.config = config; },
+    seedBootstrap: async (input) => {
+      observed.bootstrap = input;
+      return { environment: 'skiff-test', bootstrap: {} };
+    },
+    spawnSupervisor: (input) => {
+      observed.supervisor = input;
+      return { pid: 1000 };
+    },
+  });
+
+  await runInIsolatedTestRuntime({
+    skiffRoot: relativeSkiffRoot,
+    baseEnv: {
+      PATH: '/bin',
+      CARGO_TARGET_DIR: relativeCargoTarget,
+      SKIFF_TEST_PLATFORM_SOURCE_ROOT: '/tmp/hostile-platform-root',
+    },
+    signalTarget: new EventEmitter(),
+    dependencies,
+    runTest: async (environment) => { observed.runnerEnv = environment; },
+  });
+
+  assert.equal(isAbsolute(expectedCargoTarget), true);
+  assert.notEqual(expectedCargoTarget, resolve(expectedSkiffRoot, relativeCargoTarget));
+  assert.equal(
+    observed.config.includes(`cargoTargetDir: ${JSON.stringify(expectedCargoTarget)}`),
     true,
   );
+  assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);
+  assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
+  assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
+  assert.equal(observed.supervisor.skiffRoot, expectedSkiffRoot);
+  assert.strictEqual(observed.supervisor.env, observed.bootstrap.env);
+  assert.strictEqual(observed.runnerEnv, observed.bootstrap.env);
 });
 
 test('success and test failure both run owner shutdown, status, ports, lease, and temp cleanup', async () => {
