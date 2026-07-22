@@ -115,16 +115,16 @@ pub fn prepare_package_service_host_fixture(
         &fixture_root.join("consumer"),
         artifact_root,
     )?;
-    let consumer_deployment = publish_consumer_deployment(
+    let consumer_deployment = publish_consumer_deployment(ConsumerDeploymentContext {
         platform_sources,
         work_root,
         artifact_root,
-        &store,
-        &consumer_contract,
-        &payments_contract,
-        &consumer_package,
-        &helper_package,
-    )?;
+        store: &store,
+        consumer_contract: &consumer_contract,
+        payments_contract: &payments_contract,
+        consumer_package: &consumer_package,
+        helper_package: &helper_package,
+    })?;
 
     let base_assembly = publish_assembly(
         platform_sources,
@@ -185,16 +185,30 @@ fn publish_provider_deployment(
     )
 }
 
+struct ConsumerDeploymentContext<'a> {
+    platform_sources: &'a CompilerPlatformSources,
+    work_root: &'a Path,
+    artifact_root: &'a Path,
+    store: &'a CanonicalArtifactStore,
+    consumer_contract: &'a ServiceContractRef,
+    payments_contract: &'a ServiceContractRef,
+    consumer_package: &'a PackageArtifactRef,
+    helper_package: &'a PackageArtifactRef,
+}
+
 fn publish_consumer_deployment(
-    platform_sources: &CompilerPlatformSources,
-    work_root: &Path,
-    artifact_root: &Path,
-    store: &CanonicalArtifactStore,
-    consumer_contract: &ServiceContractRef,
-    payments_contract: &ServiceContractRef,
-    consumer_package: &PackageArtifactRef,
-    helper_package: &PackageArtifactRef,
+    context: ConsumerDeploymentContext<'_>,
 ) -> anyhow::Result<ServiceDeploymentRef> {
+    let ConsumerDeploymentContext {
+        platform_sources,
+        work_root,
+        artifact_root,
+        store,
+        consumer_contract,
+        payments_contract,
+        consumer_package,
+        helper_package,
+    } = context;
     let consumer_artifact = store.read_package_artifact(consumer_package)?;
     let package_requirement = consumer_artifact
         .package_requirements
