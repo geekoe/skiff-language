@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
+import {
+  assertHostDiagnosticMatchesOutcome,
+  captureHostDiagnostic,
+} from './platform-source-probe-diagnostic.mjs';
 import { commandText, errorMessage } from './platform-source-probe-support.mjs';
 
 export const PROBE_TARGETED_CRATES = Object.freeze([
@@ -198,6 +202,11 @@ export function beginHostAttempt(command, args) {
     code: null,
     signal: null,
     error: null,
+    phase: 'unknown',
+    subject: 'unknown',
+    stdoutBytes: null,
+    stderrBytes: null,
+    firstDiagnostic: null,
     stdoutSha256: null,
     stderrSha256: null,
     outputSha256: null,
@@ -216,12 +225,14 @@ export function beginHostAttempt(command, args) {
 }
 
 export function failThrownHostAttempt(attempt, error) {
+  const diagnostic = captureHostDiagnostic({ error, stdout: '', stderr: '' });
   const issue = {
     kind: 'command-throw',
     message: `full Host command threw before returning an outcome: ${errorMessage(error)}`,
   };
   return {
     ...attempt,
+    ...diagnostic,
     status: 'FAIL',
     error: errorMessage(error),
     issues: [issue],
@@ -247,6 +258,7 @@ export function completeHostAttempt(attempt, outcome, fixture, {
   const exactPassLineCount = matchingPassLines.length;
   const observedPassLine = exactPassLineCount === 1 ? matchingPassLines[0] : null;
   const observedFinalValue = observedPassLine === null ? null : fixture.expectedFinalValue;
+  const diagnostic = captureHostDiagnostic(outcome);
   const issues = [];
   if (outcome?.error != null || outcome?.signal != null || outcome?.code !== 0) {
     issues.push({
@@ -276,7 +288,7 @@ export function completeHostAttempt(attempt, outcome, fixture, {
   ) {
     issues.push({
       kind: 'result-counts',
-      message: `full gate must report exact std 11/11 and Host 1/1, got ${resultLines.join(' | ')}`,
+      message: `full gate must report exact std 11/11 and Host 1/1; observed ${resultLines.length} result line(s)`,
     });
   }
   if (exactPassLineCount !== 1) {
@@ -295,8 +307,9 @@ export function completeHostAttempt(attempt, outcome, fixture, {
       assertion: fixture.assertion,
     },
   } : null;
-  return {
+  const completed = {
     ...attempt,
+    ...diagnostic,
     status: issues.length === 0 ? 'PASS' : 'FAIL',
     code: Number.isInteger(outcome?.code) ? outcome.code : null,
     signal: outcome?.signal ?? null,
@@ -304,9 +317,13 @@ export function completeHostAttempt(attempt, outcome, fixture, {
     stdoutSha256: sha256(stdout),
     stderrSha256: sha256(stderr),
     outputSha256: sha256(output),
-    resultLines,
+    resultLines: resultLines.map((line) => (
+      HOST_RESULT_PATTERN.test(line) ? line : 'test result: <invalid>'
+    )),
     counts: parsedCounts,
-    passLines,
+    passLines: passLines.map((line) => (
+      line === fixture.expectedPassLine ? line : 'PASS <unexpected>'
+    )),
     expectedPassLine: fixture.expectedPassLine,
     observedPassLine,
     exactPassLineCount,
@@ -316,6 +333,8 @@ export function completeHostAttempt(attempt, outcome, fixture, {
     issues,
     firstIssue: issues[0] ?? null,
   };
+  assertHostDiagnosticMatchesOutcome(completed, outcome);
+  return completed;
 }
 
 export function assertHostAttempt(attempt) {

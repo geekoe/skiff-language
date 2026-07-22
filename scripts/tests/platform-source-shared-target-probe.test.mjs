@@ -10,7 +10,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 
@@ -18,6 +18,10 @@ import {
   parseProbeArgs,
   runPlatformSourceSharedTargetProbe,
 } from '../run-platform-source-shared-target-probe.mjs';
+import {
+  HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES,
+  assertHostDiagnosticMatchesOutcome,
+} from '../lib/platform-source-probe-diagnostic.mjs';
 import { probeDigest } from '../lib/platform-source-probe-support.mjs';
 
 const candidate = '1'.repeat(40);
@@ -38,7 +42,7 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(combined.status, 'PASS', combined.firstError);
     assert.equal(combined.fullProbeRuns, 0);
     assert.equal(combined.sourceSuite, null);
-    assert.equal(combined.schemaVersion, 'skiff-platform-source-shared-target-probe-v4');
+    assert.equal(combined.schemaVersion, 'skiff-platform-source-shared-target-probe-v5');
     assert.equal(combined.artifactEvidence.length, 2);
     assert.equal(
       combined.artifactEvidence.every((entry) => (
@@ -365,6 +369,89 @@ test('full Host attempt records nonzero, signal, and exact parse failures', asyn
   }
 });
 
+test('bounded diagnostic retains phase while redacting paths, secrets, and HTTP bodies', async (t) => {
+  const scenarios = [
+    ['startup', 'startup', 'isolated-runtime'],
+    ['std', 'std', 'std'],
+    ['host-prepare', 'host-prepare', 'package-service-host'],
+    ['host-runner', 'host-runner', 'package-service-host'],
+    ['unknown', 'unknown', 'unknown'],
+  ];
+  for (const [scenario, expectedPhase, expectedSubject] of scenarios) {
+    await t.test(scenario, async () => {
+      const fixture = await gateFixture();
+      try {
+        const combinedOptions = await createCombinedLedger(fixture);
+        const commandDouble = fixture.commandDouble('full', {
+          combinedLedger: combinedOptions.ledger,
+          hostScenario: `diagnostic-${scenario}`,
+        });
+        const ledger = await runPlatformSourceSharedTargetProbe(
+          fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+          fixture.dependencies(commandDouble),
+        );
+        assert.equal(ledger.status, 'FAIL');
+        assert.equal(ledger.hostAttempt.firstIssue.kind, 'command-outcome');
+        assert.equal(ledger.hostAttempt.phase, expectedPhase);
+        assert.equal(ledger.hostAttempt.subject, expectedSubject);
+        assert.equal(
+          ledger.hostAttempt.stdoutBytes,
+          Buffer.byteLength(commandDouble.hostOutcome.stdout),
+        );
+        assert.equal(
+          ledger.hostAttempt.stderrBytes,
+          Buffer.byteLength(commandDouble.hostOutcome.stderr),
+        );
+        assert.equal(
+          ledger.hostAttempt.stdoutSha256,
+          createHash('sha256').update(commandDouble.hostOutcome.stdout).digest('hex'),
+        );
+        assert.equal(
+          ledger.hostAttempt.stderrSha256,
+          createHash('sha256').update(commandDouble.hostOutcome.stderr).digest('hex'),
+        );
+        assert.equal(
+          ledger.hostAttempt.outputSha256,
+          createHash('sha256').update(
+            `${commandDouble.hostOutcome.stdout}\n${commandDouble.hostOutcome.stderr}`,
+          ).digest('hex'),
+        );
+        const first = ledger.hostAttempt.firstDiagnostic;
+        assert.equal(first.kind, 'error');
+        assert.equal(first.stream, 'stderr');
+        assert.equal(first.truncated, true);
+        assert.equal(
+          first.originalLineSha256,
+          createHash('sha256')
+            .update(commandDouble.hostOutcome.stderr.split('\n')[0])
+            .digest('hex'),
+        );
+        assert.ok(
+          Buffer.byteLength(first.sanitizedExcerpt) <= HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES,
+        );
+        assert.match(first.sanitizedExcerpt, /<PATH>/);
+        assert.match(first.sanitizedExcerpt, /<REDACTED_SECRET>/);
+        for (const path of commandDouble.diagnosticPaths) {
+          assert.equal(first.sanitizedExcerpt.includes(path), false);
+        }
+        const serialized = JSON.stringify(ledger);
+        assert.equal(serialized.includes('P5_F20A_SECRET_SENTINEL'), false);
+        assert.equal(serialized.includes('P5_F20A_HTTP_BODY_SENTINEL'), false);
+        assertHostDiagnosticMatchesOutcome(ledger.hostAttempt, commandDouble.hostOutcome);
+
+        const tampered = structuredClone(ledger.hostAttempt);
+        tampered.firstDiagnostic.sanitizedExcerpt += 'tampered';
+        assert.throws(
+          () => assertHostDiagnosticMatchesOutcome(tampered, commandDouble.hostOutcome),
+          /does not match the original command outcome/,
+        );
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test('Host primary failure stays first when cleanup also fails', async () => {
   const fixture = await gateFixture();
   try {
@@ -418,12 +505,12 @@ test('unreachable expected assertion plus assert true is rejected before Host', 
   }
 });
 
-test('legacy v3 combined ledger is explicitly invalid for full mode', async () => {
+test('legacy v4 combined ledger is explicitly invalid for full mode', async () => {
   const fixture = await gateFixture();
   try {
     const combinedOptions = await createCombinedLedger(fixture);
     const legacy = JSON.parse(await readFile(combinedOptions.ledger, 'utf8'));
-    legacy.schemaVersion = 'skiff-platform-source-shared-target-probe-v3';
+    legacy.schemaVersion = 'skiff-platform-source-shared-target-probe-v4';
     await writeFile(combinedOptions.ledger, `${JSON.stringify(legacy)}\n`);
     const commandDouble = fixture.commandDouble('full', {
       combinedLedger: combinedOptions.ledger,
@@ -440,7 +527,7 @@ test('legacy v3 combined ledger is explicitly invalid for full mode', async () =
   }
 });
 
-test('v4 validator recomputes strict artifact evidence instead of trusting verdict', async () => {
+test('v5 validator recomputes strict artifact evidence instead of trusting verdict', async () => {
   const fixture = await gateFixture();
   try {
     const combinedOptions = await createCombinedLedger(fixture);
@@ -539,7 +626,18 @@ function createCommandDouble({
 }) {
   const commands = [];
   const worktrees = new Map([[integrationRoot, { head: candidate, detached: false }]]);
+  const sourceRoot = join(dirname(integrationRoot), `${mode}-a`);
+  const targetRoot = join(dirname(integrationRoot), `${mode}-b`);
+  const diagnosticPaths = [
+    integrationRoot,
+    sourceRoot,
+    targetRoot,
+    join(dirname(integrationRoot), '.skiff-p5-g16.diagnostic'),
+    join(tmpdir(), 'skiff-f20a-temp'),
+    join(homedir(), 'skiff-f20a-home'),
+  ];
   let pid = 10_000;
+  let hostOutcome = null;
   const run = async (command, args, options = {}) => {
     commands.push({ command, args: [...args], options });
     const outcome = {
@@ -602,7 +700,8 @@ function createCommandDouble({
     } else if (command === 'rg') {
       outcome.code = 1;
     } else if (command === 'node' && args.some((value) => value.endsWith('run-skiff-tests.mjs'))) {
-      applyHostCommandScenario(outcome, hostScenario);
+      applyHostCommandScenario(outcome, hostScenario, diagnosticPaths);
+      hostOutcome = { ...outcome };
     }
     return outcome;
   };
@@ -613,13 +712,33 @@ function createCommandDouble({
     artifactScenario,
     hostScenario,
     hostSource,
-    sourceRoot: join(dirname(integrationRoot), `${mode}-a`),
-    targetRoot: join(dirname(integrationRoot), `${mode}-b`),
+    sourceRoot,
+    targetRoot,
+    diagnosticPaths,
+    get hostOutcome() { return hostOutcome; },
   };
 }
 
-function applyHostCommandScenario(outcome, scenario) {
+function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
   if (scenario === 'throw') throw new Error('Host command threw after launch');
+  if (scenario.startsWith('diagnostic-')) {
+    const phase = scenario.slice('diagnostic-'.length);
+    const phaseMarkers = {
+      startup: `[skiff-test] isolated runtime workspace: ${diagnosticPaths[4]}`,
+      std: `[skiff-tests] running std: ${join(diagnosticPaths[0], 'std')}`,
+      'host-prepare': `[skiff-tests] preparing package-service-host: ${join(diagnosticPaths[2], 'test-runner', 'fixtures', 'package-service-host')}`,
+      'host-runner': '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
+      unknown: 'unclassified source-suite output',
+    };
+    outcome.code = 1;
+    outcome.stdout = phaseMarkers[phase];
+    outcome.stderr = [
+      `error: ${phase} paths=${diagnosticPaths.join(',')} secret=P5_F20A_SECRET_SENTINEL ${'x'.repeat(700)}`,
+      'HTTP body: P5_F20A_HTTP_BODY_SENTINEL',
+    ].join('\n');
+    outcome.observedPorts = [46010, 46011, 46012];
+    return;
+  }
   const lines = [
     'PASS main.test.skiff::provider observes helper mutation',
     'test result: ok. 11 passed; 0 failed',
