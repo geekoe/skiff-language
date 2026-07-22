@@ -90,10 +90,11 @@ impl PreludeRegistry {
 
     fn try_from_platform_sources(
         platform_sources: &skiff_compiler_input::CompilerPlatformSources,
+        source_snapshot: &skiff_compiler_input::platform_sources::CompilerPlatformSourceSnapshot,
     ) -> Result<Self, String> {
         let mut registry = Self::empty();
         registry.load_std_registry(platform_sources)?;
-        registry.load_split_sources(platform_sources)?;
+        registry.load_split_sources(source_snapshot)?;
         registry.derive_prelude_types();
         registry.canonicalize_prelude_type_symbols();
         registry.native_bindings = registry.declared_native_bindings.clone();

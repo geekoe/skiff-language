@@ -16,6 +16,9 @@ use super::{
     PreludeRegistry,
 };
 
+#[cfg(unix)]
+mod p5_f18a;
+
 #[test]
 fn compiler_owned_schema_stable_types_have_canonical_symbols() {
     let registry = PreludeRegistry::empty();

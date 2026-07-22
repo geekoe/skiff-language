@@ -9,6 +9,9 @@ use skiff_artifact_model::{
 
 use super::*;
 
+#[cfg(unix)]
+mod p5_f18a;
+
 #[test]
 fn type_only_std_reference_adds_exact_requirement_from_validated_canonical_artifact() {
     let std_artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "7.4.2");

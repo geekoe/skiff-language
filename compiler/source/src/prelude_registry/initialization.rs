@@ -38,30 +38,7 @@ pub fn initialize_prelude_registry(
         return registry_for_root(initialized, platform_sources.root());
     }
 
-    platform_sources.revalidate().map_err(|source| {
-        PreludeRegistryInitializationError::PlatformSources {
-            root: platform_sources.root().to_path_buf(),
-            source,
-        }
-    })?;
-    let mut registry =
-        PreludeRegistry::try_from_platform_sources(platform_sources).map_err(|message| {
-            PreludeRegistryInitializationError::Load {
-                root: platform_sources.root().to_path_buf(),
-                message,
-            }
-        })?;
-    registry.prelude_identity_parts = platform_sources
-        .read_prelude_sources()
-        .map_err(
-            |source| PreludeRegistryInitializationError::PlatformSources {
-                root: platform_sources.root().to_path_buf(),
-                source,
-            },
-        )?
-        .into_iter()
-        .flat_map(|(relative, text)| [relative.to_string_lossy().into_owned(), text])
-        .collect();
+    let registry = load_prelude_registry(platform_sources)?;
 
     let candidate = InitializedPreludeRegistry {
         platform_root: platform_sources.root().to_path_buf(),
@@ -77,6 +54,25 @@ pub fn initialize_prelude_registry(
         .get()
         .expect("prelude registry was just initialized")
         .registry)
+}
+
+pub(super) fn load_prelude_registry(
+    platform_sources: &CompilerPlatformSources,
+) -> Result<PreludeRegistry, PreludeRegistryInitializationError> {
+    let source_snapshot = platform_sources
+        .prelude_registry_snapshot()
+        .map_err(
+            |source| PreludeRegistryInitializationError::PlatformSources {
+                root: platform_sources.root().to_path_buf(),
+                source,
+            },
+        )?;
+    PreludeRegistry::try_from_platform_sources(platform_sources, &source_snapshot).map_err(
+        |message| PreludeRegistryInitializationError::Load {
+            root: platform_sources.root().to_path_buf(),
+            message,
+        },
+    )
 }
 
 pub fn prelude_registry() -> &'static PreludeRegistry {
