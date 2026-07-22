@@ -142,10 +142,34 @@ test('one isolated runtime owner executes every registry entry with strict non-l
     SKIFF_TEST_EXPECTED_GENERATION: '2',
   });
   assert.deepEqual(logs, [
+    '[skiff-tests] phase startup: isolated-runtime',
     '[skiff-tests] running first: fixtures/first',
     '[skiff-tests] running second: fixtures/second',
     '[skiff-tests] preparing package-service-host: /checkout/skiff/test-runner/fixtures/package-service-host',
     '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
+  ]);
+});
+
+test('startup phase marker precedes a pre-readiness isolated runtime failure', async () => {
+  const actions = [];
+
+  await assert.rejects(
+    runCanonicalSkiffSourceTests({
+      skiffRoot: '/checkout/skiff',
+      runtimeOwner: async () => {
+        actions.push('runtime-owner');
+        throw new Error('runtime failed before readiness');
+      },
+      runCommand: async () => {
+        actions.push('unexpected-command');
+      },
+      log: (message) => actions.push(message),
+    }),
+    /runtime failed before readiness/,
+  );
+  assert.deepEqual(actions, [
+    '[skiff-tests] phase startup: isolated-runtime',
+    'runtime-owner',
   ]);
 });
 

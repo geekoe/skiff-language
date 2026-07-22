@@ -127,6 +127,7 @@ export async function runCanonicalSkiffSourceTests({
   log = console.log,
 } = {}) {
   const plan = createCanonicalSkiffSourceTestPlan({ skiffRoot, registry });
+  log('[skiff-tests] phase startup: isolated-runtime');
   await runtimeOwner({
     skiffRoot,
     runTest: async (isolatedEnv, signal, stack) => {
