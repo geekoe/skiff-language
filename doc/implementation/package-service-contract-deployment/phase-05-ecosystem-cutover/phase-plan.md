@@ -25,10 +25,10 @@ cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调
 且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计冻结的F19A/B已
 作为两个clean commit合流；v4 combined/窄证据PASS后，第二次full artifact gate通过但真实Host child在结果行前code1，
 且bounded diagnostic未保留。D26三路审计已冻结P26S/F20A/B与唯一第三次full条件；P20A official std exact已PASS。
-P26S三步已PASS且F20A/B两个clean commit已合流；重建v5证据后，才由第三次full与全新reviewer接收F04。
-次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
-narrow receive，
-F03B/F03C仍锁定至R05 PASS。
+P26S三步已PASS且F20A/B两个clean commit已合流；D27/F21关闭真实Router依赖启动，D30/F22A/F22B收敛Host
+result identity后，replacement I16在`411f9b6`通过。G16E只运行一次预算上限full并首次完整PASS，R23六项原始blocker
+窄验收也在同一候选PASS，F04 receive现已关闭并解锁F05。次生FileHandle teardown已由D19在`f15c210`给出
+DESIGN GO，F17已合流；F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
