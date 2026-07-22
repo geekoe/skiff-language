@@ -1,0 +1,24 @@
+import std
+
+function marker() -> string {
+  return "P5-F23D-REAL-COMPONENT-MARKER"
+}
+
+function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
+  return {
+    tag: "accept",
+    context: null,
+    businessIdentity: null,
+    connectionPolicy: null
+  }
+}
+
+function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
+  if event.tag == "connect" {
+    return acceptConnection()
+  }
+  if event.tag == "receive" {
+    std.websocket.sendTextToConnection(event.receiveEvent.connection.id, marker())
+  }
+  return null
+}

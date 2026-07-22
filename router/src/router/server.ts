@@ -115,7 +115,6 @@ const httpServer = await httpGateway.listen();
 const webSocketGateway = new AssemblyWebSocketGateway({
   snapshots,
   dispatcher,
-  registry,
   runtimeConnectionSend: runtimeEndpoint,
   server: httpServer.server,
   host: config.host,

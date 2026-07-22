@@ -185,7 +185,7 @@ describe('router websocket gateway', () => {
               schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
               type: 'response.end',
               requestId: request.requestId,
-              payloadPresent: false,
+              payloadPresent: true,
               websocketConnect: {
                 result: 'accept',
                 businessIdentity: 'zero-context-user',

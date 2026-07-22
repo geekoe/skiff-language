@@ -1,0 +1,3 @@
+test "normal source fixture compiles" {
+  assert root.main.marker() == "P5-F23D-REAL-COMPONENT-MARKER"
+}

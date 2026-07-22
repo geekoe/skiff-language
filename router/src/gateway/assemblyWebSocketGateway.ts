@@ -12,12 +12,25 @@ import type {
 import { RUNTIME_FRAME_SCHEMA_VERSION } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
-import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import { GatewayError } from '../router/errors.js';
-import type { RuntimeDispatcher } from '../router/runtimeDispatcher.js';
-import type { RuntimeConnectionSendSource } from '../router/runtimeEndpoint.js';
-import type { RuntimeDispatchConnection } from '../router/runtimeRegistry.js';
-import type { AssemblyRuntimeRegistry } from '../router/assemblyRuntimeRegistry.js';
+import {
+  canonicalAssemblyWebSocketIngressIdentity
+} from '../router/assemblyRuntimeRegistry.js';
+import {
+  readCookiesForGatewayMetadata,
+  readHeadersForGatewayMetadata,
+  readOriginFormUrlForGatewayMetadata,
+  readQueryForGatewayMetadata
+} from '../router/bind.js';
+import type {
+  RuntimeBinaryDispatchResponseWithReceipt,
+  RuntimeDispatchConnectionReceipt,
+  RuntimeDispatcher
+} from '../router/runtimeDispatcher.js';
+import type {
+  ConnectionSendDisposition,
+  RuntimeConnectionSendSource
+} from '../router/runtimeEndpoint.js';
 import {
   canonicalIngressHost,
   type RouterActiveAssemblySnapshot,
@@ -26,11 +39,15 @@ import {
 } from '../router/runtimeAssemblySnapshot.js';
 import {
   businessDeliveryKey,
-  closePolicyOverflowSocket,
   validateBusinessIdentity,
-  validateConnectionPolicy,
-  type WebSocketConnectionPolicy
+  validateConnectionPolicy
 } from './webSocketGateway.js';
+import {
+  WebSocketConnectionLifecycle,
+  WebSocketConnectionLimitExceededError,
+  type WebSocketConnectionPolicy,
+  type WebSocketReceiveLifecycleCounters
+} from './webSocketConnectionLifecycle.js';
 
 export const CANONICAL_WEBSOCKET_INGRESS_ARGS = [
   { param: 'event', source: { kind: 'websocket.ingressEvent' } }
@@ -40,9 +57,12 @@ export interface AssemblyWebSocketGatewayOptions {
   snapshots: RouterActiveAssemblySnapshotStore;
   dispatcher: RuntimeDispatcher;
   runtimeConnectionSend: RuntimeConnectionSendSource;
-  registry?: Pick<AssemblyRuntimeRegistry, 'pickDispatchConnection'>;
   host?: string;
   port?: number;
+  connectionLimit?: number;
+  receiveQueueLimit?: number;
+  slowClientBudgetBytes?: number;
+  shutdownTimeoutMs?: number;
   requestTimeoutMs?: number;
   server?: HttpServer;
 }
@@ -63,12 +83,14 @@ interface AssemblyWebSocketConnection {
   connectionPolicy?: WebSocketConnectionPolicy;
   websocketEntryId: string;
   gatewayEntryIdentity: string;
-  runtimeConnection?: RuntimeDispatchConnection;
-  ws: WebSocket;
+  connectionReceipt?: RuntimeDispatchConnectionReceipt;
 }
 
 export class AssemblyWebSocketGateway {
-  private readonly connections = new Map<string, AssemblyWebSocketConnection>();
+  private readonly lifecycle: WebSocketConnectionLifecycle<
+    AssemblyWebSocketConnection,
+    RuntimeDispatchConnectionReceipt
+  >;
   private readonly unsubscribeConnectionSend: () => void;
   private ownsServer = false;
   private server: HttpServer | undefined;
@@ -76,9 +98,23 @@ export class AssemblyWebSocketGateway {
   private upgradeHandler: ((request: IncomingMessage, socket: Socket, head: Buffer) => void) | undefined;
 
   constructor(private readonly options: AssemblyWebSocketGatewayOptions) {
-    this.unsubscribeConnectionSend = options.runtimeConnectionSend.onConnectionSend((message) => {
-      this.handleConnectionSend(message);
+    this.lifecycle = new WebSocketConnectionLifecycle({
+      ...(options.connectionLimit !== undefined
+        ? { connectionLimit: options.connectionLimit }
+        : {}),
+      ...(options.receiveQueueLimit !== undefined
+        ? { receiveQueueLimit: options.receiveQueueLimit }
+        : {}),
+      ...(options.slowClientBudgetBytes !== undefined
+        ? { slowClientBudgetBytes: options.slowClientBudgetBytes }
+        : {}),
+      ...(options.shutdownTimeoutMs !== undefined
+        ? { shutdownTimeoutMs: options.shutdownTimeoutMs }
+        : {})
     });
+    this.unsubscribeConnectionSend = options.runtimeConnectionSend.onConnectionSend(
+      (message, sender) => this.handleConnectionSend(message, sender)
+    );
   }
 
   async listen(): Promise<AssemblyWebSocketGatewayListenResult> {
@@ -118,10 +154,7 @@ export class AssemblyWebSocketGateway {
     if (this.server !== undefined && this.upgradeHandler !== undefined) {
       this.server.off('upgrade', this.upgradeHandler);
     }
-    for (const connection of this.connections.values()) {
-      connection.ws.close();
-    }
-    this.connections.clear();
+    await this.lifecycle.shutdown();
     await new Promise<void>((resolveClose) => {
       this.webSocketServer?.close(() => resolveClose());
       if (this.webSocketServer === undefined) {
@@ -145,6 +178,10 @@ export class AssemblyWebSocketGateway {
     this.ownsServer = false;
   }
 
+  receiveLifecycleCounters(): WebSocketReceiveLifecycleCounters {
+    return this.lifecycle.receiveCounters();
+  }
+
   private async handleUpgrade(
     webSocketServer: WebSocketServer,
     request: IncomingMessage,
@@ -155,6 +192,27 @@ export class AssemblyWebSocketGateway {
     const connectionId = randomUUID();
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
     const identity = canonicalWebSocketIngressIdentity(selection.binding);
+    const connection: AssemblyWebSocketConnection = {
+      id: connectionId,
+      snapshot: selection.snapshot,
+      binding: selection.binding,
+      contextBytes: new Uint8Array(),
+      websocketEntryId: identity.websocketEntryId,
+      gatewayEntryIdentity: identity.gatewayEntryIdentity
+    };
+    const connectAbort = upgradeClientDisconnectSignal(request, socket);
+    try {
+      this.lifecycle.reserve(connectionId, connection, undefined, () => {
+        connectAbort.abort();
+        socket.destroy();
+      });
+    } catch (error) {
+      connectAbort.complete();
+      if (error instanceof WebSocketConnectionLimitExceededError) {
+        throw new GatewayError(503, 'WebSocketConnectionLimitExceeded', error.message);
+      }
+      throw error;
+    }
     const connectRequest = {
       header: assemblyWebSocketRequestHeader({
         snapshot: selection.snapshot,
@@ -162,84 +220,92 @@ export class AssemblyWebSocketGateway {
         requestId: randomUUID(),
         timeoutMs,
         identity,
-        websocketAdapter: connectAdapter(request, selection.url, connectionId)
+        websocketAdapter: connectAdapter(
+          request,
+          selection.url,
+          selection.binding,
+          connectionId
+        )
       }),
       payloadBytes: new Uint8Array()
     };
-    const runtimeConnection = this.pickRuntimeConnection(connectRequest.header);
-    const connectResponse = await this.options.dispatcher.dispatchBinary(
-      connectRequest,
-      timeoutMs,
-      runtimeConnection === undefined ? {} : { connection: runtimeConnection }
-    );
-    const connectMetadata = connectResponse.header.websocketConnect;
-    if (connectMetadata === undefined) {
-      throw new GatewayError(
-        502,
-        'InvalidConnectResult',
-        'WebSocket connect response is missing websocketConnect metadata'
+    try {
+      const connectResponse = await this.options.dispatcher.dispatchBinary(
+        connectRequest,
+        timeoutMs,
+        { signal: connectAbort.signal }
       );
-    }
-    if (connectMetadata.result === 'reject') {
-      if (
-        connectResponse.payloadBytes.byteLength !== 0 ||
-        connectMetadata.contextPayloadPresent ||
-        connectMetadata.contextCodec !== undefined
-      ) {
-        throw new GatewayError(
-          502,
-          'InvalidConnectResult',
-          'WebSocket reject returned context payload metadata'
-        );
+      const accepted = decodeConnectResponse(connectResponse);
+      connection.contextBytes = accepted.contextBytes;
+      connection.connectionReceipt = connectResponse.connectionReceipt;
+      if (accepted.contextCodec !== undefined) {
+        connection.contextCodec = accepted.contextCodec;
       }
-      throw new GatewayError(
-        403,
-        'WebSocketConnectRejected',
-        connectMetadata.reason ?? 'WebSocket connect rejected'
+      if (accepted.businessIdentity !== undefined) {
+        connection.businessIdentity = accepted.businessIdentity;
+      }
+      if (accepted.connectionPolicy !== undefined) {
+        connection.connectionPolicy = accepted.connectionPolicy;
+      }
+      this.lifecycle.bindRuntime(connectionId, connectResponse.connectionReceipt);
+      const businessKey = businessDeliveryKey(
+        connection.binding.contract.serviceId,
+        connection.websocketEntryId,
+        connection.businessIdentity
       );
-    }
-    const context = connectContext(connectMetadata, connectResponse.payloadBytes);
-    const businessIdentity = validateBusinessIdentity(connectMetadata.businessIdentity);
-    const connectionPolicy = validateConnectionPolicy(
-      connectMetadata.connectionPolicy,
-      businessIdentity
-    );
-    webSocketServer.handleUpgrade(request, socket, head, (ws) => {
-      const connection: AssemblyWebSocketConnection = {
-        id: connectionId,
-        snapshot: selection.snapshot,
-        binding: selection.binding,
-        contextBytes: context.bytes,
-        websocketEntryId: identity.websocketEntryId,
-        gatewayEntryIdentity: identity.gatewayEntryIdentity,
-        ...(context.codec !== undefined ? { contextCodec: context.codec } : {}),
-        ...(businessIdentity !== undefined ? { businessIdentity } : {}),
-        ...(connectionPolicy !== undefined ? { connectionPolicy } : {}),
-        ...(runtimeConnection !== undefined ? { runtimeConnection } : {}),
-        ws
-      };
-      this.connections.set(connectionId, connection);
-      this.enforceConnectionPolicy(connection);
-      ws.on('message', (data, isBinary) => {
-        this.handleMessage(connection, data, isBinary).catch((error: unknown) => {
-          ws.close(1011, websocketCloseReason(error));
+      const admission = this.lifecycle.admit(connectionId, {
+        ...(businessKey !== null ? { businessKey } : {}),
+        ...(connection.connectionPolicy !== undefined
+          ? { policy: connection.connectionPolicy }
+          : {})
+      });
+      if (!admission.accepted) {
+        throw new GatewayError(403, 'WebSocketConnectRejected', admission.close.reason);
+      }
+      webSocketServer.handleUpgrade(request, socket, head, (ws) => {
+        this.lifecycle.attach(connectionId, ws);
+        ws.on('message', (data, isBinary) => {
+          this.handleMessage(connection, data, isBinary);
         });
       });
-      ws.on('close', () => {
-        this.connections.delete(connectionId);
-      });
-    });
+    } catch (error) {
+      this.lifecycle.release(connectionId);
+      throw error;
+    } finally {
+      connectAbort.complete();
+    }
   }
 
-  private async handleMessage(
+  private handleMessage(
     connection: AssemblyWebSocketConnection,
     data: WebSocket.RawData,
     isBinary: boolean
+  ): void {
+    const messageBytes = Uint8Array.from(rawDataBytes(data));
+    this.lifecycle.scheduleReceive(connection.id, {
+      run: (signal) => this.dispatchReceive(connection, messageBytes, isBinary, signal),
+      onError: (error) => {
+        this.lifecycle.close(connection.id, {
+          code: 1011,
+          reason: websocketCloseReason(error)
+        });
+      }
+    });
+  }
+
+  private async dispatchReceive(
+    connection: AssemblyWebSocketConnection,
+    messageBytes: Uint8Array,
+    isBinary: boolean,
+    signal: AbortSignal
   ): Promise<void> {
-    const messageBytes = rawDataBytes(data);
+    const receipt = connection.connectionReceipt;
+    if (receipt === undefined) {
+      throw new Error('admitted WebSocket connection is missing its dispatcher receipt');
+    }
     const receive = receiveDispatch(connection, messageBytes, isBinary);
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
-    const response = await this.options.dispatcher.dispatchBinary(
+    await this.options.dispatcher.dispatchBinary(
       {
         header: assemblyWebSocketRequestHeader({
           snapshot: connection.snapshot,
@@ -255,101 +321,73 @@ export class AssemblyWebSocketGateway {
         payloadBytes: receive.payloadBytes
       },
       timeoutMs,
-      connection.runtimeConnection === undefined
-        ? {}
-        : { connection: connection.runtimeConnection }
+      { connectionReceipt: receipt, signal }
     );
-    if (response.payloadBytes.byteLength !== 0 || response.header.websocketConnect !== undefined) {
-      throw new GatewayError(
-        502,
-        'InvalidReceiveResult',
-        'WebSocket receive must return null without response payload metadata'
-      );
-    }
   }
 
-  private handleConnectionSend(message: ConnectionSendEnvelope): void {
+  private handleConnectionSend(
+    message: ConnectionSendEnvelope,
+    sender: WebSocket
+  ): ConnectionSendDisposition {
     if (typeof message.businessIdentity === 'string') {
       const key = businessDeliveryKey(
         message.serviceId,
         message.websocketEntryId,
         message.businessIdentity
       );
-      if (key === null) return;
-      for (const connection of this.connections.values()) {
-        if (
-          businessDeliveryKey(
-            connection.binding.contract.serviceId,
-            connection.websocketEntryId,
-            connection.businessIdentity
-          ) === key &&
-          connection.ws.readyState === WebSocket.OPEN
-        ) {
-          connection.ws.send(message.payloadBytes, { binary: message.payloadKind === 'binary' });
-        }
-      }
-      return;
+      return {
+        kind: 'delivered',
+        deliveries:
+          key === null
+            ? 0
+            : this.lifecycle.sendToBusinessKey(key, connectionDownlinkMessage(message))
+      };
     }
-    if (typeof message.connectionId !== 'string' || typeof message.websocketEntryId !== 'string') {
-      return;
+    if (typeof message.connectionId !== 'string') {
+      return { kind: 'delivered', deliveries: 0 };
     }
-    const connection = this.connections.get(message.connectionId);
+    const connection = this.lifecycle.connection(message.connectionId);
+    if (connection === undefined) {
+      return {
+        kind: 'delivery-miss',
+        reason: 'connection-closed',
+        connectionId: message.connectionId
+      };
+    }
+    const expectedServiceId = connection.binding.contract.serviceId;
+    if (message.serviceId !== expectedServiceId) {
+      return protocolViolation('service-mismatch', message.connectionId, {
+        serviceId: expectedServiceId
+      }, { serviceId: message.serviceId });
+    }
+    if (message.websocketEntryId !== connection.websocketEntryId) {
+      return protocolViolation('websocket-entry-mismatch', message.connectionId, {
+        websocketEntryId: connection.websocketEntryId
+      }, {
+        websocketEntryId: message.websocketEntryId ?? '[missing]'
+      });
+    }
+    const receipt = connection.connectionReceipt;
     if (
-      connection === undefined ||
-      connection.binding.contract.serviceId !== message.serviceId ||
-      connection.websocketEntryId !== message.websocketEntryId ||
-      connection.ws.readyState !== WebSocket.OPEN
+      receipt === undefined ||
+      !this.options.dispatcher.isRuntimeConnectionReceiptSender(receipt, sender)
     ) {
-      return;
+      return protocolViolation('runtime-sender-mismatch', message.connectionId, {
+        runtimeId: receipt?.runtimeId ?? '[dispatcher-owned]'
+      }, { runtimeId: '[different-runtime-socket]' });
     }
-    connection.ws.send(message.payloadBytes, { binary: message.payloadKind === 'binary' });
-  }
-
-  private enforceConnectionPolicy(connection: AssemblyWebSocketConnection): void {
-    const policy = connection.connectionPolicy;
-    if (policy === undefined || connection.businessIdentity === undefined) return;
-    const key = businessDeliveryKey(
-      connection.binding.contract.serviceId,
-      connection.websocketEntryId,
-      connection.businessIdentity
+    const delivered = this.lifecycle.sendToConnection(
+      message.connectionId,
+      connectionDownlinkMessage(message)
     );
-    const peers = Array.from(this.connections.values()).filter(
-      (candidate) =>
-        candidate.ws.readyState === WebSocket.OPEN &&
-        businessDeliveryKey(
-          candidate.binding.contract.serviceId,
-          candidate.websocketEntryId,
-          candidate.businessIdentity
-        ) === key
-    );
-    const overflow = peers.length - policy.maxConnections;
-    if (overflow <= 0) return;
-    if (policy.overflow === 'reject-new') {
-      this.connections.delete(connection.id);
-      closePolicyOverflowSocket(connection.ws, policy);
-      return;
+    if (!delivered) {
+      return {
+        kind: 'delivery-miss',
+        reason: 'connection-closed',
+        connectionId: message.connectionId
+      };
     }
-    for (const candidate of peers.slice(0, overflow)) {
-      this.connections.delete(candidate.id);
-      closePolicyOverflowSocket(candidate.ws, policy);
-    }
-  }
-
-  private pickRuntimeConnection(
-    request: Parameters<AssemblyRuntimeRegistry['pickDispatchConnection']>[0]
-  ): RuntimeDispatchConnection | undefined {
-    const registry = this.options.registry;
-    if (registry === undefined) {
-      return undefined;
-    }
-    const selected = registry.pickDispatchConnection(request);
-    if (selected instanceof Error) {
-      throw selected;
-    }
-    if (selected === undefined) {
-      throw new GatewayError(503, 'AssemblyReplicaUnavailable', 'No healthy assembly replica');
-    }
-    return selected;
+    return { kind: 'delivered', deliveries: 1 };
   }
 }
 
@@ -371,7 +409,17 @@ function selectWebSocketIngress(
   } catch (error) {
     throw new GatewayError(421, 'IngressHostInvalid', 'WebSocket request Host is invalid', error);
   }
-  const url = new URL(request.url ?? '/', `ws://${host}`);
+  let url: URL;
+  try {
+    url = readOriginFormUrlForGatewayMetadata(request.url, 'ws', host);
+  } catch (error) {
+    throw new GatewayError(
+      400,
+      'WebSocketRequestTargetInvalid',
+      'WebSocket request target must be a canonical origin-form URL',
+      error
+    );
+  }
   const binding = snapshot.ingress.get({
     protocol: 'webSocket',
     host,
@@ -391,17 +439,19 @@ function selectWebSocketIngress(
 function connectAdapter(
   request: IncomingMessage,
   url: URL,
+  binding: RuntimeAssemblyIngressBinding,
   connectionId: string
 ): WebSocketAdapterFrameMetadata {
+  assertConnectRoutingConsistency(url, binding);
   return {
     kind: 'connect',
     adapterArgs: [...CANONICAL_WEBSOCKET_INGRESS_ARGS],
     connectRequest: {
       connectionId,
       url: url.toString(),
-      query: Array.from(url.searchParams.entries()).map(([name, value]) => ({ name, value })),
-      headers: rawHeaders(request),
-      cookies: []
+      query: readQueryForGatewayMetadata(url),
+      headers: readHeadersForGatewayMetadata(request),
+      cookies: readCookiesForGatewayMetadata(request)
     }
   };
 }
@@ -452,57 +502,8 @@ function receiveDispatch(
   };
 }
 
-function connectContext(
-  metadata: NonNullable<
-    Awaited<ReturnType<RuntimeDispatcher['dispatchBinary']>>['header']['websocketConnect']
-  >,
-  payloadBytes: Uint8Array
-): { bytes: Uint8Array; codec?: WebSocketContextCodecFrameMetadata } {
-  if (!metadata.contextPayloadPresent) {
-    if (payloadBytes.byteLength !== 0 || metadata.contextCodec !== undefined) {
-      throw new GatewayError(
-        502,
-        'InvalidConnectResult',
-        'WebSocket connect returned undeclared context payload'
-      );
-    }
-    return { bytes: new Uint8Array() };
-  }
-  if (metadata.contextCodec === undefined) {
-    throw new GatewayError(
-      502,
-      'InvalidConnectResult',
-      'WebSocket connect context requires payload and contextCodec'
-    );
-  }
-  return { bytes: Uint8Array.from(payloadBytes), codec: metadata.contextCodec };
-}
-
-export function canonicalWebSocketIngressIdentity(
-  binding: RuntimeAssemblyIngressBinding
-): { websocketEntryId: string; gatewayEntryIdentity: string } {
-  const selector = binding.selector;
-  if (selector.protocol !== 'webSocket' || selector.method !== null) {
-    throw new Error('canonical WebSocket identity requires a WebSocket ingress binding');
-  }
-  const body = {
-    adapterArgs: CANONICAL_WEBSOCKET_INGRESS_ARGS,
-    contractOperationId: binding.contractOperationId,
-    selector: {
-      protocol: 'webSocket',
-      host: canonicalIngressHost(selector.host),
-      method: null,
-      path: selector.path
-    },
-    serviceId: binding.contract.serviceId,
-    serviceProtocolIdentity: binding.contract.serviceProtocolIdentity
-  };
-  const digest = sha256Hex(stableStringify(body));
-  return {
-    websocketEntryId: `skiff-websocket-entry-v1:sha256:${digest}`,
-    gatewayEntryIdentity: `skiff-gateway-v1:sha256:${digest}`
-  };
-}
+export const canonicalWebSocketIngressIdentity =
+  canonicalAssemblyWebSocketIngressIdentity;
 
 export function assemblyWebSocketRequestHeader(input: {
   snapshot: RouterActiveAssemblySnapshot;
@@ -550,17 +551,6 @@ export function assemblyWebSocketRequestHeader(input: {
   return validation.envelope;
 }
 
-function rawHeaders(request: IncomingMessage): Array<{ name: string; value: string }> {
-  const result: Array<{ name: string; value: string }> = [];
-  for (let index = 0; index + 1 < request.rawHeaders.length; index += 2) {
-    result.push({
-      name: request.rawHeaders[index]!.toLowerCase(),
-      value: request.rawHeaders[index + 1]!
-    });
-  }
-  return result;
-}
-
 function rawDataBytes(data: WebSocket.RawData): Uint8Array {
   if (Array.isArray(data)) {
     return Buffer.concat(data);
@@ -588,4 +578,117 @@ function websocketCloseReason(error: unknown): string {
   return Buffer.byteLength(message) <= 123
     ? message
     : Buffer.from(message).subarray(0, 123).toString('utf8');
+}
+
+function decodeConnectResponse(
+  response: RuntimeBinaryDispatchResponseWithReceipt
+): {
+  businessIdentity?: string;
+  connectionPolicy?: WebSocketConnectionPolicy;
+  contextBytes: Uint8Array;
+  contextCodec?: WebSocketContextCodecFrameMetadata;
+} {
+  const metadata = response.header.websocketConnect;
+  if (metadata === undefined) {
+    throw new Error('dispatcher returned an unvalidated WebSocket connect response');
+  }
+  if (metadata.result === 'reject') {
+    throw new GatewayError(
+      403,
+      'WebSocketConnectRejected',
+      metadata.reason ?? 'WebSocket connect rejected'
+    );
+  }
+  const businessIdentity = validateBusinessIdentity(metadata.businessIdentity);
+  const connectionPolicy = validateConnectionPolicy(
+    metadata.connectionPolicy,
+    businessIdentity
+  );
+  return {
+    contextBytes: metadata.contextPayloadPresent
+      ? Uint8Array.from(response.payloadBytes)
+      : new Uint8Array(),
+    ...(metadata.contextCodec !== undefined
+      ? { contextCodec: metadata.contextCodec }
+      : {}),
+    ...(businessIdentity !== undefined ? { businessIdentity } : {}),
+    ...(connectionPolicy !== undefined ? { connectionPolicy } : {})
+  };
+}
+
+function assertConnectRoutingConsistency(
+  url: URL,
+  binding: RuntimeAssemblyIngressBinding
+): void {
+  const selector = binding.selector;
+  if (
+    selector.protocol !== 'webSocket' ||
+    selector.method !== null ||
+    url.protocol !== 'ws:' ||
+    canonicalIngressHost(url.host) !== canonicalIngressHost(selector.host) ||
+    url.pathname !== selector.path ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.hash !== ''
+  ) {
+    throw new GatewayError(
+      400,
+      'WebSocketRoutingMetadataMismatch',
+      'WebSocket connect metadata does not match the selected RuntimeAssembly ingress'
+    );
+  }
+}
+
+function upgradeClientDisconnectSignal(
+  request: IncomingMessage,
+  socket: Socket
+): { signal: AbortSignal; abort(): void; complete(): void } {
+  const controller = new AbortController();
+  let completed = false;
+  const abort = () => {
+    if (!completed && !controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+  socket.once('close', abort);
+  socket.once('end', abort);
+  request.once('aborted', abort);
+  if (socket.destroyed) {
+    queueMicrotask(abort);
+  }
+  return {
+    signal: controller.signal,
+    abort,
+    complete: () => {
+      completed = true;
+      socket.off('close', abort);
+      socket.off('end', abort);
+      request.off('aborted', abort);
+    }
+  };
+}
+
+function connectionDownlinkMessage(message: ConnectionSendEnvelope): {
+  data: Uint8Array;
+  binary: boolean;
+} {
+  return {
+    data: message.payloadBytes,
+    binary: message.payloadKind === 'binary'
+  };
+}
+
+function protocolViolation(
+  reason: Extract<ConnectionSendDisposition, { kind: 'protocol-violation' }>['reason'],
+  connectionId: string,
+  expected: Readonly<Record<string, string>>,
+  received: Readonly<Record<string, string>>
+): ConnectionSendDisposition {
+  return {
+    kind: 'protocol-violation',
+    reason,
+    connectionId,
+    expected,
+    received
+  };
 }

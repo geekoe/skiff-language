@@ -25,6 +25,34 @@ export function readQueryForGatewayMetadata(url: URL): GatewayNameValueMetadata[
   return Array.from(url.searchParams.entries()).map(([name, value]) => ({ name, value }));
 }
 
+export function readOriginFormUrlForGatewayMetadata(
+  requestTarget: string | undefined,
+  protocol: 'http' | 'ws',
+  authority: string
+): URL {
+  const target = requestTarget ?? '/';
+  if (!target.startsWith('/') || target.startsWith('//')) {
+    throw new Error(
+      'gateway request target must use origin-form without an authority or scheme'
+    );
+  }
+
+  const base = new URL(`${protocol}://${authority}/`);
+  const url = new URL(target, base);
+  if (
+    url.protocol !== base.protocol ||
+    url.host !== base.host ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error(
+      'gateway request target must not contain an authority, scheme, credentials, or fragment'
+    );
+  }
+  return url;
+}
+
 export function readHeadersForGatewayMetadata(
   request: IncomingMessage
 ): GatewayNameValueMetadata[] {
