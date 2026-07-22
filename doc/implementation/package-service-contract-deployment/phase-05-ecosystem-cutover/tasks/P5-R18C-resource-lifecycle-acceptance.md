@@ -1,7 +1,7 @@
 # P5-R18C：Resource Lifecycle Acceptance
 
-使用未参与F17、F18C/E/F、D19/D20、I16或其它验收的全新独立只读Agent。权威设计：架构§3、§6.1、§6.2、
-§11、§14。输入为同一final candidate/lock、F17与F18C/E/F ledgers、I16 PASS bundle；I16 path/registry/task-root/
+使用未参与F17、F18C/E/F、F19B、D19/D20/D25、I16或其它验收的全新独立只读Agent。权威设计：架构§3、§6.1、§6.2、
+§11、§14。输入为同一final candidate/lock、F17、F18C/E/F与F19B ledgers、I16 PASS bundle；I16 path/registry/task-root/
 PID/port/temp cleanup均ABSENT。第一行只给`R18C PASS/FAIL`。
 
 必验：

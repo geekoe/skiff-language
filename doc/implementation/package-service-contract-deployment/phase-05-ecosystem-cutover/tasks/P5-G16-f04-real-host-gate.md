@@ -2,12 +2,13 @@
 
 ## 输入与唯一owner
 
-使用未参与F16A/B/C/F17实现、D20审计/修复、I16或R16的全新Gate Agent。输入为D20 repair wave全部合流、I16
+使用未参与F16A/B/C/F17/F18A–J/F19A/B实现、D20/D25审计/修复、I16或R16的全新Gate Agent。输入为repair wave全部合流、I16
 combined PASS、R16 PASS且三者锚定同一exact clean candidate/tree/lock；不得编辑、提交、修复或操作stable。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6。
 
-本任务是当前收敛周期第一次且原则上唯一一次完整`run-skiff-tests.mjs`。第二次只允许有证据证明首次失败是环境瞬态且
-候选未变；第三次前必须重新执行剩余范围审计并向用户说明为什么仍需运行。
+`10746a2`上的第一次full-mode调用在Host前因harness artifact comparator失败，D25已审计且F19A/B须先关闭；实际
+`run-skiff-tests.mjs`累计仍为0。新candidate的Gate是当前周期第二次、原则上的最后一次full-mode调用。第三次前必须
+重新执行剩余范围审计并向用户说明为什么仍需运行，不能把Host前失败或candidate变化当作自动重试理由。
 
 ## 唯一命令与冻结行为
 
@@ -32,7 +33,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
   --json
 ```
 
-`--mode full`必须拒绝candidate/tree/lock/golden或combined ledger不一致；不得重跑merge-only fixture、local test或完整
+`--mode full`必须拒绝candidate/tree/lock/golden或v4 combined ledger不一致；不得重跑merge-only fixture、local test或完整
 combined矩阵。它只建立复用同类shared target的A-origin artifacts，验证B-root消费仍为Fresh，然后从任务临时目录调用
 B的absolute `scripts/run-skiff-tests.mjs`一次。任何primary失败立即停止且不自动重试；cleanup secondary单独保留。
 

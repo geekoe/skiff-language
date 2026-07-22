@@ -21,8 +21,10 @@ D20后的独立复验确认readiness语义关闭，但在`e786671`因F16C新增8
 transport扇出。因同一F04真实入口已连续暴露多个跨层blocker，收敛熔断已触发；D20在`e786671`以六个新只读
 审计/预读节点闭合14跳矩阵，并把余项批量冻结为F18A–F18I九个互斥写owner。首次I16与R15B PASS后，R18A发现
 authoring guard前仍创建store；F18J已作为同owner窄后继修复合流。旧I16/R15B随候选失效，新candidate只重跑一次
-cheap combined，再并行全新R15/compiler trust/Router CAS/resource lifecycle窄验收和H18 focused-negative，R16后G16才运行一次完整Host，
-最后由全新reviewer接收F04。次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
+cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调用在Host前被root-sensitive Cargo dep-info误判，
+且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计已冻结并行F19A/B；
+合流后重建combined/窄证据，再执行本周期第二次且原则上最后一次full-mode gate，最后由全新reviewer接收F04。
+次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
@@ -119,7 +121,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
           │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┤
           │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► F17 ───────────────────────┤
-          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F audit@e786671 ─► F18A–I repair wave ─► I16 PASS ─► R18A FAIL ─► F18J ─► replacement I16 ─► narrow reviews/H18 ─► new R16 ─► G16 one Host ─► new F04 receive
+          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F audit@e786671 ─► F18A–I ─► I16 PASS ─► R18A FAIL ─► F18J ─► I16/R15/R18/H18/R16 PASS ─► G16 pre-Host FAIL ─► D25 ─► F19A/B ─► replacement evidence ─► second G16 ─► new F04 receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -247,6 +249,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | H18 | [Host focused-negative execution](tasks/P5-H18-host-focused-negative-execution.md) | I16 PASS | 唯一focused-negative owner；不计full |
 | R16 | [F04 production path narrow acceptance](tasks/P5-R16-platform-source-trust-acceptance.md) | I16 PASS + D20 closed | 高；全新独立只读 |
 | G16 | [F04 real Host gate](tasks/P5-G16-f04-real-host-gate.md) | R16 PASS | 当前周期唯一完整Host owner |
+| G16R | [F04 real Host gate result](tasks/P5-G16-f04-real-host-gate-result.md) | G16 first full-mode call | FAIL；Host前artifact comparator |
+| D25 | [G16 pre-Host closure audit result](tasks/P5-D25-g16-pre-host-closure-audit-result.md) | G16 FAIL | 三个全新只读审计；闭合被遮挡范围 |
+| F19A | [Gate artifact/evidence convergence](tasks/P5-F19A-gate-artifact-evidence-convergence.md) | D25 complete | 高；test-only gate evidence owner |
+| F19B | [Isolated workspace ownership](tasks/P5-F19B-isolated-workspace-ownership.md) | D25 complete | 高；inner no-clobber owner |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
@@ -358,7 +364,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   14跳真实路径；root一次汇总为F18A–I九个互斥repair owner。首次combined后R18A只发现authoring pre-store顺序缺口，
   F18J作为同owner窄后继关闭；新candidate重新执行一次compiler merge probe与A-built/Fresh-B shared-target cheap combined；
   全新R15B与三组窄验收及H18均PASS后启动新R16，G16再运行一次完整Host并把
-  同一ledger交新的F04 reviewer；候选不变时不得重复昂贵gate。
+  同一ledger交新的F04 reviewer。首次G16在Host前因gate comparator假阴性FAIL，D25A–C已闭合Cargo artifact、
+  full evidence state machine与inner workspace ownership；F19A/B并行合流后必须重建v4 combined及受影响窄证据，
+  才能执行本周期第二次full-mode gate。第三次前必须重新审计剩余范围并说明原因。
 - 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只读冻结真实handle owner；F17在
   `skiff-instance`提取单一幂等可等待lifecycle并用真实FileHandle/短命child交错验证。不重跑Host、不阻塞F16A/B/C，
   但F17是I16硬前置且写集不得与F16C重叠。
