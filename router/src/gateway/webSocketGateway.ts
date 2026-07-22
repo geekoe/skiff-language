@@ -45,11 +45,7 @@ import {
   RouterActiveSnapshotStore,
   type RouterActiveSnapshot
 } from '../router/activeSnapshot.js';
-import {
-  DecodeError,
-  GatewayError,
-  toGatewayError
-} from '../router/errors.js';
+import { GatewayError, toGatewayError } from '../router/errors.js';
 import {
   resolveRequestRewrite,
   type RouterRewriteMatch,
@@ -60,11 +56,20 @@ import type {
   RuntimeDispatcher
 } from '../router/runtimeDispatcher.js';
 import type { RuntimeConnectionSendSource } from '../router/runtimeEndpoint.js';
+import {
+  WebSocketConnectionLifecycle,
+  WebSocketConnectionLimitExceededError,
+  type WebSocketConnectionPolicy,
+  type WebSocketReceiveLifecycleCounters
+} from './webSocketConnectionLifecycle.js';
 
-const MAX_PENDING_CONNECTION_MESSAGES = 100;
+export {
+  closePolicyOverflowSocket,
+  type WebSocketConnectionPolicy,
+  type WebSocketReceiveLifecycleCounters
+} from './webSocketConnectionLifecycle.js';
+
 const DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT = 1;
-const MAX_CONNECTIONS = 5000;
-const MAX_SOCKET_BUFFERED_AMOUNT = 16 * 1024 * 1024;
 const CONNECTION_DOWNLINK_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 function operationSelector(operation: OperationManifest): string {
@@ -82,15 +87,12 @@ export interface WebSocketGatewayOptions {
   port?: number;
   verifiedReceiveInFlightLimit?: number;
   verifiedReceiveQueueLimit?: number;
+  connectionLimit?: number;
+  slowClientBudgetBytes?: number;
+  shutdownTimeoutMs?: number;
   requestTimeoutMs?: number;
   rewrite?: readonly RouterRewriteRule[];
   server?: HttpServer;
-}
-
-export interface WebSocketReceiveLifecycleCounters {
-  inFlight: number;
-  queued: number;
-  abortOnClose: number;
 }
 
 export interface WebSocketGatewayListenResult {
@@ -99,12 +101,9 @@ export interface WebSocketGatewayListenResult {
   url: string;
 }
 
-type ConnectionState = 'pending' | 'verified' | 'rejected';
-
 interface Connection {
   buildId: string;
   clientSession: ClientSession;
-  connectionPolicy?: WebSocketConnectionPolicy;
   connectServiceProtocolIdentity?: string;
   connectGatewayEntryIdentity?: string;
   contextBytes: Uint8Array;
@@ -113,28 +112,11 @@ interface Connection {
   gatewayEntryIdentity: string;
   id: string;
   businessIdentity?: string;
-  deliveryKey?: string;
-  lastUsedAt: number;
-  latestRequest: IncomingMessage;
-  latestUrl: URL;
-  pendingMessages: PendingClientMessage[];
-  receiveAbortOnCloseControllers: Set<AbortController>;
-  receiveAbortControllers: Set<AbortController>;
   receiveGatewayEntryIdentity: string;
-  receiveInFlight: number;
-  receiveQueue: PendingClientMessage[];
   receiveServiceProtocolIdentity: string;
   version?: string;
   service: string;
   serviceProtocolIdentity: string;
-  sockets: Set<WebSocket>;
-  state: ConnectionState;
-}
-
-interface PendingClientMessage {
-  data: WebSocket.RawData;
-  isBinary: boolean;
-  ws: WebSocket;
 }
 
 interface ClientSession {
@@ -163,13 +145,6 @@ interface ConnectAccept {
   businessIdentity?: string;
 }
 
-export interface WebSocketConnectionPolicy {
-  maxConnections: number;
-  overflow: 'close-oldest' | 'reject-new';
-  closeCode?: number;
-  closeReason?: string;
-}
-
 interface ConnectionDownlinkMessage {
   payloadKind: ConnectionSendEnvelope['payloadKind'];
   payloadBytes: Uint8Array;
@@ -185,19 +160,9 @@ class WebSocketCloseError extends Error {
 }
 
 export class WebSocketGateway {
-  private readonly receiveInFlightLimit: number;
-  private readonly receiveQueueLimit: number;
-  private readonly receiveCounters: WebSocketReceiveLifecycleCounters = {
-    inFlight: 0,
-    queued: 0,
-    abortOnClose: 0
-  };
+  private readonly lifecycle: WebSocketConnectionLifecycle<Connection>;
   private readonly requestTimeoutMs: number;
   private readonly snapshotStore: RouterActiveSnapshotStore;
-  private readonly deliveryKeyByClient = new WeakMap<WebSocket, string>();
-  private readonly clientsByDeliveryKey = new Map<string, Set<WebSocket>>();
-  private readonly connectionsById = new Map<string, Connection>();
-  private readonly states = new WeakMap<WebSocket, Connection>();
   private readonly unsubscribeConnectionSend: () => void;
   private ownsServer = false;
   private server: HttpServer | undefined;
@@ -205,10 +170,26 @@ export class WebSocketGateway {
   private webSocketServer: WebSocketServer | undefined;
 
   constructor(private readonly options: WebSocketGatewayOptions) {
-    this.receiveInFlightLimit =
-      options.verifiedReceiveInFlightLimit ?? DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT;
-    this.receiveQueueLimit =
-      options.verifiedReceiveQueueLimit ?? MAX_PENDING_CONNECTION_MESSAGES;
+    if (
+      (options.verifiedReceiveInFlightLimit ?? DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT) !==
+      DEFAULT_VERIFIED_RECEIVE_IN_FLIGHT_LIMIT
+    ) {
+      throw new Error('websocket receive scheduling is serial per connection');
+    }
+    this.lifecycle = new WebSocketConnectionLifecycle({
+      ...(options.verifiedReceiveQueueLimit !== undefined
+        ? { receiveQueueLimit: options.verifiedReceiveQueueLimit }
+        : {}),
+      ...(options.connectionLimit !== undefined
+        ? { connectionLimit: options.connectionLimit }
+        : {}),
+      ...(options.slowClientBudgetBytes !== undefined
+        ? { slowClientBudgetBytes: options.slowClientBudgetBytes }
+        : {}),
+      ...(options.shutdownTimeoutMs !== undefined
+        ? { shutdownTimeoutMs: options.shutdownTimeoutMs }
+        : {})
+    });
     this.snapshotStore =
       options.snapshotStore ??
       new RouterActiveSnapshotStore({
@@ -276,9 +257,7 @@ export class WebSocketGateway {
       this.server.off('upgrade', this.upgradeHandler);
     }
 
-    for (const client of this.webSocketServer?.clients ?? []) {
-      client.close();
-    }
+    await this.lifecycle.shutdown();
 
     await new Promise<void>((resolve) => {
       this.webSocketServer?.close(() => resolve());
@@ -301,7 +280,6 @@ export class WebSocketGateway {
       });
     });
 
-    this.connectionsById.clear();
     this.ownsServer = false;
     this.webSocketServer = undefined;
     this.upgradeHandler = undefined;
@@ -309,7 +287,7 @@ export class WebSocketGateway {
   }
 
   receiveLifecycleCounters(): WebSocketReceiveLifecycleCounters {
-    return { ...this.receiveCounters };
+    return this.lifecycle.receiveCounters();
   }
 
   private hasWebSocketPath(pathname: string): boolean {
@@ -461,19 +439,24 @@ export class WebSocketGateway {
     const connectAbort = this.upgradeClientDisconnectSignal(request, socket);
     let prepared: PreparedUpgrade;
     try {
-      prepared = await this.prepareUpgrade(request, url, connectAbort.signal);
+      prepared = await this.prepareUpgrade(
+        request,
+        url,
+        connectAbort.signal,
+        () => {
+          connectAbort.abort();
+          socket.destroy();
+        }
+      );
     } finally {
       connectAbort.complete();
     }
     try {
       webSocketServer.handleUpgrade(request, socket, head, (ws) => {
         this.attachSocket(prepared.connection, ws);
-        this.drainPendingMessages(prepared.connection).catch((error: unknown) => {
-          this.closeWithError(ws, error);
-        });
       });
     } catch (error) {
-      this.connectionsById.delete(prepared.connection.id);
+      this.lifecycle.release(prepared.connection.id);
       throw error;
     }
   }
@@ -481,7 +464,8 @@ export class WebSocketGateway {
   private async prepareUpgrade(
     request: IncomingMessage,
     url: URL,
-    signal: AbortSignal
+    signal: AbortSignal,
+    closeBeforeAttach: () => void
   ): Promise<PreparedUpgrade> {
     const { entry, service, buildId, version } = this.selectEntry(request, url);
     const upgradeSession = resolveClientUpgradeSession();
@@ -490,17 +474,15 @@ export class WebSocketGateway {
       buildId,
       entry,
       ...(version !== undefined ? { version } : {}),
-      request,
       service,
-      url,
-      upgradeSession
+      upgradeSession,
+      closeBeforeAttach
     });
 
     try {
       await this.verifyConnection(connection, request, url, signal);
     } catch (error) {
-      connection.state = 'rejected';
-      this.connectionsById.delete(connection.id);
+      this.lifecycle.release(connection.id);
       throw error;
     }
 
@@ -508,30 +490,10 @@ export class WebSocketGateway {
   }
 
   private attachSocket(connection: Connection, ws: WebSocket): void {
-    connection.sockets.add(ws);
-    this.states.set(ws, connection);
-    if (connection.state === 'verified') {
-      this.enforceConnectionPolicyBeforeIndex(connection);
-      this.indexDelivery(ws, connection.service, connection.entry.id, connection.businessIdentity);
-    }
+    this.lifecycle.attach(connection.id, ws);
 
     ws.on('message', (data, isBinary) => {
-      this.handleClientMessage(ws, data, isBinary).catch((error: unknown) => {
-        this.closeWithError(ws, error);
-      });
-    });
-    ws.on('close', () => {
-      this.abortConnectionReceives(connection);
-      this.dropQueuedReceives(connection);
-      this.removeIdentityIndex(ws);
-      connection.sockets.delete(ws);
-      if (connection.sockets.size > 0) {
-        return;
-      }
-      if (connection.state === 'verified') {
-        connection.lastUsedAt = Date.now();
-      }
-      this.connectionsById.delete(connection.id);
+      this.handleClientMessage(connection, data, isBinary);
     });
   }
 
@@ -539,18 +501,10 @@ export class WebSocketGateway {
     buildId: string;
     entry: LoadedWebSocketEntry;
     version?: string;
-    request: IncomingMessage;
     service: string;
     upgradeSession: ClientUpgradeSession;
-    url: URL;
+    closeBeforeAttach: () => void;
   }): Connection {
-    if (this.connectionsById.size >= MAX_CONNECTIONS) {
-      throw new GatewayError(
-        503,
-        'WebSocketConnectionLimitExceeded',
-        'websocket gateway connection limit exceeded'
-      );
-    }
     const id = randomUUID();
     const connection: Connection = {
       buildId: input.buildId,
@@ -566,15 +520,7 @@ export class WebSocketGateway {
         : {}),
       gatewayEntryIdentity: input.entry.gatewayEntryIdentity,
       id,
-      lastUsedAt: Date.now(),
-      latestRequest: input.request,
-      latestUrl: input.url,
-      pendingMessages: [],
-      receiveAbortOnCloseControllers: new Set(),
-      receiveAbortControllers: new Set(),
       receiveGatewayEntryIdentity: input.entry.receive.gatewayEntryIdentity,
-      receiveInFlight: 0,
-      receiveQueue: [],
       receiveServiceProtocolIdentity: this.resolveOperationServiceProtocolIdentity(
         input.entry.receive.operationManifest
       ),
@@ -583,11 +529,20 @@ export class WebSocketGateway {
       serviceProtocolIdentity: this.resolveOperationServiceProtocolIdentity(
         input.entry.receive.operationManifest
       ),
-      contextBytes: new Uint8Array(),
-      sockets: new Set<WebSocket>(),
-      state: 'pending'
+      contextBytes: new Uint8Array()
     };
-    this.connectionsById.set(id, connection);
+    try {
+      this.lifecycle.reserve(id, connection, undefined, input.closeBeforeAttach);
+    } catch (error) {
+      if (error instanceof WebSocketConnectionLimitExceededError) {
+        throw new GatewayError(
+          503,
+          'WebSocketConnectionLimitExceeded',
+          error.message
+        );
+      }
+      throw error;
+    }
     return connection;
   }
 
@@ -606,9 +561,6 @@ export class WebSocketGateway {
     if (accepted.businessIdentity !== undefined) {
       connection.businessIdentity = accepted.businessIdentity;
     }
-    if (accepted.connectionPolicy !== undefined) {
-      connection.connectionPolicy = accepted.connectionPolicy;
-    }
     connection.contextBytes = accepted.contextBytes;
     if (accepted.contextCodec !== undefined) {
       connection.contextCodec = accepted.contextCodec;
@@ -618,23 +570,14 @@ export class WebSocketGateway {
       connection.entry.id,
       accepted.businessIdentity
     );
-    if (deliveryKey !== null) {
-      connection.deliveryKey = deliveryKey;
-      const policy = connection.connectionPolicy;
-      if (
-        policy?.overflow === 'reject-new' &&
-        this.openDeliverySockets(deliveryKey).length >= policy.maxConnections
-      ) {
-        throw new WebSocketCloseError(
-          policy.closeCode ?? 1008,
-          policy.closeReason ?? 'websocket connection limit exceeded'
-        );
-      }
-    }
-    connection.state = 'verified';
-
-    for (const socket of connection.sockets) {
-      this.indexDelivery(socket, connection.service, connection.entry.id, accepted.businessIdentity);
+    const admission = this.lifecycle.admit(connection.id, {
+      ...(deliveryKey !== null ? { businessKey: deliveryKey } : {}),
+      ...(accepted.connectionPolicy !== undefined
+        ? { policy: accepted.connectionPolicy }
+        : {})
+    });
+    if (!admission.accepted) {
+      throw new WebSocketCloseError(admission.close.code, admission.close.reason);
     }
   }
 
@@ -673,156 +616,36 @@ export class WebSocketGateway {
     return decodeWebSocketConnectResponse(response);
   }
 
-  private async handleClientMessage(
-    ws: WebSocket,
-    data: WebSocket.RawData,
-    isBinary: boolean
-  ): Promise<void> {
-    const connection = this.states.get(ws);
-    if (!connection) {
-      throw new DecodeError('websocket client is not initialized');
-    }
-
-    if (connection.state === 'pending') {
-      this.bufferPendingMessage(connection, ws, data, isBinary);
-      return;
-    }
-
-    await this.handleVerifiedClientMessage(ws, connection, data, isBinary);
-  }
-
-  private async handleVerifiedClientMessage(
-    ws: WebSocket,
+  private handleClientMessage(
     connection: Connection,
-    data: WebSocket.RawData,
-    isBinary: boolean
-  ): Promise<void> {
-    if (connection.state !== 'verified') {
-      throw new DecodeError(`websocket connection is ${connection.state}`);
-    }
-
-    this.enqueueVerifiedReceive(connection, { data, isBinary, ws });
-  }
-
-  private bufferPendingMessage(
-    connection: Connection,
-    ws: WebSocket,
     data: WebSocket.RawData,
     isBinary: boolean
   ): void {
-    if (connection.pendingMessages.length >= MAX_PENDING_CONNECTION_MESSAGES) {
-      throw new GatewayError(
-        429,
-        'PendingConnectionBufferFull',
-        'websocket connection has too many pending messages'
-      );
-    }
-    connection.pendingMessages.push({ data, isBinary, ws });
-  }
-
-  private async drainPendingMessages(connection: Connection): Promise<void> {
-    while (connection.pendingMessages.length > 0 && connection.state === 'verified') {
-      const pending = connection.pendingMessages.shift();
-      if (!pending || pending.ws.readyState !== WebSocket.OPEN) {
-        continue;
+    this.lifecycle.scheduleReceive(connection.id, {
+      run: async (signal) => {
+        const receiveDispatch = this.buildWebSocketReceiveDispatch(
+          connection,
+          data,
+          isBinary
+        );
+        await this.dispatchReceive(
+          connection.entry.receive,
+          receiveDispatch.websocketAdapter,
+          receiveDispatch.payloadBytes,
+          connection,
+          signal
+        );
+      },
+      onError: (error) => {
+        this.closeConnectionWithError(connection.id, error);
       }
-      await this.handleVerifiedClientMessage(
-        pending.ws,
-        connection,
-        pending.data,
-        pending.isBinary
-      );
-    }
-  }
-
-  private enqueueVerifiedReceive(connection: Connection, message: PendingClientMessage): void {
-    if (connection.receiveInFlight < this.receiveInFlightLimit) {
-      this.startVerifiedReceive(connection, message);
-      return;
-    }
-    if (connection.receiveQueue.length >= this.receiveQueueLimit) {
-      throw new WebSocketCloseError(1008, 'websocket receive queue is full');
-    }
-    connection.receiveQueue.push(message);
-    this.receiveCounters.queued += 1;
-  }
-
-  private drainVerifiedReceiveQueue(connection: Connection): void {
-    while (
-      connection.state === 'verified' &&
-      connection.receiveInFlight < this.receiveInFlightLimit &&
-      connection.receiveQueue.length > 0
-    ) {
-      const message = connection.receiveQueue.shift();
-      this.receiveCounters.queued = Math.max(0, this.receiveCounters.queued - 1);
-      if (!message || message.ws.readyState !== WebSocket.OPEN) {
-        continue;
-      }
-      this.startVerifiedReceive(connection, message);
-    }
-  }
-
-  private startVerifiedReceive(connection: Connection, message: PendingClientMessage): void {
-    const controller = new AbortController();
-    connection.receiveAbortControllers.add(controller);
-    connection.receiveInFlight += 1;
-    this.receiveCounters.inFlight += 1;
-
-    const finish = () => {
-      if (!connection.receiveAbortControllers.delete(controller)) {
-        return;
-      }
-      connection.receiveInFlight = Math.max(0, connection.receiveInFlight - 1);
-      this.receiveCounters.inFlight = Math.max(0, this.receiveCounters.inFlight - 1);
-      if (connection.receiveAbortOnCloseControllers.delete(controller)) {
-        this.receiveCounters.abortOnClose = Math.max(0, this.receiveCounters.abortOnClose - 1);
-      }
-      this.drainVerifiedReceiveQueue(connection);
-    };
-
-    const receiveDispatch = this.buildWebSocketReceiveDispatch(
-      connection,
-      message.data,
-      message.isBinary
-    );
-    this.dispatchReceive(
-      connection.entry.receive,
-      receiveDispatch.websocketAdapter,
-      receiveDispatch.payloadBytes,
-      connection,
-      controller.signal
-    )
-      .catch((error: unknown) => {
-        if (message.ws.readyState === WebSocket.OPEN) {
-          this.closeWithError(message.ws, error);
-        }
-      })
-      .finally(finish);
-  }
-
-  private abortConnectionReceives(connection: Connection): void {
-    for (const controller of Array.from(connection.receiveAbortControllers)) {
-      if (!controller.signal.aborted) {
-        connection.receiveAbortOnCloseControllers.add(controller);
-        this.receiveCounters.abortOnClose += 1;
-        controller.abort();
-      }
-    }
-  }
-
-  private dropQueuedReceives(connection: Connection): void {
-    const queued = connection.receiveQueue.length;
-    if (queued === 0) {
-      return;
-    }
-    connection.receiveQueue = [];
-    this.receiveCounters.queued = Math.max(0, this.receiveCounters.queued - queued);
+    });
   }
 
   private upgradeClientDisconnectSignal(
     request: IncomingMessage,
     socket: Socket
-  ): { signal: AbortSignal; complete(): void } {
+  ): { signal: AbortSignal; abort(): void; complete(): void } {
     const controller = new AbortController();
     let completed = false;
     const abort = () => {
@@ -838,6 +661,7 @@ export class WebSocketGateway {
     }
     return {
       signal: controller.signal,
+      abort,
       complete: () => {
         completed = true;
         socket.off('close', abort);
@@ -914,20 +738,19 @@ export class WebSocketGateway {
       NonNullable<WebSocketAdapterFrameMetadata['receiveEvent']>['payloadSegments']
     > = [];
     const payloadParts: Buffer[] = [];
-    if (connection.contextBytes.byteLength > 0) {
-      if (connection.contextCodec === undefined) {
-        throw new GatewayError(
-          502,
-          'InvalidConnectResult',
-          'connect context bytes are missing context codec metadata'
-        );
-      }
+    if (connection.contextCodec !== undefined) {
       segments.push({
         kind: 'websocket.context',
         offset: 0,
         length: connection.contextBytes.byteLength
       });
       payloadParts.push(bufferFromBytes(connection.contextBytes));
+    } else if (connection.contextBytes.byteLength > 0) {
+      throw new GatewayError(
+        502,
+        'InvalidConnectResult',
+        'connect context bytes are missing context codec metadata'
+      );
     }
     segments.push({
       kind: 'websocket.message',
@@ -1091,121 +914,24 @@ export class WebSocketGateway {
     return operation.serviceProtocolIdentity;
   }
 
-  private sendConnectionDownlinkToSockets(
-    sockets: Iterable<WebSocket>,
-    message: ConnectionDownlinkMessage
-  ): void {
-    for (const socket of sockets) {
-      this.sendConnectionDownlink(socket, message);
-    }
-  }
-
-  private sendConnectionDownlink(ws: WebSocket, message: ConnectionDownlinkMessage): void {
-    if (message.payloadKind === 'text') {
-      this.sendText(ws, decodeConnectionDownlinkText(message.payloadBytes));
-      return;
-    }
-    this.sendBinary(ws, message.payloadBytes);
-  }
-
-  private sendText(ws: WebSocket, value: string): void {
-    if (ws.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    if (ws.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
-      ws.close(1011, 'websocket client is too slow');
-      return;
-    }
-    ws.send(value);
-  }
-
-  private sendBinary(ws: WebSocket, value: Uint8Array): void {
-    if (ws.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    const bytes = Buffer.isBuffer(value)
-      ? value
-      : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-    if (ws.bufferedAmount + bytes.byteLength > MAX_SOCKET_BUFFERED_AMOUNT) {
-      ws.close(1011, 'websocket client is too slow');
-      return;
-    }
-    ws.send(bytes, { binary: true });
-  }
-
-  private closeWithError(ws: WebSocket, error: unknown): void {
-    if (ws.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
+  private closeConnectionWithError(connectionId: string, error: unknown): void {
     if (error instanceof WebSocketCloseError) {
-      ws.close(error.closeCode, error.message.slice(0, 120));
+      this.lifecycle.close(connectionId, {
+        code: error.closeCode,
+        reason: error.message
+      });
       return;
     }
 
     const payload = toGatewayError(error).toPayload();
-    ws.close(1011, payload.message.slice(0, 120));
+    this.lifecycle.close(connectionId, {
+      code: 1011,
+      reason: payload.message
+    });
   }
 
   private createClientSession(id: string): ClientSession {
     return { id };
-  }
-
-  private indexDelivery(
-    ws: WebSocket,
-    serviceId: string,
-    websocketEntryId: string,
-    businessIdentity: string | undefined
-  ): void {
-    const key = businessDeliveryKey(serviceId, websocketEntryId, businessIdentity);
-    if (!key) {
-      return;
-    }
-    const clients = this.clientsByDeliveryKey.get(key) ?? new Set<WebSocket>();
-    clients.add(ws);
-    this.clientsByDeliveryKey.set(key, clients);
-    this.deliveryKeyByClient.set(ws, key);
-  }
-
-  private enforceConnectionPolicyBeforeIndex(connection: Connection): void {
-    const policy = connection.connectionPolicy;
-    if (
-      policy === undefined ||
-      connection.deliveryKey === undefined ||
-      policy.overflow !== 'close-oldest'
-    ) {
-      return;
-    }
-
-    const existingOpenSockets = this.openDeliverySockets(connection.deliveryKey);
-    const overflowCount = existingOpenSockets.length + 1 - policy.maxConnections;
-    if (overflowCount <= 0) {
-      return;
-    }
-
-    const overflowSockets = existingOpenSockets.slice(0, overflowCount);
-    for (const socket of overflowSockets) {
-      this.removeIdentityIndex(socket);
-    }
-    for (const socket of overflowSockets) {
-      closePolicyOverflowSocket(socket, policy);
-    }
-  }
-
-  private removeIdentityIndex(ws: WebSocket): void {
-    const key = this.deliveryKeyByClient.get(ws);
-    if (!key) {
-      return;
-    }
-    this.deliveryKeyByClient.delete(ws);
-    const clients = this.clientsByDeliveryKey.get(key);
-    if (!clients) {
-      return;
-    }
-    clients.delete(ws);
-    if (clients.size === 0) {
-      this.clientsByDeliveryKey.delete(key);
-    }
   }
 
   private handleConnectionSend(message: ConnectionSendEnvelope): void {
@@ -1225,14 +951,14 @@ export class WebSocketGateway {
     if (!key) {
       return;
     }
-    this.sendConnectionDownlinkToSockets(this.openDeliverySockets(key), message);
+    this.lifecycle.sendToBusinessKey(key, connectionDownlinkMessage(message));
   }
 
   private handleConnectionIdSend(message: ConnectionSendEnvelope): void {
     if (typeof message.connectionId !== 'string') {
       return;
     }
-    const connection = this.connectionsById.get(message.connectionId);
+    const connection = this.lifecycle.connection(message.connectionId);
     if (
       !connection ||
       connection.service !== message.serviceId ||
@@ -1241,29 +967,16 @@ export class WebSocketGateway {
       return;
     }
 
-    if (connection.state === 'verified') {
-      if (this.hasOpenSocket(connection)) {
-        this.sendConnectionDownlinkToSockets(connection.sockets, message);
-      }
-    }
+    this.lifecycle.sendToConnection(message.connectionId, connectionDownlinkMessage(message));
   }
+}
 
-  private hasOpenSocket(connection: Connection): boolean {
-    for (const socket of connection.sockets) {
-      if (socket.readyState === WebSocket.OPEN) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private openDeliverySockets(deliveryKey: string): WebSocket[] {
-    const clients = this.clientsByDeliveryKey.get(deliveryKey);
-    if (!clients) {
-      return [];
-    }
-    return Array.from(clients).filter((socket) => socket.readyState === WebSocket.OPEN);
-  }
+function connectionDownlinkMessage(
+  message: ConnectionDownlinkMessage
+): { data: string | Uint8Array; binary: boolean } {
+  return message.payloadKind === 'text'
+    ? { data: decodeConnectionDownlinkText(message.payloadBytes), binary: false }
+    : { data: message.payloadBytes, binary: true };
 }
 
 function decodeConnectionDownlinkText(payloadBytes: Uint8Array): string {
@@ -1524,17 +1237,6 @@ export function validateConnectionPolicy(
 
 function invalidConnectionPolicy(message: string): GatewayError {
   return new GatewayError(502, 'InvalidConnectResult', message);
-}
-
-export function closePolicyOverflowSocket(ws: WebSocket, policy: WebSocketConnectionPolicy): void {
-  if (ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  if (policy.closeCode === undefined && policy.closeReason === undefined) {
-    ws.close();
-    return;
-  }
-  ws.close(policy.closeCode ?? 1000, policy.closeReason);
 }
 
 export function businessDeliveryKey(

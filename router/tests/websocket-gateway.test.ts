@@ -165,6 +165,66 @@ describe('router websocket gateway', () => {
     });
   });
 
+  it('preserves typed websocket Context presence when its encoded payload is zero bytes', async () => {
+    const manifest = loadWebSocketManifest();
+    const contextExpectation = manifest.websocketEntry!.contextExpectation!;
+    if (contextExpectation.kind !== 'typed') {
+      throw new Error('zero-byte context fixture requires typed context');
+    }
+    const harness = await RouterHarness.websocket({ manifest });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-ws-zero-byte-context',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    const receiveRequestPromise = new Promise<RequestStartEnvelope>((resolve) => {
+      runtime.onRequest((request) => {
+        if (request.websocketAdapter?.kind === 'connect') {
+          runtime.ws.send(
+            encodeRuntimeFrame({
+              schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+              type: 'response.end',
+              requestId: request.requestId,
+              payloadPresent: false,
+              websocketConnect: {
+                result: 'accept',
+                businessIdentity: 'zero-context-user',
+                contextPayloadPresent: true,
+                contextCodec: {
+                  operationAbiId: contextExpectation.connectOperationAbiId,
+                  contextTypeIdentity: contextExpectation.contextTypeIdentity
+                }
+              }
+            })
+          );
+          return;
+        }
+        resolve(request);
+        runtime.sendResponse(request.requestId, null);
+      });
+    });
+
+    const client = new WebSocket(
+      harness.webSocketUrl('?deviceId=zero-context-user&platform=web&clientVersion=1.0.0&language=en'),
+      websocketOptions('zero-context-session')
+    );
+    trackResource({ close: () => client.close() });
+    await onceWithTimeout(client, 'open', 'zero-byte context websocket open');
+    client.send('zero-byte-context-message');
+
+    const receiveRequest = await receiveRequestPromise;
+    expect(receiveRequest.websocketAdapter?.receiveEvent).toMatchObject({
+      contextCodec: {
+        operationAbiId: contextExpectation.connectOperationAbiId,
+        contextTypeIdentity: contextExpectation.contextTypeIdentity
+      },
+      payloadSegments: [
+        { kind: 'websocket.context', offset: 0, length: 0 },
+        { kind: 'websocket.message', offset: 0, length: 25 }
+      ]
+    });
+  });
+
   it('aborts in-flight websocket receive dispatch on client close', async () => {
     const manifestValue = webSocketManifestValue();
     const manifest = loadManifest(manifestValue);
@@ -253,6 +313,39 @@ describe('router websocket gateway', () => {
       reason: 'client_disconnect'
     });
     socket.destroy();
+  });
+
+  it('bounds shutdown while a websocket upgrade is waiting for connect', async () => {
+    const manifest = loadWebSocketManifest();
+    const harness = await RouterHarness.websocket({ manifest });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-ws-pending-connect-shutdown',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    const connectRequestPromise = runtime.collectRequests(1, 'pending connect shutdown request');
+    const client = new WebSocket(
+      harness.webSocketUrl('?deviceId=pending-shutdown&platform=web&clientVersion=1.0.0&language=en'),
+      websocketOptions('pending-shutdown-session')
+    );
+    client.on('error', () => {
+      // Shutdown destroys the pre-upgrade TCP socket.
+    });
+    trackResource({ close: () => client.close() });
+    const [connectRequest] = await connectRequestPromise;
+    const cancelPromise = waitForRuntimeCancel(
+      runtime.ws,
+      connectRequest!.requestId,
+      'pending connect shutdown cancel'
+    );
+
+    const startedAt = Date.now();
+    await harness.webSocketGateway!.close();
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    await expect(cancelPromise).resolves.toMatchObject({
+      reason: 'client_disconnect'
+    });
   });
 
   it('bounds verified websocket receive queue and drops queued messages locally on close', async () => {
@@ -965,6 +1058,49 @@ describe('router websocket gateway', () => {
       tag: 'offline_multitab_response',
       ok: true
     });
+  });
+
+  it('rejects an over-limit reject-new connection before websocket upgrade', async () => {
+    const manifest = loadWebSocketManifest();
+    const harness = await RouterHarness.websocket({ manifest });
+    const runtime = await harness.registerRuntime({
+      runtimeId: 'runtime-test-ws-reject-new-policy',
+      targets: manifest.operations.map((operation) => operation.target),
+      gatewayEntryIdentities: webSocketRuntimeGatewayEntryIdentities(manifest)
+    });
+    runtime.onRequest((request) => {
+      runtime.sendResponse(
+        request.requestId,
+        request.websocketAdapter?.kind === 'connect'
+          ? websocketAccept('reject-new-user', {
+              maxConnections: 1,
+              overflow: 'reject-new'
+            })
+          : null
+      );
+    });
+    const url = harness.webSocketUrl(
+      '?deviceId=reject-new-user&platform=web&clientVersion=1.0.0&language=en'
+    );
+    const first = new WebSocket(url, websocketOptions('reject-new-first'));
+    trackResource({ close: () => first.close() });
+    await onceWithTimeout(first, 'open', 'reject-new first websocket open');
+
+    await expectWebSocketUpgradeRejected(
+      url,
+      websocketOptions('reject-new-second').headers,
+      'reject-new second websocket',
+      403
+    );
+
+    const firstMessage = collectMessages(first, 1, 'reject-new surviving connection message');
+    sendRuntimeTextConnection(runtime.ws, {
+      serviceId: manifest.service.id,
+      identity: 'reject-new-user',
+      text: JSON.stringify({ tag: 'still_connected' })
+    });
+    const [data] = await firstMessage;
+    expect(JSON.parse(String(data))).toEqual({ tag: 'still_connected' });
   });
 
   it('enforces identity close-oldest policy before immediate identity delivery', async () => {
