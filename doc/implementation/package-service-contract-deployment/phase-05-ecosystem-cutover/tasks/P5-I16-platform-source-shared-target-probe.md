@@ -1,72 +1,71 @@
 # P5-I16：Platform Source Shared-target Combined Probe
 
-## 角色、输入与唯一性
+## 角色、输入与证据复用
 
-Gate owner只读运行F16A/F16B/F16C合流后的exact clean integration commit/tree；D19必须已`AUDIT CLOSED`，或D19
-冻结的F17 exact repair已合流且无在途写入。否则不得启动I16。不得编辑、提交、修复或操作stable。
-本任务是platform shared-target动态证据与F04原样Host gate的唯一owner。候选和环境不变时，R16与F04 narrow receive
-必须复用该证据，不重复完整gate。
+使用未参与F16A/B/C/F17实现、D19审计或R16验收的全新Gate owner会话。输入为F16A/F16B/F16C/F17全部合流、
+D19 `DESIGN GO`已关闭、无在途写入的exact clean integration commit/tree；不得编辑、提交、修复或操作stable。
+权威设计为`doc/architecture/package-service-contract-deployment.md` §3、§9、§10、§14及阶段标准6；动态矩阵只验证
+D18/F16合同，不增加新的trust或CLI语义。
 
-开始前记录free space、Cargo.lock blob、端口/进程与source provenance。容量不足时在启动构建前报告BLOCKED；不得
-删除用户或其它任务cache。A/B固定为`/Users/geek/workspace/skiff-p5-i16-a`与`.../skiff-p5-i16-b`的detached
-worktree。用`mktemp -d /Users/geek/workspace/.skiff-p5-i16.XXXXXX`创建`I16_TMP_ROOT`，共享target固定为
-`$I16_TMP_ROOT/target`。结束后清理两个worktree、端口、进程和整个任务自有临时目录。
+开始前只核对并消费四个开发任务的exact commit/tree/lock、自验收矩阵和D19 ledger，不重复其absolute/symlink/
+missing/cross-root/reserved/omitted/relative/context-mismatch、transport或lifecycle聚焦测试。唯一merge-only cheap probe与
+A/B动态矩阵由F16C提交的`run-platform-source-shared-target-probe.mjs`拥有；完整source-suite/Host只在该脚本末尾运行
+一次。候选和环境不变时，R16与F04 narrow receive必须复用本ledger。
 
-## 冻结顺序与命令
+## 唯一命令
 
-先在合流integration运行一次便宜combined检查；任一失败不得创建A/B或运行Host：
+Gate owner先核对`git status --short`为空及四项开发ledger有效，然后只执行：
 
 ```bash
-cargo check --locked -p skiff-compiler --bin skiff-compiler -p skiff-test-runner --bins
-cargo test --locked -p skiff-compiler-source platform_source_context_preserves_legacy_prelude_identity
-cargo test --locked -p skiff-test-runner --test package_service_contract_deployment platform_source_context_contract
-node --test scripts/tests/package-service-authoring.test.mjs scripts/tests/skiff-source-test-suite.test.mjs scripts/tests/skiff-test-cli.test.mjs scripts/tests/test-runner-runtime-isolation.test.mjs scripts/tests/encrypted-storage-live-harness.test.mjs
+P5_I16_ROOT=/Users/geek/workspace/skiff-phase-05-integration
+P5_I16_COMMIT="$(git -C "$P5_I16_ROOT" rev-parse HEAD)"
+P5_I16_TREE="$(git -C "$P5_I16_ROOT" rev-parse HEAD^{tree})"
+cd /tmp
+node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-source-shared-target-probe.mjs \
+  --integration-root "$P5_I16_ROOT" \
+  --candidate "$P5_I16_COMMIT" \
+  --expected-tree "$P5_I16_TREE" \
+  --expected-lock-blob f3ce5457138c58aec4c84abda431afa96013e3fd \
+  --expected-prelude-identity skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d \
+  --expected-std-package-build-id skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4 \
+  --a-worktree /Users/geek/workspace/skiff-p5-i16-a \
+  --b-worktree /Users/geek/workspace/skiff-p5-i16-b \
+  --json
 ```
 
-F16A/B/C各自的absolute/symlink/missing/cross-root/reserved/omitted/relative/context-mismatch单元矩阵直接消费开发ledger，
-I16不重复；combined过滤测试必须引用这些fixture并证明仍在exact合流tree。随后执行：
+任何primary失败立即停止且不重试。若candidate/lock不匹配、worktree路径已存在、容量不足或清理前置不成立，脚本
+必须在build前返回`PREFLIGHT BLOCKED`。
 
-1. 同一exact commit建立路径不同的A/B worktree，共用一个任务自有`CARGO_TARGET_DIR`。从A build
-   与smoke fixture：
+## Gate harness冻结行为
 
-   ```bash
-   CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo build --locked --manifest-path /Users/geek/workspace/skiff-p5-i16-a/test-runner/Cargo.toml --bin skiff-test-runner --bin skiff-package-service-smoke-fixture
-   ```
+脚本及其command-double test属于F16C checkpoint；I16不得修改。脚本必须：
 
-   记录runner、fixture及`skiff_compiler_input/source` rlib的hash/mtime/dep-info。再依次运行：
+1. 复验integration exact commit/tree/lock/clean、A/B路径不存在、无同名worktree。容量门槛为任务target预计占用：
+   existing shared Cargo target allocated bytes加2 GiB；若无可测shared target则要求至少8 GiB free。创建
+   `/Users/geek/workspace/.skiff-p5-i16.XXXXXX`任务目录、其中唯一shared target，并用`try/finally`/signal handlers只
+   清理任务目录和A/B detached worktree；记录清理后ABSENT、端口与残留进程。
+2. 在exact合流tree只运行未被开发ledger执行的merge-only
+   `node --test scripts/tests/platform-source-transport-combined.test.mjs`，以及一次共同编译
+   `cargo check --locked -p skiff-compiler -p skiff-test-runner --bins`。fixture检查compiler
+   authoring、runner、smoke bootstrap、source-suite、`skiff test`、runtime-live和encrypted-storage argv共享同一absolute
+   root，并直接执行一个omitted-root fail-closed路径。
+3. 建A/B detached worktree；共享target依次建立A-origin、B-origin、最终A-origin三轮。targeted clean crate固定为
+   `skiff-test-runner`、`skiff-compiler`、`skiff-compiler-input`、`skiff-compiler-source`；每轮命令显式使用对应absolute
+   `--manifest-path`、同一`CARGO_TARGET_DIR`、`--locked`及runner/smoke两个binary selector。
+4. A-origin下依次以A、B runtime root运行ignored `platform_source_identity_probe`；B-origin下依次以B、A root运行。
+   共4次probe，每次输出带标签的2个值（8项），全部exact等于上述两个golden。跨worktree第二次必须在`-vv` ledger中
+   报告`skiff-compiler-input`、`skiff-compiler-source`、`skiff-compiler`、`skiff-test-runner`及identity test为`Fresh`，
+   相关binary/rlib/test hash与mtime不变。
+5. 对实际production compiler input/source rlib、compiler/runner/smoke binary运行`strings` no-match，禁止
+   `compiler/input[/\\.]+std`、`compiler/input[/\\.]+prelude`、`compiler/source[/\\.]+std|prelude`形式的worktree
+   常量；对对应`.d` dep-info运行`rg '# env-dep:CARGO_MANIFEST_DIR='`必须零命中。导入
+   `canonicalSkiffSourceTestRegistry`并断言exact为`[{id:'std', root:'std'}]`。
+6. 前述cheap/identity/structure全部PASS后，最终从任务临时目录用A-origin shared target和B的absolute
+   `scripts/run-skiff-tests.mjs`运行唯一完整gate；要求std 11/11、Host 1/1及exact
+   `provider-observed-helper-mutated`。不因cleanup secondary改变primary verdict，但必须保留两者。
 
-   ```bash
-   SKIFF_TEST_PLATFORM_SOURCE_ROOT=/Users/geek/workspace/skiff-p5-i16-a CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo test --locked --manifest-path /Users/geek/workspace/skiff-p5-i16-a/test-runner/Cargo.toml --test package_service_contract_deployment platform_source_identity_probe -- --nocapture
-   SKIFF_TEST_PLATFORM_SOURCE_ROOT=/Users/geek/workspace/skiff-p5-i16-b CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo test --locked -vv --manifest-path /Users/geek/workspace/skiff-p5-i16-b/test-runner/Cargo.toml --test package_service_contract_deployment platform_source_identity_probe -- --nocapture
-   ```
+## 输出
 
-   B必须报告相关crate/test为`Fresh`、hash/mtime不变，且两行prelude identity/std PackageBuildId exact相同。
-2. 在任务自有target执行精确clean：
-
-   ```bash
-   cargo clean --manifest-path /Users/geek/workspace/skiff-p5-i16-b/Cargo.toml --target-dir "$I16_TMP_ROOT/target" -p skiff-test-runner -p skiff-compiler -p skiff-compiler-input -p skiff-compiler-source
-   CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo build --locked --manifest-path /Users/geek/workspace/skiff-p5-i16-b/test-runner/Cargo.toml --bin skiff-test-runner --bin skiff-package-service-smoke-fixture
-   ```
-
-   接着运行：
-
-   ```bash
-   SKIFF_TEST_PLATFORM_SOURCE_ROOT=/Users/geek/workspace/skiff-p5-i16-b CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo test --locked --manifest-path /Users/geek/workspace/skiff-p5-i16-b/test-runner/Cargo.toml --test package_service_contract_deployment platform_source_identity_probe -- --nocapture
-   SKIFF_TEST_PLATFORM_SOURCE_ROOT=/Users/geek/workspace/skiff-p5-i16-a CARGO_TARGET_DIR="$I16_TMP_ROOT/target" cargo test --locked -vv --manifest-path /Users/geek/workspace/skiff-p5-i16-a/test-runner/Cargo.toml --test package_service_contract_deployment platform_source_identity_probe -- --nocapture
-   ```
-
-   A必须`Fresh`，四次identity输出exact相同。该clean只建立B-origin镜像证据，不是任何PASS前置或修复。
-3. 检查production rlib/binary字符串与dep-info没有`compiler/input..std`、`..prelude`或platform用途
-   `CARGO_MANIFEST_DIR`；source registry仍唯一std。然后再次用步骤2的精确clean命令清理四个任务crate，从A执行
-   步骤1的build，再从B以相同manifest target执行`cargo build --locked -vv`，必须`Fresh`且hash/mtime不变。
-   全部cheap/identity/structure证据PASS后，才从任意非repo cwd运行：
-
-   ```bash
-   CARGO_TARGET_DIR="$I16_TMP_ROOT/target" node /Users/geek/workspace/skiff-p5-i16-b/scripts/run-skiff-tests.mjs
-   ```
-
-   Cargo必须复用A-origin产物，std 11/11与Host 1/1返回exact `provider-observed-helper-mutated`。
-
-任何primary失败立即停止完整gate，不重试掩盖；完整记录首错、阶段、cleanup结果和exact command。FileHandle cleanup
-只记录并关联已关闭的D19/F17 ledger，不改变platform verdict。输出PASS/FAIL、commit/tree/lock、A/B路径、target、
-hash/mtime、Fresh证据、三次identity输出、std/Host计数与资源清理证明。
+JSON ledger必须包含commit/tree/lock、capacity、A/B/temp路径、三轮origin、targeted clean crate、artifact枚举、hash/mtime/
+dep-info、Fresh crate列表、4次probe的8个golden值、structure/registry结果、std/Host计数、首错以及worktree/temp/PID/port
+清理证明。PASS才解除R16；候选、gate script、platform source、Cargo/lock或F17 lifecycle变化会使全部I16证据失效。

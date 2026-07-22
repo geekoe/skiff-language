@@ -20,6 +20,8 @@ model/converter，`cross-system-fixtures/**`，新ecosystem boundary checker/sel
 `runtime/encrypted-storage-live/**`、`runtime/live-tests/**`、verify runtime-live semantic fixture/plan、
 `doc/architecture/test-runner-runtime-isolation.md`与相关AGENTS canonical命令。
 root Cargo/lock与`scripts/verify*.mjs`在本任务独占。不改T02–T05已验收的production语义。
+F16C已在encrypted-storage、runtime-live verify plan和isolated bootstrap落下platform-source-root transport；T06拥有这些
+文件的后续四对象/legacy迁移，但必须保留该exact transport与tests，不得恢复ambient path。
 
 ## 完成态
 

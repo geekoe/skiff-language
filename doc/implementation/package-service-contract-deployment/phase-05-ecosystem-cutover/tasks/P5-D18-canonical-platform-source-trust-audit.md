@@ -34,12 +34,17 @@ platform source的实现owner和transport，不新增domain object、用户CLI�
 - compiler binary、test-runner、source-suite及Host fixture的内部transport都携带同一个由模块位置确定的绝对
   `skiffRoot`；不向用户级`skiff package|contract|deployment|assembly`命令暴露新的trust开关。
 
-执行DAG为`F16A -> (F16B || F16C)`与并行D19；只有D19 `AUDIT CLOSED`，或其冻结的F17 exact repair已合流且
-无在途写入，才能进入`I16 -> R16`。I16是共享target与F04原样Host gate的唯一动态owner；候选不变时该完整证据
+执行DAG为`F16A -> (F16B || F16C)`与`D19 -> F17`并行；F16B/F16C/F17全部合流且无在途写入后才能进入
+`I16 -> R16`。I16是共享target与F04原样Host gate的唯一动态owner；候选不变时该完整证据
 直接交F04 narrow receive，不重复昂贵gate。
+
+`40ed693`冻结identity golden：prelude为
+`skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d`；
+canonical `skiff.run/std@1.0.0` PackageBuildId为
+`skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4`。
 
 ## 次生teardown异常
 
 `Node FileHandle ... ERR_INVALID_STATE`发生在reserved-id主错误之后的cleanup/runtime early-exit阶段，不能归为主
 blocker。缺少原stack；静态最可疑是supervisor exit handler对日志handle的fire-and-forget close与立即exit竞态。
-D19使用便宜失败注入探针独立审计，禁止为此重跑F04；若可复现，再冻结单一幂等close owner的窄repair。
+D19只读冻结真实handle owner，F17以专用真实FileHandle/child交错探针实现单一幂等close owner；禁止为此重跑F04。

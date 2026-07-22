@@ -17,7 +17,7 @@ F12/F13并已在`02b97ff`通过combined R13；std 11/11后Host assembly暴露lin
 F14已在`bcbdc2c`通过R14。原样gate现仅暴露activation receipt→healthy registration毫秒级空窗，D16已冻结
 F15 readiness barrier首次被R15拒绝，D17/F15A已在`e3a0d78`通过R15窄复验。F04原样gate随后在`40ed693`
 暴露共享Cargo target复用编译期platform绝对路径；D18已以双worktree镜像实验冻结F16A shared context及F16B/F16C
-transport扇出，I16/R16后恢复F04 receive。次生FileHandle teardown由D19并行审计。F05等待F04 narrow receive，
+transport扇出，I16/R16后恢复F04 receive。次生FileHandle teardown由D19/F17并行收敛。F05等待F04 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -112,7 +112,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 FAIL@b7e0f4f ─► D17 ─► F15A ─► R15 PASS@e3a0d78 ─► F04 Host FAIL@40ed693
           │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
           │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┤
-          │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► AUDIT CLOSED / F17 merged ─┴─► I16 ─► R16 ─► F04 narrow receive
+          │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► F17 ───────────────────────┴─► I16 ─► R16 ─► F04 narrow receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -219,9 +219,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F16A | [Compiler platform source context](tasks/P5-F16A-compiler-platform-source-context.md) | D18 complete | 高；shared compiler trust checkpoint |
 | F16B | [Compiler platform source transport](tasks/P5-F16B-compiler-platform-source-transport.md) | F16A checkpoint | 高；authoring consumer |
 | F16C | [Test runner platform source transport](tasks/P5-F16C-test-runner-platform-source-transport.md) | F16A checkpoint | 高；test production consumer |
-| I16 | [Platform source shared-target probe](tasks/P5-I16-platform-source-shared-target-probe.md) | F16B + F16C merged；D19 closed或F17 merged | 唯一shared-target/Host gate owner |
+| I16 | [Platform source shared-target probe](tasks/P5-I16-platform-source-shared-target-probe.md) | F16B + F16C + F17 merged | 唯一shared-target/Host gate owner |
 | R16 | [Platform source trust acceptance](tasks/P5-R16-platform-source-trust-acceptance.md) | I16 PASS | 高；独立只读 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
+| F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
 | R02A | [Router/runtime seam acceptance](tasks/P5-R02A-router-runtime-seam-acceptance.md) | F03A exact commit | 独立只读；不作R02 verdict |
 | D03 | [Canonical request optional parity audit](tasks/P5-D03-canonical-request-optional-parity-audit.md) | R02A FAIL at `a7566bb` | 独立只读；冻结完整字段矩阵 |
@@ -327,10 +328,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - R15 PASS后的原样gate在编译std前暴露编译期platform path被共享Cargo target跨worktree复用。D18确认root/cwd/argv/
   registry均正确，禁止以clean cache、隔离target或reserved-id放宽修复。F16A唯一建立显式canonical
   `CompilerPlatformSources`并移除input/source/prelude的ambient path；F16B与F16C只迁移各自transport consumer，不得
-  各造resolver。二者合流后I16唯一执行A-built/Fresh-B shared-target矩阵和完整Host gate，R16只读验收并把同一Host
-  ledger交F04 receive，候选不变时不得重复昂贵gate。
-- 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只用便宜supervisor失败注入冻结或关闭
-  lifecycle finding；不重跑Host、不阻塞F16A/B/C。若需源码repair，必须新建F17且在I16冻结前合流。
+  各造resolver。二者与F17合流后I16唯一执行A-built/Fresh-B shared-target矩阵和完整Host gate，R16只读验收并把
+  同一Host ledger交F04 receive，候选不变时不得重复昂贵gate。
+- 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只读冻结真实handle owner；F17在
+  `skiff-instance`提取单一幂等可等待lifecycle并用真实FileHandle/短命child交错验证。不重跑Host、不阻塞F16A/B/C，
+  但F17是I16硬前置且写集不得与F16C重叠。
 - F03A在R02预审后串行独占Router/Runtime shared wire、compiler internal canonical-store adapter与cross-language
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
@@ -346,7 +348,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   ecosystem checker/verify接线、`cross-system-fixtures/**`及旧reference/architecture/runtime/router文档。
   不修改已通过R02的consumer语义。F04 extra-review移交的encrypted-storage live harness、legacy service fixtures、
   runtime-live service fixtures/base capability assembly、test-runner isolation/AGENTS命令也归T06串行迁移到四对象与
-  canonical CLI；它们不是F04 deleted-flag或live可执行性的兼容例外。
+  canonical CLI；它们不是F04 deleted-flag或live可执行性的兼容例外。F16C先行只拥有这些入口的
+  `--platform-source-root` transport与专用tests，T06后续完整迁移必须保留，不得恢复ambient path。
 - T07独占 `skiff-packages` repo。T08独占 `internals/skiff-platform/account/**`、
   `internals/skiff-platform/package-registry/**`及必要platform registry client。T09A–T09C分别只写
   各自product的code-free contract authoring/schema fixture，不改service implementation。T09D独占
@@ -442,8 +445,8 @@ T13必须从 `verify --list`及新checker registry确认去重后再记ledger。
 ## 8. 候选成熟度与证据失效
 
 - T01/R01只是shared implementation checkpoint，不是pre-acceptance candidate。
-- F16A/B/C会使`40ed693`的F04 source-suite/Host证据失效，但不使R15 readiness代码验收失效；只有I16 exact
-  shared-target/Host ledger与R16 PASS可恢复F04 receive。D19若产生production cleanup repair，必须在I16前合流。
+- F16A/B/C会使`40ed693`的F04 source-suite/Host证据失效，但不使R15 readiness代码验收失效；只有F17合流、I16 exact
+  shared-target/Host ledger与R16 PASS可恢复F04 receive。F17写集固定不重叠F16C，不额外失效其ledger。
 - R02 PASS表示Skiff production consumers已合流，可供外部repo编译；T06旧模型删除与外部
   迁移仍在途，不得冻结最终候选。
 - T06–T12与T09E合流、combined probe PASS、无在途写入/设计问题，且阶段标准已映射到

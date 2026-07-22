@@ -7,6 +7,7 @@
   checkpoint建立`/Users/geek/workspace/skiff-p5-f16a-platform-context`、分支
   `codex/p5-f16a-platform-context`。
 - 高风险shared trust checkpoint；完成后解除F16B/F16C。一个clean commit，不merge/push，不改stable。
+- 使用新的开发Agent，不复用D18 auditor或文档reviewer。
 - 五分钟内开始实际修改；若context无法在既有依赖方向内成为唯一owner，立即回报`TASK_NOT_EXECUTABLE`，不得
   另造parallel helper或fallback。
 
@@ -31,8 +32,10 @@ parse、JS transport或test-runner consumer。`authoring.rs`在本任务后仍�
 - compiler package pipeline显式消费context；所有production platform source读取均来自该owner。
 - `PreludeRegistry`只从context初始化，同canonical root幂等、不同root返回typed failure；`prelude_identity`只读
   已初始化registry。production代码和production dep-info不再含platform用途的`CARGO_MANIFEST_DIR`。
-- test-only旧content算法或冻结golden证明新context的prelude schema/native/combined identity与`40ed693` bit-identical；
-  固定测试名包含`platform_source_context_preserves_legacy_prelude_identity`，production不得保留legacy reader。
+- test-only旧content算法与冻结golden证明新context的prelude schema/native/combined identity与`40ed693` bit-identical；
+  combined golden必须exact等于
+  `skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d`。固定测试名
+  包含`platform_source_context_preserves_legacy_prelude_identity`，production不得保留legacy reader。
 - 没有第二platform-root helper；直接触碰的>200行文件完成extra-review，production文件不新增>500行混合职责。
 
 这是implementation checkpoint：compiler library必须buildable，但compiler binary与test-runner在F16B/F16C合流前允许
