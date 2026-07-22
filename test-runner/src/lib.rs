@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use skiff_compiler::CompilerPlatformSources;
 use thiserror::Error;
 
 pub mod canonical_fixture;
@@ -42,6 +43,8 @@ pub struct SkiffTestResult {
 pub struct SkiffTestOptions {
     pub live: bool,
     pub artifact_root: Option<PathBuf>,
+    /// The single validated platform trust owner for every compile in this run.
+    pub platform_sources: CompilerPlatformSources,
     /// Harness-owned writable canonical root. It has no public CLI spelling.
     pub runtime_artifact_root: Option<PathBuf>,
     pub base_assembly: Option<String>,
@@ -137,7 +140,11 @@ pub fn run_skiff_tests_with_options(
         .artifact_root
         .as_deref()
         .ok_or(SkiffTestError::MissingCanonicalRuntime)?;
-    let project = canonical_package::compile_package_project(&package_root, artifact_root)?;
+    let project = canonical_package::compile_package_project(
+        &options.platform_sources,
+        &package_root,
+        artifact_root,
+    )?;
     let cases =
         canonical_fixture::discover_package_test_cases(input, &package_root, metadata.is_file())?;
     if cases.is_empty() {

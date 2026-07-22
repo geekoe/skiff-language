@@ -20,6 +20,25 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const mongoshCommand = createMongoshCommand();
 export const repoRoot = resolve(scriptDir, '..', '..');
 
+export function encryptedStorageTestRunnerArgs({
+  testFile,
+  configPath,
+}) {
+  return [
+    'run',
+    '--manifest-path',
+    'test-runner/Cargo.toml',
+    '--',
+    testFile,
+    '--live',
+    '--platform-source-root',
+    repoRoot,
+    '--allow-network',
+    '--config',
+    configPath,
+  ];
+}
+
 const PORT_MIN = 45000;
 const PORT_MAX = 45999;
 const FORBIDDEN_PORTS = new Set([
@@ -150,17 +169,7 @@ export class EncryptedStorageLiveHarness {
     const databasesBefore = new Set(await this.databaseNames());
     const run = runCommand(
       'cargo',
-      [
-        'run',
-        '--manifest-path',
-        'test-runner/Cargo.toml',
-        '--',
-        testFile,
-        '--live',
-        '--allow-network',
-        '--config',
-        configPath,
-      ],
+      encryptedStorageTestRunnerArgs({ testFile, configPath }),
       {
         cwd: repoRoot,
         env: {

@@ -248,6 +248,7 @@ async function test(rawArgs) {
     testArgs.push('--live');
   }
   testArgs.push('--artifact-root', explicitArtifactRoot);
+  testArgs.push('--platform-source-root', skiffRoot);
   if (args.options.baseAssembly !== undefined) {
     testArgs.push('--base-assembly', args.options.baseAssembly);
   }

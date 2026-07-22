@@ -7,6 +7,7 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     AssemblyIdentity, CanonicalPackageLinkPlan, RuntimeAssembly, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
+use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
 use skiff_test_runner::{
     canonical_fixture::discover_package_test_cases, canonical_package::compile_package_project,
@@ -15,7 +16,7 @@ use skiff_test_runner::{
     test_overlay::compile_package_test_overlay,
 };
 
-const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id>";
+const USAGE: &str = "usage: skiff-package-service-smoke-fixture (<package-root> [--initialize-environment] | --bootstrap-only | --prepare-host-base <fixture-root> --work-root <dir> --receipt <file>) --artifact-root <dir> --environment <id> --platform-source-root <absolute-dir>";
 
 fn main() {
     if let Err(error) = run() {
@@ -32,6 +33,7 @@ fn run() -> anyhow::Result<()> {
     }
     if let Some(fixture_root) = args.prepare_host_base.as_deref() {
         let receipt = prepare_package_service_host_fixture(
+            &args.platform_sources,
             fixture_root,
             args.work_root
                 .as_deref()
@@ -54,6 +56,7 @@ struct FixtureArgs {
     package_root: Option<PathBuf>,
     artifact_root: PathBuf,
     environment: String,
+    platform_sources: CompilerPlatformSources,
     initialize_environment: bool,
     bootstrap_only: bool,
     prepare_host_base: Option<PathBuf>,
@@ -65,6 +68,7 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     let mut package_root = None;
     let mut artifact_root = None;
     let mut environment = None;
+    let mut platform_source_root = None;
     let mut initialize_environment = false;
     let mut bootstrap_only = false;
     let mut prepare_host_base = None;
@@ -82,6 +86,13 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
             }
             "--environment" => {
                 set_once(&mut environment, next(&mut args, &argument)?, &argument)?;
+            }
+            "--platform-source-root" => {
+                set_once(
+                    &mut platform_source_root,
+                    PathBuf::from(next(&mut args, &argument)?),
+                    &argument,
+                )?;
             }
             "--initialize-environment" => {
                 if initialize_environment {
@@ -137,10 +148,14 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     } else if work_root.is_some() || receipt.is_some() {
         anyhow::bail!("--work-root and --receipt require --prepare-host-base");
     }
+    let platform_source_root =
+        platform_source_root.ok_or_else(|| anyhow::anyhow!("missing --platform-source-root"))?;
+    let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
     Ok(FixtureArgs {
         package_root,
         artifact_root: artifact_root.ok_or_else(|| anyhow::anyhow!("missing --artifact-root"))?,
         environment: environment.ok_or_else(|| anyhow::anyhow!("missing --environment"))?,
+        platform_sources,
         initialize_environment,
         bootstrap_only,
         prepare_host_base,
@@ -168,12 +183,14 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         .package_root
         .ok_or_else(|| anyhow::anyhow!("missing package root"))?;
 
-    let project = compile_package_project(&package_root, &args.artifact_root)?;
+    let project =
+        compile_package_project(&args.platform_sources, &package_root, &args.artifact_root)?;
     let cases = discover_package_test_cases(&package_root, &package_root, false)?;
     if cases.is_empty() {
         anyhow::bail!("smoke fixture package must contain at least one .test.skiff case");
     }
-    let overlay = compile_package_test_overlay(&package_root, &project, &cases)?;
+    let overlay =
+        compile_package_test_overlay(&args.platform_sources, &package_root, &project, &cases)?;
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay)?;
     fixture
         .records

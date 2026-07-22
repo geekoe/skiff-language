@@ -2,7 +2,7 @@ import {
   spawn as spawnSupervisorChild,
 } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
@@ -78,6 +78,8 @@ export function bootstrapCanonicalArgs({
     '--bootstrap-only',
     '--artifact-root',
     artifactRoot,
+    '--platform-source-root',
+    resolve(skiffRoot),
     '--environment',
     environment,
   ];

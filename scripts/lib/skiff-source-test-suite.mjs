@@ -32,6 +32,8 @@ export function skiffSourceTestRunnerCargoArgs({
     root,
     '--artifact-root',
     artifactRoot,
+    '--platform-source-root',
+    resolve(skiffRoot),
     ...(baseAssembly === undefined ? [] : ['--base-assembly', baseAssembly]),
     '--deny-skips',
     '--require-tests',
@@ -72,6 +74,8 @@ export function packageServiceHostFixturePrepareCargoArgs({
     receipt,
     '--artifact-root',
     artifactRoot,
+    '--platform-source-root',
+    resolve(skiffRoot),
     '--environment',
     environment,
   ];

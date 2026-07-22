@@ -71,6 +71,8 @@ test('bootstrap comes from current checkout and writes only canonical generation
     '--bootstrap-only',
     '--artifact-root',
     '/tmp/isolated/dev-home/artifacts',
+    '--platform-source-root',
+    '/checkout/skiff',
     '--environment',
     'isolated-test',
   ]);
