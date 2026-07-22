@@ -27,8 +27,10 @@ cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调
 且bounded diagnostic未保留。D26三路审计已冻结P26S/F20A/B与唯一第三次full条件；P20A official std exact已PASS。
 P26S三步已PASS且F20A/B两个clean commit已合流；D27/F21关闭真实Router依赖启动，D30/F22A/F22B收敛Host
 result identity后，replacement I16在`411f9b6`通过。G16E只运行一次预算上限full并首次完整PASS，R23六项原始blocker
-窄验收也在同一候选PASS，F04 receive现已关闭并解锁F05。次生FileHandle teardown已由D19在`f15c210`给出
-DESIGN GO，F17已合流；F03B/F03C仍锁定至R05 PASS。
+窄验收也在同一候选PASS，F04 receive现已关闭。F05初版已在`c277e45`合流但R05 FAIL；D33三路熔断审计确认
+Router lifecycle/response/runtime generation与验收DAG环，冻结F23A–E、F23D convergence和R24 checkpoint。次生
+FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到
+二者合流后。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -131,9 +133,10 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           └─► D03 canonical optional-field parity audit ─► F03A1 bounded repair
                 └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
                       └─► F03A2 convergence ─► request combined probe ─► R02A third PASS ─┐
-  F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05
-                                                                                              ├─► F03B remaining Router store/gateway/pin ─┐
-                                                                                              └─► F03C Runtime startup/admission/pin      ├─► lock refresh ─► I02 ─► R02
+  F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05 FAIL ─► D33
+                                                                                               D33 ─► F23A/B/C ─► F23D ─► R24 ─► F23E ─┐
+                                                                                                                        ├─► F03B Router pin ─┐
+                                                                                                                        └─► F03C Runtime pin├─► final R05 ─► lock refresh ─► I02 ─► R02
 
 Wave 3 / Batch C：R02 PASS的exact Skiff checkpoint后terminal/external扇出
   T06 Skiff legacy deletion + checker + canonical docs ─────┐
@@ -271,6 +274,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R22B | [Host result global uniqueness reacceptance](tasks/P5-R22B-host-result-global-uniqueness-reacceptance.md) | F22B exact candidate | PASS；原reviewer只复验同一blocker |
 | G16E | [V6 real Host gate](tasks/P5-G16E-v6-real-host-gate.md) | R22 + replacement I16 PASS | 唯一full；新周期第2次/预算上限 |
 | R23 | [F04 original six-blocker acceptance](tasks/P5-R23-f04-original-six-blocker-acceptance.md) | G16E PASS | 原六项独立窄接收；PASS只解锁F05 |
+| D33 | [Canonical WS closure audit](tasks/P5-D33-canonical-websocket-closure-audit-result.md) | R05 FAIL | 三路熔断审计；闭合production路径与DAG环 |
+| F23A | [Router WS trust/dispatch](tasks/P5-F23A-router-websocket-trust-dispatch.md) | D33 complete | 高；Router protocol/dispatch owner |
+| F23B | [Shared WS lifecycle core](tasks/P5-F23B-shared-websocket-lifecycle-core.md) | D33 complete | 高；唯一session/transport owner |
+| F23C | [Runtime WS response boundary](tasks/P5-F23C-runtime-websocket-response-boundary.md) | D33 complete | 高；typed response/projector owner |
+| F23D | [Assembly WS convergence](tasks/P5-F23D-assembly-websocket-convergence.md) | F23A–C merged | 高；Assembly adapter convergence |
+| R24 | [F05 WS owner checkpoint](tasks/P5-R24-f05-websocket-owner-checkpoint.md) | F23D + combined PASS | 高；只解锁lifecycle consumers |
+| F23E | [WS generation lifecycle wire](tasks/P5-F23E-websocket-generation-lifecycle-wire.md) | R24 PASS | 高；shared TS/Rust control seam |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
@@ -280,9 +290,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D06 | [Canonical request raw/normalization audit](tasks/P5-D06-canonical-request-raw-normalization-audit.md) | R02A second FAIL at `5715497` | 独立只读；第三次verdict熔断审计 |
 | F03A2 | [Canonical request raw/normalization convergence](tasks/P5-F03A2-canonical-request-raw-normalization-convergence.md) | D06 complete | 高；shared raw/typed/default一次收敛 |
 | F05 | [Canonical WebSocket ingress authoring](tasks/P5-F05-canonical-websocket-ingress-authoring.md) | F04 receive + R02A PASS | 高；typed WS shared checkpoint |
-| R05 | [Canonical WebSocket ingress acceptance](tasks/P5-R05-canonical-websocket-ingress-acceptance.md) | F05 exact commit | 高；独立只读 |
-| F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R05 PASS | 高；unified endpoint/store/pin |
-| F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R05 PASS | 高；startup/admission/pin |
+| R05 | [Canonical WebSocket ingress acceptance](tasks/P5-R05-canonical-websocket-ingress-acceptance.md) | R24、F23E、F03B/C merged | 高；最终真实production lifecycle只读验收 |
+| F03B | [Router integration repair](tasks/P5-F03B-router-integration-repair.md) | R24 + F23E | 高；unified endpoint/store/pin |
+| F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R24 + F23E | 高；startup/admission/pin |
 | I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
 | R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
@@ -393,9 +403,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
   fixture。R02A首次FAIL后，D03只读穷举canonical request所有optional/nested字段的两端接受集合；F03A1只改
   request shared codec、直接tests与同一cross-language corpus，不回改已PASS的activation/store，也不实现consumer。
   第二次FAIL触发D06熔断审计；F03A2只收敛raw Unicode、opaque number、decoded defaults与parser单一职责。
-  request combined probe通过且R02A第三次窄复验PASS后才允许F05扩展该shared seam；R05 PASS后F03B只写Router
-  consumer，F03C只写Runtime consumer。两者不得回改shared seam；所有repair与T05合流后才刷新Cargo.lock并
-  运行I02，避免单侧mock再次冒充interop证据。
+  request combined probe通过且R02A第三次窄复验PASS后才允许F05扩展该shared seam。D33修正旧R05/F03B/F03C
+  验收环：F23A–D先关闭F05 ABI/owner blocker，R24只读checkpoint后由F23E冻结generation release wire；F03B只写
+  Router consumer，F03C只写Runtime consumer且不得回改shared seam。二者合流后最终R05才验收真实A/B lifecycle；
+  所有repair与T05合流后才刷新Cargo.lock并运行I02，避免单侧mock再次冒充interop证据。
 - D05只读冻结normal source authoring到production WS generation pin的缺口。F05在F04/R02A完成后串行独占
   typed unified WebSocket ABI，从std/compiler/deployment经shared request wire、runtime adapter/eval到Router
   assembly gateway形成一个checkpoint；不改四对象schema、activation/store或F03B/F03C的endpoint/startup owner。

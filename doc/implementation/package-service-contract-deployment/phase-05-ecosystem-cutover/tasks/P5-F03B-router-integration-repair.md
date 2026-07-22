@@ -2,9 +2,9 @@
 
 ## 输入与owner
 
-- 依赖：P5-R02A PASS的exact F03A seam、P5-R10 PASS的统一endpoint bootstrap、P5-R13 PASS的canonical unary
-  consumer及P5-R05 PASS的typed unified WS
-  checkpoint。与F03C并行，合流后共同解锁I02。
+- 依赖：P5-R02A PASS的exact F03A seam、P5-R10 PASS的统一endpoint bootstrap、P5-R13 PASS的canonical unary、
+  P5-R24 PASS的typed unified WS owner checkpoint及P5-F23E shared generation lifecycle wire。与F03C并行，合流后
+  先解锁最终R05，再共同解锁I02。
 - branch：`codex/p5-f03b-router-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03b-router-repair`。
 - 独占`router/**`及直接tests；消费F05 ABI但不回改shared wire/WS authoring规则，不改Rust
@@ -19,7 +19,8 @@
    memory fake只留直接tests。Router startup先idempotent ensure empty generation-0 bootstrap，再按exact state
    建snapshot；只有匹配committed tuple的healthy registration可接流量。
 3. participant集合消费F09已完成capabilities握手的healthy runtime连接；initial empty registration与后续旧
-   generation registration都可参加prepare，commit前仍检查连接/ACK exact tuple。全部control走binary frame。
+   generation registration都可参加prepare，commit前仍检查连接/ACK exact tuple。全部control走binary frame。消费F23E
+   release/ack，在client/policy/gateway close与runtime disconnect上幂等释放完整connection pin。
 4. HTTP gateway按snapshot中exact ServiceContract operation选择unary/serverStream，发送canonical nested
    assembly routing；不伪造build/target/service selector。WS connect建立generation-pinned connection，receive
    继续发送原assembly/generation/operation/ingress；cutover后旧连接只drain，新连接选新generation。
