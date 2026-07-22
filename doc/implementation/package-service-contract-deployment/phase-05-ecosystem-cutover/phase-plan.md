@@ -29,8 +29,9 @@ P26S三步已PASS且F20A/B两个clean commit已合流；D27/F21关闭真实Route
 result identity后，replacement I16在`411f9b6`通过。G16E只运行一次预算上限full并首次完整PASS，R23六项原始blocker
 窄验收也在同一候选PASS，F04 receive现已关闭。F05初版已在`c277e45`合流但R05 FAIL；D33三路熔断审计确认
 Router lifecycle/response/runtime generation与验收DAG环，冻结F23A–E、F23D convergence和R24 checkpoint。次生
-FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到
-二者合流后。
+F23A/B/C/F23F已合流，F23D Router convergence形成checkpoint；首次真实smoke在Runtime builtin materialization失败，
+D35闭合Event/Result/nominal Context及完整contract value范围并冻结F24A–D、R25、I24、R26。FileHandle teardown已由
+D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -134,7 +135,7 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
                 └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
                       └─► F03A2 convergence ─► request combined probe ─► R02A third PASS ─┐
   F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05 FAIL ─► D33
-                                                                                               D33 ─► F23A/B/C ─► F23D ─► R24 ─► F23E ─┐
+                                                                                               D33 ─► F23A/B/C+F23F ─► F23D checkpoint ─► D35 ─► F24A ─► R25 ─► F24B/C/D ─► I24 ─► R26 ─► R24 ─► F23E ─┐
                                                                                                                         ├─► F03B Router pin ─┐
                                                                                                                         └─► F03C Runtime pin├─► final R05 ─► lock refresh ─► I02 ─► R02
 
@@ -281,6 +282,16 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F23D | [Assembly WS convergence](tasks/P5-F23D-assembly-websocket-convergence.md) | F23A–C merged | 高；Assembly adapter convergence |
 | R24 | [F05 WS owner checkpoint](tasks/P5-R24-f05-websocket-owner-checkpoint.md) | F23D + combined PASS | 高；只解锁lifecycle consumers |
 | F23E | [WS generation lifecycle wire](tasks/P5-F23E-websocket-generation-lifecycle-wire.md) | R24 PASS | 高；shared TS/Rust control seam |
+| D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
+| F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
+| D35 | [WS builtin materialization audit](tasks/P5-D35-websocket-builtin-materialization-audit-result.md) | F23D smoke 502 | 三层masked范围闭合 |
+| F24A | [Canonical WS shape owner](tasks/P5-F24A-canonical-websocket-shape-owner.md) | D35 complete | 高；唯一shape/admission owner |
+| R25 | [WS shape owner acceptance](tasks/P5-R25-websocket-shape-owner-acceptance.md) | F24A exact | 高；只解锁materialization repair |
+| F24B | [Service value contract plan](tasks/P5-F24B-service-value-contract-plan.md) | R25 PASS | 高；boundary matcher/codec owner |
+| F24C | [Pinned WS Context plan](tasks/P5-F24C-pinned-websocket-context-plan.md) | F24B merged | 高；eval consumer owner |
+| F24D | [WS shape consumer parity](tasks/P5-F24D-websocket-shape-parity.md) | R25 PASS | 中；linked/test-support parity |
+| I24 | [WS materialization combined](tasks/P5-I24-websocket-materialization-combined.md) | F24B/C/D merged | cheap combined；不跑real smoke |
+| R26 | [F23D real smoke reacceptance](tasks/P5-R26-f23d-real-smoke-reacceptance.md) | I24 PASS | 唯一真实smoke owner |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
