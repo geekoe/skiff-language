@@ -1,7 +1,7 @@
 # P5-R16：F04 Production Path Narrow Acceptance
 
-使用未参与F16A/B/C/F17/F18A–I实现、D20审计/修复、I16或窄验收的全新独立只读Agent。输入为D20闭合矩阵与
-九个repair ledger、同一exact clean commit/tree上的I16 combined PASS、R15B/compiler trust/Router CAS/resource
+使用未参与F16A/B/C/F17/F18A–J实现、D20审计/修复、I16或窄验收的全新独立只读Agent。输入为D20闭合矩阵与
+十个repair ledger、同一exact clean commit/tree上的I16 combined PASS、R15B/compiler trust/Router CAS/resource
 lifecycle窄验收PASS及H18 focused-negative PASS；不得编辑、提交、修复、操作stable或运行完整
 source-suite/Host，也不作F04/R02总体verdict。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6。
@@ -10,7 +10,7 @@ source-suite/Host，也不作F04/R02总体verdict。权威设计为
 
 - D20矩阵从真实入口到最终可观察结果的全部14个跳点均有唯一production owner、输入/输出边界、正反probe、exact
   evidence与unseen结论；上游遮挡范围已经检查，独立blocker已批量关闭，无未决公共契约/架构/业务语义问题。
-- F18A–I各自exclusive owner无越界；R15B关闭候选Clippy，Router file CAS跨实例竞争与process/gate resource
+- F18A–J各自exclusive owner无越界；F18J关闭R18A发现的authoring pre-store IO；R15B关闭候选Clippy，Router file CAS跨实例竞争与process/gate resource
   no-clobber由独立窄验收关闭；H18真实观察false assertion→Runtime diagnostic→Router non-2xx→runner exit1且请求一次。
 - F16A是唯一platform trust owner；library、binary authoring、runner、smoke fixture、source-suite、`skiff test`显式消费
   同一个root；无cwd/env/executable/`CARGO_MANIFEST_DIR` production fallback、第二helper、dual path或clean-cache依赖。

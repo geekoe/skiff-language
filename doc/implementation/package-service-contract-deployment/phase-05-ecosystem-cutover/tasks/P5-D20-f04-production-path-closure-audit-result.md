@@ -71,9 +71,10 @@ docs checkpoint
 ├─ F18F gate resource ownership
 ├─ F18G Host negative harness
 ├─ F18H compiler test-only transport
-└─ F18I Host fixture Clippy closure
+├─ F18I Host fixture Clippy closure
+└─ F18J authoring pre-store guard（R18A在首次combined后发现）
        ↓ 全部clean commits合流；无在途写入
-I16 one cheap combined probe
+I16 replacement cheap combined probe
        ↓
 R15B + compiler trust + Router CAS + resource lifecycle narrow reviews
        └─ H18 focused-negative真实执行
@@ -81,6 +82,6 @@ R15B + compiler trust + Router CAS + resource lifecycle narrow reviews
 new R16 → G16 one positive full Host → new F04 receive
 ```
 
-九个开发节点写集互不重叠，可从同一docs checkpoint并行；受实际运行时限制当前最多同时活跃两个root child，滚动
+前九个开发节点写集互不重叠，可从同一docs checkpoint并行；F18J是R18A独立验收发现的同owner后继窄修复。受实际运行时限制当前最多同时活跃两个root child，滚动
 调度不构成语义依赖。任何节点需要越过自己的exclusive write set、修改manifest/lock或公共设计时必须
 `TASK_NOT_EXECUTABLE`。
