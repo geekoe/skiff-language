@@ -14,9 +14,8 @@ use crate::{
     service_linkable_detached::{
         materialize_detached_graph, model_error, reject_detached_interface_graph,
     },
-    service_linkable_schema::{
-        contract_type_is_callback_interface, validate_schema_closure, value_matches_contract_type,
-    },
+    service_linkable_schema::{contract_type_is_callback_interface, validate_schema_closure},
+    service_value_plan::ServiceValuePlan,
 };
 
 /// Borrowed, canonical service contract plan used by the in-process boundary.
@@ -25,6 +24,7 @@ pub struct ServiceLinkableContractPlan<'a> {
     ty: &'a ContractTypeRef,
     boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
     value_plan: &'a BoundaryValuePlan,
+    detached_value_plan: Option<ServiceValuePlan<'a>>,
 }
 
 impl<'a> ServiceLinkableContractPlan<'a> {
@@ -33,12 +33,28 @@ impl<'a> ServiceLinkableContractPlan<'a> {
         boundary_schema: &'a BTreeMap<ContractTypeId, ContractSchemaType>,
         value_plan: &'a BoundaryValuePlan,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
-        validate_schema_closure(ty, boundary_schema)?;
         validate_value_plan_shape(value_plan)?;
+        let detached_value_plan = match value_plan {
+            BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                ..
+            } => Some(ServiceValuePlan::compile(ty, boundary_schema)?),
+            BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::CallbackCapability,
+                ..
+            } => {
+                validate_schema_closure(ty, boundary_schema)?;
+                None
+            }
+            BoundaryValuePlan::Unsupported { .. } => {
+                unreachable!("unsupported plans are rejected by validate_value_plan_shape")
+            }
+        };
         Ok(Self {
             ty,
             boundary_schema,
             value_plan,
+            detached_value_plan,
         })
     }
 
@@ -90,10 +106,10 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                     });
                 }
                 reject_detached_interface_graph(value, source_heap)?;
-                if !value_matches_contract_type(value, source_heap, self.ty, self.boundary_schema)?
-                {
-                    return Err(ServiceLinkableMaterializationError::TypeMismatch);
-                }
+                self.detached_value_plan
+                    .as_ref()
+                    .expect("detached carrier has a compiled service-value plan")
+                    .validate_value(value, source_heap)?;
                 let checkpoint = destination_heap.checkpoint();
                 let result = materialize_detached_graph(value, source_heap, destination_heap);
                 if result.is_err() {
@@ -307,10 +323,18 @@ pub enum ServiceLinkableMaterializationError {
     },
     #[error("contract boundary schema contains a cycle at {contract_type_id}")]
     CyclicSchema { contract_type_id: ContractTypeId },
+    #[error("contract boundary schema contains transparent alias {contract_type_id}")]
+    AliasSchema { contract_type_id: ContractTypeId },
+    #[error("ordinary service value cannot contain callback interface {contract_type_id}")]
+    CallbackInterfaceSchema { contract_type_id: ContractTypeId },
+    #[error("service-value contract plan is invalid: {message}")]
+    InvalidContractPlan { message: String },
     #[error("runtime value does not match the canonical contract type")]
     TypeMismatch,
     #[error("runtime value matches more than one structural union branch")]
     AmbiguousStructuralUnion,
+    #[error("service-value codec rejected the payload: {message}")]
+    Codec { message: String },
     #[error("detached service materialization rejects {carrier} interface carrier")]
     DetachedInterfaceCarrier { carrier: &'static str },
     #[error("detached service materialization rejects a cyclic value graph")]

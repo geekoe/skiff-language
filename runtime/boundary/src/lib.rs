@@ -16,6 +16,7 @@ pub mod recoverable;
 pub mod service_linkable;
 mod service_linkable_detached;
 mod service_linkable_schema;
+pub mod service_value_plan;
 pub mod stream;
 pub mod type_descriptor;
 pub mod value;
@@ -28,3 +29,5 @@ pub use skiff_runtime_model::{request_heap, runtime_value, runtime_value_graph};
 mod callback_materialization_tests;
 #[cfg(test)]
 mod service_linkable_tests;
+#[cfg(test)]
+mod service_value_plan_tests;
