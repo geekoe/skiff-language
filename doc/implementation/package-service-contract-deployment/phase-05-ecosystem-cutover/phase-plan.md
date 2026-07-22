@@ -268,6 +268,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F22A | [Host result evidence identity](tasks/P5-F22A-host-result-evidence-identity.md) | D30 complete | 中；单一Host evidence owner |
 | R22 | [Host result evidence acceptance](tasks/P5-R22-host-result-evidence-acceptance.md) | F22A exact candidate | FAIL；全输出同名identity唯一性缺口 |
 | F22B | [Host result global uniqueness](tasks/P5-F22B-host-result-global-uniqueness.md) | R22 exact FAIL | 低；同一Host evidence owner窄修复 |
+| R22B | [Host result global uniqueness reacceptance](tasks/P5-R22B-host-result-global-uniqueness-reacceptance.md) | F22B exact candidate | 原reviewer只复验同一blocker |
 | G16E | [V6 real Host gate](tasks/P5-G16E-v6-real-host-gate.md) | R22 + replacement I16 PASS | 唯一full；新周期第2次/预算上限 |
 | R23 | [F04 original six-blocker acceptance](tasks/P5-R23-f04-original-six-blocker-acceptance.md) | G16E PASS | 原六项独立窄接收；PASS只解锁F05 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |

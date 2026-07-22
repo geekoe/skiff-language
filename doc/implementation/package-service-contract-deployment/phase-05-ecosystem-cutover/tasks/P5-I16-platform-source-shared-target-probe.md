@@ -2,10 +2,10 @@
 
 ## 角色、输入与证据复用
 
-使用未参与F16A/B/C/F17/F18A–J/F19A/B/F20A/B/F21A/B/C/F22A实现、D20/D25/D26/D27/D28/D30/D31审计、
-P27S/P27R探针、R21/R21C/R22验收或后续验收的全新Combined Probe owner会话。输入为D27/D30闭合矩阵已汇总、
-F18A–J至F22A全部合流、P27R与R22均为PASS且无在途写入的exact clean integration commit/tree。R22是本任务硬前置，
-不得把二者并行或用旧R21替代。不得编辑、提交、修复、操作stable或运行完整source-suite/Host。权威设计为
+使用未参与F16A/B/C/F17/F18A–J/F19A/B/F20A/B/F21A/B/C/F22A/B实现、D20/D25/D26/D27/D28/D30/D31审计、
+P27S/P27R探针、R21/R21C/R22/R22B验收或后续验收的全新Combined Probe owner会话。输入为D27/D30闭合矩阵已汇总、
+F18A–J至F22B全部合流、P27R与R22B均为PASS且无在途写入的exact clean integration commit/tree。R22B是本任务硬前置，
+不得用旧R21或R22 FAIL替代。不得编辑、提交、修复、操作stable或运行完整source-suite/Host。权威设计为
 `doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14及阶段标准2/4/5/6；动态矩阵只
 验证既有设计，不增加新的trust、CLI或业务语义。
 
@@ -34,17 +34,18 @@ PASS，但G16D证明Host evidence把runtime module错误硬编码为fixture文�
 `/Users/geek/workspace/skiff-phase-05-evidence/p5-i16-3ceb1cf-v6-combined-ledger.json`，文件SHA-256为
 `52bd4b04db92e95fbcb646d6c26656b4bcd4c25034dd500e7fc767ce9b01b05d`，内部digest为
 `5196d144123a1a217d2bafb067bdeabb2cbe4bd27da2009f424ca73d0b3bda41`。root须确认production ledger路径不存在。
-P27R/R21C只继续证明未被F22触碰的dependency/startup边界；R22负责接收新Host evidence owner。三者均不直接解锁full。
+P27R/R21C只继续证明未被F22触碰的dependency/startup边界；R22B负责关闭新Host evidence owner的全局唯一性。
+三者均不直接解锁full。
 
 开始前只核对并消费开发任务的exact commit/tree/lock、自验收矩阵、D19/F17 lifecycle ledger、D20/D27/D28闭合矩阵、
-F21A/B batch combined、P27R PASS、F22A cheap combined及R22 PASS证据，不重复仍有效的absolute/symlink/missing/cross-root/reserved/omitted/relative/
+F21A/B batch combined、P27R PASS、F22B cheap combined及R22B PASS证据，不重复仍有效的absolute/symlink/missing/cross-root/reserved/omitted/relative/
 context-mismatch聚焦测试。唯一merge-only cheap probe与A/B动态矩阵由F16C后续经F19A/F21A/C收敛的
 `run-platform-source-shared-target-probe.mjs --mode combined`拥有。候选和环境不变时，R16与后续新G16必须复用本ledger。
 
 ## 唯一命令组
 
 Combined Probe owner先核对`git status --short`为空、旧v5/v6均已归档且production ledger路径不存在、相关repair ledger、
-P26S/P27S/P27R、F22A与R22窄结果。在同一候选上先执行一次20项merge-only接线组；不得重复开发者行为矩阵：
+P26S/P27S/P27R、F22A/B与R22B窄结果。在同一候选上先执行一次20项merge-only接线组；不得重复开发者行为矩阵：
 
 ```bash
 cargo test --locked -p skiff-test-runner --lib \
@@ -96,7 +97,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
 
 ## Combined harness冻结行为
 
-脚本及其command-double test属于F16C/F19A/F21A/C/F22A checkpoint；source-suite marker属于F21B checkpoint；isolated
+脚本及其command-double test属于F16C/F19A/F21A/C/F22A/B checkpoint；source-suite marker属于F21B checkpoint；isolated
 owner属于F19B checkpoint；I16不得修改。`--mode combined`必须：
 
 1. 复验integration exact commit/tree/lock/clean、A/B路径不存在、无同名worktree。容量门槛为任务target预计占用：
@@ -137,12 +138,12 @@ I16证据bundle由两项共同组成，任何一项缺失都不是PASS：
    count分别为0。merge-only Rust test必须是`1 passed / 0 failed / 0 ignored`，不能以exit 0、0-run或ignored冒充；Node
    checks/type-check/no-run也必须逐项列出。
 
-PASS只建立该candidate的F22后replacement v6 combined证据；它只能在fresh R22 PASS后执行，二者任一缺失都不能解除
-G16E。候选、F18A–J/F19A/B/F20A/B/F21A/B/C/F22A任一相关production/test surface、Gate contract/script/schema、dependency
+PASS只建立该candidate的F22后replacement v6 combined证据；它只能在R22B PASS后执行，二者任一缺失都不能解除
+G16E。候选、F18A–J/F19A/B/F20A/B/F21A/B/C/F22A/B任一相关production/test surface、Gate contract/script/schema、dependency
 helper、source-suite marker、Router package manifest/lock或依赖物化方式、platform source、Cargo/lock、A/B/shared target隔离
 环境变化会使全部I16证据失效。
 
 本任务保持`fullProbeRuns: 0`，不消耗完整探针预算。历史累计为4次full-mode调用、3次真实Host attempt、0次完整
-positive Host；D27/F21/P27R/R21C建立的新周期已经执行G16D第1次，F22/R22/本replacement combined闭合后，G16E是
+positive Host；D27/F21/P27R/R21C建立的新周期已经执行G16D第1次，F22A/B/R22B/本replacement combined闭合后，G16E是
 该新周期第2次、历史第5次，也是本周期预算上限。具体full命令、候选冻结与失败交接只能由G16E合同定义，本合同不得
 直接运行或解锁full。

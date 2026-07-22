@@ -21,10 +21,10 @@ G16E失败后周期预算耗尽；任何下一次full前必须重新审计全部
 
 执行前逐项满足，否则在命令前停止：
 
-1. final candidate包含F22A implementation `d7ac987d54469238c413f3ed84c962a0bc2984b2`、P5-R22、更新后的active
+1. final candidate包含F22A implementation `d7ac987d54469238c413f3ed84c962a0bc2984b2`、F22B implementation、P5-R22B、更新后的active
    P5-I16与本合同；`Cargo.lock` blob为`f3ce5457138c58aec4c84abda431afa96013e3fd`。G16D合同/result blobs保持
    不变，不得事后改判。
-2. 全新R22在该exact candidate上PASS、blocking findings为0；同候选replacement I16的
+2. 原R22 reviewer按P5-R22B只复验其global-uniqueness blocker并在该exact candidate上PASS、blocking findings为0；同候选replacement I16的
    `p5-i16-command-group-v3` 20项与唯一dynamic combined均PASS。
 3. combined ledger为v6/combined PASS且digest复算一致；candidate/tree/lock/goldens相同，
    `fullProbeRuns:0`、`hostAttempt:null`、`sourceSuite:null`，无own `nodeDependencies`。记录文件SHA与内部digest，
@@ -99,7 +99,7 @@ PASS必须同时记录：
 
 candidate/tree/lock或本合同/active I16、fixture/test name/assertion、Rust discovery/formatter、Host evidence/re-export、
 orchestration/schema/diagnostic、source suite、artifact comparator、dependency/Router lock、ownership/cleanup、golden identity或
-combined ledger任一变化，都会使R22/I16/G16E共同失效。
+combined ledger任一变化，都会使R22B/I16/G16E共同失效。
 
 提交本合同时只做静态lint：diff-check；唯一命令块内`--mode full`和`--combined-ledger`各1，combined/独立ledger/direct
 Host/stable/fixed ports为0，A/B路径不同；旧G16D合同/result无diff；production/test路径旧错误literal零命中，Host identity
