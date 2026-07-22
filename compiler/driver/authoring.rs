@@ -27,6 +27,7 @@ use skiff_compiler_input::{
     package_sources::read_package_sources,
     read_publication_resources, CompilerPlatformSources,
 };
+use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly,
@@ -84,6 +85,25 @@ pub fn build_authoring_object(
 }
 
 fn build_package(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    store: &CanonicalArtifactStore,
+    publish_pointer: bool,
+) -> AuthoringResult<Value> {
+    run_after_platform_context_guard(platform_sources, || {
+        build_package_after_platform_context_guard(platform_sources, root, store, publish_pointer)
+    })
+}
+
+fn run_after_platform_context_guard<T>(
+    platform_sources: &CompilerPlatformSources,
+    operation: impl FnOnce() -> AuthoringResult<T>,
+) -> AuthoringResult<T> {
+    initialize_prelude_registry(platform_sources)?;
+    operation()
+}
+
+fn build_package_after_platform_context_guard(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     store: &CanonicalArtifactStore,
@@ -563,3 +583,7 @@ fn relative_path(store: &CanonicalArtifactStore, path: &Path) -> AuthoringResult
 fn invalid_input(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
 }
+
+#[cfg(test)]
+#[path = "authoring/tests.rs"]
+mod tests;

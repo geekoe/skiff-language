@@ -16,7 +16,11 @@ use skiff_compiler_input::{
     package_sources::{read_official_package_sources, read_package_sources},
     read_publication_resources, InputAssemblyError, ManifestOwner,
 };
-use skiff_compiler_source::{source_graph::PublicationSourceGraph, SourceCompileError};
+use skiff_compiler_source::{
+    prelude_registry::{initialize_prelude_registry, PreludeRegistryInitializationError},
+    source_graph::PublicationSourceGraph,
+    SourceCompileError,
+};
 use skiff_deployment::storage::{CanonicalArtifactStore, EcosystemStorageError};
 use thiserror::Error;
 
@@ -41,6 +45,8 @@ impl CanonicalPackageProject {
 
 #[derive(Debug, Error)]
 pub enum CanonicalPackageProjectError {
+    #[error(transparent)]
+    PlatformContext(#[from] PreludeRegistryInitializationError),
     #[error(transparent)]
     PackageConfig(#[from] PackageConfigError),
     #[error(transparent)]
@@ -95,6 +101,24 @@ pub fn compile_package_artifact(
 /// Every dependency is loaded through an exact typed pointer and immutable record
 /// in the canonical store. Dependency source is never discovered or compiled.
 pub fn compile_package_project(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    artifact_root: &Path,
+) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
+    run_after_platform_context_guard(platform_sources, || {
+        compile_package_project_after_platform_context_guard(platform_sources, root, artifact_root)
+    })
+}
+
+fn run_after_platform_context_guard<T>(
+    platform_sources: &CompilerPlatformSources,
+    operation: impl FnOnce() -> Result<T, CanonicalPackageProjectError>,
+) -> Result<T, CanonicalPackageProjectError> {
+    initialize_prelude_registry(platform_sources)?;
+    operation()
+}
+
+fn compile_package_project_after_platform_context_guard(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
@@ -365,3 +389,7 @@ fn read_package_source_input(
         resources,
     ))
 }
+
+#[cfg(test)]
+#[path = "canonical_package/tests.rs"]
+mod tests;
