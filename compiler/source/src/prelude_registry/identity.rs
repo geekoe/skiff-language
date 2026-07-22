@@ -1,5 +1,3 @@
-use std::fs;
-
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -7,10 +5,7 @@ use crate::{
     shared::type_syntax::{generic_parts, split_top_level},
 };
 
-use super::{
-    compiler_owned_schema_stable_type, default_prelude_dir, loading::collect_plain_files,
-    PreludeRegistry,
-};
+use super::{compiler_owned_schema_stable_type, PreludeRegistry};
 
 impl PreludeRegistry {
     pub fn schema_identity(&self) -> String {
@@ -56,6 +51,18 @@ impl PreludeRegistry {
             ],
         )
     }
+
+    pub fn identity(&self) -> String {
+        let schema_identity = self.schema_identity();
+        let native_identity = self.native_identity();
+        hashed_identity(
+            "skiff-prelude-v1:sha256",
+            self.prelude_identity_parts
+                .iter()
+                .map(String::as_str)
+                .chain([schema_identity.as_str(), native_identity.as_str()]),
+        )
+    }
 }
 
 pub fn prelude_schema_identity() -> String {
@@ -63,10 +70,16 @@ pub fn prelude_schema_identity() -> String {
 }
 
 pub fn prelude_identity() -> String {
-    let dir = default_prelude_dir();
+    super::prelude_registry().identity()
+}
+
+#[cfg(test)]
+pub(super) fn legacy_prelude_identity(dir: &std::path::Path, registry: &PreludeRegistry) -> String {
+    use std::fs;
+
     let mut parts = Vec::new();
     let mut files = Vec::new();
-    collect_plain_files(&dir, &dir, &mut files, &["skiff"]);
+    super::loading::collect_plain_files(dir, dir, &mut files, &["skiff"]);
     files.sort();
     for relative in files {
         let path = dir.join(&relative);
@@ -75,8 +88,8 @@ pub fn prelude_identity() -> String {
             parts.push(text);
         }
     }
-    let schema_identity = prelude_schema_identity();
-    let native_identity = super::prelude_registry().native_identity();
+    let schema_identity = registry.schema_identity();
+    let native_identity = registry.native_identity();
     hashed_identity(
         "skiff-prelude-v1:sha256",
         parts

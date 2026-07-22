@@ -1,48 +1,46 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use skiff_compiler_core::id::PublicationId;
 
-use crate::registry_helpers;
+use crate::CompilerPlatformSources;
 
 use super::{
-    manifest_io::{read_package_manifest, read_std_registry},
-    manifest_key,
-    manifest_validation::PackageManifestOwner,
+    manifest_io::read_package_manifest, manifest_key, manifest_validation::PackageManifestOwner,
     PackageConfigError, PackageDependency, PackageManifest, PackageManifestKey,
     PackageResolutionDirs, PACKAGE_CONFIG_FILE,
 };
 
 pub(super) fn discover_package_manifests(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    discover_package_manifest_baseline(root)
+    discover_package_manifest_baseline(platform_sources, root)
 }
 
 pub(super) fn discover_package_manifests_with_dirs(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     package_dirs: &PackageResolutionDirs,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    discover_package_manifests_with_dependency_dirs(root, package_dirs, &[])
+    discover_package_manifests_with_dependency_dirs(platform_sources, root, package_dirs, &[])
 }
 
 pub(super) fn discover_package_manifests_with_dependency_dirs(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     package_dirs: &PackageResolutionDirs,
     dependencies: &[PackageDependency],
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    let mut manifests = discover_package_manifest_baseline(root)?;
+    let mut manifests = discover_package_manifest_baseline(platform_sources, root)?;
     discover_package_dependencies_in_stores(package_dirs, dependencies, &mut manifests)?;
     Ok(manifests)
 }
 
 fn discover_package_manifest_baseline(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    let mut manifests = discover_builtin_std_package_manifests()?;
+    let mut manifests = discover_builtin_std_package_manifests(platform_sources)?;
     let root_manifest_path = root.join(PACKAGE_CONFIG_FILE);
     if root_manifest_path.is_file()
         && !manifests
@@ -58,43 +56,23 @@ fn discover_package_manifest_baseline(
     Ok(manifests)
 }
 
-pub(super) fn discover_builtin_std_registry_manifests(
-    std_dir: &Path,
-    registry_path: &Path,
+fn discover_builtin_std_package_manifests(
+    platform_sources: &CompilerPlatformSources,
 ) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    let registry = read_std_registry(registry_path)?;
-    if registry.schema_version.as_deref() != Some("skiff-std-registry-v1") {
-        return Err(PackageConfigError::Validation {
-            message: format!(
-                "{}: schemaVersion must be skiff-std-registry-v1",
-                registry_path.display()
-            ),
-        });
-    }
-
+    platform_sources
+        .revalidate()
+        .map_err(platform_source_validation_error)?;
     let mut manifests = BTreeMap::new();
-    for package in registry.packages {
-        registry_helpers::validate_std_registry_package_id(registry_path, &package.id)
-            .map_err(|message| PackageConfigError::Validation { message })?;
-        let package_dir = registry_helpers::official_registry_package_dir(
-            std_dir,
-            registry_path,
-            &package.id,
-            &package.path,
-        )
-        .map_err(|message| PackageConfigError::Validation { message })?;
-        let manifest_path = package_dir.join(PACKAGE_CONFIG_FILE);
-        let manifest = read_package_manifest(
-            &manifest_path,
-            PackageManifestOwner::CompilerStandardPackage,
-        )?;
-        if manifest.id.as_str() != package.id {
+    for (package_id, package) in platform_sources.packages() {
+        let manifest_path = &package.manifest_path;
+        let manifest =
+            read_package_manifest(manifest_path, PackageManifestOwner::CompilerStandardPackage)?;
+        if manifest.id.as_str() != package_id {
             return Err(PackageConfigError::Validation {
                 message: format!(
-                    "{}: std registry maps {} to {}, but package.yml declares id {}",
-                    registry_path.display(),
-                    package.id,
-                    package.path,
+                    "{}: platform registry grants {}, but package.yml declares id {}",
+                    platform_sources.registry_path().display(),
+                    package_id,
                     manifest.id
                 ),
             });
@@ -114,26 +92,20 @@ pub(super) fn discover_builtin_std_registry_manifests(
                 ),
             });
         }
+        platform_sources
+            .authorize_manifest(&manifest)
+            .map_err(platform_source_validation_error)?;
         insert_manifest(&mut manifests, manifest)?;
     }
     Ok(manifests)
 }
 
-fn discover_builtin_std_package_manifests(
-) -> Result<BTreeMap<PackageManifestKey, PackageManifest>, PackageConfigError> {
-    let std_dir = default_std_dir();
-    let registry_path = std_dir.join("registry.yml");
-    if registry_path.is_file() {
-        return discover_builtin_std_registry_manifests(&std_dir, &registry_path);
+fn platform_source_validation_error(
+    error: crate::CompilerPlatformSourcesError,
+) -> PackageConfigError {
+    PackageConfigError::Validation {
+        message: error.to_string(),
     }
-    Ok(BTreeMap::new())
-}
-
-fn default_std_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("std")
 }
 
 fn builtin_package_api_entry_is_canonical(package_id: &str, path: &str) -> bool {

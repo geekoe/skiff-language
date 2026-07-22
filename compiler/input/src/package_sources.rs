@@ -17,13 +17,21 @@ use crate::{
         source_path_for_api_source_module,
     },
     source_tree::{SourceTree, SourceTreeFile},
-    ResolvedPackage,
+    CompilerPlatformSources, ManifestOwner, ResolvedPackage,
 };
 
 pub fn read_package_sources(
     manifest: &PackageManifest,
     package_root: &Path,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
+    if manifest.provenance.owner == ManifestOwner::CompilerStandardPackage
+        || is_official_aggregate_package(manifest.id.as_str())
+    {
+        return Err(validation_error(vec![format!(
+            "package {} requires CompilerPlatformSources authorization",
+            manifest.id
+        )]));
+    }
     read_package_sources_with_module_path(
         manifest,
         package_root,
@@ -33,20 +41,26 @@ pub fn read_package_sources(
 }
 
 pub fn read_official_package_sources(
+    platform_sources: &CompilerPlatformSources,
     manifest: &PackageManifest,
-    package_root: &Path,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
+    let package_root = platform_sources
+        .authorize_manifest(manifest)
+        .map_err(platform_validation_error)?
+        .root
+        .clone();
     let mut extra_sources = Vec::new();
     if manifest.id.as_str() == SKIFF_STD_PUBLICATION_ID {
         extra_sources.push(PackageSourcePath {
-            root: default_prelude_dir(),
+            root: platform_sources.prelude_dir().to_path_buf(),
             relative_path: PathBuf::from("error.skiff"),
         });
     }
     read_package_sources_with_module_path_and_extra_sources(
         manifest,
-        package_root,
+        &package_root,
         &extra_sources,
+        Some(&package_root),
         |entry| package_module_path_for_api_entry(manifest, entry),
         |relative_path| {
             let module_path = module_path_for_package_source(relative_path);
@@ -56,6 +70,7 @@ pub fn read_official_package_sources(
 }
 
 pub fn read_resolved_package_sources(
+    platform_sources: &CompilerPlatformSources,
     package: &ResolvedPackage,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
     let package_root = package
@@ -65,7 +80,7 @@ pub fn read_resolved_package_sources(
         .parent()
         .expect("package manifest has parent directory");
     if is_official_aggregate_package(package.manifest.id.as_str()) {
-        read_official_package_sources(&package.manifest, package_root)
+        read_official_package_sources(platform_sources, &package.manifest)
     } else {
         read_package_sources(&package.manifest, package_root)
     }
@@ -81,6 +96,7 @@ fn read_package_sources_with_module_path(
         manifest,
         package_root,
         &[],
+        None,
         module_path_for_api_source,
         module_path_for_private_source,
     )
@@ -90,11 +106,17 @@ fn read_package_sources_with_module_path_and_extra_sources(
     manifest: &PackageManifest,
     package_root: &Path,
     extra_sources: &[PackageSourcePath],
+    trusted_source_root: Option<&Path>,
     module_path_for_api_source: impl Fn(&PackageApiEntry) -> String,
     module_path_for_private_source: impl Fn(&Path) -> String,
 ) -> Result<RawPackagePublicationSources, InputAssemblyError> {
     let mut paths = Vec::new();
-    collect_package_source_paths(package_root, package_root, &mut paths)?;
+    collect_package_source_paths_with_trust(
+        package_root,
+        package_root,
+        &mut paths,
+        trusted_source_root,
+    )?;
     let mut source_paths = paths
         .into_iter()
         .map(|relative_path| PackageSourcePath {
@@ -151,9 +173,14 @@ fn read_package_sources_with_module_path_and_extra_sources(
         .into_iter()
         .map(|source_path| {
             let full_path = source_path.root.join(&source_path.relative_path);
+            let read_path = if trusted_source_root.is_some() {
+                canonical_contained_source_path(&source_path.root, &full_path)?
+            } else {
+                full_path.clone()
+            };
             let text =
-                fs::read_to_string(&full_path).map_err(|source| InputAssemblyError::Read {
-                    path: full_path.display().to_string(),
+                fs::read_to_string(&read_path).map_err(|source| InputAssemblyError::Read {
+                    path: read_path.display().to_string(),
                     source,
                 })?;
             let module_path = if let Some((module_path, public_module_path)) =
@@ -322,6 +349,18 @@ pub fn collect_package_source_paths(
     current: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> Result<(), InputAssemblyError> {
+    collect_package_source_paths_with_trust(package_root, current, paths, None)
+}
+
+fn collect_package_source_paths_with_trust(
+    package_root: &Path,
+    current: &Path,
+    paths: &mut Vec<PathBuf>,
+    trusted_source_root: Option<&Path>,
+) -> Result<(), InputAssemblyError> {
+    if let Some(trusted_root) = trusted_source_root {
+        canonical_contained_source_path(trusted_root, current)?;
+    }
     let entries = fs::read_dir(current).map_err(|source| InputAssemblyError::Read {
         path: current.display().to_string(),
         source,
@@ -334,7 +373,12 @@ pub fn collect_package_source_paths(
         let path = entry.path();
         if path.is_dir() {
             if !should_skip_package_source_dir(&path) {
-                collect_package_source_paths(package_root, &path, paths)?;
+                collect_package_source_paths_with_trust(
+                    package_root,
+                    &path,
+                    paths,
+                    trusted_source_root,
+                )?;
             }
         } else if path
             .extension()
@@ -349,6 +393,26 @@ pub fn collect_package_source_paths(
         }
     }
     Ok(())
+}
+
+fn canonical_contained_source_path(
+    trusted_root: &Path,
+    path: &Path,
+) -> Result<PathBuf, InputAssemblyError> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| InputAssemblyError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+    if canonical.starts_with(trusted_root) {
+        return Ok(canonical);
+    }
+    Err(validation_error(vec![format!(
+        "platform source {} escapes canonical root {}",
+        canonical.display(),
+        trusted_root.display()
+    )]))
 }
 
 pub fn is_test_skiff_file(path: &Path) -> bool {
@@ -410,11 +474,8 @@ pub fn should_skip_package_source_dir(path: &Path) -> bool {
         || name.starts_with('.')
 }
 
-fn default_prelude_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("prelude")
+fn platform_validation_error(error: crate::CompilerPlatformSourcesError) -> InputAssemblyError {
+    validation_error(vec![error.to_string()])
 }
 
 fn validation_error(violations: Vec<String>) -> InputAssemblyError {
@@ -428,172 +489,5 @@ fn validation_error(violations: Vec<String>) -> InputAssemblyError {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{fs, path::PathBuf};
-
-    use super::*;
-    use crate::{
-        package_config::{PackageApi, PackageManifest},
-        ManifestOwner, ManifestProvenance, PublicationApiEntry, PublicationManifest,
-    };
-    use skiff_compiler_core::id::PublicationId;
-
-    #[test]
-    fn official_package_sources_use_std_namespace_and_explicit_private_namespace() {
-        let temp = TestDir::new("skiff-package-sources", "official-private-namespace");
-        fs::write(
-            temp.path().join("http.skiff"),
-            r#"
-                function request() -> string { return "ok" }
-            "#,
-        )
-        .unwrap();
-        fs::write(
-            temp.path().join("helper.skiff"),
-            r#"
-                type HelperState { value: string }
-                function helper() -> HelperState {
-                  return { value: "internal" }
-                }
-            "#,
-        )
-        .unwrap();
-        fs::create_dir_all(temp.path().join("__private")).unwrap();
-        fs::write(
-            temp.path().join("__private").join("secret.skiff"),
-            r#"
-                function secret() -> string {
-                  return "internal"
-                }
-            "#,
-        )
-        .unwrap();
-
-        let manifest = official_std_manifest(temp.path().join("package.yml"));
-        let sources = read_official_package_sources(&manifest, temp.path()).unwrap();
-        let module_paths = sources
-            .files()
-            .iter()
-            .map(|source| source.meta.module_path.as_str())
-            .collect::<Vec<_>>();
-
-        assert!(module_paths.contains(&"std.http"));
-        assert!(module_paths.contains(&"std.helper"));
-        assert!(module_paths.contains(&"std.__private.secret"));
-        assert!(
-            module_paths
-                .iter()
-                .all(|module_path| !module_path.contains('/')),
-            "official package module paths must be dotted identities: {module_paths:?}"
-        );
-        assert!(
-            !module_paths
-                .iter()
-                .any(|module_path| module_path.starts_with("skiff.run/std")),
-            "canonical package id must not leak into module paths: {module_paths:?}"
-        );
-    }
-
-    #[test]
-    fn official_package_source_module_path_normalizes_std_prefixes() {
-        assert_eq!(
-            official_package_source_module_path("skiff.run/std", "helper"),
-            "std.helper"
-        );
-        assert_eq!(
-            official_package_source_module_path("skiff.run/std", "std.helper"),
-            "std.helper"
-        );
-        assert_eq!(
-            official_package_source_module_path("skiff.run/std", "__private.helper"),
-            "std.__private.helper"
-        );
-        assert_eq!(
-            official_package_source_module_path("skiff.run/std", "std.__private.helper"),
-            "std.__private.helper"
-        );
-    }
-
-    #[test]
-    fn package_source_validation_remains_fail_closed_without_origin_metadata() {
-        let source_path = PathBuf::from("source.skiff");
-        let files = vec![CompilerRawSourceFile {
-            meta: RawSourceFileMeta {
-                relative_path: source_path.clone(),
-                module_path: "source".to_string(),
-                is_test_file: false,
-                is_generated: false,
-            },
-            text: String::new(),
-            role: CompilerSourceRole::Package,
-        }];
-
-        let missing_visibility =
-            validate_package_publication_sources(&files, &BTreeMap::new()).unwrap_err();
-        assert!(
-            missing_visibility
-                .to_string()
-                .contains("source.skiff has no package visibility"),
-            "unexpected validation error: {missing_visibility}"
-        );
-
-        let missing_source_path = PathBuf::from("missing.skiff");
-        let visibility_by_path = BTreeMap::from([(
-            missing_source_path,
-            PackageSourceVisibility::Export {
-                public_module_path: String::new(),
-            },
-        )]);
-        let incomplete_sources =
-            validate_package_publication_sources(&[], &visibility_by_path).unwrap_err();
-        let incomplete_sources = incomplete_sources.to_string();
-        assert!(
-            incomplete_sources.contains("missing.skiff has package visibility but no raw source"),
-            "unexpected validation error: {incomplete_sources}"
-        );
-        assert!(
-            incomplete_sources.contains("missing.skiff has empty public module path"),
-            "unexpected validation error: {incomplete_sources}"
-        );
-    }
-
-    fn official_std_manifest(path: PathBuf) -> PackageManifest {
-        PackageManifest::new(
-            PublicationManifest::new(
-                PublicationId::parse("skiff.run/std").unwrap(),
-                "1.0.0".to_string(),
-                PackageApi::from_entries(vec![PublicationApiEntry::for_source(
-                    "http.request",
-                    "http",
-                    "request",
-                )]),
-                Vec::new(),
-                ManifestProvenance::file(path, ManifestOwner::CompilerStandardPackage),
-            ),
-            Vec::new(),
-        )
-    }
-
-    struct TestDir {
-        path: PathBuf,
-    }
-
-    impl TestDir {
-        fn new(prefix: &str, name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("{prefix}-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("test dir should be created");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-}
+#[path = "package_sources/tests.rs"]
+mod tests;

@@ -7,9 +7,10 @@ pub(crate) mod shared;
 pub(crate) mod source_compile;
 
 pub use input::{
-    ManifestOwner, ManifestProvenance, PackageCompileInput, PackageContractCompileDependency,
-    PackageDependency, PackageSourceInput, PublicationManifest, PublicationResourceInput,
-    PublicationSourceGraph, SourceTree, SourceTreeFile,
+    CompilerPlatformSources, CompilerPlatformSourcesError, ManifestOwner, ManifestProvenance,
+    PackageCompileInput, PackageContractCompileDependency, PackageDependency, PackageSourceInput,
+    PublicationManifest, PublicationResourceInput, PublicationSourceGraph, SourceTree,
+    SourceTreeFile,
 };
 pub use pipeline::{compile_contract, compile_package};
 pub use shared::package_compile_error::PackageCompileError;
