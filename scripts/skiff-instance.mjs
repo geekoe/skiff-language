@@ -39,6 +39,7 @@ import {
   binaryIdentity,
   installManagedBinary,
 } from './lib/managed-binary.mjs';
+import { createSupervisedEntryLifecycle } from './lib/supervised-entry-lifecycle.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
@@ -651,43 +652,96 @@ async function componentStatus(config, name) {
 async function startManagedProcess(config, spec, options = {}) {
   const managedBinary = await managedBinaryMetadata(spec);
   await rm(pidPath(config, spec.name), { force: true });
-  const out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
-  const err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
-  // child-process-owner: managed-component
-  const child = spawnManagedChild(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: processEnv(),
-    detached: true,
-    stdio: ['ignore', out.fd, err.fd],
-  });
-  let spawnError = null;
-  child.once('error', (error) => {
-    spawnError = error;
-  });
-  if (child.pid === undefined) {
-    await out.close();
-    await err.close();
-    throw new Error(`failed to start ${spec.name}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+  let out;
+  let err;
+  let child;
+  try {
+    out = await open(join(config.paths.logDir, `${spec.name}.log`), 'a');
+    err = await open(join(config.paths.logDir, `${spec.name}.err.log`), 'a');
+    // child-process-owner: managed-component
+    child = spawnManagedChild(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: processEnv(),
+      detached: true,
+      stdio: ['ignore', out.fd, err.fd],
+    });
+    if (child.pid === undefined) {
+      child.once('error', () => {});
+      throw new Error(`failed to start ${spec.name}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+    }
+  } catch (error) {
+    const handles = [
+      ['stdout', out],
+      ['stderr', err],
+    ].filter(([, handle]) => handle !== undefined);
+    const closeResults = await Promise.allSettled(
+      handles.map(([, handle]) => Promise.resolve().then(() => handle.close())),
+    );
+    const closeErrors = closeResults.flatMap((result, index) => result.status === 'fulfilled'
+      ? []
+      : [new Error(
+          `[skiff-instance] ${spec.name} acquisition cleanup failed for ${handles[index][0]}: ${result.reason?.message || String(result.reason)}`,
+          { cause: result.reason },
+        )]);
+    if (closeErrors.length > 0) {
+      const errors = [error, ...closeErrors];
+      throw new AggregateError(
+        errors,
+        `[skiff-instance] ${spec.name} process acquisition failed and log cleanup failed`,
+        { cause: errors },
+      );
+    }
+    throw error;
   }
-  await writePidMetadata(config, spec, child.pid, managedBinary);
+
+  const pidMetadataWrite = writePidMetadata(config, spec, child.pid, managedBinary);
   if (!options.supervised) {
+    await pidMetadataWrite;
     child.unref();
     await out.close();
     await err.close();
-  }
-  await delay(250);
-  if (spawnError !== null) {
-    throw new Error(`failed to start ${spec.name}: ${spawnError.message}`);
-  }
-  if (!isProcessAlive(child.pid)) {
-    throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
-  }
-  console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
-  if (!options.supervised) {
+    await delay(250);
+    if (!isProcessAlive(child.pid)) {
+      throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+    }
+    console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
     await waitForComponentRunning(config, spec, child.pid);
     return { name: spec.name, started: true, pid: child.pid, pgid: child.pid };
   }
-  return { name: spec.name, started: true, pid: child.pid, pgid: child.pid, child, out, err };
+
+  const lifecycle = createSupervisedEntryLifecycle({
+    component: spec.name,
+    child,
+    pgid: child.pid,
+    stdoutHandle: out,
+    stderrHandle: err,
+    stopProcessGroup,
+    isProcessGroupAlive,
+    removePidMetadata: async () => {
+      await Promise.allSettled([pidMetadataWrite]);
+      await rm(pidPath(config, spec.name), { force: true });
+    },
+  });
+  try {
+    await pidMetadataWrite;
+    const startupResult = await Promise.race([
+      delay(250).then(() => null),
+      lifecycle.exit.then((outcome) => outcome),
+    ]);
+    if (startupResult !== null) {
+      throw new Error(
+        `${spec.name} exited after start with ${startupResult.signal ?? startupResult.code}; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`,
+      );
+    }
+    if (!isProcessAlive(child.pid)) {
+      throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
+    }
+  } catch (error) {
+    lifecycle.recordPrimary(error);
+    return await lifecycle.stop('startup failure');
+  }
+  console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
+  return lifecycle;
 }
 
 async function waitForComponentRunning(config, spec, pid) {
@@ -712,28 +766,68 @@ async function waitForComponentRunning(config, spec, pid) {
 async function superviseInstance(config) {
   const specs = managedProcessSpecs(config);
   const running = new Map();
+  const active = new Map();
+  const pendingStarts = new Set();
+  const restartTimers = new Map();
   let stopping = false;
+  let shutdownPromise;
+  let resolveSupervisorDone;
+  const supervisorDone = new Promise((resolve) => {
+    resolveSupervisorDone = resolve;
+  });
 
-  const stopAll = async (signal) => {
-    if (stopping) {
-      return;
+  const stopAll = (reason, primaryError) => {
+    if (primaryError !== undefined) {
+      process.exitCode = 1;
+      console.error(`[skiff-instance] supervisor failure: ${primaryError?.message || String(primaryError)}`);
+    }
+    if (shutdownPromise !== undefined) {
+      return shutdownPromise;
     }
     stopping = true;
-    console.log(`[skiff-instance] stopping after ${signal}`);
-    for (const spec of [...specs].reverse()) {
-      await stopManagedProcess(config, spec.name);
+    console.log(`[skiff-instance] stopping after ${reason}`);
+    for (const timer of restartTimers.values()) {
+      clearTimeout(timer);
     }
-    process.exit(0);
+    restartTimers.clear();
+    shutdownPromise = (async () => {
+      const startResults = await Promise.allSettled([...pendingStarts]);
+      const orderedEntries = [...specs].reverse()
+        .flatMap((spec) => active.has(spec.name) ? [active.get(spec.name)] : []);
+      const stopResults = await Promise.allSettled(
+        orderedEntries.map((entry) => entry.lifecycle.stop(reason)),
+      );
+      const errors = [...startResults, ...stopResults]
+        .flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      if (errors.length > 0) {
+        const details = errors.map((error) => error?.message || String(error)).join('; ');
+        throw new AggregateError(
+          errors,
+          `[skiff-instance] supervisor shutdown failed: ${details}`,
+          { cause: errors },
+        );
+      }
+    })()
+      .catch((error) => {
+        process.exitCode = 1;
+        console.error(error?.message || String(error));
+      })
+      .finally(() => {
+        resolveSupervisorDone();
+      });
+    return shutdownPromise;
   };
 
-  process.on('SIGTERM', () => {
-    void stopAll('SIGTERM');
-  });
-  process.on('SIGINT', () => {
-    void stopAll('SIGINT');
-  });
+  const signalHandlers = new Map(
+    ['SIGTERM', 'SIGINT'].map((signal) => [signal, async () => {
+      await stopAll(signal);
+    }]),
+  );
+  for (const [signal, handler] of signalHandlers) {
+    process.once(signal, handler);
+  }
 
-  const start = async (spec) => {
+  const startOne = async (spec) => {
     if (stopping) {
       return;
     }
@@ -743,35 +837,87 @@ async function superviseInstance(config) {
     } else if (status.category !== 'stopped') {
       throw new Error(`${spec.name} is ${status.category}; stop or repair it before supervise`);
     }
-    const entry = await startManagedProcess(config, spec, { supervised: true });
-    running.set(spec.name, entry);
-    entry.child.on('exit', (code, signal) => {
-      const current = running.get(spec.name);
-      running.delete(spec.name);
-      void current?.out.close();
-      void current?.err.close();
-      void (async () => {
-        if (current !== undefined && isProcessGroupAlive(current.pgid)) {
-          await stopProcessGroup(current.pgid);
+    if (stopping) {
+      return;
+    }
+    const lifecycle = await startManagedProcess(config, spec, { supervised: true });
+    const entry = { spec, lifecycle, exitDescription: 'unknown' };
+    active.set(spec.name, entry);
+    lifecycle.exit.then(
+      ({ code, signal }) => {
+        entry.exitDescription = signal ?? code;
+        if (running.get(spec.name) === entry) {
+          running.delete(spec.name);
         }
-        if (current === undefined || !isProcessGroupAlive(current.pgid)) {
-          await rm(pidPath(config, spec.name), { force: true });
+      },
+      (error) => {
+        entry.exitDescription = error?.message || String(error);
+        if (running.get(spec.name) === entry) {
+          running.delete(spec.name);
         }
-        if (!stopping) {
-          console.warn(`[skiff-instance] ${spec.name} exited with ${signal ?? code}; restarting`);
-          setTimeout(() => {
-            void start(spec);
+      },
+    );
+    lifecycle.completion.then(
+      () => {
+        if (active.get(spec.name) === entry) {
+          active.delete(spec.name);
+        }
+        if (!stopping && !running.has(spec.name)) {
+          console.warn(`[skiff-instance] ${spec.name} exited with ${entry.exitDescription}; restarting`);
+          const timer = setTimeout(async () => {
+            restartTimers.delete(spec.name);
+            try {
+              await start(spec);
+            } catch (error) {
+              await stopAll(`${spec.name} restart failure`, error);
+            }
           }, 1000);
+          restartTimers.set(spec.name, timer);
         }
-      })();
-    });
+      },
+      async (error) => {
+        if (active.get(spec.name) === entry) {
+          active.delete(spec.name);
+        }
+        await stopAll(`${spec.name} lifecycle failure`, error);
+      },
+    );
+    if (stopping) {
+      await lifecycle.stop('shutdown during component start');
+      return;
+    }
+    running.set(spec.name, entry);
   };
 
-  for (const spec of specs) {
-    await start(spec);
+  const start = (spec) => {
+    const operation = startOne(spec);
+    pendingStarts.add(operation);
+    operation.then(
+      () => pendingStarts.delete(operation),
+      () => pendingStarts.delete(operation),
+    );
+    return operation;
+  };
+
+  try {
+    for (const spec of specs) {
+      await start(spec);
+      if (stopping) {
+        break;
+      }
+    }
+    if (!stopping) {
+      console.log(JSON.stringify(await instanceStatus(config), null, 2));
+    }
+    await supervisorDone;
+  } catch (error) {
+    await stopAll('startup failure', error);
+    throw error;
+  } finally {
+    for (const [signal, handler] of signalHandlers) {
+      process.off(signal, handler);
+    }
   }
-  console.log(JSON.stringify(await instanceStatus(config), null, 2));
-  await new Promise(() => {});
 }
 
 async function stopManagedProcess(config, name) {
