@@ -5,7 +5,7 @@ use skiff_compiler_source::prelude_registry::{
     prelude_registry, PreludeRegistryInitializationError,
 };
 
-use super::run_after_platform_context_guard;
+use super::{build_authoring_object, run_after_platform_context_guard, AuthoringObject};
 
 #[test]
 fn p5_f18b_authoring_mismatch_zero_source_reads() {
@@ -33,6 +33,21 @@ fn p5_f18b_authoring_mismatch_zero_source_reads() {
         Some(PreludeRegistryInitializationError::DifferentPlatformRoot { .. })
     ));
     assert_eq!(mismatch_reads.get(), 0);
+
+    let hostile_store = different_root.root.join("hostile-authoring-store");
+    let authoring_error = build_authoring_object(
+        &different_root.context(),
+        AuthoringObject::Package,
+        &different_root.root.join("missing-package"),
+        &hostile_store,
+        false,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        authoring_error.downcast_ref::<PreludeRegistryInitializationError>(),
+        Some(PreludeRegistryInitializationError::DifferentPlatformRoot { .. })
+    ));
+    assert!(!hostile_store.exists());
 }
 
 fn repository_platform_sources() -> CompilerPlatformSources {

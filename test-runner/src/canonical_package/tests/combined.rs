@@ -67,6 +67,7 @@ fn p5_f18_compiler_repair_combined() {
         authoring_error.downcast_ref::<PreludeRegistryInitializationError>(),
         Some(PreludeRegistryInitializationError::DifferentPlatformRoot { .. })
     ));
+    assert!(!authoring_store.exists());
 
     let runner_error = compile_package_project(
         &different_root.context(),

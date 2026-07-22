@@ -75,24 +75,25 @@ pub fn build_authoring_object(
     artifact_root: &Path,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
+    let build_non_package: fn(&Path, &CanonicalArtifactStore, bool) -> AuthoringResult<Value> =
+        match object {
+            AuthoringObject::Package => {
+                return run_after_platform_context_guard(platform_sources, || {
+                    let store = CanonicalArtifactStore::create(artifact_root)?;
+                    build_package_after_platform_context_guard(
+                        platform_sources,
+                        root,
+                        &store,
+                        publish_pointer,
+                    )
+                });
+            }
+            AuthoringObject::Contract => build_contract,
+            AuthoringObject::Deployment => build_deployment,
+            AuthoringObject::Assembly => build_assembly,
+        };
     let store = CanonicalArtifactStore::create(artifact_root)?;
-    match object {
-        AuthoringObject::Package => build_package(platform_sources, root, &store, publish_pointer),
-        AuthoringObject::Contract => build_contract(root, &store, publish_pointer),
-        AuthoringObject::Deployment => build_deployment(root, &store, publish_pointer),
-        AuthoringObject::Assembly => build_assembly(root, &store, publish_pointer),
-    }
-}
-
-fn build_package(
-    platform_sources: &CompilerPlatformSources,
-    root: &Path,
-    store: &CanonicalArtifactStore,
-    publish_pointer: bool,
-) -> AuthoringResult<Value> {
-    run_after_platform_context_guard(platform_sources, || {
-        build_package_after_platform_context_guard(platform_sources, root, store, publish_pointer)
-    })
+    build_non_package(root, &store, publish_pointer)
 }
 
 fn run_after_platform_context_guard<T>(
