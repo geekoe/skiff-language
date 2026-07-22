@@ -46,7 +46,7 @@ test('command-double runs only one copied-consumer negative Host probe', async (
         proxyState.requests.push(failedRequest());
         return commandOutcome(1, {
           stdout: [
-            'FAIL main.test.skiff::provider observes helper mutation',
+            'FAIL main.__test::provider observes helper mutation',
             '  HTTP 500: {"message":"assertion failed"}',
             '',
           ].join('\n'),
@@ -129,7 +129,7 @@ test('command-double rejects retry, synthesized response, or a missing Runtime d
             if (name !== 'retry') mutate(state);
             return commandOutcome(1, {
               stdout: [
-                'FAIL main.test.skiff::provider observes helper mutation',
+                'FAIL main.__test::provider observes helper mutation',
                 `  HTTP 500: {"message":"${state.runnerDiagnostic}"}`,
               ].join('\n'),
               stderr: 'error: 1 test(s) failed\n',

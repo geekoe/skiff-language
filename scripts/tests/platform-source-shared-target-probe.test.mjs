@@ -100,7 +100,7 @@ test('combined and full modes remain disjoint command-double orchestrations', as
       host: { passed: 1, total: 1 },
       finalValue: 'provider-observed-helper-mutated',
       finalValueEvidence: {
-        passLine: 'PASS main.test.skiff::provider observes helper mutation',
+        passLine: 'PASS main.__test::provider observes helper mutation',
         assertionPath: join(
           fullOptions.bWorktree,
           'test-runner',
@@ -124,6 +124,20 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(full.artifactEvidence[0].diff.rootMaterializations.length, 2);
     assert.equal(full.hostAttempt.status, 'PASS');
     assert.equal(full.hostAttempt.exactPassLineCount, 1);
+    assert.equal(
+      full.hostAttempt.expectedPassLine,
+      'PASS <runtime-module-path>::provider observes helper mutation',
+    );
+    assert.equal(
+      full.hostAttempt.observedPassLine,
+      'PASS main.__test::provider observes helper mutation',
+    );
+    assert.equal(full.hostAttempt.passLines.length, 12);
+    assert.match(full.hostAttempt.passLines[0], /^PASS <unexpected sha256:[a-f0-9]{64}>$/);
+    assert.equal(
+      full.hostAttempt.passLines[11],
+      'PASS main.__test::provider observes helper mutation',
+    );
     assert.match(full.hostAttempt.outputSha256, /^[a-f0-9]{64}$/);
     assert.equal(full.cleanup.processGroupsAbsent, true);
     assert.equal(full.cleanup.portsAbsent, true);
@@ -453,6 +467,8 @@ test('full Host attempt records nonzero, signal, and exact parse failures', asyn
     ['wrong-pass', 'pass-line'],
     ['missing-pass', 'pass-line'],
     ['duplicate-pass', 'pass-line'],
+    ['malformed-pass', 'pass-line-format'],
+    ['oversized-pass', 'pass-line-format'],
   ];
   for (const [scenario, expectedIssue] of scenarios) {
     await t.test(scenario, async () => {
@@ -877,10 +893,15 @@ function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
     return;
   }
   const lines = [
-    'PASS main.test.skiff::provider observes helper mutation',
+    ...Array.from(
+      { length: 11 },
+      (_unused, index) => `PASS std.case_${index}.__test::unrelated std case ${index}`,
+    ),
     'test result: ok. 11 passed; 0 failed',
+    'PASS main.__test::provider observes helper mutation',
     'test result: ok. 1 passed; 0 failed',
   ];
+  const targetIndex = 12;
   if (scenario === 'nonzero') {
     outcome.code = 9;
     outcome.stderr = 'Host command failed after launch';
@@ -888,15 +909,19 @@ function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
     outcome.code = null;
     outcome.signal = 'SIGTERM';
   } else if (scenario === 'malformed') {
-    lines[2] = 'test result: malformed';
+    lines[lines.length - 1] = 'test result: malformed';
   } else if (scenario === 'extra-counts') {
     lines.push('test result: ok. 1 passed; 0 failed');
   } else if (scenario === 'wrong-pass') {
-    lines[0] = 'PASS main.test.skiff::wrong observation';
+    lines[targetIndex] = 'PASS main.__test::wrong observation';
   } else if (scenario === 'missing-pass') {
-    lines.shift();
+    lines.splice(targetIndex, 1);
   } else if (scenario === 'duplicate-pass') {
-    lines.unshift(lines[0]);
+    lines.splice(targetIndex, 0, lines[targetIndex]);
+  } else if (scenario === 'malformed-pass') {
+    lines[targetIndex] = 'PASS ::provider observes helper mutation';
+  } else if (scenario === 'oversized-pass') {
+    lines[targetIndex] = `PASS main.__test::${'x'.repeat(600)}`;
   }
   outcome.stdout = lines.join('\n');
   outcome.observedPorts = [46010, 46011, 46012];
