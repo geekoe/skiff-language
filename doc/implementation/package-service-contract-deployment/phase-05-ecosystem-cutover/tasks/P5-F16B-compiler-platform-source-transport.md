@@ -6,7 +6,8 @@
 - 输入：F16A exact checkpoint；从其合流commit建立
   `/Users/geek/workspace/skiff-p5-f16b-compiler-platform-transport`、分支
   `codex/p5-f16b-compiler-platform-transport`。与F16C并行，禁止修改其owner。
-- 高风险production authoring consumer；一个clean commit，不merge/push、不改stable。完成后与F16C共同解除I16。
+- 高风险production authoring consumer；一个clean commit，不merge/push、不改stable。完成后只解除I16的F16B分支
+  前置；I16仍须等待F16C、F17合流且无在途写入。
 - 使用新的开发Agent，不复用F16A、D18 auditor或文档reviewer。
 - 五分钟内开始实际修改；若F16A API不能在本owner内直接消费，立即报`TASK_NOT_EXECUTABLE`，不得回改shared owner。
 - 证据只对F16A exact API、compiler bin/authoring JS caller、platform source内容、Cargo.lock与本任务commit不变时有效。
