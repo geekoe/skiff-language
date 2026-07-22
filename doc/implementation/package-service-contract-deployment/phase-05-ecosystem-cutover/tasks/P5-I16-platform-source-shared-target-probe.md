@@ -19,7 +19,7 @@ merge-only接线组；不得重复开发者行为矩阵：
 
 ```bash
 cargo test --locked -p skiff-test-runner --lib \
-  canonical_package::tests::combined::p5_f18_compiler_repair_combined -- --exact --test-threads=1
+  canonical_package::tests::combined::p5_f18_compiler_repair_combined -- --exact --ignored --test-threads=1
 cargo test --locked -p skiff-compiler --tests --no-run
 pnpm --filter @skiff/router type-check
 node --check scripts/lib/isolated-test-runtime-instance.mjs
@@ -85,7 +85,14 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
 
 ## 输出
 
-JSON ledger必须同时列出merge-only命令组结果，并包含commit/tree/lock、capacity、A/B/temp路径、三轮origin、targeted clean crate、artifact枚举、hash/mtime/
-dep-info、Fresh crate列表、4次probe的8个golden值、structure/registry结果、首错及worktree/temp/PID/port清理证明；明确
-`fullProbeRuns: 0`。PASS只解除R15B、compiler trust、Router CAS、resource lifecycle与H18窄证据；它们全部PASS后才解除
-R16。候选、F18A–I任一production/test surface、gate script、platform source、Cargo/lock变化会使全部I16证据失效。
+I16证据bundle由两项共同组成，任何一项缺失都不是PASS：
+
+1. gate脚本原子写入的v3 dynamic JSON ledger，包含commit/tree/lock、capacity、A/B/temp路径、三轮origin、targeted
+   clean crate、artifact枚举、hash/mtime/dep-info、Fresh crate列表、4次probe的8个golden值、structure/registry、首错及
+   worktree/temp/PID/port/registry/ownership清理证明，明确`fullProbeRuns: 0`；不得事后修改或扩schema。
+2. Combined Probe owner在最终回报中给出immutable `p5-i16-command-group-v1` report：同一candidate/tree/lock、clean
+   before/after、上述每条前置命令的exact argv/exit/result。merge-only Rust test必须是`1 passed / 0 failed / 0 ignored`，
+   不能以exit 0、0-run或ignored冒充；Node checks/type-check/no-run也必须逐项列出。
+
+PASS只解除R15B、compiler trust、Router CAS、resource lifecycle与H18窄证据；所有窄证据PASS后才解除R16。候选、
+F18A–I任一production/test surface、gate script、platform source、Cargo/lock变化会使全部I16证据失效。

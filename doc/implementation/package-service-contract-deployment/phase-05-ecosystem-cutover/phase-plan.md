@@ -238,6 +238,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F18H | [Compiler test-only platform context](tasks/P5-F18H-compiler-test-platform-context-transport.md) | D22 closed | 中；verify compile blocker |
 | F18I | [Host fixture Clippy closure](tasks/P5-F18I-host-fixture-clippy-closure.md) | R15 reaccept FAIL | 低；candidate hygiene |
 | I16 | [Platform source shared-target combined probe](tasks/P5-I16-platform-source-shared-target-probe.md) | D20 repair wave merged | 唯一cheap combined owner；不跑Host |
+| R15B | [Readiness Clippy reacceptance](tasks/P5-R15B-readiness-clippy-reacceptance.md) | I16 PASS | 低；只复验R15A exact blocker |
+| R18A | [Compiler trust acceptance](tasks/P5-R18A-compiler-trust-acceptance.md) | I16 PASS | 高；独立只读 |
+| R18B | [Router file CAS acceptance](tasks/P5-R18B-router-file-cas-acceptance.md) | I16 PASS | 高；独立只读 |
+| R18C | [Resource lifecycle acceptance](tasks/P5-R18C-resource-lifecycle-acceptance.md) | I16 PASS | 高；独立只读 |
+| H18 | [Host focused-negative execution](tasks/P5-H18-host-focused-negative-execution.md) | I16 PASS | 唯一focused-negative owner；不计full |
 | R16 | [F04 production path narrow acceptance](tasks/P5-R16-platform-source-trust-acceptance.md) | I16 PASS + D20 closed | 高；全新独立只读 |
 | G16 | [F04 real Host gate](tasks/P5-G16-f04-real-host-gate.md) | R16 PASS | 当前周期唯一完整Host owner |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
