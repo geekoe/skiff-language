@@ -94,6 +94,48 @@ test('actual runtime PASS identity and fixture assertion jointly project final v
   assert.deepEqual(Object.keys(completed).sort(), v6HostAttemptFields);
 });
 
+test('an alternate runtime module is accepted when it is the sole Host identity', () => {
+  const alternatePassLine = `PASS nested.main.__test::${testName}`;
+  const completed = completeHostAttempt(
+    beginHostAttempt('node', ['/owned/b/scripts/run-skiff-tests.mjs']),
+    hostOutcome([alternatePassLine]),
+    fixture(),
+    evidencePresent,
+  );
+
+  assert.equal(completed.status, 'PASS');
+  assert.equal(completed.exactPassLineCount, 1);
+  assert.equal(completed.observedPassLine, alternatePassLine);
+  assert.deepEqual(completed.passLines, [alternatePassLine]);
+  assert.equal(completed.sourceSuite.finalValueEvidence.passLine, alternatePassLine);
+});
+
+test('same-name identities outside the Host segment make a correct Host identity ambiguous', async (t) => {
+  const cases = [
+    ['before std', { beforeStd: [actualPassLine] }],
+    ['after Host', { afterHost: [actualPassLine] }],
+    ['stderr', { stderrLines: [actualPassLine] }],
+  ];
+  for (const [name, outcomeOverrides] of cases) {
+    await t.test(name, () => {
+      const completed = completeHostAttempt(
+        beginHostAttempt('node', ['/owned/b/scripts/run-skiff-tests.mjs']),
+        hostOutcome([actualPassLine], outcomeOverrides),
+        fixture(),
+        evidencePresent,
+      );
+
+      assert.equal(completed.status, 'FAIL');
+      assert.equal(completed.firstIssue.kind, 'pass-line');
+      assert.equal(completed.exactPassLineCount, 2);
+      assert.equal(completed.observedPassLine, null);
+      assert.equal(completed.sourceSuite, null);
+      assert.equal(completed.passLines.length, 2);
+      assert.equal(completed.passLines.every(isUnexpectedPassToken), true);
+    });
+  }
+});
+
 test('wrong, missing, duplicate, malformed, illegal, and oversized identities fail closed', async (t) => {
   const cases = [
     ['wrong test name', ['PASS main.__test::wrong observation'], 'pass-line', {}],
@@ -118,14 +160,7 @@ test('wrong, missing, duplicate, malformed, illegal, and oversized identities fa
       assert.equal(completed.status, 'FAIL');
       assert.equal(completed.sourceSuite, null);
       assert.equal(completed.firstIssue.kind, expectedIssue);
-      const boundedTargetLines = new Set([
-        actualPassLine,
-        `PASS nested.main.__test::${testName}`,
-      ]);
-      assert.equal(completed.passLines.every((line) => (
-        boundedTargetLines.has(line)
-        || /^PASS <unexpected sha256:[a-f0-9]{64}>$/.test(line)
-      )), true);
+      assert.equal(completed.passLines.every(isUnexpectedPassToken), true);
     });
   }
 });
@@ -166,6 +201,8 @@ function hostOutcome(passLines, {
   host = 'test result: ok. 1 passed; 0 failed',
   extra = null,
   beforeStd = [],
+  afterHost = [],
+  stderrLines = [],
 } = {}) {
   return {
     code,
@@ -176,10 +213,15 @@ function hostOutcome(passLines, {
       std,
       ...passLines,
       host,
+      ...afterHost,
       ...(extra === null ? [] : [extra]),
     ].join('\n'),
-    stderr: '',
+    stderr: stderrLines.join('\n'),
   };
+}
+
+function isUnexpectedPassToken(line) {
+  return /^PASS <unexpected sha256:[a-f0-9]{64}>$/.test(line);
 }
 
 function sha256(value) {

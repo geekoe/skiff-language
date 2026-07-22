@@ -163,18 +163,24 @@ function parseHostOutput(stdout, stderr, testName) {
       const parsed = parsePassIdentity(entry.line);
       return {
         ...parsed,
-        target: parsed.valid
-          && parsed.testName === testName
-          && inHostResultSegment(entry.stream, entry.index),
+        inHostResultSegment: inHostResultSegment(entry.stream, entry.index),
+        matchesTestName: parsed.valid && parsed.testName === testName,
       };
     });
-  const matchingPassLines = passLines.filter((entry) => entry.target);
+  const matchingPassLines = passLines.filter((entry) => entry.matchesTestName);
+  const observedPassLineEntry = matchingPassLines.length === 1
+    && matchingPassLines[0].inHostResultSegment
+    ? matchingPassLines[0]
+    : null;
   return {
     resultLines,
     counts,
-    passLines,
+    passLines: passLines.map((entry) => ({
+      ...entry,
+      retainActual: entry === observedPassLineEntry,
+    })),
     matchingPassLines,
-    observedPassLine: matchingPassLines.length === 1 ? matchingPassLines[0].line : null,
+    observedPassLine: observedPassLineEntry?.line ?? null,
   };
 }
 
@@ -211,10 +217,10 @@ function hostEvidenceIssues(outcome, parsed, testName, evidence) {
       message: `full gate observed ${invalidPassLineCount} malformed or oversized PASS line(s)`,
     });
   }
-  if (parsed.matchingPassLines.length !== 1) {
+  if (parsed.matchingPassLines.length !== 1 || parsed.observedPassLine === null) {
     issues.push({
       kind: 'pass-line',
-      message: `full gate must report exactly one syntax-valid PASS identity for test "${testName}"`,
+      message: `full gate must report exactly one syntax-valid PASS identity for test "${testName}" across all output, in the stdout Host result segment`,
     });
   }
   return issues;
@@ -242,7 +248,7 @@ function projectSourceSuite(parsed, fixture) {
 }
 
 function storedPassLine(entry) {
-  return entry.valid && entry.target
+  return entry.valid && entry.retainActual
     ? entry.line
     : `PASS <unexpected sha256:${sha256(entry.line)}>`;
 }
