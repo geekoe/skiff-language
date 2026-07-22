@@ -125,9 +125,10 @@ pub(crate) use skiff_runtime_eval::{
     EvalRequestInvocationWebSocketMessageEncoding, EvalRequestInvocationWebSocketMessageTag,
     EvalRequestInvocationWebSocketNameValue, EvalRequestInvocationWebSocketPayloadSegment,
     EvalRequestInvocationWebSocketPayloadSegmentKind, EvalRequestInvocationWebSocketReceiveRequest,
-    EvalRequestWebSocketAdapterResult, EvalRequestWebSocketConnectResponse,
-    EvalRequestWebSocketConnectResult, EvalRequestWebSocketContextCodec, EvalRuntimeProgram,
-    EvalRuntimeProgramSource, Interpreter, InterpreterHttpOptions,
+    EvalRequestWebSocketAdapterResult, EvalRequestWebSocketConnectAccept,
+    EvalRequestWebSocketConnectContext, EvalRequestWebSocketConnectReject,
+    EvalRequestWebSocketContextCodec, EvalRuntimeProgram, EvalRuntimeProgramSource, Interpreter,
+    InterpreterHttpOptions,
 };
 
 #[cfg(test)]
