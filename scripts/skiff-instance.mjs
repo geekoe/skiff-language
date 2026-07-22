@@ -39,11 +39,18 @@ import {
   binaryIdentity,
   installManagedBinary,
 } from './lib/managed-binary.mjs';
+import {
+  installManagedPidMetadata,
+  managedPidMetadataOwner,
+  readManagedPidMetadataFile,
+  removeManagedPidMetadata,
+} from './lib/managed-pid-metadata.mjs';
 import { createSupervisedEntryLifecycle } from './lib/supervised-entry-lifecycle.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const skiffRoot = resolve(scriptDir, '..');
 const pidMetadataSchemaVersion = 1;
+const pidMetadataOwnerSymbol = Symbol('managed-pid-metadata-owner');
 const startTimeoutMs = 20000;
 const stopTimeoutMs = 5000;
 const instanceCommands = new Set([
@@ -378,7 +385,18 @@ async function repairInstance(rawArgs, configPath) {
   }
   for (const processStatus of before.processes) {
     if (processStatus.category === 'stale-pid') {
-      await rm(processStatus.pidPath, { force: true });
+      const owner = processStatus[pidMetadataOwnerSymbol];
+      if (owner == null) {
+        throw new Error(
+          `${processStatus.name} has foreign or unowned PID metadata at ${processStatus.pidPath}; refusing repair`,
+        );
+      }
+      const removal = await removeManagedPidMetadata(owner);
+      if (!removal.removed) {
+        throw new Error(
+          `${processStatus.name} PID metadata changed during repair (${removal.reason}); preserving it`,
+        );
+      }
       repaired.push({ name: processStatus.name, action: 'removed-stale-pid' });
       continue;
     }
@@ -623,8 +641,9 @@ async function ensureManagedProcessRunning(config, spec, options) {
       return startManagedProcess(config, spec);
     }
     if (status.category === 'stale-pid') {
-      await rm(status.pidPath, { force: true });
-      return startManagedProcess(config, spec);
+      throw new Error(
+        `${spec.name} has pre-existing PID metadata at ${status.pidPath}; refusing to replace it`,
+      );
     }
     if (hasUnknownPortConflict(status)) {
       throw new Error(`${spec.name} has unknown port conflict; refusing to start`);
@@ -651,7 +670,6 @@ async function componentStatus(config, name) {
 
 async function startManagedProcess(config, spec, options = {}) {
   const managedBinary = await managedBinaryMetadata(spec);
-  await rm(pidPath(config, spec.name), { force: true });
   let out;
   let err;
   let child;
@@ -694,21 +712,8 @@ async function startManagedProcess(config, spec, options = {}) {
     throw error;
   }
 
-  const pidMetadataWrite = writePidMetadata(config, spec, child.pid, managedBinary);
-  if (!options.supervised) {
-    await pidMetadataWrite;
-    child.unref();
-    await out.close();
-    await err.close();
-    await delay(250);
-    if (!isProcessAlive(child.pid)) {
-      throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
-    }
-    console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
-    await waitForComponentRunning(config, spec, child.pid);
-    return { name: spec.name, started: true, pid: child.pid, pgid: child.pid };
-  }
-
+  let pidOwner;
+  let pidMetadataInstall;
   const lifecycle = createSupervisedEntryLifecycle({
     component: spec.name,
     child,
@@ -718,12 +723,27 @@ async function startManagedProcess(config, spec, options = {}) {
     stopProcessGroup,
     isProcessGroupAlive,
     removePidMetadata: async () => {
-      await Promise.allSettled([pidMetadataWrite]);
-      await rm(pidPath(config, spec.name), { force: true });
+      await Promise.allSettled([pidMetadataInstall]);
+      if (pidOwner === undefined) {
+        return;
+      }
+      const removal = await removeManagedPidMetadata(pidOwner);
+      if (!removal.removed) {
+        throw new Error(
+          `[skiff-instance] ${spec.name} PID metadata ownership lost (${removal.reason}); preserving ${pidOwner.path}`,
+        );
+      }
     },
   });
+  pidMetadataInstall = installManagedPidMetadata(
+    pidPath(config, spec.name),
+    pidMetadata(config, spec, child.pid, managedBinary),
+  ).then((owner) => {
+    pidOwner = owner;
+    return owner;
+  });
   try {
-    await pidMetadataWrite;
+    await pidMetadataInstall;
     const startupResult = await Promise.race([
       delay(250).then(() => null),
       lifecycle.exit.then((outcome) => outcome),
@@ -736,12 +756,23 @@ async function startManagedProcess(config, spec, options = {}) {
     if (!isProcessAlive(child.pid)) {
       throw new Error(`${spec.name} exited after start; see ${join(config.paths.logDir, `${spec.name}.err.log`)}`);
     }
+    if (!options.supervised) {
+      await waitForComponentRunning(config, spec, child.pid);
+      await lifecycle.detach();
+    }
   } catch (error) {
     lifecycle.recordPrimary(error);
-    return await lifecycle.stop('startup failure');
+    try {
+      await lifecycle.stop('startup failure');
+    } catch (lifecycleError) {
+      throw lifecycleError;
+    }
+    throw error;
   }
   console.log(`[skiff-instance] started ${spec.name} pid=${child.pid} pgid=${child.pid}`);
-  return lifecycle;
+  return options.supervised
+    ? lifecycle
+    : { name: spec.name, started: true, pid: child.pid, pgid: child.pid };
 }
 
 async function waitForComponentRunning(config, spec, pid) {
@@ -833,7 +864,9 @@ async function superviseInstance(config) {
     }
     const status = await componentStatus(config, spec.name);
     if (status.category === 'stale-pid') {
-      await rm(status.pidPath, { force: true });
+      throw new Error(
+        `${spec.name} has pre-existing PID metadata at ${status.pidPath}; refusing to supervise`,
+      );
     } else if (status.category !== 'stopped') {
       throw new Error(`${spec.name} is ${status.category}; stop or repair it before supervise`);
     }
@@ -929,8 +962,7 @@ async function stopComponentStatus(config, processStatus) {
     return { name: processStatus.name, stopped: false, reason: 'stopped' };
   }
   if (processStatus.category === 'stale-pid') {
-    await rm(processStatus.pidPath, { force: true });
-    return { name: processStatus.name, stopped: false, reason: 'stale-pid-removed' };
+    return { name: processStatus.name, stopped: false, reason: 'stale-pid-preserved' };
   }
   if (hasUnknownPortConflict(processStatus)) {
     return { name: processStatus.name, stopped: false, reason: 'unknown-port-conflict' };
@@ -944,13 +976,30 @@ async function stopComponentStatus(config, processStatus) {
     stoppedGroups.push(await stopProcessGroup(pgid));
   }
   const groupsGone = stoppedGroups.every((group) => !isProcessGroupAlive(group.pgid));
-  if (groupsGone) {
-    await rm(processStatus.pidPath, { force: true });
+  if (!groupsGone) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} process group absence was not proven; preserving PID metadata`,
+    );
+  }
+  const owner = processStatus[pidMetadataOwnerSymbol];
+  const pidMetadataRemoval = owner == null
+    ? { removed: false, reason: 'unowned' }
+    : await removeManagedPidMetadata(owner);
+  if (stoppedGroups.some((group) => group.stopped !== true)) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} process stop returned stopped=false; restart is blocked`,
+    );
+  }
+  if (!pidMetadataRemoval.removed) {
+    throw new Error(
+      `[skiff-instance] ${processStatus.name} PID metadata ownership lost (${pidMetadataRemoval.reason}); restart is blocked`,
+    );
   }
   return {
     name: processStatus.name,
     stopped: stoppedGroups.some((group) => group.stopped),
-    pidMetadataRemoved: groupsGone,
+    pidMetadataRemoved: pidMetadataRemoval.removed,
+    pidMetadataRemovalReason: pidMetadataRemoval.reason,
     groups: stoppedGroups,
   };
 }
@@ -1140,6 +1189,7 @@ function processStatus(config, spec, pidRecord, listenersByPort, ownedGroups, sp
   }
 
   return {
+    [pidMetadataOwnerSymbol]: sameInstance && metadataMatchesSpec ? pidRecord.owner : null,
     name: spec.name,
     category,
     running: category === 'running',
@@ -1541,14 +1591,18 @@ function pidPath(config, name) {
 async function readPidMetadata(config, name) {
   const path = pidPath(config, name);
   try {
-    const text = await readFile(path, 'utf8');
-    const trimmed = text.trim();
+    const snapshot = await readManagedPidMetadataFile(path);
+    if (snapshot === null) {
+      return { path, format: 'missing', metadata: null, owner: null, pid: null, error: null };
+    }
+    const trimmed = snapshot.text.trim();
     if (trimmed.startsWith('{')) {
       const metadata = JSON.parse(trimmed);
       return {
         path,
         format: 'json',
         metadata,
+        owner: managedPidMetadataOwner(path, metadata, snapshot.identity),
         pid: readPositiveInteger(metadata.pid),
         error: null,
       };
@@ -1558,15 +1612,13 @@ async function readPidMetadata(config, name) {
       path,
       format: Number.isInteger(pid) && pid > 0 ? 'plain' : 'invalid',
       metadata: null,
+      owner: null,
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
       error: Number.isInteger(pid) && pid > 0 ? null : 'invalid plain pid',
     };
   } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return { path, format: 'missing', metadata: null, pid: null, error: null };
-    }
     if (error instanceof SyntaxError) {
-      return { path, format: 'invalid', metadata: null, pid: null, error: error.message };
+      return { path, format: 'invalid', metadata: null, owner: null, pid: null, error: error.message };
     }
     throw error;
   }
@@ -1581,8 +1633,8 @@ async function managedBinaryMetadata(spec) {
       };
 }
 
-async function writePidMetadata(config, spec, pid, managedBinary) {
-  const metadata = {
+function pidMetadata(config, spec, pid, managedBinary) {
+  return {
     schemaVersion: pidMetadataSchemaVersion,
     component: spec.name,
     pid,
@@ -1597,7 +1649,6 @@ async function writePidMetadata(config, spec, pid, managedBinary) {
     startedAt: new Date().toISOString(),
     managedBinary,
   };
-  await writeFile(pidPath(config, spec.name), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
 function isSameInstanceMetadata(config, metadata) {
