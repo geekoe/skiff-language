@@ -1,10 +1,13 @@
 use skiff_artifact_model::{
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryStreamContract,
-    ContractDiscriminatedUnionBranch, ContractLiteral, ContractTypeDescriptor, ContractTypeRef,
-    ContractTypeShape,
+    websocket_ingress::canonical_websocket_shape_spec, BoundaryErrorContract,
+    BoundaryOperationContract, BoundaryStreamContract, ContractDiscriminatedUnionBranch,
+    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, ContractTypeShape,
 };
 
 use crate::{ArtifactIdentityError, Result};
+
+#[cfg(test)]
+mod tests;
 
 /// Producer-side canonicalization for code-free contract definitions.
 ///
@@ -135,28 +138,29 @@ fn normalize_builtin(
     arguments: Vec<ContractTypeRef>,
     path: &str,
 ) -> Result<ContractTypeRef> {
-    let canonical_name = match name.as_str() {
-        "boolean" => "bool",
-        "String" => "string",
-        "Bytes" | "std.bytes.bytes" => "bytes",
-        "std.collection.Array" => "Array",
-        "std.collection.Map" => "Map",
-        "std.date.Date" => "Date",
-        "std.time.Duration" => "Duration",
-        "std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult" => {
-            name.as_str()
-        }
-        "string" | "number" | "integer" | "bool" | "null" | "void" | "bytes" | "Date"
-        | "Duration" | "Json" | "JsonObject" | "Array" | "Map" => name.as_str(),
-        _ => return invalid_contract(format!("{path}: unknown contract builtin `{name}`")),
-    };
-    let expected_arity = match canonical_name {
-        "Array"
-        | "std.websocket.WebSocketIngressEvent"
-        | "std.websocket.WebSocketConnectResult" => 1,
-        "Map" => 2,
-        _ => 0,
-    };
+    let (canonical_name, expected_arity) =
+        if let Some(builtin) = canonical_websocket_shape_spec().contract_builtin_named(&name) {
+            (builtin.name(), builtin.context_arity())
+        } else {
+            let canonical_name = match name.as_str() {
+                "boolean" => "bool",
+                "String" => "string",
+                "Bytes" | "std.bytes.bytes" => "bytes",
+                "std.collection.Array" => "Array",
+                "std.collection.Map" => "Map",
+                "std.date.Date" => "Date",
+                "std.time.Duration" => "Duration",
+                "string" | "number" | "integer" | "bool" | "null" | "void" | "bytes" | "Date"
+                | "Duration" | "Json" | "JsonObject" | "Array" | "Map" => name.as_str(),
+                _ => return invalid_contract(format!("{path}: unknown contract builtin `{name}`")),
+            };
+            let expected_arity = match canonical_name {
+                "Array" => 1,
+                "Map" => 2,
+                _ => 0,
+            };
+            (canonical_name, expected_arity)
+        };
     if arguments.len() != expected_arity {
         return invalid_contract(format!(
             "{path}: builtin {canonical_name} expects {expected_arity} arguments, got {}",
