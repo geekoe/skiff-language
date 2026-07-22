@@ -42,7 +42,7 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(combined.status, 'PASS', combined.firstError);
     assert.equal(combined.fullProbeRuns, 0);
     assert.equal(combined.sourceSuite, null);
-    assert.equal(combined.schemaVersion, 'skiff-platform-source-shared-target-probe-v5');
+    assert.equal(combined.schemaVersion, 'skiff-platform-source-shared-target-probe-v6');
     assert.equal(combined.artifactEvidence.length, 2);
     assert.equal(
       combined.artifactEvidence.every((entry) => (
@@ -416,10 +416,12 @@ test('bounded diagnostic retains phase while redacting paths, secrets, and HTTP 
             `${commandDouble.hostOutcome.stdout}\n${commandDouble.hostOutcome.stderr}`,
           ).digest('hex'),
         );
-        const first = ledger.hostAttempt.firstDiagnostic;
+        const first = ledger.hostAttempt.diagnostics[0];
         assert.equal(first.kind, 'error');
         assert.equal(first.stream, 'stderr');
         assert.equal(first.truncated, true);
+        assert.equal(ledger.hostAttempt.diagnostics.length, 3);
+        assert.equal(ledger.hostAttempt.diagnosticOmittedCount, 1);
         assert.equal(
           first.originalLineSha256,
           createHash('sha256')
@@ -440,7 +442,7 @@ test('bounded diagnostic retains phase while redacting paths, secrets, and HTTP 
         assertHostDiagnosticMatchesOutcome(ledger.hostAttempt, commandDouble.hostOutcome);
 
         const tampered = structuredClone(ledger.hostAttempt);
-        tampered.firstDiagnostic.sanitizedExcerpt += 'tampered';
+        tampered.diagnostics[0].sanitizedExcerpt += 'tampered';
         assert.throws(
           () => assertHostDiagnosticMatchesOutcome(tampered, commandDouble.hostOutcome),
           /does not match the original command outcome/,
@@ -505,12 +507,12 @@ test('unreachable expected assertion plus assert true is rejected before Host', 
   }
 });
 
-test('legacy v4 combined ledger is explicitly invalid for full mode', async () => {
+test('legacy v5 combined ledger is explicitly invalid for full mode', async () => {
   const fixture = await gateFixture();
   try {
     const combinedOptions = await createCombinedLedger(fixture);
     const legacy = JSON.parse(await readFile(combinedOptions.ledger, 'utf8'));
-    legacy.schemaVersion = 'skiff-platform-source-shared-target-probe-v4';
+    legacy.schemaVersion = 'skiff-platform-source-shared-target-probe-v5';
     await writeFile(combinedOptions.ledger, `${JSON.stringify(legacy)}\n`);
     const commandDouble = fixture.commandDouble('full', {
       combinedLedger: combinedOptions.ledger,
@@ -527,7 +529,7 @@ test('legacy v4 combined ledger is explicitly invalid for full mode', async () =
   }
 });
 
-test('v5 validator recomputes strict artifact evidence instead of trusting verdict', async () => {
+test('v6 validator recomputes strict artifact evidence instead of trusting verdict', async () => {
   const fixture = await gateFixture();
   try {
     const combinedOptions = await createCombinedLedger(fixture);
@@ -728,12 +730,16 @@ function applyHostCommandScenario(outcome, scenario, diagnosticPaths) {
       std: `[skiff-tests] running std: ${join(diagnosticPaths[0], 'std')}`,
       'host-prepare': `[skiff-tests] preparing package-service-host: ${join(diagnosticPaths[2], 'test-runner', 'fixtures', 'package-service-host')}`,
       'host-runner': '[skiff-tests] running package-service-host: test-runner/fixtures/package-service-host/consumer',
-      unknown: 'unclassified source-suite output',
+      unknown: '[skiff-tests] unclassified source-suite output',
     };
     outcome.code = 1;
-    outcome.stdout = phaseMarkers[phase];
+    outcome.stdout = [
+      phaseMarkers[phase],
+      '[skiff-instance] stopping after startup failure',
+    ].join('\n');
     outcome.stderr = [
-      `error: ${phase} paths=${diagnosticPaths.join(',')} secret=P5_F20A_SECRET_SENTINEL ${'x'.repeat(700)}`,
+      `[skiff-instance] supervisor failure: ${phase} paths=${diagnosticPaths.join(',')} secret=P5_F20A_SECRET_SENTINEL ${'x'.repeat(700)}`,
+      `error: secondary ${phase} diagnostic`,
       'HTTP body: P5_F20A_HTTP_BODY_SENTINEL',
     ].join('\n');
     outcome.observedPorts = [46010, 46011, 46012];

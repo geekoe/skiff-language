@@ -6,7 +6,7 @@ import {
 } from './platform-source-probe-evidence.mjs';
 import { probeDigest } from './platform-source-probe-support.mjs';
 
-export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v5';
+export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v6';
 export { PROBE_TARGETED_CRATES };
 
 export function validateProbeOptions(options) {

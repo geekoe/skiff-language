@@ -1,9 +1,22 @@
 import { createHash } from 'node:crypto';
 
 export const HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES = 512;
+export const HOST_DIAGNOSTIC_MAX_ENTRIES = 3;
+export const HOST_DIAGNOSTIC_TOTAL_EXCERPT_MAX_BYTES = 1536;
 
 const UNKNOWN_CONTEXT = Object.freeze({ phase: 'unknown', subject: 'unknown' });
+const PHASE_RANK = Object.freeze({ startup: 0, std: 1, 'host-prepare': 2, 'host-runner': 3 });
+const DIAGNOSTIC_PRIORITY = Object.freeze({
+  panic: 0,
+  error: 1,
+  'invalid-result': 2,
+  failure: 3,
+  diagnostic: 4,
+  'command-outcome': 5,
+});
+const STREAM_PRIORITY = Object.freeze({ none: 0, stderr: 1, stdout: 2 });
 const CANONICAL_RESULT_LINE = /^test result: ok\. \d+ passed; \d+ failed$/;
+const SECONDARY_STARTUP_SHUTDOWN = /^\[skiff-instance\] stopping after startup failure$/i;
 const HTTP_BODY = /\b((?:http|request|response)\s+body\s*[:=])[^\r\n]*/gi;
 const LABELED_SECRET = /\b(authorization|api[-_ ]?key|password|secret|token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi;
 const BEARER_SECRET = /\bbearer\s+\S+/gi;
@@ -16,15 +29,21 @@ const HOME_PATH = /(?:^|\s)~\/(?:[^\s"'<>]+\/)*[^\s"'<>]+/g;
 export function captureHostDiagnostic(outcome) {
   const stdout = text(outcome?.stdout);
   const stderr = text(outcome?.stderr);
-  const selected = selectDiagnostic(stdout, stderr, outcome?.error);
+  const selected = selectDiagnostics(stdout, stderr, outcome?.error);
   const failed = outcome?.error != null || outcome?.signal != null || outcome?.code !== 0;
-  const diagnostic = selected ?? (failed ? syntheticOutcomeDiagnostic(outcome) : null);
+  if (selected.candidates.length === 0 && failed) {
+    selected.candidates.push(syntheticOutcomeDiagnostic(outcome));
+  }
+  const ranked = [...selected.candidates].sort(compareDiagnosticCandidates);
+  const diagnostics = ranked
+    .slice(0, HOST_DIAGNOSTIC_MAX_ENTRIES)
+    .map(publicDiagnostic);
   return {
-    phase: diagnostic?.phase ?? 'unknown',
-    subject: diagnostic?.subject ?? 'unknown',
+    ...mostAdvancedContext(selected.markers),
     stdoutBytes: Buffer.byteLength(stdout),
     stderrBytes: Buffer.byteLength(stderr),
-    firstDiagnostic: diagnostic === null ? null : publicDiagnostic(diagnostic),
+    diagnostics,
+    diagnosticOmittedCount: ranked.length - diagnostics.length,
   };
 }
 
@@ -35,7 +54,8 @@ export function assertHostDiagnosticMatchesOutcome(attempt, outcome) {
     subject: attempt?.subject,
     stdoutBytes: attempt?.stdoutBytes,
     stderrBytes: attempt?.stderrBytes,
-    firstDiagnostic: attempt?.firstDiagnostic,
+    diagnostics: attempt?.diagnostics,
+    diagnosticOmittedCount: attempt?.diagnosticOmittedCount,
   };
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error('Host bounded diagnostic does not match the original command outcome');
@@ -55,23 +75,23 @@ export function sanitizeHostDiagnostic(value) {
     .replace(POSIX_PATH, '<PATH>');
 }
 
-function selectDiagnostic(stdout, stderr, spawnError) {
-  let context = UNKNOWN_CONTEXT;
+function selectDiagnostics(stdout, stderr, spawnError) {
   const candidates = [];
+  const markers = [];
   for (const [stream, contents] of [['stdout', stdout], ['stderr', stderr]]) {
-    for (const originalLine of contents.split(/\r?\n/)) {
+    for (const [lineIndex, originalLine] of contents.split(/\r?\n/).entries()) {
       const line = originalLine.trim();
       if (line.length === 0) continue;
       const marker = phaseMarker(line);
       if (marker !== null) {
-        context = marker;
+        if (marker.phase !== 'unknown') markers.push(marker);
         continue;
       }
       if (isRoutineOutput(line)) continue;
       candidates.push({
-        ...context,
         kind: diagnosticKind(line),
         stream,
+        lineIndex,
         originalLine,
       });
     }
@@ -79,19 +99,19 @@ function selectDiagnostic(stdout, stderr, spawnError) {
   if (spawnError != null) {
     const originalLine = spawnError instanceof Error ? spawnError.message : String(spawnError);
     candidates.push({
-      ...context,
       kind: 'error',
       stream: 'none',
+      lineIndex: 0,
       originalLine,
     });
   }
-  return candidates.find((entry) => entry.kind !== 'diagnostic')
-    ?? candidates.find((entry) => entry.stream === 'stderr')
-    ?? candidates[0]
-    ?? null;
+  return { candidates, markers };
 }
 
 function phaseMarker(line) {
+  if (line === '[skiff-tests] phase startup: isolated-runtime') {
+    return { phase: 'startup', subject: 'isolated-runtime' };
+  }
   if (/^\[skiff-test\] isolated runtime (?:control|workspace):/.test(line)) {
     return { phase: 'startup', subject: 'isolated-runtime' };
   }
@@ -111,6 +131,7 @@ function phaseMarker(line) {
 
 function diagnosticKind(line) {
   if (/\bpanic(?:ked)?\b/i.test(line)) return 'panic';
+  if (/^\[skiff-instance\] supervisor failure:/i.test(line)) return 'error';
   if (/^(?:error|fatal)\b|\berror:/i.test(line)) return 'error';
   if (/\b(?:failed|failure)\b/i.test(line)) return 'failure';
   if (line.startsWith('test result:')) return 'invalid-result';
@@ -127,11 +148,39 @@ function isRoutineOutput(line) {
 function syntheticOutcomeDiagnostic(outcome) {
   const originalLine = `child outcome: ${outcome?.signal ?? outcome?.code ?? 'spawn'}`;
   return {
-    ...UNKNOWN_CONTEXT,
     kind: 'command-outcome',
     stream: 'none',
+    lineIndex: 0,
     originalLine,
   };
+}
+
+function compareDiagnosticCandidates(left, right) {
+  // Stream preference is a deterministic causal heuristic, never a merged-stream timestamp.
+  return diagnosticPriority(left) - diagnosticPriority(right)
+    || streamPriority(left.stream) - streamPriority(right.stream)
+    || left.lineIndex - right.lineIndex;
+}
+
+function diagnosticPriority(candidate) {
+  if (SECONDARY_STARTUP_SHUTDOWN.test(candidate.originalLine.trim())) return 6;
+  return DIAGNOSTIC_PRIORITY[candidate.kind] ?? DIAGNOSTIC_PRIORITY.diagnostic;
+}
+
+function streamPriority(stream) {
+  return STREAM_PRIORITY[stream] ?? 3;
+}
+
+function mostAdvancedContext(markers) {
+  if (markers.length === 0) return UNKNOWN_CONTEXT;
+  // Markers are monotonic phase declarations; diagnostics remain unordered across streams.
+  const maximumRank = Math.max(...markers.map((marker) => PHASE_RANK[marker.phase] ?? -1));
+  const advanced = markers.filter((marker) => PHASE_RANK[marker.phase] === maximumRank);
+  const contexts = new Map(advanced.map((marker) => [
+    `${marker.phase}\0${marker.subject}`,
+    marker,
+  ]));
+  return contexts.size === 1 ? contexts.values().next().value : UNKNOWN_CONTEXT;
 }
 
 function publicDiagnostic(diagnostic) {
@@ -167,16 +216,26 @@ function assertDiagnosticShape(evidence) {
     || !Number.isInteger(evidence.stderrBytes) || evidence.stderrBytes < 0) {
     throw new Error('Host bounded diagnostic has invalid stream byte counts');
   }
-  if (evidence.firstDiagnostic === null) return;
-  const diagnostic = evidence.firstDiagnostic;
-  if (!['stdout', 'stderr', 'none'].includes(diagnostic.stream)
-    || typeof diagnostic.kind !== 'string'
-    || diagnostic.kind.length === 0
-    || typeof diagnostic.sanitizedExcerpt !== 'string'
-    || Buffer.byteLength(diagnostic.sanitizedExcerpt) > HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES
-    || !/^[a-f0-9]{64}$/.test(diagnostic.originalLineSha256)
-    || typeof diagnostic.truncated !== 'boolean') {
-    throw new Error('Host bounded diagnostic has an invalid first diagnostic');
+  if (!Array.isArray(evidence.diagnostics)
+    || evidence.diagnostics.length > HOST_DIAGNOSTIC_MAX_ENTRIES
+    || !Number.isInteger(evidence.diagnosticOmittedCount)
+    || evidence.diagnosticOmittedCount < 0) {
+    throw new Error('Host bounded diagnostic has an invalid diagnostic collection');
+  }
+  let totalExcerptBytes = 0;
+  for (const diagnostic of evidence.diagnostics) {
+    totalExcerptBytes += Buffer.byteLength(diagnostic?.sanitizedExcerpt ?? '');
+    if (!['stdout', 'stderr', 'none'].includes(diagnostic?.stream)
+      || !Object.hasOwn(DIAGNOSTIC_PRIORITY, diagnostic?.kind)
+      || typeof diagnostic.sanitizedExcerpt !== 'string'
+      || Buffer.byteLength(diagnostic.sanitizedExcerpt) > HOST_DIAGNOSTIC_EXCERPT_MAX_BYTES
+      || !/^[a-f0-9]{64}$/.test(diagnostic.originalLineSha256)
+      || typeof diagnostic.truncated !== 'boolean') {
+      throw new Error('Host bounded diagnostic has an invalid diagnostic entry');
+    }
+  }
+  if (totalExcerptBytes > HOST_DIAGNOSTIC_TOTAL_EXCERPT_MAX_BYTES) {
+    throw new Error('Host bounded diagnostic exceeded the aggregate excerpt limit');
   }
 }
 
