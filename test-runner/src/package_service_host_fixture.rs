@@ -8,7 +8,10 @@ use skiff_artifact_model::{
     ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceDeploymentRef,
     ServiceRequirementKey, ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
-use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
+use skiff_compiler::{
+    authoring::{build_authoring_object, AuthoringObject},
+    CompilerPlatformSources,
+};
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 pub const PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION: &str =
@@ -50,7 +53,10 @@ impl PackageServiceHostFixtureReceipt {
     }
 
     pub fn write(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             fs::create_dir_all(parent)?;
         }
         fs::write(
@@ -62,6 +68,7 @@ impl PackageServiceHostFixtureReceipt {
 }
 
 pub fn prepare_package_service_host_fixture(
+    platform_sources: &CompilerPlatformSources,
     fixture_root: &Path,
     work_root: &Path,
     artifact_root: &Path,
@@ -72,15 +79,30 @@ pub fn prepare_package_service_host_fixture(
     }
     fs::create_dir_all(work_root)?;
 
-    let payments_contract =
-        publish_contract(&fixture_root.join("payments-contract"), artifact_root)?;
-    let consumer_contract =
-        publish_contract(&fixture_root.join("consumer-contract"), artifact_root)?;
-    let helper_package = publish_package(&fixture_root.join("helper"), artifact_root)?;
-    let provider_package = publish_package(&fixture_root.join("provider"), artifact_root)?;
+    let payments_contract = publish_contract(
+        platform_sources,
+        &fixture_root.join("payments-contract"),
+        artifact_root,
+    )?;
+    let consumer_contract = publish_contract(
+        platform_sources,
+        &fixture_root.join("consumer-contract"),
+        artifact_root,
+    )?;
+    let helper_package = publish_package(
+        platform_sources,
+        &fixture_root.join("helper"),
+        artifact_root,
+    )?;
+    let provider_package = publish_package(
+        platform_sources,
+        &fixture_root.join("provider"),
+        artifact_root,
+    )?;
 
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let provider_deployment = publish_provider_deployment(
+        platform_sources,
         work_root,
         artifact_root,
         &store,
@@ -88,8 +110,13 @@ pub fn prepare_package_service_host_fixture(
         &provider_package,
     )?;
 
-    let consumer_package = publish_package(&fixture_root.join("consumer"), artifact_root)?;
+    let consumer_package = publish_package(
+        platform_sources,
+        &fixture_root.join("consumer"),
+        artifact_root,
+    )?;
     let consumer_deployment = publish_consumer_deployment(
+        platform_sources,
         work_root,
         artifact_root,
         &store,
@@ -100,6 +127,7 @@ pub fn prepare_package_service_host_fixture(
     )?;
 
     let base_assembly = publish_assembly(
+        platform_sources,
         &work_root.join("base-assembly"),
         artifact_root,
         &RuntimeAssemblyAuthoring {
@@ -122,6 +150,7 @@ pub fn prepare_package_service_host_fixture(
 }
 
 fn publish_provider_deployment(
+    platform_sources: &CompilerPlatformSources,
     work_root: &Path,
     artifact_root: &Path,
     store: &CanonicalArtifactStore,
@@ -130,6 +159,7 @@ fn publish_provider_deployment(
 ) -> anyhow::Result<ServiceDeploymentRef> {
     let payments_operation = contract_operation(store, payments_contract, "echo")?;
     publish_deployment(
+        platform_sources,
         &work_root.join("provider-deployment"),
         artifact_root,
         &ServiceDeploymentInput {
@@ -156,6 +186,7 @@ fn publish_provider_deployment(
 }
 
 fn publish_consumer_deployment(
+    platform_sources: &CompilerPlatformSources,
     work_root: &Path,
     artifact_root: &Path,
     store: &CanonicalArtifactStore,
@@ -177,6 +208,7 @@ fn publish_consumer_deployment(
         .ok_or_else(|| anyhow::anyhow!("consumer fixture omitted payments service requirement"))?;
     let consumer_operation = contract_operation(store, consumer_contract, "echo")?;
     publish_deployment(
+        platform_sources,
         &work_root.join("consumer-deployment"),
         artifact_root,
         &ServiceDeploymentInput {
@@ -217,21 +249,40 @@ fn publish_consumer_deployment(
     )
 }
 
-fn publish_contract(root: &Path, artifact_root: &Path) -> anyhow::Result<ServiceContractRef> {
-    let receipt = author(AuthoringObject::Contract, root, artifact_root)?;
+fn publish_contract(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    artifact_root: &Path,
+) -> anyhow::Result<ServiceContractRef> {
+    let receipt = author(
+        platform_sources,
+        AuthoringObject::Contract,
+        root,
+        artifact_root,
+    )?;
     Ok(serde_json::from_value(
         receipt["serviceContractReceipt"]["contract"].clone(),
     )?)
 }
 
-fn publish_package(root: &Path, artifact_root: &Path) -> anyhow::Result<PackageArtifactRef> {
-    let receipt = author(AuthoringObject::Package, root, artifact_root)?;
+fn publish_package(
+    platform_sources: &CompilerPlatformSources,
+    root: &Path,
+    artifact_root: &Path,
+) -> anyhow::Result<PackageArtifactRef> {
+    let receipt = author(
+        platform_sources,
+        AuthoringObject::Package,
+        root,
+        artifact_root,
+    )?;
     Ok(serde_json::from_value(
         receipt["packageArtifactReceipt"]["artifact"].clone(),
     )?)
 }
 
 fn publish_deployment(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
     input: &ServiceDeploymentInput,
@@ -241,13 +292,19 @@ fn publish_deployment(
         root.join("deployment.yml"),
         format!("{}\n", serde_json::to_string_pretty(input)?),
     )?;
-    let receipt = author(AuthoringObject::Deployment, root, artifact_root)?;
+    let receipt = author(
+        platform_sources,
+        AuthoringObject::Deployment,
+        root,
+        artifact_root,
+    )?;
     Ok(serde_json::from_value(
         receipt["serviceDeploymentReceipt"]["deployment"].clone(),
     )?)
 }
 
 fn publish_assembly(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
     input: &RuntimeAssemblyAuthoring,
@@ -257,14 +314,24 @@ fn publish_assembly(
         root.join("assembly.yml"),
         format!("{}\n", serde_json::to_string_pretty(input)?),
     )?;
-    let receipt = author(AuthoringObject::Assembly, root, artifact_root)?;
+    let receipt = author(
+        platform_sources,
+        AuthoringObject::Assembly,
+        root,
+        artifact_root,
+    )?;
     Ok(serde_json::from_value(
         receipt["runtimeAssemblyReceipt"]["assembly"].clone(),
     )?)
 }
 
-fn author(object: AuthoringObject, root: &Path, artifact_root: &Path) -> anyhow::Result<Value> {
-    build_authoring_object(object, root, artifact_root, true)
+fn author(
+    platform_sources: &CompilerPlatformSources,
+    object: AuthoringObject,
+    root: &Path,
+    artifact_root: &Path,
+) -> anyhow::Result<Value> {
+    build_authoring_object(platform_sources, object, root, artifact_root, true)
         .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 

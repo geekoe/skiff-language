@@ -1,10 +1,11 @@
 use std::{env, path::PathBuf, process};
 
+use skiff_compiler::CompilerPlatformSources;
 use skiff_test_runner::{
     run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() {
     if let Err(message) = run() {
@@ -32,6 +33,7 @@ struct CliArgs {
 struct RawCliArgs {
     input: Option<PathBuf>,
     artifact_root: Option<PathBuf>,
+    platform_source_root: Option<PathBuf>,
     base_assembly: Option<String>,
     activation_url: Option<String>,
     ingress_url: Option<String>,
@@ -54,6 +56,11 @@ fn parse_args() -> Result<Option<CliArgs>, String> {
             "--artifact-root" => {
                 set_once_path(&mut parsed.artifact_root, next(&mut args, &arg)?, &arg)?
             }
+            "--platform-source-root" => set_once_path(
+                &mut parsed.platform_source_root,
+                next(&mut args, &arg)?,
+                &arg,
+            )?,
             "--base-assembly" => set_once(&mut parsed.base_assembly, next(&mut args, &arg)?, &arg)?,
             "--activation-url" => {
                 let value = next(&mut args, &arg)?;
@@ -94,6 +101,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     let RawCliArgs {
         input,
         artifact_root,
+        platform_source_root,
         base_assembly,
         activation_url,
         ingress_url,
@@ -105,6 +113,10 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
     } = parsed;
     let input = input.ok_or_else(|| "missing input path".to_string())?;
     let artifact_root = artifact_root.ok_or_else(|| "missing --artifact-root".to_string())?;
+    let platform_source_root =
+        platform_source_root.ok_or_else(|| "missing --platform-source-root".to_string())?;
+    let platform_sources =
+        CompilerPlatformSources::new(&platform_source_root).map_err(|error| error.to_string())?;
     if live
         && (activation_url.is_none()
             || ingress_url.is_none()
@@ -164,6 +176,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         options: SkiffTestOptions {
             live,
             artifact_root: Some(artifact_root),
+            platform_sources,
             runtime_artifact_root,
             base_assembly,
             activation_url,

@@ -112,6 +112,13 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       command.args.slice(command.args.indexOf('--artifact-root'), command.args.indexOf('--artifact-root') + 2),
       ['--artifact-root', '/tmp/isolated/source-artifacts'],
     );
+    assert.deepEqual(
+      command.args.slice(
+        command.args.indexOf('--platform-source-root'),
+        command.args.indexOf('--platform-source-root') + 2,
+      ),
+      ['--platform-source-root', '/checkout/skiff'],
+    );
   }
   assert.deepEqual(commands[2].options, {
     cwd: '/checkout/skiff',
@@ -210,6 +217,8 @@ test('runner command selects the canonical binary from the multi-binary producti
     '/checkout/skiff/std',
     '--artifact-root',
     '/tmp/isolated/source-artifacts',
+    '--platform-source-root',
+    '/checkout/skiff',
     '--deny-skips',
     '--require-tests',
   ]);

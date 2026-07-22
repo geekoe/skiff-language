@@ -247,6 +247,7 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       '--live',
       '--artifact-root',
       artifactRoot,
+      ...runtimeLivePlatformSourceArgs(root),
       '--activation-url',
       activationUrl,
       '--ingress-url',
@@ -265,6 +266,10 @@ function runtimeFixturePhases(root, invocation, runtimeState, env) {
       executionPreflight,
     });
   });
+}
+
+export function runtimeLivePlatformSourceArgs(skiffRoot) {
+  return ['--platform-source-root', resolve(skiffRoot)];
 }
 
 function canonicalPackageRoot(repositoryRoot, file) {

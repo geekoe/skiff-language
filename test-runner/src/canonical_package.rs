@@ -5,8 +5,8 @@ use std::{
 
 use skiff_artifact_model::{ContractRequirement, PackageArtifact, PackageLocalAbiIdentity};
 use skiff_compiler::{
-    compile_package, PackageCompileError, PackageCompileInput, PackageContractCompileDependency,
-    PackageSourceInput, PublishedPackageArtifact,
+    compile_package, CompilerPlatformSources, PackageCompileError, PackageCompileInput,
+    PackageContractCompileDependency, PackageSourceInput, PublishedPackageArtifact,
 };
 use skiff_compiler_input::{
     package_config::{
@@ -76,6 +76,7 @@ pub enum CanonicalPackageProjectError {
 
 /// Compile one package source input through the production canonical pipeline.
 pub fn compile_package_artifact(
+    platform_sources: &CompilerPlatformSources,
     package: &PackageSourceInput,
     package_aliases: &BTreeMap<String, Vec<String>>,
     dependency_packages: &[PackageArtifact],
@@ -83,7 +84,7 @@ pub fn compile_package_artifact(
     contract_dependencies: &[PackageContractCompileDependency],
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
     let package_id = package.manifest().id.to_string();
-    let input = PackageCompileInput::new(package, package_aliases, &package_id)
+    let input = PackageCompileInput::new(platform_sources, package, package_aliases, &package_id)
         .with_canonical_dependencies(dependency_packages, contract_dependencies)
         .with_available_canonical_packages(available_packages);
     compile_package(input)
@@ -94,10 +95,11 @@ pub fn compile_package_artifact(
 /// Every dependency is loaded through an exact typed pointer and immutable record
 /// in the canonical store. Dependency source is never discovered or compiled.
 pub fn compile_package_project(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     artifact_root: &Path,
 ) -> Result<CanonicalPackageProject, CanonicalPackageProjectError> {
-    let manifest = read_root_package_manifest(root)?;
+    let manifest = read_root_package_manifest(platform_sources, root)?;
     let store = CanonicalArtifactStore::open(artifact_root)?;
     let manifest_dependencies = read_package_dependency_closure(&store, &manifest)?;
     let direct_dependencies = manifest
@@ -121,8 +123,9 @@ pub fn compile_package_project(
     let aliases = package_aliases(&manifest, &manifest_dependencies);
     let mut available = manifest_dependencies.clone();
     read_optional_platform_std(&store, &mut available)?;
-    let source = read_package_source_input(&manifest)?;
+    let source = read_package_source_input(platform_sources, &manifest)?;
     let package = compile_package_artifact(
+        platform_sources,
         &source,
         &aliases,
         &direct_dependencies,
@@ -138,13 +141,14 @@ pub fn compile_package_project(
 }
 
 pub(crate) fn read_root_package_manifest(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
 ) -> Result<PackageManifest, CanonicalPackageProjectError> {
     let path = root.join(PACKAGE_CONFIG_FILE);
     match read_user_package_manifest(&path) {
         Ok(manifest) => Ok(manifest),
         Err(user_error) => {
-            let Ok(manifests) = discover_package_manifests(root) else {
+            let Ok(manifests) = discover_package_manifests(platform_sources, root) else {
                 return Err(user_error.into());
             };
             let canonical_path = path.canonicalize().ok();
@@ -333,6 +337,7 @@ pub(crate) fn package_aliases(
 }
 
 fn read_package_source_input(
+    platform_sources: &CompilerPlatformSources,
     manifest: &PackageManifest,
 ) -> Result<PackageSourceInput, CanonicalPackageProjectError> {
     let root = manifest
@@ -344,7 +349,9 @@ fn read_package_source_input(
             path: manifest.provenance.path.display().to_string(),
         })?;
     let sources = match manifest.provenance.owner {
-        ManifestOwner::CompilerStandardPackage => read_official_package_sources(manifest, &root)?,
+        ManifestOwner::CompilerStandardPackage => {
+            read_official_package_sources(platform_sources, manifest)?
+        }
         ManifestOwner::UserOrBuiltinPackage => read_package_sources(manifest, &root)?,
     };
     let source_tree = sources.source_tree();

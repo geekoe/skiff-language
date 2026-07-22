@@ -39,7 +39,8 @@ pub fn run_package_cases(
         )
     })?;
     let base = CanonicalBaseAssembly::load(source_artifact_root, options.base_assembly.as_deref())?;
-    let overlay = compile_package_test_overlay(package_root, &project, &cases)?;
+    let overlay =
+        compile_package_test_overlay(&options.platform_sources, package_root, &project, &cases)?;
     let fixture = assemble_package_test_fixture(&project, overlay, base)?;
     fixture
         .records

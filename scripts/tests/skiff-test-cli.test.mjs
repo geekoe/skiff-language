@@ -43,6 +43,8 @@ test('skiff test --live forwards the complete canonical target and strict flags'
       '--live',
       '--artifact-root',
       artifactRoot,
+      '--platform-source-root',
+      root,
       '--base-assembly',
       assembly,
       '--activation-url',
@@ -93,6 +95,7 @@ test('skiff test rejects every retired test-runner option without an alias', asy
       '--router-reload-url',
       '--packages-dir',
       '--allow-network',
+      '--platform-source-root',
     ]) {
       const result = await runProcess(process.execPath, [
         skiffPath, 'test', input, '--artifact-root', fixture.root, option,

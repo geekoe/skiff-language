@@ -13,8 +13,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
-    ManifestOwner, ManifestProvenance, PackageSourceInput, PublicationManifest,
-    PublicationSourceGraph, SourceTree,
+    CompilerPlatformSources, ManifestOwner, ManifestProvenance, PackageSourceInput,
+    PublicationManifest, PublicationSourceGraph, SourceTree,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_test_runner::{
@@ -32,14 +32,20 @@ use skiff_test_runner::{
     SkiffTestError, SkiffTestOptions,
 };
 
+const EXPECTED_PRELUDE_IDENTITY: &str =
+    "skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d";
+const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
+    "skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4";
+
 #[test]
-fn runner_cli_exposes_only_the_canonical_test_target() {
+fn platform_source_context_contract() {
     let runner = env!("CARGO_BIN_EXE_skiff-test-runner");
     let help = Command::new(runner).arg("--help").output().unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     for option in [
         "--artifact-root",
+        "--platform-source-root",
         "--base-assembly",
         "--live",
         "--activation-url",
@@ -81,6 +87,9 @@ fn runner_cli_exposes_only_the_canonical_test_target() {
         .unwrap()
         .contains("missing --artifact-root"));
 
+    let fixture = env!("CARGO_BIN_EXE_skiff-package-service-smoke-fixture");
+    assert_platform_context_rejections(runner, fixture, &platform_source_root());
+
     let sentinel = "direct-runner-url-secret";
     for (option, value, expected) in [
         (
@@ -102,6 +111,66 @@ fn runner_cli_exposes_only_the_canonical_test_target() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains(expected));
         assert!(!stderr.contains(sentinel));
+    }
+}
+
+fn assert_platform_context_rejections(runner: &str, fixture: &str, platform_root: &Path) {
+    let cases = [
+        (vec![], "missing --platform-source-root"),
+        (
+            vec![
+                "--platform-source-root".to_string(),
+                platform_root.display().to_string(),
+                "--platform-source-root".to_string(),
+                platform_root.display().to_string(),
+            ],
+            "--platform-source-root was provided more than once",
+        ),
+        (
+            vec![
+                "--platform-source-root".to_string(),
+                "relative/platform".to_string(),
+            ],
+            "compiler platform source root must be absolute",
+        ),
+        (
+            vec![
+                "--platform-source-root".to_string(),
+                platform_root
+                    .join("missing-platform-root")
+                    .display()
+                    .to_string(),
+            ],
+            "failed to inspect compiler platform source path",
+        ),
+    ];
+    for (platform_args, expected) in cases {
+        let runner_output = Command::new(runner)
+            .arg(platform_root.join("std"))
+            .args(["--artifact-root", "/missing"])
+            .args(&platform_args)
+            .output()
+            .unwrap();
+        assert!(!runner_output.status.success());
+        assert!(String::from_utf8(runner_output.stderr)
+            .unwrap()
+            .contains(expected));
+
+        let fixture_output = Command::new(fixture)
+            .args([
+                "--bootstrap-only",
+                "--artifact-root",
+                "/missing",
+                "--environment",
+                "context-contract",
+            ])
+            .args(&platform_args)
+            .output()
+            .unwrap();
+        assert!(!fixture_output.status.success());
+        assert!(String::from_utf8(fixture_output.stderr)
+            .unwrap()
+            .contains(expected));
     }
 }
 
@@ -161,6 +230,7 @@ fn package_source_uses_the_canonical_package_artifact_pipeline() {
         Vec::new(),
     );
     let published = skiff_test_runner::canonical_package::compile_package_artifact(
+        &platform_sources(),
         &package,
         &BTreeMap::new(),
         &[],
@@ -196,7 +266,7 @@ contracts:
         ),
     );
 
-    let project = compile_package_project(&package, &artifacts)
+    let project = compile_package_project(&platform_sources(), &package, &artifacts)
         .expect("contract must resolve from the canonical store");
     assert_eq!(project.contract_dependencies.len(), 1);
     assert_eq!(project.package.artifact.service_requirements.len(), 1);
@@ -248,7 +318,7 @@ packages:
     )
     .unwrap();
 
-    let project = compile_package_project(&consumer, &artifacts)
+    let project = compile_package_project(&platform_sources(), &consumer, &artifacts)
         .expect("only canonical dependency records should be consulted");
     assert_eq!(project.dependency_packages.len(), 2);
     assert!(project
@@ -263,7 +333,8 @@ packages:
     .unwrap();
     let source_before_publish = read_tree(&artifacts);
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    let overlay = compile_package_test_overlay(&consumer, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
     let fixture =
         assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
     fixture.records.publish(&artifacts, &runtime).unwrap();
@@ -278,7 +349,8 @@ packages:
 
     let missing_store = root.child("missing-store");
     create_store(&missing_store);
-    let error = compile_package_project(&consumer, &missing_store).unwrap_err();
+    let error =
+        compile_package_project(&platform_sources(), &consumer, &missing_store).unwrap_err();
     assert!(error.to_string().contains("no published canonical pointer"));
 }
 
@@ -289,17 +361,16 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
     let runtime = root.child("runtime-artifacts");
     create_store(&artifacts);
 
-    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("std");
-    let project = compile_package_project(&platform_root, &artifacts).unwrap();
+    let platform_sources = platform_sources();
+    let platform_root = platform_sources.std_dir().to_path_buf();
+    let project = compile_package_project(&platform_sources, &platform_root, &artifacts).unwrap();
     assert_eq!(project.package.artifact.package_id, "skiff.run/std");
     assert!(project.dependency_packages.is_empty());
 
     let cases = discover_package_test_cases(&platform_root, &platform_root, false).unwrap();
     assert_eq!(cases.len(), 11, "the canonical std root must stay complete");
-    let overlay = compile_package_test_overlay(&platform_root, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources, &platform_root, &project, &cases).unwrap();
     assert!(overlay.bindings.iter().all(|binding| matches!(
         overlay
             .overlay
@@ -314,6 +385,41 @@ fn official_platform_package_is_compiled_as_the_selected_source_root() {
         assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default()).unwrap();
     assert_eq!(fixture.entrypoints.len(), cases.len());
     fixture.records.publish(&artifacts, &runtime).unwrap();
+
+    let fake_root = root.child("fake-reserved");
+    fs::create_dir_all(&fake_root).unwrap();
+    fs::copy(
+        platform_root.join("package.yml"),
+        fake_root.join("package.yml"),
+    )
+    .unwrap();
+    let error = compile_package_project(&platform_sources, &fake_root, &artifacts).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("package id skiff.run/std is reserved"));
+}
+
+#[test]
+#[ignore = "I16/G16 shared-target identity probe only"]
+fn platform_source_identity_probe() {
+    let root = std::env::var_os("SKIFF_TEST_PLATFORM_SOURCE_ROOT")
+        .map(PathBuf::from)
+        .expect("SKIFF_TEST_PLATFORM_SOURCE_ROOT is required by the ignored identity probe");
+    let platform_sources = CompilerPlatformSources::new(&root).unwrap();
+    skiff_compiler_source::prelude_registry::initialize_prelude_registry(&platform_sources)
+        .unwrap();
+
+    let temp = TestRoot::new("platform-identity-probe");
+    let artifacts = temp.child("artifacts");
+    create_store(&artifacts);
+    let project =
+        compile_package_project(&platform_sources, platform_sources.std_dir(), &artifacts).unwrap();
+    let prelude_identity = skiff_compiler_source::prelude_registry::prelude_identity();
+    let std_package_build_id = project.package.artifact.package_build_id.as_str();
+    assert_eq!(prelude_identity, EXPECTED_PRELUDE_IDENTITY);
+    assert_eq!(std_package_build_id, EXPECTED_STD_PACKAGE_BUILD_ID);
+    println!("PLATFORM_SOURCE_PRELUDE_IDENTITY={prelude_identity}");
+    println!("PLATFORM_SOURCE_STD_PACKAGE_BUILD_ID={std_package_build_id}");
 }
 
 #[test]
@@ -332,7 +438,7 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
     } = create_base_assembly_scenario();
 
     let source_before_publish = read_tree(&artifacts);
-    let project = compile_package_project(&consumer, &artifacts).unwrap();
+    let project = compile_package_project(&platform_sources(), &consumer, &artifacts).unwrap();
     assert_eq!(project.package.artifact.package_requirements.len(), 1);
     assert_eq!(project.package.artifact.service_call_refs.len(), 1);
     let package_requirement = project
@@ -348,7 +454,8 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
         .first()
         .expect("consumer service requirement");
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
-    let overlay = compile_package_test_overlay(&consumer, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
     let fixture = assemble_package_test_fixture(&project, overlay, base).unwrap();
     let test_deployment = fixture
         .records
@@ -433,11 +540,13 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
     )
     .unwrap();
     let before = read_tree(&artifacts);
-    let project = compile_package_project(&package, &artifacts).expect("production package");
+    let project = compile_package_project(&platform_sources(), &package, &artifacts)
+        .expect("production package");
     let production = skiff_artifact_identity::package_artifact_ref(&project.package.artifact)
         .expect("production ref");
     let cases = discover_package_test_cases(&package, &package, false).expect("test cases");
-    let overlay = compile_package_test_overlay(&package, &project, &cases).expect("overlay");
+    let overlay = compile_package_test_overlay(&platform_sources(), &package, &project, &cases)
+        .expect("overlay");
     assert_ne!(
         overlay.overlay.artifact.package_build_id,
         production.package_build_id
@@ -488,6 +597,7 @@ fn non_live_runtime_root_cannot_be_nested_under_the_external_store() {
         &SkiffTestOptions {
             live: false,
             artifact_root: Some(artifacts.clone()),
+            platform_sources: platform_sources(),
             runtime_artifact_root: Some(runtime),
             base_assembly: None,
             activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
@@ -525,9 +635,11 @@ contracts:
         "test \"needs provider\" { assert true }\n",
     )
     .unwrap();
-    let project = compile_package_project(&package, &artifacts).expect("consumer package");
+    let project = compile_package_project(&platform_sources(), &package, &artifacts)
+        .expect("consumer package");
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
-    let overlay = compile_package_test_overlay(&package, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
     let error = assemble_package_test_fixture(&project, overlay, CanonicalBaseAssembly::default())
         .unwrap_err();
     assert!(error
@@ -600,7 +712,7 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
         base,
         ..
     } = create_base_assembly_scenario();
-    let project = compile_package_project(&consumer, &artifacts).unwrap();
+    let project = compile_package_project(&platform_sources(), &consumer, &artifacts).unwrap();
     assert_helper_mutation_semantics(&project, &helper_package);
 
     let PackageLocalAbiSymbol::Callable { callable_id, .. } = project
@@ -629,7 +741,8 @@ fn fresh_helper_mutation_then_detached_service_call_projects_and_assembles() {
 
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     assert_eq!(cases.len(), 1);
-    let overlay = compile_package_test_overlay(&consumer, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
     assert!(matches!(
         overlay
             .overlay
@@ -684,11 +797,12 @@ fn ecosystem_fixture_has_no_artifact_rewrite_or_synthetic_stream_bridge() {
         "test \"smoke\" { assert true }\n",
     )
     .unwrap();
-    let project = compile_package_project(&package, &artifacts).unwrap();
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
     let production =
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
     let cases = discover_package_test_cases(&package, &package, false).unwrap();
-    let overlay = compile_package_test_overlay(&package, &project, &cases).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
     assert_eq!(fixture.production, production);
     assert_eq!(fixture.unary.selector.path, "/probe");
@@ -715,6 +829,7 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
     let fixture_root = package_service_host_fixture_root();
     let consumer = fixture_root.join("consumer");
     let receipt = prepare_package_service_host_fixture(
+        &platform_sources(),
         &fixture_root,
         &root.child("authoring"),
         &artifacts,
@@ -768,14 +883,21 @@ fn create_base_assembly_scenario() -> BaseAssemblyScenario {
 }
 
 fn publish_package(root: &Path, artifacts: &Path) -> PackageArtifactRef {
-    let output = build_authoring_object(AuthoringObject::Package, root, artifacts, true)
-        .expect("production package authoring should publish pointer and records");
+    let output = build_authoring_object(
+        &platform_sources(),
+        AuthoringObject::Package,
+        root,
+        artifacts,
+        true,
+    )
+    .expect("production package authoring should publish pointer and records");
     serde_json::from_value(output["packageArtifactReceipt"]["artifact"].clone())
         .expect("typed package authoring receipt")
 }
 
 fn publish_contract(artifacts: &Path) -> ServiceContractRef {
     let output = build_authoring_object(
+        &platform_sources(),
         AuthoringObject::Contract,
         &package_service_host_fixture_root().join("payments-contract"),
         artifacts,
@@ -788,6 +910,17 @@ fn publish_contract(artifacts: &Path) -> ServiceContractRef {
 
 fn package_service_host_fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/package-service-host")
+}
+
+fn platform_source_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("test-runner must live directly below the Skiff root")
+        .to_path_buf()
+}
+
+fn platform_sources() -> CompilerPlatformSources {
+    CompilerPlatformSources::new(&platform_source_root()).unwrap()
 }
 
 fn assert_json_keys(value: &serde_json::Value, expected: &[&str]) {

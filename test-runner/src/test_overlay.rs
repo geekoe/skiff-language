@@ -11,7 +11,9 @@ use std::{
 
 use skiff_artifact_identity::package_artifact_ref;
 use skiff_artifact_model::{PackageArtifactRef, PackageCallableId, PackageLocalAbiSymbol};
-use skiff_compiler::{PackageCompileError, PackageSourceInput, PublishedPackageArtifact};
+use skiff_compiler::{
+    CompilerPlatformSources, PackageCompileError, PackageSourceInput, PublishedPackageArtifact,
+};
 use skiff_compiler_input::source_tree::SourceTreeFile;
 use skiff_compiler_input::{
     package_config::{is_standard_package_id, PackageManifest},
@@ -62,6 +64,7 @@ pub enum PackageTestOverlayError {
 }
 
 pub fn compile_package_test_overlay(
+    platform_sources: &CompilerPlatformSources,
     package_root: &Path,
     project: &CanonicalPackageProject,
     cases: &[PackageTestCase],
@@ -73,8 +76,8 @@ pub fn compile_package_test_overlay(
     }
     let production = package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?;
-    let (source, manifest) = build_overlay_source(package_root, cases)?;
-    let overlay = compile_overlay_artifact(project, &manifest, &source)?;
+    let (source, manifest) = build_overlay_source(platform_sources, package_root, cases)?;
+    let overlay = compile_overlay_artifact(platform_sources, project, &manifest, &source)?;
     let bindings = overlay_bindings(cases, &overlay)?;
     if package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?
@@ -92,13 +95,14 @@ pub fn compile_package_test_overlay(
 }
 
 fn build_overlay_source(
+    platform_sources: &CompilerPlatformSources,
     package_root: &Path,
     cases: &[PackageTestCase],
 ) -> Result<(PackageSourceInput, PackageManifest), PackageTestOverlayError> {
-    let manifest = read_root_package_manifest(package_root)?;
+    let manifest = read_root_package_manifest(platform_sources, package_root)?;
     let raw_sources = match manifest.provenance.owner {
         ManifestOwner::CompilerStandardPackage => {
-            read_official_package_sources(&manifest, package_root)?
+            read_official_package_sources(platform_sources, &manifest)?
         }
         ManifestOwner::UserOrBuiltinPackage => read_package_sources(&manifest, package_root)?,
     };
@@ -176,6 +180,7 @@ fn build_overlay_source(
 }
 
 fn compile_overlay_artifact(
+    platform_sources: &CompilerPlatformSources,
     project: &CanonicalPackageProject,
     manifest: &PackageManifest,
     source: &PackageSourceInput,
@@ -198,6 +203,7 @@ fn compile_overlay_artifact(
         .collect::<Result<Vec<_>, _>>()?;
     let available = project.artifacts().cloned().collect::<Vec<_>>();
     Ok(compile_package_artifact(
+        platform_sources,
         source,
         &aliases,
         &dependencies,
