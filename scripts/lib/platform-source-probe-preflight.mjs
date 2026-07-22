@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 import { assertCombinedLedger } from './platform-source-probe-contract.mjs';
+import { assertProbeWorktreesUnregistered } from './platform-source-probe-ownership.mjs';
 
 const GIB = 1024 ** 3;
 
@@ -58,14 +59,7 @@ export async function preflightPlatformSourceProbe(input, deps, checked) {
   if (!statusIsClean(status, input)) {
     throw new Error(`integration candidate is not clean: ${status}`);
   }
-  const worktrees = (await checked(deps, 'git', [
-    '-C', input.integrationRoot, 'worktree', 'list', '--porcelain',
-  ])).stdout;
-  for (const path of [input.aWorktree, input.bWorktree]) {
-    if (worktrees.split(/\r?\n/).includes(`worktree ${path}`)) {
-      throw new Error(`worktree is already registered: ${path}`);
-    }
-  }
+  await assertProbeWorktreesUnregistered(input, deps, checked);
 
   let combinedLedger = null;
   if (input.mode === 'full') {

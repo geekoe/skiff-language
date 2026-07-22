@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { probeDigest } from './platform-source-probe-support.mjs';
 
-export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v2';
+export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v3';
 export const PROBE_TARGETED_CRATES = Object.freeze([
   'skiff-test-runner',
   'skiff-compiler',
@@ -71,10 +71,14 @@ function pathsOverlap(left, right) {
   return contained(fromLeft) || contained(fromRight);
 }
 
-export function createProbeLedger(input) {
+export function createProbeLedger(input, probeNonce) {
+  if (!/^[a-f0-9]{32}$/.test(probeNonce)) {
+    throw new Error('probe nonce must be 128 bits of lowercase hexadecimal');
+  }
   return {
     schemaVersion: PROBE_LEDGER_SCHEMA,
     mode: input.mode,
+    probeNonce,
     status: 'RUNNING',
     candidate: input.candidate,
     tree: input.expectedTree,
@@ -98,6 +102,7 @@ export function createProbeLedger(input) {
     ports: [],
     primary: null,
     cleanup: null,
+    ownership: null,
     firstError: null,
   };
 }
@@ -128,6 +133,10 @@ export function assertCombinedLedger(ledger, input) {
     ledger.paths?.integrationRoot !== input.integrationRoot
     || ledger.output?.combinedLedger !== input.combinedLedger
     || ledger.output?.atomicWrite !== 'PASS'
+    || ledger.output?.method !== 'wx+flush+close+hard-link'
+    || ledger.output?.temporaryPath !== `${input.combinedLedger}.${ledger.probeNonce}.tmp`
+    || ledger.output?.ownedTemporaryAbsent !== true
+    || ledger.output?.foreignDestinationPreserved !== true
     || ledger.primary?.status !== 'PASS'
     || ledger.firstError !== null
     || JSON.stringify(ledger.targetedCleanCrates) !== JSON.stringify(PROBE_TARGETED_CRATES)
@@ -137,6 +146,35 @@ export function assertCombinedLedger(ledger, input) {
     || ledger.sourceSuite !== null
   ) {
     throw new Error('combined ledger matrix metadata is incomplete');
+  }
+  const worktreeOwnership = ledger.ownership?.worktrees;
+  if (
+    !/^[a-f0-9]{32}$/.test(ledger.probeNonce)
+    || ledger.ownership?.nonce !== ledger.probeNonce
+    || !Array.isArray(worktreeOwnership)
+    || worktreeOwnership.length !== 2
+    || JSON.stringify(worktreeOwnership.map((entry) => entry.label))
+      !== JSON.stringify(['A', 'B'])
+    || JSON.stringify(worktreeOwnership.map((entry) => entry.path))
+      !== JSON.stringify([ledger.paths?.aWorktree, ledger.paths?.bWorktree])
+    || worktreeOwnership.some((entry) => (
+      entry.claimVerifiedBeforeRemoval !== true
+      || entry.pathAbsent !== true
+      || entry.registryAbsent !== true
+      || entry.registryStorageAbsent !== true
+      || entry.error !== null
+      || typeof entry.registryIdentity?.entryIdentity !== 'string'
+      || entry.registryIdentity?.adminIdentity?.kind !== 'directory'
+      || !/^[a-f0-9]{64}$/.test(entry.claimDigest)
+    ))
+    || ledger.ownership?.taskRoot?.path !== ledger.paths?.taskRoot
+    || ledger.ownership?.taskRoot?.markerVerifiedBeforeRemoval !== true
+    || ledger.ownership?.taskRoot?.retainedForOwnership !== false
+    || ledger.ownership?.taskRoot?.absent !== true
+    || ledger.ownership?.foreign?.preserved !== true
+    || ledger.ownership?.errors?.length !== 0
+  ) {
+    throw new Error('combined ledger resource ownership proof is incomplete');
   }
   if (
     !Array.isArray(ledger.identityProbes)
