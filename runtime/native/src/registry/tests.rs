@@ -4,8 +4,12 @@ use skiff_artifact_model::{
     BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_model::error::{TypeIdentity, WirePayload};
+use skiff_runtime_native_contract::NativeRequiredContext;
 
-use crate::handlers::array_empty;
+use crate::{
+    dispatch::{runtime_shared_native_route_for_validation, RuntimeNativeRoute},
+    handlers::array_empty,
+};
 
 use super::{
     table::{
@@ -179,20 +183,80 @@ fn native_callable_semantics_registry_rejects_signature_mismatch() {
 }
 
 #[test]
-fn native_callable_semantics_registry_rejects_capability_descriptor() {
+fn native_callable_semantics_registry_accepts_exact_websocket_route_matrix() {
+    for binding_key in [
+        "std.websocket.sendTextToConnection",
+        "std.websocket.sendBinaryToConnection",
+        "std.websocket.sendTextToBusinessIdentity",
+        "std.websocket.sendBinaryToBusinessIdentity",
+    ] {
+        let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|semantics| semantics.binding_key == binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} should have audited callable semantics"));
+        let handler_count = NATIVE_BINDINGS
+            .iter()
+            .filter(|entry| entry.binding_key == binding_key)
+            .count();
+
+        assert_eq!(
+            NativeRequiredContext::for_binding_key(binding_key),
+            Some(NativeRequiredContext::Websocket),
+            "{binding_key} required context"
+        );
+        assert_eq!(handler_count, 0, "{binding_key} registry handler count");
+        assert_eq!(
+            runtime_shared_native_route_for_validation(binding_key, handler_count > 0),
+            Some(RuntimeNativeRoute::Websocket),
+            "{binding_key} runtime route"
+        );
+        validate_native_callable_semantics_registry(
+            std::slice::from_ref(semantics),
+            STD_NATIVE_SIGNATURES,
+            NATIVE_BINDINGS,
+        )
+        .unwrap_or_else(|error| panic!("{binding_key} should validate: {error}"));
+    }
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_websocket_registry_handler() {
+    let binding_key = "std.websocket.sendTextToConnection";
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == binding_key)
+        .expect("websocket send should have audited callable semantics");
+    let handler_entries = &[NativeHandlerEntry {
+        binding_key,
+        handler: array_empty,
+    }];
     let error = validate_native_callable_semantics_registry(
-        &[detached_native_semantics(
-            "std.websocket.sendTextToConnection",
-        )],
+        std::slice::from_ref(semantics),
+        STD_NATIVE_SIGNATURES,
+        handler_entries,
+    )
+    .expect_err("websocket route must not use a context-free registry handler");
+
+    assert!(
+        error.contains(binding_key)
+            && error.contains("expected 0 runtime registry handler(s), found 1"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_unaudited_file_capability_descriptor() {
+    let error = validate_native_callable_semantics_registry(
+        &[detached_native_semantics("std.file.readText")],
         STD_NATIVE_SIGNATURES,
         NATIVE_BINDINGS,
     )
-    .expect_err("contextful descriptor should fail validation");
+    .expect_err("unaudited file descriptor should fail validation");
 
     assert!(
-        error.contains("std.websocket.sendTextToConnection")
-            && error.contains("context Websocket")
-            && error.contains("route Websocket"),
+        error.contains("std.file.readText")
+            && error.contains("context File")
+            && error.contains("route File"),
         "unexpected error: {error}"
     );
 }
@@ -214,11 +278,13 @@ fn native_callable_semantics_registry_rejects_missing_handler() {
 }
 
 #[test]
-fn native_callable_semantics_registry_keeps_unaudited_capabilities_unregistered() {
+fn native_callable_semantics_registry_keeps_unaudited_non_websocket_capabilities_unregistered() {
     for binding_key in [
         "std.file.readText",
         "std.http.client.request",
-        "std.websocket.sendTextToConnection",
+        "actor.put",
+        "std.telemetry.emit",
+        "std.resource.text",
     ] {
         assert!(STD_NATIVE_CALLABLE_SEMANTICS
             .iter()

@@ -148,6 +148,7 @@ pub(super) fn validate_native_callable_semantics_registry(
         let route_matches = match (binding_key, required_context, route) {
             ("core.date.now", NativeRequiredContext::Time, RuntimeNativeRoute::NativeRegistry)
             | ("std.time.sleep", NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
+            (_, NativeRequiredContext::Websocket, RuntimeNativeRoute::Websocket) => true,
             (_, NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry) => true,
             _ => false,
         };
