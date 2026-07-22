@@ -56,6 +56,57 @@ fn canonical_spec_exposes_only_event_and_result_as_contract_builtins() {
 }
 
 #[test]
+fn websocket_admission_consumes_context_arity_from_builtin_spec() {
+    let operation_id = ContractOperationId::new("operation:websocket");
+    let one_argument_contract = websocket_contract(
+        operation_id.clone(),
+        ContractTypeRef::builtin("null"),
+        BTreeMap::new(),
+    );
+    let mut arity_drift = build_canonical_websocket_shape_spec();
+    for builtin in &mut arity_drift.contract_builtins {
+        builtin.context_arity = 2;
+    }
+
+    assert_error_contains(
+        websocket_ingress_context_with_shape_spec(
+            &one_argument_contract,
+            &operation_id,
+            &arity_drift,
+        ),
+        "event must be",
+    );
+
+    let mut two_argument_contract = one_argument_contract;
+    let operation = &mut two_argument_contract
+        .operations
+        .get_mut(&operation_id)
+        .expect("WebSocket operation is present")
+        .contract;
+    let ContractTypeRef::Builtin { arguments, .. } = &mut operation.parameters[0].ty else {
+        panic!("event must be a builtin")
+    };
+    arguments.push(ContractTypeRef::builtin("null"));
+    let ContractTypeRef::Nullable { inner } = &mut operation.return_value.ty else {
+        panic!("result must be nullable")
+    };
+    let ContractTypeRef::Builtin { arguments, .. } = inner.as_mut() else {
+        panic!("result must wrap a builtin")
+    };
+    arguments.push(ContractTypeRef::builtin("null"));
+
+    assert_eq!(
+        websocket_ingress_context_with_shape_spec(
+            &two_argument_contract,
+            &operation_id,
+            &arity_drift,
+        )
+        .unwrap(),
+        WebSocketIngressContext::Null
+    );
+}
+
+#[test]
 fn canonical_event_spec_covers_connect_and_receive_nested_shapes_exactly() {
     use WebSocketShapeId as Id;
     use WebSocketShapeType as Ty;

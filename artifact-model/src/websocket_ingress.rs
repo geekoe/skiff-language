@@ -441,7 +441,18 @@ pub fn websocket_ingress_context(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
 ) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
-    let shape_spec = canonical_websocket_shape_spec();
+    websocket_ingress_context_with_shape_spec(
+        contract,
+        operation_id,
+        canonical_websocket_shape_spec(),
+    )
+}
+
+fn websocket_ingress_context_with_shape_spec(
+    contract: &ServiceContract,
+    operation_id: &ContractOperationId,
+    shape_spec: &CanonicalWebSocketShapeSpec,
+) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
     let event_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
     let result_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Result);
     let descriptor = contract.operations.get(operation_id).ok_or_else(|| {
@@ -465,7 +476,7 @@ pub fn websocket_ingress_context(
             "WebSocket ingress parameter must be named event",
         ));
     }
-    let context = generic_argument(&parameter.ty, event_builtin.name()).ok_or_else(|| {
+    let context = generic_context_argument(&parameter.ty, event_builtin).ok_or_else(|| {
         WebSocketIngressContractError::new(format!(
             "WebSocket ingress event must be {}<Context>",
             event_builtin.name()
@@ -497,7 +508,7 @@ pub fn websocket_ingress_context(
             "WebSocket ingress return must be {WEBSOCKET_CONNECT_RESULT_TYPE}<Context>?"
         )));
     };
-    let return_context = generic_argument(inner, result_builtin.name()).ok_or_else(|| {
+    let return_context = generic_context_argument(inner, result_builtin).ok_or_else(|| {
         WebSocketIngressContractError::new(format!(
             "WebSocket ingress return must be {}<Context>?",
             result_builtin.name()
@@ -691,18 +702,17 @@ fn validate_persistable_context_ref(
     }
 }
 
-fn generic_argument<'a>(ty: &'a ContractTypeRef, name: &str) -> Option<&'a ContractTypeRef> {
-    let ContractTypeRef::Builtin {
-        name: actual,
-        arguments,
-    } = ty
-    else {
+fn generic_context_argument<'a>(
+    ty: &'a ContractTypeRef,
+    builtin: &WebSocketContractBuiltinSpec,
+) -> Option<&'a ContractTypeRef> {
+    let ContractTypeRef::Builtin { name, arguments } = ty else {
         return None;
     };
-    let [argument] = arguments.as_slice() else {
+    if name != builtin.name() || arguments.len() != builtin.context_arity() {
         return None;
-    };
-    (actual == name).then_some(argument)
+    }
+    arguments.first()
 }
 
 fn generic_context_ref(context: &WebSocketIngressContext) -> ContractTypeRef {
