@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
+  compilerAuthoringInvocation,
+  objectUsage,
   parseObjectArgs,
   requestAssemblyActivation,
   runCompilerAuthoring,
@@ -17,6 +19,58 @@ import {
 } from './package-service-fixtures.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
+
+test(
+  'compiler authoring transports the exact absolute platform root independently of cwd',
+  { concurrency: false },
+  async () => {
+    const alternateCwd = await mkdtemp(join(tmpdir(), 'skiff-authoring-cwd-'));
+    const request = {
+      skiffRoot,
+      kind: 'package',
+      action: 'build',
+      root: '/tmp/example-package',
+      artifactRoot: '/tmp/example-artifacts',
+    };
+    const originalCwd = process.cwd();
+    const before = compilerAuthoringInvocation(request);
+    let after;
+    try {
+      process.chdir(alternateCwd);
+      after = compilerAuthoringInvocation(request);
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    assert.deepEqual(after, before);
+    assert.equal(before.cwd, skiffRoot);
+    const platformRootPositions = before.args
+      .map((argument, index) => argument === '--platform-source-root' ? index : -1)
+      .filter((index) => index !== -1);
+    assert.deepEqual(platformRootPositions, [before.args.length - 3]);
+    assert.equal(before.args[platformRootPositions[0] + 1], skiffRoot);
+    assert.throws(
+      () => compilerAuthoringInvocation({ ...request, skiffRoot: 'relative/skiff-root' }),
+      /absolute skiffRoot/,
+    );
+  },
+);
+
+test('public four-object CLI does not expose the internal platform trust option', () => {
+  for (const kind of ['package', 'contract', 'deployment', 'assembly']) {
+    assert.doesNotMatch(objectUsage(kind), /platform-source-root/);
+    assert.throws(
+      () => parseObjectArgs(kind, 'build', [
+        '/tmp/object-root',
+        '--artifact-root',
+        '/tmp/artifacts',
+        '--platform-source-root',
+        skiffRoot,
+      ]),
+      /unknown option --platform-source-root/,
+    );
+  }
+});
 
 test('contract-first publish compiles a consumer with no provider package', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'skiff-authoring-contract-first-'));

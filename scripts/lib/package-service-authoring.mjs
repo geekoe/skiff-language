@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 import { cargoTargetDir } from './cargo-target-dir.mjs';
 import { captureAttachedCommand } from './command-execution.mjs';
@@ -120,23 +120,15 @@ export async function runCompilerAuthoring({
   root,
   artifactRoot,
 }) {
-  const commandArgs = [
-    'run',
-    '--quiet',
-    '--manifest-path',
-    resolve(skiffRoot, 'compiler', 'Cargo.toml'),
-    '--bin',
-    'skiff-compiler',
-    '--',
+  const invocation = compilerAuthoringInvocation({
+    skiffRoot,
     kind,
     action,
     root,
-    '--artifact-root',
     artifactRoot,
-    '--json',
-  ];
-  const outcome = await captureAttachedCommand('cargo', commandArgs, {
-    cwd: skiffRoot,
+  });
+  const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
     env: {
       ...process.env,
       CARGO_TARGET_DIR: cargoTargetDir(skiffRoot),
@@ -152,6 +144,39 @@ export async function runCompilerAuthoring({
   } catch (error) {
     throw new Error(`${kind} ${action} returned invalid JSON: ${error.message}`);
   }
+}
+
+export function compilerAuthoringInvocation({
+  skiffRoot,
+  kind,
+  action,
+  root,
+  artifactRoot,
+}) {
+  if (!isAbsolute(skiffRoot)) {
+    throw new Error('compiler authoring requires an absolute skiffRoot');
+  }
+  return {
+    command: 'cargo',
+    cwd: skiffRoot,
+    args: [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      resolve(skiffRoot, 'compiler', 'Cargo.toml'),
+      '--bin',
+      'skiff-compiler',
+      '--',
+      kind,
+      action,
+      root,
+      '--artifact-root',
+      artifactRoot,
+      '--platform-source-root',
+      skiffRoot,
+      '--json',
+    ],
+  };
 }
 
 export function parseObjectArgs(kind, action, rawArgs) {
