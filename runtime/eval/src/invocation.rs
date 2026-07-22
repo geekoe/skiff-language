@@ -385,28 +385,34 @@ pub struct EvalWebSocketContextCodec {
     pub context_type_identity: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalWebSocketConnectResult {
-    Accept,
-    Reject,
+#[derive(Clone, Debug, PartialEq)]
+pub enum EvalWebSocketAdapterResult {
+    ConnectAccept(EvalWebSocketConnectAccept),
+    ConnectReject(EvalWebSocketConnectReject),
+    Receive,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct EvalWebSocketAdapterResult {
-    pub payload: Vec<u8>,
-    pub response: Option<EvalWebSocketConnectResponse>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EvalWebSocketConnectResponse {
-    pub result: EvalWebSocketConnectResult,
+pub struct EvalWebSocketConnectAccept {
     pub business_identity: Option<String>,
     pub connection_policy:
         Option<skiff_runtime_capability_context::WebSocketConnectionPolicyControl>,
-    pub context_codec: Option<EvalWebSocketContextCodec>,
-    pub context_payload_present: bool,
-    pub code: Option<u16>,
-    pub reason: Option<String>,
+    pub context: EvalWebSocketConnectContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvalWebSocketConnectContext {
+    Null,
+    Typed {
+        payload: Vec<u8>,
+        codec: EvalWebSocketContextCodec,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalWebSocketConnectReject {
+    pub code: u16,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

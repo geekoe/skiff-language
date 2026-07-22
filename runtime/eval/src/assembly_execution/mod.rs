@@ -4,7 +4,9 @@ mod callback_native;
 mod ingress;
 mod ordinary;
 mod projection;
+mod websocket_identity;
 mod websocket_ingress;
+mod websocket_response;
 
 use skiff_artifact_model::{BoundaryCancellationContract, BoundaryStreamContract};
 use skiff_runtime_linked_program::{
@@ -22,6 +24,7 @@ use crate::{
 pub(crate) use callback_native::CallbackNativeCapabilityHooks;
 pub use ingress::{dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse};
 pub(crate) use projection::{RuntimeAssemblyExecutionProjection, RuntimeExecutionProjection};
+pub use websocket_identity::AdmittedWebSocketIngressIdentity;
 pub use websocket_ingress::dispatch_websocket_ingress_via_in_process_boundary;
 
 pub(crate) async fn dispatch_package_direct(

@@ -17,8 +17,9 @@ pub use outbound::{
     RuntimeDeadlineControl, RuntimeTraceContextControl, SpawnSubmitControlRequest,
 };
 pub use response_event::{
-    BoundaryResponse, HttpResponseMetadata, ResponseError, ResponseEvent, ResponseStreamEvent,
-    WebSocketConnectResponse,
+    BoundaryResponse, HttpResponseMetadata, ResponseEnd, ResponseError, ResponseEvent,
+    ResponseStreamEvent, WebSocketConnectAccept, WebSocketConnectContext, WebSocketConnectReject,
+    WebSocketResponse,
 };
 pub use skiff_runtime_capability_context::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,

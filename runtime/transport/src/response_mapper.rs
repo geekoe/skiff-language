@@ -1,16 +1,18 @@
 use skiff_runtime_request_contract::{
-    HttpNameValue, HttpResponseMetadata, OutboundResponse, ResponseError, ResponseEvent,
-    ResponseStreamEvent, WebSocketConnectResponse, WebSocketContextCodec,
+    HttpNameValue, HttpResponseMetadata, OutboundResponse, ResponseEnd, ResponseError,
+    ResponseEvent, ResponseStreamEvent, WebSocketConnectAccept, WebSocketConnectContext,
+    WebSocketConnectReject, WebSocketContextCodec, WebSocketResponse,
 };
 
 use crate::{
     error::TransportResult,
     protocol::{
         encode_binary_frame, ResponseChunkFrameHeader, ResponseEndFrameHeader,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, RuntimeErrorFramePayload,
-        RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
-        RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketResponseFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        ResponseEndFrameMetadata, ResponseErrorFrameHeader, ResponseStartFrameHeader,
+        RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
+        RuntimeWebSocketConnectAcceptFrameHeader, RuntimeWebSocketConnectContextFrameHeader,
+        RuntimeWebSocketConnectRejectFrameHeader, RuntimeWebSocketContextCodecFrameHeader,
+        RuntimeWebSocketResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -19,19 +21,16 @@ pub fn response_event_into_frame(
     event: ResponseEvent,
 ) -> TransportResult<Vec<u8>> {
     match event {
-        ResponseEvent::End {
-            payload,
-            http_response,
-            websocket_connect,
-        } => {
+        ResponseEvent::End(end) => {
+            let (payload, payload_present, metadata, phase) = response_end_frame_parts(end);
             let header = ResponseEndFrameHeader {
                 schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
                 envelope_type: "response.end".to_string(),
                 request_id,
-                payload_present: !payload.is_empty(),
-                http_response: http_response.map(protocol_http_response_metadata),
-                websocket_connect: websocket_connect.map(protocol_websocket_connect_response),
+                payload_present,
+                metadata,
             };
+            validate_response_end_frame(&header, &payload, phase)?;
             encode_response_frame(&header, &payload)
         }
         ResponseEvent::Error(error) => {
@@ -80,8 +79,7 @@ pub fn response_stream_event_into_frame(
                 envelope_type: "response.end".to_string(),
                 request_id: request_id.to_string(),
                 payload_present: false,
-                http_response: None,
-                websocket_connect: None,
+                metadata: ResponseEndFrameMetadata::None,
             };
             encode_response_frame(&header, &[])
         }
@@ -92,8 +90,68 @@ pub fn response_end_to_outbound(
     header: &ResponseEndFrameHeader,
     payload: Vec<u8>,
 ) -> OutboundResponse {
-    let _payload_present = header.payload_present;
+    if let Err(error) = validate_response_end_frame(header, &payload, ResponseEndPhase::Payload) {
+        return invalid_response_end(&error.to_string());
+    }
     OutboundResponse::End { payload }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseEndPhase {
+    Payload,
+    Http,
+    WebSocketConnect,
+    WebSocketReceive,
+}
+
+/// Validates the phase facts that cannot be represented by the shared wire header alone.
+/// In particular, a typed WebSocket Context is nominally present even when its payload encodes to
+/// zero bytes, while receive never carries a response payload or connect metadata.
+pub fn validate_response_end_frame(
+    header: &ResponseEndFrameHeader,
+    payload: &[u8],
+    phase: ResponseEndPhase,
+) -> TransportResult<()> {
+    if header.schema_version != RUNTIME_FRAME_SCHEMA_VERSION
+        || header.envelope_type != "response.end"
+    {
+        return Err(crate::TransportError::decode(
+            "response.end schemaVersion/type is invalid",
+        ));
+    }
+    let valid = match (phase, &header.metadata) {
+        (ResponseEndPhase::Payload, ResponseEndFrameMetadata::None)
+        | (ResponseEndPhase::Http, ResponseEndFrameMetadata::Http(_)) => {
+            header.payload_present == !payload.is_empty()
+        }
+        (
+            ResponseEndPhase::WebSocketConnect,
+            ResponseEndFrameMetadata::WebSocketConnect(
+                RuntimeWebSocketResponseFrameHeader::ConnectAccept(accept),
+            ),
+        ) => match &accept.context {
+            RuntimeWebSocketConnectContextFrameHeader::Null => {
+                !header.payload_present && payload.is_empty()
+            }
+            RuntimeWebSocketConnectContextFrameHeader::Typed(_) => header.payload_present,
+        },
+        (
+            ResponseEndPhase::WebSocketConnect,
+            ResponseEndFrameMetadata::WebSocketConnect(
+                RuntimeWebSocketResponseFrameHeader::ConnectReject(_),
+            ),
+        )
+        | (ResponseEndPhase::WebSocketReceive, ResponseEndFrameMetadata::None) => {
+            !header.payload_present && payload.is_empty()
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(crate::TransportError::decode(
+            "response.end metadata/payload does not match the admitted response phase",
+        ));
+    }
+    Ok(())
 }
 
 pub fn response_start_to_outbound(header: &ResponseStartFrameHeader) -> OutboundResponse {
@@ -172,18 +230,100 @@ fn request_response_error(error: RuntimeErrorFramePayload) -> ResponseError {
     }
 }
 
-fn protocol_websocket_connect_response(
-    response: WebSocketConnectResponse,
+fn response_end_frame_parts(
+    response: ResponseEnd,
+) -> (Vec<u8>, bool, ResponseEndFrameMetadata, ResponseEndPhase) {
+    match response {
+        ResponseEnd::Payload(payload) => {
+            let payload_present = !payload.is_empty();
+            (
+                payload,
+                payload_present,
+                ResponseEndFrameMetadata::None,
+                ResponseEndPhase::Payload,
+            )
+        }
+        ResponseEnd::Http { payload, metadata } => {
+            let payload_present = !payload.is_empty();
+            (
+                payload,
+                payload_present,
+                ResponseEndFrameMetadata::Http(protocol_http_response_metadata(metadata)),
+                ResponseEndPhase::Http,
+            )
+        }
+        ResponseEnd::WebSocket(WebSocketResponse::ConnectAccept(response)) => {
+            let (payload, payload_present, metadata) = protocol_websocket_connect_accept(response);
+            (
+                payload,
+                payload_present,
+                metadata,
+                ResponseEndPhase::WebSocketConnect,
+            )
+        }
+        ResponseEnd::WebSocket(WebSocketResponse::ConnectReject(response)) => (
+            Vec::new(),
+            false,
+            ResponseEndFrameMetadata::WebSocketConnect(protocol_websocket_connect_reject(response)),
+            ResponseEndPhase::WebSocketConnect,
+        ),
+        ResponseEnd::WebSocket(WebSocketResponse::Receive) => (
+            Vec::new(),
+            false,
+            ResponseEndFrameMetadata::None,
+            ResponseEndPhase::WebSocketReceive,
+        ),
+    }
+}
+
+fn protocol_websocket_connect_accept(
+    response: WebSocketConnectAccept,
+) -> (Vec<u8>, bool, ResponseEndFrameMetadata) {
+    let (payload, payload_present, context) = match response.context {
+        WebSocketConnectContext::Null => (
+            Vec::new(),
+            false,
+            RuntimeWebSocketConnectContextFrameHeader::Null,
+        ),
+        WebSocketConnectContext::Typed { payload, codec } => (
+            payload,
+            true,
+            RuntimeWebSocketConnectContextFrameHeader::Typed(protocol_websocket_context_codec(
+                codec,
+            )),
+        ),
+    };
+    (
+        payload,
+        payload_present,
+        ResponseEndFrameMetadata::WebSocketConnect(
+            RuntimeWebSocketResponseFrameHeader::ConnectAccept(
+                RuntimeWebSocketConnectAcceptFrameHeader {
+                    business_identity: response.business_identity,
+                    connection_policy: response.connection_policy,
+                    context,
+                },
+            ),
+        ),
+    )
+}
+
+fn protocol_websocket_connect_reject(
+    response: WebSocketConnectReject,
 ) -> RuntimeWebSocketResponseFrameHeader {
-    RuntimeWebSocketResponseFrameHeader {
-        result: response.result,
-        business_identity: response.business_identity,
-        connection_policy: response.connection_policy,
-        context_codec: response.context_codec.map(protocol_websocket_context_codec),
-        context_payload_present: response.context_payload_present,
+    RuntimeWebSocketResponseFrameHeader::ConnectReject(RuntimeWebSocketConnectRejectFrameHeader {
         code: response.code,
         reason: response.reason,
-    }
+    })
+}
+
+fn invalid_response_end(message: &str) -> OutboundResponse {
+    OutboundResponse::Error(ResponseError {
+        code: "RuntimeProtocolViolation".to_string(),
+        message: message.to_string(),
+        status: None,
+        details: None,
+    })
 }
 
 fn protocol_websocket_context_codec(
@@ -196,274 +336,4 @@ fn protocol_websocket_context_codec(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::num::NonZeroU32;
-
-    use serde_json::json;
-
-    use super::{
-        response_chunk_to_outbound, response_end_to_outbound, response_error_to_outbound,
-        response_event_into_frame, response_start_to_outbound, response_stream_event_into_frame,
-    };
-    use crate::protocol::{
-        decode_typed_binary_frame, ResponseChunkFrameHeader, ResponseEndFrameHeader,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, RuntimeErrorFramePayload,
-        RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
-        RuntimeWebSocketContextCodecFrameHeader, RuntimeWebSocketResponseFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
-    };
-    use skiff_runtime_request_contract::{
-        HttpNameValue, HttpResponseMetadata, OutboundResponse, ResponseError, ResponseEvent,
-        ResponseStreamEvent, WebSocketConnectResponse, WebSocketConnectionPolicyControl,
-        WebSocketConnectionPolicyOverflowControl, WebSocketContextCodec,
-    };
-
-    #[test]
-    fn response_event_end_maps_to_response_end_frame_with_opaque_payload() {
-        let payload = b"opaque response bytes".to_vec();
-        let frame = response_event_into_frame(
-            "request-1".to_string(),
-            ResponseEvent::End {
-                payload: payload.clone(),
-                http_response: Some(HttpResponseMetadata::new(
-                    202,
-                    vec![HttpNameValue {
-                        name: "content-type".to_string(),
-                        value: "application/octet-stream".to_string(),
-                    }],
-                )),
-                websocket_connect: Some(WebSocketConnectResponse {
-                    result: "accepted".to_string(),
-                    business_identity: Some("business-1".to_string()),
-                    connection_policy: Some(WebSocketConnectionPolicyControl {
-                        max_connections: NonZeroU32::new(1).expect("non-zero fixture"),
-                        overflow: WebSocketConnectionPolicyOverflowControl::CloseOldest,
-                        close_code: None,
-                        close_reason: None,
-                    }),
-                    context_codec: Some(WebSocketContextCodec {
-                        operation_abi_id: "op-abi-1".to_string(),
-                        context_type_identity: "context-type-1".to_string(),
-                    }),
-                    context_payload_present: true,
-                    code: None,
-                    reason: None,
-                }),
-            },
-        )
-        .expect("response.end frame should encode");
-
-        let (header, decoded_payload): (ResponseEndFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("response.end frame should decode");
-
-        assert_eq!(decoded_payload, payload);
-        assert_eq!(
-            header,
-            ResponseEndFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "response.end".to_string(),
-                request_id: "request-1".to_string(),
-                payload_present: true,
-                http_response: Some(RuntimeHttpResponseFrameHeader {
-                    status: 202,
-                    headers: vec![RuntimeHttpNameValueFrameHeader {
-                        name: "content-type".to_string(),
-                        value: "application/octet-stream".to_string(),
-                    }],
-                }),
-                websocket_connect: Some(RuntimeWebSocketResponseFrameHeader {
-                    result: "accepted".to_string(),
-                    business_identity: Some("business-1".to_string()),
-                    connection_policy: Some(WebSocketConnectionPolicyControl {
-                        max_connections: NonZeroU32::new(1).expect("non-zero fixture"),
-                        overflow: WebSocketConnectionPolicyOverflowControl::CloseOldest,
-                        close_code: None,
-                        close_reason: None,
-                    }),
-                    context_codec: Some(RuntimeWebSocketContextCodecFrameHeader {
-                        operation_abi_id: "op-abi-1".to_string(),
-                        context_type_identity: "context-type-1".to_string(),
-                    }),
-                    context_payload_present: true,
-                    code: None,
-                    reason: None,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn response_event_error_maps_to_response_error_frame() {
-        let frame = response_event_into_frame(
-            "request-2".to_string(),
-            ResponseEvent::Error(ResponseError {
-                code: "std.http.HttpError".to_string(),
-                message: "upstream failed".to_string(),
-                status: None,
-                details: Some(json!({ "status": 503 })),
-            }),
-        )
-        .expect("response.error frame should encode");
-
-        let (header, payload): (ResponseErrorFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("response.error frame should decode");
-
-        assert!(payload.is_empty());
-        assert_eq!(header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(header.envelope_type, "response.error");
-        assert_eq!(header.request_id, "request-2");
-        assert_eq!(header.error.code, "std.http.HttpError");
-        assert_eq!(header.error.message, "upstream failed");
-        assert_eq!(header.error.details, Some(json!({ "status": 503 })));
-    }
-
-    #[test]
-    fn response_stream_events_map_to_start_chunk_and_end_frames() {
-        let start = response_stream_event_into_frame(
-            "request-3",
-            ResponseStreamEvent::Start {
-                http_response: HttpResponseMetadata::new(
-                    200,
-                    vec![HttpNameValue {
-                        name: "x-stream".to_string(),
-                        value: "yes".to_string(),
-                    }],
-                ),
-            },
-        )
-        .expect("response.start frame should encode");
-        let (start_header, start_payload): (ResponseStartFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&start).expect("response.start frame should decode");
-
-        assert!(start_payload.is_empty());
-        assert_eq!(start_header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(start_header.envelope_type, "response.start");
-        assert_eq!(start_header.request_id, "request-3");
-        assert_eq!(start_header.http_response.status, 200);
-        assert_eq!(
-            start_header.http_response.headers,
-            vec![RuntimeHttpNameValueFrameHeader {
-                name: "x-stream".to_string(),
-                value: "yes".to_string(),
-            }]
-        );
-
-        let chunk = response_stream_event_into_frame(
-            "request-3",
-            ResponseStreamEvent::Chunk {
-                seq: 7,
-                payload: b"chunk bytes".to_vec(),
-            },
-        )
-        .expect("response.chunk frame should encode");
-        let (chunk_header, chunk_payload): (ResponseChunkFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&chunk).expect("response.chunk frame should decode");
-
-        assert_eq!(chunk_payload.as_slice(), b"chunk bytes");
-        assert_eq!(chunk_header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(chunk_header.envelope_type, "response.chunk");
-        assert_eq!(chunk_header.request_id, "request-3");
-        assert_eq!(chunk_header.seq, 7);
-
-        let end = response_stream_event_into_frame("request-3", ResponseStreamEvent::End)
-            .expect("response.end frame should encode");
-        let (end_header, end_payload): (ResponseEndFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&end).expect("response.end frame should decode");
-
-        assert!(end_payload.is_empty());
-        assert_eq!(end_header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
-        assert_eq!(end_header.envelope_type, "response.end");
-        assert_eq!(end_header.request_id, "request-3");
-        assert!(!end_header.payload_present);
-        assert!(end_header.http_response.is_none());
-        assert!(end_header.websocket_connect.is_none());
-    }
-
-    #[test]
-    fn response_frame_headers_map_to_outbound_router_response_facts() {
-        let http_response = RuntimeHttpResponseFrameHeader {
-            status: 206,
-            headers: vec![RuntimeHttpNameValueFrameHeader {
-                name: "content-range".to_string(),
-                value: "bytes 0-4/10".to_string(),
-            }],
-        };
-        let start = response_start_to_outbound(&ResponseStartFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.start".to_string(),
-            request_id: "request-4".to_string(),
-            http_response: http_response.clone(),
-        });
-        assert_eq!(start.kind(), "response.start");
-        let expected_http_response = HttpResponseMetadata {
-            status: http_response.status,
-            headers: vec![HttpNameValue {
-                name: "content-range".to_string(),
-                value: "bytes 0-4/10".to_string(),
-            }],
-        };
-        assert!(matches!(
-            start,
-            OutboundResponse::Start {
-                http_response: actual
-            } if actual == expected_http_response
-        ));
-
-        let chunk = response_chunk_to_outbound(
-            &ResponseChunkFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "response.chunk".to_string(),
-                request_id: "request-4".to_string(),
-                seq: 9,
-            },
-            b"chunk bytes".to_vec(),
-        );
-        assert_eq!(chunk.kind(), "response.chunk");
-        assert!(matches!(
-            chunk,
-            OutboundResponse::Chunk { seq: 9, payload }
-                if payload.as_slice() == b"chunk bytes"
-        ));
-
-        let end = response_end_to_outbound(
-            &ResponseEndFrameHeader {
-                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                envelope_type: "response.end".to_string(),
-                request_id: "request-4".to_string(),
-                payload_present: true,
-                http_response: None,
-                websocket_connect: None,
-            },
-            b"final bytes".to_vec(),
-        );
-        assert_eq!(end.kind(), "response.end");
-        assert!(matches!(
-            end,
-            OutboundResponse::End { payload } if payload.as_slice() == b"final bytes"
-        ));
-
-        let error = RuntimeErrorFramePayload {
-            code: "RemoteError".to_string(),
-            message: "callee failed".to_string(),
-            status: Some(502),
-            details: Some(json!({ "upstream": "account" })),
-        };
-        let response_error = response_error_to_outbound(&ResponseErrorFrameHeader {
-            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-            envelope_type: "response.error".to_string(),
-            request_id: "request-4".to_string(),
-            error: error.clone(),
-        });
-        assert_eq!(response_error.kind(), "response.error");
-        let expected_error = ResponseError {
-            code: error.code,
-            message: error.message,
-            status: error.status,
-            details: error.details,
-        };
-        assert!(matches!(
-            response_error,
-            OutboundResponse::Error(actual) if actual == expected_error
-        ));
-    }
-}
+mod tests;

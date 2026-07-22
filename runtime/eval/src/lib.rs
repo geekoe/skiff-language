@@ -53,7 +53,7 @@ use runtime_ops::*;
 
 pub use assembly_execution::{
     dispatch_ingress_via_in_process_boundary, dispatch_websocket_ingress_via_in_process_boundary,
-    InProcessBoundaryIngressResponse,
+    AdmittedWebSocketIngressIdentity, InProcessBoundaryIngressResponse,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use assembly_execution::{
@@ -79,8 +79,8 @@ pub use request_boundary::{
     EvalRequestInvocationWebSocketMessageTag, EvalRequestInvocationWebSocketNameValue,
     EvalRequestInvocationWebSocketPayloadSegment, EvalRequestInvocationWebSocketPayloadSegmentKind,
     EvalRequestInvocationWebSocketReceiveRequest, EvalRequestWebSocketAdapterResult,
-    EvalRequestWebSocketConnectResponse, EvalRequestWebSocketConnectResult,
-    EvalRequestWebSocketContextCodec,
+    EvalRequestWebSocketConnectAccept, EvalRequestWebSocketConnectContext,
+    EvalRequestWebSocketConnectReject, EvalRequestWebSocketContextCodec,
 };
 
 use serde_json::Value;

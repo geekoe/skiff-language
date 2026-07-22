@@ -16,7 +16,11 @@ use skiff_runtime_model::{
     type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan},
 };
 
-use super::{dispatch_in_process_boundary, InProcessBoundaryDispatchOrigin};
+use super::{
+    dispatch_in_process_boundary,
+    websocket_identity::{validate_admitted_identity, AdmittedWebSocketIngressIdentity},
+    InProcessBoundaryDispatchOrigin,
+};
 use crate::{
     env::Env,
     error::{Result, RuntimeError},
@@ -42,12 +46,20 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
     target: RuntimeAssemblyServiceCallTarget,
     request: &RequestPayloadContext<'_>,
     adapter: &EvalInvocationBuildWebSocketAdapter,
+    admitted_identity: &AdmittedWebSocketIngressIdentity,
 ) -> Result<EvalWebSocketAdapterResult> {
     let descriptor = target.descriptor();
     let operation_id = descriptor.operation_id.clone();
     let ingress_context = websocket_ingress_context(target.contract(), &operation_id)
         .map_err(|error| RuntimeError::InvalidArtifact(error.to_string()))?;
     validate_canonical_adapter(adapter, request.target())?;
+    validate_admitted_identity(
+        target.contract().service_id.as_str(),
+        target.contract().service_protocol_identity.as_str(),
+        target.descriptor().operation_id.as_str(),
+        admitted_identity,
+        request.target(),
+    )?;
 
     let addr = target.executable_addr().clone();
     let projection = super::RuntimeExecutionProjection::for_context(interpreter, &context)?;
@@ -123,7 +135,7 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
                 return_type,
                 &PlanContext::from_type_view(projection.type_view(), &canonical_addr),
             )?;
-            crate::websocket_adapter::canonical_websocket_connect_response(
+            super::websocket_response::project_connect_response(
                 request.target(),
                 &value,
                 &return_plan,
@@ -139,10 +151,7 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
                     message: "websocket receive operation must return null".to_string(),
                 });
             }
-            Ok(EvalWebSocketAdapterResult {
-                payload: Vec::new(),
-                response: None,
-            })
+            Ok(EvalWebSocketAdapterResult::Receive)
         }
     }
 }
@@ -450,7 +459,7 @@ fn websocket_protocol_error(target: &str, message: impl Into<String>) -> Runtime
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
     use skiff_artifact_model::{ContractOperationId, ContractTypeId};
     use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
 

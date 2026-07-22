@@ -59,11 +59,12 @@ impl<'ctx, 'req> RuntimeIngressHandler<'ctx, 'req> {
                     .with_version(self.context.metadata.service_version.clone())
                     .with_build_id(self.context.metadata.build_id.clone()),
             );
-        Ok(BoundaryResponse::end(
-            encode_payload_plan(&value, &expected_plan, &boundary, &heap)?,
-            None,
-            None,
-        ))
+        Ok(BoundaryResponse::payload(encode_payload_plan(
+            &value,
+            &expected_plan,
+            &boundary,
+            &heap,
+        )?))
     }
 }
 

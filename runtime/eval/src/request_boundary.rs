@@ -2,8 +2,9 @@ pub use super::{
     invocation::{
         EvalInvocation as EvalRequestInvocation,
         EvalWebSocketAdapterResult as EvalRequestWebSocketAdapterResult,
-        EvalWebSocketConnectResponse as EvalRequestWebSocketConnectResponse,
-        EvalWebSocketConnectResult as EvalRequestWebSocketConnectResult,
+        EvalWebSocketConnectAccept as EvalRequestWebSocketConnectAccept,
+        EvalWebSocketConnectContext as EvalRequestWebSocketConnectContext,
+        EvalWebSocketConnectReject as EvalRequestWebSocketConnectReject,
         EvalWebSocketContextCodec as EvalRequestWebSocketContextCodec,
     },
     invocation_builder::{

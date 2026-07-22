@@ -1,0 +1,272 @@
+{
+  "responseEndCases": [
+    {
+      "name": "payload bytes",
+      "phase": "payload",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-payload",
+        "payloadPresent": true
+      },
+      "payloadHex": "00ff"
+    },
+    {
+      "name": "http empty body",
+      "phase": "http",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-http-empty",
+        "payloadPresent": false,
+        "httpResponse": {
+          "status": 204,
+          "headers": []
+        }
+      },
+      "payloadHex": ""
+    },
+    {
+      "name": "websocket accept null context",
+      "phase": "webSocketConnect",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-websocket-accept-null",
+        "payloadPresent": false,
+        "websocketConnect": {
+          "result": "accept",
+          "businessIdentity": "business-1",
+          "contextPayloadPresent": false
+        }
+      },
+      "payloadHex": ""
+    },
+    {
+      "name": "websocket accept nominal zero-byte context",
+      "phase": "webSocketConnect",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-websocket-accept-zero",
+        "payloadPresent": true,
+        "websocketConnect": {
+          "result": "accept",
+          "contextCodec": {
+            "operationAbiId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "contextTypeIdentity": "skiff-contract-type-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "contextPayloadPresent": true
+        }
+      },
+      "payloadHex": ""
+    },
+    {
+      "name": "websocket reject",
+      "phase": "webSocketConnect",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-websocket-reject",
+        "payloadPresent": false,
+        "websocketConnect": {
+          "result": "reject",
+          "contextPayloadPresent": false,
+          "code": 1008,
+          "reason": "policy"
+        }
+      },
+      "payloadHex": ""
+    },
+    {
+      "name": "websocket receive",
+      "phase": "webSocketReceive",
+      "header": {
+        "schemaVersion": "skiff-runtime-frame-v1",
+        "type": "response.end",
+        "requestId": "response-websocket-receive",
+        "payloadPresent": false
+      },
+      "payloadHex": ""
+    }
+  ],
+  "responseEndMutations": [
+    {
+      "name": "wrong schema version",
+      "baseIndex": 0,
+      "setPath": "schemaVersion",
+      "value": "legacy"
+    },
+    {
+      "name": "wrong envelope type",
+      "baseIndex": 0,
+      "setPath": "type",
+      "value": "response.start"
+    },
+    {
+      "name": "payload flag disagrees with bytes",
+      "baseIndex": 0,
+      "setPath": "payloadPresent",
+      "value": false
+    },
+    {
+      "name": "http phase loses metadata",
+      "baseIndex": 1,
+      "removePath": "httpResponse"
+    },
+    {
+      "name": "http and websocket metadata mixed",
+      "baseIndex": 1,
+      "setPath": "websocketConnect",
+      "value": {
+        "result": "reject",
+        "contextPayloadPresent": false,
+        "code": 1008,
+        "reason": "mixed"
+      }
+    },
+    {
+      "name": "accept result missing",
+      "baseIndex": 2,
+      "removePath": "websocketConnect.result"
+    },
+    {
+      "name": "accept carries reject code",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.code",
+      "value": 1008
+    },
+    {
+      "name": "accept says context present without codec",
+      "baseIndex": 2,
+      "setPath": "websocketConnect.contextPayloadPresent",
+      "value": true
+    },
+    {
+      "name": "accept codec says context absent",
+      "baseIndex": 3,
+      "setPath": "websocketConnect.contextPayloadPresent",
+      "value": false
+    },
+    {
+      "name": "reject says context present",
+      "baseIndex": 4,
+      "setPath": "websocketConnect.contextPayloadPresent",
+      "value": true
+    },
+    {
+      "name": "reject carries accept identity",
+      "baseIndex": 4,
+      "setPath": "websocketConnect.businessIdentity",
+      "value": "illegal"
+    },
+    {
+      "name": "reject code missing",
+      "baseIndex": 4,
+      "removePath": "websocketConnect.code"
+    },
+    {
+      "name": "reject reason missing",
+      "baseIndex": 4,
+      "removePath": "websocketConnect.reason"
+    },
+    {
+      "name": "reject carries payload bytes",
+      "baseIndex": 4,
+      "payloadHex": "00"
+    },
+    {
+      "name": "receive carries connect metadata",
+      "baseIndex": 5,
+      "setPath": "websocketConnect",
+      "value": {
+        "result": "reject",
+        "contextPayloadPresent": false,
+        "code": 1000,
+        "reason": "unexpected"
+      }
+    },
+    {
+      "name": "receive says payload present",
+      "baseIndex": 5,
+      "setPath": "payloadPresent",
+      "value": true
+    },
+    {
+      "name": "receive carries payload bytes",
+      "baseIndex": 5,
+      "payloadHex": "00"
+    },
+    {
+      "name": "unknown response field",
+      "baseIndex": 5,
+      "setPath": "legacyPayload",
+      "value": null
+    }
+  ],
+  "admittedIdentityGolden": {
+    "serviceId": "example.com/chat",
+    "serviceProtocolIdentity": "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "contractOperationId": "skiff-contract-operation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "selector": {
+      "protocol": "webSocket",
+      "host": "socket.example.com",
+      "method": null,
+      "path": "/chat"
+    },
+    "websocketEntryId": "skiff-websocket-entry-v1:sha256:6d82e1f87849f5743884be72a71568539817bea31f2090aca457b15ff83b879b",
+    "gatewayEntryIdentity": "skiff-gateway-v1:sha256:6d82e1f87849f5743884be72a71568539817bea31f2090aca457b15ff83b879b"
+  },
+  "admittedIdentityMutations": [
+    {
+      "name": "uppercase host",
+      "setPath": "selector.host",
+      "value": "Socket.example.com"
+    },
+    {
+      "name": "method on websocket selector",
+      "setPath": "selector.method",
+      "value": "GET"
+    },
+    {
+      "name": "query in selector path",
+      "setPath": "selector.path",
+      "value": "/chat?room=one"
+    },
+    {
+      "name": "default port in canonical host",
+      "setPath": "selector.host",
+      "value": "socket.example.com:80"
+    },
+    {
+      "name": "backslash in host",
+      "setPath": "selector.host",
+      "value": "socket.example.com\\path"
+    },
+    {
+      "name": "non-canonical IPv4 spelling",
+      "setPath": "selector.host",
+      "value": "127.000.000.001"
+    },
+    {
+      "name": "service id drift",
+      "setPath": "serviceId",
+      "value": "example.com/other"
+    },
+    {
+      "name": "operation id drift",
+      "setPath": "contractOperationId",
+      "value": "skiff-contract-operation-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "websocket entry claim drift",
+      "setPath": "websocketEntryId",
+      "value": "skiff-websocket-entry-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "name": "gateway entry claim drift",
+      "setPath": "gatewayEntryIdentity",
+      "value": "skiff-gateway-v1:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ]
+}

@@ -486,24 +486,127 @@ pub struct RuntimeWebSocketPayloadSegmentFrameHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeWebSocketResponseFrameHeader {
-    pub result: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+#[serde(
+    try_from = "RawRuntimeWebSocketResponseFrameHeader",
+    into = "RawRuntimeWebSocketResponseFrameHeader"
+)]
+pub enum RuntimeWebSocketResponseFrameHeader {
+    ConnectAccept(RuntimeWebSocketConnectAcceptFrameHeader),
+    ConnectReject(RuntimeWebSocketConnectRejectFrameHeader),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWebSocketConnectAcceptFrameHeader {
     pub business_identity: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_policy: Option<WebSocketConnectionPolicyControl>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
-    // The router envelope schema marks `contextPayloadPresent` as required, so it
-    // must always be serialized (including `false` for the reject path).
-    pub context_payload_present: bool,
-    #[serde(rename = "code")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<u16>,
-    #[serde(rename = "reason")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub context: RuntimeWebSocketConnectContextFrameHeader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeWebSocketConnectContextFrameHeader {
+    Null,
+    Typed(RuntimeWebSocketContextCodecFrameHeader),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeWebSocketConnectRejectFrameHeader {
+    pub code: u16,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "result",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum RawRuntimeWebSocketResponseFrameHeader {
+    Accept {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        business_identity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_policy: Option<WebSocketConnectionPolicyControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_codec: Option<RuntimeWebSocketContextCodecFrameHeader>,
+        context_payload_present: bool,
+    },
+    Reject {
+        context_payload_present: bool,
+        code: u16,
+        reason: String,
+    },
+}
+
+impl TryFrom<RawRuntimeWebSocketResponseFrameHeader> for RuntimeWebSocketResponseFrameHeader {
+    type Error = String;
+
+    fn try_from(raw: RawRuntimeWebSocketResponseFrameHeader) -> Result<Self, Self::Error> {
+        match raw {
+            RawRuntimeWebSocketResponseFrameHeader::Accept {
+                business_identity,
+                connection_policy,
+                context_codec: None,
+                context_payload_present: false,
+            } => Ok(Self::ConnectAccept(
+                RuntimeWebSocketConnectAcceptFrameHeader {
+                    business_identity,
+                    connection_policy,
+                    context: RuntimeWebSocketConnectContextFrameHeader::Null,
+                },
+            )),
+            RawRuntimeWebSocketResponseFrameHeader::Accept {
+                business_identity,
+                connection_policy,
+                context_codec: Some(codec),
+                context_payload_present: true,
+            } => Ok(Self::ConnectAccept(
+                RuntimeWebSocketConnectAcceptFrameHeader {
+                    business_identity,
+                    connection_policy,
+                    context: RuntimeWebSocketConnectContextFrameHeader::Typed(codec),
+                },
+            )),
+            RawRuntimeWebSocketResponseFrameHeader::Accept { .. } => Err(
+                "websocket accept contextPayloadPresent and contextCodec are inconsistent"
+                    .to_string(),
+            ),
+            RawRuntimeWebSocketResponseFrameHeader::Reject {
+                context_payload_present: false,
+                code,
+                reason,
+            } => Ok(Self::ConnectReject(
+                RuntimeWebSocketConnectRejectFrameHeader { code, reason },
+            )),
+            RawRuntimeWebSocketResponseFrameHeader::Reject { .. } => {
+                Err("websocket reject contextPayloadPresent must be false".to_string())
+            }
+        }
+    }
+}
+
+impl From<RuntimeWebSocketResponseFrameHeader> for RawRuntimeWebSocketResponseFrameHeader {
+    fn from(header: RuntimeWebSocketResponseFrameHeader) -> Self {
+        match header {
+            RuntimeWebSocketResponseFrameHeader::ConnectAccept(accept) => {
+                let (context_payload_present, context_codec) = match accept.context {
+                    RuntimeWebSocketConnectContextFrameHeader::Null => (false, None),
+                    RuntimeWebSocketConnectContextFrameHeader::Typed(codec) => (true, Some(codec)),
+                };
+                Self::Accept {
+                    business_identity: accept.business_identity,
+                    connection_policy: accept.connection_policy,
+                    context_codec,
+                    context_payload_present,
+                }
+            }
+            RuntimeWebSocketResponseFrameHeader::ConnectReject(reject) => Self::Reject {
+                context_payload_present: false,
+                code: reject.code,
+                reason: reject.reason,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -613,18 +716,80 @@ pub struct ResponseStartFrameHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    try_from = "RawResponseEndFrameHeader",
+    into = "RawResponseEndFrameHeader"
+)]
 pub struct ResponseEndFrameHeader {
     pub schema_version: String,
-    #[serde(rename = "type")]
     pub envelope_type: String,
     pub request_id: String,
     pub payload_present: bool,
+    pub metadata: ResponseEndFrameMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseEndFrameMetadata {
+    None,
+    Http(RuntimeHttpResponseFrameHeader),
+    WebSocketConnect(RuntimeWebSocketResponseFrameHeader),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawResponseEndFrameHeader {
+    schema_version: String,
+    #[serde(rename = "type")]
+    envelope_type: String,
+    request_id: String,
+    payload_present: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_response: Option<RuntimeHttpResponseFrameHeader>,
+    http_response: Option<RuntimeHttpResponseFrameHeader>,
     #[serde(rename = "websocketConnect")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub websocket_connect: Option<RuntimeWebSocketResponseFrameHeader>,
+    websocket_connect: Option<RuntimeWebSocketResponseFrameHeader>,
+}
+
+impl TryFrom<RawResponseEndFrameHeader> for ResponseEndFrameHeader {
+    type Error = String;
+
+    fn try_from(raw: RawResponseEndFrameHeader) -> Result<Self, Self::Error> {
+        let metadata = match (raw.http_response, raw.websocket_connect) {
+            (None, None) => ResponseEndFrameMetadata::None,
+            (Some(http), None) => ResponseEndFrameMetadata::Http(http),
+            (None, Some(websocket)) => ResponseEndFrameMetadata::WebSocketConnect(websocket),
+            (Some(_), Some(_)) => {
+                return Err(
+                    "response.end cannot mix HTTP and WebSocket response metadata".to_string(),
+                )
+            }
+        };
+        Ok(Self {
+            schema_version: raw.schema_version,
+            envelope_type: raw.envelope_type,
+            request_id: raw.request_id,
+            payload_present: raw.payload_present,
+            metadata,
+        })
+    }
+}
+
+impl From<ResponseEndFrameHeader> for RawResponseEndFrameHeader {
+    fn from(header: ResponseEndFrameHeader) -> Self {
+        let (http_response, websocket_connect) = match header.metadata {
+            ResponseEndFrameMetadata::None => (None, None),
+            ResponseEndFrameMetadata::Http(http) => (Some(http), None),
+            ResponseEndFrameMetadata::WebSocketConnect(websocket) => (None, Some(websocket)),
+        };
+        Self {
+            schema_version: header.schema_version,
+            envelope_type: header.envelope_type,
+            request_id: header.request_id,
+            payload_present: header.payload_present,
+            http_response,
+            websocket_connect,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

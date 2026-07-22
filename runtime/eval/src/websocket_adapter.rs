@@ -1,5 +1,4 @@
 use serde_json::{json, Value};
-use skiff_artifact_model::{ContractOperationId, WebSocketIngressContext};
 use skiff_runtime_boundary::{
     binary::{decode_payload_plan, encode_payload_plan},
     payload::{PayloadBoundary, PayloadBoundaryKind},
@@ -25,11 +24,11 @@ use crate::{
     error::{Result, RuntimeError},
     invocation::{
         AdapterArgPlan, AdapterArgSource, EvalBoundaryProjection, EvalInvocation,
-        EvalWebSocketAdapterResult, EvalWebSocketConnectRequest, EvalWebSocketConnectResponse,
-        EvalWebSocketConnectResult, EvalWebSocketContextCodec, EvalWebSocketContextExpectation,
-        EvalWebSocketMessageEncoding, EvalWebSocketMessageTag, EvalWebSocketNameValue,
-        EvalWebSocketPayloadSegment, EvalWebSocketPayloadSegmentKind, EvalWebSocketReceiveRequest,
-        WebSocketAdapterProjection, WebSocketAdapterProjectionKind,
+        EvalWebSocketAdapterResult, EvalWebSocketConnectAccept, EvalWebSocketConnectContext,
+        EvalWebSocketConnectReject, EvalWebSocketConnectRequest, EvalWebSocketContextCodec,
+        EvalWebSocketContextExpectation, EvalWebSocketMessageEncoding, EvalWebSocketMessageTag,
+        EvalWebSocketNameValue, EvalWebSocketPayloadSegment, EvalWebSocketPayloadSegmentKind,
+        EvalWebSocketReceiveRequest, WebSocketAdapterProjection, WebSocketAdapterProjectionKind,
     },
 };
 use skiff_runtime_capability_context::WebSocketConnectionPolicyControl;
@@ -139,10 +138,7 @@ impl Interpreter {
                 heap,
             )
             .await?;
-        Ok(EvalWebSocketAdapterResult {
-            payload: Vec::new(),
-            response: None,
-        })
+        Ok(EvalWebSocketAdapterResult::Receive)
     }
 }
 
@@ -426,18 +422,12 @@ fn websocket_connect_response(
         let fields = runtime_object_fields(value, heap)?;
         let code = runtime_number_field(fields, "code")?;
         let reason = runtime_string_field(fields, "reason", heap)?;
-        return Ok(EvalWebSocketAdapterResult {
-            payload: Vec::new(),
-            response: Some(EvalWebSocketConnectResponse {
-                result: EvalWebSocketConnectResult::Reject,
-                business_identity: None,
-                connection_policy: None,
-                context_codec: None,
-                context_payload_present: false,
-                code: Some(code as u16),
-                reason: Some(reason),
-            }),
-        });
+        return Ok(EvalWebSocketAdapterResult::ConnectReject(
+            EvalWebSocketConnectReject {
+                code: code as u16,
+                reason,
+            },
+        ));
     }
     if tag != "accept" {
         return Err(
@@ -452,13 +442,31 @@ fn websocket_connect_response(
             fields.get("connectionPolicy").cloned(),
         )
     };
-    let context_plan = websocket_connect_context_plan(return_plan)?;
-    let context_payload = encode_payload_plan(
-        &context_value,
-        context_plan,
-        &websocket_payload_boundary(),
-        heap,
-    )?;
+    let connect_context = match context.context_expectation.as_ref() {
+        Some(EvalWebSocketContextExpectation::Typed {
+            connect_operation_abi_id,
+            context_type_identity,
+        }) => EvalWebSocketConnectContext::Typed {
+            payload: encode_payload_plan(
+                &context_value,
+                websocket_connect_context_plan(return_plan)?,
+                &websocket_payload_boundary(),
+                heap,
+            )?,
+            codec: EvalWebSocketContextCodec {
+                operation_abi_id: connect_operation_abi_id.clone(),
+                context_type_identity: context_type_identity.clone(),
+            },
+        },
+        Some(EvalWebSocketContextExpectation::Null) | None => {
+            if !matches!(context_value, RuntimeValue::Null) {
+                return Err(context.protocol_error(
+                    "websocket accept Context must be null without a typed context expectation",
+                ));
+            }
+            EvalWebSocketConnectContext::Null
+        }
+    };
     let connection_policy = match connection_policy_value {
         Some(RuntimeValue::Null) | None => None,
         Some(value) => {
@@ -479,148 +487,13 @@ fn websocket_connect_response(
             )
         }
     };
-    Ok(EvalWebSocketAdapterResult {
-        payload: context_payload,
-        response: Some(EvalWebSocketConnectResponse {
-            result: EvalWebSocketConnectResult::Accept,
+    Ok(EvalWebSocketAdapterResult::ConnectAccept(
+        EvalWebSocketConnectAccept {
             business_identity,
             connection_policy,
-            context_codec: context.context_codec_for_connect(),
-            context_payload_present: true,
-            code: None,
-            reason: None,
-        }),
-    })
-}
-
-pub(crate) fn canonical_websocket_connect_response(
-    request_target: &str,
-    value: &RuntimeValue,
-    return_plan: &RuntimeTypePlan,
-    context: &WebSocketIngressContext,
-    operation_id: &ContractOperationId,
-    heap: &mut RequestHeap,
-) -> Result<EvalWebSocketAdapterResult> {
-    let protocol_error = |message: String| RuntimeError::Protocol {
-        target: request_target.to_string(),
-        message,
-    };
-    if matches!(value, RuntimeValue::Null) {
-        return Err(protocol_error(
-            "websocket connect operation must return accept or reject, not null".to_string(),
-        ));
-    }
-    let tag = {
-        let fields = runtime_object_fields(value, heap)?;
-        runtime_string_field(fields, "tag", heap)?
-    };
-    if tag == "reject" {
-        let fields = runtime_object_fields(value, heap)?;
-        let code = runtime_number_field(fields, "code")?;
-        if !code.is_finite() || code.fract() != 0.0 || !(0.0..=u16::MAX as f64).contains(&code) {
-            return Err(protocol_error(
-                "websocket reject code must be an unsigned 16-bit integer".to_string(),
-            ));
-        }
-        let reason = runtime_string_field(fields, "reason", heap)?;
-        return Ok(EvalWebSocketAdapterResult {
-            payload: Vec::new(),
-            response: Some(EvalWebSocketConnectResponse {
-                result: EvalWebSocketConnectResult::Reject,
-                business_identity: None,
-                connection_policy: None,
-                context_codec: None,
-                context_payload_present: false,
-                code: Some(code as u16),
-                reason: Some(reason),
-            }),
-        });
-    }
-    if tag != "accept" {
-        return Err(protocol_error(format!(
-            "websocket connect returned unsupported tag {tag}"
-        )));
-    }
-    let (context_value, business_identity, connection_policy_value) = {
-        let fields = runtime_object_fields(value, heap)?;
-        (
-            fields.get("context").cloned().unwrap_or(RuntimeValue::Null),
-            optional_runtime_string_field(fields, "businessIdentity", heap)?,
-            fields.get("connectionPolicy").cloned(),
-        )
-    };
-    let context_plan = websocket_connect_context_plan(return_plan)?;
-    let (payload, context_payload_present, context_codec) = match context {
-        WebSocketIngressContext::Null => {
-            if !matches!(context_value, RuntimeValue::Null) {
-                return Err(protocol_error(
-                    "websocket accept Context must be null for this ServiceContract".to_string(),
-                ));
-            }
-            (Vec::new(), false, None)
-        }
-        WebSocketIngressContext::Contract(contract_type_id) => (
-            encode_payload_plan(
-                &context_value,
-                context_plan,
-                &websocket_payload_boundary(),
-                heap,
-            )?,
-            true,
-            Some(EvalWebSocketContextCodec {
-                operation_abi_id: operation_id.as_str().to_string(),
-                context_type_identity: contract_type_id.as_str().to_string(),
-            }),
-        ),
-    };
-    let connection_policy = match connection_policy_value {
-        Some(RuntimeValue::Null) | None => None,
-        Some(value) => {
-            let plan = websocket_connect_connection_policy_plan(return_plan)?;
-            let wire = runtime_to_wire_required_plan(
-                &value,
-                Some(plan),
-                "websocket connection policy",
-                heap,
-            )?;
-            Some(
-                serde_json::from_value::<WebSocketConnectionPolicyControl>(wire).map_err(
-                    |error| {
-                        protocol_error(format!(
-                            "websocket connection policy does not match runtime wire schema: {error}"
-                        ))
-                    },
-                )?,
-            )
-        }
-    };
-    Ok(EvalWebSocketAdapterResult {
-        payload,
-        response: Some(EvalWebSocketConnectResponse {
-            result: EvalWebSocketConnectResult::Accept,
-            business_identity,
-            connection_policy,
-            context_codec,
-            context_payload_present,
-            code: None,
-            reason: None,
-        }),
-    })
-}
-
-impl WebSocketAdapterContext<'_> {
-    fn context_codec_for_connect(&self) -> Option<EvalWebSocketContextCodec> {
-        match self.context_expectation.as_ref()? {
-            EvalWebSocketContextExpectation::Null => None,
-            EvalWebSocketContextExpectation::Typed {
-                connect_operation_abi_id,
-                context_type_identity,
-            } => Some(EvalWebSocketContextCodec {
-                operation_abi_id: connect_operation_abi_id.clone(),
-                context_type_identity: context_type_identity.clone(),
-            }),
-        }
-    }
+            context: connect_context,
+        },
+    ))
 }
 
 fn websocket_connect_context_plan(return_plan: &RuntimeTypePlan) -> Result<&RuntimeTypePlan> {
@@ -811,7 +684,6 @@ mod tests {
     use std::num::NonZeroU32;
 
     use serde_json::{json, Value};
-    use skiff_artifact_model::{ContractOperationId, ContractTypeId};
     use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
     use skiff_runtime_capability_context::WebSocketConnectionPolicyOverflowControl;
     use skiff_runtime_model::runtime_value::RuntimeObject;
@@ -834,14 +706,6 @@ mod tests {
         .expect("connect result plan should build")
     }
 
-    fn typed_empty_connect_return_plan() -> RuntimeTypePlan {
-        RuntimeTypePlan::from_descriptor(&generic(
-            "std.websocket.WebSocketConnectResult",
-            vec![json!({ "kind": "record", "fields": {} })],
-        ))
-        .expect("typed connect result plan should build")
-    }
-
     fn connect_context() -> WebSocketAdapterContext<'static> {
         WebSocketAdapterContext {
             request: RequestPayloadContext::new("test-runtime", &[], None),
@@ -859,93 +723,22 @@ mod tests {
     }
 
     #[test]
-    fn canonical_websocket_adapter_connect_requires_non_null_result() {
+    fn legacy_websocket_ingress_event_is_rejected() {
+        let parameter_plan = RuntimeTypePlan::from_descriptor(&named("null"))
+            .expect("null parameter plan should build");
+        let arg = AdapterArgPlan {
+            parameter_name: "event".to_string(),
+            source: AdapterArgSource::WebSocketIngressEvent,
+            parameter_plan: parameter_plan.clone(),
+        };
         let mut heap = RequestHeap::default();
-        let error = canonical_websocket_connect_response(
-            "test-runtime",
-            &RuntimeValue::Null,
-            &connect_return_plan(),
-            &WebSocketIngressContext::Null,
-            &ContractOperationId::new("operation:websocket"),
-            &mut heap,
-        )
-        .expect_err("connect null must fail closed");
 
-        assert!(error
-            .to_string()
-            .contains("must return accept or reject, not null"));
-    }
-
-    #[test]
-    fn canonical_websocket_adapter_null_context_accept_has_no_codec_or_payload() {
-        let return_plan = connect_return_plan();
-        let mut heap = RequestHeap::default();
-        let value = runtime_from_wire_required_plan(
-            &json!({
-                "tag": "accept",
-                "context": null,
-                "businessIdentity": null,
-                "connectionPolicy": null,
-            }),
-            Some(&return_plan),
-            "canonical websocket connect result",
-            &mut heap,
-        )
-        .unwrap();
-        let result = canonical_websocket_connect_response(
-            "test-runtime",
-            &value,
-            &return_plan,
-            &WebSocketIngressContext::Null,
-            &ContractOperationId::new("operation:websocket"),
-            &mut heap,
-        )
-        .unwrap();
-        let response = result.response.unwrap();
-
-        assert!(result.payload.is_empty());
-        assert!(!response.context_payload_present);
-        assert_eq!(response.context_codec, None);
-    }
-
-    #[test]
-    fn canonical_websocket_adapter_typed_context_keeps_presence_and_codec() {
-        let return_plan = typed_empty_connect_return_plan();
-        let mut heap = RequestHeap::default();
-        let value = runtime_from_wire_required_plan(
-            &json!({
-                "tag": "accept",
-                "context": {},
-                "businessIdentity": null,
-                "connectionPolicy": null,
-            }),
-            Some(&return_plan),
-            "canonical websocket typed connect result",
-            &mut heap,
-        )
-        .unwrap();
-        let operation = ContractOperationId::new("operation:websocket");
-        let context_type = ContractTypeId::new("contract-type:context");
-        let result = canonical_websocket_connect_response(
-            "test-runtime",
-            &value,
-            &return_plan,
-            &WebSocketIngressContext::Contract(context_type.clone()),
-            &operation,
-            &mut heap,
-        )
-        .unwrap();
-        let response = result.response.unwrap();
-
-        assert!(!result.payload.is_empty());
-        assert!(response.context_payload_present);
-        assert_eq!(
-            response.context_codec,
-            Some(EvalWebSocketContextCodec {
-                operation_abi_id: operation.as_str().to_string(),
-                context_type_identity: context_type.as_str().to_string(),
-            })
-        );
+        let error =
+            websocket_adapter_arg_value(&connect_context(), &arg, &parameter_plan, &mut heap)
+                .expect_err("legacy adapter must reject canonical ingressEvent source");
+        assert!(error.to_string().contains(
+            "canonical websocket.ingressEvent is not valid for the legacy WebSocket adapter"
+        ));
     }
 
     #[test]
@@ -974,9 +767,9 @@ mod tests {
         let result =
             websocket_connect_response(&connect_context(), &value, &return_plan, &mut heap)
                 .expect("accept response should encode");
-        let response = result.response.expect("response should be present");
-
-        assert_eq!(response.result, EvalWebSocketConnectResult::Accept);
+        let EvalWebSocketAdapterResult::ConnectAccept(response) = result else {
+            panic!("expected accept response");
+        };
         assert_eq!(response.business_identity, Some("host-1".to_string()));
         assert_eq!(
             response.connection_policy,
@@ -987,8 +780,7 @@ mod tests {
                 close_reason: Some("host connection replaced".to_string()),
             })
         );
-        assert!(response.context_payload_present);
-        assert_eq!(response.context_codec, None);
+        assert_eq!(response.context, EvalWebSocketConnectContext::Null);
     }
 
     #[test]
@@ -1011,11 +803,11 @@ mod tests {
             let result =
                 websocket_connect_response(&connect_context(), &value, &return_plan, &mut heap)
                     .expect("accept response should encode");
-            let response = result.response.expect("response should be present");
-
-            assert_eq!(response.result, EvalWebSocketConnectResult::Accept);
+            let EvalWebSocketAdapterResult::ConnectAccept(response) = result else {
+                panic!("expected accept response");
+            };
             assert_eq!(response.connection_policy, None);
-            assert!(response.context_payload_present);
+            assert_eq!(response.context, EvalWebSocketConnectContext::Null);
         }
     }
 
@@ -1038,14 +830,12 @@ mod tests {
         let result =
             websocket_connect_response(&connect_context(), &value, &return_plan, &mut heap)
                 .expect("reject response should encode");
-        let response = result.response.expect("response should be present");
-
-        assert!(result.payload.is_empty());
-        assert_eq!(response.result, EvalWebSocketConnectResult::Reject);
-        assert_eq!(response.connection_policy, None);
-        assert_eq!(response.context_codec, None);
-        assert!(!response.context_payload_present);
-        assert_eq!(response.code, Some(1008));
-        assert_eq!(response.reason, Some("policy".to_string()));
+        assert_eq!(
+            result,
+            EvalWebSocketAdapterResult::ConnectReject(EvalWebSocketConnectReject {
+                code: 1008,
+                reason: "policy".to_string(),
+            })
+        );
     }
 }
