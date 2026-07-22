@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   access,
@@ -10,13 +11,14 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 
 import {
   parseProbeArgs,
   runPlatformSourceSharedTargetProbe,
 } from '../run-platform-source-shared-target-probe.mjs';
+import { probeDigest } from '../lib/platform-source-probe-support.mjs';
 
 const candidate = '1'.repeat(40);
 const tree = '2'.repeat(40);
@@ -36,6 +38,15 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(combined.status, 'PASS', combined.firstError);
     assert.equal(combined.fullProbeRuns, 0);
     assert.equal(combined.sourceSuite, null);
+    assert.equal(combined.schemaVersion, 'skiff-platform-source-shared-target-probe-v4');
+    assert.equal(combined.artifactEvidence.length, 2);
+    assert.equal(
+      combined.artifactEvidence.every((entry) => (
+        entry.comparator === 'strict-stable-artifact-v1'
+        && entry.diff.changedCount === 0
+      )),
+      true,
+    );
     assert.match(combined.probeNonce, /^[a-f0-9]{32}$/);
     assert.deepEqual(combined.ownership.worktrees.map((entry) => entry.label), ['A', 'B']);
     assert.equal(
@@ -84,6 +95,7 @@ test('combined and full modes remain disjoint command-double orchestrations', as
       host: { passed: 1, total: 1 },
       finalValue: 'provider-observed-helper-mutated',
       finalValueEvidence: {
+        passLine: 'PASS main.test.skiff::provider observes helper mutation',
         assertionPath: join(
           fullOptions.bWorktree,
           'test-runner',
@@ -101,6 +113,11 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(fullDouble.commands.filter(isRunnerBuild).length, 2);
     assert.equal(fullDouble.commands.filter(isCompilerBuild).length, 0);
     assert.deepEqual(full.rounds.map((round) => round.label), ['A-origin-full']);
+    assert.equal(full.artifactEvidence[0].comparator, 'full-root-materialization-v1');
+    assert.equal(full.artifactEvidence[0].diff.rootMaterializations.length, 2);
+    assert.equal(full.hostAttempt.status, 'PASS');
+    assert.equal(full.hostAttempt.exactPassLineCount, 1);
+    assert.match(full.hostAttempt.outputSha256, /^[a-f0-9]{64}$/);
     assert.equal(full.cleanup.processGroupsAbsent, true);
     assert.equal(full.cleanup.portsAbsent, true);
   } finally {
@@ -227,6 +244,237 @@ test('primary failure remains first when owned worktree removal also fails', asy
   }
 });
 
+test('combined comparator rejects even root-specific dep-info materialization', async () => {
+  const fixture = await gateFixture();
+  try {
+    const commandDouble = fixture.commandDouble('combined');
+    let snapshot = 0;
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('combined'),
+      fixture.dependencies(commandDouble, {
+        snapshotArtifacts: async (targetRoot) => {
+          snapshot += 1;
+          return fakeArtifacts(targetRoot, {
+            materializationRoot: snapshot === 2 ? '/tmp/other-root' : '/tmp/combined-root',
+          });
+        },
+      }),
+    );
+    assert.equal(ledger.status, 'FAIL');
+    assert.equal(ledger.artifactEvidence.length, 1);
+    assert.equal(ledger.artifactEvidence[0].comparator, 'strict-stable-artifact-v1');
+    assert.equal(
+      ledger.artifactEvidence[0].diff.firstDisallowed.classification,
+      'root-specific-dep-info',
+    );
+    assert.equal(ledger.artifactEvidence[0].diff.firstDisallowed.allowed, false);
+    assert.equal(ledger.artifactEvidence[0].diff.firstDisallowed.rootMaterialization, null);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('full artifact evidence accepts only exact root dep-info materialization', async (t) => {
+  const scenarios = [
+    ['binary-change', 'binary'],
+    ['rlib-change', 'rlib'],
+    ['hashed-dep-info-change', 'hashed-dep-info'],
+    ['stable-mtime-change', 'binary'],
+    ['illegal-root-materialization', 'root-specific-dep-info'],
+    ['missing-fresh', 'missing-fresh'],
+    ['fresh-conflict', 'conflicting-cargo-unit'],
+  ];
+  for (const [scenario, expected] of scenarios) {
+    await t.test(scenario, async () => {
+      const fixture = await gateFixture();
+      try {
+        const combinedOptions = await createCombinedLedger(fixture);
+        const commandDouble = fixture.commandDouble('full', {
+          combinedLedger: combinedOptions.ledger,
+          artifactScenario: scenario,
+        });
+        const ledger = await runPlatformSourceSharedTargetProbe(
+          fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+          fixture.dependencies(commandDouble),
+        );
+        assert.equal(ledger.status, 'FAIL');
+        assert.equal(ledger.fullProbeRuns, 0);
+        assert.equal(ledger.hostAttempt, null);
+        assert.equal(ledger.artifactEvidence.length, 1);
+        const evidence = ledger.artifactEvidence[0];
+        assert.equal(evidence.verdict, 'FAIL');
+        if (expected === 'missing-fresh' || expected === 'conflicting-cargo-unit') {
+          assert.equal(evidence.firstIssue.kind, expected);
+        } else {
+          assert.equal(evidence.firstIssue.kind, 'artifact-diff');
+          assert.equal(evidence.firstIssue.classification, expected);
+        }
+        assert.ok(Array.isArray(evidence.before));
+        assert.match(evidence.cargo.outputSha256, /^[a-f0-9]{64}$/);
+        assert.ok(Array.isArray(evidence.after));
+        assert.ok(Array.isArray(evidence.diff.entries));
+        if (evidence.firstIssue.path !== null) {
+          assert.equal(typeof evidence.firstIssue.before.sha256, 'string');
+          assert.equal(typeof evidence.firstIssue.after.sha256, 'string');
+          assert.equal(typeof evidence.firstIssue.before.mtimeMs, 'number');
+          assert.equal(typeof evidence.firstIssue.after.size, 'number');
+        }
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('full Host attempt records nonzero, signal, and exact parse failures', async (t) => {
+  const scenarios = [
+    ['throw', 'command-throw'],
+    ['nonzero', 'command-outcome'],
+    ['signal', 'command-outcome'],
+    ['malformed', 'result-counts'],
+    ['extra-counts', 'result-counts'],
+    ['wrong-pass', 'pass-line'],
+    ['missing-pass', 'pass-line'],
+    ['duplicate-pass', 'pass-line'],
+  ];
+  for (const [scenario, expectedIssue] of scenarios) {
+    await t.test(scenario, async () => {
+      const fixture = await gateFixture();
+      try {
+        const combinedOptions = await createCombinedLedger(fixture);
+        const commandDouble = fixture.commandDouble('full', {
+          combinedLedger: combinedOptions.ledger,
+          hostScenario: scenario,
+        });
+        const ledger = await runPlatformSourceSharedTargetProbe(
+          fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+          fixture.dependencies(commandDouble),
+        );
+        assert.equal(ledger.status, 'FAIL');
+        assert.equal(ledger.fullProbeRuns, 1);
+        assert.equal(ledger.sourceSuite, null);
+        assert.equal(ledger.hostAttempt.status, 'FAIL');
+        assert.equal(ledger.hostAttempt.firstIssue.kind, expectedIssue);
+        if (scenario === 'throw') assert.equal(ledger.hostAttempt.outputSha256, null);
+        else assert.match(ledger.hostAttempt.outputSha256, /^[a-f0-9]{64}$/);
+        assert.equal(commandDouble.commands.filter(isRunSkiffTests).length, 1);
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('Host primary failure stays first when cleanup also fails', async () => {
+  const fixture = await gateFixture();
+  try {
+    const combinedOptions = await createCombinedLedger(fixture);
+    const commandDouble = fixture.commandDouble('full', {
+      combinedLedger: combinedOptions.ledger,
+      hostScenario: 'nonzero',
+      failRemove: true,
+    });
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+      fixture.dependencies(commandDouble),
+    );
+    assert.equal(ledger.status, 'FAIL');
+    assert.equal(ledger.fullProbeRuns, 1);
+    assert.equal(ledger.hostAttempt.firstIssue.kind, 'command-outcome');
+    assert.match(ledger.firstError, /Host command failed/);
+    assert.equal(ledger.cleanup.errors.length > 0, true);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('unreachable expected assertion plus assert true is rejected before Host', async () => {
+  const fixture = await gateFixture();
+  try {
+    const combinedOptions = await createCombinedLedger(fixture);
+    const commandDouble = fixture.commandDouble('full', {
+      combinedLedger: combinedOptions.ledger,
+      hostSource: [
+        'test "provider observes helper mutation" {',
+        '  if false {',
+        '    assert root.main.run() == "provider-observed-helper-mutated"',
+        '  }',
+        '  assert true',
+        '}',
+        '',
+      ].join('\n'),
+    });
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+      fixture.dependencies(commandDouble),
+    );
+    assert.equal(ledger.status, 'FAIL');
+    assert.equal(ledger.fullProbeRuns, 0);
+    assert.equal(ledger.hostAttempt, null);
+    assert.match(ledger.firstError, /one reachable assertion/);
+    assert.equal(commandDouble.commands.filter(isRunSkiffTests).length, 0);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('legacy v3 combined ledger is explicitly invalid for full mode', async () => {
+  const fixture = await gateFixture();
+  try {
+    const combinedOptions = await createCombinedLedger(fixture);
+    const legacy = JSON.parse(await readFile(combinedOptions.ledger, 'utf8'));
+    legacy.schemaVersion = 'skiff-platform-source-shared-target-probe-v3';
+    await writeFile(combinedOptions.ledger, `${JSON.stringify(legacy)}\n`);
+    const commandDouble = fixture.commandDouble('full', {
+      combinedLedger: combinedOptions.ledger,
+    });
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+      fixture.dependencies(commandDouble),
+    );
+    assert.equal(ledger.status, 'PREFLIGHT BLOCKED');
+    assert.match(ledger.primary.error, /harness schema/);
+    assert.equal(commandDouble.commands.some(isBuildOrFixture), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('v4 validator recomputes strict artifact evidence instead of trusting verdict', async () => {
+  const fixture = await gateFixture();
+  try {
+    const combinedOptions = await createCombinedLedger(fixture);
+    const tampered = JSON.parse(await readFile(combinedOptions.ledger, 'utf8'));
+    tampered.artifactEvidence[0].before[0].sha256 = 'f'.repeat(64);
+    delete tampered.ledgerDigest;
+    tampered.ledgerDigest = probeDigest(tampered);
+    await writeFile(combinedOptions.ledger, `${JSON.stringify(tampered)}\n`);
+    const commandDouble = fixture.commandDouble('full', {
+      combinedLedger: combinedOptions.ledger,
+    });
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('full', { combinedLedger: combinedOptions.ledger }),
+      fixture.dependencies(commandDouble),
+    );
+    assert.equal(ledger.status, 'PREFLIGHT BLOCKED');
+    assert.match(ledger.primary.error, /identity, Fresh, or structure evidence is incomplete/);
+    assert.equal(commandDouble.commands.some(isBuildOrFixture), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+async function createCombinedLedger(fixture) {
+  const options = fixture.options('combined');
+  const commandDouble = fixture.commandDouble('combined');
+  const ledger = await runPlatformSourceSharedTargetProbe(
+    options,
+    fixture.dependencies(commandDouble),
+  );
+  assert.equal(ledger.status, 'PASS', ledger.firstError);
+  return options;
+}
+
 async function gateFixture() {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'skiff-platform-probe-double-')),
@@ -257,15 +505,15 @@ async function gateFixture() {
     commandDouble(mode, options = {}) {
       return createCommandDouble({ integrationRoot, mode, ...options });
     },
-    dependencies(commandDouble) {
+    dependencies(commandDouble, overrides = {}) {
       return {
         signalTarget: new EventEmitter(),
         runCommand: commandDouble.run,
         availableBytes: async () => 16 * (1024 ** 3),
         allocatedBytes: async () => undefined,
-        snapshotArtifacts: async (targetRoot) => fakeArtifacts(targetRoot),
+        snapshotArtifacts: artifactSnapshotDouble(commandDouble),
         loadRegistry: async () => [{ id: 'std', root: 'std' }],
-        readText: async () => [
+        readText: async () => commandDouble.hostSource ?? [
           'test "provider observes helper mutation" {',
           '  assert root.main.run() == "provider-observed-helper-mutated"',
           '}',
@@ -273,6 +521,7 @@ async function gateFixture() {
         ].join('\n'),
         assertPortsClosed: async () => {},
         assertExecutables: async () => {},
+        ...overrides,
       };
     },
   };
@@ -284,6 +533,9 @@ function createCommandDouble({
   combinedLedger,
   failIdentity = false,
   failRemove = false,
+  artifactScenario = 'legal-root-materialization',
+  hostScenario = 'pass',
+  hostSource,
 }) {
   const commands = [];
   const worktrees = new Map([[integrationRoot, { head: candidate, detached: false }]]);
@@ -343,25 +595,80 @@ function createCommandDouble({
         outcome.stderr += '\nprimary identity failure';
       }
     } else if (command === 'cargo' && args[0] === 'build') {
-      outcome.stderr = freshOutput();
+      outcome.stderr = freshOutput({
+        missing: artifactScenario === 'missing-fresh' ? 'skiff-compiler-source' : null,
+        conflict: artifactScenario === 'fresh-conflict' ? 'skiff-compiler' : null,
+      });
     } else if (command === 'rg') {
       outcome.code = 1;
     } else if (command === 'node' && args.some((value) => value.endsWith('run-skiff-tests.mjs'))) {
-      outcome.stdout = [
-        'test result: ok. 11 passed; 0 failed',
-        'test result: ok. 1 passed; 0 failed',
-      ].join('\n');
-      outcome.observedPorts = [46010, 46011, 46012];
+      applyHostCommandScenario(outcome, hostScenario);
     }
     return outcome;
   };
-  return { commands, run };
+  return {
+    commands,
+    run,
+    mode,
+    artifactScenario,
+    hostScenario,
+    hostSource,
+    sourceRoot: join(dirname(integrationRoot), `${mode}-a`),
+    targetRoot: join(dirname(integrationRoot), `${mode}-b`),
+  };
 }
 
-function fakeArtifacts(targetRoot) {
+function applyHostCommandScenario(outcome, scenario) {
+  if (scenario === 'throw') throw new Error('Host command threw after launch');
+  const lines = [
+    'PASS main.test.skiff::provider observes helper mutation',
+    'test result: ok. 11 passed; 0 failed',
+    'test result: ok. 1 passed; 0 failed',
+  ];
+  if (scenario === 'nonzero') {
+    outcome.code = 9;
+    outcome.stderr = 'Host command failed after launch';
+  } else if (scenario === 'signal') {
+    outcome.code = null;
+    outcome.signal = 'SIGTERM';
+  } else if (scenario === 'malformed') {
+    lines[2] = 'test result: malformed';
+  } else if (scenario === 'extra-counts') {
+    lines.push('test result: ok. 1 passed; 0 failed');
+  } else if (scenario === 'wrong-pass') {
+    lines[0] = 'PASS main.test.skiff::wrong observation';
+  } else if (scenario === 'missing-pass') {
+    lines.shift();
+  } else if (scenario === 'duplicate-pass') {
+    lines.unshift(lines[0]);
+  }
+  outcome.stdout = lines.join('\n');
+  outcome.observedPorts = [46010, 46011, 46012];
+}
+
+function artifactSnapshotDouble(commandDouble) {
+  let call = 0;
+  return async (targetRoot) => {
+    const phase = commandDouble.mode === 'full' && call > 0 ? 'after' : 'before';
+    call += 1;
+    return fakeArtifacts(targetRoot, {
+      materializationRoot: phase === 'before'
+        ? commandDouble.sourceRoot
+        : commandDouble.targetRoot,
+      scenario: phase === 'after' ? commandDouble.artifactScenario : 'before',
+      includeCompilerDepInfo: commandDouble.mode === 'combined',
+    });
+  };
+}
+
+function fakeArtifacts(targetRoot, {
+  materializationRoot = '/tmp/combined-root',
+  scenario = 'before',
+  includeCompilerDepInfo = true,
+} = {}) {
   const debug = join(targetRoot, 'debug');
   const deps = join(debug, 'deps');
-  return [
+  const artifacts = [
     structure(join(debug, 'skiff-compiler')),
     structure(join(debug, 'skiff-test-runner')),
     structure(join(debug, 'skiff-package-service-smoke-fixture')),
@@ -370,52 +677,86 @@ function fakeArtifacts(targetRoot) {
     structure(join(deps, 'libskiff_compiler-c.rlib')),
     {
       path: join(deps, 'package_service_contract_deployment-d'),
-      sha256: 'identity',
+      sha256: fakeSha('identity'),
       mtimeMs: 1,
       size: 1,
+      classification: 'identity-test',
       depInfo: false,
       structureSubject: false,
       identityTest: true,
     },
     depInfo(join(deps, 'skiff_compiler_input-a.d')),
     depInfo(join(deps, 'skiff_compiler_source-b.d')),
-    depInfo(join(debug, 'skiff-compiler.d')),
-    depInfo(join(debug, 'skiff-test-runner.d')),
-    depInfo(join(debug, 'skiff-package-service-smoke-fixture.d')),
+    ...(includeCompilerDepInfo
+      ? [depInfo(join(debug, 'skiff-compiler.d'), { materializationRoot })]
+      : []),
+    depInfo(join(debug, 'skiff-test-runner.d'), { materializationRoot }),
+    depInfo(join(debug, 'skiff-package-service-smoke-fixture.d'), { materializationRoot }),
   ];
+  if (scenario === 'binary-change') mutateArtifact(artifacts, 'skiff-test-runner', 'sha256');
+  if (scenario === 'rlib-change') mutateArtifact(artifacts, 'libskiff_compiler_input-a.rlib', 'sha256');
+  if (scenario === 'hashed-dep-info-change') {
+    mutateArtifact(artifacts, 'skiff_compiler_input-a.d', 'sha256');
+  }
+  if (scenario === 'stable-mtime-change') mutateArtifact(artifacts, 'skiff-test-runner', 'mtimeMs');
+  if (scenario === 'illegal-root-materialization') {
+    const entry = artifacts.find((artifact) => basename(artifact.path) === 'skiff-test-runner.d');
+    entry.materializationText += '\nforeign-change';
+    entry.sha256 = fakeSha('illegal-root-materialization');
+    entry.size = entry.materializationText.length;
+  }
+  return artifacts;
 }
 
 function structure(path) {
   return {
     path,
-    sha256: basename(path),
+    sha256: fakeSha(basename(path)),
     mtimeMs: 1,
     size: 1,
+    classification: basename(path).endsWith('.rlib') ? 'rlib' : 'binary',
     depInfo: false,
     structureSubject: true,
     identityTest: false,
   };
 }
 
-function depInfo(path) {
+function depInfo(path, { materializationRoot } = {}) {
+  const rootSpecific = materializationRoot !== undefined;
+  const materializationText = rootSpecific
+    ? `${path}: ${materializationRoot}/Cargo.toml ${materializationRoot}/src/main.rs`
+    : undefined;
   return {
     path,
-    sha256: basename(path),
-    mtimeMs: 1,
-    size: 1,
+    sha256: fakeSha(materializationText ?? basename(path)),
+    mtimeMs: rootSpecific ? materializationRoot.length : 1,
+    size: materializationText?.length ?? 1,
+    classification: rootSpecific ? 'root-specific-dep-info' : 'hashed-dep-info',
     depInfo: true,
     structureSubject: false,
     identityTest: false,
+    ...(rootSpecific ? { materializationText } : {}),
   };
 }
 
-function freshOutput() {
-  return [
+function mutateArtifact(artifacts, name, field) {
+  const entry = artifacts.find((artifact) => basename(artifact.path) === name);
+  entry[field] = field === 'mtimeMs' ? entry[field] + 1 : fakeSha(`${entry[field]}-changed`);
+}
+
+function fakeSha(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function freshOutput({ missing = null, conflict = null } = {}) {
+  const lines = [
     'Fresh skiff-test-runner v0.1.0',
     'Fresh skiff-compiler v0.1.0',
     'Fresh skiff-compiler-input v0.1.0',
     'Fresh skiff-compiler-source v0.1.0',
-  ].join('\n');
+  ].filter((line) => !line.includes(` ${missing} `));
+  if (conflict !== null) lines.push(`Dirty ${conflict} v0.1.0`);
+  return lines.join('\n');
 }
 
 function isMergeOnlyFixture({ command, args }) {

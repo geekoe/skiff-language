@@ -1,14 +1,13 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
+import {
+  PROBE_TARGETED_CRATES,
+  combinedArtifactEvidenceIsComplete,
+} from './platform-source-probe-evidence.mjs';
 import { probeDigest } from './platform-source-probe-support.mjs';
 
-export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v3';
-export const PROBE_TARGETED_CRATES = Object.freeze([
-  'skiff-test-runner',
-  'skiff-compiler',
-  'skiff-compiler-input',
-  'skiff-compiler-source',
-]);
+export const PROBE_LEDGER_SCHEMA = 'skiff-platform-source-shared-target-probe-v4';
+export { PROBE_TARGETED_CRATES };
 
 export function validateProbeOptions(options) {
   const mode = options?.mode;
@@ -91,12 +90,13 @@ export function createProbeLedger(input, probeNonce) {
     paths: null,
     rounds: [],
     identityProbes: [],
-    fresh: [],
+    artifactEvidence: [],
     artifacts: [],
     structure: null,
     registry: null,
     sourceSuite: null,
     fullProbeRuns: 0,
+    hostAttempt: null,
     output: null,
     processes: [],
     ports: [],
@@ -144,6 +144,7 @@ export function assertCombinedLedger(ledger, input) {
       !== JSON.stringify(['A-origin', 'B-origin', 'final-A-origin'])
     || JSON.stringify(ledger.registry) !== JSON.stringify([{ id: 'std', root: 'std' }])
     || ledger.sourceSuite !== null
+    || ledger.hostAttempt !== null
   ) {
     throw new Error('combined ledger matrix metadata is incomplete');
   }
@@ -192,14 +193,7 @@ export function assertCombinedLedger(ledger, input) {
       [ledger.paths?.bWorktree, ledger.paths?.bWorktree],
       [ledger.paths?.aWorktree, ledger.paths?.aWorktree],
     ])
-    || !Array.isArray(ledger.fresh)
-    || ledger.fresh.length !== 2
-    || ledger.fresh.some((entry) => (
-      entry.identityTargetFresh !== true
-      || JSON.stringify(entry.crates) !== JSON.stringify(PROBE_TARGETED_CRATES)
-      || !Array.isArray(entry.artifacts)
-      || entry.artifacts.length === 0
-    ))
+    || !combinedArtifactEvidenceIsComplete(ledger.artifactEvidence)
     || !Array.isArray(ledger.artifacts)
     || ledger.artifacts.length === 0
     || !Array.isArray(ledger.structure?.stringsNoMatch)

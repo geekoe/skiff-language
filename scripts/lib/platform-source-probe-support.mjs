@@ -17,7 +17,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { assertPortsClosed } from './local-port-lease.mjs';
@@ -37,7 +37,6 @@ export function createProbeDependencies(overrides) {
     canonicalPath: realpath,
     availableBytes: diskAvailableBytes,
     allocatedBytes: allocatedDirectoryBytes,
-    snapshotArtifacts,
     loadRegistry,
     readText: (path) => readFile(path, 'utf8'),
     readOwnershipText: (path) => readFile(path, 'utf8'),
@@ -92,59 +91,6 @@ export function commandFailure(command, outcome) {
 
 export function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function snapshotArtifacts(targetRoot) {
-  const debugRoot = join(targetRoot, 'debug');
-  const files = await walkFiles(debugRoot);
-  const selected = files.filter((path) => artifactTraits(path) !== null);
-  const result = [];
-  for (const path of selected.sort()) {
-    const traits = artifactTraits(path);
-    const metadata = await stat(path);
-    const contents = await readFile(path);
-    result.push({
-      path,
-      sha256: createHash('sha256').update(contents).digest('hex'),
-      mtimeMs: metadata.mtimeMs,
-      size: metadata.size,
-      ...traits,
-    });
-  }
-  return result;
-}
-
-function artifactTraits(path) {
-  const name = path.split(sep).at(-1);
-  const depInfo = name.endsWith('.d')
-    && /(?:skiff[-_](?:compiler|test[-_]runner|package[-_]service[-_]smoke[-_]fixture)|package_service_contract_deployment)/
-      .test(name);
-  if (depInfo) return { depInfo: true, structureSubject: false, identityTest: false };
-  const structureSubject = name === 'skiff-compiler'
-    || name === 'skiff-test-runner'
-    || name === 'skiff-package-service-smoke-fixture'
-    || /^libskiff_compiler(?:_input|_source)?-[^.]+\.rlib$/.test(name);
-  const identityTest = /^package_service_contract_deployment-[^.]+$/.test(name);
-  return structureSubject || identityTest
-    ? { depInfo: false, structureSubject, identityTest }
-    : null;
-}
-
-async function walkFiles(root) {
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    throw error;
-  }
-  const files = [];
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) files.push(...await walkFiles(path));
-    else if (entry.isFile()) files.push(path);
-  }
-  return files;
 }
 
 async function loadRegistry(root, candidate) {

@@ -5,6 +5,17 @@ import {
   createProbeLedger,
   validateProbeOptions,
 } from './platform-source-probe-contract.mjs';
+import {
+  artifactSnapshotForLedger,
+  assertArtifactEvidence,
+  assertHostAttempt,
+  beginHostAttempt,
+  completeHostAttempt,
+  createArtifactEvidence,
+  failThrownHostAttempt,
+  inspectHostFixture,
+  snapshotProbeArtifacts,
+} from './platform-source-probe-evidence.mjs';
 import { preflightPlatformSourceProbe } from './platform-source-probe-preflight.mjs';
 import {
   addOwnedWorktree,
@@ -22,11 +33,12 @@ import {
 
 const PRELUDE_LABEL = 'PLATFORM_SOURCE_PRELUDE_IDENTITY';
 const STD_LABEL = 'PLATFORM_SOURCE_STD_PACKAGE_BUILD_ID';
-const HOST_FINAL_VALUE = 'provider-observed-helper-mutated';
-const HOST_FINAL_VALUE_ASSERTION = `assert root.main.run() == "${HOST_FINAL_VALUE}"`;
 
 export async function runPlatformSourceSharedTargetProbe(options, overrides = {}) {
-  const deps = createProbeDependencies(overrides);
+  const deps = createProbeDependencies({
+    snapshotArtifacts: snapshotProbeArtifacts,
+    ...overrides,
+  });
   const input = validateProbeOptions(options);
   const ledger = createProbeLedger(input, deps.createNonce());
   deps.ledger = ledger;
@@ -214,36 +226,44 @@ async function runCombined(state) {
 
   await addWorktrees(state);
   const probes = [];
-  const fresh = [];
   await buildOrigin(state, input.aWorktree, 'A-origin');
   probes.push(await identityProbe(state, input.aWorktree, input.aWorktree));
   const aBeforeB = await deps.snapshotArtifacts(sharedTarget);
-  const aWithB = await identityProbe(state, input.bWorktree, input.bWorktree);
-  probes.push(aWithB);
-  fresh.push(assertFresh(
-    aWithB.output,
-    aBeforeB,
-    await deps.snapshotArtifacts(sharedTarget),
-    'A-origin/B-root',
-  ));
+  const aWithBOutcome = await runIdentityCommand(state, input.bWorktree, input.bWorktree);
+  const aAfterB = await deps.snapshotArtifacts(sharedTarget);
+  recordArtifactEvidence(state, {
+    mode: 'combined',
+    label: 'A-origin/B-root',
+    outcome: aWithBOutcome,
+    before: aBeforeB,
+    after: aAfterB,
+    sourceRoot: input.aWorktree,
+    targetRoot: input.bWorktree,
+    requireIdentity: true,
+  });
+  probes.push(parseIdentityProbe(input, input.bWorktree, input.bWorktree, aWithBOutcome));
 
   await buildOrigin(state, input.bWorktree, 'B-origin');
   probes.push(await identityProbe(state, input.bWorktree, input.bWorktree));
   const bBeforeA = await deps.snapshotArtifacts(sharedTarget);
-  const bWithA = await identityProbe(state, input.aWorktree, input.aWorktree);
-  probes.push(bWithA);
-  fresh.push(assertFresh(
-    bWithA.output,
-    bBeforeA,
-    await deps.snapshotArtifacts(sharedTarget),
-    'B-origin/A-root',
-  ));
+  const bWithAOutcome = await runIdentityCommand(state, input.aWorktree, input.aWorktree);
+  const bAfterA = await deps.snapshotArtifacts(sharedTarget);
+  recordArtifactEvidence(state, {
+    mode: 'combined',
+    label: 'B-origin/A-root',
+    outcome: bWithAOutcome,
+    before: bBeforeA,
+    after: bAfterA,
+    sourceRoot: input.bWorktree,
+    targetRoot: input.aWorktree,
+    requireIdentity: true,
+  });
+  probes.push(parseIdentityProbe(input, input.aWorktree, input.aWorktree, bWithAOutcome));
 
   await buildOrigin(state, input.aWorktree, 'final-A-origin');
   const artifacts = await deps.snapshotArtifacts(sharedTarget);
-  ledger.artifacts = artifacts;
+  ledger.artifacts = artifactSnapshotForLedger(artifacts);
   ledger.identityProbes = probes.map(({ output, ...probe }) => probe);
-  ledger.fresh = fresh;
   ledger.structure = await inspectStructure(state, artifacts);
   const registry = await deps.loadRegistry(input.aWorktree, input.candidate);
   if (JSON.stringify(registry) !== JSON.stringify([{ id: 'std', root: 'std' }])) {
@@ -259,20 +279,24 @@ async function runFull(state) {
   await addWorktrees(state);
   await buildOrigin(state, input.aWorktree, 'A-origin-full', { buildCompilerBinary: false });
   const before = await deps.snapshotArtifacts(sharedTarget);
-  const outcome = await checked(deps, 'cargo', runnerBuildArgs(input.bWorktree), {
+  const outcome = await deps.runCommand('cargo', runnerBuildArgs(input.bWorktree), {
     cwd: input.bWorktree,
     env: targetEnv(sharedTarget),
     signal,
   });
+  recordOwnedResources(ledger, outcome);
   const after = await deps.snapshotArtifacts(sharedTarget);
-  ledger.fresh = [assertFresh(
-    commandText(outcome),
+  recordArtifactEvidence(state, {
+    mode: 'full',
+    label: 'full A-origin/B-root',
+    outcome,
     before,
     after,
-    'full A-origin/B-root',
-    { requireIdentity: false },
-  )];
-  ledger.artifacts = after;
+    sourceRoot: input.aWorktree,
+    targetRoot: input.bWorktree,
+    requireIdentity: false,
+  });
+  ledger.artifacts = artifactSnapshotForLedger(after);
   const hostAssertionPath = join(
     input.bWorktree,
     'test-runner',
@@ -282,39 +306,30 @@ async function runFull(state) {
     'main.test.skiff',
   );
   const hostSource = await deps.readText(hostAssertionPath);
-  const exactAssertions = hostSource
-    .split(/\r?\n/)
-    .filter((line) => line.trim() === HOST_FINAL_VALUE_ASSERTION);
-  if (exactAssertions.length !== 1) {
-    throw new Error(`Host fixture must assert ${HOST_FINAL_VALUE} exactly once`);
+  const fixture = inspectHostFixture(hostSource, hostAssertionPath);
+  const hostArgs = [join(input.bWorktree, 'scripts/run-skiff-tests.mjs')];
+  ledger.fullProbeRuns += 1;
+  ledger.hostAttempt = beginHostAttempt('node', hostArgs);
+  let gate;
+  try {
+    gate = await deps.runCommand('node', hostArgs, {
+      cwd: taskRoot,
+      env: targetEnv(sharedTarget),
+      signal,
+      observePorts: true,
+    });
+  } catch (error) {
+    ledger.hostAttempt = failThrownHostAttempt(ledger.hostAttempt, error);
+    throw error;
   }
-  const gate = await checked(deps, 'node', [
-    join(input.bWorktree, 'scripts/run-skiff-tests.mjs'),
-  ], {
-    cwd: taskRoot,
-    env: targetEnv(sharedTarget),
-    signal,
-    observePorts: true,
+  recordOwnedResources(ledger, gate);
+  ledger.hostAttempt = completeHostAttempt(ledger.hostAttempt, gate, fixture, {
+    processEvidencePresent: ledger.processes.some((entry) => entry.pid === gate.pid),
+    portEvidencePresent: (gate.observedPorts?.length ?? 0) > 0
+      && gate.observedPorts.every((port) => ledger.ports.some((entry) => entry.port === port)),
   });
-  const output = commandText(gate);
-  if (ledger.ports.length === 0 || !ledger.processes.some((entry) => entry.pid === gate.pid)) {
-    throw new Error('full gate omitted owned process/port cleanup evidence');
-  }
-  const counts = [...output.matchAll(/test result: ok\. (\d+) passed; 0 failed/g)]
-    .map((match) => Number(match[1]));
-  if (counts.length !== 2 || counts[0] !== 11 || counts[1] !== 1) {
-    throw new Error(`full gate must report exact std 11/11 and Host 1/1, got ${counts.join('/')}`);
-  }
-  ledger.sourceSuite = {
-    std: { passed: 11, total: 11 },
-    host: { passed: 1, total: 1 },
-    finalValue: HOST_FINAL_VALUE,
-    finalValueEvidence: {
-      assertionPath: hostAssertionPath,
-      assertion: HOST_FINAL_VALUE_ASSERTION,
-    },
-  };
-  ledger.fullProbeRuns = 1;
+  assertHostAttempt(ledger.hostAttempt);
+  ledger.sourceSuite = ledger.hostAttempt.sourceSuite;
 }
 
 async function addWorktrees(state) {
@@ -351,8 +366,16 @@ function runnerBuildArgs(root) {
 }
 
 async function identityProbe(state, manifestRoot, platformRoot) {
-  const { deps, input, sharedTarget, signal } = state;
-  const outcome = await checked(deps, 'cargo', [
+  const outcome = await runIdentityCommand(state, manifestRoot, platformRoot);
+  if (outcome.code !== 0 || outcome.signal !== null || outcome.error != null) {
+    throw commandFailure('cargo', outcome);
+  }
+  return parseIdentityProbe(state.input, manifestRoot, platformRoot, outcome);
+}
+
+async function runIdentityCommand(state, manifestRoot, platformRoot) {
+  const { deps, sharedTarget, signal } = state;
+  const outcome = await deps.runCommand('cargo', [
     'test', '--locked', '--manifest-path', join(manifestRoot, 'test-runner', 'Cargo.toml'),
     '--test', 'package_service_contract_deployment',
     'platform_source_identity_probe', '-vv', '--', '--ignored', '--exact', '--nocapture',
@@ -364,6 +387,11 @@ async function identityProbe(state, manifestRoot, platformRoot) {
     },
     signal,
   });
+  recordOwnedResources(deps.ledger, outcome);
+  return outcome;
+}
+
+function parseIdentityProbe(input, manifestRoot, platformRoot, outcome) {
   const output = commandText(outcome);
   const prelude = labeledValue(output, PRELUDE_LABEL);
   const std = labeledValue(output, STD_LABEL);
@@ -371,6 +399,13 @@ async function identityProbe(state, manifestRoot, platformRoot) {
     throw new Error(`identity probe mismatch for ${manifestRoot} using ${platformRoot}`);
   }
   return { manifestRoot, platformRoot, preludeIdentity: prelude, stdPackageBuildId: std, output };
+}
+
+function recordArtifactEvidence(state, evidenceInput) {
+  const evidence = createArtifactEvidence(evidenceInput);
+  state.ledger.artifactEvidence.push(evidence);
+  assertArtifactEvidence(evidence);
+  return evidence;
 }
 
 async function inspectStructure(state, artifacts) {
@@ -435,27 +470,6 @@ function recordOwnedResources(ledger, outcome) {
   for (const port of outcome.observedPorts ?? []) {
     ledger.ports.push({ port, absent: outcome.portsAbsent === true });
   }
-}
-
-function assertFresh(output, before, after, label, { requireIdentity = true } = {}) {
-  const freshCrates = PROBE_TARGETED_CRATES.filter(
-    (name) => new RegExp(`Fresh\\s+${name}\\b`).test(output),
-  );
-  if (freshCrates.length !== PROBE_TARGETED_CRATES.length) {
-    throw new Error(`${label} omitted Fresh crate evidence: ${freshCrates.join(', ')}`);
-  }
-  if (JSON.stringify(before) !== JSON.stringify(after)) {
-    throw new Error(`${label} changed shared-target artifact hash or mtime`);
-  }
-  if (requireIdentity && !before.some((entry) => entry.identityTest === true)) {
-    throw new Error(`${label} omitted the identity integration-test artifact`);
-  }
-  return {
-    label,
-    crates: freshCrates,
-    identityTargetFresh: requireIdentity,
-    artifacts: before,
-  };
 }
 
 function targetEnv(sharedTarget) {
