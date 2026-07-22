@@ -36,6 +36,17 @@ test('combined and full modes remain disjoint command-double orchestrations', as
     assert.equal(combined.status, 'PASS', combined.firstError);
     assert.equal(combined.fullProbeRuns, 0);
     assert.equal(combined.sourceSuite, null);
+    assert.match(combined.probeNonce, /^[a-f0-9]{32}$/);
+    assert.deepEqual(combined.ownership.worktrees.map((entry) => entry.label), ['A', 'B']);
+    assert.equal(
+      combined.ownership.worktrees.every((entry) => (
+        entry.claimVerifiedBeforeRemoval && entry.pathAbsent && entry.registryAbsent
+      )),
+      true,
+    );
+    assert.equal(combined.ownership.taskRoot.markerVerifiedBeforeRemoval, true);
+    assert.equal(combined.output.ownedTemporaryAbsent, true);
+    assert.equal(combined.output.foreignDestinationPreserved, true);
     assert.equal(combined.identityProbes.length, 4);
     assert.deepEqual(combined.rounds.map((round) => round.label), [
       'A-origin', 'B-origin', 'final-A-origin',
@@ -192,6 +203,30 @@ test('CLI parser requires an explicit mode and mode-specific ledger option', () 
   );
 });
 
+test('primary failure remains first when owned worktree removal also fails', async () => {
+  const fixture = await gateFixture();
+  try {
+    const commandDouble = fixture.commandDouble('combined', {
+      failIdentity: true,
+      failRemove: true,
+    });
+    const ledger = await runPlatformSourceSharedTargetProbe(
+      fixture.options('combined'),
+      fixture.dependencies(commandDouble),
+    );
+    assert.equal(ledger.status, 'FAIL');
+    assert.match(ledger.firstError, /primary identity failure/);
+    assert.equal(ledger.ownership.worktrees.length, 2);
+    assert.equal(ledger.ownership.worktrees.every((entry) => entry.error !== null), true);
+    assert.equal(
+      commandDouble.commands.some(({ args }) => args.includes('--force')),
+      false,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 async function gateFixture() {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'skiff-platform-probe-double-')),
@@ -219,8 +254,8 @@ async function gateFixture() {
         ...overrides,
       };
     },
-    commandDouble(mode, { combinedLedger } = {}) {
-      return createCommandDouble({ integrationRoot, mode, combinedLedger });
+    commandDouble(mode, options = {}) {
+      return createCommandDouble({ integrationRoot, mode, ...options });
     },
     dependencies(commandDouble) {
       return {
@@ -243,8 +278,15 @@ async function gateFixture() {
   };
 }
 
-function createCommandDouble({ integrationRoot, mode, combinedLedger }) {
+function createCommandDouble({
+  integrationRoot,
+  mode,
+  combinedLedger,
+  failIdentity = false,
+  failRemove = false,
+}) {
   const commands = [];
+  const worktrees = new Map([[integrationRoot, { head: candidate, detached: false }]]);
   let pid = 10_000;
   const run = async (command, args, options = {}) => {
     commands.push({ command, args: [...args], options });
@@ -267,17 +309,39 @@ function createCommandDouble({ integrationRoot, mode, combinedLedger }) {
         outcome.stdout = `?? ${relative(integrationRoot, combinedLedger)}\n`;
       }
     } else if (command === 'git' && args.includes('worktree') && args.includes('list')) {
-      outcome.stdout = `worktree ${integrationRoot}\nHEAD ${candidate}\n`;
+      outcome.stdout = [...worktrees].map(([path, entry]) => [
+        `worktree ${path}`,
+        `HEAD ${entry.head}`,
+        entry.detached ? 'detached' : 'branch refs/heads/integration',
+        '',
+      ].join('\0')).join('\0');
     } else if (command === 'git' && args.includes('worktree') && args.includes('add')) {
-      await mkdir(args[args.indexOf('add') + 2], { recursive: true });
+      const path = args[args.indexOf('add') + 2];
+      const adminPath = join(integrationRoot, `.git-worktree-${basename(path)}`);
+      await mkdir(path, { recursive: true });
+      await mkdir(adminPath);
+      await writeFile(join(path, '.git'), `gitdir: ${adminPath}\n`);
+      worktrees.set(path, { head: candidate, detached: true, adminPath });
     } else if (command === 'git' && args.includes('worktree') && args.includes('remove')) {
-      await rm(args[args.indexOf('remove') + 2], { recursive: true, force: true });
+      const path = args[args.indexOf('remove') + 1];
+      if (failRemove) {
+        outcome.code = 8;
+        outcome.stderr = 'owned remove failure';
+      } else {
+        await rm(path, { recursive: true, force: true });
+        await rm(worktrees.get(path).adminPath, { recursive: true, force: true });
+        worktrees.delete(path);
+      }
     } else if (command === 'cargo' && args.includes('platform_source_identity_probe')) {
       outcome.stdout = [
         `PLATFORM_SOURCE_PRELUDE_IDENTITY=${prelude}`,
         `PLATFORM_SOURCE_STD_PACKAGE_BUILD_ID=${std}`,
       ].join('\n');
       outcome.stderr = freshOutput();
+      if (failIdentity) {
+        outcome.code = 7;
+        outcome.stderr += '\nprimary identity failure';
+      }
     } else if (command === 'cargo' && args[0] === 'build') {
       outcome.stderr = freshOutput();
     } else if (command === 'rg') {

@@ -3,17 +3,18 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
   access,
+  link,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   realpath,
-  rename,
   rm,
   stat,
   statfs,
-  writeFile,
+  unlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
@@ -27,18 +28,22 @@ export function createProbeDependencies(overrides) {
   return {
     signalTarget: process,
     runCommand: captureOwnedCommand,
+    createNonce: () => randomBytes(16).toString('hex'),
     makeTempRoot: (prefix) => mkdtemp(prefix),
     mkdir,
-    remove: (path) => rm(path, { recursive: true, force: true }),
+    removeOwnedTree: (path) => rm(path, { recursive: true, force: false }),
     exists: pathExists,
+    pathIdentity,
     canonicalPath: realpath,
     availableBytes: diskAvailableBytes,
     allocatedBytes: allocatedDirectoryBytes,
     snapshotArtifacts,
     loadRegistry,
     readText: (path) => readFile(path, 'utf8'),
+    readOwnershipText: (path) => readFile(path, 'utf8'),
     readLedger: async (path) => JSON.parse(await readFile(path, 'utf8')),
-    writeLedger: atomicWriteLedger,
+    writeExclusiveDurable,
+    writeLedger: installLedgerNoClobber,
     assertExecutables,
     ...overrides,
   };
@@ -273,15 +278,135 @@ async function diskAvailableBytes(path) {
   return bytes > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(bytes);
 }
 
-async function atomicWriteLedger(path, ledger) {
-  const temporary = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(ledger, null, 2)}\n`, { flag: 'wx' });
+export function ledgerTemporaryPath(path, nonce) {
+  if (!/^[a-f0-9]{32}$/.test(nonce)) {
+    throw new Error('ledger temporary requires a 128-bit lowercase hexadecimal nonce');
+  }
+  return `${path}.${nonce}.tmp`;
+}
+
+export async function installLedgerNoClobber(path, ledger, {
+  nonce,
+  openFile = open,
+  linkFile = link,
+  unlinkFile = unlink,
+  inspectPath = pathIdentity,
+  readPath = (candidate) => readFile(candidate),
+} = {}) {
+  const temporaryPath = ledgerTemporaryPath(path, nonce);
+  let handle;
+  let temporaryIdentity;
+  let destinationInstalled = false;
   try {
-    await rename(temporary, path);
+    handle = await openFile(temporaryPath, 'wx', 0o600);
+    temporaryIdentity = identityFromStats(await handle.stat({ bigint: true }));
+    await handle.writeFile(`${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await linkFile(temporaryPath, path);
+    destinationInstalled = true;
+    const destinationIdentity = await inspectPath(path);
+    if (!samePathIdentity(destinationIdentity, temporaryIdentity)) {
+      throw new Error('installed ledger identity does not match its owned temporary');
+    }
+    await unlinkFile(temporaryPath);
+    if (await inspectPath(temporaryPath) !== null) {
+      throw new Error('owned ledger temporary remains after installation');
+    }
+    return {
+      temporaryPath,
+      ownedTemporaryAbsent: true,
+      foreignDestinationPreserved: true,
+      method: 'wx+flush+close+hard-link',
+    };
   } catch (error) {
-    await rm(temporary, { force: true });
+    try { await handle?.close(); } catch {}
+    const cleanupErrors = [];
+    if (destinationInstalled && temporaryIdentity !== undefined) {
+      try {
+        if (samePathIdentity(await inspectPath(path), temporaryIdentity)) {
+          await unlinkFile(path);
+        }
+      } catch (cleanupError) {
+        cleanupErrors.push(`destination cleanup: ${errorMessage(cleanupError)}`);
+      }
+    }
+    if (temporaryIdentity !== undefined) {
+      try {
+        if (samePathIdentity(await inspectPath(temporaryPath), temporaryIdentity)) {
+          await unlinkFile(temporaryPath);
+        }
+      } catch (cleanupError) {
+        cleanupErrors.push(`temporary cleanup: ${errorMessage(cleanupError)}`);
+      }
+    }
+    const ownedTemporaryAbsent = temporaryIdentity === undefined
+      || !samePathIdentity(await inspectPath(temporaryPath), temporaryIdentity);
+    let foreignDestinationSha256 = null;
+    const remainingDestination = await inspectPath(path);
+    if (remainingDestination !== null && !samePathIdentity(remainingDestination, temporaryIdentity)) {
+      try {
+        foreignDestinationSha256 = createHash('sha256').update(await readPath(path)).digest('hex');
+      } catch {}
+    }
+    const wrapped = new Error(errorMessage(error), { cause: error });
+    wrapped.ledgerInstallEvidence = {
+      temporaryPath,
+      ownedTemporaryAbsent,
+      foreignDestinationPreserved: !destinationInstalled || remainingDestination === null,
+      foreignDestinationSha256,
+      cleanupErrors,
+      method: 'wx+flush+close+hard-link',
+    };
+    throw wrapped;
+  }
+}
+
+export async function writeExclusiveDurable(path, contents) {
+  let handle;
+  let identity;
+  try {
+    handle = await open(path, 'wx', 0o600);
+    identity = identityFromStats(await handle.stat({ bigint: true }));
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+    await handle.close();
+    return identity;
+  } catch (error) {
+    try { await handle?.close(); } catch {}
+    if (identity !== undefined && samePathIdentity(await pathIdentity(path), identity)) {
+      try { await unlink(path); } catch {}
+    }
     throw error;
   }
+}
+
+export async function pathIdentity(path) {
+  try {
+    return identityFromStats(await lstat(path, { bigint: true }));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function identityFromStats(metadata) {
+  return {
+    dev: metadata.dev.toString(),
+    ino: metadata.ino.toString(),
+    kind: metadata.isDirectory() ? 'directory' : metadata.isFile() ? 'file' : 'other',
+  };
+}
+
+export function samePathIdentity(left, right) {
+  return left !== null
+    && right !== null
+    && left !== undefined
+    && right !== undefined
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.kind === right.kind;
 }
 
 async function pathExists(path) {

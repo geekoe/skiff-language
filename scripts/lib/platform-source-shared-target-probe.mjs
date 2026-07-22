@@ -7,11 +7,17 @@ import {
 } from './platform-source-probe-contract.mjs';
 import { preflightPlatformSourceProbe } from './platform-source-probe-preflight.mjs';
 import {
+  addOwnedWorktree,
+  cleanupProbeOwnership,
+  createProbeOwnership,
+} from './platform-source-probe-ownership.mjs';
+import {
   commandFailure,
   commandText,
   createProbeDependencies,
   errorMessage,
   finalizeProbeDigest,
+  ledgerTemporaryPath,
 } from './platform-source-probe-support.mjs';
 
 const PRELUDE_LABEL = 'PLATFORM_SOURCE_PRELUDE_IDENTITY';
@@ -22,7 +28,7 @@ const HOST_FINAL_VALUE_ASSERTION = `assert root.main.run() == "${HOST_FINAL_VALU
 export async function runPlatformSourceSharedTargetProbe(options, overrides = {}) {
   const deps = createProbeDependencies(overrides);
   const input = validateProbeOptions(options);
-  const ledger = createProbeLedger(input);
+  const ledger = createProbeLedger(input, deps.createNonce());
   deps.ledger = ledger;
   try {
     const preflight = await preflightPlatformSourceProbe(input, deps, checked);
@@ -43,8 +49,7 @@ export async function runPlatformSourceSharedTargetProbe(options, overrides = {}
   for (const [signal, handler] of handlers) deps.signalTarget.on(signal, handler);
 
   let taskRoot;
-  let aAdded = false;
-  let bAdded = false;
+  let ownership;
   let primaryError;
   try {
     const prefix = join(
@@ -52,6 +57,7 @@ export async function runPlatformSourceSharedTargetProbe(options, overrides = {}
       input.mode === 'combined' ? '.skiff-p5-i16.' : '.skiff-p5-g16.',
     );
     taskRoot = await deps.makeTempRoot(prefix);
+    ownership = await createProbeOwnership({ input, deps, ledger, taskRoot });
     const sharedTarget = join(taskRoot, 'cargo-target');
     await deps.mkdir(sharedTarget, { recursive: true });
     ledger.paths = {
@@ -68,8 +74,7 @@ export async function runPlatformSourceSharedTargetProbe(options, overrides = {}
       taskRoot,
       sharedTarget,
       signal: abortController.signal,
-      markAAdded: () => { aAdded = true; },
-      markBAdded: () => { bAdded = true; },
+      ownership,
     };
     if (input.mode === 'combined') await runCombined(state);
     else await runFull(state);
@@ -80,29 +85,59 @@ export async function runPlatformSourceSharedTargetProbe(options, overrides = {}
     ledger.primary = { status: 'FAIL', error: errorMessage(error) };
   }
 
-  const cleanupErrors = [];
-  for (const [path, added] of [[input.bWorktree, bAdded], [input.aWorktree, aAdded]]) {
-    if (!added) continue;
+  await finishProbeCleanup({
+    input,
+    deps,
+    ledger,
+    ownership,
+    taskRoot,
+    handlers,
+    interruptedBy,
+    primaryError,
+  });
+  return input.mode === 'combined'
+    ? await installCombinedLedger(input, deps, ledger)
+    : finalizeProbeDigest(ledger);
+}
+
+async function finishProbeCleanup({
+  input,
+  deps,
+  ledger,
+  ownership,
+  taskRoot,
+  handlers,
+  interruptedBy,
+  primaryError,
+}) {
+  let ownershipCleanup;
+  if (ownership !== undefined) {
     try {
-      await checked(deps, 'git', [
-        '-C', input.integrationRoot, 'worktree', 'remove', '--force', path,
-      ], { cwd: input.integrationRoot });
+      ownershipCleanup = await cleanupProbeOwnership(ownership, checked);
     } catch (error) {
-      cleanupErrors.push(error);
+      ownershipCleanup = failedOwnershipCleanup(ledger.probeNonce, taskRoot, error);
     }
+  } else {
+    const taskRootAbsent = taskRoot === undefined || !await deps.exists(taskRoot);
+    ownershipCleanup = {
+      nonce: ledger.probeNonce,
+      worktrees: [],
+      taskRoot: { path: taskRoot ?? null, absent: taskRootAbsent, error: null },
+      foreign: { paths: [], registries: [], preserved: true },
+      errors: taskRootAbsent ? [] : ['task root exists without a complete ownership marker'],
+    };
   }
-  if (taskRoot !== undefined) {
-    try { await deps.remove(taskRoot); } catch (error) { cleanupErrors.push(error); }
-  }
+  ledger.ownership = ownershipCleanup;
   for (const [signal, handler] of handlers) deps.signalTarget.off(signal, handler);
   ledger.cleanup = {
     aWorktreeAbsent: !await deps.exists(input.aWorktree),
     bWorktreeAbsent: !await deps.exists(input.bWorktree),
-    taskRootAbsent: taskRoot === undefined || !await deps.exists(taskRoot),
+    taskRootAbsent: ownershipCleanup.taskRoot.absent,
     processGroupsAbsent: ledger.processes.every((entry) => entry.absent === true),
     portsAbsent: ledger.ports.every((entry) => entry.absent === true),
     interruptedBy: interruptedBy ?? null,
-    errors: cleanupErrors.map(errorMessage),
+    foreignPreserved: ownershipCleanup.foreign.preserved,
+    errors: [...ownershipCleanup.errors],
   };
   for (const [label, absent] of [
     ['A worktree', ledger.cleanup.aWorktreeAbsent],
@@ -113,24 +148,55 @@ export async function runPlatformSourceSharedTargetProbe(options, overrides = {}
   ]) {
     if (!absent) ledger.cleanup.errors.push(`${label} cleanup proof is not ABSENT`);
   }
-  const cleanupPassed = ledger.cleanup.errors.length === 0;
-  ledger.status = primaryError === undefined && cleanupPassed ? 'PASS' : 'FAIL';
+  ledger.status = primaryError === undefined && ledger.cleanup.errors.length === 0
+    ? 'PASS'
+    : 'FAIL';
   ledger.firstError = primaryError === undefined
     ? (ledger.cleanup.errors[0] ?? null)
     : errorMessage(primaryError);
+}
+
+function failedOwnershipCleanup(nonce, taskRoot, error) {
+  return {
+    nonce,
+    worktrees: [],
+    taskRoot: { path: taskRoot, absent: false, error: errorMessage(error) },
+    foreign: { paths: [], registries: [], preserved: false },
+    errors: [errorMessage(error)],
+  };
+}
+
+async function installCombinedLedger(input, deps, ledger) {
+  const temporaryPath = ledgerTemporaryPath(input.ledger, ledger.probeNonce);
+  ledger.output = {
+    combinedLedger: input.ledger,
+    atomicWrite: 'PASS',
+    method: 'wx+flush+close+hard-link',
+    temporaryPath,
+    ownedTemporaryAbsent: true,
+    foreignDestinationPreserved: true,
+    error: null,
+  };
   let result = finalizeProbeDigest(ledger);
-  if (input.mode === 'combined') {
-    ledger.output = { combinedLedger: input.ledger, atomicWrite: 'PASS', error: null };
+  try {
+    await deps.writeLedger(input.ledger, result, { nonce: ledger.probeNonce });
+  } catch (error) {
+    const message = `failed to write combined ledger atomically: ${errorMessage(error)}`;
+    const evidence = error?.ledgerInstallEvidence;
+    ledger.status = 'FAIL';
+    ledger.firstError ??= message;
+    ledger.output = {
+      combinedLedger: input.ledger,
+      atomicWrite: 'FAIL',
+      method: evidence?.method ?? 'wx+flush+close+hard-link',
+      temporaryPath: evidence?.temporaryPath ?? temporaryPath,
+      ownedTemporaryAbsent: evidence?.ownedTemporaryAbsent === true,
+      foreignDestinationPreserved: evidence?.foreignDestinationPreserved === true,
+      foreignDestinationSha256: evidence?.foreignDestinationSha256 ?? null,
+      cleanupErrors: evidence?.cleanupErrors ?? [],
+      error: message,
+    };
     result = finalizeProbeDigest(ledger);
-    try {
-      await deps.writeLedger(input.ledger, result);
-    } catch (error) {
-      const message = `failed to write combined ledger atomically: ${errorMessage(error)}`;
-      ledger.status = 'FAIL';
-      ledger.firstError ??= message;
-      ledger.output = { combinedLedger: input.ledger, atomicWrite: 'FAIL', error: message };
-      result = finalizeProbeDigest(ledger);
-    }
   }
   return result;
 }
@@ -252,22 +318,9 @@ async function runFull(state) {
 }
 
 async function addWorktrees(state) {
-  const { input, deps, signal } = state;
-  await addWorktree(state, input.aWorktree, state.markAAdded, signal);
-  await addWorktree(state, input.bWorktree, state.markBAdded, signal);
-}
-
-async function addWorktree(state, path, markAdded, signal) {
-  const { input, deps } = state;
-  try {
-    await checked(deps, 'git', [
-      '-C', input.integrationRoot, 'worktree', 'add', '--detach', path, input.candidate,
-    ], { cwd: input.integrationRoot, signal });
-    markAdded();
-  } catch (error) {
-    if (await deps.exists(path)) markAdded();
-    throw error;
-  }
+  const { input, ownership, signal } = state;
+  await addOwnedWorktree(ownership, 'A', input.aWorktree, checked, signal);
+  await addOwnedWorktree(ownership, 'B', input.bWorktree, checked, signal);
 }
 
 async function buildOrigin(state, root, label, { buildCompilerBinary = true } = {}) {
