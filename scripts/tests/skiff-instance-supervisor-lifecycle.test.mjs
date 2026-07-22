@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
+import {
+  installManagedPidMetadata,
+  removeManagedPidMetadata,
+} from '../lib/managed-pid-metadata.mjs';
 import { createSupervisedEntryLifecycle } from '../lib/supervised-entry-lifecycle.mjs';
 
 const childSource = String.raw`
@@ -62,6 +67,165 @@ test('supervised entry owns real log handles across exactly 20 IPC child exit/st
   await assert.rejects(access(root), { code: 'ENOENT' });
 });
 
+test('false process-group stop rejects, preserves PID metadata, closes both handles, and blocks restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-supervisor-false-stop-'));
+  const pidPath = join(root, 'component.pid');
+  const stdoutFile = await open(join(root, 'stdout.log'), 'a');
+  const stderrFile = await open(join(root, 'stderr.log'), 'a');
+  const stdoutHandle = instrumentFileHandle(stdoutFile);
+  const stderrHandle = instrumentFileHandle(stderrFile);
+  let child;
+  let closePromise;
+  let pidRemovalCount = 0;
+  try {
+    await writeFile(pidPath, 'owned-and-still-live\n');
+    child = spawn(process.execPath, ['--input-type=module', '--eval', childSource], {
+      detached: true,
+      stdio: ['ignore', stdoutFile.fd, stderrFile.fd, 'ipc'],
+    });
+    closePromise = once(child, 'close');
+    const lifecycle = createSupervisedEntryLifecycle({
+      component: 'false-stop',
+      child,
+      pgid: child.pid,
+      stdoutHandle,
+      stderrHandle,
+      stopProcessGroup: async (pgid) => ({ pgid, stopped: false, forced: true }),
+      isProcessGroupAlive: () => true,
+      removePidMetadata: async () => {
+        pidRemovalCount += 1;
+        await rm(pidPath, { force: true });
+      },
+    });
+    await once(child, 'message');
+
+    let restartCount = 0;
+    void lifecycle.completion.then(
+      () => {
+        restartCount += 1;
+      },
+      () => {},
+    );
+    const error = await rejectionOf(lifecycle.stop('false stop'));
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(
+      error.errors.map(({ step }) => step),
+      ['process-group-stop', 'process-group-absence'],
+    );
+    assert.equal(pidRemovalCount, 0);
+    assert.equal(await access(pidPath).then(() => true), true);
+    assert.equal(stdoutHandle.closeCount, 1);
+    assert.equal(stderrHandle.closeCount, 1);
+    assert.equal(stdoutFile.fd, -1);
+    assert.equal(stderrFile.fd, -1);
+    assert.equal(processGroupAlive(child.pid), true);
+    await delay(0);
+    assert.equal(restartCount, 0);
+  } finally {
+    if (child !== undefined && processGroupAlive(child.pid)) {
+      signalProcessGroup(child, child.pid, 'SIGKILL');
+    }
+    if (closePromise !== undefined) {
+      await Promise.allSettled([closePromise]);
+    }
+    await Promise.allSettled([stdoutFile.close(), stderrFile.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('unsupervised PID-write primary and one-sided close failure use the same lifecycle completion', async (t) => {
+  await t.test('PID metadata write failure stops the child and closes both real handles', async () => {
+    const fixture = await createChildFixture('pid-write');
+    const pidPath = join(fixture.root, 'component.pid');
+    let pidRemovalCount = 0;
+    let pidOwner;
+    let pidInstall;
+    try {
+      await writeFile(pidPath, 'foreign-pre-existing-owner\n');
+      const lifecycle = createSupervisedEntryLifecycle({
+        component: 'pid-write',
+        child: fixture.child,
+        pgid: fixture.child.pid,
+        stdoutHandle: fixture.stdoutHandle,
+        stderrHandle: fixture.stderrHandle,
+        stopProcessGroup: (pgid) => stopRealProcessGroup(fixture.child, pgid),
+        isProcessGroupAlive: processGroupAlive,
+        removePidMetadata: async () => {
+          pidRemovalCount += 1;
+          await Promise.allSettled([pidInstall]);
+          if (pidOwner !== undefined) {
+            await removeManagedPidMetadata(pidOwner);
+          }
+        },
+      });
+      pidInstall = installManagedPidMetadata(pidPath, {
+        schemaVersion: 1,
+        component: 'pid-write',
+        pid: fixture.child.pid,
+        pgid: fixture.child.pid,
+      }).then((owner) => {
+        pidOwner = owner;
+        return owner;
+      });
+      const pidWriteErrorPromise = rejectionOf(pidInstall);
+      await once(fixture.child, 'message');
+      const pidWriteError = await pidWriteErrorPromise;
+      assert.equal(pidWriteError.code, 'EEXIST');
+      lifecycle.recordPrimary(pidWriteError);
+      assert.strictEqual(await rejectionOf(lifecycle.stop('PID write failure')), pidWriteError);
+      await fixture.closePromise;
+      assert.equal(pidRemovalCount, 1);
+      assert.equal(fixture.stdoutHandle.closeCount, 1);
+      assert.equal(fixture.stderrHandle.closeCount, 1);
+      assert.equal(fixture.stdoutFile.fd, -1);
+      assert.equal(fixture.stderrFile.fd, -1);
+      assert.equal(processGroupAlive(fixture.child.pid), false);
+      assert.equal(await readFile(pidPath, 'utf8'), 'foreign-pre-existing-owner\n');
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  await t.test('delegated stdout close failure still closes stderr, stops the child, and removes PID', async () => {
+    const closeMarker = new Error('injected unsupervised stdout close failure');
+    const fixture = await createChildFixture('detach-close', closeMarker);
+    const pidPath = join(fixture.root, 'component.pid');
+    let pidRemovalCount = 0;
+    try {
+      await writeFile(pidPath, 'owned\n');
+      const lifecycle = createSupervisedEntryLifecycle({
+        component: 'detach-close',
+        child: fixture.child,
+        pgid: fixture.child.pid,
+        stdoutHandle: fixture.stdoutHandle,
+        stderrHandle: fixture.stderrHandle,
+        stopProcessGroup: (pgid) => stopRealProcessGroup(fixture.child, pgid),
+        isProcessGroupAlive: processGroupAlive,
+        removePidMetadata: async () => {
+          pidRemovalCount += 1;
+          await rm(pidPath);
+        },
+      });
+      await once(fixture.child, 'message');
+      const error = await rejectionOf(lifecycle.detach());
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 1);
+      assert.equal(error.errors[0].step, 'stdout-close');
+      assert.strictEqual(error.errors[0].cause, closeMarker);
+      await fixture.closePromise;
+      assert.equal(pidRemovalCount, 1);
+      assert.equal(fixture.stdoutHandle.closeCount, 1);
+      assert.equal(fixture.stderrHandle.closeCount, 1);
+      assert.equal(fixture.stdoutFile.fd, -1);
+      assert.equal(fixture.stderrFile.fd, -1);
+      assert.equal(processGroupAlive(fixture.child.pid), false);
+      await assert.rejects(access(pidPath), { code: 'ENOENT' });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});
+
 async function runRound({ root, scenario, index }) {
   const component = `${scenario}-${index}`;
   const stdoutPath = join(root, `${component}.stdout.log`);
@@ -105,7 +269,7 @@ async function runRound({ root, scenario, index }) {
       stderrHandle,
       stopProcessGroup: async (pgid) => {
         processGroupStopCount += 1;
-        signalProcessGroup(child, pgid, 'SIGTERM');
+        return await stopRealProcessGroup(child, pgid);
       },
       isProcessGroupAlive: processGroupAlive,
       removePidMetadata: async () => {
@@ -203,6 +367,35 @@ async function runRound({ root, scenario, index }) {
   }
 }
 
+async function createChildFixture(name, stdoutFailure = null) {
+  const root = await mkdtemp(join(tmpdir(), `skiff-supervisor-${name}-`));
+  const stdoutFile = await open(join(root, 'stdout.log'), 'a');
+  const stderrFile = await open(join(root, 'stderr.log'), 'a');
+  const stdoutHandle = instrumentFileHandle(stdoutFile, stdoutFailure);
+  const stderrHandle = instrumentFileHandle(stderrFile);
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', childSource], {
+    detached: true,
+    stdio: ['ignore', stdoutFile.fd, stderrFile.fd, 'ipc'],
+  });
+  const closePromise = once(child, 'close');
+  return {
+    root,
+    child,
+    closePromise,
+    stdoutFile,
+    stderrFile,
+    stdoutHandle,
+    stderrHandle,
+    async cleanup() {
+      if (processGroupAlive(child.pid)) {
+        signalProcessGroup(child, child.pid, 'SIGKILL');
+      }
+      await Promise.allSettled([closePromise, stdoutFile.close(), stderrFile.close()]);
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
 function instrumentFileHandle(fileHandle, injectedFailure = null) {
   let closeCount = 0;
   const closeRealFileHandle = fileHandle.close.bind(fileHandle);
@@ -261,6 +454,24 @@ function signalProcessGroup(child, pgid, signal) {
       throw error;
     }
   }
+}
+
+async function stopRealProcessGroup(child, pgid) {
+  signalProcessGroup(child, pgid, 'SIGTERM');
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processGroupAlive(pgid)) {
+      return { pgid, stopped: true, forced: false };
+    }
+    await delay(5);
+  }
+  signalProcessGroup(child, pgid, 'SIGKILL');
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processGroupAlive(pgid)) {
+      return { pgid, stopped: true, forced: true };
+    }
+    await delay(5);
+  }
+  return { pgid, stopped: false, forced: true };
 }
 
 function processGroupAlive(pgid) {

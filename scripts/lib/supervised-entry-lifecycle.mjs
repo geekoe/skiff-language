@@ -33,22 +33,19 @@ export function createSupervisedEntryLifecycle({
 
   const completion = completionTrigger.then(async () => {
     const cleanupErrors = [];
-    const groupCheck = await settleCleanup([
-      ['process-group-check', () => isProcessGroupAlive(pgid)],
-    ]);
-    cleanupErrors.push(...groupCheck.errors);
-    if (groupCheck.values[0] === true) {
+    const processGroup = await closeProcessGroup();
+    cleanupErrors.push(...processGroup.errors);
+    if (processGroup.absent) {
       cleanupErrors.push(...(await settleCleanup([
-        ['process-group-stop', () => stopProcessGroup(pgid)],
+        ['child-exit', () => exit],
       ])).errors);
     }
-    cleanupErrors.push(...(await settleCleanup([
-      ['child-exit', () => exit],
-    ])).errors);
     cleanupErrors.push(...await closeLogsOnce());
-    cleanupErrors.push(...(await settleCleanup([
-      ['pid-metadata-remove', () => removePidMetadata()],
-    ])).errors);
+    if (processGroup.absent) {
+      cleanupErrors.push(...(await settleCleanup([
+        ['pid-metadata-remove', () => removePidMetadata()],
+      ])).errors);
+    }
 
     const errors = primaryRecorded ? [primaryError, ...cleanupErrors] : cleanupErrors;
     if (errors.length === 0) {
@@ -86,6 +83,31 @@ export function createSupervisedEntryLifecycle({
   const stop = (_reason) => {
     return beginCompletion();
   };
+  const detach = async () => {
+    const closeErrors = await closeLogsOnce();
+    if (closeErrors.length > 0) {
+      return await beginCompletion();
+    }
+    if (completionStarted) {
+      const error = new Error(
+        `[skiff-instance] ${component} exited before process lifecycle detach`,
+      );
+      recordPrimary(error);
+      try {
+        await completion;
+      } catch (completionError) {
+        throw completionError;
+      }
+      throw error;
+    }
+    try {
+      child.unref();
+    } catch (error) {
+      recordPrimary(error);
+      return await beginCompletion();
+    }
+    return { detached: true };
+  };
 
   void exit.then(
     () => {
@@ -97,7 +119,51 @@ export function createSupervisedEntryLifecycle({
     },
   );
 
-  return { exit, completion, recordPrimary, finish, stop };
+  return { exit, completion, recordPrimary, finish, stop, detach };
+
+  async function closeProcessGroup() {
+    const errors = [];
+    const groupCheck = await settleCleanup([
+      ['process-group-check', async () => {
+        const alive = await isProcessGroupAlive(pgid);
+        if (alive !== true && alive !== false) {
+          throw new Error(`process-group check returned ${String(alive)}`);
+        }
+        return alive;
+      }],
+    ]);
+    errors.push(...groupCheck.errors);
+    if (groupCheck.errors.length > 0) {
+      return { absent: false, errors };
+    }
+    if (groupCheck.values[0] === false) {
+      return { absent: true, errors };
+    }
+
+    const stopResult = await settleCleanup([
+      ['process-group-stop', async () => {
+        const result = await stopProcessGroup(pgid);
+        if (result?.stopped !== true) {
+          throw new Error(
+            `process-group stop did not prove absence: ${JSON.stringify(result ?? null)}`,
+          );
+        }
+        return result;
+      }],
+    ]);
+    errors.push(...stopResult.errors);
+    const absenceCheck = await settleCleanup([
+      ['process-group-absence', async () => {
+        const alive = await isProcessGroupAlive(pgid);
+        if (alive !== false) {
+          throw new Error(`process group ${pgid} is still alive after stop`);
+        }
+        return true;
+      }],
+    ]);
+    errors.push(...absenceCheck.errors);
+    return { absent: absenceCheck.values[0] === true, errors };
+  }
 
   async function settleCleanup(steps) {
     const results = await Promise.allSettled(
