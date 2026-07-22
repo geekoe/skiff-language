@@ -915,6 +915,7 @@ fn is_std_abi_generic_type_name(name: &str) -> bool {
     matches!(
         name,
         "std.websocket.WebSocketConnectResult"
+            | "std.websocket.WebSocketIngressEvent"
             | "std.websocket.WebSocketConnection"
             | "std.websocket.WebSocketReceiveEvent"
     )

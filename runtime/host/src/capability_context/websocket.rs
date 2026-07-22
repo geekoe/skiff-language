@@ -153,16 +153,11 @@ enum ConnectionSendTarget {
 
 impl ConnectionSendTarget {
     fn websocket_entry_id(&self, entry_id: Option<&str>, target: &str) -> Result<Option<String>> {
-        match self {
-            ConnectionSendTarget::BusinessIdentity(_) => {
-                let entry_id = entry_id.ok_or_else(|| RuntimeError::ProviderUnavailable {
-                    target: target.to_string(),
-                    reason: "websocket entry id is not available".to_string(),
-                })?;
-                Ok(Some(entry_id.to_string()))
-            }
-            ConnectionSendTarget::Connection(_) => Ok(None),
-        }
+        let entry_id = entry_id.ok_or_else(|| RuntimeError::ProviderUnavailable {
+            target: target.to_string(),
+            reason: "websocket entry id is not available".to_string(),
+        })?;
+        Ok(Some(entry_id.to_string()))
     }
 
     fn business_identity(&self) -> Option<String> {

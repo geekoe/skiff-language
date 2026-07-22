@@ -1691,6 +1691,42 @@ fn std_websocket_receive_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan
     )
 }
 
+fn std_websocket_connect_request_plan() -> RuntimeTypePlan {
+    std_record_plan(
+        "std.websocket.WebSocketConnectRequest",
+        vec![
+            std_field("connectionId", leaf_string_plan()),
+            std_field("url", leaf_string_plan()),
+            std_field("query", std_array_plan(std_http_header_plan())),
+            std_field("headers", std_array_plan(std_http_header_plan())),
+            std_field("cookies", std_array_plan(std_http_header_plan())),
+            std_field("version", std_nullable_plan(leaf_string_plan())),
+        ],
+    )
+}
+
+fn std_websocket_ingress_event_plan(context: RuntimeTypePlan) -> RuntimeTypePlan {
+    std_union_plan(
+        "std.websocket.WebSocketIngressEvent",
+        vec![
+            std_record_plan(
+                "std.websocket.WebSocketIngressConnectEvent",
+                vec![
+                    std_field("tag", std_literal_string_plan("connect")),
+                    std_field("connectRequest", std_websocket_connect_request_plan()),
+                ],
+            ),
+            std_record_plan(
+                "std.websocket.WebSocketIngressReceiveEvent",
+                vec![
+                    std_field("tag", std_literal_string_plan("receive")),
+                    std_field("receiveEvent", std_websocket_receive_event_plan(context)),
+                ],
+            ),
+        ],
+    )
+}
+
 fn std_runtime_builtin_node(
     name: &str,
     args: &[StdRuntimeTypeArg<'_>],
@@ -1737,6 +1773,19 @@ fn std_runtime_builtin_node(
                 Err(error) => return Some(Err(error)),
             };
             std_websocket_connect_result_plan(root, context).node
+        }
+        "WebSocketIngressEvent"
+            if args.len() == 1
+                && matches!(
+                    root,
+                    "WebSocketIngressEvent" | "std.websocket.WebSocketIngressEvent"
+                ) =>
+        {
+            let context = match args[0].plan() {
+                Ok(plan) => plan,
+                Err(error) => return Some(Err(error)),
+            };
+            std_websocket_ingress_event_plan(context).node
         }
         "WebSocketReceiveEvent"
             if args.len() == 1

@@ -316,6 +316,7 @@ pub enum AdapterArgSource {
     HttpRequest,
     HttpBody,
     HttpContext,
+    WebSocketIngressEvent,
     WebSocketConnectRequest,
     WebSocketReceiveEvent,
     WebSocketConnection,

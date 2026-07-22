@@ -1613,7 +1613,9 @@ function sendRuntimeTextConnection(
         ...(input.identity
           ? { businessIdentity: input.identity, websocketEntryId: input.websocketEntryId ?? 'client' }
           : {}),
-        ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+        ...(input.connectionId
+          ? { connectionId: input.connectionId, websocketEntryId: input.websocketEntryId ?? 'client' }
+          : {}),
         payloadKind: 'text'
       },
       Buffer.from(input.text, 'utf8')

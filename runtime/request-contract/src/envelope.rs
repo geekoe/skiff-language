@@ -103,6 +103,7 @@ pub enum GatewayAdapterSource {
     HttpRequest,
     HttpBody,
     HttpContext,
+    WebSocketIngressEvent,
     WebSocketConnectRequest,
     WebSocketReceiveEvent,
     WebSocketConnection,

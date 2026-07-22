@@ -93,6 +93,7 @@ websocket:
   WebSocketConnectRequest: websocket.WebSocketConnectRequest
   WebSocketConnection: websocket.WebSocketConnection
   WebSocketReceiveEvent: websocket.WebSocketReceiveEvent
+  WebSocketIngressEvent: websocket.WebSocketIngressEvent
   WebSocketCloseEvent: websocket.WebSocketCloseEvent
   WebSocketConnectionPolicy: websocket.WebSocketConnectionPolicy
   WebSocketConnectResult: websocket.WebSocketConnectResult

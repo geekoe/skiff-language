@@ -11,6 +11,7 @@ const HTTP_SOURCE_KINDS = new Set([
   "http.context",
 ]);
 const WEBSOCKET_SOURCE_KINDS = new Set([
+  "websocket.ingressEvent",
   "websocket.connectRequest",
   "websocket.receiveEvent",
   "websocket.connection",
@@ -168,7 +169,19 @@ function validateCallable(value: unknown, label: string): void {
 }
 
 function validateWebSocketAdapter(envelope: Record<string, unknown>): void {
-  if (!has(envelope, "websocketAdapter")) return;
+  if (!has(envelope, "websocketAdapter")) {
+    if (isCanonicalWebSocketIngress(envelope)) {
+      fail("canonical WebSocket ingress requires websocketAdapter metadata");
+    }
+    return;
+  }
+  if (
+    isRecord(envelope.routing) &&
+    isRecord(envelope.routing.ingress) &&
+    envelope.routing.ingress.protocol === "http"
+  ) {
+    fail("canonical HTTP ingress does not accept WebSocket metadata");
+  }
   const adapter = exactObject(
     envelope.websocketAdapter,
     "websocketAdapter",
@@ -186,6 +199,13 @@ function validateWebSocketAdapter(envelope: Record<string, unknown>): void {
   if (has(adapter, "contextExpectation")) {
     validateContextExpectation(adapter.contextExpectation);
   }
+  if (
+    envelope.testEffectsEnabled === true ||
+    (isRecord(envelope.testEffectDoubles) &&
+      Object.keys(envelope.testEffectDoubles).length > 0)
+  ) {
+    fail("canonical WebSocket ingress does not accept test effects");
+  }
   requireString(envelope, "websocketEntryId", "websocketEntryId");
   requireString(envelope, "gatewayEntryIdentity", "gatewayEntryIdentity");
   if (adapter.kind === "connect") {
@@ -193,12 +213,72 @@ function validateWebSocketAdapter(envelope: Record<string, unknown>): void {
       fail("websocketAdapter.receiveEvent is not supported for connect");
     }
     validateConnectRequest(adapter.connectRequest);
+    validateCanonicalWebSocketIngressAdapter(envelope, adapter);
     return;
   }
   if (has(adapter, "connectRequest")) {
     fail("websocketAdapter.connectRequest is not supported for receive");
   }
   validateReceiveEvent(adapter.receiveEvent);
+  validateCanonicalWebSocketIngressAdapter(envelope, adapter);
+}
+
+function validateCanonicalWebSocketIngressAdapter(
+  envelope: Record<string, unknown>,
+  adapter: Record<string, unknown>,
+): void {
+  if (!isCanonicalWebSocketIngress(envelope)) return;
+  if (envelope.mode !== "unary") {
+    fail("canonical WebSocket ingress requires mode unary");
+  }
+  if (has(envelope, "httpRequest") || has(envelope, "httpAdapter")) {
+    fail("canonical WebSocket ingress does not accept HTTP metadata");
+  }
+  if (has(adapter, "contextExpectation")) {
+    fail("canonical WebSocket ingress derives Context from the pinned ServiceContract");
+  }
+  if (!Array.isArray(adapter.adapterArgs) || adapter.adapterArgs.length !== 1) {
+    fail("canonical WebSocket ingress requires exactly one event adapter argument");
+  }
+  const arg = adapter.adapterArgs[0];
+  if (
+    !isRecord(arg) ||
+    arg.param !== "event" ||
+    !isRecord(arg.source) ||
+    arg.source.kind !== "websocket.ingressEvent"
+  ) {
+    fail(
+      "canonical WebSocket ingress adapterArgs must be event:websocket.ingressEvent",
+    );
+  }
+  if (adapter.kind === "receive" && isRecord(adapter.receiveEvent)) {
+    const receive = adapter.receiveEvent;
+    const expected = has(receive, "contextCodec")
+      ? ["websocket.context", "websocket.message"]
+      : ["websocket.message"];
+    if (!Array.isArray(receive.payloadSegments) || receive.payloadSegments.length !== expected.length) {
+      fail("canonical WebSocket receive payload segments do not match Context presence");
+    }
+    let next = 0;
+    for (const [index, segment] of receive.payloadSegments.entries()) {
+      if (
+        !isRecord(segment) ||
+        segment.kind !== expected[index] ||
+        segment.offset !== next
+      ) {
+        fail("canonical WebSocket receive payload segments must be ordered and contiguous");
+      }
+      next += segment.length as number;
+    }
+  }
+}
+
+function isCanonicalWebSocketIngress(envelope: Record<string, unknown>): boolean {
+  return (
+    isRecord(envelope.routing) &&
+    isRecord(envelope.routing.ingress) &&
+    envelope.routing.ingress.protocol === "webSocket"
+  );
 }
 
 function validateContextExpectation(value: unknown): void {

@@ -4,12 +4,20 @@ import { connect } from 'node:net';
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AssemblyWebSocketGateway } from '../src/gateway/assemblyWebSocketGateway.js';
+import {
+  AssemblyWebSocketGateway,
+  CANONICAL_WEBSOCKET_INGRESS_ARGS,
+  canonicalWebSocketIngressIdentity
+} from '../src/gateway/assemblyWebSocketGateway.js';
+import type { ConnectionSendEnvelope } from '../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyHttpGateway } from '../src/router/assemblyHttpGateway.js';
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
-import type { RuntimeUnaryDispatchFrameHeader } from '../src/router/runtimeRegistry.js';
+import type {
+  RuntimeDispatchConnection,
+  RuntimeUnaryDispatchFrameHeader
+} from '../src/router/runtimeRegistry.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -57,24 +65,163 @@ describe('RuntimeAssembly Host ingress', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('keeps the pre-cutover WebSocket writer fail closed', async () => {
+  it('dispatches canonical WebSocket ingress with pinned generation and exact direct-send identity', async () => {
     const snapshots = snapshotStore();
+    const runtimeConnectionSend = connectionSendSource();
+    const runtimeA = runtimeDispatchConnection('runtime-A');
+    const runtimeB = runtimeDispatchConnection('runtime-B');
+    let currentRuntime = runtimeA;
+    const registrySelections: RuntimeAssemblyRequestStartFrameHeader[] = [];
+    const dispatchConnections: Array<RuntimeDispatchConnection | undefined> = [];
+    const dispatcher = fakeDispatcher(dispatchConnections);
     const http = new AssemblyHttpGateway({ snapshots, dispatcher: fakeDispatcher(), port: 0 });
     const httpListen = await http.listen();
     resources.push(http);
     const websocket = new AssemblyWebSocketGateway({
       snapshots,
-      dispatcher: fakeDispatcher(),
-      runtimeConnectionSend: { onConnectionSend: () => () => undefined },
+      dispatcher,
+      runtimeConnectionSend,
+      registry: {
+        pickDispatchConnection(header) {
+          const validation = validateRuntimeAssemblyRequestStartFrameHeader(header);
+          if (!validation.ok) throw new Error(validation.error);
+          registrySelections.push(validation.envelope);
+          return currentRuntime;
+        }
+      },
       server: httpListen.server
     });
     await websocket.listen();
     resources.push(websocket);
 
-    await expect(openWebSocket(httpListen.url, 'aihub.localhost', '/ws?service=wrong')).rejects.toThrow();
-    await expect(openWebSocket(httpListen.url, 'agine.localhost', '/ws')).rejects.toThrow();
+    const oldClient = await openWebSocket(httpListen.url, 'aihub.localhost', '/ws?service=wrong');
+    resources.push(webSocketResource(oldClient));
+    const oldConnect = calls.at(-1)!;
+    expect(oldConnect).toMatchObject({
+      mode: 'unary',
+      routing: {
+        assemblyIdentity: ASSEMBLY,
+        assemblyGeneration: 7,
+        contractOperationId: AIHUB_SOCKET_OPERATION,
+        ingress: {
+          protocol: 'webSocket',
+          host: 'aihub.localhost',
+          method: null,
+          path: '/ws'
+        }
+      },
+      websocketAdapter: {
+        kind: 'connect',
+        adapterArgs: CANONICAL_WEBSOCKET_INGRESS_ARGS
+      }
+    });
+    expect(oldConnect.websocketAdapter).not.toHaveProperty('contextExpectation');
+    expect(dispatchConnections).toEqual([runtimeA]);
+    expect(registrySelections).toHaveLength(1);
+    const connectionId = oldConnect.websocketAdapter!.connectRequest!.connectionId;
+    const websocketEntryId = oldConnect.websocketEntryId!;
+
+    snapshots.replace(snapshot(8, '9'));
+    currentRuntime = runtimeB;
+    oldClient.send('generation-A');
+    await waitFor(() => calls.length === 2, 'old generation receive');
+    expect(calls[1]).toMatchObject({
+      routing: {
+        assemblyIdentity: ASSEMBLY,
+        assemblyGeneration: 7,
+        contractOperationId: AIHUB_SOCKET_OPERATION
+      },
+      gatewayEntryIdentity: oldConnect.gatewayEntryIdentity,
+      websocketEntryId,
+      websocketAdapter: {
+        kind: 'receive',
+        adapterArgs: CANONICAL_WEBSOCKET_INGRESS_ARGS,
+        receiveEvent: {
+          connectionId,
+          contextCodec: {
+            operationAbiId: AIHUB_SOCKET_OPERATION,
+            contextTypeIdentity: 'skiff-contract-type-v1:sha256:context'
+          },
+          payloadSegments: [
+            { kind: 'websocket.context', offset: 0, length: 0 },
+            { kind: 'websocket.message', offset: 0, length: 12 }
+          ]
+        }
+      }
+    });
+    expect(dispatchConnections).toEqual([runtimeA, runtimeA]);
+    expect(registrySelections).toHaveLength(1);
+
+    const newClient = await openWebSocket(httpListen.url, 'aihub.localhost', '/ws');
+    resources.push(webSocketResource(newClient));
+    expect(calls.at(-1)).toMatchObject({
+      routing: {
+        assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'9'.repeat(64)}`,
+        assemblyGeneration: 8
+      },
+      gatewayEntryIdentity: oldConnect.gatewayEntryIdentity,
+      websocketEntryId
+    });
+    expect(dispatchConnections).toEqual([runtimeA, runtimeA, runtimeB]);
+    expect(registrySelections).toHaveLength(2);
+
+    const received: WebSocket.RawData[] = [];
+    oldClient.on('message', (data) => received.push(data));
+    runtimeConnectionSend.emit({
+      type: 'connection.send',
+      serviceId: 'service/aihub.localhost',
+      websocketEntryId: `skiff-websocket-entry-v1:sha256:${'0'.repeat(64)}`,
+      connectionId,
+      payloadKind: 'text',
+      payloadBytes: Buffer.from('wrong-entry')
+    });
+    runtimeConnectionSend.emit({
+      type: 'connection.send',
+      serviceId: 'service/agine.localhost',
+      websocketEntryId,
+      connectionId,
+      payloadKind: 'text',
+      payloadBytes: Buffer.from('wrong-service')
+    });
+    await delay(20);
+    expect(received).toHaveLength(0);
+    runtimeConnectionSend.emit({
+      type: 'connection.send',
+      serviceId: 'service/aihub.localhost',
+      websocketEntryId,
+      connectionId,
+      payloadKind: 'text',
+      payloadBytes: Buffer.from('canonical-direct')
+    });
+    await waitFor(() => received.length === 1, 'canonical direct send');
+    expect(String(received[0])).toBe('canonical-direct');
+
+    const agineClient = await openWebSocket(httpListen.url, 'agine.localhost', '/ws');
+    resources.push(webSocketResource(agineClient));
     await expect(openWebSocket(httpListen.url, 'unknown.localhost', '/ws')).rejects.toThrow();
-    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps canonical WebSocket entry identity stable across implementation generations and sensitive to ABI', () => {
+    const original = binding(
+      'webSocket',
+      'aihub.localhost',
+      null,
+      '/ws',
+      AIHUB_SOCKET_OPERATION
+    );
+    const samePublicIngress = structuredClone(original);
+    samePublicIngress.deployment.deploymentRevision = 'generation-B';
+    samePublicIngress.deployment.deploymentArtifactIdentity =
+      `skiff-deployment-artifact-v1:sha256:${'8'.repeat(64)}`;
+    const changedAbi = structuredClone(original);
+    changedAbi.contractOperationId = operationIdentity('9');
+
+    expect(canonicalWebSocketIngressIdentity(samePublicIngress)).toEqual(
+      canonicalWebSocketIngressIdentity(original)
+    );
+    expect(canonicalWebSocketIngressIdentity(changedAbi)).not.toEqual(
+      canonicalWebSocketIngressIdentity(original)
+    );
   });
 });
 
@@ -90,18 +237,24 @@ async function listenHttp() {
 
 function snapshotStore(): RouterActiveAssemblySnapshotStore {
   const snapshots = new RouterActiveAssemblySnapshotStore();
-  snapshots.replace({
+  snapshots.replace(snapshot(7, 'a'));
+  return snapshots;
+}
+
+function snapshot(generation: number, assemblyCharacter: string) {
+  return {
     environment: 'test',
-    generation: 7,
-    assembly: { assemblyIdentity: ASSEMBLY },
+    generation,
+    assembly: {
+      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${assemblyCharacter.repeat(64)}`
+    },
     ingress: new RuntimeAssemblyIngressIndex([
       binding('http', 'codex-relay.localhost', 'GET', '/v1/models', CODEX_MODELS_OPERATION),
       binding('http', 'aihub.localhost', 'GET', '/v1/models', AIHUB_MODELS_OPERATION),
       binding('webSocket', 'aihub.localhost', null, '/ws', AIHUB_SOCKET_OPERATION),
       binding('webSocket', 'agine.localhost', null, '/ws', AGINE_SOCKET_OPERATION)
     ])
-  });
-  return snapshots;
+  };
 }
 
 function binding(
@@ -128,9 +281,16 @@ function binding(
   };
 }
 
-function fakeDispatcher(): RuntimeDispatcher {
+function fakeDispatcher(
+  dispatchConnections?: Array<RuntimeDispatchConnection | undefined>
+): RuntimeDispatcher {
   return {
-    dispatchBinary: async (input: { header: RuntimeUnaryDispatchFrameHeader }) => {
+    dispatchBinary: async (
+      input: { header: RuntimeUnaryDispatchFrameHeader },
+      _timeoutMs: number,
+      options: { connection?: RuntimeDispatchConnection } = {}
+    ) => {
+      dispatchConnections?.push(options.connection);
       const validation = validateRuntimeAssemblyRequestStartFrameHeader(input.header);
       if (!validation.ok) {
         throw new Error(validation.error);
@@ -146,7 +306,11 @@ function fakeDispatcher(): RuntimeDispatcher {
             ? {
                 websocketConnect: {
                   result: 'accept' as const,
-                  contextPayloadPresent: false
+                  contextPayloadPresent: true,
+                  contextCodec: {
+                    operationAbiId: validation.envelope.routing.contractOperationId,
+                    contextTypeIdentity: 'skiff-contract-type-v1:sha256:context'
+                  }
                 }
               }
             : {})
@@ -155,6 +319,10 @@ function fakeDispatcher(): RuntimeDispatcher {
       };
     }
   } as unknown as RuntimeDispatcher;
+}
+
+function runtimeDispatchConnection(runtimeId: string): RuntimeDispatchConnection {
+  return { runtimeId, ws: {} as WebSocket };
 }
 
 function operationIdentity(character: string): string {
@@ -191,7 +359,7 @@ async function httpGet(
   });
 }
 
-async function openWebSocket(baseUrl: string, host: string, path: string): Promise<void> {
+async function openWebSocket(baseUrl: string, host: string, path: string): Promise<WebSocket> {
   const base = new URL(baseUrl);
   const ws = new WebSocket(`ws://${base.hostname}:${base.port}${path}`, {
     headers: {
@@ -202,11 +370,49 @@ async function openWebSocket(baseUrl: string, host: string, path: string): Promi
   });
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => {
-      ws.close();
       resolve();
     });
     ws.once('error', reject);
   });
+  return ws;
+}
+
+function webSocketResource(ws: WebSocket): { close(): Promise<void> } {
+  return {
+    close: async () => {
+      if (ws.readyState === WebSocket.CLOSED) return;
+      const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()));
+      ws.close();
+      await closed;
+    }
+  };
+}
+
+function connectionSendSource() {
+  let handler: ((message: ConnectionSendEnvelope) => void) | undefined;
+  return {
+    onConnectionSend(next: (message: ConnectionSendEnvelope) => void) {
+      handler = next;
+      return () => {
+        if (handler === next) handler = undefined;
+      };
+    },
+    emit(message: ConnectionSendEnvelope) {
+      handler?.(message);
+    }
+  };
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await delay(5);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function httpWithoutHost(baseUrl: string): Promise<number> {

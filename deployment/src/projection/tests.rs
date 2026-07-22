@@ -265,6 +265,124 @@ fn projection_maps_every_operation_explicitly_and_emits_no_public_path() {
 }
 
 #[test]
+fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
+    let mut fixture = ProjectionFixture::new();
+    let operation_id = fixture
+        .contract
+        .operations
+        .keys()
+        .next()
+        .expect("fixture operation")
+        .clone();
+    fixture.input.ingress = vec![DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "socket.example.test".to_string(),
+            method: None,
+            path: "/socket".to_string(),
+        },
+        contract_operation_id: operation_id.clone(),
+    }];
+    assert!(matches!(
+        validate_ingress_contracts(&fixture.input, &fixture.contract),
+        Err(ProjectionError::InvalidWebSocketIngressContract { .. })
+    ));
+
+    let context = fixture
+        .contract
+        .boundary_schema
+        .keys()
+        .next()
+        .expect("fixture context type")
+        .clone();
+    let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
+    descriptor.stable_key = "websocket".to_string();
+    descriptor.contract = websocket_ingress_operation(ContractTypeRef::contract(context));
+    validate_ingress_contracts(&fixture.input, &fixture.contract)
+        .expect("exact unified WebSocket ABI should pass deployment projection validation");
+
+    let baseline = fixture.contract.operations[&operation_id].contract.clone();
+    let mut invalid = baseline.clone();
+    invalid.parameters[0].name = "request".to_string();
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline.clone();
+    invalid.may_suspend = true;
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline.clone();
+    invalid.parameters.push(invalid.parameters[0].clone());
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline.clone();
+    invalid.errors = BoundaryErrorContract::Typed {
+        payload_type: ContractTypeRef::builtin("string"),
+        value_plan: linkable_plan(BoundaryValueOwner::Provider),
+    };
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline.clone();
+    invalid.parameters[0].ty = ContractTypeRef::Builtin {
+        name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
+        arguments: vec![ContractTypeRef::builtin("string")],
+    };
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline.clone();
+    invalid.return_value.ty = ContractTypeRef::builtin("null");
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+
+    let mut invalid = baseline;
+    invalid.stream = BoundaryStreamContract::ServerStream {
+        item_type: ContractTypeRef::builtin("string"),
+        item_value_plan: linkable_plan(BoundaryValueOwner::Provider),
+    };
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = invalid;
+    assert!(validate_ingress_contracts(&fixture.input, &fixture.contract).is_err());
+}
+
+#[test]
 fn operation_mapping_failures_are_structured_and_fail_closed() {
     let mut fixture = ProjectionFixture::new();
     fixture.input.operation_bindings.pop();
@@ -609,6 +727,41 @@ fn contract_ref(contract: &ServiceContract) -> ServiceContractRef {
         service_id: contract.service_id.clone(),
         contract_version: contract.contract_version.clone(),
         service_protocol_identity: contract.service_protocol_identity.clone(),
+    }
+}
+
+fn websocket_ingress_operation(context: ContractTypeRef) -> BoundaryOperationContract {
+    BoundaryOperationContract {
+        parameters: vec![BoundaryParameter {
+            name: "event".to_string(),
+            ty: ContractTypeRef::Builtin {
+                name: WEBSOCKET_INGRESS_EVENT_TYPE.to_string(),
+                arguments: vec![context.clone()],
+            },
+            value_plan: linkable_plan(BoundaryValueOwner::Caller),
+        }],
+        return_value: BoundaryReturn {
+            ty: ContractTypeRef::Nullable {
+                inner: Box::new(ContractTypeRef::Builtin {
+                    name: WEBSOCKET_CONNECT_RESULT_TYPE.to_string(),
+                    arguments: vec![context],
+                }),
+            },
+            value_plan: linkable_plan(BoundaryValueOwner::Provider),
+        },
+        errors: BoundaryErrorContract::None,
+        stream: BoundaryStreamContract::Unary,
+        cancellation: BoundaryCancellationContract::NotCancellable,
+        callbacks: BoundaryCallbackContract::None,
+        may_suspend: false,
+        effect_guarantee: BoundaryEffectGuarantee {
+            detached_parameters: true,
+            detached_return: true,
+            detached_error: true,
+            no_caller_reachable_mutation: true,
+            no_caller_value_escape: true,
+            no_same_heap_identity: true,
+        },
     }
 }
 

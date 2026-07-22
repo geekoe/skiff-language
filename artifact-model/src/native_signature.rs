@@ -74,6 +74,10 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.crypto.uuid"),
     detached_scalar_native("std.crypto.uuidSimple"),
     detached_native("std.time.sleep", true),
+    detached_scalar_native("std.websocket.sendTextToConnection"),
+    detached_scalar_native("std.websocket.sendBinaryToConnection"),
+    detached_scalar_native("std.websocket.sendTextToBusinessIdentity"),
+    detached_scalar_native("std.websocket.sendBinaryToBusinessIdentity"),
 ];
 
 pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCallableSemantics> {
@@ -827,6 +831,10 @@ mod tests {
             "std.string.isAsciiDigits",
             "std.string.truncateUtf8Bytes",
             "std.time.sleep",
+            "std.websocket.sendBinaryToBusinessIdentity",
+            "std.websocket.sendBinaryToConnection",
+            "std.websocket.sendTextToBusinessIdentity",
+            "std.websocket.sendTextToConnection",
         ]);
         let actual = STD_NATIVE_CALLABLE_SEMANTICS
             .iter()

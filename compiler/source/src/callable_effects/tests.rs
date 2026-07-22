@@ -6,12 +6,13 @@ use skiff_artifact_model::{
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
     ContractTypeRef, PackageCallableId, PackageLocalAbiIdentity, ValueEscapeLane, ValueProvenance,
 };
-use skiff_compiler_input::ResolvedContractDependency;
+use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
     contract_dependency_test_fixture::{contract_fixture, requirement, resolved_contract_fixture},
     parsed_sources::parse_publication_sources,
+    prelude_registry::initialize_prelude_registry,
     source_graph::CompilerSourceFile,
     CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependencyAnalysisFacts,
     PackageDependencyCallableAnalysis, PackageSourceModel, ResolvedCallTarget,
@@ -603,7 +604,6 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
         "nativeWrapper",
         "fileWrapper",
         "httpWrapper",
-        "websocketWrapper",
         "dynamicNativeWrapper",
         "dynamicWrapper",
         "interfaceWrapper",
@@ -617,6 +617,14 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             CallableProvenanceSummary::Unknown { .. }
         ));
     }
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "websocketWrapper"),
+        no_effects()
+    );
+    assert!(matches!(
+        provenance_in(&model, "std.effect_test", "websocketWrapper"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
     assert_eq!(
         effects_in(&model, "std.effect_test", "nativeWrapper"),
         all_effects()
@@ -1007,6 +1015,14 @@ fn analyze_named_result(
     module_path: &str,
     package_id: &str,
 ) -> Result<PackageSourceModel, crate::SourceCompileError> {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root resolves");
+    let platform_sources =
+        CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+    initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         module_path.to_string(),

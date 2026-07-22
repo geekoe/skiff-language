@@ -8,8 +8,8 @@ use std::{
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, PackageArtifactRef, PackageLocalAbiSymbol,
-    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    CallableMayEffects, CallableProvenanceSummary, IngressProtocol, PackageArtifactRef,
+    PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -789,8 +789,32 @@ fn ecosystem_fixture_has_no_artifact_rewrite_or_synthetic_stream_bridge() {
     write_package(
         &package,
         "id: example.com/smoke\nversion: 1.0.0\n",
-        Some("marker: main.marker\n"),
-        Some("function marker() -> string { return \"A\" }\n"),
+        Some("marker: main.marker\nwebsocket: main.websocket\n"),
+        Some(
+            r#"import std
+
+function marker() -> string { return "A" }
+
+function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
+  return {
+    tag: "accept",
+    context: null,
+    businessIdentity: null,
+    connectionPolicy: null
+  }
+}
+
+function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
+  if event.tag == "connect" {
+    return acceptConnection()
+  }
+  if event.tag == "receive" {
+    std.websocket.sendTextToConnection(event.receiveEvent.connection.id, marker())
+  }
+  return null
+}
+"#,
+        ),
     );
     fs::write(
         package.join("main.test.skiff"),
@@ -806,6 +830,12 @@ fn ecosystem_fixture_has_no_artifact_rewrite_or_synthetic_stream_bridge() {
     let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
     assert_eq!(fixture.production, production);
     assert_eq!(fixture.unary.selector.path, "/probe");
+    let websocket = fixture
+        .websocket
+        .as_ref()
+        .expect("canonical websocket public ABI should enter the real smoke fixture");
+    assert_eq!(websocket.selector.protocol, IngressProtocol::WebSocket);
+    assert_eq!(websocket.selector.path, "/socket");
     assert_eq!(fixture.records.assembly.roots.len(), 2);
 }
 

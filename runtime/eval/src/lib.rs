@@ -52,7 +52,8 @@ use mutable_path::{apply_collection_mutation, CollectionMutation};
 use runtime_ops::*;
 
 pub use assembly_execution::{
-    dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse,
+    dispatch_ingress_via_in_process_boundary, dispatch_websocket_ingress_via_in_process_boundary,
+    InProcessBoundaryIngressResponse,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use assembly_execution::{

@@ -127,7 +127,7 @@
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
       "requestId": "request-ws-connect-full",
-      "mode": "serverStream",
+      "mode": "unary",
       "caller": {
         "kind": "gateway",
         "target": "gateway-webSocket"
@@ -164,59 +164,12 @@
         "kind": "connect",
         "adapterArgs": [
           {
-            "param": "connect",
+            "param": "event",
             "source": {
-              "kind": "websocket.connectRequest"
-            }
-          },
-          {
-            "param": "receive",
-            "source": {
-              "kind": "websocket.receiveEvent"
-            }
-          },
-          {
-            "param": "connection",
-            "source": {
-              "kind": "websocket.connection"
-            }
-          },
-          {
-            "param": "context",
-            "source": {
-              "kind": "websocket.connectionContext"
-            }
-          },
-          {
-            "param": "message",
-            "source": {
-              "kind": "websocket.message"
-            }
-          },
-          {
-            "param": "body",
-            "source": {
-              "kind": "websocket.messageBody"
-            }
-          },
-          {
-            "param": "connectionId",
-            "source": {
-              "kind": "websocket.connectionId"
-            }
-          },
-          {
-            "param": "business",
-            "source": {
-              "kind": "websocket.businessIdentity"
+              "kind": "websocket.ingressEvent"
             }
           }
         ],
-        "contextExpectation": {
-          "kind": "typed",
-          "connectOperationAbiId": "connect-abi",
-          "contextTypeIdentity": "context-type"
-        },
         "connectRequest": {
           "connectionId": "connection-connect",
           "url": "wss://socket.example.com/chat",
@@ -260,7 +213,7 @@
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
       "requestId": "request-ws-receive-text-full",
-      "mode": "serverStream",
+      "mode": "unary",
       "caller": {
         "kind": "gateway",
         "target": "gateway-webSocket"
@@ -290,13 +243,10 @@
           {
             "param": "event",
             "source": {
-              "kind": "websocket.receiveEvent"
+              "kind": "websocket.ingressEvent"
             }
           }
         ],
-        "contextExpectation": {
-          "kind": "null"
-        },
         "receiveEvent": {
           "connectionId": "connection-text",
           "businessIdentity": "event-business",
@@ -304,7 +254,18 @@
             "tag": "text",
             "encoding": "utf8"
           },
-          "payloadSegments": [],
+          "payloadSegments": [
+            {
+              "kind": "websocket.context",
+              "offset": 0,
+              "length": 0
+            },
+            {
+              "kind": "websocket.message",
+              "offset": 0,
+              "length": 0
+            }
+          ],
           "contextCodec": {
             "operationAbiId": "context-abi",
             "contextTypeIdentity": "context-type"
@@ -318,7 +279,7 @@
       "schemaVersion": "skiff-runtime-frame-v1",
       "type": "request.start",
       "requestId": "request-ws-receive-binary-boundary",
-      "mode": "serverStream",
+      "mode": "unary",
       "caller": {
         "kind": "gateway",
         "target": "gateway-webSocket"
@@ -349,9 +310,9 @@
         "kind": "receive",
         "adapterArgs": [
           {
-            "param": "message",
+            "param": "event",
             "source": {
-              "kind": "websocket.message"
+              "kind": "websocket.ingressEvent"
             }
           }
         ],
@@ -363,26 +324,14 @@
           },
           "payloadSegments": [
             {
-              "kind": "websocket.context",
-              "offset": 0,
-              "length": 9007199254740991
-            },
-            {
               "kind": "websocket.message",
-              "offset": 9007199254740991,
+              "offset": 0,
               "length": 0
             }
           ]
         }
       },
-      "testEffectDoubles": {
-        "effect": [
-          {
-            "expectRequest": null,
-            "response": null
-          }
-        ]
-      },
+      "testEffectDoubles": {},
       "testEffectsEnabled": false
     }
   ],
@@ -655,12 +604,6 @@
       "name": "websocket adapter args null",
       "baseIndex": 1,
       "setPath": "websocketAdapter.adapterArgs",
-      "value": null
-    },
-    {
-      "name": "websocket context expectation null",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation",
       "value": null
     },
     {
@@ -1155,8 +1098,21 @@
     {
       "name": "websocket adapter duplicate param",
       "baseIndex": 1,
-      "setPath": "websocketAdapter.adapterArgs.1.param",
-      "value": "connect"
+      "setPath": "websocketAdapter.adapterArgs",
+      "value": [
+        {
+          "param": "event",
+          "source": {
+            "kind": "websocket.ingressEvent"
+          }
+        },
+        {
+          "param": "event",
+          "source": {
+            "kind": "websocket.ingressEvent"
+          }
+        }
+      ]
     },
     {
       "name": "websocket adapter source wrong type",
@@ -1186,57 +1142,6 @@
       "baseIndex": 1,
       "setPath": "websocketAdapter.adapterArgs.0.source.kind",
       "value": "websocket.unknown"
-    },
-    {
-      "name": "context expectation wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation",
-      "value": []
-    },
-    {
-      "name": "context expectation unknown field",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation.unknown",
-      "value": true
-    },
-    {
-      "name": "context expectation missing kind",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.contextExpectation.kind"
-    },
-    {
-      "name": "context expectation invalid kind",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation.kind",
-      "value": "optional"
-    },
-    {
-      "name": "typed context missing connect abi",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.contextExpectation.connectOperationAbiId"
-    },
-    {
-      "name": "typed context missing type identity",
-      "baseIndex": 1,
-      "removePath": "websocketAdapter.contextExpectation.contextTypeIdentity"
-    },
-    {
-      "name": "typed context connect abi wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation.connectOperationAbiId",
-      "value": 1
-    },
-    {
-      "name": "typed context type identity wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation.contextTypeIdentity",
-      "value": 1
-    },
-    {
-      "name": "null context carries typed field",
-      "baseIndex": 2,
-      "setPath": "websocketAdapter.contextExpectation.connectOperationAbiId",
-      "value": "extra"
     },
     {
       "name": "connect missing connect request",
@@ -1798,12 +1703,6 @@
       "value": 1
     },
     {
-      "name": "context expectation kind wrong type",
-      "baseIndex": 1,
-      "setPath": "websocketAdapter.contextExpectation.kind",
-      "value": 1
-    },
-    {
       "name": "receive message tag wrong type",
       "baseIndex": 2,
       "setPath": "websocketAdapter.receiveEvent.message.tag",
@@ -1825,13 +1724,62 @@
       "name": "http adapter param unicode blank",
       "baseIndex": 0,
       "setPath": "httpAdapter.adapterArgs.0.param",
-      "value": "\ufeff"
+      "value": "﻿"
     },
     {
       "name": "websocket adapter param unicode blank",
       "baseIndex": 1,
       "setPath": "websocketAdapter.adapterArgs.0.param",
-      "value": "\ufeff"
+      "value": "﻿"
+    },
+    {
+      "name": "canonical websocket missing adapter args",
+      "baseIndex": 1,
+      "removePath": "websocketAdapter.adapterArgs"
+    },
+    {
+      "name": "canonical websocket event param mismatch",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.param",
+      "value": "request"
+    },
+    {
+      "name": "canonical websocket legacy source",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.adapterArgs.0.source.kind",
+      "value": "websocket.connectRequest"
+    },
+    {
+      "name": "canonical websocket context expectation forbidden",
+      "baseIndex": 1,
+      "setPath": "websocketAdapter.contextExpectation",
+      "value": {
+        "kind": "null"
+      }
+    },
+    {
+      "name": "canonical websocket server stream forbidden",
+      "baseIndex": 1,
+      "setPath": "mode",
+      "value": "serverStream"
+    },
+    {
+      "name": "canonical websocket HTTP metadata forbidden",
+      "baseIndex": 1,
+      "setPath": "httpRequest",
+      "value": {
+        "method": "GET",
+        "url": "https://socket.example.com/chat",
+        "path": "/chat",
+        "query": [],
+        "headers": []
+      }
+    },
+    {
+      "name": "canonical websocket test effects forbidden",
+      "baseIndex": 1,
+      "setPath": "testEffectsEnabled",
+      "value": true
     }
   ],
   "requestStartRawCases": [
@@ -1995,12 +1943,6 @@
       "name": "http adapter args absent equals empty",
       "baseIndex": 0,
       "path": "httpAdapter.adapterArgs",
-      "value": []
-    },
-    {
-      "name": "websocket adapter args absent equals empty",
-      "baseIndex": 1,
-      "path": "websocketAdapter.adapterArgs",
       "value": []
     },
     {

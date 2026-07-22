@@ -2,14 +2,16 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_eval::{
-    dispatch_ingress_via_in_process_boundary, InProcessBoundaryIngressResponse, Interpreter,
+    dispatch_ingress_via_in_process_boundary, dispatch_websocket_ingress_via_in_process_boundary,
+    InProcessBoundaryIngressResponse, Interpreter,
 };
 
 use crate::{
-    request_payload_context_from_request, AssemblyRequestEvalAdapter, BoundaryResponse,
-    ExecutionBudget, ExecutionControl, HttpNameValue, HttpResponseMetadata, RequestEnvelope,
-    RequestError, RequestEvalExecutionInputParts, RequestResult, RuntimeAssemblyRequestTarget,
-    RuntimeOperation,
+    invocation_builder::eval_websocket_adapter, request_payload_context_from_request,
+    websocket_ingress::boundary_response_from_eval_websocket_adapter_result,
+    AssemblyRequestEvalAdapter, BoundaryResponse, ExecutionBudget, ExecutionControl, HttpNameValue,
+    HttpResponseMetadata, RequestEnvelope, RequestError, RequestEvalExecutionInputParts,
+    RequestResult, RuntimeAssemblyRequestTarget, RuntimeOperation,
 };
 
 pub struct AssemblyRequestExecutionInput {
@@ -50,6 +52,10 @@ pub async fn execute_runtime_assembly_request(
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
     let request_context = request_payload_context_from_request(&request);
+    let websocket_adapter = request
+        .websocket_adapter
+        .as_ref()
+        .map(eval_websocket_adapter);
     let context = adapter.execution_context(
         RequestEvalExecutionInputParts {
             operation: &operation,
@@ -65,6 +71,19 @@ pub async fn execute_runtime_assembly_request(
         target,
     );
     let mut heap = context.request_heap();
+    if let Some(websocket_adapter) = websocket_adapter.as_ref() {
+        let result = dispatch_websocket_ingress_via_in_process_boundary(
+            &interpreter,
+            context,
+            &mut heap,
+            target.boundary().clone(),
+            &request_context,
+            websocket_adapter,
+        )
+        .await
+        .map_err(RequestError::from)?;
+        return Ok(boundary_response_from_eval_websocket_adapter_result(result));
+    }
     let result = dispatch_ingress_via_in_process_boundary(
         &interpreter,
         context,
@@ -138,6 +157,26 @@ fn validate_assembly_ingress_request(request: &RequestEnvelope) -> RequestResult
                 .to_string(),
         ));
     }
+    let selector = request
+        .ingress_selector
+        .as_ref()
+        .expect("canonical selector checked above");
+    match selector.protocol {
+        skiff_artifact_model::IngressProtocol::Http => {
+            if request.websocket_adapter.is_some() {
+                return Err(RequestError::Unsupported(
+                    "canonical HTTP ingress does not accept WebSocket metadata".to_string(),
+                ));
+            }
+        }
+        skiff_artifact_model::IngressProtocol::WebSocket => {
+            if request.websocket_adapter.is_none() || request.binary_http.is_some() {
+                return Err(RequestError::Unsupported(
+                    "canonical WebSocket ingress requires only WebSocket metadata".to_string(),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -171,7 +210,46 @@ mod tests {
     use skiff_artifact_model::{IngressProtocol, IngressSelector};
 
     use super::validate_assembly_ingress_request;
-    use crate::RequestEnvelope;
+    use crate::{
+        GatewayAdapterArg, GatewayAdapterSource, RequestEnvelope, WebSocketAdapter,
+        WebSocketAdapterKind, WebSocketConnectRequest,
+    };
+
+    #[test]
+    fn websocket_ingress_accepts_only_canonical_websocket_phase_metadata() {
+        let mut request = request();
+        request.ingress_selector = Some(IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "example.test".to_string(),
+            method: None,
+            path: "/socket".to_string(),
+        });
+        request.websocket_adapter = Some(WebSocketAdapter {
+            kind: WebSocketAdapterKind::Connect,
+            adapter_args: vec![GatewayAdapterArg {
+                param: "event".to_string(),
+                source: GatewayAdapterSource::WebSocketIngressEvent,
+            }],
+            context_expectation: None,
+            connect_request: Some(WebSocketConnectRequest {
+                connection_id: "connection-1".to_string(),
+                url: "ws://example.test/socket".to_string(),
+                query: Vec::new(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                version: None,
+            }),
+            receive_request: None,
+        });
+        assert!(validate_assembly_ingress_request(&request).is_ok());
+
+        request.ingress_selector.as_mut().unwrap().protocol = IngressProtocol::Http;
+        let error = validate_assembly_ingress_request(&request)
+            .expect_err("HTTP selector must not accept WebSocket phase metadata");
+        assert!(error
+            .to_string()
+            .contains("does not accept WebSocket metadata"));
+    }
 
     #[test]
     fn assembly_ingress_ignores_legacy_target_fields_but_requires_canonical_selector() {

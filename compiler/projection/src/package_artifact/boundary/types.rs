@@ -235,9 +235,18 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
             0,
         )
         | ("Array", 1)
-        | ("Map", 2) => Ok(()),
+        | ("Map", 2)
+        | ("std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult", 1) => {
+            Ok(())
+        }
         ("Stream", _) => Err(BoundaryUnavailableReason::UnsupportedStream),
-        ("Array" | "Map", _) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+        (
+            "Array"
+            | "Map"
+            | "std.websocket.WebSocketIngressEvent"
+            | "std.websocket.WebSocketConnectResult",
+            _,
+        ) => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         _ => Err(BoundaryUnavailableReason::NativeAdapterUnavailable),
     }
 }

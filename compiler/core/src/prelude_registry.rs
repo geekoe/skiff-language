@@ -107,6 +107,7 @@ pub fn compiler_owned_type_symbol(name: &str) -> Option<&'static str> {
         "Json" => Some("Json"),
         "JsonObject" => Some("JsonObject"),
         "WebSocketConnectResult" => Some("std.websocket.WebSocketConnectResult"),
+        "WebSocketIngressEvent" => Some("std.websocket.WebSocketIngressEvent"),
         "ConnectionMessage" => Some("std.websocket.ConnectionMessage"),
         "TextConnectionMessage" => Some("std.websocket.TextConnectionMessage"),
         "BinaryConnectionMessage" => Some("std.websocket.BinaryConnectionMessage"),

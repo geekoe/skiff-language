@@ -3295,6 +3295,7 @@ fn is_std_abi_generic_type_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
         "std.websocket.WebSocketConnectResult"
+            | "std.websocket.WebSocketIngressEvent"
             | "std.websocket.WebSocketConnection"
             | "std.websocket.WebSocketReceiveEvent"
     )

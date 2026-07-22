@@ -9,7 +9,10 @@ import type {
   WebSocketAdapterFrameMetadata,
   WebSocketContextCodecFrameMetadata
 } from '../protocol/envelope.js';
-import { assemblyRequestHeader } from '../router/assemblyHttpGateway.js';
+import { RUNTIME_FRAME_SCHEMA_VERSION } from '../protocol/envelope.js';
+import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
+import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import { sha256Hex, stableStringify } from '../manifest/identity.js';
 import { GatewayError } from '../router/errors.js';
 import type { RuntimeDispatcher } from '../router/runtimeDispatcher.js';
 import type { RuntimeConnectionSendSource } from '../router/runtimeEndpoint.js';
@@ -21,6 +24,17 @@ import {
   type RouterActiveAssemblySnapshotStore,
   type RuntimeAssemblyIngressBinding
 } from '../router/runtimeAssemblySnapshot.js';
+import {
+  businessDeliveryKey,
+  closePolicyOverflowSocket,
+  validateBusinessIdentity,
+  validateConnectionPolicy,
+  type WebSocketConnectionPolicy
+} from './webSocketGateway.js';
+
+export const CANONICAL_WEBSOCKET_INGRESS_ARGS = [
+  { param: 'event', source: { kind: 'websocket.ingressEvent' } }
+] as const;
 
 export interface AssemblyWebSocketGatewayOptions {
   snapshots: RouterActiveAssemblySnapshotStore;
@@ -46,6 +60,9 @@ interface AssemblyWebSocketConnection {
   businessIdentity?: string;
   contextBytes: Uint8Array;
   contextCodec?: WebSocketContextCodecFrameMetadata;
+  connectionPolicy?: WebSocketConnectionPolicy;
+  websocketEntryId: string;
+  gatewayEntryIdentity: string;
   runtimeConnection?: RuntimeDispatchConnection;
   ws: WebSocket;
 }
@@ -137,12 +154,14 @@ export class AssemblyWebSocketGateway {
     const selection = selectWebSocketIngress(this.options.snapshots.get(), request);
     const connectionId = randomUUID();
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
+    const identity = canonicalWebSocketIngressIdentity(selection.binding);
     const connectRequest = {
-      header: assemblyRequestHeader({
+      header: assemblyWebSocketRequestHeader({
         snapshot: selection.snapshot,
         binding: selection.binding,
         requestId: randomUUID(),
         timeoutMs,
+        identity,
         websocketAdapter: connectAdapter(request, selection.url, connectionId)
       }),
       payloadBytes: new Uint8Array()
@@ -162,6 +181,17 @@ export class AssemblyWebSocketGateway {
       );
     }
     if (connectMetadata.result === 'reject') {
+      if (
+        connectResponse.payloadBytes.byteLength !== 0 ||
+        connectMetadata.contextPayloadPresent ||
+        connectMetadata.contextCodec !== undefined
+      ) {
+        throw new GatewayError(
+          502,
+          'InvalidConnectResult',
+          'WebSocket reject returned context payload metadata'
+        );
+      }
       throw new GatewayError(
         403,
         'WebSocketConnectRejected',
@@ -169,19 +199,27 @@ export class AssemblyWebSocketGateway {
       );
     }
     const context = connectContext(connectMetadata, connectResponse.payloadBytes);
-    const businessIdentity = optionalBusinessIdentity(connectMetadata.businessIdentity);
+    const businessIdentity = validateBusinessIdentity(connectMetadata.businessIdentity);
+    const connectionPolicy = validateConnectionPolicy(
+      connectMetadata.connectionPolicy,
+      businessIdentity
+    );
     webSocketServer.handleUpgrade(request, socket, head, (ws) => {
       const connection: AssemblyWebSocketConnection = {
         id: connectionId,
         snapshot: selection.snapshot,
         binding: selection.binding,
         contextBytes: context.bytes,
+        websocketEntryId: identity.websocketEntryId,
+        gatewayEntryIdentity: identity.gatewayEntryIdentity,
         ...(context.codec !== undefined ? { contextCodec: context.codec } : {}),
         ...(businessIdentity !== undefined ? { businessIdentity } : {}),
+        ...(connectionPolicy !== undefined ? { connectionPolicy } : {}),
         ...(runtimeConnection !== undefined ? { runtimeConnection } : {}),
         ws
       };
       this.connections.set(connectionId, connection);
+      this.enforceConnectionPolicy(connection);
       ws.on('message', (data, isBinary) => {
         this.handleMessage(connection, data, isBinary).catch((error: unknown) => {
           ws.close(1011, websocketCloseReason(error));
@@ -203,11 +241,15 @@ export class AssemblyWebSocketGateway {
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
     const response = await this.options.dispatcher.dispatchBinary(
       {
-        header: assemblyRequestHeader({
+        header: assemblyWebSocketRequestHeader({
           snapshot: connection.snapshot,
           binding: connection.binding,
           requestId: randomUUID(),
           timeoutMs,
+          identity: {
+            websocketEntryId: connection.websocketEntryId,
+            gatewayEntryIdentity: connection.gatewayEntryIdentity
+          },
           websocketAdapter: receive.adapter
         }),
         payloadBytes: receive.payloadBytes
@@ -217,20 +259,80 @@ export class AssemblyWebSocketGateway {
         ? {}
         : { connection: connection.runtimeConnection }
     );
-    if (response.payloadBytes.byteLength > 0 && connection.ws.readyState === WebSocket.OPEN) {
-      connection.ws.send(response.payloadBytes, { binary: true });
+    if (response.payloadBytes.byteLength !== 0 || response.header.websocketConnect !== undefined) {
+      throw new GatewayError(
+        502,
+        'InvalidReceiveResult',
+        'WebSocket receive must return null without response payload metadata'
+      );
     }
   }
 
   private handleConnectionSend(message: ConnectionSendEnvelope): void {
-    if (typeof message.connectionId !== 'string') {
+    if (typeof message.businessIdentity === 'string') {
+      const key = businessDeliveryKey(
+        message.serviceId,
+        message.websocketEntryId,
+        message.businessIdentity
+      );
+      if (key === null) return;
+      for (const connection of this.connections.values()) {
+        if (
+          businessDeliveryKey(
+            connection.binding.contract.serviceId,
+            connection.websocketEntryId,
+            connection.businessIdentity
+          ) === key &&
+          connection.ws.readyState === WebSocket.OPEN
+        ) {
+          connection.ws.send(message.payloadBytes, { binary: message.payloadKind === 'binary' });
+        }
+      }
+      return;
+    }
+    if (typeof message.connectionId !== 'string' || typeof message.websocketEntryId !== 'string') {
       return;
     }
     const connection = this.connections.get(message.connectionId);
-    if (connection === undefined || connection.ws.readyState !== WebSocket.OPEN) {
+    if (
+      connection === undefined ||
+      connection.binding.contract.serviceId !== message.serviceId ||
+      connection.websocketEntryId !== message.websocketEntryId ||
+      connection.ws.readyState !== WebSocket.OPEN
+    ) {
       return;
     }
     connection.ws.send(message.payloadBytes, { binary: message.payloadKind === 'binary' });
+  }
+
+  private enforceConnectionPolicy(connection: AssemblyWebSocketConnection): void {
+    const policy = connection.connectionPolicy;
+    if (policy === undefined || connection.businessIdentity === undefined) return;
+    const key = businessDeliveryKey(
+      connection.binding.contract.serviceId,
+      connection.websocketEntryId,
+      connection.businessIdentity
+    );
+    const peers = Array.from(this.connections.values()).filter(
+      (candidate) =>
+        candidate.ws.readyState === WebSocket.OPEN &&
+        businessDeliveryKey(
+          candidate.binding.contract.serviceId,
+          candidate.websocketEntryId,
+          candidate.businessIdentity
+        ) === key
+    );
+    const overflow = peers.length - policy.maxConnections;
+    if (overflow <= 0) return;
+    if (policy.overflow === 'reject-new') {
+      this.connections.delete(connection.id);
+      closePolicyOverflowSocket(connection.ws, policy);
+      return;
+    }
+    for (const candidate of peers.slice(0, overflow)) {
+      this.connections.delete(candidate.id);
+      closePolicyOverflowSocket(candidate.ws, policy);
+    }
   }
 
   private pickRuntimeConnection(
@@ -293,7 +395,7 @@ function connectAdapter(
 ): WebSocketAdapterFrameMetadata {
   return {
     kind: 'connect',
-    adapterArgs: [],
+    adapterArgs: [...CANONICAL_WEBSOCKET_INGRESS_ARGS],
     connectRequest: {
       connectionId,
       url: url.toString(),
@@ -313,7 +415,7 @@ function receiveDispatch(
   const payloadSegments: NonNullable<
     NonNullable<WebSocketAdapterFrameMetadata['receiveEvent']>['payloadSegments']
   > = [];
-  if (connection.contextBytes.byteLength > 0) {
+  if (connection.contextCodec !== undefined) {
     payloadSegments.push({
       kind: 'websocket.context',
       offset: 0,
@@ -329,22 +431,22 @@ function receiveDispatch(
   payloadParts.push(messageBytes);
   return {
     adapter: {
-    kind: 'receive',
-    adapterArgs: [],
-    receiveEvent: {
-      connectionId: connection.id,
-      ...(connection.businessIdentity !== undefined
-        ? { businessIdentity: connection.businessIdentity }
-        : {}),
-      message: {
-        tag: isBinary ? 'binary' : 'text',
-        encoding: isBinary ? 'binary' : 'utf8'
-      },
-      payloadSegments,
-      ...(connection.contextCodec !== undefined
-        ? { contextCodec: connection.contextCodec }
-        : {})
-    }
+      kind: 'receive',
+      adapterArgs: [...CANONICAL_WEBSOCKET_INGRESS_ARGS],
+      receiveEvent: {
+        connectionId: connection.id,
+        ...(connection.businessIdentity !== undefined
+          ? { businessIdentity: connection.businessIdentity }
+          : {}),
+        message: {
+          tag: isBinary ? 'binary' : 'text',
+          encoding: isBinary ? 'binary' : 'utf8'
+        },
+        payloadSegments,
+        ...(connection.contextCodec !== undefined
+          ? { contextCodec: connection.contextCodec }
+          : {})
+      }
     },
     payloadBytes: Buffer.concat(payloadParts.map((part) => Buffer.from(part)))
   };
@@ -366,7 +468,7 @@ function connectContext(
     }
     return { bytes: new Uint8Array() };
   }
-  if (payloadBytes.byteLength === 0 || metadata.contextCodec === undefined) {
+  if (metadata.contextCodec === undefined) {
     throw new GatewayError(
       502,
       'InvalidConnectResult',
@@ -376,18 +478,76 @@ function connectContext(
   return { bytes: Uint8Array.from(payloadBytes), codec: metadata.contextCodec };
 }
 
-function optionalBusinessIdentity(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
+export function canonicalWebSocketIngressIdentity(
+  binding: RuntimeAssemblyIngressBinding
+): { websocketEntryId: string; gatewayEntryIdentity: string } {
+  const selector = binding.selector;
+  if (selector.protocol !== 'webSocket' || selector.method !== null) {
+    throw new Error('canonical WebSocket identity requires a WebSocket ingress binding');
   }
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new GatewayError(
-      502,
-      'InvalidConnectResult',
-      'WebSocket connect returned an invalid businessIdentity'
-    );
+  const body = {
+    adapterArgs: CANONICAL_WEBSOCKET_INGRESS_ARGS,
+    contractOperationId: binding.contractOperationId,
+    selector: {
+      protocol: 'webSocket',
+      host: canonicalIngressHost(selector.host),
+      method: null,
+      path: selector.path
+    },
+    serviceId: binding.contract.serviceId,
+    serviceProtocolIdentity: binding.contract.serviceProtocolIdentity
+  };
+  const digest = sha256Hex(stableStringify(body));
+  return {
+    websocketEntryId: `skiff-websocket-entry-v1:sha256:${digest}`,
+    gatewayEntryIdentity: `skiff-gateway-v1:sha256:${digest}`
+  };
+}
+
+export function assemblyWebSocketRequestHeader(input: {
+  snapshot: RouterActiveAssemblySnapshot;
+  binding: RuntimeAssemblyIngressBinding;
+  requestId: string;
+  timeoutMs: number;
+  identity: { websocketEntryId: string; gatewayEntryIdentity: string };
+  websocketAdapter: WebSocketAdapterFrameMetadata;
+}): RuntimeAssemblyRequestStartFrameHeader {
+  const selector = input.binding.selector;
+  if (selector.protocol !== 'webSocket' || selector.method !== null) {
+    throw new Error('canonical WebSocket requests require a WebSocket ingress binding');
   }
-  return value;
+  const candidate = {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'request.start',
+    requestId: input.requestId,
+    mode: 'unary',
+    caller: { kind: 'gateway', target: '__skiff.runtime-assembly-ingress' },
+    routing: {
+      kind: 'runtimeAssembly',
+      assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
+      assemblyGeneration: input.snapshot.generation,
+      contractOperationId: input.binding.contractOperationId,
+      ingress: {
+        protocol: 'webSocket',
+        host: canonicalIngressHost(selector.host),
+        method: null,
+        path: selector.path
+      }
+    },
+    gatewayEntryIdentity: input.identity.gatewayEntryIdentity,
+    websocketEntryId: input.identity.websocketEntryId,
+    deadline: {
+      timeoutMs: input.timeoutMs,
+      expiresAt: new Date(Date.now() + input.timeoutMs).toISOString()
+    },
+    trace: { traceId: randomUUID(), spanId: randomUUID() },
+    websocketAdapter: input.websocketAdapter,
+    testEffectsEnabled: false,
+    testEffectDoubles: {}
+  } as const;
+  const validation = validateRuntimeAssemblyRequestStartFrameHeader(candidate);
+  if (!validation.ok) throw new Error(validation.error);
+  return validation.envelope;
 }
 
 function rawHeaders(request: IncomingMessage): Array<{ name: string; value: string }> {

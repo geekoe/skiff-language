@@ -34,6 +34,10 @@ type WebSocketReceiveEvent<Context> {
   message: ConnectionMessage,
 }
 
+type WebSocketIngressEvent<Context> discriminator "tag" =
+  { tag: "connect", connectRequest: WebSocketConnectRequest }
+  | { tag: "receive", receiveEvent: WebSocketReceiveEvent<Context> }
+
 type WebSocketCloseEvent {
   connectionId: string,
   code: integer,

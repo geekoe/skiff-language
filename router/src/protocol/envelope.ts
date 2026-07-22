@@ -353,6 +353,7 @@ export interface WebSocketCookieFrameMetadata {
 }
 
 export type WebSocketAdapterSourceKind =
+  | 'websocket.ingressEvent'
   | 'websocket.connectRequest'
   | 'websocket.receiveEvent'
   | 'websocket.connection'

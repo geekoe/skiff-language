@@ -1,8 +1,20 @@
 use serde_json::{Map, Value};
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
-use skiff_runtime_request::{RequestEnvelope, ResponseEvent, RouterWriterMessage};
+use skiff_runtime_request::{
+    GatewayAdapterArg, GatewayAdapterSource, HttpNameValue, RequestEnvelope, ResponseEvent,
+    RouterWriterMessage, WebSocketAdapter, WebSocketAdapterKind, WebSocketConnectRequest,
+    WebSocketContextCodec, WebSocketContextExpectation, WebSocketMessage, WebSocketMessageEncoding,
+    WebSocketMessageTag, WebSocketPayloadSegment, WebSocketPayloadSegmentKind,
+    WebSocketReceiveRequest,
+};
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketAdapterFrameHeader, RuntimeAssemblyWebSocketAdapterKindFrameHeader,
+    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader,
+    RuntimeAssemblyWebSocketContextExpectationFrameHeader,
+    RuntimeAssemblyWebSocketMessageEncodingFrameHeader,
+    RuntimeAssemblyWebSocketMessageTagFrameHeader,
+    RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader,
 };
 use tokio::sync::mpsc;
 use tracing::error;
@@ -81,22 +93,23 @@ fn validate_narrow_unary_header(header: &RuntimeAssemblyRequestStartFrameHeader)
             "canonical assembly ingress requires caller.kind gateway".to_string(),
         ));
     }
-    if !matches!(
-        header.routing.ingress.protocol,
-        RuntimeAssemblyRequestIngressProtocol::Http
-    ) {
-        return Err(RuntimeError::Unsupported(
-            "canonical unary bridge only accepts HTTP ingress".to_string(),
-        ));
-    }
-    if header.http_adapter.is_some() || header.websocket_adapter.is_some() {
-        return Err(RuntimeError::Unsupported(
-            "canonical unary bridge does not accept gateway adapter metadata".to_string(),
-        ));
-    }
     if header.test_effects_enabled || !header.test_effect_doubles.is_empty() {
         return Err(RuntimeError::Unsupported(
             "canonical unary bridge does not accept test effects".to_string(),
+        ));
+    }
+    match header.routing.ingress.protocol {
+        RuntimeAssemblyRequestIngressProtocol::Http => validate_http_ingress_header(header),
+        RuntimeAssemblyRequestIngressProtocol::WebSocket => {
+            validate_websocket_ingress_header(header)
+        }
+    }
+}
+
+fn validate_http_ingress_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<()> {
+    if header.http_adapter.is_some() || header.websocket_adapter.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "canonical HTTP ingress does not accept gateway adapter metadata".to_string(),
         ));
     }
     let http_request = header.http_request.as_ref().ok_or_else(|| {
@@ -135,15 +148,31 @@ fn validate_narrow_unary_header(header: &RuntimeAssemblyRequestStartFrameHeader)
     Ok(())
 }
 
+fn validate_websocket_ingress_header(
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+) -> Result<()> {
+    if header.http_request.is_some() || header.http_adapter.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "canonical WebSocket ingress does not accept HTTP metadata".to_string(),
+        ));
+    }
+    if header.websocket_adapter.is_none() {
+        return Err(RuntimeError::Decode(
+            "canonical WebSocket ingress requires websocketAdapter metadata".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn ingress_selector(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<IngressSelector> {
     let ingress = &header.routing.ingress;
-    let method = ingress.method.clone().ok_or_else(|| {
-        RuntimeError::Decode("canonical HTTP routing ingress requires method".to_string())
-    })?;
     Ok(IngressSelector {
-        protocol: IngressProtocol::Http,
+        protocol: match ingress.protocol {
+            RuntimeAssemblyRequestIngressProtocol::Http => IngressProtocol::Http,
+            RuntimeAssemblyRequestIngressProtocol::WebSocket => IngressProtocol::WebSocket,
+        },
         host: ingress.host.clone(),
-        method: Some(method),
+        method: ingress.method.clone(),
         path: ingress.path.clone(),
     })
 }
@@ -187,6 +216,10 @@ fn request_envelope_from_route(
         .to_string();
     let activation = route.activation();
     let extra = request_extra(&header)?;
+    let websocket_adapter = header
+        .websocket_adapter
+        .as_ref()
+        .map(websocket_adapter_from_header);
     Ok(RequestEnvelope {
         request_id: header.request_id,
         mode: header.mode,
@@ -208,7 +241,7 @@ fn request_envelope_from_route(
         ingress_selector: Some(binding.selector.clone()),
         binary_http: None,
         http_adapter: None,
-        websocket_adapter: None,
+        websocket_adapter,
         test_effects_enabled: false,
         test_effect_doubles: Default::default(),
         payload_bytes: payload,
@@ -251,4 +284,142 @@ fn insert_optional_string(map: &mut Map<String, Value>, key: &str, value: Option
     if let Some(value) = value {
         map.insert(key.to_string(), Value::String(value.clone()));
     }
+}
+
+fn websocket_adapter_from_header(
+    adapter: &RuntimeAssemblyWebSocketAdapterFrameHeader,
+) -> WebSocketAdapter {
+    WebSocketAdapter {
+        kind: match adapter.kind {
+            RuntimeAssemblyWebSocketAdapterKindFrameHeader::Connect => {
+                WebSocketAdapterKind::Connect
+            }
+            RuntimeAssemblyWebSocketAdapterKindFrameHeader::Receive => {
+                WebSocketAdapterKind::Receive
+            }
+        },
+        adapter_args: adapter
+            .adapter_args
+            .iter()
+            .map(|arg| GatewayAdapterArg {
+                param: arg.param.clone(),
+                source: match arg.source.kind {
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::IngressEvent => {
+                        GatewayAdapterSource::WebSocketIngressEvent
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::ConnectRequest => {
+                        GatewayAdapterSource::WebSocketConnectRequest
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::ReceiveEvent => {
+                        GatewayAdapterSource::WebSocketReceiveEvent
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::Connection => {
+                        GatewayAdapterSource::WebSocketConnection
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::ConnectionContext => {
+                        GatewayAdapterSource::WebSocketConnectionContext
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::Message => {
+                        GatewayAdapterSource::WebSocketMessage
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::MessageBody => {
+                        GatewayAdapterSource::WebSocketMessageBody
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::ConnectionId => {
+                        GatewayAdapterSource::WebSocketConnectionId
+                    }
+                    RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::BusinessIdentity => {
+                        GatewayAdapterSource::WebSocketBusinessIdentity
+                    }
+                },
+            })
+            .collect(),
+        context_expectation: adapter.context_expectation.as_ref().map(|expectation| {
+            match expectation {
+                RuntimeAssemblyWebSocketContextExpectationFrameHeader::Null => {
+                    WebSocketContextExpectation::Null
+                }
+                RuntimeAssemblyWebSocketContextExpectationFrameHeader::Typed {
+                    connect_operation_abi_id,
+                    context_type_identity,
+                } => WebSocketContextExpectation::Typed {
+                    connect_operation_abi_id: connect_operation_abi_id.clone(),
+                    context_type_identity: context_type_identity.clone(),
+                },
+            }
+        }),
+        connect_request: adapter
+            .connect_request
+            .as_ref()
+            .map(|request| WebSocketConnectRequest {
+                connection_id: request.connection_id.clone(),
+                url: request.url.clone(),
+                query: name_values(&request.query),
+                headers: name_values(&request.headers),
+                cookies: name_values(&request.cookies),
+                version: request.version.clone(),
+            }),
+        receive_request: adapter
+            .receive_event
+            .as_ref()
+            .map(|receive| WebSocketReceiveRequest {
+                connection_id: receive.connection_id.clone(),
+                business_identity: receive.business_identity.clone(),
+                message: WebSocketMessage {
+                    tag: match receive.message.tag {
+                        RuntimeAssemblyWebSocketMessageTagFrameHeader::Text => {
+                            WebSocketMessageTag::Text
+                        }
+                        RuntimeAssemblyWebSocketMessageTagFrameHeader::Binary => {
+                            WebSocketMessageTag::Binary
+                        }
+                    },
+                    encoding: match receive.message.encoding {
+                        RuntimeAssemblyWebSocketMessageEncodingFrameHeader::Utf8 => {
+                            WebSocketMessageEncoding::Utf8
+                        }
+                        RuntimeAssemblyWebSocketMessageEncodingFrameHeader::Binary => {
+                            WebSocketMessageEncoding::Raw
+                        }
+                    },
+                },
+                context_codec: receive
+                    .context_codec
+                    .as_ref()
+                    .map(|codec| WebSocketContextCodec {
+                        operation_abi_id: codec.operation_abi_id.clone(),
+                        context_type_identity: codec.context_type_identity.clone(),
+                    }),
+                payload_segments: receive
+                    .payload_segments
+                    .iter()
+                    .map(|segment| WebSocketPayloadSegment {
+                        kind: match segment.kind {
+                            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Context => {
+                                WebSocketPayloadSegmentKind::Context
+                            }
+                            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message => {
+                                WebSocketPayloadSegmentKind::Message
+                            }
+                        },
+                        offset: usize::try_from(segment.offset)
+                            .expect("wire safe integer fits the runtime host target"),
+                        length: usize::try_from(segment.length)
+                            .expect("wire safe integer fits the runtime host target"),
+                    })
+                    .collect(),
+            }),
+    }
+}
+
+fn name_values(
+    values: &[skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader],
+) -> Vec<HttpNameValue> {
+    values
+        .iter()
+        .map(|value| HttpNameValue {
+            name: value.name.clone(),
+            value: value.value.clone(),
+        })
+        .collect()
 }

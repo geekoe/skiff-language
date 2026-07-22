@@ -143,12 +143,17 @@ fn normalize_builtin(
         "std.collection.Map" => "Map",
         "std.date.Date" => "Date",
         "std.time.Duration" => "Duration",
+        "std.websocket.WebSocketIngressEvent" | "std.websocket.WebSocketConnectResult" => {
+            name.as_str()
+        }
         "string" | "number" | "integer" | "bool" | "null" | "void" | "bytes" | "Date"
         | "Duration" | "Json" | "JsonObject" | "Array" | "Map" => name.as_str(),
         _ => return invalid_contract(format!("{path}: unknown contract builtin `{name}`")),
     };
     let expected_arity = match canonical_name {
-        "Array" => 1,
+        "Array"
+        | "std.websocket.WebSocketIngressEvent"
+        | "std.websocket.WebSocketConnectResult" => 1,
         "Map" => 2,
         _ => 0,
     };

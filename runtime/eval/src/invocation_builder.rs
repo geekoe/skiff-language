@@ -79,6 +79,7 @@ pub enum EvalInvocationBuildArgFrom {
     HttpRequest,
     HttpBody,
     HttpContext,
+    WebSocketIngressEvent,
     WebSocketConnectRequest,
     WebSocketReceiveEvent,
     WebSocketConnection,
@@ -734,7 +735,8 @@ fn http_adapter_handler_arg_plans(
             }
             (
                 _,
-                AdapterArgSource::WebSocketConnectRequest
+                AdapterArgSource::WebSocketIngressEvent
+                | AdapterArgSource::WebSocketConnectRequest
                 | AdapterArgSource::WebSocketReceiveEvent
                 | AdapterArgSource::WebSocketConnection
                 | AdapterArgSource::WebSocketConnectionContext
@@ -766,6 +768,7 @@ fn http_adapter_handler_arg_plans(
             )?,
             AdapterArgSource::HttpBody
             | AdapterArgSource::HttpContext
+            | AdapterArgSource::WebSocketIngressEvent
             | AdapterArgSource::WebSocketConnectRequest
             | AdapterArgSource::WebSocketReceiveEvent
             | AdapterArgSource::WebSocketConnection
@@ -960,6 +963,9 @@ fn adapter_arg_source(source: EvalInvocationBuildArgFrom) -> AdapterArgSource {
         EvalInvocationBuildArgFrom::HttpRequest => AdapterArgSource::HttpRequest,
         EvalInvocationBuildArgFrom::HttpBody => AdapterArgSource::HttpBody,
         EvalInvocationBuildArgFrom::HttpContext => AdapterArgSource::HttpContext,
+        EvalInvocationBuildArgFrom::WebSocketIngressEvent => {
+            AdapterArgSource::WebSocketIngressEvent
+        }
         EvalInvocationBuildArgFrom::WebSocketConnectRequest => {
             AdapterArgSource::WebSocketConnectRequest
         }

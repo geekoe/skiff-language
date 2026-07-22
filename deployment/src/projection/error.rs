@@ -56,6 +56,11 @@ pub enum ProjectionError {
         operation_id: ContractOperationId,
         callable_id: PackageCallableId,
     },
+    #[error("operation {operation_id} is not the canonical WebSocket ingress ABI: {message}")]
+    InvalidWebSocketIngressContract {
+        operation_id: ContractOperationId,
+        message: String,
+    },
     #[error("callable {callable_id} fails independent boundary eligibility: {reasons:?}")]
     BoundaryEligibilityViolation {
         callable_id: PackageCallableId,

@@ -47,7 +47,7 @@ impl<'ctx, 'req> WebSocketIngressHandler<'ctx, 'req> {
     }
 }
 
-fn boundary_response_from_eval_websocket_adapter_result(
+pub(crate) fn boundary_response_from_eval_websocket_adapter_result(
     response: EvalRequestWebSocketAdapterResult,
 ) -> BoundaryResponse {
     BoundaryResponse::end(

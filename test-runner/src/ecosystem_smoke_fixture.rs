@@ -1,8 +1,8 @@
-//! Canonical unary and package-test fixtures used by the isolated ecosystem smoke.
+//! Canonical unary, WebSocket, and package-test fixtures used by the isolated ecosystem smoke.
 //!
-//! WebSocket authoring deliberately does not appear here: the production package
-//! boundary cannot yet prove the native WebSocket adapter capability, so this
-//! fixture never edits or re-signs a compiler-produced artifact to manufacture it.
+//! WebSocket is included only when the production package exports the canonical
+//! `websocket` callable. The fixture consumes the compiler-produced boundary
+//! projection directly and never edits or re-signs a package artifact.
 
 use std::collections::BTreeMap;
 
@@ -34,6 +34,7 @@ use crate::{
 const SMOKE_SERVICE_ID: &str = "test.skiff/ecosystem-smoke";
 const SMOKE_CONTRACT_VERSION: &str = "1.0.0";
 const SMOKE_HOST: &str = "ecosystem-smoke.skiff.localhost";
+const SMOKE_WEBSOCKET_PATH: &str = "/socket";
 
 #[derive(Debug, Clone)]
 pub struct EcosystemSmokeEntrypoint {
@@ -50,6 +51,7 @@ pub struct CanonicalEcosystemSmokeFixture {
     pub records: CanonicalTestRecords,
     pub package_test: CanonicalPackageTestEntrypoint,
     pub unary: EcosystemSmokeEntrypoint,
+    pub websocket: Option<EcosystemSmokeEntrypoint>,
 }
 
 pub fn assemble_ecosystem_smoke_fixture(
@@ -70,12 +72,24 @@ pub fn assemble_ecosystem_smoke_fixture(
         method: Some("POST".to_string()),
         path: "/probe".to_string(),
     };
+    let websocket_selector = IngressSelector {
+        protocol: IngressProtocol::WebSocket,
+        host: SMOKE_HOST.to_string(),
+        method: None,
+        path: SMOKE_WEBSOCKET_PATH.to_string(),
+    };
     let production = package_artifact_ref(&project.package.artifact)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let packages = project.artifacts().cloned().collect::<Vec<_>>();
     let package_bindings = canonical_package_bindings(&packages)?;
     let deployment = project_service_deployment(
-        smoke_deployment_input(&smoke, production, selector.clone(), package_bindings),
+        smoke_deployment_input(
+            &smoke,
+            production,
+            selector.clone(),
+            websocket_selector.clone(),
+            package_bindings,
+        ),
         &smoke.contract,
         &packages,
     )
@@ -103,6 +117,15 @@ pub fn assemble_ecosystem_smoke_fixture(
     )
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
 
+    let websocket = smoke
+        .websocket_operation
+        .clone()
+        .map(|operation| EcosystemSmokeEntrypoint {
+            selector: websocket_selector,
+            deployment: deployment_ref.clone(),
+            contract: smoke.reference.clone(),
+            operation,
+        });
     Ok(CanonicalEcosystemSmokeFixture {
         production: test_fixture.production,
         overlay: test_fixture.overlay,
@@ -114,6 +137,7 @@ pub fn assemble_ecosystem_smoke_fixture(
             contract: smoke.reference,
             operation: smoke.operation,
         },
+        websocket,
     })
 }
 
@@ -121,6 +145,7 @@ fn smoke_deployment_input(
     smoke: &SmokeContract,
     production: PackageArtifactRef,
     selector: IngressSelector,
+    websocket_selector: IngressSelector,
     package_bindings: Vec<PackageBinding>,
 ) -> ServiceDeploymentInput {
     let revision = production
@@ -129,21 +154,33 @@ fn smoke_deployment_input(
         .rsplit(':')
         .next()
         .unwrap_or("package");
+    let mut operation_bindings = vec![ServiceDeploymentOperationInput {
+        contract_operation_id: smoke.operation.clone(),
+        package_public_path: "marker".to_string(),
+    }];
+    let mut ingress = vec![DeploymentIngressBinding {
+        selector,
+        contract_operation_id: smoke.operation.clone(),
+    }];
+    if let Some(operation) = smoke.websocket_operation.as_ref() {
+        operation_bindings.push(ServiceDeploymentOperationInput {
+            contract_operation_id: operation.clone(),
+            package_public_path: "websocket".to_string(),
+        });
+        ingress.push(DeploymentIngressBinding {
+            selector: websocket_selector,
+            contract_operation_id: operation.clone(),
+        });
+    }
     ServiceDeploymentInput {
         schema_version: SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION.to_string(),
         contract: smoke.reference.clone(),
         deployment_revision: DeploymentRevision::new(format!("smoke-{revision}")),
         implementation: production,
-        operation_bindings: vec![ServiceDeploymentOperationInput {
-            contract_operation_id: smoke.operation.clone(),
-            package_public_path: "marker".to_string(),
-        }],
+        operation_bindings,
         package_bindings,
         service_selectors: Vec::new(),
-        ingress: vec![DeploymentIngressBinding {
-            selector,
-            contract_operation_id: smoke.operation.clone(),
-        }],
+        ingress,
         config_literals: Vec::new(),
         secret_refs: Vec::new(),
         state_bindings: Vec::new(),
@@ -176,49 +213,23 @@ struct SmokeContract {
     contract: ServiceContract,
     reference: ServiceContractRef,
     operation: ContractOperationId,
+    websocket_operation: Option<ContractOperationId>,
 }
 
 fn compile_smoke_contract(
     project: &CanonicalPackageProject,
 ) -> Result<SmokeContract, CanonicalFixtureError> {
-    let symbol = project
-        .package
-        .artifact
-        .package_local_abi
-        .public_symbols
-        .get("marker")
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "smoke package omitted public callable marker".to_string(),
-            )
-        })?;
-    let skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol else {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "smoke public path marker is not callable".to_string(),
-        ));
-    };
-    let projection = project
-        .package
-        .artifact
-        .boundary_projections
-        .get(callable_id)
-        .ok_or_else(|| {
-            CanonicalFixtureError::InvalidInput(
-                "smoke marker has no boundary projection".to_string(),
-            )
-        })?;
-    let BoundaryCallableProjection::Available {
-        operation_contract, ..
-    } = projection
-    else {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "smoke marker cannot cross the canonical boundary".to_string(),
-        ));
-    };
+    let marker_contract = public_operation_contract(project, "marker", true)?
+        .expect("required marker projection checked");
+    let websocket_contract = public_operation_contract(project, "websocket", false)?;
+    let mut operations = BTreeMap::from([("marker".to_string(), marker_contract)]);
+    if let Some(websocket) = websocket_contract {
+        operations.insert("websocket".to_string(), websocket);
+    }
     let contract = compile_contract(ServiceContractDefinition {
         service_id: SMOKE_SERVICE_ID.to_string(),
         contract_version: SMOKE_CONTRACT_VERSION.to_string(),
-        operations: BTreeMap::from([("marker".to_string(), operation_contract.clone())]),
+        operations,
         boundary_schema: BTreeMap::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "ecosystem smoke".to_string(),
@@ -227,13 +238,72 @@ fn compile_smoke_contract(
         },
     })
     .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    let descriptor = contract.operations.values().next().ok_or_else(|| {
-        CanonicalFixtureError::InvalidInput("smoke contract omitted marker operation".to_string())
-    })?;
+    let operation = contract
+        .operations
+        .values()
+        .find(|descriptor| descriptor.stable_key == "marker")
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(
+                "smoke contract omitted marker operation".to_string(),
+            )
+        })?
+        .operation_id
+        .clone();
+    let websocket_operation = contract
+        .operations
+        .values()
+        .find(|descriptor| descriptor.stable_key == "websocket")
+        .map(|descriptor| descriptor.operation_id.clone());
     Ok(SmokeContract {
         reference: service_contract_ref(&contract)
             .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?,
-        operation: descriptor.operation_id.clone(),
+        operation,
+        websocket_operation,
         contract,
     })
+}
+
+fn public_operation_contract(
+    project: &CanonicalPackageProject,
+    public_path: &str,
+    required: bool,
+) -> Result<Option<skiff_artifact_model::BoundaryOperationContract>, CanonicalFixtureError> {
+    let Some(symbol) = project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get(public_path)
+    else {
+        if required {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "smoke package omitted public callable {public_path}"
+            )));
+        }
+        return Ok(None);
+    };
+    let skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol else {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "smoke public path {public_path} is not callable"
+        )));
+    };
+    let projection = project
+        .package
+        .artifact
+        .boundary_projections
+        .get(callable_id)
+        .ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "smoke {public_path} has no boundary projection"
+            ))
+        })?;
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        return Err(CanonicalFixtureError::InvalidInput(format!(
+            "smoke {public_path} cannot cross the canonical boundary"
+        )));
+    };
+    Ok(Some(operation_contract.clone()))
 }

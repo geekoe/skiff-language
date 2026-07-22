@@ -10,8 +10,8 @@ mod package_closure;
 mod requirements;
 
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, PackageArtifact, ServiceContract, ServiceDeployment,
-    ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    websocket_ingress_context, DeploymentArtifactIdentity, IngressProtocol, PackageArtifact,
+    ServiceContract, ServiceDeployment, ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 pub use error::{ProjectionError, ProjectionResult};
@@ -23,6 +23,7 @@ pub fn project_service_deployment(
     package_artifacts: &[PackageArtifact],
 ) -> ProjectionResult<ServiceDeployment> {
     validate_contract_ref(&input, contract)?;
+    validate_ingress_contracts(&input, contract)?;
     let closure = package_closure::PackageClosure::resolve(&input, package_artifacts)?;
     let operations =
         operations::project_operation_bindings(&input, contract, closure.implementation(&input))?;
@@ -56,6 +57,23 @@ pub fn project_service_deployment(
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)?;
     skiff_artifact_identity::validate_service_deployment_identity(&deployment)?;
     Ok(deployment)
+}
+
+fn validate_ingress_contracts(
+    input: &ServiceDeploymentInput,
+    contract: &ServiceContract,
+) -> ProjectionResult<()> {
+    for binding in &input.ingress {
+        if matches!(binding.selector.protocol, IngressProtocol::WebSocket) {
+            websocket_ingress_context(contract, &binding.contract_operation_id).map_err(
+                |error| ProjectionError::InvalidWebSocketIngressContract {
+                    operation_id: binding.contract_operation_id.clone(),
+                    message: error.to_string(),
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_contract_ref(

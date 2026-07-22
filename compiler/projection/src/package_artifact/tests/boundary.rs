@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryErrorContract, BoundaryUnavailableReason,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CallableTargetFact, ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableSignature,
-    PackageRuntimeRequirements, PackageTypeRef, TypeRefIr, ValueEscapeLane, ValueProvenance,
+    CallableTargetFact, ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableParameter,
+    PackageCallableSignature, PackageRuntimeRequirements, PackageTypeRef, TypeRefIr,
+    ValueEscapeLane, ValueProvenance,
 };
 
 use super::fixtures::{runtime_requirements, safe_facts, signature};
@@ -191,6 +192,76 @@ fn null_literal_keeps_its_exact_canonical_boundary_semantics() {
     );
 }
 
+#[test]
+fn websocket_ingress_generic_types_project_to_the_exact_contract_abi() {
+    let context = PackageTypeRef::Contract {
+        contract_type_id: ContractTypeId::new("contract-type:websocket-context"),
+    };
+    let signature = PackageCallableSignature {
+        parameters: vec![PackageCallableParameter {
+            name: "event".to_string(),
+            ty: PackageTypeRef::Container {
+                name: "std.websocket.WebSocketIngressEvent".to_string(),
+                arguments: vec![context.clone()],
+            },
+        }],
+        return_type: PackageTypeRef::Nullable {
+            inner: Box::new(PackageTypeRef::Container {
+                name: "std.websocket.WebSocketConnectResult".to_string(),
+                arguments: vec![context],
+            }),
+        },
+        throw_types: Vec::new(),
+        may_suspend: false,
+    };
+    let projection = project_boundary_callable(
+        "api",
+        &signature,
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("canonical WebSocket ingress must be boundary available")
+    };
+    assert_eq!(operation_contract.parameters[0].name, "event");
+    assert!(matches!(
+        &operation_contract.parameters[0].ty,
+        ContractTypeRef::Builtin { name, arguments }
+            if name == "std.websocket.WebSocketIngressEvent" && arguments.len() == 1
+    ));
+    assert!(matches!(
+        &operation_contract.return_value.ty,
+        ContractTypeRef::Nullable { inner }
+            if matches!(inner.as_ref(), ContractTypeRef::Builtin { name, arguments }
+                if name == "std.websocket.WebSocketConnectResult" && arguments.len() == 1)
+    ));
+}
+
+#[test]
+fn websocket_ingress_generic_types_reject_wrong_arity() {
+    let projection = project_boundary_callable(
+        "api",
+        &signature(TypeRefIr::Native {
+            name: "std.websocket.WebSocketIngressEvent".to_string(),
+            args: Vec::new(),
+        }),
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+    )
+    .unwrap();
+    assert!(matches!(
+        projection,
+        BoundaryCallableProjection::Unavailable { reasons }
+            if reasons.contains(&BoundaryUnavailableReason::UnsupportedBoundaryType)
+    ));
+}
+
 fn assert_reasons(
     signature: PackageCallableSignature,
     facts: CallableSemanticFacts,
@@ -216,5 +287,13 @@ fn assert_reasons(
             reasons.contains(reason),
             "missing {reason:?} in {reasons:?}"
         );
+    }
+}
+
+fn empty_runtime_requirements() -> PackageRuntimeRequirements {
+    PackageRuntimeRequirements {
+        config: Vec::new(),
+        resources: Vec::new(),
+        runtime_capabilities: Vec::new(),
     }
 }

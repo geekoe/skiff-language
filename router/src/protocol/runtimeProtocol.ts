@@ -3542,6 +3542,9 @@ function validateConnectionSendConnectionId(envelope: Record<string, unknown>): 
   if (typeof value !== 'string' || value.trim().length === 0) {
     return 'invalid connection.send envelope: connectionId must be a non-empty string';
   }
+  if (typeof envelope.websocketEntryId !== 'string' || envelope.websocketEntryId.trim().length === 0) {
+    return 'invalid connection.send envelope: websocketEntryId must be a non-empty string for connectionId target';
+  }
   return null;
 }
 

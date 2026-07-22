@@ -398,11 +398,11 @@ export class RuntimeEndpoint
           };
           if (typeof header.businessIdentity === 'string') {
             envelope.businessIdentity = header.businessIdentity;
-            if (typeof header.websocketEntryId === 'string') {
-              envelope.websocketEntryId = header.websocketEntryId;
-            }
           } else if (typeof header.connectionId === 'string') {
             envelope.connectionId = header.connectionId;
+          }
+          if (typeof header.websocketEntryId === 'string') {
+            envelope.websocketEntryId = header.websocketEntryId;
           }
           this.forwardConnectionSend(ws, envelope);
         }
@@ -450,7 +450,10 @@ export class RuntimeEndpoint
       (hasIdentity &&
         (typeof envelope.websocketEntryId !== 'string' ||
           envelope.websocketEntryId.trim().length === 0)) ||
-      (hasConnectionId && envelope.connectionId!.trim().length === 0)
+      (hasConnectionId && envelope.connectionId!.trim().length === 0) ||
+      (hasConnectionId &&
+        (typeof envelope.websocketEntryId !== 'string' ||
+          envelope.websocketEntryId.trim().length === 0))
     ) {
       throw new Error('invalid connection.send envelope');
     }

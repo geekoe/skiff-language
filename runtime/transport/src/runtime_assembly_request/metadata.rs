@@ -150,6 +150,8 @@ pub struct RuntimeAssemblyWebSocketAdapterSourceFrameHeader {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader {
+    #[serde(rename = "websocket.ingressEvent")]
+    IngressEvent,
     #[serde(rename = "websocket.connectRequest")]
     ConnectRequest,
     #[serde(rename = "websocket.receiveEvent")]

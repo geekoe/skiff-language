@@ -254,9 +254,9 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
   const storeCorpus = await readJson("ecosystem-store-cases.json");
 
   assert.equal(requestCorpus.requestStartHeaders.length, 4);
-  assert.equal(requestCorpus.requestStartMutations.length, 244);
+  assert.equal(requestCorpus.requestStartMutations.length, 240);
   assert.equal(requestCorpus.requestStartRawCases.length, 29);
-  assert.equal(requestCorpus.requestStartEquivalentOptionPairs.length, 4);
+  assert.equal(requestCorpus.requestStartEquivalentOptionPairs.length, 3);
   assert.equal(requestCorpus.legacyRequestStartHeaders.length, 1);
 
   assert.equal(frameCorpus.assemblyActivationFrames.length, controlMessages.length);
@@ -311,7 +311,9 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
     const typed = validateRuntimeAssemblyRequestStartFrameHeader(header);
     assert.equal(typed.ok, true, typed.ok ? header.requestId : typed.error);
     assert.deepEqual(typed.envelope, header);
-    const payload = Buffer.from(`payload:${header.requestId}`);
+    const payload = header.routing.ingress.protocol === "webSocket"
+      ? Buffer.alloc(0)
+      : Buffer.from(`payload:${header.requestId}`);
     const decoded = decodeRuntimeAssemblyRequestStartFrame(
       encodeBinaryFrame(header, payload),
     );
@@ -323,13 +325,13 @@ async function runRuntimeWireSelfTest(controlMessages, frozenCheckpoint) {
       `${header.requestId} direction`,
     );
   }
-  const nullDouble = requestCorpus.requestStartHeaders[3]
+  const nullDouble = requestCorpus.requestStartHeaders[0]
     .testEffectDoubles.effect[0];
   assert.equal(
-    Object.prototype.hasOwnProperty.call(nullDouble, "expectRequest"),
+    Object.prototype.hasOwnProperty.call(nullDouble, "response"),
     true,
   );
-  assert.equal(nullDouble.expectRequest, null);
+  assert.equal(nullDouble.response, null);
 
   const mutationNames = new Set();
   for (const mutation of requestCorpus.requestStartMutations) {

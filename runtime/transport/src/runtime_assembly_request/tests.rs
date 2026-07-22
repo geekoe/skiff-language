@@ -47,9 +47,9 @@ struct EquivalentOptionPair {
 fn runtime_assembly_request_start_corpus_is_exhaustive() {
     let corpus = corpus();
     assert_eq!(corpus.request_start_headers.len(), 4);
-    assert_eq!(corpus.request_start_mutations.len(), 244);
+    assert_eq!(corpus.request_start_mutations.len(), 240);
     assert_eq!(corpus.request_start_raw_cases.len(), 29);
-    assert_eq!(corpus.request_start_equivalent_option_pairs.len(), 4);
+    assert_eq!(corpus.request_start_equivalent_option_pairs.len(), 3);
     assert_eq!(corpus.legacy_request_start_headers.len(), 1);
 }
 
@@ -82,7 +82,14 @@ fn runtime_assembly_request_start_decodes_shared_headers() {
         let reparsed: RuntimeAssemblyRequestStartFrameHeader =
             serde_json::from_value(serialized).unwrap();
         assert_eq!(reparsed, expected);
-        let payload = b"opaque request payload";
+        let payload: &[u8] = if matches!(
+            expected.routing.ingress.protocol,
+            super::RuntimeAssemblyRequestIngressProtocol::WebSocket
+        ) {
+            &[]
+        } else {
+            b"opaque request payload"
+        };
         let frame = encode_binary_frame(&expected, payload).unwrap();
         let (decoded, decoded_payload) =
             decode_runtime_assembly_request_start_frame(&frame).unwrap();

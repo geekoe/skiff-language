@@ -163,7 +163,7 @@ interface ConnectAccept {
   businessIdentity?: string;
 }
 
-interface WebSocketConnectionPolicy {
+export interface WebSocketConnectionPolicy {
   maxConnections: number;
   overflow: 'close-oldest' | 'reject-new';
   closeCode?: number;
@@ -1235,7 +1235,8 @@ export class WebSocketGateway {
     const connection = this.connectionsById.get(message.connectionId);
     if (
       !connection ||
-      connection.service !== message.serviceId
+      connection.service !== message.serviceId ||
+      connection.entry.id !== message.websocketEntryId
     ) {
       return;
     }
@@ -1439,7 +1440,7 @@ function validateConnectContext(
   payloadBytes: Uint8Array
 ): { contextBytes: Uint8Array; contextCodec?: WebSocketContextCodecFrameMetadata } {
   if (metadata.contextPayloadPresent) {
-    if (payloadBytes.byteLength === 0 || metadata.contextCodec === undefined) {
+    if (metadata.contextCodec === undefined) {
       throw new GatewayError(
         502,
         'InvalidConnectResult',
@@ -1461,7 +1462,7 @@ function validateConnectContext(
   return { contextBytes: new Uint8Array() };
 }
 
-function validateBusinessIdentity(value: unknown): string | undefined {
+export function validateBusinessIdentity(value: unknown): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
@@ -1471,7 +1472,7 @@ function validateBusinessIdentity(value: unknown): string | undefined {
   return value;
 }
 
-function validateConnectionPolicy(
+export function validateConnectionPolicy(
   value: unknown,
   businessIdentity: string | undefined
 ): WebSocketConnectionPolicy | undefined {
@@ -1525,7 +1526,7 @@ function invalidConnectionPolicy(message: string): GatewayError {
   return new GatewayError(502, 'InvalidConnectResult', message);
 }
 
-function closePolicyOverflowSocket(ws: WebSocket, policy: WebSocketConnectionPolicy): void {
+export function closePolicyOverflowSocket(ws: WebSocket, policy: WebSocketConnectionPolicy): void {
   if (ws.readyState !== WebSocket.OPEN) {
     return;
   }
@@ -1536,7 +1537,7 @@ function closePolicyOverflowSocket(ws: WebSocket, policy: WebSocketConnectionPol
   ws.close(policy.closeCode ?? 1000, policy.closeReason);
 }
 
-function businessDeliveryKey(
+export function businessDeliveryKey(
   serviceId: string,
   websocketEntryId: string | undefined,
   businessIdentity: string | undefined

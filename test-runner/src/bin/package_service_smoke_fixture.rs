@@ -206,7 +206,7 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
     let assembly = runtime_assembly_ref(&fixture.records.assembly)?;
     let overlay_record_path = PackageArtifactRecordPath::new(&fixture.overlay)?.to_string();
     let production = package_artifact_ref(&project.package.artifact)?;
-    let entrypoints = [
+    let mut entrypoints = vec![
         json!({
             "kind": "packageTest",
             "name": fixture.package_test.case.name,
@@ -228,6 +228,18 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
             "operation": fixture.unary.operation,
         }),
     ];
+    if let Some(websocket) = fixture.websocket.as_ref() {
+        entrypoints.push(json!({
+            "kind": "websocket",
+            "name": "websocket",
+            "host": websocket.selector.host,
+            "method": websocket.selector.method,
+            "path": websocket.selector.path,
+            "deployment": websocket.deployment,
+            "contract": websocket.contract,
+            "operation": websocket.operation,
+        }));
+    }
     println!(
         "{}",
         serde_json::to_string(&json!({

@@ -1366,6 +1366,39 @@ describe('runtime binary frame foundations', () => {
     });
   });
 
+  it('requires service, entry, and connection identity for direct connection.send targets', () => {
+    const {
+      businessIdentity: _businessIdentity,
+      websocketEntryId: _websocketEntryId,
+      ...base
+    } = runtimeFrameHeaderFixtures['connection.send'];
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...base,
+        connectionId: 'connection-1'
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid connection.send envelope: websocketEntryId must be a non-empty string for connectionId target'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...base,
+        websocketEntryId: 'entry-1',
+        connectionId: 'connection-1'
+      })
+    ).toEqual({
+      ok: true,
+      envelope: {
+        ...base,
+        websocketEntryId: 'entry-1',
+        connectionId: 'connection-1'
+      }
+    });
+  });
+
   it('accepts only known connection.send frame payload kinds', () => {
     expect(
       validateRuntimeToRouterFrameHeader({

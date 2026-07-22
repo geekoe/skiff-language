@@ -59,7 +59,9 @@ fn eval_http_adapter(adapter: &HttpAdapter) -> EvalRequestInvocationHttpAdapter 
     }
 }
 
-fn eval_websocket_adapter(adapter: &WebSocketAdapter) -> EvalRequestInvocationWebSocketAdapter {
+pub(crate) fn eval_websocket_adapter(
+    adapter: &WebSocketAdapter,
+) -> EvalRequestInvocationWebSocketAdapter {
     EvalRequestInvocationWebSocketAdapter {
         kind: match adapter.kind {
             WebSocketAdapterKind::Connect => EvalRequestInvocationWebSocketKind::Connect,
@@ -114,6 +116,9 @@ fn eval_arg_from(source: GatewayAdapterSource) -> EvalRequestInvocationArgFrom {
         GatewayAdapterSource::HttpRequest => EvalRequestInvocationArgFrom::HttpRequest,
         GatewayAdapterSource::HttpBody => EvalRequestInvocationArgFrom::HttpBody,
         GatewayAdapterSource::HttpContext => EvalRequestInvocationArgFrom::HttpContext,
+        GatewayAdapterSource::WebSocketIngressEvent => {
+            EvalRequestInvocationArgFrom::WebSocketIngressEvent
+        }
         GatewayAdapterSource::WebSocketConnectRequest => {
             EvalRequestInvocationArgFrom::WebSocketConnectRequest
         }

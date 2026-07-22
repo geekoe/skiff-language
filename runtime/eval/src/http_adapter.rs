@@ -395,7 +395,8 @@ fn http_adapter_handler_values(
                 })?;
                 args.push(value);
             }
-            AdapterArgSource::WebSocketConnectRequest
+            AdapterArgSource::WebSocketIngressEvent
+            | AdapterArgSource::WebSocketConnectRequest
             | AdapterArgSource::WebSocketReceiveEvent
             | AdapterArgSource::WebSocketConnection
             | AdapterArgSource::WebSocketConnectionContext
@@ -439,7 +440,8 @@ fn http_raw_adapter_handler_values(
                     context.protocol_error("HTTP raw adapter does not support body handler arg")
                 );
             }
-            AdapterArgSource::WebSocketConnectRequest
+            AdapterArgSource::WebSocketIngressEvent
+            | AdapterArgSource::WebSocketConnectRequest
             | AdapterArgSource::WebSocketReceiveEvent
             | AdapterArgSource::WebSocketConnection
             | AdapterArgSource::WebSocketConnectionContext

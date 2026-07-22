@@ -113,6 +113,15 @@ impl TryFrom<RawRuntimeAssemblyRequestStartFrameHeader> for RuntimeAssemblyReque
                 "websocketAdapter requires websocketEntryId and gatewayEntryIdentity".to_string(),
             );
         }
+        match raw.routing.ingress.protocol {
+            RuntimeAssemblyRequestIngressProtocol::WebSocket => {
+                validate_canonical_websocket_ingress(&raw)?;
+            }
+            RuntimeAssemblyRequestIngressProtocol::Http if raw.websocket_adapter.is_some() => {
+                return Err("canonical HTTP ingress does not accept WebSocket metadata".to_string());
+            }
+            RuntimeAssemblyRequestIngressProtocol::Http => {}
+        }
         Ok(Self {
             schema_version: raw.schema_version,
             frame_type: raw.frame_type,
@@ -218,12 +227,145 @@ pub fn decode_runtime_assembly_request_start_frame(
     frame: &[u8],
 ) -> Result<(RuntimeAssemblyRequestStartFrameHeader, Vec<u8>), BinaryFrameError> {
     let (header, payload) = strict_json::decode_runtime_assembly_request_json_frame(frame)?;
-    let header = serde_json::from_value(header).map_err(|error| {
-        TransportError::decode(format!(
-            "invalid skiff binary frame: header failed typed decode: {error}"
-        ))
-    })?;
+    let header: RuntimeAssemblyRequestStartFrameHeader =
+        serde_json::from_value(header).map_err(|error| {
+            TransportError::decode(format!(
+                "invalid skiff binary frame: header failed typed decode: {error}"
+            ))
+        })?;
+    validate_canonical_websocket_payload(&header, payload.len()).map_err(TransportError::decode)?;
     Ok((header, payload))
+}
+
+fn validate_canonical_websocket_ingress(
+    raw: &RawRuntimeAssemblyRequestStartFrameHeader,
+) -> Result<(), String> {
+    if raw.mode != "unary" {
+        return Err("canonical WebSocket ingress requires mode unary".to_string());
+    }
+    if raw.http_request.is_some() || raw.http_adapter.is_some() {
+        return Err("canonical WebSocket ingress does not accept HTTP metadata".to_string());
+    }
+    if raw.test_effects_enabled || !raw.test_effect_doubles.is_empty() {
+        return Err("canonical WebSocket ingress does not accept test effects".to_string());
+    }
+    let adapter = raw.websocket_adapter.as_ref().ok_or_else(|| {
+        "canonical WebSocket ingress requires websocketAdapter metadata".to_string()
+    })?;
+    if adapter.context_expectation.is_some() {
+        return Err(
+            "canonical WebSocket ingress derives Context from the pinned ServiceContract"
+                .to_string(),
+        );
+    }
+    let [arg] = adapter.adapter_args.as_slice() else {
+        return Err(
+            "canonical WebSocket ingress requires exactly one event adapter argument".to_string(),
+        );
+    };
+    if arg.param != "event"
+        || !matches!(
+            arg.source.kind,
+            RuntimeAssemblyWebSocketAdapterSourceKindFrameHeader::IngressEvent
+        )
+    {
+        return Err(
+            "canonical WebSocket ingress adapterArgs must be event:websocket.ingressEvent"
+                .to_string(),
+        );
+    }
+    if let Some(receive) = adapter.receive_event.as_ref() {
+        let expected = if receive.context_codec.is_some() {
+            &[
+                RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Context,
+                RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message,
+            ][..]
+        } else {
+            &[RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message][..]
+        };
+        if receive.payload_segments.len() != expected.len() {
+            return Err(
+                "canonical WebSocket receive payload segments do not match Context presence"
+                    .to_string(),
+            );
+        }
+        let mut next = 0_u64;
+        for (segment, expected_kind) in receive.payload_segments.iter().zip(expected) {
+            if segment.kind != *expected_kind || segment.offset != next {
+                return Err(
+                    "canonical WebSocket receive payload segments must be ordered and contiguous"
+                        .to_string(),
+                );
+            }
+            next = next.checked_add(segment.length).ok_or_else(|| {
+                "canonical WebSocket receive payload segment range overflows".to_string()
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_canonical_websocket_payload(
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+    payload_len: usize,
+) -> Result<(), String> {
+    if !matches!(
+        header.routing.ingress.protocol,
+        RuntimeAssemblyRequestIngressProtocol::WebSocket
+    ) {
+        return Ok(());
+    }
+    let adapter = header
+        .websocket_adapter
+        .as_ref()
+        .expect("canonical WebSocket metadata validated during typed decode");
+    if matches!(
+        adapter.kind,
+        RuntimeAssemblyWebSocketAdapterKindFrameHeader::Connect
+    ) {
+        return if payload_len == 0 {
+            Ok(())
+        } else {
+            Err("canonical WebSocket connect payload must be empty".to_string())
+        };
+    }
+    let receive = adapter
+        .receive_event
+        .as_ref()
+        .expect("receive metadata validated during typed decode");
+    let expected = if receive.context_codec.is_some() {
+        &[
+            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Context,
+            RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message,
+        ][..]
+    } else {
+        &[RuntimeAssemblyWebSocketPayloadSegmentKindFrameHeader::Message][..]
+    };
+    if receive.payload_segments.len() != expected.len() {
+        return Err(
+            "canonical WebSocket receive payload segments do not match Context presence"
+                .to_string(),
+        );
+    }
+    let mut next = 0_u64;
+    for (segment, expected_kind) in receive.payload_segments.iter().zip(expected) {
+        if segment.kind != *expected_kind || segment.offset != next {
+            return Err(
+                "canonical WebSocket receive payload segments must be ordered and contiguous"
+                    .to_string(),
+            );
+        }
+        next = next.checked_add(segment.length).ok_or_else(|| {
+            "canonical WebSocket receive payload segment range overflows".to_string()
+        })?;
+    }
+    if next != payload_len as u64 {
+        return Err(
+            "canonical WebSocket receive payload segments must cover the complete payload"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn is_false(value: &bool) -> bool {
