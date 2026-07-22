@@ -25,7 +25,7 @@ cheap combined，并通过全新窄验收、H18与R16；G16第一次full-mode调
 且失败取证/Host计数、final PASS解析与inner isolated workspace ownership仍有缺口。D25三路只读审计冻结的F19A/B已
 作为两个clean commit合流；v4 combined/窄证据PASS后，第二次full artifact gate通过但真实Host child在结果行前code1，
 且bounded diagnostic未保留。D26三路审计已冻结P26S/F20A/B与唯一第三次full条件；P20A official std exact已PASS。
-全部合流并重建v5证据后，才由第三次full与全新reviewer接收F04。
+P26S三步已PASS且F20A/B两个clean commit已合流；重建v5证据后，才由第三次full与全新reviewer接收F04。
 次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
@@ -262,6 +262,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | P26S | [Source diagnostic batch](tasks/P5-P26S-source-diagnostic-batch.md) | D26 complete | 只读cold/helper/std-only；不跑Host |
 | F20A | [Gate bounded diagnostic retention](tasks/P5-F20A-gate-bounded-diagnostic-retention.md) | D26 complete | 高；v5 evidence owner |
 | F20B | [`skiff test` explicit binary](tasks/P5-F20B-skiff-test-explicit-binary.md) | D26 complete | 低；公开caller精确修复 |
+| R20A | [Gate diagnostic acceptance](tasks/P5-R20A-gate-diagnostic-acceptance.md) | v5 I16 PASS | 高；独立只读 |
+| R20B | [`skiff test` binary acceptance](tasks/P5-R20B-skiff-test-binary-acceptance.md) | v5 I16 PASS | 高；独立只读 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
