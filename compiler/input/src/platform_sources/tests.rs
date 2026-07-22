@@ -125,6 +125,72 @@ fn platform_sources_reject_official_source_outside_authorized_package() {
     assert!(error.contains("escapes canonical root"));
 }
 
+#[cfg(unix)]
+#[test]
+fn p5_f18a_platform_snapshot_containment() {
+    use std::os::unix::fs::symlink;
+
+    for source_root in ["prelude", "std"] {
+        let fixture = PlatformFixture::new(&format!("snapshot-outside-{source_root}"));
+        let outside = fixture.base().join(format!("outside-{source_root}.skiff"));
+        fs::write(&outside, "type EscapedPlatformSource {}\n").unwrap();
+        symlink(
+            &outside,
+            fixture.root().join(source_root).join("escaped.skiff"),
+        )
+        .unwrap();
+
+        let error = fixture.context().unwrap().prelude_registry_snapshot();
+        assert!(matches!(
+            error,
+            Err(CompilerPlatformSourcesError::InvalidLayout { message })
+                if message.contains("escapes canonical platform root")
+        ));
+    }
+
+    let fixture = PlatformFixture::new("snapshot-same-root");
+    symlink(
+        fixture.root().join("prelude/error.skiff"),
+        fixture.root().join("prelude/error_alias.skiff"),
+    )
+    .unwrap();
+    symlink(
+        fixture.root().join("std/http.skiff"),
+        fixture.root().join("std/http_alias.skiff"),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root().join("std/ignored.test.skiff"),
+        "type IgnoredDotTest {}\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root().join("std/ignored_test.skiff"),
+        "type IgnoredUnderscoreTest {}\n",
+    )
+    .unwrap();
+
+    let snapshot = fixture
+        .context()
+        .unwrap()
+        .prelude_registry_snapshot()
+        .unwrap();
+    let paths = snapshot
+        .sources()
+        .iter()
+        .map(|(path, _)| path.as_path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![
+            Path::new("prelude/error.skiff"),
+            Path::new("prelude/error_alias.skiff"),
+            Path::new("std/http.skiff"),
+            Path::new("std/http_alias.skiff"),
+        ]
+    );
+}
+
 #[test]
 fn platform_sources_authorize_manifest_and_source_provenance_only() {
     let fixture = PlatformFixture::new("manifest-provenance");
@@ -172,13 +238,18 @@ fn platform_sources_read_canonical_prelude_content_in_stable_order() {
     .unwrap();
     let context = fixture.context().unwrap();
 
-    let sources = context.read_prelude_sources().unwrap();
+    let snapshot = context.prelude_registry_snapshot().unwrap();
     assert_eq!(
-        sources
+        snapshot
+            .sources()
             .iter()
             .map(|(path, _)| path.as_path())
             .collect::<Vec<_>>(),
-        vec![Path::new("actor.skiff"), Path::new("error.skiff")]
+        vec![
+            Path::new("prelude/actor.skiff"),
+            Path::new("prelude/error.skiff"),
+            Path::new("std/http.skiff"),
+        ]
     );
 }
 

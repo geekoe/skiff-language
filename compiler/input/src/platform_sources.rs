@@ -1,5 +1,5 @@
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -27,6 +27,21 @@ pub struct CompilerPlatformSources {
     registry_path: PathBuf,
     prelude_error_path: PathBuf,
     packages: BTreeMap<String, PlatformPackageSource>,
+}
+
+/// Immutable compiler-owned source input for one prelude registry build.
+///
+/// Logical paths are relative to the canonical platform root. The snapshot is
+/// fully contained and read before the source crate parses any entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompilerPlatformSourceSnapshot {
+    sources: Box<[(PathBuf, String)]>,
+}
+
+impl CompilerPlatformSourceSnapshot {
+    pub fn sources(&self) -> &[(PathBuf, String)] {
+        &self.sources
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,21 +153,37 @@ impl CompilerPlatformSources {
         Ok(())
     }
 
-    /// Reads the canonical prelude content used by compiler identity framing.
-    pub fn read_prelude_sources(
+    /// Captures every official `.skiff` source consumed by PreludeRegistry.
+    pub fn prelude_registry_snapshot(
         &self,
-    ) -> Result<Vec<(PathBuf, String)>, CompilerPlatformSourcesError> {
+    ) -> Result<CompilerPlatformSourceSnapshot, CompilerPlatformSourcesError> {
         self.revalidate()?;
         let mut sources = Vec::new();
-        let mut visited_dirs = BTreeSet::new();
-        collect_prelude_sources(
+        collect_contained_sources(
             &self.prelude_dir,
             &self.prelude_dir,
-            &mut visited_dirs,
+            Path::new("prelude"),
+            false,
             &mut sources,
         )?;
+        for (package_id, package) in &self.packages {
+            if package_id != SKIFF_STD_PUBLICATION_ID {
+                return Err(invalid_layout(format!(
+                    "official package {package_id} has no prelude registry logical root"
+                )));
+            }
+            collect_contained_sources(
+                &package.root,
+                &package.root,
+                Path::new("std"),
+                true,
+                &mut sources,
+            )?;
+        }
         sources.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(sources)
+        Ok(CompilerPlatformSourceSnapshot {
+            sources: sources.into_boxed_slice(),
+        })
     }
 
     pub(crate) fn packages(&self) -> &BTreeMap<String, PlatformPackageSource> {
@@ -338,16 +369,14 @@ fn invalid_layout(message: String) -> CompilerPlatformSourcesError {
     CompilerPlatformSourcesError::InvalidLayout { message }
 }
 
-fn collect_prelude_sources(
+fn collect_contained_sources(
     root: &Path,
     dir: &Path,
-    visited_dirs: &mut BTreeSet<PathBuf>,
+    logical_root: &Path,
+    skip_test_sources: bool,
     sources: &mut Vec<(PathBuf, String)>,
 ) -> Result<(), CompilerPlatformSourcesError> {
-    let canonical_dir = canonical_contained_directory(root, dir, "prelude source directory")?;
-    if !visited_dirs.insert(canonical_dir.clone()) {
-        return Ok(());
-    }
+    let canonical_dir = canonical_contained_directory(root, dir, "platform source directory")?;
     let entries =
         fs::read_dir(&canonical_dir).map_err(|source| CompilerPlatformSourcesError::Inspect {
             path: canonical_dir.clone(),
@@ -359,19 +388,23 @@ fn collect_prelude_sources(
             source,
         })?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_prelude_sources(root, &path, visited_dirs, sources)?;
-            continue;
-        }
         if path.extension().and_then(|extension| extension.to_str()) != Some("skiff") {
             continue;
         }
-        let canonical = canonical_contained_file(root, &path, "prelude source")?;
-        let relative = canonical.strip_prefix(root).map_err(|_| {
+        let Some(file_stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            return Err(invalid_layout(format!(
+                "platform source {} has a non-UTF-8 file name",
+                path.display()
+            )));
+        };
+        if skip_test_sources && (file_stem.ends_with(".test") || file_stem.ends_with("_test")) {
+            continue;
+        }
+        let canonical = canonical_contained_file(root, &path, "platform source")?;
+        let file_name = path.file_name().ok_or_else(|| {
             invalid_layout(format!(
-                "prelude source {} escaped canonical prelude root {}",
-                canonical.display(),
-                root.display()
+                "platform source {} has no logical file name",
+                path.display()
             ))
         })?;
         let text = fs::read_to_string(&canonical).map_err(|source| {
@@ -380,7 +413,7 @@ fn collect_prelude_sources(
                 source,
             }
         })?;
-        sources.push((relative.to_path_buf(), text));
+        sources.push((logical_root.join(file_name), text));
     }
     Ok(())
 }
