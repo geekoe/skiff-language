@@ -15,10 +15,12 @@ source-suite缺少canonical `--bin`的直接caller并已合流`c06e115`；完整
 D13/F11已在`2d74b2c`通过R12。真实std request继续暴露双端canonical unary consumer未接线，D14已冻结并行
 F12/F13并已在`02b97ff`通过combined R13；std 11/11后Host assembly暴露linked FileIR locator误比较，D15已冻结
 F14已在`bcbdc2c`通过R14。原样gate现仅暴露activation receipt→healthy registration毫秒级空窗，D16已冻结
-F15 readiness barrier首次被R15拒绝，D17/F15A已在`e3a0d78`通过R15窄复验。F04原样gate随后在`40ed693`
+F15 readiness barrier首次被R15拒绝，D17/F15A在`e3a0d78`形成实现checkpoint；旧计划声称的R15 PASS没有独立ledger，
+D20后的独立复验确认readiness语义关闭，但在`e786671`因F16C新增8参helper的Clippy回归FAIL。F04原样gate曾在`40ed693`
 暴露共享Cargo target复用编译期platform绝对路径；D18已以双worktree镜像实验冻结F16A shared context及F16B/F16C
-transport扇出。因同一F04真实入口已连续暴露多个跨层blocker，现已触发收敛熔断：D20以三个只读分片闭合14跳
-production矩阵，独立blocker按owner批量修复；随后I16只跑cheap combined、全新R16窄验收、G16才运行一次完整Host，
+transport扇出。因同一F04真实入口已连续暴露多个跨层blocker，收敛熔断已触发；D20在`e786671`以六个新只读
+审计/预读节点闭合14跳矩阵，并把余项批量冻结为F18A–F18I九个互斥写owner。全部合流后I16只跑一次cheap combined，
+再并行R15B/compiler trust/Router CAS/resource lifecycle窄验收和H18 focused-negative，R16后G16才运行一次完整Host，
 最后由全新reviewer接收F04。次生FileHandle teardown已由D19在`f15c210`给出DESIGN GO，F17已合流。F05等待F04
 narrow receive，
 F03B/F03C仍锁定至R05 PASS。
@@ -112,11 +114,11 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
           │                                                                                                                                                                      └─► F04B@c06e115 ─► D13 ─► F11 ─► R12 PASS@a9ef444
           │                                                                                                                                                                                                   └─► D14 ─► F12 Router ─┐
           │                                                                                                                                                                                                              F13 Runtime ─┴─► R13 PASS@02b97ff ─► D15 ─► F14 ─► R14 PASS@629f1c8
-          │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 FAIL@b7e0f4f ─► D17 ─► F15A ─► R15 PASS@e3a0d78 ─► F04 Host FAIL@40ed693
+          │                                                                                                                                                                                                                                                      └─► D16 ─► F15 ─► R15 FAIL@b7e0f4f ─► D17 ─► F15A@e3a0d78 ─► F04 Host FAIL@40ed693
           │                                                                                                                                                                                                                                                                                                                                                 ├─► D18 ─► F16A ─┬─► F16B ─┐
           │                                                                                                                                                                                                                                                                                                                                                 │                 └─► F16C ─┤
           │                                                                                                                                                                                                                                                                                                                                                 └─► D19 ─► F17 ───────────────────────┤
-          │                                                                                                                                                                                                                                                                                                                                                                   D20A/B/C audit ─► D20 aggregate ─► repair wave ─► I16 cheap combined ─► new R16 ─► G16 one Host ─► new F04 receive
+          │                                                                                                                                                                                                                                                                                                                                                                   D20A–F audit@e786671 ─► F18A–I repair wave ─► I16 cheap combined ─► narrow reviews/H18 ─► new R16 ─► G16 one Host ─► new F04 receive
           └─► D05 canonical WS authoring audit ─────────────────────────────────────────────────────┐
 
   R02 pre-review@b47ddf7 findings
@@ -223,7 +225,18 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F16A | [Compiler platform source context](tasks/P5-F16A-compiler-platform-source-context.md) | D18 complete | 高；shared compiler trust checkpoint |
 | F16B | [Compiler platform source transport](tasks/P5-F16B-compiler-platform-source-transport.md) | F16A checkpoint | 高；authoring consumer |
 | F16C | [Test runner platform source transport](tasks/P5-F16C-test-runner-platform-source-transport.md) | F16A checkpoint | 高；test production consumer |
-| D20 | [F04 production path closure audit](tasks/P5-D20-f04-production-path-closure-audit.md) | F04跨层收敛熔断 | 三个新只读分片；root唯一汇总 |
+| D20 | [F04 production path closure audit](tasks/P5-D20-f04-production-path-closure-audit.md) | F04跨层收敛熔断 | 六个新只读审计/预读节点；root唯一汇总 |
+| D20R | [F04 production path closure result](tasks/P5-D20-f04-production-path-closure-audit-result.md) | D20A–F complete | 14跳闭合矩阵；批量repair DAG |
+| R15A | [Readiness reacceptance result](tasks/P5-R15-readiness-reacceptance-result.md) | D20 evidence audit | FAIL；语义通过、F18I Clippy blocker |
+| F18A | [Prelude source containment](tasks/P5-F18A-prelude-source-containment.md) | D20 closed | 高；compiler trust owner |
+| F18B | [Platform context pre-read guard](tasks/P5-F18B-platform-context-pre-read-guard.md) | D20 closed | 高；authoring/runner ordering |
+| F18C | [Isolated runtime provenance/readiness](tasks/P5-F18C-isolated-runtime-provenance-readiness.md) | D20 closed | 高；test runtime boundary |
+| F18D | [Router file activation CAS](tasks/P5-F18D-router-file-activation-cas.md) | D20 closed | 高；durable concurrency |
+| F18E | [Supervisor process lifecycle closure](tasks/P5-F18E-supervisor-process-lifecycle-closure.md) | D20 closed | 高；process/PID/FD owner |
+| F18F | [Gate resource ownership](tasks/P5-F18F-gate-resource-ownership.md) | D20 closed | 高；no-clobber cleanup |
+| F18G | [Host negative result harness](tasks/P5-F18G-host-negative-result-harness.md) | D20 closed | 中；focused evidence设施 |
+| F18H | [Compiler test-only platform context](tasks/P5-F18H-compiler-test-platform-context-transport.md) | D22 closed | 中；verify compile blocker |
+| F18I | [Host fixture Clippy closure](tasks/P5-F18I-host-fixture-clippy-closure.md) | R15 reaccept FAIL | 低；candidate hygiene |
 | I16 | [Platform source shared-target combined probe](tasks/P5-I16-platform-source-shared-target-probe.md) | D20 repair wave merged | 唯一cheap combined owner；不跑Host |
 | R16 | [F04 production path narrow acceptance](tasks/P5-R16-platform-source-trust-acceptance.md) | I16 PASS + D20 closed | 高；全新独立只读 |
 | G16 | [F04 real Host gate](tasks/P5-G16-f04-real-host-gate.md) | R16 PASS | 当前周期唯一完整Host owner |
@@ -331,13 +344,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 - R15首次拒绝F15的无界DNS、宽松pending/UTF-8与1273行混合职责。D17/F15A从原base重建，复用activation连接
   peer实现barrier内零DNS和absolute I/O deadline，以production activation validate收敛pending invariants，并拆分HTTP/
   readiness/wire模块。F15A checkpoint只由root跑一次combined test，R15窄复验后才恢复F04 gate。
-- R15 PASS后的原样gate在编译std前暴露编译期platform path被共享Cargo target跨worktree复用。D18确认root/cwd/argv/
+- F15A后的原样gate在编译std前暴露编译期platform path被共享Cargo target跨worktree复用。D18确认root/cwd/argv/
   registry均正确，禁止以clean cache、隔离target或reserved-id放宽修复。F16A唯一建立显式canonical
   `CompilerPlatformSources`并移除input/source/prelude的ambient path；F16B与F16C只迁移各自transport consumer，不得
-  各造resolver。二者与F17合流后先由D20三个新只读Agent按source/artifact、activation/readiness、request/eval/cleanup
-  风险面闭合真实路径；root一次汇总并按owner批量建立repair wave。相关修复合流后I16只执行A-built/Fresh-B
-  shared-target cheap combined，新的R16窄验收PASS后，G16才运行一次完整Host并把同一ledger交新的F04 reviewer；
-  候选不变时不得重复昂贵gate。
+  各造resolver。二者与F17合流后，D20A–F按source/artifact、activation/readiness、request/eval/cleanup及证据缺口闭合
+  14跳真实路径；root一次汇总为F18A–I九个互斥repair owner。全部修复合流后I16才执行compiler merge probe、
+  A-built/Fresh-B shared-target cheap combined；R15B与三组窄验收及H18均PASS后启动新R16，G16再运行一次完整Host并把
+  同一ledger交新的F04 reviewer；候选不变时不得重复昂贵gate。
 - 同一失败cleanup中的FileHandle异常是primary reserved-id之后的次生事件。D19只读冻结真实handle owner；F17在
   `skiff-instance`提取单一幂等可等待lifecycle并用真实FileHandle/短命child交错验证。不重跑Host、不阻塞F16A/B/C，
   但F17是I16硬前置且写集不得与F16C重叠。

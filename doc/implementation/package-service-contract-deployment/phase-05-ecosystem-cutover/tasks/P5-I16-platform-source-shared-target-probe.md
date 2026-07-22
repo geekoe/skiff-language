@@ -2,8 +2,8 @@
 
 ## 角色、输入与证据复用
 
-使用未参与F16A/B/C/F17实现、D20审计/修复或R16验收的全新Combined Probe owner会话。输入为D20闭合矩阵已汇总、
-其批量repair wave全部合流、无在途写入的exact clean integration commit/tree；不得编辑、提交、修复、操作stable或运行
+使用未参与F16A/B/C/F17/F18A–I实现、D20审计/修复或后续验收的全新Combined Probe owner会话。输入为D20闭合矩阵
+已汇总、F18A–I全部合流、无在途写入的exact clean integration commit/tree；不得编辑、提交、修复、操作stable或运行
 完整source-suite/Host。权威设计为`doc/architecture/package-service-contract-deployment.md` §3、§6.1、§6.2、§9–§14
 及阶段标准2/4/5/6；动态矩阵只验证既有设计，不增加新的trust、CLI或业务语义。
 
@@ -12,9 +12,28 @@
 probe与A/B动态矩阵由F16C提交的`run-platform-source-shared-target-probe.mjs --mode combined`拥有。候选和环境不变时，
 R16与G16必须复用本ledger。
 
-## 唯一命令
+## 唯一命令组
 
-Combined Probe owner先核对`git status --short`为空及输入ledger有效，然后只执行：
+Combined Probe owner先核对`git status --short`为空、九个repair ledger与R15 result有效。在同一候选上先执行一次
+merge-only接线组；不得重复开发者行为矩阵：
+
+```bash
+cargo test --locked -p skiff-test-runner --lib \
+  canonical_package::tests::combined::p5_f18_compiler_repair_combined -- --exact --test-threads=1
+cargo test --locked -p skiff-compiler --tests --no-run
+pnpm --filter @skiff/router type-check
+node --check scripts/lib/isolated-test-runtime-instance.mjs
+node --check scripts/lib/isolated-test-runtime.mjs
+node --check scripts/lib/supervised-entry-lifecycle.mjs
+node --check scripts/lib/managed-pid-metadata.mjs
+node --check scripts/skiff-instance.mjs
+node --check scripts/lib/platform-source-probe-ownership.mjs
+node --check scripts/lib/platform-source-shared-target-probe.mjs
+node --check scripts/lib/package-service-host-negative-probe.mjs
+node --check scripts/run-package-service-host-negative-probe.mjs
+```
+
+全部PASS后才从非repo cwd执行唯一动态combined命令：
 
 ```bash
 P5_I16_ROOT=/Users/geek/workspace/skiff-phase-05-integration
@@ -35,7 +54,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
   --json
 ```
 
-任何primary失败立即停止且不重试。若candidate/lock不匹配、worktree路径或ledger已存在、容量不足或清理前置不成立，
+命令组任一primary失败立即停止且不重试，不启动reviewer。若candidate/lock不匹配、worktree路径或ledger已存在、容量不足或清理前置不成立，
 脚本必须在build前返回`PREFLIGHT BLOCKED`。ledger是候选证据，不提交；G16结束后与临时资源一起清理。
 
 ## Combined harness冻结行为
@@ -66,7 +85,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
 
 ## 输出
 
-JSON ledger必须包含commit/tree/lock、capacity、A/B/temp路径、三轮origin、targeted clean crate、artifact枚举、hash/mtime/
+JSON ledger必须同时列出merge-only命令组结果，并包含commit/tree/lock、capacity、A/B/temp路径、三轮origin、targeted clean crate、artifact枚举、hash/mtime/
 dep-info、Fresh crate列表、4次probe的8个golden值、structure/registry结果、首错及worktree/temp/PID/port清理证明；明确
-`fullProbeRuns: 0`。PASS才解除R16；候选、gate script、platform source、Cargo/lock、D20 repair或F17 lifecycle变化会使
-全部I16证据失效。
+`fullProbeRuns: 0`。PASS只解除R15B、compiler trust、Router CAS、resource lifecycle与H18窄证据；它们全部PASS后才解除
+R16。候选、F18A–I任一production/test surface、gate script、platform source、Cargo/lock变化会使全部I16证据失效。
