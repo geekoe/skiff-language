@@ -52,8 +52,10 @@ node scripts/check-package-service-ecosystem-boundaries.mjs
 node scripts/verify.mjs --only checks --list
 node --test scripts/tests/encrypted-storage-live-harness.test.mjs
 node --test scripts/tests/verify-runtime-live-canonical.test.mjs
+node --test scripts/tests/verify-live-plan-platform-source.test.mjs scripts/tests/isolated-test-runtime.test.mjs
 git diff --check
 ```
 
-不跑完整checks/verify。提交一个commit并合入Skiff integration branch，回报删除模块/fixture disposition、checker subject/
-mutation矩阵、docs替换索引、反向搜索及自验收矩阵。
+不跑完整checks/verify。后两项只重建T06直接修改的F16C caller ledger；候选不变时不重跑I16 Host gate。提交一个commit
+并合入Skiff integration branch，回报删除模块/fixture disposition、checker subject/mutation矩阵、docs替换索引、反向
+搜索及自验收矩阵。

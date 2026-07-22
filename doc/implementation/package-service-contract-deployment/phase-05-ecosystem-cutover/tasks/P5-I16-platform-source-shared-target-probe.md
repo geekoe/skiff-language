@@ -57,7 +57,7 @@ node /Users/geek/workspace/skiff-phase-05-integration/scripts/run-platform-sourc
    报告`skiff-compiler-input`、`skiff-compiler-source`、`skiff-compiler`、`skiff-test-runner`及identity test为`Fresh`，
    相关binary/rlib/test hash与mtime不变。
 5. 对实际production compiler input/source rlib、compiler/runner/smoke binary运行`strings` no-match，禁止
-   `compiler/input[/\\.]+std`、`compiler/input[/\\.]+prelude`、`compiler/source[/\\.]+std|prelude`形式的worktree
+   `compiler/input[/\\.]+(std|prelude)`、`compiler/source[/\\.]+(std|prelude)`形式的worktree
    常量；对对应`.d` dep-info运行`rg '# env-dep:CARGO_MANIFEST_DIR='`必须零命中。导入
    `canonicalSkiffSourceTestRegistry`并断言exact为`[{id:'std', root:'std'}]`。
 6. 前述cheap/identity/structure全部PASS后，最终从任务临时目录用A-origin shared target和B的absolute
