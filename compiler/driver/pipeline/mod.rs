@@ -34,6 +34,10 @@ use crate::{
 pub fn compile_package(
     input: PackageCompileInput<'_>,
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
+    skiff_compiler_source::prelude_registry::initialize_prelude_registry(input.platform_sources())
+        .map_err(|error| PackageCompileError::ContractValidation {
+            message: error.to_string(),
+        })?;
     let package_id = input.package_id.to_string();
     let package_version = input.package.manifest.version.clone();
     let declared_package_requirements = package_requirements(&input)?;

@@ -25,7 +25,7 @@ use skiff_artifact_model::{
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
-    read_publication_resources,
+    read_publication_resources, CompilerPlatformSources,
 };
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 use skiff_deployment::{
@@ -68,6 +68,7 @@ impl AuthoringObject {
 }
 
 pub fn build_authoring_object(
+    platform_sources: &CompilerPlatformSources,
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
@@ -75,7 +76,7 @@ pub fn build_authoring_object(
 ) -> AuthoringResult<Value> {
     let store = CanonicalArtifactStore::create(artifact_root)?;
     match object {
-        AuthoringObject::Package => build_package(root, &store, publish_pointer),
+        AuthoringObject::Package => build_package(platform_sources, root, &store, publish_pointer),
         AuthoringObject::Contract => build_contract(root, &store, publish_pointer),
         AuthoringObject::Deployment => build_deployment(root, &store, publish_pointer),
         AuthoringObject::Assembly => build_assembly(root, &store, publish_pointer),
@@ -83,6 +84,7 @@ pub fn build_authoring_object(
 }
 
 fn build_package(
+    platform_sources: &CompilerPlatformSources,
     root: &Path,
     store: &CanonicalArtifactStore,
     publish_pointer: bool,
@@ -95,7 +97,7 @@ fn build_package(
     let package_id = manifest.id.to_string();
     let mut available = dependencies.clone();
     read_optional_platform_std(store, &mut available)?;
-    let input = PackageCompileInput::new(&package, &aliases, &package_id)
+    let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id)
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available);
     let published = compile_package(input)?;

@@ -8,35 +8,6 @@ use std::{
 use super::*;
 
 #[test]
-fn std_registry_rejects_non_std_package_entries() {
-    let temp = temp_dir("std-registry-mismatch");
-    let std_dir = temp.join("std");
-    let other_dir = temp.join("other");
-    fs::create_dir_all(&std_dir).unwrap();
-    fs::create_dir_all(&other_dir).unwrap();
-    fs::write(
-        std_dir.join("registry.yml"),
-        r#"
-schemaVersion: skiff-std-registry-v1
-packages:
-  - id: other
-    path: ../other
-"#,
-    )
-    .unwrap();
-    fs::write(other_dir.join("package.yml"), "id: other\nversion: 1.0.0\n").unwrap();
-
-    let error = discover_builtin_std_registry_manifests(&std_dir, &std_dir.join("registry.yml"))
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("std registry package other is invalid"));
-    assert!(error.contains("std registry can only declare skiff.run/std"));
-
-    let _ = fs::remove_dir_all(temp);
-}
-
-#[test]
 fn rejects_package_dependency_missing_version() {
     let error = read_temp_manifest(
         "missing-version",
@@ -618,6 +589,7 @@ fn discovers_multiple_versions_for_same_package_id() {
     write_package_store_manifest(&store, "skiff.run/llm", "2.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -640,7 +612,7 @@ fn discovers_package_manifest_from_concrete_package_root() {
     let temp = temp_dir("current-package");
     write_package_manifest(&temp, "skiff.run/llm", "1.0.0");
 
-    let manifests = discover_package_manifests(&temp).unwrap();
+    let manifests = discover_package_manifests(&test_platform_sources(), &temp).unwrap();
 
     assert!(manifests.contains_key(&("skiff.run/llm".to_string(), "1.0.0".to_string())));
 
@@ -657,6 +629,7 @@ fn discovers_package_store_version_path() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -683,6 +656,7 @@ fn does_not_scan_unrequested_package_store_entries() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -705,6 +679,7 @@ fn package_dir_is_not_treated_as_a_single_dependency_package() {
     fs::create_dir_all(&service).unwrap();
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: vec![package_root],
@@ -727,6 +702,7 @@ fn does_not_implicitly_discover_ancestor_package_stores() {
     write_package_store_manifest(&store, "skiff.run/llm", "1.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &service,
         &PackageResolutionDirs {
             package_dirs: Vec::new(),
@@ -749,6 +725,7 @@ fn ordered_package_dirs_shadow_lower_priority_duplicates() {
     write_package_store_manifest(&second, "skiff.run/llm", "1.0.0");
 
     let manifests = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![first.clone(), second],
@@ -773,6 +750,7 @@ fn resolves_direct_dependency_by_exact_package_id_and_version() {
     write_package_store_manifest(&store, "skiff.run/llm", "2.0.0");
     let dependency = package_dependency("skiff.run/llm", "2.0.0");
     let available = discover_package_manifests_with_dependency_dirs(
+        &test_platform_sources(),
         &temp,
         &PackageResolutionDirs {
             package_dirs: vec![store],
@@ -908,6 +886,14 @@ fn package_dependency(id: &str, version: &str) -> PackageDependency {
         config: empty_dependency_config(),
         collection_name_mapping: BTreeMap::new(),
     }
+}
+
+fn test_platform_sources() -> crate::CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    crate::CompilerPlatformSources::new(&root).unwrap()
 }
 
 fn temp_dir(name: &str) -> PathBuf {

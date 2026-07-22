@@ -1,12 +1,19 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
+use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::shared::type_syntax::generic_parts;
 
+use super::identity::legacy_prelude_identity;
 use super::{
-    default_prelude_dir, default_std_dir, native_type_expr_def_normalized_name, prelude_registry,
-    prelude_schema_identity, shared_native_alias_target, NativeBindingShape, PreludeRegistry,
+    default_prelude_dir, initialize_prelude_registry, native_type_expr_def_normalized_name,
+    prelude_identity, prelude_schema_identity, shared_native_alias_target, NativeBindingShape,
+    PreludeRegistry,
 };
 
 #[test]
@@ -98,15 +105,40 @@ fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
 }
 
 #[test]
-fn split_registry_identities_match_builtin_registry_accessors() {
-    let registry =
-        PreludeRegistry::try_from_split_dirs(&default_prelude_dir(), &default_std_dir()).unwrap();
-
-    assert_eq!(registry.schema_identity(), prelude_schema_identity());
+fn platform_source_context_preserves_legacy_prelude_identity() {
+    let registry = prelude_registry();
+    assert_eq!(
+        registry.schema_identity(),
+        "skiff-prelude-schema-v1:sha256:ef46d43c3c83fc9cbdc0369729efe4a29d543d701151169c904a66f02f3b82d6"
+    );
     assert_eq!(
         registry.native_identity(),
-        prelude_registry().native_identity()
+        "skiff-prelude-native-v1:sha256:783472b0637e13d20eda4a2c90477326f3f2e402cd5b8f276f61f6af5cf3888e"
     );
+    assert_eq!(registry.schema_identity(), prelude_schema_identity());
+    assert_eq!(
+        prelude_identity(),
+        legacy_prelude_identity(&default_prelude_dir(), registry)
+    );
+    assert_eq!(
+        prelude_identity(),
+        "skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d"
+    );
+}
+
+#[test]
+fn prelude_registry_same_root_is_idempotent_and_different_root_is_typed_failure() {
+    let context = test_platform_sources();
+    let first = initialize_prelude_registry(&context).unwrap();
+    let second = initialize_prelude_registry(&context).unwrap();
+    assert!(std::ptr::eq(first, second));
+
+    let other = MinimalPlatformFixture::new("different-root");
+    let error = initialize_prelude_registry(&other.context()).unwrap_err();
+    assert!(matches!(
+        error,
+        super::PreludeRegistryInitializationError::DifferentPlatformRoot { .. }
+    ));
 }
 
 #[test]
@@ -404,4 +436,58 @@ fn normalize_compiler_native_type_name(
         return format!("{root}<{args}>");
     }
     name.to_string()
+}
+
+fn prelude_registry() -> &'static PreludeRegistry {
+    initialize_prelude_registry(&test_platform_sources()).unwrap()
+}
+
+fn test_platform_sources() -> CompilerPlatformSources {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    CompilerPlatformSources::new(&root).unwrap()
+}
+
+struct MinimalPlatformFixture {
+    root: PathBuf,
+}
+
+impl MinimalPlatformFixture {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "skiff-prelude-registry-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("std")).unwrap();
+        fs::create_dir_all(root.join("prelude")).unwrap();
+        fs::write(
+            root.join("std/registry.yml"),
+            "schemaVersion: skiff-std-registry-v1\npackages:\n  - id: skiff.run/std\n    path: .\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("std/package.yml"),
+            "id: skiff.run/std\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("prelude/error.skiff"),
+            "native type ErrorPayload\n",
+        )
+        .unwrap();
+        Self { root }
+    }
+
+    fn context(&self) -> CompilerPlatformSources {
+        CompilerPlatformSources::new(&self.root).unwrap()
+    }
+}
+
+impl Drop for MinimalPlatformFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }

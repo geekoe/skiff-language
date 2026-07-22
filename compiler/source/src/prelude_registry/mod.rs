@@ -1,8 +1,7 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
 pub use skiff_compiler_core::prelude_registry::PRELUDE_REGISTRY_ID;
@@ -18,10 +17,12 @@ use crate::{
 };
 
 mod identity;
+mod initialization;
 mod loading;
 mod validation;
 
 pub use self::identity::{prelude_identity, prelude_schema_identity};
+pub use self::initialization::{initialize_prelude_registry, PreludeRegistryInitializationError};
 
 #[derive(Debug, Clone)]
 pub struct PreludeRegistry {
@@ -48,6 +49,7 @@ pub struct PreludeRegistry {
     type_symbols: BTreeMap<String, String>,
     source_modules: Vec<String>,
     native_type_names: BTreeSet<String>,
+    prelude_identity_parts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,13 +84,16 @@ impl PreludeRegistry {
             type_symbols: BTreeMap::new(),
             source_modules: Vec::new(),
             native_type_names: BTreeSet::new(),
+            prelude_identity_parts: Vec::new(),
         }
     }
 
-    pub fn try_from_split_dirs(prelude_dir: &Path, std_dir: &Path) -> Result<Self, String> {
+    fn try_from_platform_sources(
+        platform_sources: &skiff_compiler_input::CompilerPlatformSources,
+    ) -> Result<Self, String> {
         let mut registry = Self::empty();
-        registry.load_std_registry(std_dir)?;
-        registry.load_split_sources(prelude_dir, std_dir)?;
+        registry.load_std_registry(platform_sources)?;
+        registry.load_split_sources(platform_sources)?;
         registry.derive_prelude_types();
         registry.canonicalize_prelude_type_symbols();
         registry.native_bindings = registry.declared_native_bindings.clone();
@@ -364,39 +369,19 @@ pub fn shared_native_binding_key(symbol: &str) -> Option<&'static str> {
     })
 }
 
-pub fn prelude_registry() -> &'static PreludeRegistry {
-    static REGISTRY: OnceLock<PreludeRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let prelude_dir = default_prelude_dir();
-        let std_dir = default_std_dir();
-        assert!(
-            std_dir.join("registry.yml").is_file(),
-            "builtin std package registry is missing registry.yml at {}",
-            std_dir.display()
-        );
-        PreludeRegistry::try_from_split_dirs(&prelude_dir, &std_dir).unwrap_or_else(|message| {
-            panic!("failed to load builtin prelude/std registry: {message}")
-        })
-    })
-}
+pub use self::initialization::prelude_registry;
 
 pub fn is_builtin_type_name(name: &str) -> bool {
     let name = name.trim();
     prelude_registry().is_prelude_type_name(name) || is_language_builtin_type_name(name)
 }
 
+#[cfg(test)]
 pub fn default_prelude_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("prelude")
-}
-
-pub fn default_std_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("std")
 }
 
 fn compiler_owned_schema_stable_type(name: &str) -> bool {
