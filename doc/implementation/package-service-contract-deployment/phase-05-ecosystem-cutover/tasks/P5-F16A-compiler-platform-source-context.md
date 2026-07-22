@@ -15,7 +15,7 @@
 owner限`compiler/input`的platform context、manifest/source trust，`compiler/source/prelude_registry/**`及把显式
 context接入compiler library pipeline所需的最小Rust API和直接tests。可调整`compiler/driver/pipeline/**`与
 `compiler/driver/authoring.rs`的library signature，使F16B/F16C能从同一checkpoint独立接线；不得实现binary CLI
-parse、JS transport或test-runner consumer。
+parse、JS transport或test-runner consumer。`authoring.rs`在本任务后仍归F16A checkpoint，F16B不得回改。
 
 不改artifact/schema/identity语义、Router、Runtime、deployment、source-suite、Host fixture、manifest或Cargo.lock。
 禁止`Default`、ambient cwd/env/executable位置、`CARGO_MANIFEST_DIR` production fallback、任意
@@ -31,7 +31,13 @@ parse、JS transport或test-runner consumer。
 - compiler package pipeline显式消费context；所有production platform source读取均来自该owner。
 - `PreludeRegistry`只从context初始化，同canonical root幂等、不同root返回typed failure；`prelude_identity`只读
   已初始化registry。production代码和production dep-info不再含platform用途的`CARGO_MANIFEST_DIR`。
+- test-only旧content算法或冻结golden证明新context的prelude schema/native/combined identity与`40ed693` bit-identical；
+  固定测试名包含`platform_source_context_preserves_legacy_prelude_identity`，production不得保留legacy reader。
 - 没有第二platform-root helper；直接触碰的>200行文件完成extra-review，production文件不新增>500行混合职责。
+
+这是implementation checkpoint：compiler library必须buildable，但compiler binary与test-runner在F16B/F16C合流前允许
+因缺required transport暂时断链；该状态不得作pre-acceptance candidate。证据只对F16A exact commit及未变化的platform
+context、input/source/prelude、compiler library API、platform source内容与Cargo.lock有效。
 
 ## 唯一聚焦验证
 
@@ -39,7 +45,7 @@ parse、JS transport或test-runner consumer。
 cargo test --locked -p skiff-compiler-input platform_sources
 cargo test --locked -p skiff-compiler-source prelude_registry
 cargo test --locked -p skiff-compiler --lib
-cargo check --locked -p skiff-compiler
+cargo check --locked -p skiff-compiler --lib
 cargo fmt --all -- --check
 git diff --check
 ```

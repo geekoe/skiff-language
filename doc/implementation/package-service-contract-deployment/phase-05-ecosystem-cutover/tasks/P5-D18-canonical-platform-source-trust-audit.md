@@ -34,8 +34,9 @@ platform source的实现owner和transport，不新增domain object、用户CLI�
 - compiler binary、test-runner、source-suite及Host fixture的内部transport都携带同一个由模块位置确定的绝对
   `skiffRoot`；不向用户级`skiff package|contract|deployment|assembly`命令暴露新的trust开关。
 
-执行DAG为`F16A -> (F16B || F16C) -> I16 -> R16`。I16是共享target与F04原样Host gate的唯一动态owner；
-候选不变时该完整证据直接交F04 narrow receive，不重复昂贵gate。
+执行DAG为`F16A -> (F16B || F16C)`与并行D19；只有D19 `AUDIT CLOSED`，或其冻结的F17 exact repair已合流且
+无在途写入，才能进入`I16 -> R16`。I16是共享target与F04原样Host gate的唯一动态owner；候选不变时该完整证据
+直接交F04 narrow receive，不重复昂贵gate。
 
 ## 次生teardown异常
 

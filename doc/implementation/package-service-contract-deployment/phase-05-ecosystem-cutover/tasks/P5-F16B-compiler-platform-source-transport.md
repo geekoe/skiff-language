@@ -7,11 +7,13 @@
   `/Users/geek/workspace/skiff-p5-f16b-compiler-platform-transport`、分支
   `codex/p5-f16b-compiler-platform-transport`。与F16C并行，禁止修改其owner。
 - 高风险production authoring consumer；一个clean commit，不merge/push、不改stable。完成后与F16C共同解除I16。
+- 五分钟内开始实际修改；若F16A API不能在本owner内直接消费，立即报`TASK_NOT_EXECUTABLE`，不得回改shared owner。
+- 证据只对F16A exact API、compiler bin/authoring JS caller、platform source内容、Cargo.lock与本任务commit不变时有效。
 
 ## 写入owner与完成态
 
-owner限compiler binary/authoring transport、`scripts/lib/package-service-authoring.mjs`及对应compiler/Node参数测试。
-消费F16A唯一context，不创建第二platform-root resolver。
+owner限compiler binary transport、`scripts/lib/package-service-authoring.mjs`及对应compiler/Node参数测试。消费F16A
+唯一context，不创建第二platform-root resolver；不得修改F16A-owned `compiler/driver/authoring.rs`或pipeline。
 
 - internal compiler binary严格接收一次`--platform-source-root <absolute-root>`并构造F16A context；missing、重复、
   relative、不可canonicalize或invalid layout均在任何package读取前失败。
@@ -26,7 +28,8 @@ owner限compiler binary/authoring transport、`scripts/lib/package-service-autho
 ## 唯一聚焦验证
 
 ```bash
-cargo test --locked -p skiff-compiler --lib
+cargo test --locked -p skiff-compiler --bin skiff-compiler
+cargo check --locked -p skiff-compiler --bin skiff-compiler
 node --test scripts/tests/package-service-authoring.test.mjs scripts/tests/package-service-store.test.mjs
 cargo fmt --all -- --check
 git diff --check

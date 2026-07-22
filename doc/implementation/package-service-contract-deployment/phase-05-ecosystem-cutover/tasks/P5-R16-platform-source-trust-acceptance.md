@@ -2,6 +2,7 @@
 
 未参与F16A/B/C实现的独立只读Agent。输入为三任务合流后的exact clean commit/tree、D18/F16A/B/C合同与I16唯一
 动态ledger；不得编辑、提交、修复、操作stable或重跑完整source-suite/Host，也不作F04/R02总体verdict。
+I16 ledger还必须证明D19已`AUDIT CLOSED`，或其F17 repair在候选中且无在途写入。
 
 第一行只给`R16 PASS`或`R16 FAIL`。必验：
 
@@ -10,7 +11,7 @@
 - compiler library、binary authoring、runner、smoke fixture、source-suite、`skiff test`全部显式消费同一个root；无
   cwd/env/executable/`CARGO_MANIFEST_DIR` production fallback、第二helper、dual path或clean-cache依赖。
 - I16确实以A-built/Fresh-B、不同worktree路径和共享target跑过std 11/11 + Host exact 1/1；候选、binary hash/mtime、
-  lock和环境证据一致，镜像方向与关键负例已关闭，资源已清理。
+  lock和环境证据一致，A/B/B-origin镜像identity exact、legacy identity bit-identical，关键负例已关闭，资源已清理。
 - production artifact/dep-info无worktree platform常量；source registry不扩张，fake reserved package、missing/cross-root、
   relative/omitted/context mismatch均fail closed，canonical symlink正例成立。
 - 未修改Router/Runtime/schema/fixture业务语义/manifest/lock；直接触碰的大文件职责收敛，运行`extra-review`，不把
