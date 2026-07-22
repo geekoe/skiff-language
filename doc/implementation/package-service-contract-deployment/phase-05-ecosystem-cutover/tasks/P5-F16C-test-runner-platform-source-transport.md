@@ -35,9 +35,11 @@ tests。另只对
   production Rust/JS/binary不得读取该环境变量。这是`SKIFF_TEST_*` platform-root禁令的唯一test-only例外。
 - std identity必须exact等于
   `skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4`。
-- gate harness严格实现I16合同中的candidate/space/worktree/shared-target/identity/structure/Fresh/Host/cleanup矩阵，
-  command-double tests不启动真实build。merge-only combined fixture跨F16B/F16C检查所有production argv共享同一absolute
-  root及一个omitted-root直接失败路径；F16C分支不运行它，只有exact合流后的I16运行一次。
+- gate harness提供严格分离且必选的`--mode combined|full`：`combined`只实现candidate/space/worktree/shared-target/
+  identity/structure/Fresh/cleanup矩阵，生成可复用JSON ledger；`full`只在核对同一candidate的combined ledger后执行一次
+  A-origin build→B-root Fresh→原样Host完整gate，不重复combined/local矩阵。command-double tests覆盖两个mode且不启动真实
+  build。merge-only combined fixture跨F16B/F16C检查所有production argv共享同一absolute root及一个omitted-root直接失败
+  路径；F16C分支不运行任一真实mode，只有exact合流后的I16运行`combined`，G16在R16 PASS后运行`full`。
 - 不改变公开`skiff test`参数语义、source registry、test count、activation/readiness/request路径或Host receipt。
 
 不改F16A shared context/prelude、compiler binary/authoring JS、Router/Runtime、fixture业务语义、manifest/lock。
@@ -56,6 +58,6 @@ git diff --check
 ```
 
 tests覆盖runner/fixture/compiler context参数全链、cwd变化、fake reserved root、missing/duplicate/relative、runtime-live/
-encrypted/bootstrap caller、gate cleanup refusal及source registry不变。不得运行merge-only combined fixture、原样
-source-suite、Host或完整verify。回报commit/tree/lock blob、所有production caller反向搜索、文件行数与extra-review
-自验收矩阵。
+encrypted/bootstrap caller、两个gate mode的命令编排、combined-ledger/candidate拒绝、cleanup refusal及source registry不变。
+不得运行merge-only combined fixture、任一真实gate mode、原样source-suite、Host或完整verify。回报commit/tree/lock blob、
+所有production caller反向搜索、文件行数与extra-review自验收矩阵。
