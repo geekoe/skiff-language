@@ -17,6 +17,7 @@ import {
   snapshotProbeArtifacts,
 } from './platform-source-probe-evidence.mjs';
 import { preflightPlatformSourceProbe } from './platform-source-probe-preflight.mjs';
+import { prepareOwnedRouterNodeDependencies } from './platform-source-probe-node-dependencies.mjs';
 import {
   addOwnedWorktree,
   cleanupProbeOwnership,
@@ -297,6 +298,16 @@ async function runFull(state) {
     requireIdentity: false,
   });
   ledger.artifacts = artifactSnapshotForLedger(after);
+  try {
+    ledger.nodeDependencies = await prepareOwnedRouterNodeDependencies({
+      root: input.bWorktree,
+      signal,
+      runCommand: (command, args, options) => runOwnedCommand(state, command, args, options),
+    });
+  } catch (error) {
+    ledger.nodeDependencies = error?.nodeDependencyEvidence ?? null;
+    throw error;
+  }
   const hostAssertionPath = join(
     input.bWorktree,
     'test-runner',
@@ -460,6 +471,12 @@ async function checked(deps, command, args, options = {}) {
   const outcome = await deps.runCommand(command, args, options);
   recordOwnedResources(deps.ledger, outcome);
   if (outcome.code !== 0) throw commandFailure(command, outcome);
+  return outcome;
+}
+
+async function runOwnedCommand(state, command, args, options = {}) {
+  const outcome = await state.deps.runCommand(command, args, options);
+  recordOwnedResources(state.ledger, outcome);
   return outcome;
 }
 
