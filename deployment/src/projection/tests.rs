@@ -383,6 +383,97 @@ fn websocket_ingress_contract_validation_accepts_only_the_unified_abi() {
 }
 
 #[test]
+fn websocket_ingress_admission_rejects_non_persistable_context_graphs() {
+    let mut fixture = ProjectionFixture::new();
+    let operation_id = fixture
+        .contract
+        .operations
+        .keys()
+        .next()
+        .expect("fixture operation")
+        .clone();
+    fixture.input.ingress = vec![DeploymentIngressBinding {
+        selector: IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            host: "socket.example.test".to_string(),
+            method: None,
+            path: "/socket".to_string(),
+        },
+        contract_operation_id: operation_id.clone(),
+    }];
+    let context_id = fixture
+        .contract
+        .boundary_schema
+        .keys()
+        .next()
+        .expect("fixture context type")
+        .clone();
+    let descriptor = fixture.contract.operations.get_mut(&operation_id).unwrap();
+    descriptor.stable_key = WEBSOCKET_INGRESS_OPERATION_NAME.to_string();
+    descriptor.contract = websocket_ingress_operation(ContractTypeRef::builtin("null"));
+    validate_ingress_contracts(&fixture.input, &fixture.contract)
+        .expect("null Context must pass deployment admission");
+
+    fixture
+        .contract
+        .operations
+        .get_mut(&operation_id)
+        .unwrap()
+        .contract = websocket_ingress_operation(ContractTypeRef::contract(context_id.clone()));
+    validate_ingress_contracts(&fixture.input, &fixture.contract)
+        .expect("persistable nominal Context must pass deployment admission");
+
+    fixture
+        .contract
+        .boundary_schema
+        .get_mut(&context_id)
+        .unwrap()
+        .shape
+        .descriptor = ContractTypeDescriptor::CallbackInterface {
+        operations: BTreeMap::new(),
+    };
+    assert_websocket_admission_error_contains(&fixture, "CallbackInterface");
+
+    fixture
+        .contract
+        .boundary_schema
+        .get_mut(&context_id)
+        .unwrap()
+        .shape
+        .descriptor = ContractTypeDescriptor::Record {
+        fields: BTreeMap::from([(
+            "self".to_string(),
+            ContractTypeRef::contract(context_id.clone()),
+        )]),
+    };
+    assert_websocket_admission_error_contains(&fixture, "contract schema cycle");
+
+    let missing_id = ContractTypeId::new("type:foreign-or-missing");
+    fixture
+        .contract
+        .boundary_schema
+        .get_mut(&context_id)
+        .unwrap()
+        .shape
+        .descriptor = ContractTypeDescriptor::Record {
+        fields: BTreeMap::from([("foreign".to_string(), ContractTypeRef::contract(missing_id))]),
+    };
+    assert_websocket_admission_error_contains(&fixture, "missing or foreign ContractTypeId");
+}
+
+fn assert_websocket_admission_error_contains(fixture: &ProjectionFixture, expected: &str) {
+    let error = validate_ingress_contracts(&fixture.input, &fixture.contract)
+        .expect_err("invalid WebSocket Context must fail deployment admission");
+    let ProjectionError::InvalidWebSocketIngressContract { message, .. } = error else {
+        panic!("expected WebSocket ingress admission error, got {error:?}")
+    };
+    assert!(
+        message.contains(expected),
+        "expected `{expected}` in `{message}`"
+    );
+}
+
+#[test]
 fn operation_mapping_failures_are_structured_and_fail_closed() {
     let mut fixture = ProjectionFixture::new();
     fixture.input.operation_bindings.pop();
