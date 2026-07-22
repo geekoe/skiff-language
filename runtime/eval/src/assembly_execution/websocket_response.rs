@@ -1,22 +1,19 @@
-use skiff_artifact_model::{ContractOperationId, WebSocketIngressContext};
-use skiff_runtime_boundary::{
-    binary::encode_payload_plan,
-    payload::{PayloadBoundary, PayloadBoundaryKind},
-};
+use serde_json::{Map, Value};
+use skiff_artifact_model::WebSocketIngressContext;
+use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind};
 use skiff_runtime_capability_context::WebSocketConnectionPolicyControl;
 use skiff_runtime_model::{
     request_heap::RequestHeap,
     runtime_value::{HeapNode, RuntimeObjectFields, RuntimeValue},
-    type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan},
 };
 
+use super::websocket_ingress::PinnedWebSocketContractPlan;
 use crate::{
     error::{Result, RuntimeError},
     invocation::{
         EvalWebSocketAdapterResult, EvalWebSocketConnectAccept, EvalWebSocketConnectContext,
         EvalWebSocketConnectReject, EvalWebSocketContextCodec,
     },
-    runtime_ops::runtime_to_wire_required_plan,
 };
 
 /// The sole canonical projector from a typed WebSocket operation result to the runtime response
@@ -24,94 +21,87 @@ use crate::{
 pub(super) fn project_connect_response(
     request_target: &str,
     value: &RuntimeValue,
-    return_plan: &RuntimeTypePlan,
-    context: &WebSocketIngressContext,
-    operation_id: &ContractOperationId,
+    pinned_plan: &PinnedWebSocketContractPlan<'_>,
     heap: &mut RequestHeap,
 ) -> Result<EvalWebSocketAdapterResult> {
-    let protocol_error = |message: String| RuntimeError::Protocol {
-        target: request_target.to_string(),
-        message,
-    };
     if matches!(value, RuntimeValue::Null) {
         return Err(protocol_error(
-            "websocket connect operation must return accept or reject, not null".to_string(),
+            request_target,
+            "websocket connect operation must return accept or reject, not null",
         ));
     }
-    let tag = {
-        let fields = runtime_object_fields(value, heap)?;
-        runtime_string_field(fields, "tag", heap)?
-    };
+    let wire = pinned_plan.encode_result_json(value, heap, request_target)?;
+    let fields = wire_object(request_target, &wire)?;
+    let tag = wire_string(request_target, fields, "tag")?;
     if tag == "reject" {
-        let fields = runtime_object_fields(value, heap)?;
-        let code = runtime_number_field(fields, "code")?;
+        let code = wire_number(request_target, fields, "code")?;
         if !code.is_finite() || code.fract() != 0.0 || !(0.0..=u16::MAX as f64).contains(&code) {
             return Err(protocol_error(
-                "websocket reject code must be an unsigned 16-bit integer".to_string(),
+                request_target,
+                "websocket reject code must be an unsigned 16-bit integer",
             ));
         }
         return Ok(EvalWebSocketAdapterResult::ConnectReject(
             EvalWebSocketConnectReject {
                 code: code as u16,
-                reason: runtime_string_field(fields, "reason", heap)?,
+                reason: wire_string(request_target, fields, "reason")?.to_string(),
             },
         ));
     }
     if tag != "accept" {
-        return Err(protocol_error(format!(
-            "websocket connect returned unsupported tag {tag}"
-        )));
+        return Err(protocol_error(
+            request_target,
+            format!("websocket connect returned unsupported tag {tag}"),
+        ));
     }
-    let (context_value, business_identity, connection_policy_value) = {
-        let fields = runtime_object_fields(value, heap)?;
-        (
-            fields.get("context").cloned().unwrap_or(RuntimeValue::Null),
-            optional_runtime_string_field(fields, "businessIdentity", heap)?,
-            fields.get("connectionPolicy").cloned(),
-        )
-    };
-    let context_plan = connect_accept_field_plan(return_plan, "context")?;
-    let context = match context {
+
+    let context_value = runtime_object_fields(value, heap)?
+        .get("context")
+        .cloned()
+        .ok_or_else(|| protocol_error(request_target, "websocket accept omitted Context"))?;
+    let context = match pinned_plan.ingress_context() {
         WebSocketIngressContext::Null => {
             if !matches!(context_value, RuntimeValue::Null) {
                 return Err(protocol_error(
-                    "websocket accept Context must be null for this ServiceContract".to_string(),
+                    request_target,
+                    "websocket accept Context must be null for this ServiceContract",
                 ));
             }
             EvalWebSocketConnectContext::Null
         }
         WebSocketIngressContext::Contract(contract_type_id) => EvalWebSocketConnectContext::Typed {
-            payload: encode_payload_plan(
+            payload: pinned_plan.encode_context_binary(
                 &context_value,
-                context_plan,
                 &websocket_payload_boundary(),
                 heap,
+                request_target,
             )?,
             codec: EvalWebSocketContextCodec {
-                operation_abi_id: operation_id.as_str().to_string(),
+                operation_abi_id: pinned_plan.operation_id().as_str().to_string(),
                 context_type_identity: contract_type_id.as_str().to_string(),
             },
         },
     };
-    let connection_policy = match connection_policy_value {
-        Some(RuntimeValue::Null) | None => None,
-        Some(value) => {
-            let plan = connect_accept_field_plan(return_plan, "connectionPolicy")?;
-            let wire = runtime_to_wire_required_plan(
-                &value,
-                Some(plan),
-                "websocket connection policy",
-                heap,
-            )?;
-            Some(
-                serde_json::from_value::<WebSocketConnectionPolicyControl>(wire).map_err(
-                    |error| {
-                        protocol_error(format!(
+    let business_identity = wire_optional_string(request_target, fields, "businessIdentity")?;
+    let connection_policy = match fields.get("connectionPolicy") {
+        Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<WebSocketConnectionPolicyControl>(value.clone()).map_err(
+                |error| {
+                    protocol_error(
+                        request_target,
+                        format!(
                             "websocket connection policy does not match runtime wire schema: {error}"
-                        ))
-                    },
-                )?,
-            )
+                        ),
+                    )
+                },
+            )?,
+        ),
+        None => {
+            return Err(protocol_error(
+                request_target,
+                "websocket accept omitted connectionPolicy",
+            ))
         }
     };
     Ok(EvalWebSocketAdapterResult::ConnectAccept(
@@ -127,51 +117,55 @@ fn websocket_payload_boundary() -> PayloadBoundary {
     PayloadBoundary::external_untrusted(PayloadBoundaryKind::WebsocketRequest)
 }
 
-fn connect_accept_field_plan<'a>(
-    return_plan: &'a RuntimeTypePlan,
-    field_name: &str,
-) -> Result<&'a RuntimeTypePlan> {
-    for item in union_items(return_plan) {
-        if let RuntimeTypeNode::Record { fields, .. } = item.node() {
-            if fields.iter().any(|field| {
-                field.name == "tag" && literal_string_plan(&field.ty) == Some("accept")
-            }) {
-                return field_plan(fields, field_name);
-            }
-        }
-    }
-    Err(RuntimeError::Decode(format!(
-        "websocket connect return type missing accept {field_name}"
-    )))
+fn wire_object<'a>(request_target: &str, value: &'a Value) -> Result<&'a Map<String, Value>> {
+    value
+        .as_object()
+        .ok_or_else(|| protocol_error(request_target, "websocket connect result must be an object"))
 }
 
-fn union_items(plan: &RuntimeTypePlan) -> &[RuntimeTypePlan] {
-    match peel_plan(plan).node() {
-        RuntimeTypeNode::Union(items) => items,
-        _ => std::slice::from_ref(plan),
+fn wire_string<'a>(
+    request_target: &str,
+    fields: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str> {
+    fields.get(name).and_then(Value::as_str).ok_or_else(|| {
+        protocol_error(
+            request_target,
+            format!("websocket field {name} must be string"),
+        )
+    })
+}
+
+fn wire_optional_string(
+    request_target: &str,
+    fields: &Map<String, Value>,
+    name: &str,
+) -> Result<Option<String>> {
+    match fields.get(name) {
+        Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|value| Some(value.to_string()))
+            .ok_or_else(|| {
+                protocol_error(
+                    request_target,
+                    format!("websocket field {name} must be string or null"),
+                )
+            }),
+        None => Err(protocol_error(
+            request_target,
+            format!("websocket result omitted {name}"),
+        )),
     }
 }
 
-fn peel_plan(plan: &RuntimeTypePlan) -> &RuntimeTypePlan {
-    match plan.node() {
-        RuntimeTypeNode::Alias(inner) | RuntimeTypeNode::Nullable(inner) => peel_plan(inner),
-        _ => plan,
-    }
-}
-
-fn field_plan<'a>(fields: &'a [RuntimeRecordFieldPlan], name: &str) -> Result<&'a RuntimeTypePlan> {
-    fields
-        .iter()
-        .find(|field| field.name == name)
-        .map(|field| &field.ty)
-        .ok_or_else(|| RuntimeError::Decode(format!("websocket type missing field {name}")))
-}
-
-fn literal_string_plan(plan: &RuntimeTypePlan) -> Option<&str> {
-    match peel_plan(plan).node() {
-        RuntimeTypeNode::LiteralString(value) => Some(value.as_str()),
-        _ => None,
-    }
+fn wire_number(request_target: &str, fields: &Map<String, Value>, name: &str) -> Result<f64> {
+    fields.get(name).and_then(Value::as_f64).ok_or_else(|| {
+        protocol_error(
+            request_target,
+            format!("websocket field {name} must be number"),
+        )
+    })
 }
 
 fn runtime_object_fields<'a>(
@@ -191,81 +185,34 @@ fn runtime_object_fields<'a>(
     }
 }
 
-fn runtime_string_field(
-    fields: &RuntimeObjectFields,
-    name: &str,
-    heap: &RequestHeap,
-) -> Result<String> {
-    match fields.get(name) {
-        Some(RuntimeValue::String(value)) => Ok(value.clone()),
-        Some(RuntimeValue::Heap(handle)) => match heap.get(*handle)? {
-            HeapNode::Interface(value) => Err(RuntimeError::Decode(format!(
-                "websocket field {name} cannot be {}",
-                value.diagnostic_label()
-            ))),
-            _ => Err(RuntimeError::Decode(format!(
-                "websocket field {name} must be string"
-            ))),
-        },
-        _ => Err(RuntimeError::Decode(format!(
-            "websocket field {name} must be string"
-        ))),
-    }
-}
-
-fn optional_runtime_string_field(
-    fields: &RuntimeObjectFields,
-    name: &str,
-    heap: &RequestHeap,
-) -> Result<Option<String>> {
-    match fields.get(name) {
-        Some(RuntimeValue::Null) | None => Ok(None),
-        Some(_) => runtime_string_field(fields, name, heap).map(Some),
-    }
-}
-
-fn runtime_number_field(fields: &RuntimeObjectFields, name: &str) -> Result<f64> {
-    match fields.get(name) {
-        Some(RuntimeValue::Number(value)) => Ok(*value),
-        _ => Err(RuntimeError::Decode(format!(
-            "websocket field {name} must be number"
-        ))),
+fn protocol_error(request_target: &str, message: impl Into<String>) -> RuntimeError {
+    RuntimeError::Protocol {
+        target: request_target.to_string(),
+        message: message.into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
-    use skiff_artifact_model::{ContractTypeId, WebSocketIngressContext};
-    use skiff_runtime_boundary::type_descriptor::RuntimeTypePlanDescriptorExt;
+    use serde_json::json;
     use skiff_runtime_model::runtime_value::RuntimeValue;
 
     use super::*;
-    use crate::runtime_ops::runtime_from_wire_required_plan;
-
-    fn named(name: &str) -> Value {
-        json!({ "kind": "builtin", "name": name, "args": [] })
-    }
-
-    fn connect_return_plan(context: Value) -> RuntimeTypePlan {
-        RuntimeTypePlan::from_descriptor(&json!({
-            "kind": "builtin",
-            "name": "std.websocket.WebSocketConnectResult",
-            "args": [context],
-        }))
-        .expect("connect result plan should build")
-    }
+    use crate::assembly_execution::websocket_ingress::{
+        websocket_contract_plan_test_support::{empty_nominal_contract, null_contract},
+        PinnedWebSocketContractPlan,
+    };
 
     #[test]
     fn canonical_websocket_response_requires_non_null_connect_result() {
-        let mut heap = RequestHeap::default();
+        let fixture = null_contract();
+        let plan =
+            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
         let error = project_connect_response(
             "test-runtime",
             &RuntimeValue::Null,
-            &connect_return_plan(named("null")),
-            &WebSocketIngressContext::Null,
-            &ContractOperationId::new("operation:websocket"),
-            &mut heap,
+            &plan,
+            &mut RequestHeap::default(),
         )
         .expect_err("connect null must fail closed");
         assert!(error
@@ -274,54 +221,45 @@ mod tests {
     }
 
     #[test]
-    fn canonical_websocket_response_discriminates_null_accept_and_reject() {
-        let return_plan = connect_return_plan(named("null"));
+    fn canonical_websocket_response_discriminates_null_accept_reject_and_policy() {
+        let fixture = null_contract();
+        let plan =
+            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
         let mut heap = RequestHeap::default();
-        let accept = runtime_from_wire_required_plan(
-            &json!({
-                "tag": "accept",
-                "context": null,
-                "businessIdentity": null,
-                "connectionPolicy": null,
-            }),
-            Some(&return_plan),
-            "canonical websocket connect result",
-            &mut heap,
-        )
-        .unwrap();
-        assert!(matches!(
-            project_connect_response(
-                "test-runtime",
-                &accept,
-                &return_plan,
-                &WebSocketIngressContext::Null,
-                &ContractOperationId::new("operation:websocket"),
+        let accept = plan
+            .result_value_plan()
+            .decode_json_value(
+                &json!({
+                    "tag": "accept",
+                    "context": null,
+                    "businessIdentity": "tenant-1",
+                    "connectionPolicy": {
+                        "maxConnections": 2,
+                        "overflow": "close-oldest",
+                        "closeCode": null,
+                        "closeReason": null
+                    },
+                }),
                 &mut heap,
             )
-            .unwrap(),
-            EvalWebSocketAdapterResult::ConnectAccept(EvalWebSocketConnectAccept {
-                context: EvalWebSocketConnectContext::Null,
-                ..
-            })
-        ));
+            .unwrap();
+        let result = project_connect_response("test-runtime", &accept, &plan, &mut heap).unwrap();
+        let EvalWebSocketAdapterResult::ConnectAccept(accept) = result else {
+            panic!("expected connect accept")
+        };
+        assert_eq!(accept.business_identity.as_deref(), Some("tenant-1"));
+        assert_eq!(accept.context, EvalWebSocketConnectContext::Null);
+        assert_eq!(accept.connection_policy.unwrap().max_connections.get(), 2);
 
-        let reject = runtime_from_wire_required_plan(
-            &json!({ "tag": "reject", "code": 1008, "reason": "policy" }),
-            Some(&return_plan),
-            "canonical websocket reject",
-            &mut heap,
-        )
-        .unwrap();
-        assert_eq!(
-            project_connect_response(
-                "test-runtime",
-                &reject,
-                &return_plan,
-                &WebSocketIngressContext::Null,
-                &ContractOperationId::new("operation:websocket"),
+        let reject = plan
+            .result_value_plan()
+            .decode_json_value(
+                &json!({ "tag": "reject", "code": 1008, "reason": "policy" }),
                 &mut heap,
             )
-            .unwrap(),
+            .unwrap();
+        assert_eq!(
+            project_connect_response("test-runtime", &reject, &plan, &mut heap).unwrap(),
             EvalWebSocketAdapterResult::ConnectReject(EvalWebSocketConnectReject {
                 code: 1008,
                 reason: "policy".to_string(),
@@ -330,40 +268,43 @@ mod tests {
     }
 
     #[test]
-    fn canonical_websocket_response_binds_typed_context_codec_to_contract() {
-        let return_plan = connect_return_plan(json!({ "kind": "record", "fields": {} }));
+    fn canonical_websocket_response_encodes_nominal_context_from_the_pinned_plan() {
+        let fixture = empty_nominal_contract();
+        let plan =
+            PinnedWebSocketContractPlan::compile(&fixture.contract, &fixture.operation_id).unwrap();
         let mut heap = RequestHeap::default();
-        let value = runtime_from_wire_required_plan(
-            &json!({
-                "tag": "accept",
-                "context": {},
-                "businessIdentity": null,
-                "connectionPolicy": null,
-            }),
-            Some(&return_plan),
-            "canonical websocket typed connect result",
-            &mut heap,
-        )
-        .unwrap();
-        let operation = ContractOperationId::new("operation:websocket");
-        let context_type = ContractTypeId::new("contract-type:context");
-        let result = project_connect_response(
-            "test-runtime",
-            &value,
-            &return_plan,
-            &WebSocketIngressContext::Contract(context_type.clone()),
-            &operation,
-            &mut heap,
-        )
-        .unwrap();
+        let value = plan
+            .result_value_plan()
+            .decode_json_value(
+                &json!({
+                    "tag": "accept",
+                    "context": {},
+                    "businessIdentity": null,
+                    "connectionPolicy": null,
+                }),
+                &mut heap,
+            )
+            .unwrap();
+        let result = project_connect_response("test-runtime", &value, &plan, &mut heap).unwrap();
         let EvalWebSocketAdapterResult::ConnectAccept(accept) = result else {
-            panic!("expected typed accept");
+            panic!("expected typed accept")
         };
         let EvalWebSocketConnectContext::Typed { payload, codec } = accept.context else {
-            panic!("expected typed context");
+            panic!("expected typed context")
         };
-        assert!(!payload.is_empty());
-        assert_eq!(codec.operation_abi_id, operation.as_str());
-        assert_eq!(codec.context_type_identity, context_type.as_str());
+        assert_eq!(codec.operation_abi_id, fixture.operation_id.as_str());
+        assert_eq!(
+            codec.context_type_identity,
+            fixture.context_type_id.unwrap().as_str()
+        );
+        let decoded = plan
+            .context_value_plan()
+            .decode_binary(
+                &payload,
+                &websocket_payload_boundary(),
+                &mut RequestHeap::default(),
+            )
+            .expect("typed Context payload should decode with the same pinned plan");
+        assert!(matches!(decoded, RuntimeValue::Heap(_)));
     }
 }
