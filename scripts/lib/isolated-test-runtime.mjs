@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,11 @@ import {
   isolatedTestRunnerEnvironment,
 } from './isolated-test-runtime-instance.mjs';
 import { assertPortsClosed, leaseConsecutiveLocalPorts } from './local-port-lease.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+  removeOwnedIsolatedTestWorkspace,
+} from './isolated-test-runtime-workspace.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
@@ -105,11 +110,13 @@ async function startIsolatedTestRuntime({
 }) {
   const portLease = await ops.leasePorts();
   let tempRoot;
+  let ownershipReceipt;
   let supervisor;
-  let configWritten = false;
+  let configOwnershipRequired = false;
   let supervisorAttempted = false;
   try {
     tempRoot = await ops.makeTempRoot();
+    ownershipReceipt = await ops.claimWorkspace(tempRoot);
     const sourceArtifactRoot = join(tempRoot, 'source-artifacts');
     await ops.createSourceArtifactRoot(sourceArtifactRoot);
     const instanceRoot = join(tempRoot, 'instance');
@@ -124,8 +131,9 @@ async function startIsolatedTestRuntime({
       basePort,
       environment,
     });
-    await ops.writeConfig(configPath, config);
-    configWritten = true;
+    configOwnershipRequired = true;
+    await ops.writeConfig(configPath, config, ownershipReceipt);
+    ownershipReceipt = await ops.captureConfigOwnership(ownershipReceipt, configPath);
     const isolatedEnv = isolatedTestRunnerEnvironment({
       baseEnv,
       skiffRoot,
@@ -169,13 +177,15 @@ async function startIsolatedTestRuntime({
       supervisor,
       tempRoot,
       environment,
+      instanceOwnership: ownershipReceipt,
+      ownershipReceipt,
       testRunnerEnv: isolatedEnv,
     };
   } catch (error) {
     const partial = {
-      configPath: configWritten && supervisorAttempted
-        ? join(tempRoot, 'instance', 'config.yml')
-        : undefined,
+      instanceOwnership: supervisorAttempted ? ownershipReceipt : undefined,
+      ownershipReceipt,
+      configOwnershipRequired,
       portLease,
       ports: portLease.ports,
       supervisor,
@@ -196,42 +206,47 @@ async function startIsolatedTestRuntime({
 async function cleanupIsolatedTestRuntime(stack, ops) {
   const errors = [];
   if (stack.supervisor !== undefined) {
-    try {
-      await ops.stopSupervisor(stack.supervisor);
-    } catch (error) {
-      errors.push(cleanupStepError('stop supervisor', error));
-    }
+    await settleCleanupStep(errors, 'stop supervisor', async () => {
+      const stopped = await ops.stopSupervisor(stack.supervisor);
+      if (stopped?.stopped === false) {
+        throw new Error('isolated runtime supervisor reported stopped:false');
+      }
+    });
   }
-  if (stack.configPath !== undefined) {
-    try {
-      await ops.stopOwnedInstance(stack.configPath);
-    } catch (error) {
-      errors.push(cleanupStepError('stop owned instance', error));
-    }
+  if (stack.instanceOwnership !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'stop owned instance',
+      () => ops.stopOwnedInstance(stack.instanceOwnership),
+    );
   }
-  if (stack.configPath !== undefined) {
-    try {
-      await ops.verifyInstanceStopped(stack.configPath);
-    } catch (error) {
-      errors.push(cleanupStepError('verify instance stopped', error));
-    }
+  if (stack.instanceOwnership !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'verify instance stopped',
+      () => ops.verifyInstanceStopped(stack.instanceOwnership),
+    );
   }
-  try {
-    await ops.assertPortsClosed(stack.ports);
-  } catch (error) {
-    errors.push(cleanupStepError('verify ports closed', error));
+  await settleCleanupStep(errors, 'verify ports closed', () => ops.assertPortsClosed(stack.ports));
+  await settleCleanupStep(errors, 'release port lease', () => stack.portLease.release());
+  if (stack.tempRoot !== undefined && stack.ownershipReceipt === undefined) {
+    errors.push(cleanupStepError(
+      'preserve unowned temp workspace',
+      new Error(`isolated workspace ownership receipt was not established for ${stack.tempRoot}`),
+    ));
   }
-  try {
-    await stack.portLease.release();
-  } catch (error) {
-    errors.push(cleanupStepError('release port lease', error));
+  if (stack.configOwnershipRequired && stack.ownershipReceipt?.config === undefined) {
+    errors.push(cleanupStepError(
+      'preserve workspace with uncaptured config',
+      new Error(`instance config ownership was not captured for ${stack.tempRoot}`),
+    ));
   }
-  if (errors.length === 0 && stack.tempRoot !== undefined) {
-    try {
-      await ops.removeTempRoot(stack.tempRoot);
-    } catch (error) {
-      errors.push(cleanupStepError('remove temp workspace', error));
-    }
+  if (errors.length === 0 && stack.ownershipReceipt !== undefined) {
+    await settleCleanupStep(
+      errors,
+      'remove temp workspace',
+      () => ops.removeOwnedWorkspace(stack.ownershipReceipt),
+    );
   }
   if (errors.length > 0) {
     const evidence = stack.tempRoot === undefined
@@ -251,9 +266,11 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
       count: 3,
     }),
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
+    claimWorkspace: claimIsolatedTestWorkspace,
     createSourceArtifactRoot: (path) => mkdir(path, { recursive: true }),
+    captureConfigOwnership: captureIsolatedTestConfig,
     assertPortsClosed,
-    removeTempRoot: (path) => rm(path, { recursive: true, force: true }),
+    removeOwnedWorkspace: removeOwnedIsolatedTestWorkspace,
     ...overrides,
   };
 }
@@ -264,6 +281,14 @@ function errorMessage(error) {
 
 function cleanupStepError(step, error) {
   return new Error(`${step}: ${errorMessage(error)}`, { cause: error });
+}
+
+async function settleCleanupStep(errors, step, operation) {
+  try {
+    await operation();
+  } catch (error) {
+    errors.push(cleanupStepError(step, error));
+  }
 }
 
 export const isolatedTestRuntimeConstants = {

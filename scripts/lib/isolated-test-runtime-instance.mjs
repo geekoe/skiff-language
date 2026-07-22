@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
+import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 
 const STABLE_MONGO_PORT = 27017;
 const START_TIMEOUT_MS = 120_000;
@@ -130,9 +131,15 @@ export function isolatedRuntimeHealthReady(health, bootstrapReceipt) {
 
 export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
   return {
-    writeConfig: async (configPath, config) => {
+    writeConfig: async (configPath, config, ownershipReceipt) => {
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt);
       await mkdir(dirname(configPath), { recursive: true });
-      await writeFile(configPath, config, 'utf8');
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt);
+      await writeFile(configPath, config, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
     },
     seedBootstrap: async ({ artifactRoot, environment, env, signal }) => {
       const result = await captureCheckedCommand(
@@ -152,14 +159,21 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
     },
     waitReady: waitForIsolatedRuntime,
     stopSupervisor,
-    stopOwnedInstance: (configPath) => runOwnedCommand(
-      'node',
-      [join(skiffRoot, 'scripts', 'skiff-instance.mjs'), 'down', configPath],
-      { cwd: skiffRoot, env: baseEnv },
-    ),
-    verifyInstanceStopped: (configPath) => verifyInstanceStopped({
+    stopOwnedInstance: async (ownershipReceipt) => {
+      await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
+      return runOwnedCommand(
+        'node',
+        [
+          join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
+          'down',
+          ownershipReceipt.config.path,
+        ],
+        { cwd: skiffRoot, env: baseEnv },
+      );
+    },
+    verifyInstanceStopped: (ownershipReceipt) => verifyInstanceStopped({
       skiffRoot,
-      configPath,
+      ownershipReceipt,
       env: baseEnv,
     }),
   };
@@ -220,7 +234,9 @@ async function stopSupervisor(child) {
   }
 }
 
-async function verifyInstanceStopped({ skiffRoot, configPath, env }) {
+async function verifyInstanceStopped({ skiffRoot, ownershipReceipt, env }) {
+  await assertIsolatedTestWorkspaceOwned(ownershipReceipt, { requireConfig: true });
+  const configPath = ownershipReceipt.config.path;
   const result = await runCommandCapture('node', [
     join(skiffRoot, 'scripts', 'skiff-instance.mjs'),
     'status',

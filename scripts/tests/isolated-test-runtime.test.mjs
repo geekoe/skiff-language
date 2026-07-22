@@ -20,6 +20,12 @@ import {
 } from '../lib/isolated-test-runtime-instance.mjs';
 import { leaseConsecutiveLocalPorts } from '../lib/local-port-lease.mjs';
 import { runOwnedCommand } from '../lib/owned-command.mjs';
+import {
+  captureIsolatedTestConfig,
+  claimIsolatedTestWorkspace,
+} from '../lib/isolated-test-runtime-workspace.mjs';
+
+import './isolated-test-runtime-workspace-cases.mjs';
 
 test('isolated instance config and runner env stay inside dynamic temp boundaries', () => {
   const devHome = '/tmp/skiff-test-runtime/instance/dev-home';
@@ -92,7 +98,11 @@ test('default owner shutdown invokes current checkout instance down command', as
   const capturePath = join(root, 'capture.json');
   const configPath = join(root, 'instance', 'config.yml');
   try {
+    let ownershipReceipt = await claimIsolatedTestWorkspace(root);
     await mkdir(scriptsRoot, { recursive: true });
+    await mkdir(join(root, 'instance'), { recursive: true });
+    await writeFile(configPath, 'environment: "skiff-test"\n');
+    ownershipReceipt = await captureIsolatedTestConfig(ownershipReceipt, configPath);
     await writeFile(join(scriptsRoot, 'skiff-instance.mjs'), [
       "import { writeFile } from 'node:fs/promises';",
       "await writeFile(process.env.SKIFF_OWNER_SHUTDOWN_CAPTURE, JSON.stringify(process.argv.slice(2)));",
@@ -105,9 +115,32 @@ test('default owner shutdown invokes current checkout instance down command', as
       },
     });
 
-    await operations.stopOwnedInstance(configPath);
+    await operations.stopOwnedInstance(ownershipReceipt);
 
     assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['down', configPath]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('default config creation is exclusive and preserves a foreign destination', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-config-no-clobber-test-'));
+  const configPath = join(root, 'instance', 'config.yml');
+  const foreignConfig = 'foreign: true\n';
+  try {
+    const ownershipReceipt = await claimIsolatedTestWorkspace(root);
+    await mkdir(join(root, 'instance'));
+    await writeFile(configPath, foreignConfig, 'utf8');
+    const operations = isolatedInstanceOperations({ skiffRoot: root, baseEnv: process.env });
+    await assert.rejects(
+      operations.writeConfig(
+        configPath,
+        'environment: "skiff-test"\n',
+        ownershipReceipt,
+      ),
+      { code: 'EEXIST' },
+    );
+    assert.equal(await readFile(configPath, 'utf8'), foreignConfig);
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -269,7 +302,8 @@ test('success and test failure both run owner shutdown, status, ports, lease, an
       assert.equal(await operation, 'passed');
     }
     assert.deepEqual(actions, [
-      'lease', 'temp', 'source-artifacts', 'config', 'bootstrap', 'spawn', 'ready', 'test',
+      'lease', 'temp', 'workspace-claim', 'source-artifacts', 'config', 'config-owner',
+      'bootstrap', 'spawn', 'ready', 'test',
       'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed',
       'lease-release', 'temp-remove',
     ]);
@@ -307,6 +341,29 @@ test('test and cleanup errors are both retained and evidence workspace is preser
   assert.equal(actions.includes('temp-remove'), false);
 });
 
+test('false supervisor stop remains a cleanup failure while later owners still settle', async () => {
+  const { actions, dependencies } = lifecycleDouble({
+    stopSupervisor: async () => {
+      actions.push('stop-supervisor');
+      return { stopped: false };
+    },
+  });
+  await assert.rejects(
+    runInIsolatedTestRuntime({
+      skiffRoot: '/checkout/skiff',
+      baseEnv: {},
+      signalTarget: new EventEmitter(),
+      dependencies,
+      runTest: async () => { actions.push('test'); },
+    }),
+    /supervisor reported stopped:false/,
+  );
+  assert.deepEqual(actions.slice(-5), [
+    'stop-supervisor', 'instance-down', 'instance-status', 'ports-closed', 'lease-release',
+  ]);
+  assert.equal(actions.includes('temp-remove'), false);
+});
+
 test('write and bootstrap startup failures do not run instance ownership commands', async () => {
   for (const failureAt of ['config', 'bootstrap']) {
     const { actions, dependencies } = lifecycleDouble({
@@ -332,13 +389,39 @@ test('write and bootstrap startup failures do not run instance ownership command
         dependencies,
         runTest: async () => assert.fail('test runner must not start'),
       }),
-      new RegExp(`${failureAt} failed`),
+      failureAt === 'config'
+        ? /config failed.*preserve workspace with uncaptured config/s
+        : /bootstrap failed/,
     );
     assert.equal(actions.includes('instance-down'), false);
     assert.equal(actions.includes('instance-status'), false);
     assert.equal(actions.includes('lease-release'), true);
-    assert.equal(actions.includes('temp-remove'), true);
+    assert.equal(actions.includes('temp-remove'), failureAt === 'bootstrap');
   }
+});
+
+test('config capture failure preserves the workspace and still releases ports and lease', async () => {
+  const { actions, dependencies } = lifecycleDouble({
+    captureConfigOwnership: async () => {
+      actions.push('config-owner');
+      throw new Error('config identity changed before capture');
+    },
+  });
+  await assert.rejects(
+    runInIsolatedTestRuntime({
+      skiffRoot: '/checkout/skiff',
+      baseEnv: {},
+      signalTarget: new EventEmitter(),
+      dependencies,
+      runTest: async () => assert.fail('test runner must not start'),
+    }),
+    /config identity changed before capture.*preserve workspace with uncaptured config/s,
+  );
+  assert.equal(actions.includes('instance-down'), false);
+  assert.equal(actions.includes('instance-status'), false);
+  assert.equal(actions.includes('ports-closed'), true);
+  assert.equal(actions.includes('lease-release'), true);
+  assert.equal(actions.includes('temp-remove'), false);
 });
 
 test('partial supervisor startup failure still runs owner down plus status and port verification', async () => {
@@ -420,18 +503,21 @@ test('aborted owned command waits for its process group before returning', {
   }
 });
 
-test('live mode bypasses automatic isolated runtime and leases stay in reserved range', async () => {
+test('live bypass and reserved port leases preserve a foreign token replacement', async () => {
   assert.equal(shouldUseIsolatedTestRuntime(true), false);
   assert.equal(shouldUseIsolatedTestRuntime(false), true);
+  const leaseDir = await mkdtemp(join(tmpdir(), 'skiff-port-lease-audit-'));
   const first = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
     count: 3,
+    leaseDir,
   });
   const second = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
     count: 3,
+    leaseDir,
   });
   try {
     assert.equal(first.ports.every((port) => port >= 46000 && port <= 46999), true);
@@ -440,14 +526,36 @@ test('live mode bypasses automatic isolated runtime and leases stay in reserved 
     const forbidden = [27017, ...range(4000, 4007), ...range(44000, 45999)];
     assert.equal(first.ports.some((port) => forbidden.includes(port)), false);
     assert.equal(second.ports.some((port) => forbidden.includes(port)), false);
+    const replacedLeasePath = join(leaseDir, `${first.ports[0]}.lock`);
+    const foreignLease = `${JSON.stringify({
+      schemaVersion: 'skiff-local-port-lease-v1',
+      pid: process.pid,
+      token: 'foreign-token',
+      ports: [first.ports[0]],
+    })}\n`;
+    await rm(replacedLeasePath);
+    await writeFile(replacedLeasePath, foreignLease, 'utf8');
+    await first.release();
+    assert.equal(await readFile(replacedLeasePath, 'utf8'), foreignLease);
+    await rm(replacedLeasePath);
   } finally {
     await first.release();
     await second.release();
+    await rm(leaseDir, { force: true, recursive: true });
   }
 });
 
 function lifecycleDouble(overrides = {}) {
   const actions = [];
+  const workspaceReceipt = {
+    schemaVersion: 'isolated-runtime-double-v1',
+    nonce: '0'.repeat(32),
+    root: { path: '/tmp/isolated-runtime-double', identity: { dev: '1', ino: '2' } },
+    marker: {
+      path: '/tmp/isolated-runtime-double/.skiff-isolated-workspace-owner.json',
+      identity: { dev: '1', ino: '3' },
+    },
+  };
   const dependencies = {
     leasePorts: async () => {
       actions.push('lease');
@@ -460,8 +568,19 @@ function lifecycleDouble(overrides = {}) {
       actions.push('temp');
       return '/tmp/isolated-runtime-double';
     },
+    claimWorkspace: async () => {
+      actions.push('workspace-claim');
+      return workspaceReceipt;
+    },
     createSourceArtifactRoot: async () => { actions.push('source-artifacts'); },
     writeConfig: async () => { actions.push('config'); },
+    captureConfigOwnership: async (receipt, configPath) => {
+      actions.push('config-owner');
+      return {
+        ...receipt,
+        config: { path: configPath, identity: { dev: '1', ino: '4' } },
+      };
+    },
     seedBootstrap: async () => { actions.push('bootstrap'); },
     spawnSupervisor: () => {
       actions.push('spawn');
@@ -472,7 +591,7 @@ function lifecycleDouble(overrides = {}) {
     stopOwnedInstance: async () => { actions.push('instance-down'); },
     verifyInstanceStopped: async () => { actions.push('instance-status'); },
     assertPortsClosed: async () => { actions.push('ports-closed'); },
-    removeTempRoot: async () => { actions.push('temp-remove'); },
+    removeOwnedWorkspace: async () => { actions.push('temp-remove'); },
     ...overrides,
   };
   return { actions, dependencies };
