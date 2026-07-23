@@ -181,6 +181,53 @@ impl TrustedRegistryOperationScope {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrustedRegistryNativeCapabilitySpec {
+    pub binding_key: &'static str,
+    pub operation_scope: TrustedRegistryOperationScope,
+}
+
+macro_rules! native_capability_spec {
+    ($index:literal, $scope:ident) => {
+        TrustedRegistryNativeCapabilitySpec {
+            binding_key: TRUSTED_REGISTRY_NATIVE_SIGNATURES[$index].binding_key,
+            operation_scope: TrustedRegistryOperationScope::$scope,
+        }
+    };
+}
+
+pub const TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS: &[TrustedRegistryNativeCapabilitySpec] = &[
+    native_capability_spec!(0, ArtifactWrite),
+    native_capability_spec!(1, ArtifactRead),
+    native_capability_spec!(2, PointerRead),
+    native_capability_spec!(3, PointerCas),
+    native_capability_spec!(4, HistoryRead),
+    native_capability_spec!(5, ArtifactWrite),
+    native_capability_spec!(6, ArtifactRead),
+    native_capability_spec!(7, PointerRead),
+    native_capability_spec!(8, PointerCas),
+    native_capability_spec!(9, HistoryRead),
+    native_capability_spec!(10, ArtifactWrite),
+    native_capability_spec!(11, ArtifactRead),
+    native_capability_spec!(12, PointerRead),
+    native_capability_spec!(13, PointerCas),
+    native_capability_spec!(14, HistoryRead),
+    native_capability_spec!(15, ArtifactWrite),
+    native_capability_spec!(16, ArtifactRead),
+    native_capability_spec!(17, PointerRead),
+    native_capability_spec!(18, PointerCas),
+    native_capability_spec!(19, HistoryRead),
+    native_capability_spec!(20, ActivationActivate),
+];
+
+pub fn trusted_registry_native_capability_spec(
+    binding_key: &str,
+) -> Option<&'static TrustedRegistryNativeCapabilitySpec> {
+    TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS
+        .iter()
+        .find(|spec| spec.binding_key == binding_key)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageArtifactPointer {

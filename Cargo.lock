@@ -2297,6 +2297,7 @@ dependencies = [
  "skiff-artifact-model",
  "skiff-compiler-core",
  "skiff-compiler-projection-input",
+ "skiff-trusted-registry-contract",
  "thiserror",
 ]
 

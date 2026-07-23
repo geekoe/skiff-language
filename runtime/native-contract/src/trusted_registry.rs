@@ -1,12 +1,12 @@
 use skiff_trusted_registry_contract::{
-    TrustedRegistryOperationScope, TRUSTED_REGISTRY_CAPABILITY_ID,
-    TRUSTED_REGISTRY_CAPABILITY_VERSION, TRUSTED_REGISTRY_NATIVE_SIGNATURES,
+    TRUSTED_REGISTRY_CAPABILITY_ID, TRUSTED_REGISTRY_CAPABILITY_VERSION,
+    TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS, TRUSTED_REGISTRY_NATIVE_SIGNATURES,
 };
 
 use crate::{NativeBindingKey, NativeBindingSpec, NativeRequiredContext};
 
 macro_rules! spec {
-    ($index:literal, $scope:ident) => {
+    ($index:literal) => {
         NativeBindingSpec {
             key: NativeBindingKey::from_static(
                 TRUSTED_REGISTRY_NATIVE_SIGNATURES[$index].binding_key,
@@ -15,33 +15,33 @@ macro_rules! spec {
             required_context: NativeRequiredContext::TrustedRegistry,
             capability_id: Some(TRUSTED_REGISTRY_CAPABILITY_ID),
             capability_version: Some(TRUSTED_REGISTRY_CAPABILITY_VERSION),
-            operation_scope: Some(TrustedRegistryOperationScope::$scope),
+            operation_scope: Some(TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS[$index].operation_scope),
         }
     };
 }
 
 pub const TRUSTED_REGISTRY_NATIVE_BINDING_SPECS: &[NativeBindingSpec] = &[
-    spec!(0, ArtifactWrite),
-    spec!(1, ArtifactRead),
-    spec!(2, PointerRead),
-    spec!(3, PointerCas),
-    spec!(4, HistoryRead),
-    spec!(5, ArtifactWrite),
-    spec!(6, ArtifactRead),
-    spec!(7, PointerRead),
-    spec!(8, PointerCas),
-    spec!(9, HistoryRead),
-    spec!(10, ArtifactWrite),
-    spec!(11, ArtifactRead),
-    spec!(12, PointerRead),
-    spec!(13, PointerCas),
-    spec!(14, HistoryRead),
-    spec!(15, ArtifactWrite),
-    spec!(16, ArtifactRead),
-    spec!(17, PointerRead),
-    spec!(18, PointerCas),
-    spec!(19, HistoryRead),
-    spec!(20, ActivationActivate),
+    spec!(0),
+    spec!(1),
+    spec!(2),
+    spec!(3),
+    spec!(4),
+    spec!(5),
+    spec!(6),
+    spec!(7),
+    spec!(8),
+    spec!(9),
+    spec!(10),
+    spec!(11),
+    spec!(12),
+    spec!(13),
+    spec!(14),
+    spec!(15),
+    spec!(16),
+    spec!(17),
+    spec!(18),
+    spec!(19),
+    spec!(20),
 ];
 
 #[cfg(test)]
@@ -50,6 +50,7 @@ mod tests {
 
     use super::*;
     use skiff_artifact_model::NativeTypeExprDef;
+    use skiff_trusted_registry_contract::TrustedRegistryOperationScope;
 
     #[test]
     fn binding_specs_are_exact_typed_and_authoritative() {

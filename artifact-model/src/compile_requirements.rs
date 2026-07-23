@@ -60,6 +60,8 @@ pub struct PackageResourceRequirement {
 pub struct PackageRuntimeCapabilityRequirement {
     pub capability: String,
     pub required_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operation_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

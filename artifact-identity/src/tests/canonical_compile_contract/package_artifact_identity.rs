@@ -142,6 +142,7 @@ fn build_identity_includes_every_canonical_package_artifact_fact() {
                 PackageRuntimeCapabilityRequirement {
                     capability: "stream".to_string(),
                     required_version: "1".to_string(),
+                    operation_scopes: Vec::new(),
                 },
             )
         },
