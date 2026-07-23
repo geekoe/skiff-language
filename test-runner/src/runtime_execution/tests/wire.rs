@@ -260,3 +260,61 @@ fn health_unknown_missing_and_wrong_typed_fields_fail_closed() {
         );
     }
 }
+
+#[test]
+fn replica_connection_lifecycle_counts_decode_as_required_safe_integers() {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+    let mut replica = replica(2, ASSEMBLY_B, "healthy", true);
+    replica["connectionPinCount"] = serde_json::json!(MAX_SAFE_INTEGER);
+    replica["connectionReleaseAckCount"] = serde_json::json!(17);
+    let health = decode_health_snapshot(&health_body(
+        ENVIRONMENT,
+        2,
+        ASSEMBLY_B,
+        Value::Null,
+        vec![replica],
+        vec![capability(REPLICA, true)],
+    ))
+    .unwrap();
+
+    assert_eq!(health.replicas[0].connection_pin_count, MAX_SAFE_INTEGER);
+    assert_eq!(health.replicas[0].connection_release_ack_count, 17);
+}
+
+#[test]
+fn replica_connection_lifecycle_count_mutations_fail_closed() {
+    let valid = || replica(2, ASSEMBLY_B, "healthy", true);
+    let mut cases = Vec::new();
+    for field in ["connectionPinCount", "connectionReleaseAckCount"] {
+        let mut missing = valid();
+        missing.as_object_mut().unwrap().remove(field);
+        cases.push((format!("missing {field}"), missing));
+
+        for (kind, value) in [
+            ("negative", serde_json::json!(-1)),
+            ("fractional", serde_json::json!(1.5)),
+            ("unsafe", serde_json::json!(9_007_199_254_740_992_u64)),
+            ("string", serde_json::json!("1")),
+        ] {
+            let mut mutated = valid();
+            mutated[field] = value;
+            cases.push((format!("{kind} {field}"), mutated));
+        }
+    }
+    let mut unknown = valid();
+    unknown["legacyConnectionPinCount"] = serde_json::json!(0);
+    cases.push(("unknown replica field".to_string(), unknown));
+
+    for (name, replica) in cases {
+        let result = decode_health_snapshot(&health_body(
+            ENVIRONMENT,
+            2,
+            ASSEMBLY_B,
+            Value::Null,
+            vec![replica],
+            vec![capability(REPLICA, true)],
+        ));
+        assert!(result.is_err(), "mutation {name} was accepted");
+    }
+}

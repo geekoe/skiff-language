@@ -36,6 +36,8 @@ pub(super) struct ReplicaSnapshot {
     pub(super) assembly: RuntimeAssemblyRef,
     pub(super) state: ReplicaState,
     pub(super) connected: bool,
+    pub(super) connection_pin_count: u64,
+    pub(super) connection_release_ack_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,12 +278,17 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
             "state",
             "connected",
             "inFlightCount",
+            "connectionPinCount",
+            "connectionReleaseAckCount",
             "registeredAt",
         ],
         &["lastHealthAt", "healthCounters"],
         &context,
     )?;
     u64_field(replica, "inFlightCount", &context)?;
+    let connection_pin_count = safe_u64_field(replica, "connectionPinCount", &context)?;
+    let connection_release_ack_count =
+        safe_u64_field(replica, "connectionReleaseAckCount", &context)?;
     string_field(replica, "registeredAt", &context)?;
     if replica
         .get("lastHealthAt")
@@ -308,6 +315,8 @@ fn decode_replica(value: &Value, index: usize) -> Result<ReplicaSnapshot, String
         )?,
         state,
         connected: bool_field(replica, "connected", &context)?,
+        connection_pin_count,
+        connection_release_ack_count,
     })
 }
 
@@ -415,6 +424,18 @@ fn u64_field(object: &Map<String, Value>, name: &str, context: &str) -> Result<u
     field(object, name, context)?
         .as_u64()
         .ok_or_else(|| format!("{context}.{name} must be a canonical unsigned integer"))
+}
+
+fn safe_u64_field(object: &Map<String, Value>, name: &str, context: &str) -> Result<u64, String> {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+    let value = u64_field(object, name, context)?;
+    if value > MAX_SAFE_INTEGER {
+        return Err(format!(
+            "{context}.{name} must be a non-negative safe integer"
+        ));
+    }
+    Ok(value)
 }
 
 fn array<'a>(value: &'a Value, context: &str) -> Result<&'a [Value], String> {

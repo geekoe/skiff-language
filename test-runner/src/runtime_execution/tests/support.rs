@@ -91,6 +91,8 @@ pub(super) fn replica(
         "state": state,
         "connected": connected,
         "inFlightCount": 0,
+        "connectionPinCount": 0,
+        "connectionReleaseAckCount": 0,
         "registeredAt": "2026-07-22T00:00:00.000Z",
     })
 }
