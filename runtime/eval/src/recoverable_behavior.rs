@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use skiff_artifact_identity::{abi_type_id_from_source_anchor, abi_type_id_key};
 use skiff_artifact_model::{AbiDeclarationKind, AbiSourceDeclarationAnchor};
@@ -104,7 +104,6 @@ impl EvalRecoverableBehaviorHooks {
     pub(crate) fn new_for_execution(
         program: &RuntimeExecutionProjection<'_>,
     ) -> Result<Self, RuntimeError> {
-        unique_package_ids(program)?;
         let mut hooks = Self {
             method_tables: HashMap::new(),
             remote_operation_tables: HashMap::new(),
@@ -692,25 +691,6 @@ fn remote_operation_tables_runtime_equivalent(
         && left.slots() == right.slots()
 }
 
-fn unique_package_ids(
-    program: &RuntimeExecutionProjection<'_>,
-) -> Result<HashSet<String>, RuntimeError> {
-    let mut ids = HashSet::new();
-    for slot in 0..program.package_files().len() {
-        let package_id = program.package_id(slot).ok_or_else(|| {
-            RuntimeError::InvalidArtifact(format!(
-                "recoverable local concrete owner package slot {slot} is not loaded"
-            ))
-        })?;
-        if !ids.insert(package_id.to_string()) {
-            return Err(RuntimeError::InvalidArtifact(format!(
-                "recoverable local concrete owner lookup found duplicate package id {package_id}"
-            )));
-        }
-    }
-    Ok(ids)
-}
-
 fn local_concrete_restore_key(
     program: &RuntimeExecutionProjection<'_>,
     concrete_type: &LinkedTypeRef,
@@ -849,4 +829,86 @@ fn recoverable_hook_error(
     )
     .with_detail(serde_json::json!({ "nodePath": path }))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use skiff_runtime_linked_program::{LinkOverlay, PackageUnit, RuntimeTypeContext, UnitAddr};
+
+    use super::{local_concrete_owner, EvalRecoverableBehaviorHooks};
+    use crate::{error::RuntimeError, invocation::EvalProgramProjection};
+
+    const PACKAGE_ID: &str = "skiff.test/shared";
+
+    struct DuplicatePackageProgram {
+        packages: Vec<Arc<PackageUnit>>,
+        package_files: Vec<Vec<Arc<skiff_runtime_linked_program::LinkedFileUnit>>>,
+        spawn_routes: HashMap<String, skiff_runtime_linked_program::ExecutableAddr>,
+        link_overlay: LinkOverlay,
+        types: RuntimeTypeContext,
+    }
+
+    impl DuplicatePackageProgram {
+        fn new() -> Self {
+            Self {
+                packages: vec![
+                    Arc::new(PackageUnit::empty(
+                        PACKAGE_ID,
+                        "1.0.0",
+                        "package-build:first",
+                        "package-abi:test",
+                    )),
+                    Arc::new(PackageUnit::empty(
+                        PACKAGE_ID,
+                        "2.0.0",
+                        "package-build:second",
+                        "package-abi:test",
+                    )),
+                ],
+                package_files: vec![Vec::new(), Vec::new()],
+                spawn_routes: HashMap::new(),
+                link_overlay: LinkOverlay::default(),
+                types: RuntimeTypeContext::default(),
+            }
+        }
+
+        fn projection(&self) -> EvalProgramProjection<'_> {
+            EvalProgramProjection::new(
+                "skiff.test/service",
+                &[],
+                &self.packages,
+                &self.package_files,
+                &self.spawn_routes,
+                &self.link_overlay,
+                &self.types,
+            )
+        }
+    }
+
+    #[test]
+    fn duplicate_package_id_different_build_allows_plain_data_hook_construction() {
+        let program = DuplicatePackageProgram::new();
+
+        EvalRecoverableBehaviorHooks::new(program.projection(), "artifact:test", "build:test")
+            .expect("plain-data hook construction must not eagerly validate package owner lookup");
+    }
+
+    #[test]
+    fn duplicate_package_id_fails_closed_when_package_local_concrete_owner_is_needed() {
+        let program = DuplicatePackageProgram::new();
+        let projection = super::RuntimeExecutionProjection::from(program.projection());
+
+        let result = local_concrete_owner(&projection, &UnitAddr::Package(0));
+
+        match result {
+            Err(RuntimeError::InvalidArtifact(message)) => assert!(
+                message.contains("package id skiff.test/shared is ambiguous"),
+                "unexpected invalid artifact message: {message}"
+            ),
+            Err(error) => panic!("expected invalid artifact error, got {error}"),
+            Ok(owner) => panic!("ambiguous package owner must fail closed, got {owner:?}"),
+        }
+    }
 }
