@@ -420,6 +420,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F52B result | [Host loader service protocol v2 result](tasks/P5-F52B-host-loader-service-protocol-v2-result.md) | `f57d7bd` | complete；2项register blocker确认 |
 | F52C | [Runtime register protocolVersion removal](tasks/P5-F52C-runtime-register-protocol-version-removal.md) | 用户决定：删除 | Rust wire/mapper owner |
 | F52D | [Router register protocolVersion removal](tasks/P5-F52D-router-register-protocol-version-removal.md) | 用户决定：删除 | Router schema/registry owner |
+| F52C result | [Runtime register protocolVersion removal result](tasks/P5-F52C-runtime-register-protocol-version-removal-result.md) | `43e4d89` | complete；loader v1 residual |
+| F52D result | [Router register protocolVersion removal result](tasks/P5-F52D-router-register-protocol-version-removal-result.md) | `650bcb6` | complete；fixture v1 residual |
+| D53 | [Service protocol v1 residual audit](tasks/P5-D53-service-protocol-v1-residual-audit.md) | F52A/B/C/D merged | Rust/Router双分片分类 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
