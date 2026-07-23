@@ -2182,7 +2182,7 @@ impl<'a> OwnerChecker<'a> {
             Expr::Generic { callee, type_args } => (callee.as_ref(), type_args.as_slice()),
             _ => (callee, &[][..]),
         };
-        if let Some(return_type) = self.runtime_receiver_call_type(key, callee) {
+        if let Some(return_type) = self.runtime_receiver_call_type(key, callee, args, arg_types) {
             return Some(return_type);
         }
         if let Some(return_type) =
@@ -2518,6 +2518,11 @@ impl<'a> OwnerChecker<'a> {
         if let Some(resolved) = self.exact_type_arg_substitution(raw, type_params, type_args) {
             return Some(resolved);
         }
+        if let Some(resolved) =
+            self.structured_type_arg_substitution(raw, context, type_params, type_args)
+        {
+            return Some(resolved);
+        }
         let substituted = self.substitute_type_params_in_text(raw, type_params, type_args);
         self.type_resolution
             .resolve_type_text(&substituted, context)
@@ -2536,6 +2541,40 @@ impl<'a> OwnerChecker<'a> {
         self.type_resolution
             .resolve_type_ref(arg, &self.type_context)
             .ok()
+    }
+
+    fn structured_type_arg_substitution(
+        &self,
+        raw: &str,
+        context: &TypeResolutionContext<'_>,
+        type_params: &[String],
+        type_args: &[TypeRef],
+    ) -> Option<ResolvedTypeRef> {
+        if type_params.is_empty() || type_params.len() != type_args.len() {
+            return None;
+        }
+        let generic_context = TypeResolutionContext::with_type_params(
+            context.module_path,
+            type_params.iter().cloned().collect(),
+        );
+        let generic = self
+            .type_resolution
+            .resolve_type_text(raw, &generic_context)
+            .ok()?;
+        let substitutions = type_params
+            .iter()
+            .zip(type_args)
+            .map(|(param, argument)| {
+                self.type_resolution
+                    .resolve_type_ref(argument, &self.type_context)
+                    .map(|resolved| (param.clone(), resolved.ir))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .ok()?;
+        Some(resolved_type_from_ir(&substitute_type_params_in_ir(
+            &generic.ir,
+            &substitutions,
+        )))
     }
 
     fn project_callable_package_type(
@@ -2714,11 +2753,18 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         key: &ExpressionKey,
         callee: &Expr,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Option<ResolvedTypeRef> {
         let (_, method_name) = receiver_call_parts(callee)?;
         let offset = 1 + receiver_object_offset_in_callee(callee)?;
         let receiver_ty = self.expression_type_at_offset(key, offset)?;
         let return_type = builtin_receiver_call_return_type(&receiver_ty, method_name)?;
+        if runtime_receiver_root_from_type_ref(&receiver_ty.ir).as_deref() == Some("Array")
+            && method_name == "push"
+        {
+            self.validate_array_push_args(&receiver_ty, args, arg_types);
+        }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
                 .and_then(|receiver| {
@@ -2729,6 +2775,40 @@ impl<'a> OwnerChecker<'a> {
                 .record_expression_type(key.clone(), projected);
         }
         Some(return_type)
+    }
+
+    fn validate_array_push_args(
+        &mut self,
+        receiver_ty: &ResolvedTypeRef,
+        args: &[Expr],
+        arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
+    ) {
+        let Some(expected) =
+            array_item_type_ir(&receiver_ty.ir).map(|ty| resolved_type_from_ir(&ty))
+        else {
+            return;
+        };
+        if args.len() != 1 {
+            self.diagnostics.push(format!(
+                "{}: call `Array.push` arity mismatch: expected 1 arguments, found {}",
+                self.module_path,
+                args.len()
+            ));
+            return;
+        }
+        let Some((key, Some(actual))) = arg_types.first() else {
+            return;
+        };
+        self.check_value_assignable_to_expected(
+            None,
+            &args[0],
+            key,
+            actual,
+            &expected,
+            None,
+            "call `Array.push` argument 1",
+            self.expression_span(key),
+        );
     }
 
     fn any_interface_receiver_call_type(

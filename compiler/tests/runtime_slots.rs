@@ -589,6 +589,72 @@ fn array_empty_binding_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
+fn union_element_array_push_lowers_to_receiver_builtin() {
+    let project = compile_root_alias_array_push(
+        r#"
+            function run() -> Array<root.types.Modality> {
+                const items = Array.empty<root.types.Modality>()
+                items.push("text")
+                items.push("image")
+                return items
+            }
+        "#,
+    )
+    .expect("Array<root alias literal union>.push should compile");
+    let artifact = module_artifact(&project.package, "types_overlay");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+
+    assert_eq!(
+        call_exprs(run)
+            .iter()
+            .filter(|call| receiver_builtin_call_matches(call, "Array", "push"))
+            .count(),
+        2,
+        "each union element Array.push should lower to receiverBuiltin",
+    );
+}
+
+#[test]
+fn union_element_array_push_rejects_nonmembers_and_wrong_receivers() {
+    let nonmember = compile_root_alias_array_push(
+        r#"
+            function run() -> Array<root.types.Modality> {
+                const items = Array.empty<root.types.Modality>()
+                items.push("document")
+                return items
+            }
+        "#,
+    )
+    .expect_err("Array literal-union push must reject nonmembers")
+    .to_string();
+    assert!(
+        nonmember.contains("Array.push")
+            && nonmember.contains("argument 1")
+            && nonmember.contains("document"),
+        "nonmember error should identify the exact push argument, got:\n{nonmember}",
+    );
+
+    let wrong_receiver = compile_root_alias_array_push(
+        r#"
+            function run() -> number {
+                const value: number = 1
+                value.push("text")
+                return value
+            }
+        "#,
+    )
+    .expect_err("non-array receivers must not acquire Array.push")
+    .to_string();
+    assert!(
+        wrong_receiver.contains("receiver method `push`")
+            && wrong_receiver.contains("number")
+            && wrong_receiver.contains("must resolve"),
+        "wrong receiver error should stay fail closed, got:\n{wrong_receiver}",
+    );
+}
+
+#[test]
 fn literal_string_binding_receiver_call_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
@@ -1270,6 +1336,25 @@ fn compile_package_file_ir(
 
     let project = compile_package_project(temp.path())?;
     Ok(module_artifact(&project.package, module_path.as_ref()).clone())
+}
+
+fn compile_root_alias_array_push(
+    overlay_source: &str,
+) -> Result<common::package_project::PublishedPackageProject, PackageProjectCompileError> {
+    let temp = TestDir::new("skiff-compiler", "union-array-push");
+    fs::write(
+        temp.path().join("package.yml"),
+        "id: example.com/union-array-push\nversion: 1.0.0\n",
+    )
+    .expect("package manifest should be written");
+    fs::write(
+        temp.path().join("types.skiff"),
+        r#"alias Modality = "text" | "image" | "video" | "audio""#,
+    )
+    .expect("production type source should be written");
+    fs::write(temp.path().join("types_overlay.skiff"), overlay_source)
+        .expect("overlay source should be written");
+    compile_package_project(temp.path())
 }
 
 fn executable_entry<'a>(artifact: &'a Value, name: &str) -> &'a Value {
