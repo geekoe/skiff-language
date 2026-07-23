@@ -10,6 +10,7 @@ use super::*;
 pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
+    pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
@@ -25,6 +26,10 @@ pub(crate) fn assembly_request_eval_adapter(
     let config = crate::config_view::RuntimeConfigView::from_activation_literals(
         &input.activation.owned_bindings().config_literals,
     )?;
+    let package_configs = package_config_views(
+        input.execution_image.as_ref(),
+        &input.activation.owned_bindings().config_literals,
+    )?;
     let deployment = &input.activation.identity().deployment;
     let activation_identity = activation_identity_control(input.activation.as_ref());
     let runtime_activation = Arc::new(RuntimeActivation {
@@ -34,7 +39,10 @@ pub(crate) fn assembly_request_eval_adapter(
             metadata: Default::default(),
         },
         version: deployment.contract_version.clone(),
-        package_configs: Vec::new(),
+        package_configs: package_configs
+            .iter()
+            .map(|config| config.resolved_config_value().clone())
+            .collect(),
         service_dependencies: Vec::new(),
         timeout: Default::default(),
         operation_route_bindings: Vec::new(),
@@ -47,6 +55,7 @@ pub(crate) fn assembly_request_eval_adapter(
         activation: input.activation,
         activation_identity,
         config,
+        package_configs,
         runtime_activation,
         file_source: input.file_source,
         http_options: input.http_options,
@@ -63,6 +72,7 @@ struct RuntimeAssemblyRequestEvalAdapter {
     activation: Arc<ActivationContext>,
     activation_identity: ActivationIdentityControl,
     config: crate::config_view::RuntimeConfigView,
+    package_configs: Vec<crate::config_view::RuntimeConfigView>,
     runtime_activation: Arc<RuntimeActivation>,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
@@ -137,7 +147,10 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
         let test_effect_doubles = interpreter.test_effect_double_context();
         ProgramExecutionContext::new(ProgramExecutionInput {
             execution: execution.clone(),
-            config: config_context(concrete::ConfigCapabilityContext::new(&self.config, &[])),
+            config: config_context(concrete::ConfigCapabilityContext::new(
+                &self.config,
+                &self.package_configs,
+            )),
             db,
             file,
             file_source_stream: eval_capabilities::FileSourceStreamContext::new(
@@ -160,6 +173,162 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             request_heap_limits,
         })
         .with_runtime_assembly_target(target.eval().clone())
+    }
+}
+
+fn package_config_views(
+    image: &skiff_runtime_linked_program::AssemblyExecutionImage,
+    literals: &[skiff_artifact_model::ConfigLiteralBinding],
+) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    if image.code_slots().len() != image.shared_packages().code_slots().len() {
+        anyhow::bail!("active execution image package code-slot vectors are misaligned");
+    }
+
+    let mut requirements_by_slot = Vec::with_capacity(image.shared_packages().code_slots().len());
+    for (slot, package) in image.shared_packages().code_slots().iter().enumerate() {
+        if package.code_slot().index() != slot {
+            anyhow::bail!(
+                "active execution image package slot mismatch: expected {slot}, got {}",
+                package.code_slot().index()
+            );
+        }
+        requirements_by_slot.push(package.artifact().runtime_requirements.config.as_slice());
+    }
+    package_config_views_from_requirements(&requirements_by_slot, literals)
+}
+
+fn package_config_views_from_requirements(
+    requirements_by_slot: &[&[skiff_artifact_model::PackageConfigRequirement]],
+    literals: &[skiff_artifact_model::ConfigLiteralBinding],
+) -> anyhow::Result<Vec<crate::config_view::RuntimeConfigView>> {
+    use std::collections::BTreeSet;
+
+    let mut known_paths = BTreeSet::new();
+    let mut views = Vec::with_capacity(requirements_by_slot.len());
+    for requirements in requirements_by_slot {
+        let required_paths = requirements
+            .iter()
+            .map(|requirement| requirement.path.as_str())
+            .collect::<BTreeSet<_>>();
+        known_paths.extend(required_paths.iter().map(|path| (*path).to_string()));
+        let scoped = literals
+            .iter()
+            .filter(|literal| required_paths.contains(literal.path.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let shape = skiff_artifact_model::config_shape_from_package_requirements(requirements)?;
+        views.push(
+            crate::config_view::RuntimeConfigView::from_activation_literals_with_shape(
+                &scoped, shape,
+            )?,
+        );
+    }
+    if let Some(unknown) = literals
+        .iter()
+        .find(|literal| !known_paths.contains(&literal.path))
+    {
+        anyhow::bail!(
+            "activation config literal {} is not required by an exact active package slot",
+            unknown.path
+        );
+    }
+    Ok(views)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use skiff_artifact_model::{ConfigLiteralBinding, MetadataValue, PackageConfigRequirement};
+
+    use super::package_config_views_from_requirements;
+
+    fn requirement(path: &str, value_type: &str, required: bool) -> PackageConfigRequirement {
+        PackageConfigRequirement {
+            path: path.to_string(),
+            value_type: value_type.to_string(),
+            required,
+        }
+    }
+
+    fn literal(path: &str, value: MetadataValue) -> ConfigLiteralBinding {
+        ConfigLiteralBinding {
+            path: path.to_string(),
+            value,
+        }
+    }
+
+    #[test]
+    fn activation_literals_are_projected_to_exact_package_slots() {
+        let own = [
+            requirement("cookieName", "string", true),
+            requirement("maxAgeSeconds", "number", true),
+        ];
+        let dependency = [requirement("dependency.token", "string", true)];
+        let views = package_config_views_from_requirements(
+            &[&own, &dependency],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("maxAgeSeconds", MetadataValue::Number(3600.into())),
+                literal(
+                    "dependency.token",
+                    MetadataValue::String("dependency-value".into()),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(views.len(), 2);
+        assert_eq!(
+            views[0].resolved_config_value(),
+            &json!({"cookieName": "sid", "maxAgeSeconds": 3600})
+        );
+        assert_eq!(
+            views[1].resolved_config_value(),
+            &json!({"dependency": {"token": "dependency-value"}})
+        );
+        assert!(views[0].resolved_config_value().get("dependency").is_none());
+        assert!(views[1].resolved_config_value().get("cookieName").is_none());
+    }
+
+    #[test]
+    fn package_config_projection_fails_closed() {
+        let own = [requirement("cookieName", "string", true)];
+
+        let missing = package_config_views_from_requirements(&[&own], &[]).unwrap_err();
+        assert!(missing
+            .to_string()
+            .contains("cookieName required value is missing"));
+
+        let wrong_type = package_config_views_from_requirements(
+            &[&own],
+            &[literal("cookieName", MetadataValue::Number(1.into()))],
+        )
+        .unwrap_err();
+        assert!(wrong_type
+            .to_string()
+            .contains("cookieName must be a string"));
+
+        let unknown = package_config_views_from_requirements(
+            &[&own],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("retired.key", MetadataValue::String("stale".into())),
+            ],
+        )
+        .unwrap_err();
+        assert!(unknown
+            .to_string()
+            .contains("retired.key is not required by an exact active package slot"));
+
+        let duplicate = package_config_views_from_requirements(
+            &[&own],
+            &[
+                literal("cookieName", MetadataValue::String("sid".into())),
+                literal("cookieName", MetadataValue::String("other".into())),
+            ],
+        )
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("cookieName is duplicated"));
     }
 }
 

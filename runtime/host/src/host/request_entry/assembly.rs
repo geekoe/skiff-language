@@ -248,6 +248,7 @@ impl RuntimeHost {
             crate::eval_capability_adapter::RuntimeAssemblyRequestEvalAdapterInput {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
+                execution_image: Arc::clone(route.execution_image()),
                 file_source: crate::capability_context::FileCapabilitySource::new(
                     self.file_runtime(),
                 ),
