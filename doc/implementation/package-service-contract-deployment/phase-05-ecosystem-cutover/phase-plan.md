@@ -375,6 +375,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I02B | [Skiff consumer combined causal](tasks/P5-I02B-skiff-combined-causal.md) | I37 PASS | one-replica；PASS解锁R02 |
 | I02B result | [Skiff consumer combined causal result](tasks/P5-I02B-skiff-combined-causal-result.md) | `00649e5` | FAIL；suspending marker污染WS ABI |
 | D48 | [I02 fixture effect closure audit](tasks/P5-D48-i02-fixture-effect-closure-audit.md) | I02B FAIL | 只读熔断；第三次I02前闭合 |
+| D48 result | [I02 fixture effect closure audit result](tasks/P5-D48-i02-fixture-effect-closure-audit-result.md) | `00649e5` | COMPLETE；冻结F48A/B/C并行 |
+| F48A | [I02 fixture effect split](tasks/P5-F48A-i02-fixture-effect-split.md) | D48 complete | fixture/API owner |
+| F48B | [Canonical Runtime spawn eval](tasks/P5-F48B-canonical-runtime-spawn-eval.md) | D48 complete | runtime/eval owner |
+| F48C | [Runtime submit receipt validation](tasks/P5-F48C-runtime-submit-receipt-validation.md) | D48 complete | runtime/host owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
