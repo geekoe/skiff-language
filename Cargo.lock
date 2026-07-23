@@ -2332,6 +2332,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "hex",
+ "mongodb",
  "serde",
  "serde_json",
  "sha2",
@@ -2340,6 +2341,7 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-trusted-registry-contract",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

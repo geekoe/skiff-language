@@ -7,6 +7,7 @@
 pub mod assembly;
 pub mod error;
 pub mod fixtures;
+pub mod platform_registry;
 pub mod projection;
 pub mod storage;
 pub mod validation;
