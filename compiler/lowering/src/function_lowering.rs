@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Number;
-use skiff_artifact_model::{validate_supported_receiver_builtin_op, ReceiverCallAbi};
+use skiff_artifact_model::{
+    builtin_receiver_op_by_name, validate_supported_receiver_builtin_op, ReceiverCallAbi,
+};
 use skiff_compiler_source::{
     prelude_registry::{prelude_registry, shared_native_alias_target},
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
@@ -1498,6 +1500,13 @@ impl<'a> FunctionLowerer<'a> {
 
         if let Some(target) =
             self.lower_any_interface_receiver_call_target(&receiver_ty, method_name)
+        {
+            return Ok(Some(target));
+        }
+
+        if let Some(target) = runtime_receiver_root_from_type_ref(&receiver_ty)
+            .and_then(|root| builtin_receiver_op_by_name(&root, method_name))
+            .map(|op| CallTargetIr::ReceiverBuiltin { op })
         {
             return Ok(Some(target));
         }

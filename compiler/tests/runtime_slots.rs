@@ -477,6 +477,39 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
+fn explicitly_typed_json_object_local_in_transaction_lowers_set_to_receiver_builtin() {
+    let artifact = compile_package_file_ir(
+        r#"
+            alias Metadata = JsonObject
+
+            function run(runId: string, sourceRunId: string) -> void {
+                db transaction {
+                    const successorMetadata: Metadata = {
+                      successorOf: runId,
+                      reason: "failed-with-new-input",
+                    }
+                    successorMetadata.set("runtimeBindingsSourceRunId", sourceRunId)
+                }
+            }
+        "#,
+        "internal/drain_checkpoint_store.skiff",
+        "internal.drain_checkpoint_store",
+    )
+    .expect("drain-checkpoint-shaped JsonObject.set fixture should compile");
+    let artifact_value = artifact.value();
+    let run = executable_entry(&artifact_value, "run");
+
+    assert!(
+        receiver_builtin_call(run, "JsonObject", "set").is_some(),
+        "explicit JsonObject local must lower set to the exact JsonObject receiver builtin"
+    );
+    assert!(
+        receiver_builtin_call(run, "Map", "set").is_none(),
+        "JsonObject.set must not be selected through a method-name-only Map fallback"
+    );
+}
+
+#[test]
 fn chained_string_receiver_call_lowers_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
