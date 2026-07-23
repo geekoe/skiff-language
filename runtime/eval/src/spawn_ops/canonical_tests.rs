@@ -21,10 +21,6 @@ use skiff_runtime_capability_context::{
     ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError, CapabilityFuture,
     OwnedActorCapabilityContext, SpawnSubmitControlRequest,
 };
-use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, AssemblyPackageExecutionCode, HydratedPackageCode, LinkedCallTarget,
-    LinkedExprIr, PublicationResourceTable, RuntimeTypeContext, SharedPackageLinkedImage,
-};
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::ActorRef,
@@ -307,33 +303,8 @@ fn canonical_spawn_fixture(metadata_symbol: Option<&str>) -> CanonicalSpawnFixtu
         activation_templates: Vec::new(),
         global_ingress: Vec::new(),
     };
-    let shared = Arc::new(
-        SharedPackageLinkedImage::from_runtime_assembly(
-            &assembly,
-            [HydratedPackageCode::new(
-                Arc::new(package),
-                vec![Arc::new(file.clone())],
-                PublicationResourceTable::default(),
-            )],
-        )
-        .expect("canonical spawn package should hydrate in memory"),
-    );
-    let mut linked_file = skiff_runtime_linker::linked_file_unit_from_artifact(&file)
-        .expect("canonical spawn File IR should link");
-    let LinkedExprIr::Call { call } = &mut linked_file.executables[0].body.expressions[0] else {
-        panic!("canonical spawn caller should contain a call");
-    };
-    call.target = LinkedCallTarget::Executable {
-        addr: skiff_runtime_linked_program::ExecutableAddr::package(0, 0, 1),
-    };
-    let code = Arc::new(
-        AssemblyPackageExecutionCode::try_new(&shared.code_slots()[0], vec![Arc::new(linked_file)])
-            .expect("canonical spawn execution code should match admitted source"),
-    );
-    let image = Arc::new(
-        AssemblyExecutionImage::try_new(shared, vec![code], RuntimeTypeContext::default())
-            .expect("canonical spawn execution image should be admitted"),
-    );
+    let image =
+        crate::test_support::link_package_fixture(assembly.clone(), vec![(package, vec![file])]);
     let activation = activation_context(
         assembly_identity.clone(),
         package_ref.package_build_id.clone(),

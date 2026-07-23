@@ -412,6 +412,7 @@ pub(crate) struct ResolvedRuntimeConst<'a> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::*;
     use skiff_artifact_model::{
         AssemblyIdentity, CanonicalPackageLinkPlan, ExecutableBody, ExecutableIr, ExecutableKind,
         FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageBuildId,
@@ -419,12 +420,6 @@ mod tests {
         PackageRuntimeRequirements, RuntimeAssembly, SlotLayout, TypeDeclIr, TypeDescriptorIr,
         TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     };
-    use skiff_runtime_linked_program::{
-        AssemblyPackageExecutionCode, HydratedPackageCode, PublicationResourceTable,
-        SharedPackageLinkedImage,
-    };
-
-    use super::*;
 
     #[test]
     fn assembly_execution_projection_resolves_image_owned_lookup_matrix() {
@@ -593,26 +588,9 @@ mod tests {
             activation_templates: Vec::new(),
             global_ingress: Vec::new(),
         };
-        let shared = Arc::new(
-            SharedPackageLinkedImage::from_runtime_assembly(
-                &assembly,
-                vec![HydratedPackageCode::new(
-                    Arc::new(package),
-                    vec![Arc::new(file.clone())],
-                    PublicationResourceTable::default(),
-                )],
-            )
-            .expect("projection shared image"),
-        );
-        let linked = skiff_runtime_linker::linked_file_unit_from_artifact(&file)
-            .expect("projection linked file");
-        let code = Arc::new(
-            AssemblyPackageExecutionCode::try_new(&shared.code_slots()[0], vec![Arc::new(linked)])
-                .expect("projection execution code"),
-        );
-        let image = Arc::new(
-            AssemblyExecutionImage::try_new(shared, vec![code], RuntimeTypeContext::default())
-                .expect("projection execution image"),
+        let image = crate::test_support::link_package_fixture(
+            assembly,
+            vec![(package, vec![file.clone()])],
         );
         (image, file.file_ir_identity)
     }

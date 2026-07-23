@@ -8,11 +8,7 @@ use skiff_runtime_activation::{
     ActivationContext, ActivationId, ActivationIdentity, ActivationOwnedBindings,
     RequestActivationContext, RuntimeActivation,
 };
-use skiff_runtime_linked_program::{
-    AssemblyExecutionImage, AssemblyPackageExecutionCode, HydratedPackageCode, LinkedCallTarget,
-    LinkedExecutableBody, LinkedExprIr, LinkedStmtIr, PublicationResourceTable, RuntimeTypeContext,
-    SharedPackageLinkedImage,
-};
+use skiff_runtime_linked_program::LinkedCallTarget;
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{HeapHandle, HeapNode, RuntimeValue},
@@ -194,27 +190,8 @@ fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {
         activation_templates: Vec::new(),
         global_ingress: Vec::new(),
     };
-    let shared = Arc::new(
-        SharedPackageLinkedImage::from_runtime_assembly(
-            &assembly,
-            [HydratedPackageCode::new(
-                Arc::new(package),
-                vec![Arc::new(file.clone())],
-                PublicationResourceTable::default(),
-            )],
-        )
-        .expect("materialization package should hydrate"),
-    );
-    let linked_file = skiff_runtime_linker::linked_file_unit_from_artifact(&file)
-        .expect("materialization File IR should link");
-    let code = Arc::new(
-        AssemblyPackageExecutionCode::try_new(&shared.code_slots()[0], vec![Arc::new(linked_file)])
-            .expect("materialization execution slot should match the canonical source"),
-    );
-    let image = Arc::new(
-        AssemblyExecutionImage::try_new(shared, vec![code], RuntimeTypeContext::default())
-            .expect("materialization execution image should build"),
-    );
+    let image =
+        crate::test_support::link_package_fixture(assembly.clone(), vec![(package, vec![file])]);
     let caller_addr = skiff_runtime_linked_program::ExecutableAddr {
         unit: skiff_runtime_linked_program::UnitAddr::Package(0),
         file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(0),
@@ -313,59 +290,12 @@ fn package_direct_fixture() -> PackageDirectFixture {
         activation_templates: Vec::new(),
         global_ingress: Vec::new(),
     };
-    let shared = Arc::new(
-        SharedPackageLinkedImage::from_runtime_assembly(
-            &assembly,
-            [
-                HydratedPackageCode::new(
-                    Arc::new(caller_package),
-                    vec![Arc::new(caller_file.clone())],
-                    PublicationResourceTable::default(),
-                ),
-                HydratedPackageCode::new(
-                    Arc::new(callee_package),
-                    vec![Arc::new(callee_file.clone())],
-                    PublicationResourceTable::default(),
-                ),
-            ],
-        )
-        .expect("canonical package graph should hydrate"),
-    );
-    let direct_call = shared
-        .resolve_package_direct_call(&caller_ref.package_build_id, &dependency_ref, &callable_id)
-        .expect("canonical package dependency should resolve to an exact executable");
-
-    let mut caller_conversion = caller_file.clone();
-    caller_conversion.external_refs.package_callables.clear();
-    caller_conversion.executables[0].body = ExecutableBody::default();
-    let mut linked_caller =
-        skiff_runtime_linker::linked_file_unit_from_artifact(&caller_conversion)
-            .expect("caller shell should convert before installing the resolved canonical call");
-    linked_caller.executables[0].body = linked_caller_body(direct_call);
-    let linked_callee = skiff_runtime_linker::linked_file_unit_from_artifact(&callee_file)
-        .expect("callee should link as ordinary package code");
-
-    let caller_code = Arc::new(
-        AssemblyPackageExecutionCode::try_new(
-            &shared.code_slots()[0],
-            vec![Arc::new(linked_caller)],
-        )
-        .expect("caller execution slot should match the canonical source"),
-    );
-    let callee_code = Arc::new(
-        AssemblyPackageExecutionCode::try_new(
-            &shared.code_slots()[1],
-            vec![Arc::new(linked_callee)],
-        )
-        .expect("callee execution slot should match the canonical source"),
-    );
-    let image = Arc::new(
-        AssemblyExecutionImage::try_new(
-            shared,
-            vec![caller_code, callee_code],
-            RuntimeTypeContext::default(),
-        )
-        .expect("canonical execution image should own both package slots"),
+    let image = crate::test_support::link_package_fixture(
+        assembly.clone(),
+        vec![
+            (caller_package, vec![caller_file]),
+            (callee_package, vec![callee_file]),
+        ],
     );
     let caller_addr = skiff_runtime_linked_program::ExecutableAddr {
         unit: skiff_runtime_linked_program::UnitAddr::Package(0),
@@ -479,31 +409,6 @@ fn callee_executable(array_type: TypeRefIr) -> ExecutableIr {
             ],
         },
         source_span: None,
-    }
-}
-
-fn linked_caller_body(
-    direct_call: skiff_runtime_linked_program::LinkedPackageDirectCall,
-) -> LinkedExecutableBody {
-    LinkedExecutableBody {
-        blocks: vec![skiff_runtime_linked_program::BlockIr {
-            label: "entry".to_string(),
-            statements: vec![skiff_runtime_linked_program::StmtRefIr { statement: 0 }],
-        }],
-        statements: vec![LinkedStmtIr::Return {
-            value: Some(skiff_runtime_linked_program::ExprRefIr { expression: 1 }),
-        }],
-        expressions: vec![
-            LinkedExprIr::LoadSlot { slot: 0 },
-            LinkedExprIr::Call {
-                call: skiff_runtime_linked_program::CallIr {
-                    target: LinkedCallTarget::PackageDirect { call: direct_call },
-                    args: vec![skiff_runtime_linked_program::ExprRefIr { expression: 0 }],
-                    type_args: BTreeMap::new(),
-                    metadata: BTreeMap::new(),
-                },
-            },
-        ],
     }
 }
 

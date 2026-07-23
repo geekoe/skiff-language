@@ -39,3 +39,16 @@ pub use program::{
 pub use resolver::{
     LinkedProgramImageResolverExt, ProgramError, ProgramResult, ResolvedLinkedExecutable,
 };
+
+#[cfg(feature = "test-support")]
+pub fn link_package_fixture_from_runtime_assembly(
+    assembly: &skiff_artifact_model::RuntimeAssembly,
+    packages: impl IntoIterator<Item = skiff_runtime_linked_program::HydratedPackageCode>,
+) -> anyhow::Result<std::sync::Arc<skiff_runtime_linked_program::AssemblyExecutionImage>> {
+    let shared = std::sync::Arc::new(
+        skiff_runtime_linked_program::SharedPackageLinkedImage::from_runtime_assembly(
+            assembly, packages,
+        )?,
+    );
+    crate::assembly_execution::link_assembly_execution_image(shared)
+}

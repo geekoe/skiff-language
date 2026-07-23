@@ -10,6 +10,27 @@ use skiff_runtime_linked_program::{
 
 use crate::EvalRuntimeProgramSource;
 
+#[cfg(test)]
+pub(crate) fn link_package_fixture(
+    assembly: skiff_artifact_model::RuntimeAssembly,
+    packages: Vec<(
+        skiff_artifact_model::PackageArtifact,
+        Vec<skiff_artifact_model::FileIrUnit>,
+    )>,
+) -> Arc<skiff_runtime_linked_program::AssemblyExecutionImage> {
+    skiff_runtime_linker::link_package_fixture_from_runtime_assembly(
+        &assembly,
+        packages.into_iter().map(|(package, files)| {
+            skiff_runtime_linked_program::HydratedPackageCode::new(
+                Arc::new(package),
+                files.into_iter().map(Arc::new).collect(),
+                skiff_runtime_linked_program::PublicationResourceTable::default(),
+            )
+        }),
+    )
+    .expect("package fixture should link through the canonical assembly projection")
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeProgram {
     pub service: ServiceMeta,
