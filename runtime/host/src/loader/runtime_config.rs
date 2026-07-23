@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde_json::{json, Map, Value};
+use skiff_artifact_identity::SERVICE_PROTOCOL_IDENTITY_PREFIX;
 use skiff_artifact_model::ConfigShape;
 use skiff_runtime_linked_program::{
     package_config_shape, LinkedProgramImage, PackageUnit, ServiceUnit,
@@ -974,7 +975,7 @@ fn validate_typed_service_metadata(
     }
     if !is_protocol_identity(&service_unit.protocol_identity) {
         anyhow::bail!(
-            "service unit protocolIdentity must be skiff-protocol-v1:sha256:<64 lowercase hex>"
+            "service unit protocolIdentity must be {SERVICE_PROTOCOL_IDENTITY_PREFIX}:<64 lowercase hex>"
         );
     }
     Ok(())
@@ -1007,11 +1008,13 @@ fn is_bare_sha256(value: &str) -> bool {
 }
 
 fn is_protocol_identity(value: &str) -> bool {
-    let Some((prefix, hash)) = value.rsplit_once(":sha256:") else {
+    let Some(hash) = value.strip_prefix(SERVICE_PROTOCOL_IDENTITY_PREFIX) else {
         return false;
     };
-    prefix == "skiff-protocol-v1"
-        && hash.len() == 64
+    let Some(hash) = hash.strip_prefix(':') else {
+        return false;
+    };
+    hash.len() == 64
         && hash
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
@@ -1063,7 +1066,7 @@ mod tests {
     };
 
     const PROTOCOL_IDENTITY: &str =
-        "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SERVICE_REVISION_ID: &str =
         "875894aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const POINTER_BUILD_ID: &str = "skiff-service-build-v1:sha256:5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5cd5";
@@ -1074,6 +1077,20 @@ mod tests {
             .as_value()
             .pointer("/mongoUrl")
             .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn service_protocol_identity_admission_is_canonical_v2_only() {
+        assert!(is_protocol_identity(PROTOCOL_IDENTITY));
+        assert!(!is_protocol_identity(
+            "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(!is_protocol_identity(
+            "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(!is_protocol_identity(
+            "skiff-service-protocol-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ));
     }
 
     fn expect_binary_router_message(message: RouterWriterMessage) -> Vec<u8> {
