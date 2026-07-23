@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -105,6 +105,29 @@ test('official package authority is transported only as an absolute descriptor b
     }),
     /descriptor must be absolute/,
   );
+});
+
+test('real compiler CLI rejects original and copied registry roots without authority', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-registry-no-authority-'));
+  const copiedRoot = join(temp, 'registry-copy');
+  await cp(join(skiffRoot, 'registry'), copiedRoot, { recursive: true });
+  for (const [name, root] of [
+    ['original', join(skiffRoot, 'registry')],
+    ['copy', copiedRoot],
+  ]) {
+    const artifactRoot = join(temp, `${name}-artifacts`);
+    await assert.rejects(
+      runCompilerAuthoring({
+        skiffRoot,
+        kind: 'package',
+        action: 'build',
+        root,
+        artifactRoot,
+      }),
+      /package id skiff\.run\/registry is reserved/,
+    );
+    await assert.rejects(readFile(join(artifactRoot, 'store.json')), /ENOENT/);
+  }
 });
 
 test('contract-first publish compiles a consumer with no provider package', async () => {

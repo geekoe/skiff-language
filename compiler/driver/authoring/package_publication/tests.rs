@@ -232,6 +232,34 @@ fn copied_std_remains_a_rejected_user_package_with_zero_record_writes() {
 }
 
 #[test]
+fn registry_without_matching_authority_is_rejected_before_store_creation() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let platform_sources = CompilerPlatformSources::new(&root).unwrap();
+    let artifact_root = TestDir::new("unauthorized-registry-records");
+    let records = artifact_root.path().join("records");
+
+    let error = build_authoring_object(
+        &platform_sources,
+        AuthoringObject::Package,
+        &root.join("registry"),
+        &records,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        error.contains("package id skiff.run/registry is reserved"),
+        "{error}"
+    );
+    assert!(!records.exists());
+}
+
+#[test]
 fn official_std_route_fails_closed_on_wrong_platform_manifest_and_source_facts() {
     let changed_registry = MinimalPlatformFixture::new("changed-registry");
     let changed_registry_context = changed_registry.context();
