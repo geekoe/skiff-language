@@ -75,6 +75,7 @@ impl ExpressionTypeModelBuildError {
 pub struct ExpressionTypeFact {
     pub ty: Option<ResolvedTypeRef>,
     pub span: SourceSpan,
+    stream_emit_target: Option<ResolvedTypeRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +219,7 @@ struct OwnerChecker<'a> {
     callable_signatures: &'a BTreeMap<String, CallableSignature>,
     dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
     return_type: Option<TypeRef>,
+    stream_chunk: Option<ResolvedTypeRef>,
     type_context: TypeResolutionContext<'a>,
     env: BTreeMap<String, ResolvedTypeRef>,
     contract_projection: ContractProjectionState,
@@ -307,45 +309,10 @@ impl ExpressionTypeModel {
         self.object_materializations.get(key)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn value_assignable_to_expected(
-        &self,
-        expression_sources: &ExpressionSourceMap,
-        type_resolution: &TypeResolutionModel,
-        type_context: &TypeResolutionContext<'_>,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-    ) -> bool {
-        ExpressionAssignability::new("", expression_sources, type_resolution, type_context, None)
-            .value_assignable_without_contract_projection(annotation, value, actual, expected)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn object_literal_assignability_diagnostics(
-        &self,
-        diagnostic_path: &str,
-        expression_sources: &ExpressionSourceMap,
-        type_resolution: &TypeResolutionModel,
-        type_context: &TypeResolutionContext<'_>,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        value_key: &ExpressionKey,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-        context: &str,
-    ) -> Option<Vec<String>> {
-        ExpressionAssignability::new(
-            diagnostic_path,
-            expression_sources,
-            type_resolution,
-            type_context,
-            None,
-        )
-        .object_literal_assignability_diagnostics(
-            annotation, value, value_key, actual, expected, context,
-        )
+    /// Returns the `Stream<T>` chunk target recorded by the unified expression
+    /// checker for a `Stmt::Emit` root expression.
+    pub fn stream_emit_target(&self, key: &ExpressionKey) -> Option<&ResolvedTypeRef> {
+        self.facts.get(key)?.stream_emit_target.as_ref()
     }
 }
 
@@ -674,6 +641,12 @@ impl<'a> OwnerChecker<'a> {
         object_materialization: &'a mut ObjectMaterializationState,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
+        let stream_chunk = return_type.as_ref().and_then(|return_type| {
+            type_resolution
+                .resolve_type_ref(return_type, &type_context)
+                .ok()
+                .and_then(|return_type| stream_chunk_type(&return_type))
+        });
         let (contract_projection, projection_diagnostics) = ContractProjectionState::new(
             &env,
             &exact_bindings,
@@ -696,6 +669,7 @@ impl<'a> OwnerChecker<'a> {
             callable_signatures,
             dependency_analysis,
             return_type,
+            stream_chunk,
             type_context,
             env,
             contract_projection,
@@ -929,9 +903,30 @@ impl<'a> OwnerChecker<'a> {
                 false
             }
             Stmt::DbTransaction { body } => self.check_block(body),
-            Stmt::Throw { value } | Stmt::Emit(value) => {
+            Stmt::Throw { value } => {
                 self.check_expr(value);
-                matches!(stmt, Stmt::Throw { .. })
+                true
+            }
+            Stmt::Emit(value) => {
+                let value_key = self.peek_key();
+                let actual = self.check_expr(value);
+                let Some(expected) = self.stream_chunk.clone() else {
+                    return false;
+                };
+                self.record_stream_emit_target(&value_key, expected.clone());
+                if let Some(actual) = actual {
+                    self.check_value_assignable_to_expected(
+                        None,
+                        value,
+                        &value_key,
+                        &actual,
+                        &expected,
+                        None,
+                        "emit chunk",
+                        self.expression_span(&value_key),
+                    );
+                }
+                false
             }
             Stmt::Expr(value) => {
                 let ty = self.check_expr(value);
@@ -1631,9 +1626,22 @@ impl<'a> OwnerChecker<'a> {
             ExpressionTypeFact {
                 ty: ty.clone(),
                 span,
+                stream_emit_target: None,
             },
         );
         ty
+    }
+
+    fn record_stream_emit_target(&mut self, key: &ExpressionKey, target: ResolvedTypeRef) {
+        let Some(fact) = self.facts.get_mut(key) else {
+            self.diagnostics.push(format!(
+                "{}: emit target fact could not be recorded at {}",
+                self.module_path,
+                self.expression_span_label(key)
+            ));
+            return;
+        };
+        fact.stream_emit_target = Some(target);
     }
 
     fn validate_constructor(
@@ -3359,6 +3367,19 @@ fn single_for_item_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
         }),
         _ => None,
     }
+}
+
+fn stream_chunk_type(ty: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
+    let TypeRefIr::Native { name, args } = &ty.ir else {
+        return None;
+    };
+    matches!(name.as_str(), "Stream" | "std.stream.Stream")
+        .then_some(args)
+        .filter(|args| args.len() == 1)
+        .map(|args| ResolvedTypeRef {
+            ir: args[0].clone(),
+            source_text: type_ref_debug_text(&args[0]),
+        })
 }
 
 fn map_entry_types(ty: &ResolvedTypeRef) -> Option<(ResolvedTypeRef, ResolvedTypeRef)> {

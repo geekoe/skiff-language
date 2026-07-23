@@ -308,6 +308,134 @@ fn map_and_json_targets_keep_map_materialization_facts() {
 }
 
 #[test]
+fn stream_emit_materializes_record_union_nullable_and_nested_object_facts() {
+    let built = build(
+        r#"
+          type Details { label: string, note: string? }
+          type RecordChunk { sequence: integer, details: Details, optional: string? }
+          alias UnionChunk =
+            { tag: "record", payload: RecordChunk, trace: string? }
+            | { tag: "done", count: integer }
+
+          function recordEvents() -> Stream<RecordChunk> {
+            emit({ sequence: 1, details: { label: "record-details" } })
+            return
+          }
+
+          function unionEvents() -> Stream<UnionChunk> {
+            emit({ tag: "record", payload: { sequence: 2, details: { label: "union-details" } } })
+            emit({ tag: "done", count: 2 })
+            return
+          }
+        "#,
+    )
+    .expect("stream emit targets should drive recursive object materialization");
+
+    let record_snippet = r#"{ sequence: 1, details: { label: "record-details" } }"#;
+    let record_key = built.key(record_snippet);
+    let record = built.materialization(record_snippet);
+    assert!(matches!(
+        record.kind,
+        ObjectMaterializationKind::Record { .. }
+    ));
+    assert_eq!(field_names(record), ["details", "optional", "sequence"]);
+    assert_eq!(synthetic_fields(record), ["optional"]);
+    assert_eq!(
+        built
+            .model
+            .stream_emit_target(&record_key)
+            .expect("record emit should persist its target")
+            .ir,
+        record.resolved_target.ir
+    );
+
+    let record_details = built.materialization(r#"{ label: "record-details" }"#);
+    assert_eq!(field_names(record_details), ["label", "note"]);
+    assert_eq!(synthetic_fields(record_details), ["note"]);
+
+    let union_snippet =
+        r#"{ tag: "record", payload: { sequence: 2, details: { label: "union-details" } } }"#;
+    let union_key = built.key(union_snippet);
+    let union = built.materialization(union_snippet);
+    assert_eq!(union_tag(union), Some("record"));
+    assert_eq!(field_names(union), ["payload", "tag", "trace"]);
+    assert_eq!(synthetic_fields(union), ["trace"]);
+    assert_eq!(
+        built
+            .model
+            .stream_emit_target(&union_key)
+            .expect("union emit should persist its target")
+            .ir,
+        union.resolved_target.ir
+    );
+
+    let union_payload =
+        built.materialization(r#"{ sequence: 2, details: { label: "union-details" } }"#);
+    assert!(matches!(
+        union_payload.kind,
+        ObjectMaterializationKind::Record { .. }
+    ));
+    assert_eq!(synthetic_fields(union_payload), ["optional"]);
+    assert_eq!(
+        synthetic_fields(built.materialization(r#"{ label: "union-details" }"#)),
+        ["note"]
+    );
+
+    let done_snippet = r#"{ tag: "done", count: 2 }"#;
+    assert_eq!(union_tag(built.materialization(done_snippet)), Some("done"));
+    assert!(built
+        .model
+        .stream_emit_target(&built.key(done_snippet))
+        .is_some());
+}
+
+#[test]
+fn stream_emit_object_and_scalar_negatives_fail_in_the_unified_type_owner() {
+    let cases = [
+        (
+            r#"
+              type Chunk { required: string, nullable: string? }
+              function events() -> Stream<Chunk> { emit({}) return }
+            "#,
+            "missing required object literal field `required`",
+        ),
+        (
+            r#"
+              type Chunk { value: string }
+              function events() -> Stream<Chunk> {
+                emit({ value: "ok", extra: true })
+                return
+              }
+            "#,
+            "unknown object literal field `extra`",
+        ),
+        (
+            r#"
+              alias Chunk = { left: string? } | { right: string? }
+              function events() -> Stream<Chunk> { emit({}) return }
+            "#,
+            "ambiguous object literal branch",
+        ),
+        (
+            r#"
+              function events() -> Stream<string> { emit(42) return }
+            "#,
+            "emit chunk type mismatch",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let error = build(source)
+            .expect_err("invalid stream emit should fail source typing")
+            .message();
+        assert!(
+            error.contains(expected),
+            "expected diagnostic {expected:?}, got:\n{error}"
+        );
+    }
+}
+
+#[test]
 fn object_literal_negatives_fail_closed() {
     let cases = [
         (

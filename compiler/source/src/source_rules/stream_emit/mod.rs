@@ -1,14 +1,13 @@
-use std::{collections::BTreeSet, path::Path};
-
-use skiff_artifact_model::TypeRefIr;
+use std::path::Path;
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
-    shared::ast::{Block, Expr, FunctionDecl, SourceFile, Stmt, TypeRef},
-    shared::type_syntax::generic_parts,
-    ExpressionKey, ExpressionOwnerKey, ExpressionSourceMap, ExpressionTypeModel, ResolvedTypeRef,
-    TypeResolutionContext, TypeResolutionModel,
+    shared::ast::{Block, Expr, FunctionDecl, SourceFile, Stmt},
+    ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
 };
+
+#[cfg(test)]
+use crate::shared::ast::TypeRef;
 
 #[cfg(test)]
 mod statements;
@@ -54,9 +53,7 @@ pub fn collect_stream_emit_expression_call_violations(
 pub fn collect_stream_emit_type_violations(
     diagnostic_root: &Path,
     parsed_sources: &[ParsedCompilerSource],
-    expression_sources: &ExpressionSourceMap,
     expression_types: &ExpressionTypeModel,
-    type_resolution: &TypeResolutionModel,
     violations: &mut Vec<String>,
 ) {
     for parsed in parsed_sources {
@@ -65,9 +62,7 @@ pub fn collect_stream_emit_type_violations(
             &path,
             parsed.source().module_path.as_str(),
             parsed.ast(),
-            expression_sources,
             expression_types,
-            type_resolution,
             violations,
         );
     }
@@ -160,9 +155,7 @@ fn collect_source_stream_emit_type_violations(
     path: &str,
     module_path: &str,
     ast: &SourceFile,
-    expression_sources: &ExpressionSourceMap,
     expression_types: &ExpressionTypeModel,
-    type_resolution: &TypeResolutionModel,
     violations: &mut Vec<String>,
 ) {
     for function in &ast.functions {
@@ -174,15 +167,11 @@ fn collect_source_stream_emit_type_violations(
             module_path,
             ExpressionOwnerKey::Function(function.name.clone()),
             function,
-            &[],
-            expression_sources,
             expression_types,
-            type_resolution,
             violations,
         );
     }
     for implementation in &ast.impls {
-        let inherited_type_params = generic_type_params(&implementation.target);
         for method in &implementation.method_bodies {
             if method.is_native || method.is_provider {
                 continue;
@@ -195,10 +184,7 @@ fn collect_source_stream_emit_type_violations(
                     method: method.name.clone(),
                 },
                 method,
-                &inherited_type_params,
-                expression_sources,
                 expression_types,
-                type_resolution,
                 violations,
             );
         }
@@ -211,30 +197,16 @@ fn collect_function_stream_emit_type_violations(
     module_path: &str,
     owner: ExpressionOwnerKey,
     function: &FunctionDecl,
-    inherited_type_params: &[String],
-    expression_sources: &ExpressionSourceMap,
     expression_types: &ExpressionTypeModel,
-    type_resolution: &TypeResolutionModel,
     violations: &mut Vec<String>,
 ) {
-    let type_params = inherited_type_params
-        .iter()
-        .chain(&function.type_params)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let type_context = TypeResolutionContext::with_type_params(module_path, type_params);
-    let stream_chunk = stream_chunk_type(&function.return_type, &type_context, type_resolution);
     let mut checker = StreamEmitTypeChecker {
         path,
         module_path,
         owner,
         function_name: function.name.as_str(),
-        stream_chunk,
-        type_context,
         next_index: 0,
-        expression_sources,
         expression_types,
-        type_resolution,
         violations,
     };
     checker.check_block(&function.body);
@@ -245,12 +217,8 @@ struct StreamEmitTypeChecker<'a> {
     module_path: &'a str,
     owner: ExpressionOwnerKey,
     function_name: &'a str,
-    stream_chunk: Option<ResolvedTypeRef>,
-    type_context: TypeResolutionContext<'a>,
     next_index: u32,
-    expression_sources: &'a ExpressionSourceMap,
     expression_types: &'a ExpressionTypeModel,
-    type_resolution: &'a TypeResolutionModel,
     violations: &'a mut Vec<String>,
 }
 
@@ -300,8 +268,8 @@ impl StreamEmitTypeChecker<'_> {
             }
             Stmt::Emit(value) => {
                 let value_key = self.peek_key();
-                let actual = self.check_expr(value);
-                self.check_emit(value, &value_key, actual);
+                self.check_expr(value);
+                self.check_emit(value, &value_key);
             }
             Stmt::Rethrow { exception } => {
                 self.check_expr(exception);
@@ -315,69 +283,40 @@ impl StreamEmitTypeChecker<'_> {
         }
     }
 
-    fn check_emit(
-        &mut self,
-        value: &Expr,
-        value_key: &ExpressionKey,
-        actual: Option<ResolvedTypeRef>,
-    ) {
-        let Some(expected) = &self.stream_chunk else {
+    fn check_emit(&mut self, value: &Expr, value_key: &ExpressionKey) {
+        let Some(_expected) = self.expression_types.stream_emit_target(value_key) else {
             self.violations.push(format!(
                 "{}: emit can only be used in a Stream<T> producer; function {} returns a non-stream type",
                 self.path, self.function_name
             ));
             return;
         };
-        let Some(actual) = actual else {
+        let Some(_actual) = self
+            .expression_types
+            .fact(value_key)
+            .and_then(|fact| fact.ty.as_ref())
+        else {
             self.violations.push(format!(
                 "{}: cannot infer emit chunk type in {}; emit expression must have a known Stream<T> chunk type",
                 self.path, self.function_name
             ));
             return;
         };
-        if self.expression_types.value_assignable_to_expected(
-            self.expression_sources,
-            self.type_resolution,
-            &self.type_context,
-            None,
-            value,
-            &actual,
-            expected,
-        ) {
-            return;
-        }
-        if let Some(diagnostics) = self
-            .expression_types
-            .object_literal_assignability_diagnostics(
-                self.path,
-                self.expression_sources,
-                self.type_resolution,
-                &self.type_context,
-                None,
-                value,
-                value_key,
-                &actual,
-                expected,
-                &format!("emit chunk in {}", self.function_name),
-            )
+        if matches!(value, Expr::ObjectLiteral { .. })
+            && self
+                .expression_types
+                .object_materialization(value_key)
+                .is_none()
         {
-            if !diagnostics.is_empty() {
-                self.violations.extend(diagnostics);
-                return;
-            }
+            self.violations.push(format!(
+                "{}: emit object chunk in {} is missing its materialization fact",
+                self.path, self.function_name
+            ));
         }
-        self.violations.push(format!(
-            "{}: emit chunk type mismatch in {}: expected {}, found {}",
-            self.path, self.function_name, expected.source_text, actual.source_text
-        ));
     }
 
-    fn check_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
+    fn check_expr(&mut self, expr: &Expr) {
         let key = self.next_key();
-        let ty = self
-            .expression_types
-            .fact(&key)
-            .and_then(|fact| fact.ty.clone());
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {}
             Expr::Binary { left, right, .. } => {
@@ -481,7 +420,12 @@ impl StreamEmitTypeChecker<'_> {
                 self.check_expr(&read.key);
             }
         }
-        ty
+        if self.expression_types.fact(&key).is_none() {
+            self.violations.push(format!(
+                "{}: expression in {} is missing its unified type fact",
+                self.path, self.function_name
+            ));
+        }
     }
 
     fn next_key(&mut self) -> ExpressionKey {
@@ -522,44 +466,18 @@ impl StreamEmitTypeChecker<'_> {
     }
 }
 
-fn stream_chunk_type(
-    return_type: &TypeRef,
-    context: &TypeResolutionContext<'_>,
-    type_resolution: &TypeResolutionModel,
-) -> Option<ResolvedTypeRef> {
-    let parts = generic_parts(return_type.name.trim())?;
-    let root = type_resolution
-        .resolve_type_text(parts.root, context)
-        .ok()?;
-    let is_stream = matches!(root.source_text.as_str(), "Stream" | "std.stream.Stream")
-        || matches!(
-            root.ir,
-            TypeRefIr::Native { ref name, .. } if name == "Stream"
-        );
-    if !is_stream || parts.args.len() != 1 {
-        return None;
-    }
-    type_resolution
-        .resolve_type_text(parts.args[0], context)
-        .ok()
-}
-
-fn generic_type_params(target: &str) -> Vec<String> {
-    generic_parts(target)
-        .map(|parts| {
-            parts
-                .args
-                .iter()
-                .map(|arg| arg.trim().to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use skiff_compiler_input::CompilerPlatformSources;
+
+    use crate::{
+        parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+        publication_db_metadata_index, source_graph::CompilerSourceFile, ExpressionSourceMap,
+        PublicationTypeSymbolIndex, TypeResolutionModel,
+    };
 
     fn collect(source: &str) -> Vec<String> {
         let ast = crate::shared::parser::parse_source(source).unwrap();
@@ -567,6 +485,62 @@ mod tests {
         collect_stream_function_return_types(&ast, &mut return_types);
         let mut violations = Vec::new();
         collect_stream_emit_violations("test.skiff", &ast, &return_types, &mut violations);
+        violations
+    }
+
+    fn collect_typed(source: &str) -> Vec<String> {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        let platform_sources = CompilerPlatformSources::new(&platform_root)
+            .expect("workspace platform sources should load");
+        initialize_prelude_registry(&platform_sources).expect("prelude registry should initialize");
+        let source = CompilerSourceFile::parse(
+            PathBuf::from("stream_emit.skiff"),
+            "stream_emit".to_string(),
+            false,
+            false,
+            source.to_string(),
+            "stream_emit.skiff",
+        )
+        .expect("stream emit test source should parse");
+        let diagnostic_root = PathBuf::from("/test");
+        let parsed_sources = parse_publication_sources(&diagnostic_root, &[source])
+            .expect("stream emit parsed source facts should build");
+        let type_resolution = TypeResolutionModel::build(
+            &parsed_sources,
+            &BTreeMap::new(),
+            &[],
+            None,
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("stream emit type resolution should build");
+        let expression_sources = ExpressionSourceMap::build(&parsed_sources)
+            .expect("stream emit expression source facts should build");
+        let db_metadata = publication_db_metadata_index(
+            parsed_sources
+                .iter()
+                .map(|source| (source.module_path(), source.ast())),
+            &BTreeMap::new(),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("stream emit DB metadata should build");
+        let expression_types = ExpressionTypeModel::build(
+            &parsed_sources,
+            &expression_sources,
+            &type_resolution,
+            &db_metadata,
+            None,
+        )
+        .expect("stream emit expression type facts should build");
+        let mut violations = Vec::new();
+        collect_stream_emit_type_violations(
+            &diagnostic_root,
+            &parsed_sources,
+            &expression_types,
+            &mut violations,
+        );
         violations
     }
 
@@ -612,6 +586,30 @@ mod tests {
                 "test.skiff: emit can only be used in a Stream<T> producer; function echo returns a non-stream type"
             ]
         );
+    }
+
+    #[test]
+    fn typed_checker_consumes_emit_facts_and_only_reports_stream_control_violations() {
+        let violations = collect_typed(
+            r#"
+                type Chunk { value: string }
+
+                function valid() -> Stream<Chunk> {
+                    emit({ value: "ok" })
+                    return
+                }
+
+                function invalid() -> Chunk {
+                    emit(Chunk { value: "invalid" })
+                    return Chunk { value: "return" }
+                }
+            "#,
+        );
+
+        assert_eq!(violations.len(), 1, "violations: {violations:#?}");
+        assert!(violations[0].contains(
+            "emit can only be used in a Stream<T> producer; function invalid returns a non-stream type"
+        ));
     }
 
     #[test]
