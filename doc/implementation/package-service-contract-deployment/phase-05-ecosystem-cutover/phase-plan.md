@@ -351,6 +351,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F45E | [I02 canonical spawn submit probe](tasks/P5-F45E-i02-spawn-submit-probe.md) | F45A/C/D merged | 高；I02真实typed control consumer |
 | F45E result | [I02 canonical spawn submit probe result](tasks/P5-F45E-i02-spawn-submit-probe-result.md) | `dada6d5` | complete；direct 6/6 |
 | I35 | [Actor control / I02 combined](tasks/P5-I35-actor-control-i02-combined.md) | F45A–E merged | cheap combined；只解锁R05C |
+| I35 result | [Actor control / I02 combined result](tasks/P5-I35-actor-control-i02-combined-result.md) | `dada6d5` | FAIL；fixture缺--artifact-root |
+| I35A | [Spawn submit fixture reacceptance](tasks/P5-I35A-spawn-submit-fixture-reacceptance.md) | I35 exact FAIL | 只复验fixture compile/test |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
