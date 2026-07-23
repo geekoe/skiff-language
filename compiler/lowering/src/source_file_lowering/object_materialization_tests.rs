@@ -58,6 +58,55 @@ fn lowered_unit(source_text: &str) -> FileIrUnit {
         .clone()
 }
 
+fn lowering_error_with_expression_model(
+    source_text: &str,
+    expression_model_source: &str,
+) -> String {
+    let model = source_model(source_text);
+    let expression_model = source_model(expression_model_source);
+    let parsed = model
+        .sources()
+        .parsed_sources()
+        .first()
+        .expect("one object source");
+    let mut callable_return_types = BTreeMap::new();
+    extend_callable_return_types_for_source(
+        &mut callable_return_types,
+        parsed.module_path(),
+        parsed.ast(),
+    );
+    let package_interface_methods = model.type_resolution().package_interface_method_index();
+
+    model
+        .with_semantic_context(|semantic_context| {
+            let source_context = semantic_context
+                .source_context(parsed.module_path())
+                .map_err(source_error)?;
+            compile_package_source_file_ir_unit(PackageSourceLoweringInput {
+                source: parsed.source_text(),
+                role: "package",
+                package_aliases: model.name_resolution().package_aliases_map(),
+                package_interface_methods: &package_interface_methods,
+                resolved_call_targets: model.resolved_call_targets(),
+                external_type_symbols: model.indexes().publication_type_symbols(),
+                publication_db_metadata: model.indexes().publication_db_metadata_index(),
+                semantic_context: &source_context,
+                source_alias_targets: model
+                    .resolutions()
+                    .alias_targets_for_module(parsed.module_path()),
+                type_resolution: model.type_resolution(),
+                expression_types: Some(expression_model.expression_types()),
+                callable_return_types: &callable_return_types,
+                executable_signatures: model.executable_signatures(),
+                interface_signatures: Some(model.interface_signatures()),
+                service_calls: None,
+            })
+            .map_err(source_error)
+        })
+        .expect_err("inconsistent object materialization facts should fail closed")
+        .to_string()
+}
+
 fn executable<'a>(unit: &'a FileIrUnit, name: &str) -> &'a ExecutableIr {
     let symbol = format!("{MODULE}.{name}");
     unit.executables
@@ -269,53 +318,69 @@ fn object_materialization_missing_target_fact_fails_closed_at_source_lowering_in
       type Context { id: string }
       function make() -> Context { return Context { id: "ctx" } }
     "#;
-    let model = source_model(object_source);
-    let unrelated_expression_model = source_model(explicit_source);
-    let parsed = model
-        .sources()
-        .parsed_sources()
-        .first()
-        .expect("one object source");
-    let mut callable_return_types = BTreeMap::new();
-    extend_callable_return_types_for_source(
-        &mut callable_return_types,
-        parsed.module_path(),
-        parsed.ast(),
-    );
-    let package_interface_methods = model.type_resolution().package_interface_method_index();
-
-    let error = model
-        .with_semantic_context(|semantic_context| {
-            let source_context = semantic_context
-                .source_context(parsed.module_path())
-                .map_err(source_error)?;
-            compile_package_source_file_ir_unit(PackageSourceLoweringInput {
-                source: parsed.source_text(),
-                role: "package",
-                package_aliases: model.name_resolution().package_aliases_map(),
-                package_interface_methods: &package_interface_methods,
-                resolved_call_targets: model.resolved_call_targets(),
-                external_type_symbols: model.indexes().publication_type_symbols(),
-                publication_db_metadata: model.indexes().publication_db_metadata_index(),
-                semantic_context: &source_context,
-                source_alias_targets: model
-                    .resolutions()
-                    .alias_targets_for_module(parsed.module_path()),
-                type_resolution: model.type_resolution(),
-                expression_types: Some(unrelated_expression_model.expression_types()),
-                callable_return_types: &callable_return_types,
-                executable_signatures: model.executable_signatures(),
-                interface_signatures: Some(model.interface_signatures()),
-                service_calls: None,
-            })
-            .map_err(source_error)
-        })
-        .expect_err("missing object materialization fact should fail closed")
-        .to_string();
+    let error = lowering_error_with_expression_model(object_source, explicit_source);
     assert!(
         error.contains("requires source-owned materialization fact"),
         "unexpected lowering error: {error}"
     );
+}
+
+#[test]
+fn object_materialization_rejects_compatible_key_and_field_fact_with_forged_target() {
+    let actual = r#"
+      type Context { id: string }
+      function make() -> Context { return { id: "ctx" } }
+    "#;
+    let forged = r#"
+      type Context { id: string }
+      function make() -> Map<string, string> { return { id: "ctx" } }
+    "#;
+
+    let error = lowering_error_with_expression_model(actual, forged);
+    assert!(
+        error.contains("resolved target") && error.contains("current expected target"),
+        "forged Map materialization should fail target consistency: {error}"
+    );
+}
+
+#[test]
+fn object_materialization_rejects_stale_nested_and_synthetic_field_types() {
+    let cases = [
+        (
+            r#"
+              type Child { id: string }
+              type Other { id: string }
+              type Context { child: Child }
+              function make() -> Context { return { child: { id: "ctx" } } }
+            "#,
+            r#"
+              type Child { id: string }
+              type Other { id: string }
+              type Context { child: Other }
+              function make() -> Context { return { child: { id: "ctx" } } }
+            "#,
+            "field `child` fact type",
+        ),
+        (
+            r#"
+              type Context { note: string? }
+              function make() -> Context { return {} }
+            "#,
+            r#"
+              type Context { note: integer? }
+              function make() -> Context { return {} }
+            "#,
+            "field `note` fact type",
+        ),
+    ];
+
+    for (actual, stale, expected) in cases {
+        let error = lowering_error_with_expression_model(actual, stale);
+        assert!(
+            error.contains(expected),
+            "stale materialization should report {expected:?}: {error}"
+        );
+    }
 }
 
 fn source_error(error: impl std::fmt::Display) -> SourceCompileError {

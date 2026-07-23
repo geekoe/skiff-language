@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::file_ir::{
     BlockIr, CallIr, CallTargetIr, ConstDeclarationIr, ConstIr, ExecutableBody,
     ExecutableDeclarationIr, ExecutableIr, ExecutableKind, ExprIr, FileIrUnit, FunctionTypeParamIr,
-    ParamIr, SlotKind, SlotLayout, StmtIr,
+    ParamIr, SlotKind, SlotLayout, StmtIr, TypeRefIr,
 };
 use skiff_compiler_source::{
     semantic::{
@@ -113,6 +113,7 @@ pub(super) fn lower_const_declarations(
         let source_span = source_span_ref(constant.span);
         let body = lower_const_initializer_body(
             constant,
+            &ty,
             const_indices,
             executable_indices,
             db_metadata,
@@ -164,6 +165,7 @@ pub(super) fn lower_const_declarations(
 #[allow(clippy::too_many_arguments)]
 fn lower_const_initializer_body(
     constant: &ConstDecl,
+    expected_type: &TypeRefIr,
     const_indices: &BTreeMap<String, u32>,
     executable_indices: &BTreeMap<String, u32>,
     db_metadata: &BTreeMap<String, DbMetadataIr>,
@@ -209,7 +211,7 @@ fn lower_const_initializer_body(
         executable_signatures,
         service_calls,
     );
-    let value = lowerer.lower_expr(&constant.value)?;
+    let value = lowerer.lower_expr_with_expected(&constant.value, Some(expected_type))?;
     let mut entry = BlockIr {
         label: "entry".to_string(),
         statements: Vec::new(),
@@ -636,6 +638,7 @@ fn lower_function_with_params(
             "missing projected exact signature for File IR executable `{executable_symbol}` at index {current_index}"
         ))
     })?;
+    lowerer.expected_return_type = Some(exact_signature.return_type.clone());
     if exact_signature.params.len() != params_source.len() {
         return Err(CompileError::Semantic(format!(
             "exact signature for `{executable_symbol}` has {} parameters, but its executable body declares {}",

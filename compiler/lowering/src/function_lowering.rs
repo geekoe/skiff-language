@@ -102,6 +102,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
+    pub(super) expected_return_type: Option<TypeRefIr>,
     executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
     service_calls: &'a LoweredServiceCalls,
     pub(super) next_expression_index: u32,
@@ -170,6 +171,7 @@ impl<'a> FunctionLowerer<'a> {
             expression_types,
             callable_return_types,
             local_type_fields,
+            expected_return_type: None,
             executable_signatures,
             service_calls,
             next_expression_index: 0,
@@ -319,12 +321,17 @@ impl<'a> FunctionLowerer<'a> {
                 let value = self.lower_expr(value)?;
                 StmtIr::Assign { target, value }
             }
-            Stmt::Return(value) => StmtIr::Return {
-                value: value
-                    .as_ref()
-                    .map(|value| self.lower_expr(value))
-                    .transpose()?,
-            },
+            Stmt::Return(value) => {
+                let expected_return_type = self.expected_return_type.clone();
+                StmtIr::Return {
+                    value: value
+                        .as_ref()
+                        .map(|value| {
+                            self.lower_expr_with_expected(value, expected_return_type.as_ref())
+                        })
+                        .transpose()?,
+                }
+            }
             Stmt::Expr(value) => StmtIr::Expr {
                 value: self.lower_expr(value)?,
             },
@@ -1009,6 +1016,14 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<ExprRefIr> {
+        self.lower_expr_with_expected(expr, None)
+    }
+
+    pub(super) fn lower_expr_with_expected(
+        &mut self,
+        expr: &Expr,
+        expected_target: Option<&TypeRefIr>,
+    ) -> Result<ExprRefIr> {
         let expression_key = self.next_expression_key();
         let lowered = match expr {
             Expr::Literal(literal) => ExprIr::Literal {
@@ -1037,7 +1052,11 @@ impl<'a> FunctionLowerer<'a> {
                 right: self.lower_expr(right)?,
             },
             Expr::ObjectLiteral { entries } => {
-                self.lower_target_typed_object_literal(expression_key.as_ref(), entries)?
+                self.lower_target_typed_object_literal(
+                    expression_key.as_ref(),
+                    entries,
+                    expected_target,
+                )?
             }
             Expr::Patch { target, operations } => self.lower_patch_expr(target, operations)?,
             Expr::Record {
