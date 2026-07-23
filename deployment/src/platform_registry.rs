@@ -22,6 +22,12 @@ use skiff_artifact_model::{
     ServiceDeploymentRef,
 };
 
+use crate::router_activation_backend::{
+    ActivationBackendCommit, ActivationBackendCommitted, ActivationBackendError,
+    ActivationBackendFuture, ActivationBackendPending, ActivationBackendPrepare,
+    ActivationBackendRef, ActivationBackendSnapshot, ReadActivation, ReadAssembly,
+    RouterActivationBackend, RouterBackendSnapshot,
+};
 use skiff_trusted_registry_contract::{
     ActivationReceipt, ActivationRequest, PackageArtifactPointer, PackageArtifactPointerCas,
     PackageArtifactPointerHistoryQuery, PackageArtifactPointerKey, PackageArtifactPointerReceipt,
@@ -256,70 +262,268 @@ impl PlatformDbTrustedRegistry {
         Ok(values)
     }
 
-    async fn activate_atomically(
+    async fn read_backend_state(
         &self,
-        request: ActivationRequest,
-    ) -> TrustedRegistryResult<ActivationReceipt> {
-        validate_activation(&request)?;
-        self.read_record::<RuntimeAssembly>(
-            runtime_record_id(&request.assembly),
-            "runtimeAssembly",
-        )
-        .await?;
-        let mut session = self.client.start_session().await.map_err(map_mongo)?;
-        session.start_transaction().await.map_err(map_mongo)?;
-        let existing = self
+        environment: &str,
+    ) -> Result<ActivationBackendSnapshot, ActivationBackendError> {
+        validate_activation_environment(environment).map_err(backend_invalid)?;
+        self.activations()
+            .find_one(doc! {"_id": environment})
+            .await
+            .map_err(backend_mongo)?
+            .map(|document| backend_snapshot(environment, &document))
+            .transpose()
+            .map(|snapshot| {
+                snapshot.unwrap_or(ActivationBackendSnapshot {
+                    environment: environment.to_owned(),
+                    committed: None,
+                    pending: None,
+                })
+            })
+    }
+
+    async fn mutate_backend_state(
+        &self,
+        operation: BackendMutation,
+    ) -> Result<ActivationBackendSnapshot, ActivationBackendError> {
+        operation.validate()?;
+        let environment = operation.environment();
+        let mut session = self.client.start_session().await.map_err(backend_mongo)?;
+        session.start_transaction().await.map_err(backend_mongo)?;
+        let current = self
             .activations()
-            .find_one(doc! {"_id": &request.environment})
+            .find_one(doc! {"_id": environment})
             .session(&mut session)
             .await
-            .map_err(map_mongo)?;
-        let (generation, sequence) = match existing {
-            Some(ref state) => (
-                read_u64(state, "generation")?,
-                read_u64(state, "auditSequence")?,
-            ),
-            None if request.expected_generation == 0 => (0, 0),
-            None => {
-                session.abort_transaction().await.map_err(map_mongo)?;
-                return Err(TrustedRegistryError::CasMismatch);
-            }
+            .map_err(backend_mongo)?;
+        let current_snapshot = current
+            .as_ref()
+            .map(|document| backend_snapshot(environment, document))
+            .transpose()?
+            .unwrap_or(ActivationBackendSnapshot {
+                environment: environment.to_owned(),
+                committed: None,
+                pending: None,
+            });
+        let Some((next, event, activation_id)) = operation.apply(current_snapshot.clone())? else {
+            session.abort_transaction().await.map_err(backend_mongo)?;
+            return Ok(current_snapshot);
         };
-        if generation != request.expected_generation {
-            session.abort_transaction().await.map_err(map_mongo)?;
-            return Err(TrustedRegistryError::CasMismatch);
-        }
-        let next_generation = next_sequence(generation)?;
-        let next_audit_sequence = next_sequence(sequence)?;
+        let sequence = current
+            .as_ref()
+            .map(|value| backend_audit_sequence(value))
+            .transpose()?
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| backend_failure("activation audit sequence overflow"))?;
         self.activations()
             .replace_one(
-                doc! {"_id": &request.environment},
-                doc! {
-                    "_id": &request.environment,
-                    "generation": next_generation as i64,
-                    "assembly": bson::to_bson(&request.assembly).map_err(invalid_bson)?,
-                    "auditSequence": next_audit_sequence as i64,
-                },
+                doc! {"_id": environment},
+                backend_document(&next, sequence)?,
             )
             .upsert(true)
             .session(&mut session)
             .await
-            .map_err(map_mongo)?;
+            .map_err(backend_mongo)?;
         insert_audit(
             &self.audit(),
             &mut session,
-            &request.environment,
-            next_audit_sequence,
-            "committed",
-            &request.activation_id,
+            environment,
+            sequence,
+            event,
+            &activation_id,
         )
-        .await?;
-        commit_recoverably(&mut session).await?;
-        Ok(ActivationReceipt {
-            activation_id: request.activation_id,
-            environment: request.environment,
-            generation: next_generation,
-            assembly: request.assembly,
+        .await
+        .map_err(backend_store)?;
+        commit_recoverably(&mut session)
+            .await
+            .map_err(backend_store)?;
+        Ok(next)
+    }
+}
+
+enum BackendMutation {
+    Prepare(ActivationBackendPrepare),
+    Commit(ActivationBackendCommit),
+    Abort(ActivationBackendRef),
+}
+
+impl BackendMutation {
+    fn environment(&self) -> &str {
+        match self {
+            Self::Prepare(value) => &value.environment,
+            Self::Commit(value) => &value.environment,
+            Self::Abort(value) => &value.environment,
+        }
+    }
+    fn validate(&self) -> Result<(), ActivationBackendError> {
+        validate_activation_environment(self.environment()).map_err(backend_invalid)?;
+        let (activation_id, assembly) = match self {
+            Self::Prepare(value) => {
+                validate_transition_generations(
+                    value.expected_generation,
+                    value.candidate_generation,
+                )
+                .map_err(backend_invalid)?;
+                if value.candidate_generation
+                    != value
+                        .expected_generation
+                        .checked_add(1)
+                        .ok_or_else(|| backend_failure("activation generation overflow"))?
+                {
+                    return Err(backend_invalid(
+                        "candidate generation must equal expected generation + 1",
+                    ));
+                }
+                validate_runtime_assembly_ref(&value.assembly).map_err(backend_invalid)?;
+                canonical_replica_ids(&value.participant_replica_ids)?;
+                (&value.activation_id, Some(&value.assembly))
+            }
+            Self::Commit(value) => {
+                canonical_replica_ids(&value.connected_replica_ids)?;
+                canonical_replica_ids(&value.prepared_replica_ids)?;
+                (&value.activation_id, None)
+            }
+            Self::Abort(value) => (&value.activation_id, None),
+        };
+        validate_activation_token(activation_id, "activationId").map_err(backend_invalid)?;
+        let _ = assembly;
+        Ok(())
+    }
+    fn apply(
+        &self,
+        mut state: ActivationBackendSnapshot,
+    ) -> Result<Option<(ActivationBackendSnapshot, &'static str, String)>, ActivationBackendError>
+    {
+        match self {
+            Self::Prepare(request) => {
+                let generation = state.committed.as_ref().map_or(0, |value| value.generation);
+                if generation != request.expected_generation {
+                    return Err(backend_conflict(
+                        "activation prepare expected generation is stale",
+                    ));
+                }
+                let pending = ActivationBackendPending {
+                    activation_id: request.activation_id.clone(),
+                    expected_generation: request.expected_generation,
+                    candidate_generation: request.candidate_generation,
+                    assembly: request.assembly.clone(),
+                    participant_replica_ids: canonical_replica_ids(
+                        &request.participant_replica_ids,
+                    )?,
+                };
+                if let Some(current) = &state.pending {
+                    if current == &pending {
+                        return Ok(None);
+                    }
+                    return Err(backend_conflict(
+                        "a different activation is already pending",
+                    ));
+                }
+                state.pending = Some(pending);
+                Ok(Some((state, "prepared", request.activation_id.clone())))
+            }
+            Self::Commit(request) => {
+                let Some(pending) = state.pending.clone() else {
+                    return Err(backend_conflict(
+                        "activation commit has no durable pending tuple",
+                    ));
+                };
+                if pending.activation_id != request.activation_id {
+                    return Err(backend_conflict(
+                        "activation commit does not match durable pending tuple",
+                    ));
+                }
+                let participants = canonical_replica_ids(&pending.participant_replica_ids)?;
+                let connected = canonical_replica_ids(&request.connected_replica_ids)?;
+                let prepared = canonical_replica_ids(&request.prepared_replica_ids)?;
+                if prepared != participants || connected != participants {
+                    return Err(backend_conflict("activation commit requires every frozen participant connected and prepared"));
+                }
+                state.committed = Some(ActivationBackendCommitted {
+                    generation: pending.candidate_generation,
+                    assembly: pending.assembly,
+                });
+                state.pending = None;
+                Ok(Some((state, "committed", request.activation_id.clone())))
+            }
+            Self::Abort(request) => {
+                let Some(pending) = state.pending.as_ref() else {
+                    return Ok(None);
+                };
+                if pending.activation_id != request.activation_id {
+                    return Err(backend_conflict(
+                        "activation abort does not match durable pending tuple",
+                    ));
+                }
+                state.pending = None;
+                Ok(Some((state, "aborted", request.activation_id.clone())))
+            }
+        }
+    }
+}
+
+impl RouterActivationBackend for PlatformDbTrustedRegistry {
+    fn read(
+        &self,
+        request: ReadActivation,
+    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
+        Box::pin(async move { self.read_backend_state(&request.environment).await })
+    }
+    fn read_snapshot(
+        &self,
+        request: ReadAssembly,
+    ) -> ActivationBackendFuture<'_, RouterBackendSnapshot> {
+        Box::pin(async move {
+            let assembly = self
+                .read_record::<RuntimeAssembly>(
+                    runtime_record_id(&request.assembly),
+                    "runtimeAssembly",
+                )
+                .await
+                .map_err(backend_store)?;
+            let mut contracts = Vec::with_capacity(assembly.resolved_contracts.len());
+            for reference in &assembly.resolved_contracts {
+                contracts.push(
+                    self.read_record(contract_record_id(reference), "serviceContract")
+                        .await
+                        .map_err(backend_store)?,
+                );
+            }
+            RouterBackendSnapshot::from_canonical(assembly, contracts)
+        })
+    }
+    fn prepare(
+        &self,
+        request: ActivationBackendPrepare,
+    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
+        Box::pin(async move {
+            self.read_record::<RuntimeAssembly>(
+                runtime_record_id(&request.assembly),
+                "runtimeAssembly",
+            )
+            .await
+            .map_err(backend_store)?;
+            self.mutate_backend_state(BackendMutation::Prepare(request))
+                .await
+        })
+    }
+    fn commit(
+        &self,
+        request: ActivationBackendCommit,
+    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
+        Box::pin(async move {
+            self.mutate_backend_state(BackendMutation::Commit(request))
+                .await
+        })
+    }
+    fn abort(
+        &self,
+        request: ActivationBackendRef,
+    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
+        Box::pin(async move {
+            self.mutate_backend_state(BackendMutation::Abort(request))
+                .await
         })
     }
 }
@@ -506,7 +710,121 @@ impl TrustedRegistryStoreApi for PlatformDbTrustedRegistry {
         })
     }
     fn activate(&self, request: ActivationRequest) -> TrustedRegistryFuture<'_, ActivationReceipt> {
-        Box::pin(async move { self.activate_atomically(request).await })
+        Box::pin(async move {
+            let _ = request;
+            Err(TrustedRegistryError::InvalidRequest(
+                "production activation is Router-coordinated; direct registry activate is disabled"
+                    .into(),
+            ))
+        })
+    }
+}
+
+fn canonical_replica_ids(values: &[String]) -> Result<Vec<String>, ActivationBackendError> {
+    if values.is_empty() {
+        return Err(backend_invalid("activation replica set must not be empty"));
+    }
+    let mut canonical = values.to_vec();
+    canonical.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    for value in &canonical {
+        validate_activation_token(value, "replicaId").map_err(backend_invalid)?;
+    }
+    if canonical.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(backend_invalid("activation replica ids must be unique"));
+    }
+    Ok(canonical)
+}
+
+fn backend_snapshot(
+    environment: &str,
+    document: &Document,
+) -> Result<ActivationBackendSnapshot, ActivationBackendError> {
+    let committed = match (document.get("generation"), document.get("assembly")) {
+        (Some(_), Some(assembly)) => Some(ActivationBackendCommitted {
+            generation: read_u64(document, "generation").map_err(backend_store)?,
+            assembly: bson::from_bson(assembly.clone()).map_err(backend_invalid)?,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(backend_failure(
+                "activation state has a partial committed tuple",
+            ))
+        }
+    };
+    let pending = document
+        .get("pending")
+        .cloned()
+        .map(bson::from_bson)
+        .transpose()
+        .map_err(backend_invalid)?;
+    Ok(ActivationBackendSnapshot {
+        environment: environment.to_owned(),
+        committed,
+        pending,
+    })
+}
+
+fn backend_document(
+    snapshot: &ActivationBackendSnapshot,
+    audit_sequence: u64,
+) -> Result<Document, ActivationBackendError> {
+    let mut document = doc! {
+        "_id": &snapshot.environment,
+        "auditSequence": i64::try_from(audit_sequence).map_err(|_| backend_failure("activation audit sequence exceeds Mongo i64"))?,
+    };
+    if let Some(committed) = &snapshot.committed {
+        document.insert(
+            "generation",
+            i64::try_from(committed.generation)
+                .map_err(|_| backend_failure("activation generation exceeds Mongo i64"))?,
+        );
+        document.insert(
+            "assembly",
+            bson::to_bson(&committed.assembly).map_err(backend_invalid)?,
+        );
+    }
+    if let Some(pending) = &snapshot.pending {
+        document.insert("pending", bson::to_bson(pending).map_err(backend_invalid)?);
+    }
+    Ok(document)
+}
+
+fn backend_audit_sequence(document: &Document) -> Result<u64, ActivationBackendError> {
+    read_u64(document, "auditSequence").map_err(backend_store)
+}
+fn backend_invalid(error: impl std::fmt::Display) -> ActivationBackendError {
+    ActivationBackendError {
+        code: "invalid-request".into(),
+        message: error.to_string(),
+    }
+}
+fn backend_conflict(message: impl Into<String>) -> ActivationBackendError {
+    ActivationBackendError {
+        code: "cas-mismatch".into(),
+        message: message.into(),
+    }
+}
+fn backend_failure(message: impl Into<String>) -> ActivationBackendError {
+    ActivationBackendError {
+        code: "backend-unavailable".into(),
+        message: message.into(),
+    }
+}
+fn backend_mongo(error: mongodb::error::Error) -> ActivationBackendError {
+    backend_failure(error.to_string())
+}
+fn backend_store(error: TrustedRegistryError) -> ActivationBackendError {
+    let code = match error {
+        TrustedRegistryError::Unauthorized => "unauthorized",
+        TrustedRegistryError::NotFound => "not-found",
+        TrustedRegistryError::InvalidRequest(_) => "invalid-request",
+        TrustedRegistryError::CasMismatch => "cas-mismatch",
+        TrustedRegistryError::ImmutableConflict => "immutable-conflict",
+        TrustedRegistryError::BackendUnavailable => "backend-unavailable",
+    };
+    ActivationBackendError {
+        code: code.into(),
+        message: format!("{error:?}"),
     }
 }
 
@@ -657,22 +975,6 @@ fn validate_selector(selector: &PointerHistorySelector) -> TrustedRegistryResult
     } else {
         Ok(())
     }
-}
-fn validate_activation(request: &ActivationRequest) -> TrustedRegistryResult<()> {
-    validate_activation_environment(&request.environment).map_err(invalid_validation)?;
-    validate_activation_token(&request.activation_id, "activationId")
-        .map_err(invalid_validation)?;
-    validate_transition_generations(
-        request.expected_generation,
-        request
-            .expected_generation
-            .checked_add(1)
-            .ok_or(TrustedRegistryError::InvalidRequest(
-                "activation generation overflow".into(),
-            ))?,
-    )
-    .map_err(invalid_validation)?;
-    validate_runtime_assembly_ref(&request.assembly).map_err(invalid_validation)
 }
 fn validate_non_empty(value: &str, field: &str) -> TrustedRegistryResult<()> {
     if value.trim().is_empty() {
@@ -832,18 +1134,17 @@ mod tests {
     fn activation_state_and_audit_share_transaction_and_commit_is_recoverable() {
         let source = include_str!("platform_registry.rs");
         let body = source
-            .split("async fn activate_atomically")
+            .split("async fn mutate_backend_state")
             .nth(1)
             .expect("atomic activation implementation")
-            .split("macro_rules! record_methods")
+            .split("enum BackendMutation")
             .next()
             .expect("bounded activation implementation");
         assert!(body.contains("self.activations()"));
         assert!(body.contains("insert_audit("));
         assert!(body.matches(".session(&mut session)").count() >= 2);
-        assert!(body.contains("\"committed\""));
-        assert!(!body.contains("\"pending\""));
         assert!(source.contains("UnknownTransactionCommitResult"));
         assert!(source.contains("session.commit_transaction().await"));
+        assert!(source.contains("direct registry activate is disabled"));
     }
 }
