@@ -38,6 +38,7 @@ publication/seed、strict receipt与readiness，冻结F27A–C、I27、R29。I27
 D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
 R24首次审查在TS runtime reject缺`code/reason`仍通过时FAIL，冻结F29A Router protocol窄修复；正路径与R30证据仍有效。
 F29A已合流且原R24 reviewer在`a194e55`窄复验PASS，现只解除F23E shared wire；F03B/F03C继续等待F23E。
+F23E shared TS/Rust lifecycle wire已在`9f55a7c`形成checkpoint，现解除F03B/F03C两个互斥consumer节点。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -290,6 +291,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R24 | [F05 WS owner checkpoint](tasks/P5-R24-f05-websocket-owner-checkpoint.md) | F23D + combined PASS | 高；只解锁lifecycle consumers |
 | R24 result | [F05 WS owner checkpoint result](tasks/P5-R24-f05-websocket-owner-checkpoint-result.md) | `a194e55` | PASS；只解锁F23E |
 | F23E | [WS generation lifecycle wire](tasks/P5-F23E-websocket-generation-lifecycle-wire.md) | R24 PASS | 高；shared TS/Rust control seam |
+| F23E result | [WS generation lifecycle wire result](tasks/P5-F23E-websocket-generation-lifecycle-wire-result.md) | `9f55a7c` | complete；解除F03B/F03C |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
 | D35 | [WS builtin materialization audit](tasks/P5-D35-websocket-builtin-materialization-audit-result.md) | F23D smoke 502 | 三层masked范围闭合 |

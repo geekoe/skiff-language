@@ -1,14 +1,22 @@
 # P5-F03B：Router Integration Repair
 
+权威设计为
+`doc/architecture/package-service-contract-deployment.md` §2第4、5、6、8、9、10条，§5、§6.2、§7、§12及§14。
+Router只能从active RuntimeAssembly snapshot与typed deployment/ingress事实选择target；service call必须经dispatcher切换
+ActivationContext，长连接必须固定其建立时generation并在可观测drain后释放。
+
 ## 输入与owner
 
 - 依赖：P5-R02A PASS的exact F03A seam、P5-R10 PASS的统一endpoint bootstrap、P5-R13 PASS的canonical unary、
   P5-R24 PASS的typed unified WS owner checkpoint及P5-F23E shared generation lifecycle wire。与F03C并行，合流后
   先解锁最终R05，再共同解锁I02。
+- DAG节点F03B；风险高，验收分组为Router production consumer。进入状态为F23E exact integration checkpoint，派发时给
+  commit/tree/Cargo.lock。完成后仍只是Implementation Checkpoint，不能单独解除R05/I02。
 - branch：`codex/p5-f03b-router-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03b-router-repair`。
 - 独占`router/**`及直接tests；消费F05 ABI但不回改shared wire/WS authoring规则，不改Rust
-  runtime/compiler/test-runner。只提交task branch。
+  runtime/compiler/test-runner。F23E的protocol schema/codec/golden为冻结输入，只允许consumer import，不得改其字段或
+  接受集合。只提交task branch。
 
 ## 完成态
 
@@ -40,7 +48,7 @@ header、build rewrite或第二writer，R05后仍完成serverStream/WS gateway�
 
 ```bash
 pnpm --filter @skiff/router type-check
-pnpm --filter @skiff/router test -- \
+pnpm --dir router exec vitest run \
   tests/active-assembly-reload.test.ts \
   tests/assembly-replica-dispatch.test.ts \
   tests/host-ingress.test.ts \
@@ -48,5 +56,8 @@ pnpm --filter @skiff/router test -- \
 git diff --check
 ```
 
-聚焦探针覆盖capabilities不掉线、actor/spawn typed response、binary prepare/ACK/commit/register、bootstrap、
-serverStream与WS old-generation pin、adapter failure rollback。提交一个commit及证据矩阵，不跑I02/full suite。
+新增consumer direct tests必须通过同一direct Vitest命令显式列出，测试数非零。聚焦探针覆盖capabilities不掉线、
+actor/spawn typed response、binary prepare/ACK/commit/register、bootstrap、serverStream与WS old-generation pin、
+F23E acquire/release/ack/reject、runtime-session disconnect cleanup及adapter failure rollback。提交一个clean commit及证据
+矩阵；禁止I02、R05 real transcript、full/I16/Host/stable，不merge/push。Router store/gateway/endpoint/F23E wire或
+Runtime activation schema变化会使证据失效。

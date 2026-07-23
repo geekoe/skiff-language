@@ -1,14 +1,22 @@
 # P5-F03C：Runtime Integration Repair
 
+权威设计为
+`doc/architecture/package-service-contract-deployment.md` §2第4、5、6、8、9、10条，§5、§6.2、§7、§12及§14。
+Runtime必须只加载完整同一assembly，按pinned deployment/ActivationContext执行service call，跨generation保留旧连接owner，
+且admission、health、drain与atomic reload可观测。
+
 ## 输入与owner
 
 - 依赖：P5-R02A PASS的exact F03A seam、P5-R11 PASS的committed bootstrap、P5-R13 PASS的canonical unary、
   P5-R24 PASS的typed unified WS owner checkpoint及P5-F23E shared generation lifecycle wire。与F03B并行，合流后
   先解锁最终R05，再共同解锁I02。
+- DAG节点F03C；风险高，验收分组为Runtime production consumer。进入状态为F23E exact integration checkpoint，派发时给
+  commit/tree/Cargo.lock。完成后仍只是Implementation Checkpoint，不能单独解除R05/I02。
 - branch：`codex/p5-f03c-runtime-integration-repair`。
 - worktree：`/Users/geek/workspace/skiff-p5-f03c-runtime-repair`。
 - 独占`runtime/driver/**`、`runtime/host/**`及必要runtime request/transport consumer tests；不得改F03A
-  /F05 shared wire与WS authoring规则、Router/compiler/test-runner。只提交task branch。
+  /F05 shared wire与WS authoring规则、Router/compiler/test-runner。F23E transport lifecycle schema/codec/golden为冻结输入，
+  只允许consumer import，不得改其字段或接受集合。只提交task branch。
 - D09已把legacy Host package-test consumer/template cache与两个activation codec旧调用拆给F08/R08前置关闭；
   F03C不得恢复这些seam。其余startup/admission/request/drain/typed WS职责不变。
 
@@ -40,13 +48,15 @@ RequestStart mapper或current-pointer-only lookup，R05后仍完成WS/serverStre
 ## 验证
 
 ```bash
-cargo test -p skiff-runtime-host --test active_runtime_assembly
-cargo test -p skiff-runtime-transport --test assembly_replica_registration
-cargo test -p skiff-runtime-host router_session::tests::assembly
-cargo test -p runtime config
+cargo test --locked -p skiff-runtime-host --test active_runtime_assembly -- --test-threads=1
+cargo test --locked -p skiff-runtime-transport --test assembly_replica_registration -- --test-threads=1
+cargo test --locked -p skiff-runtime-host host::router_session::tests:: -- --test-threads=1
+cargo test --locked -p runtime config::tests:: -- --test-threads=1
 node scripts/check-runtime-crate-dag.mjs
 git diff --check
 ```
 
-聚焦探针覆盖cold start/register、binary lifecycle、schema negative、direct-admit反搜、stream/WS pin及artifact-I/O=0。
-提交一个commit及证据矩阵，不跑I02/live/chat。
+新增consumer direct tests必须用新模块exact filter运行，所有filter测试数非零。聚焦探针覆盖cold start/register、binary
+lifecycle、schema negative、direct-admit反搜、stream/WS old-generation pin、F23E acquire/release/session disconnect、
+retired generation回收及artifact-I/O=0。提交一个clean commit及证据矩阵；禁止I02、R05 real transcript、live/chat/full/
+I16/Host/stable，不merge/push。Runtime admission/host/F23E wire或Router activation schema变化会使证据失效。
