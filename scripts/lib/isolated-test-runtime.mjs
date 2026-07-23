@@ -16,6 +16,10 @@ import {
   claimIsolatedTestWorkspace,
   removeOwnedIsolatedTestWorkspace,
 } from './isolated-test-runtime-workspace.mjs';
+import {
+  ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY,
+  retainIsolatedRuntimeLogEvidence,
+} from './isolated-test-runtime-log-evidence.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultSkiffRoot = resolve(scriptDir, '..', '..');
@@ -76,7 +80,7 @@ export async function runInIsolatedTestRuntime({
   let cleanupError;
   if (stack !== undefined) {
     try {
-      await cleanupIsolatedTestRuntime(stack, ops);
+      await cleanupIsolatedTestRuntime(stack, ops, testError);
     } catch (error) {
       cleanupError = error;
     }
@@ -88,10 +92,19 @@ export async function runInIsolatedTestRuntime({
     testError = new Error(`skiff test interrupted by ${interruptedBy}`);
   }
   if (testError !== undefined && cleanupError !== undefined) {
-    throw new Error(
+    const combinedError = new Error(
       `${errorMessage(testError)}; isolated runtime cleanup failed: ${errorMessage(cleanupError)}`,
       { cause: new AggregateError([testError, cleanupError]) },
     );
+    if (Object.hasOwn(testError, ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY)) {
+      Object.defineProperty(combinedError, ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY, {
+        value: testError[ISOLATED_RUNTIME_LOG_EVIDENCE_PROPERTY],
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    throw combinedError;
   }
   if (testError !== undefined) {
     throw testError;
@@ -207,7 +220,7 @@ async function startIsolatedTestRuntime({
   }
 }
 
-async function cleanupIsolatedTestRuntime(stack, ops) {
+async function cleanupIsolatedTestRuntime(stack, ops, testError) {
   const errors = [];
   if (stack.supervisor !== undefined) {
     await settleCleanupStep(errors, 'stop supervisor', async () => {
@@ -230,6 +243,11 @@ async function cleanupIsolatedTestRuntime(stack, ops) {
       'verify instance stopped',
       () => ops.verifyInstanceStopped(stack.instanceOwnership),
     );
+  }
+  if (testError !== undefined && stack.tempRoot !== undefined) {
+    await retainIsolatedRuntimeLogEvidence(testError, stack.tempRoot, {
+      read: ops.readFailureLog,
+    });
   }
   await settleCleanupStep(errors, 'verify ports closed', () => ops.assertPortsClosed(stack.ports));
   await settleCleanupStep(errors, 'release port lease', () => stack.portLease.release());
@@ -275,6 +293,7 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
     captureConfigOwnership: captureIsolatedTestConfig,
     assertPortsClosed,
     removeOwnedWorkspace: removeOwnedIsolatedTestWorkspace,
+    readFailureLog: undefined,
     ...overrides,
   };
 }
