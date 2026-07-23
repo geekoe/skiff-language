@@ -6,13 +6,18 @@
 //! registry surface exposes only atomic activation.
 
 use std::{
+    collections::BTreeSet,
     future::Future,
     io::{BufRead, Read, Write},
     pin::Pin,
 };
 
-use serde::{Deserialize, Serialize};
-use skiff_artifact_model::{RuntimeAssembly, RuntimeAssemblyRef};
+use serde::{de, Deserialize, Deserializer, Serialize};
+use skiff_artifact_identity::service_contract_ref;
+use skiff_artifact_model::{
+    validate_activation_token, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
+    ServiceContractRef,
+};
 
 pub const MAX_BACKEND_FRAME_BYTES: usize = 1024 * 1024;
 
@@ -21,6 +26,17 @@ pub const MAX_BACKEND_FRAME_BYTES: usize = 1024 * 1024;
 pub struct ActivationBackendRef {
     pub environment: String,
     pub activation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivationBackendCommit {
+    pub environment: String,
+    pub activation_id: String,
+    #[serde(deserialize_with = "deserialize_replica_ids")]
+    pub connected_replica_ids: Vec<String>,
+    #[serde(deserialize_with = "deserialize_replica_ids")]
+    pub prepared_replica_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,7 +77,7 @@ pub struct ActivationBackendSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReadSnapshot {
+pub struct ReadActivation {
     pub environment: String,
 }
 
@@ -69,6 +85,54 @@ pub struct ReadSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadAssembly {
     pub assembly: RuntimeAssemblyRef,
+}
+
+/// Backend-neutral Router projection. Ingress modes remain exact immutable
+/// ServiceContract facts rather than being reconstructed from assembly data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterBackendSnapshot {
+    pub assembly: RuntimeAssembly,
+    pub service_contracts: Vec<ServiceContract>,
+}
+
+impl RouterBackendSnapshot {
+    pub fn from_canonical(
+        assembly: RuntimeAssembly,
+        service_contracts: Vec<ServiceContract>,
+    ) -> Result<Self, ActivationBackendError> {
+        let expected = assembly
+            .resolved_contracts
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut actual = BTreeSet::<ServiceContractRef>::new();
+        for contract in &service_contracts {
+            let reference =
+                service_contract_ref(contract).map_err(|error| ActivationBackendError {
+                    code: "invalid-service-contract".into(),
+                    message: error.to_string(),
+                })?;
+            if !actual.insert(reference) {
+                return Err(ActivationBackendError {
+                    code: "duplicate-service-contract".into(),
+                    message: "router snapshot contains a duplicate exact ServiceContract".into(),
+                });
+            }
+        }
+        if actual != expected {
+            return Err(ActivationBackendError {
+                code: "service-contract-set-mismatch".into(),
+                message:
+                    "router snapshot ServiceContracts must exactly match assembly.resolvedContracts"
+                        .into(),
+            });
+        }
+        Ok(Self {
+            assembly,
+            service_contracts,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,10 +143,10 @@ pub struct ReadAssembly {
     deny_unknown_fields
 )]
 pub enum ActivationBackendOperation {
-    Read(ReadAssembly),
-    ReadSnapshot(ReadSnapshot),
+    Read(ReadActivation),
+    ReadSnapshot(ReadAssembly),
     Prepare(ActivationBackendPrepare),
-    Commit(ActivationBackendRef),
+    Commit(ActivationBackendCommit),
     Abort(ActivationBackendRef),
 }
 
@@ -104,7 +168,7 @@ pub struct ActivationBackendError {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ActivationBackendOutcome {
-    Assembly { assembly: RuntimeAssembly },
+    RouterSnapshot { snapshot: RouterBackendSnapshot },
     Success { snapshot: ActivationBackendSnapshot },
     Failure { error: ActivationBackendError },
 }
@@ -124,18 +188,21 @@ pub type ActivationBackendFuture<'a, T> =
 /// persist audit entries in the same transaction as state; callers cannot
 /// supply audit payloads.
 pub trait RouterActivationBackend: Send + Sync {
-    fn read(&self, request: ReadAssembly) -> ActivationBackendFuture<'_, RuntimeAssembly>;
+    fn read(
+        &self,
+        request: ReadActivation,
+    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot>;
     fn read_snapshot(
         &self,
-        request: ReadSnapshot,
-    ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot>;
+        request: ReadAssembly,
+    ) -> ActivationBackendFuture<'_, RouterBackendSnapshot>;
     fn prepare(
         &self,
         request: ActivationBackendPrepare,
     ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot>;
     fn commit(
         &self,
-        request: ActivationBackendRef,
+        request: ActivationBackendCommit,
     ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot>;
     fn abort(
         &self,
@@ -201,11 +268,11 @@ where
             ActivationBackendOperation::Read(value) => backend
                 .read(value)
                 .await
-                .map(|assembly| ActivationBackendOutcome::Assembly { assembly }),
+                .map(|snapshot| ActivationBackendOutcome::Success { snapshot }),
             ActivationBackendOperation::ReadSnapshot(value) => backend
                 .read_snapshot(value)
                 .await
-                .map(|snapshot| ActivationBackendOutcome::Success { snapshot }),
+                .map(|snapshot| ActivationBackendOutcome::RouterSnapshot { snapshot }),
             ActivationBackendOperation::Prepare(value) => backend
                 .prepare(value)
                 .await
@@ -245,6 +312,23 @@ fn validate_request_id(request_id: &str) -> Result<(), ActivationBackendEnvelope
     Ok(())
 }
 
+fn deserialize_replica_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<String>::deserialize(deserializer)?;
+    let mut unique = BTreeSet::new();
+    for value in &values {
+        validate_activation_token(value, "replicaId").map_err(de::Error::custom)?;
+        if !unique.insert(value) {
+            return Err(de::Error::custom(format!(
+                "replicaIds contains duplicate {value}"
+            )));
+        }
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -277,20 +361,23 @@ mod tests {
     }
 
     impl RouterActivationBackend for RecordingBackend {
-        fn read(&self, _request: ReadAssembly) -> ActivationBackendFuture<'_, RuntimeAssembly> {
-            self.operations.lock().unwrap().push("read-assembly");
+        fn read(
+            &self,
+            request: ReadActivation,
+        ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
+            self.result("read", request.environment)
+        }
+        fn read_snapshot(
+            &self,
+            _request: ReadAssembly,
+        ) -> ActivationBackendFuture<'_, RouterBackendSnapshot> {
+            self.operations.lock().unwrap().push("read-snapshot");
             Box::pin(async {
                 Err(ActivationBackendError {
                     code: "not-found".into(),
                     message: "fixture".into(),
                 })
             })
-        }
-        fn read_snapshot(
-            &self,
-            request: ReadSnapshot,
-        ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
-            self.result("read", request.environment)
         }
         fn prepare(
             &self,
@@ -300,7 +387,7 @@ mod tests {
         }
         fn commit(
             &self,
-            request: ActivationBackendRef,
+            request: ActivationBackendCommit,
         ) -> ActivationBackendFuture<'_, ActivationBackendSnapshot> {
             self.result("commit", request.environment)
         }
@@ -315,8 +402,8 @@ mod tests {
     #[tokio::test]
     async fn dispatches_typed_frames_and_correlates_request_ids() {
         let input =
-            br#"{"requestId":"one","operation":"read-snapshot","payload":{"environment":"prod"}}
-{"requestId":"two","operation":"commit","payload":{"environment":"prod","activationId":"a"}}
+            br#"{"requestId":"one","operation":"read","payload":{"environment":"prod"}}
+{"requestId":"two","operation":"commit","payload":{"environment":"prod","activationId":"a","connectedReplicaIds":["r1","r2"],"preparedReplicaIds":["r2","r1"]}}
 "#;
         let backend = RecordingBackend::default();
         let mut output = Vec::new();
@@ -337,6 +424,8 @@ mod tests {
             "payload": {
                 "environment": "prod",
                 "activationId": "a",
+                "connectedReplicaIds": ["r1"],
+                "preparedReplicaIds": ["r1"],
                 "audit": {"status": "committed"}
             }
         });
@@ -347,6 +436,82 @@ mod tests {
             "payload": {"environment": "prod"}
         });
         assert!(serde_json::from_value::<ActivationBackendRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn commit_replica_collections_are_exact_and_deduplicated() {
+        let valid = serde_json::json!({
+            "requestId": "commit-1",
+            "operation": "commit",
+            "payload": {
+                "environment": "prod",
+                "activationId": "a",
+                "connectedReplicaIds": ["r2", "r1"],
+                "preparedReplicaIds": ["r1"]
+            }
+        });
+        let decoded = serde_json::from_value::<ActivationBackendRequest>(valid).unwrap();
+        let ActivationBackendOperation::Commit(commit) = decoded.operation else {
+            panic!("expected commit");
+        };
+        assert_eq!(commit.connected_replica_ids, ["r2", "r1"]);
+        assert_eq!(commit.prepared_replica_ids, ["r1"]);
+
+        for duplicate_field in ["connectedReplicaIds", "preparedReplicaIds"] {
+            let mut invalid = serde_json::json!({
+                "requestId": "commit-2",
+                "operation": "commit",
+                "payload": {
+                    "environment": "prod",
+                    "activationId": "a",
+                    "connectedReplicaIds": ["r1"],
+                    "preparedReplicaIds": ["r1"]
+                }
+            });
+            invalid["payload"][duplicate_field] = serde_json::json!(["r1", "r1"]);
+            assert!(
+                serde_json::from_value::<ActivationBackendRequest>(invalid).is_err(),
+                "{duplicate_field} duplicates must fail closed"
+            );
+        }
+
+        let missing = serde_json::json!({
+            "requestId": "commit-3",
+            "operation": "commit",
+            "payload": {
+                "environment": "prod",
+                "activationId": "a",
+                "connectedReplicaIds": ["r1"]
+            }
+        });
+        assert!(serde_json::from_value::<ActivationBackendRequest>(missing).is_err());
+    }
+
+    #[test]
+    fn router_snapshot_wire_and_contract_projection_fail_closed() {
+        let assembly = crate::fixtures::empty_runtime_assembly_fixture().unwrap();
+        let snapshot = RouterBackendSnapshot::from_canonical(assembly.clone(), Vec::new()).unwrap();
+        let encoded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(encoded["serviceContracts"], serde_json::json!([]));
+        assert_eq!(
+            serde_json::from_value::<RouterBackendSnapshot>(encoded.clone()).unwrap(),
+            snapshot
+        );
+
+        let mut missing = encoded.clone();
+        missing.as_object_mut().unwrap().remove("serviceContracts");
+        assert!(serde_json::from_value::<RouterBackendSnapshot>(missing).is_err());
+        let mut unknown = encoded;
+        unknown["operationModes"] = serde_json::json!({});
+        assert!(serde_json::from_value::<RouterBackendSnapshot>(unknown).is_err());
+
+        let mut requires_contract = assembly;
+        requires_contract
+            .resolved_contracts
+            .push(crate::fixtures::service_contract_ref_fixture());
+        let error =
+            RouterBackendSnapshot::from_canonical(requires_contract, Vec::new()).unwrap_err();
+        assert_eq!(error.code, "service-contract-set-mismatch");
     }
 
     #[tokio::test]
