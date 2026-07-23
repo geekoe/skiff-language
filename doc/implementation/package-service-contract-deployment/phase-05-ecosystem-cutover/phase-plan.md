@@ -43,6 +43,8 @@ F03B/F03C现已在`d2452e0`合流；F03B发现独立scripts provisioning缺口�
 `ecosystemStoreCliPath`生产配置链，关闭前不得运行R05 transcript。
 D40已批量冻结explicit path、local/isolated/remote compiler install、remote flag与dev rewrite四项同owner缺口；F30A一次
 修复，之后I30 cheap combined PASS才解除R05。
+F30A已合流且I30在`4a7b145`以92/92 PASS。批次在H31交接；D41先冻结缺失的R05真实A/B transcript入口，禁止用旧
+single-generation smoke代替最终验收。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -302,6 +304,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D40 result | [Ecosystem Store CLI provisioning result](tasks/P5-D40-ecosystem-store-cli-provisioning-audit-result.md) | `bbd69ce` | complete；无需设计决策 |
 | F30A | [Ecosystem Store CLI provisioning](tasks/P5-F30A-ecosystem-store-cli-provisioning.md) | D40 complete | 高；唯一scripts/config/install owner |
 | I30 | [Lifecycle consumer/provisioning combined](tasks/P5-I30-lifecycle-consumer-provisioning-combined.md) | F03B/C/F30A merged | cheap combined；只解锁R05 |
+| F30A result | [Ecosystem Store CLI provisioning result](tasks/P5-F30A-ecosystem-store-cli-provisioning-result.md) | `4a7b145` | complete |
+| I30 result | [Lifecycle consumer/provisioning combined result](tasks/P5-I30-lifecycle-consumer-provisioning-combined-result.md) | `4a7b145` | PASS；92/92 |
+| D41 | [R05 real transcript entry preflight](tasks/P5-D41-r05-real-transcript-entry-preflight.md) | I30 PASS | 只读；冻结唯一真实入口/缺失harness |
+| H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
 | D35 | [WS builtin materialization audit](tasks/P5-D35-websocket-builtin-materialization-audit-result.md) | F23D smoke 502 | 三层masked范围闭合 |

@@ -1,8 +1,14 @@
 # P5-R05：Canonical WebSocket Ingress Acceptance
 
-未参与F05/F23/F03B/F03C实现及旧R05失败验收的全新独立只读Agent。输入为R24 PASS、F23E、F03B/F03C exact
-clean integration commit/tree、D05/F05合同、R02A PASS seam与合流后聚焦证据；不得编辑、提交、修复或给R02最终
-verdict。旧R05在`c277e45`永久保持FAIL，本合同是production lifecycle闭合后的全新最终验收批次。
+权威设计为
+`doc/architecture/package-service-contract-deployment.md` §2第4、5、8、9、10条，§5、§6.2、§7、§12及§14。
+
+DAG节点R05，依赖R24 PASS、F23E、F03B/F03C/F30A、I30 PASS，以及D41冻结的真实transcript入口；若D41确认缺harness，
+还依赖其后续实现与cheap combined PASS。风险高，验收分组为canonical WebSocket production generation lifecycle。
+
+必须使用未参与F05/F23/F03B/F03C/F30A、旧R05或D41/harness实现的全新独立只读Agent。输入为交接后冻结的exact clean
+integration commit/tree/Cargo.lock、D05/F05合同、R02A seam、R24/F23E/F03B/C/F30A/I30证据及D41冻结命令。不得编辑、
+提交、修复或给R02最终verdict。旧R05在`c277e45`永久保持FAIL，本合同是production lifecycle闭合后的全新最终验收批次。
 
 必验：
 
@@ -16,5 +22,9 @@ verdict。旧R05在`c277e45`永久保持FAIL，本合同是production lifecycle�
 
 必须在真实隔离Router+Runtime child上只运行一次
 `A connect → activate B → A receive×2 → B connect/receive → unary B → close/release/drain` transcript；禁止fake
-registry/dispatcher/direct-send emitter，且不得重跑full Host/I16/stable。第一行只给`R05 PASS`或`R05 FAIL`。
-PASS与一次cheap combined共同解锁I02；FAIL给最小production反例、失效证据与唯一owner。
+registry/dispatcher/direct-send emitter，且不得重跑full Host/I16/stable。精确命令必须由D41及必要harness任务提前写入合同/
+handoff，验收Agent不得临时拼装或先试跑。第一行只给`R05 PASS`或`R05 FAIL`。PASS与已通过的I30/必要harness combined共同
+解锁Cargo.lock no-op/refresh验证与I02；FAIL给最小production反例、失效证据与唯一owner，不重试。
+
+证据只对最终派发的exact candidate与本次隔离环境有效。Router/Runtime lifecycle、store provisioning、fixture/transcript、
+shared wire、Cargo.lock或环境来源变化会使其失效。
