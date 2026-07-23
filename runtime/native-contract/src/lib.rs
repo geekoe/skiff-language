@@ -4,6 +4,7 @@ mod http_targets;
 mod registry;
 mod required_context;
 mod signature;
+mod trusted_registry;
 
 pub use binding::{
     native_target_binding_key, native_target_name, NativeBindingKey, NativeBindingSpec,
@@ -15,4 +16,7 @@ pub use required_context::NativeRequiredContext;
 pub use signature::{
     is_reserved_std_native_target, type_arg_key, validate_native_call_arg_count,
     validate_native_call_type_arg_refs, NativeTypeArgRef,
+};
+pub use trusted_registry::{
+    TrustedRegistryNativeSignature, TRUSTED_REGISTRY_CAPABILITY, TRUSTED_REGISTRY_NATIVE_SIGNATURES,
 };

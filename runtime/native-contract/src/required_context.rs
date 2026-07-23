@@ -11,6 +11,7 @@ pub enum NativeRequiredContext {
     Websocket,
     Telemetry,
     Resource,
+    TrustedRegistry,
 }
 
 impl NativeRequiredContext {
@@ -88,6 +89,29 @@ impl NativeRequiredContext {
             | "std.file.delete"
             | "std.file.createFromStream" => Self::File,
             "std.telemetry.emit" => Self::Telemetry,
+            "registry.packageArtifact.put"
+            | "registry.packageArtifact.read"
+            | "registry.packageArtifact.pointer.read"
+            | "registry.packageArtifact.pointer.cas"
+            | "registry.packageArtifact.pointer.history"
+            | "registry.serviceContract.put"
+            | "registry.serviceContract.read"
+            | "registry.serviceContract.pointer.read"
+            | "registry.serviceContract.pointer.cas"
+            | "registry.serviceContract.pointer.history"
+            | "registry.serviceDeployment.put"
+            | "registry.serviceDeployment.read"
+            | "registry.serviceDeployment.pointer.read"
+            | "registry.serviceDeployment.pointer.cas"
+            | "registry.serviceDeployment.pointer.history"
+            | "registry.runtimeAssembly.put"
+            | "registry.runtimeAssembly.read"
+            | "registry.runtimeAssembly.pointer.read"
+            | "registry.runtimeAssembly.pointer.cas"
+            | "registry.runtimeAssembly.pointer.history"
+            | "registry.activation.prepare"
+            | "registry.activation.commit"
+            | "registry.activation.abort" => Self::TrustedRegistry,
             "std.websocket.sendTextToConnection"
             | "std.websocket.sendBinaryToConnection"
             | "std.websocket.sendTextToBusinessIdentity"
