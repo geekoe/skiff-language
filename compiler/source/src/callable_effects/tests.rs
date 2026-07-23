@@ -523,6 +523,10 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
               return std.json.encode(Payload { value: "ok" })
             }
 
+            function decode(value: string) -> Payload {
+              return std.json.decode<Payload>(value)
+            }
+
             function join(items: Array<string>) -> string {
               return string.join(items, ",")
             }
@@ -580,6 +584,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
         "emptyArray",
         "utf8",
         "json",
+        "decode",
         "join",
         "split",
         "arrayLength",

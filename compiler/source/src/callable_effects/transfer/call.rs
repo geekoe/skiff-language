@@ -361,13 +361,25 @@ fn direct_config_intrinsic(mut callee: &Expr) -> bool {
 }
 
 fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
-    let semantics = native_callable_semantics(binding_key)?;
-    let mut state = CallableState::bottom();
-    state.effects = semantics.effects;
-    state
-        .return_origins
-        .insert(Origin::from(semantics.return_provenance.clone()));
-    Some(state)
+    if let Some(semantics) = native_callable_semantics(binding_key) {
+        let mut state = CallableState::bottom();
+        state.effects = semantics.effects;
+        state
+            .return_origins
+            .insert(Origin::from(semantics.return_provenance.clone()));
+        return Some(state);
+    }
+    match binding_key {
+        // runtime/native dispatch decodes into the current request heap and
+        // either returns that newly materialized value or raises a detached
+        // std.json.DecodeError. It does not retain the input or suspend.
+        "std.json.decode" => {
+            let mut state = CallableState::bottom();
+            state.return_origins.insert(Origin::Fresh);
+            Some(state)
+        }
+        _ => None,
+    }
 }
 
 fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
