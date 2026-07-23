@@ -345,6 +345,10 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F45B result | [Actor control activation wire result](tasks/P5-F45B-actor-control-activation-wire-result.md) | `0c5922f` | complete；shared checkpoint |
 | F45C | [Runtime actor activation consumer](tasks/P5-F45C-runtime-actor-activation-consumer.md) | F45B merged | 高；Runtime current-context owner |
 | F45D | [Router actor activation consumer](tasks/P5-F45D-router-actor-activation-consumer.md) | F45B merged | 高；Router registration/snapshot owner |
+| F45C result | [Runtime actor activation consumer result](tasks/P5-F45C-runtime-actor-activation-consumer-result.md) | `1538f83` | complete；worker子范围进入D46 |
+| F45D result | [Router actor activation consumer result](tasks/P5-F45D-router-actor-activation-consumer-result.md) | `b1fd753` | complete；Router 58/type-check PASS |
+| D46 | [Canonical spawn worker source](tasks/P5-D46-canonical-spawn-worker-source.md) | F45C finding | 设计分支暂停；不阻塞submit probe |
+| F45E | [I02 canonical spawn submit probe](tasks/P5-F45E-i02-spawn-submit-probe.md) | F45A/C/D merged | 高；I02真实typed control consumer |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
