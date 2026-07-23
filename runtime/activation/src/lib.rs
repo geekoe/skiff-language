@@ -4,9 +4,8 @@ mod cache;
 mod capability;
 mod context;
 mod request_context;
-mod requirements;
 
-pub use activation::{build_runtime_activation_for_image, RuntimeActivation};
+pub use activation::RuntimeActivation;
 pub use assembly_seam::{RuntimeAssemblyActivationSeamError, RuntimeAssemblyActivationTemplate};
 pub use cache::{
     RemovedRuntimeActivationCacheEntry, RuntimeActivationCache, RuntimeActivationCacheEntry,
