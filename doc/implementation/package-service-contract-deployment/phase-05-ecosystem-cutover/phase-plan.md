@@ -513,6 +513,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D56 | [Trusted registry callable audit](tasks/P5-D56-trusted-registry-callable-audit.md) | T08 blocked | capability/design双分片 |
 | D56 result | [Trusted registry callable audit result](tasks/P5-D56-trusted-registry-callable-audit-result.md) | 用户决定 | Platform DB唯一SOT |
 | F56C0 | [Trusted registry contract checkpoint](tasks/P5-F56C0-trusted-registry-contract-checkpoint.md) | D56 decision | shared typed capability |
+| F56C0 result | [Trusted registry contract checkpoint result](tasks/P5-F56C0-trusted-registry-contract-checkpoint-result.md) | `811095d` | complete |
+| F56C1 | [Platform DB registry adapter](tasks/P5-F56C1-platform-db-registry-adapter.md) | F56C0 | deployment/backend owner |
+| F56C2 | [Host trusted registry wiring](tasks/P5-F56C2-host-trusted-registry-wiring.md) | F56C0 | host/native owner |
+| F56C3 | [Router activation callable](tasks/P5-F56C3-router-activation-callable.md) | F56C0 | Router/control owner |
+| F56C4 | [Official registry package](tasks/P5-F56C4-official-registry-package.md) | F56C0 | package owner |
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
 | T09B | [AIHub contract](tasks/P5-T09B-internals-aihub-contract.md) | R02 exact Skiff | 高；contract ABI/schema |
 | T09C | [Agine contract](tasks/P5-T09C-internals-agine-contract.md) | R02 exact Skiff | 高；contract/API owner split |
