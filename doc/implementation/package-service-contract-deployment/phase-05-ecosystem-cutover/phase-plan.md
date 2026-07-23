@@ -497,6 +497,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
 | T06 blocker | [Terminal cleanup blocker](tasks/P5-T06-skiff-terminal-cleanup-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；33 consumer |
 | D55 | [Terminal legacy consumer audit](tasks/P5-D55-terminal-legacy-consumer-audit.md) | T06 blocked | 三只读分片并行 |
+| D55 result | [Terminal legacy consumer audit result](tasks/P5-D55-terminal-legacy-consumer-audit-result.md) | D55A/B/C complete | consumer checkpoint first |
+| F55A | [Host/driver legacy consumer removal](tasks/P5-F55A-host-driver-legacy-consumer-removal.md) | D55 complete | host/driver owner |
+| F55B | [Loader/linker legacy chain removal](tasks/P5-F55B-loader-linker-legacy-chain-removal.md) | D55 complete | loader/linker owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
