@@ -49,6 +49,9 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 9. code identity、service protocol identity、deployment revision与assembly identity必须分开。
 10. 当前ActivationContext必须随async continuation、stream和callback显式传播；任何service call都以它
     解析caller binding slot并切换到provider owner。
+11. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
+    exact assembly registration及active/draining generation验证，不能按serviceId、package build、display
+    name或legacy runtime registration补事实。
 
 ## 3. Package 与 PackageArtifact
 
@@ -503,6 +506,18 @@ replica加载完整相同assembly：
   任何mutable runtime state不得因PackageBuildId相同而共享；
 - replica之间heap、CPU调度、request lifecycle与failure独立；
 - MongoDB、Redis等外部数据层按deployment配置共享。
+
+canonical runtime connection上的actor、spawn及后续同类跨request control frame必须显式携带当前
+ActivationIdentity，至少包含assembly identity、generation、runtime replica与deployment revision。Runtime
+从发起控制动作的当前ActivationContext填充该identity；callback、continuation或spawn source不能重建、删减
+或用ambient connection state替代它。
+
+Router先把frame绑定到发送者的exact assembly registration，再按该registration对应的active或draining
+generation snapshot验证完整identity。active generation可发起新控制动作；仍被request、stream、WebSocket或
+callback显式pin住的draining generation只在其pin生命周期内继续使用原ActivationContext。未注册sender、
+identity缺失/歧义、tuple不匹配、generation已完成drain或仅有legacy `runtime.register`/serviceId事实时一律
+fail closed。actor/spawn response继续按同一request与sender correlation返回，不能在Router中恢复
+service/build inference。
 
 这能整体扩CPU、内存与副本可用性，但不能单独隔离或扩缩某个service；一个service的CPU/memory故障
 可能影响同replica内其它service。第一版明确接受这一限制，并要求assembly admission、health、drain和
