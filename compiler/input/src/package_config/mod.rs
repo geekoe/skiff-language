@@ -137,7 +137,7 @@ pub fn read_user_package_manifest(path: &Path) -> Result<PackageManifest, Packag
 }
 
 fn is_enabled_standard_package_id(id: &str) -> bool {
-    is_standard_package_id(id)
+    is_standard_package_id(id) || id == skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID
 }
 
 pub fn is_standard_package_id(id: &str) -> bool {

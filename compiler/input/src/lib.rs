@@ -40,7 +40,7 @@ pub use manifest::{
 pub use platform_sources::{
     CompilerPlatformPackageAuthority, CompilerPlatformSources, CompilerPlatformSourcesError,
 };
-pub use registry_native_sources::trusted_registry_native_sources;
+pub use registry_native_sources::{trusted_registry_native_api, trusted_registry_native_sources};
 pub use resources::{
     collect_publication_resource_spec_violations, read_publication_resources,
     validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,

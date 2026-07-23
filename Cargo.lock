@@ -2187,6 +2187,7 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-deployment",
  "skiff-syntax",
+ "skiff-trusted-registry-contract",
  "thiserror",
 ]
 

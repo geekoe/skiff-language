@@ -113,6 +113,7 @@ skiff-compiler-projection-input = { path = "projection-input" }
 skiff-compiler-source = { path = "source" }
 skiff-deployment = { path = "../deployment" }
 skiff-syntax = { path = "../syntax" }
+skiff-trusted-registry-contract = { path = "../trusted-registry-contract" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"

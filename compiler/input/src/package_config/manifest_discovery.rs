@@ -65,8 +65,11 @@ fn discover_builtin_std_package_manifests(
     let mut manifests = BTreeMap::new();
     for (package_id, package) in platform_sources.packages() {
         let manifest_path = &package.manifest_path;
-        let manifest =
+        let mut manifest =
             read_package_manifest(manifest_path, PackageManifestOwner::CompilerStandardPackage)?;
+        if package_id == skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID {
+            manifest.publication.api = crate::trusted_registry_native_api();
+        }
         if manifest.id.as_str() != package_id {
             return Err(PackageConfigError::Validation {
                 message: format!(

@@ -46,7 +46,8 @@ use crate::{
 mod package_publication;
 
 pub use package_publication::{
-    author_official_std_package, publish_package_artifact_records, PublishedPackageArtifactReceipt,
+    author_official_registry_package, author_official_std_package,
+    publish_package_artifact_records, PublishedPackageArtifactReceipt,
 };
 
 pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -84,6 +85,20 @@ pub fn build_authoring_object(
         match object {
             AuthoringObject::Package => {
                 return run_after_platform_context_guard(platform_sources, || {
+                    if platform_sources
+                        .trusted_registry_package_authority()
+                        .is_ok_and(|authority| {
+                            fs::canonicalize(root)
+                                .is_ok_and(|candidate| candidate == authority.package_root())
+                        })
+                    {
+                        let store = CanonicalArtifactStore::create(artifact_root)?;
+                        return build_official_registry_package(
+                            platform_sources,
+                            &store,
+                            publish_pointer,
+                        );
+                    }
                     let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
                     let store = CanonicalArtifactStore::create(artifact_root)?;
                     build_package_after_platform_context_guard(
@@ -101,6 +116,15 @@ pub fn build_authoring_object(
         };
     let store = CanonicalArtifactStore::create(artifact_root)?;
     build_non_package(root, &store, publish_pointer)
+}
+
+fn build_official_registry_package(
+    platform_sources: &CompilerPlatformSources,
+    store: &CanonicalArtifactStore,
+    publish_pointer: bool,
+) -> AuthoringResult<Value> {
+    let published = author_official_registry_package(platform_sources)?;
+    write_package_authoring_result(store, &published, publish_pointer)
 }
 
 fn run_after_platform_context_guard<T>(
@@ -129,6 +153,14 @@ fn build_package_after_platform_context_guard(
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available);
     let published = compile_package(input)?;
+    write_package_authoring_result(store, &published, publish_pointer)
+}
+
+fn write_package_authoring_result(
+    store: &CanonicalArtifactStore,
+    published: &skiff_compiler_emission::package_artifact::PublishedPackageArtifact,
+    publish_pointer: bool,
+) -> AuthoringResult<Value> {
     let receipt = publish_package_artifact_records(store, &published)?;
     let mut output = Map::from_iter([(
         "packageArtifactReceipt".to_string(),

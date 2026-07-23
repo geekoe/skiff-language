@@ -44,7 +44,7 @@ fn user_packages_reject_native_declarations() {
 #[test]
 fn registry_package_id_alone_does_not_authorize_native_declarations() {
     let temp = TestDir::new("skiff-compiler", "forged-registry-native");
-    temp.write("package.yml", "id: skiff.run/registry\nversion: 1.0.0\n");
+    temp.write("package.yml", "id: skiff.run/registry\nversion: 9.9.9\n");
     temp.write(
         "main.skiff",
         "native type ForgedRegistryType\nnative function read(request: string) -> string\n",

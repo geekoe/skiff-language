@@ -11,8 +11,46 @@ use skiff_trusted_registry_contract::{
 
 use crate::{
     package_sources::{PackageSourceVisibility, RawPackagePublicationSources},
-    CompilerPlatformPackageAuthority, InputAssemblyError,
+    CompilerPlatformPackageAuthority, InputAssemblyError, PublicationApiEntry, PublicationApiSpec,
+    SourceSymbolSelector,
 };
+
+pub fn trusted_registry_native_api() -> PublicationApiSpec {
+    let mut entries = TRUSTED_REGISTRY_NATIVE_SIGNATURES
+        .iter()
+        .map(|signature| {
+            let (module, symbol) = signature.target.rsplit_once('.').unwrap();
+            PublicationApiEntry::new(
+                module
+                    .strip_prefix("skiff.registry.")
+                    .unwrap()
+                    .split('.')
+                    .chain(std::iter::once(symbol))
+                    .map(str::to_string)
+                    .collect(),
+                SourceSymbolSelector::new(module, symbol),
+            )
+        })
+        .collect::<Vec<_>>();
+    let types = TRUSTED_REGISTRY_NATIVE_SIGNATURES
+        .iter()
+        .flat_map(|signature| {
+            signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.return_type))
+        })
+        .map(registry_type_name)
+        .collect::<BTreeSet<_>>();
+    entries.extend(types.into_iter().map(|name| {
+        PublicationApiEntry::new(
+            vec![name.to_string()],
+            SourceSymbolSelector::new("skiff.registry", name),
+        )
+    }));
+    entries.sort_by_key(PublicationApiEntry::public_path_string);
+    PublicationApiSpec::from_entries(entries)
+}
 
 pub fn trusted_registry_native_sources(
     authority: &CompilerPlatformPackageAuthority,
@@ -123,12 +161,19 @@ mod tests {
         let snapshot_before = platform.prelude_registry_snapshot().unwrap();
         let authority = platform.trusted_registry_package_authority().unwrap();
         let sources = trusted_registry_native_sources(&authority).unwrap();
+        let api = trusted_registry_native_api();
         let snapshot_after = platform.prelude_registry_snapshot().unwrap();
         assert_eq!(authority.package_id(), TRUSTED_REGISTRY_PACKAGE_ID);
         assert_eq!(
             snapshot_before, snapshot_after,
             "registry authority must not mutate std/prelude inputs"
         );
+        assert!(api
+            .entries()
+            .any(|entry| entry.public_path_string() == "activation.activate"));
+        assert!(api
+            .entries()
+            .any(|entry| entry.public_path_string() == "ActivationRequest"));
         assert!(sources
             .files()
             .iter()

@@ -103,6 +103,50 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
 }
 
 #[test]
+fn official_registry_cli_authoring_path_compiles_all_canonical_native_declarations() {
+    let platform = repository_platform_sources();
+    let authority = platform.trusted_registry_package_authority().unwrap();
+    let artifact_root = TestDir::new("official-registry-cli-authoring");
+    let result = build_authoring_object(
+        &platform,
+        AuthoringObject::Package,
+        authority.package_root(),
+        artifact_root.path(),
+        false,
+    )
+    .expect("official registry package build must use compiler-owned authoring");
+    let reference: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(result["packageArtifactReceipt"]["artifact"].clone()).unwrap();
+    assert_eq!(
+        reference.package_id,
+        skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID
+    );
+
+    let store = CanonicalArtifactStore::open(artifact_root.path()).unwrap();
+    let artifact = store.read_package_artifact(&reference).unwrap();
+    let executable_count = artifact
+        .files
+        .iter()
+        .map(|file| {
+            store
+                .read_file_ir(&reference, file)
+                .unwrap()
+                .declarations
+                .executables
+                .len()
+        })
+        .sum::<usize>();
+    assert_eq!(
+        executable_count,
+        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES.len()
+    );
+    assert!(
+        !artifact_root.path().join("pointers").exists(),
+        "build must not publish a pointer"
+    );
+}
+
+#[test]
 fn package_record_writer_validates_the_complete_candidate_before_writing() {
     let mut incomplete = repository_std();
     incomplete.file_ir_units.pop();

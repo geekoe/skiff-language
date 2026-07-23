@@ -43,6 +43,7 @@ pub struct CompilerPlatformSourceSnapshot {
 pub struct CompilerPlatformPackageAuthority {
     package_id: &'static str,
     platform_root: PathBuf,
+    package_root: PathBuf,
 }
 
 impl CompilerPlatformPackageAuthority {
@@ -52,6 +53,10 @@ impl CompilerPlatformPackageAuthority {
 
     pub(crate) fn platform_root(&self) -> &Path {
         &self.platform_root
+    }
+
+    pub fn package_root(&self) -> &Path {
+        &self.package_root
     }
 }
 
@@ -174,9 +179,19 @@ impl CompilerPlatformSources {
         &self,
     ) -> Result<CompilerPlatformPackageAuthority, CompilerPlatformSourcesError> {
         self.revalidate()?;
+        let package = self
+            .packages
+            .get(TRUSTED_REGISTRY_PACKAGE_ID)
+            .ok_or_else(|| {
+                invalid_layout(format!(
+                    "{}: missing registry package {TRUSTED_REGISTRY_PACKAGE_ID}",
+                    self.registry_path.display()
+                ))
+            })?;
         Ok(CompilerPlatformPackageAuthority {
             package_id: TRUSTED_REGISTRY_PACKAGE_ID,
             platform_root: self.root.clone(),
+            package_root: package.root.clone(),
         })
     }
 
@@ -194,6 +209,9 @@ impl CompilerPlatformSources {
             &mut sources,
         )?;
         for (package_id, package) in &self.packages {
+            if package_id == TRUSTED_REGISTRY_PACKAGE_ID {
+                continue;
+            }
             if package_id != SKIFF_STD_PUBLICATION_ID {
                 return Err(invalid_layout(format!(
                     "official package {package_id} has no prelude registry logical root"
@@ -290,8 +308,10 @@ fn load_platform_packages(
 
     let mut packages = BTreeMap::new();
     for package in registry.packages {
-        validate_std_registry_package_id(&package.id)
-            .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
+        if package.id != TRUSTED_REGISTRY_PACKAGE_ID {
+            validate_std_registry_package_id(&package.id)
+                .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
+        }
         validate_official_registry_package_path(&package.id, &package.path)
             .map_err(|error| invalid_layout(format!("{}: {error}", registry_path.display())))?;
         let package_root = canonical_contained_directory(
@@ -328,6 +348,25 @@ fn load_platform_packages(
                 )));
             }
         }
+    }
+    if root.join("registry").is_dir() {
+        let trusted_registry_root = canonical_contained_directory(
+            root,
+            &root.join("registry"),
+            "trusted registry package",
+        )?;
+        let trusted_registry_manifest = canonical_contained_file(
+            &trusted_registry_root,
+            &trusted_registry_root.join("package.yml"),
+            "trusted registry package manifest",
+        )?;
+        packages.insert(
+            TRUSTED_REGISTRY_PACKAGE_ID.to_string(),
+            PlatformPackageSource {
+                root: trusted_registry_root,
+                manifest_path: trusted_registry_manifest,
+            },
+        );
     }
     if !packages.contains_key(SKIFF_STD_PUBLICATION_ID) {
         return Err(invalid_layout(format!(
