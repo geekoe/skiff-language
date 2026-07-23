@@ -22,7 +22,7 @@ use crate::protocol::{
 };
 
 const SERVICE_PROTOCOL_A: &str =
-    "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SERVICE_REVISION: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
 fn activation_identity() -> ActivationIdentityFrameMetadata {
@@ -938,7 +938,7 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
             "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         service_protocol_identity:
-            "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         activation_identity: None,
         gateway_entry_identity: None,
