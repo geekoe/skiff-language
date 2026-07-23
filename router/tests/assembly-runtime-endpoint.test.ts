@@ -27,7 +27,9 @@ import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
 import {
   MemoryRuntimeAssemblySnapshotLoader,
   RouterActiveAssemblySnapshotStore,
-  type LoadedRuntimeAssembly
+  RuntimeAssemblyIngressIndex,
+  type LoadedRuntimeAssembly,
+  type RuntimeAssemblyIngressBinding
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY_A = identity('a');
@@ -36,6 +38,13 @@ const ASSEMBLY_C = identity('c');
 const EMPTY_ASSEMBLY =
   'skiff-runtime-assembly-v1:sha256:4176e39122928fcf47db987c34884f2f7ab4a1833c502a33bb6fd0c861a5acf6';
 const RUNTIME_ID = 'runtime-assembly-a';
+const SERVICE_ID = 'example.com/actors';
+const SERVICE_VERSION = '1.0.0';
+const SERVICE_PROTOCOL =
+  `skiff-protocol-v1:sha256:${'c'.repeat(64)}`;
+const BUILD_ID = `skiff-service-build-v1:sha256:${'d'.repeat(64)}`;
+const TARGET = 'function:service.example~actors.ActorApi.spawn';
+const SPAWN_COMPATIBILITY = `${SERVICE_VERSION}:${SERVICE_PROTOCOL}:${TARGET}`;
 const fixtures: CompositeEndpointFixture[] = [];
 
 describe('unified RuntimeEndpoint assembly bootstrap', () => {
@@ -124,6 +133,221 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     ]);
   });
 
+  it('authorizes active actor/spawn control and round-trips structured activation identity', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+    const activationIdentity = activation(ASSEMBLY_A, 1);
+
+    const actorPut = nextRuntimeFrame(ws, 'actor.put.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.put.request'],
+      rpcId: 'actor-active-put',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      actorKey: actorKey()
+    }, new Uint8Array([1, 2, 3])));
+    await expect(actorPut).resolves.toMatchObject({
+      header: {
+        type: 'actor.put.response',
+        rpcId: 'actor-active-put',
+        actorRef: { serviceId: SERVICE_ID }
+      }
+    });
+
+    const submit = nextRuntimeFrame(ws, 'spawn.submit.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+      rpcId: 'spawn-active-submit',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      serviceId: SERVICE_ID,
+      serviceVersion: SERVICE_VERSION,
+      serviceProtocolIdentity: SERVICE_PROTOCOL,
+      target: TARGET,
+      buildId: BUILD_ID,
+      spawnId: 'spawn-active-1'
+    }, new Uint8Array([7, 8])));
+    await expect(submit).resolves.toMatchObject({
+      header: { type: 'spawn.submit.response', spawnId: 'spawn-active-1' }
+    });
+
+    const claim = nextRuntimeFrame(ws, 'spawn.claim.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
+      rpcId: 'spawn-active-claim',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      serviceId: SERVICE_ID,
+      serviceVersion: SERVICE_VERSION,
+      serviceProtocolIdentity: SERVICE_PROTOCOL,
+      supportedTargets: [TARGET],
+      supportedSpawnCompatibilityKeys: [SPAWN_COMPATIBILITY],
+      buildId: BUILD_ID
+    }));
+    const claimed = await claim;
+    expect(claimed).toMatchObject({
+      header: {
+        type: 'spawn.claim.response',
+        claimed: true,
+        item: {
+          serviceId: SERVICE_ID,
+          buildId: BUILD_ID,
+          activationIdentity
+        }
+      }
+    });
+    expect([...claimed.payloadBytes]).toEqual([7, 8]);
+    if (
+      claimed.header.type !== 'spawn.claim.response' ||
+      claimed.header.item === undefined
+    ) {
+      throw new Error('expected a claimed spawn item');
+    }
+
+    const renew = nextRuntimeFrame(ws, 'spawn.renew.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['spawn.renew.request'],
+      rpcId: 'spawn-active-renew',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      itemId: claimed.header.item.itemId,
+      leaseId: claimed.header.item.leaseId
+    }));
+    await expect(renew).resolves.toMatchObject({
+      header: {
+        type: 'spawn.renew.response',
+        rpcId: 'spawn-active-renew',
+        renewed: true
+      }
+    });
+
+    const wrongComplete = nextRuntimeFrame(ws, 'spawn.complete.error');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['spawn.complete.request'],
+      rpcId: 'spawn-wrong-complete',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: {
+        ...activationIdentity,
+        deploymentRevision: 'revision-other'
+      },
+      itemId: claimed.header.item.itemId,
+      leaseId: claimed.header.item.leaseId
+    }));
+    await expect(wrongComplete).resolves.toMatchObject({
+      header: {
+        type: 'spawn.complete.error',
+        rpcId: 'spawn-wrong-complete',
+        error: { code: 'RuntimeActivationMismatch', status: 403 }
+      }
+    });
+
+    const complete = nextRuntimeFrame(ws, 'spawn.complete.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['spawn.complete.request'],
+      rpcId: 'spawn-active-complete',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      itemId: claimed.header.item.itemId,
+      leaseId: claimed.header.item.leaseId
+    }));
+    await expect(complete).resolves.toMatchObject({
+      header: {
+        type: 'spawn.complete.response',
+        rpcId: 'spawn-active-complete',
+        status: 'completed'
+      }
+    });
+  });
+
+  it('rejects every mismatched activation tuple field on the exact assembly sender', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+
+    const mismatches = [
+      { ...activation(ASSEMBLY_A, 1), assemblyIdentity: ASSEMBLY_B },
+      { ...activation(ASSEMBLY_A, 1), generation: 2 },
+      { ...activation(ASSEMBLY_A, 1), runtimeReplicaId: 'runtime-other' },
+      { ...activation(ASSEMBLY_A, 1), deploymentRevision: 'revision-other' }
+    ];
+    for (const [index, activationIdentity] of mismatches.entries()) {
+      const rpcId = `actor-mismatch-${index}`;
+      const response = nextRuntimeFrame(ws, 'actor.find.error');
+      ws.send(encodeRuntimeFrame({
+        ...runtimeFrameHeaderFixtures['actor.find.request'],
+        rpcId,
+        runtimeId: RUNTIME_ID,
+        activationIdentity,
+        actorKey: actorKey()
+      }));
+      await expect(response).resolves.toMatchObject({
+        header: {
+          type: 'actor.find.error',
+          rpcId,
+          error: { code: 'RuntimeActivationMismatch', status: 403 }
+        }
+      });
+    }
+  });
+
+  it('allows a pinned draining activation and rejects it after the pin drains', async () => {
+    const fixture = await createFixture();
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(1, ASSEMBLY_A));
+    await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
+    const oldActivation = activation(ASSEMBLY_A, 1);
+
+    fixture.snapshots.replace({
+      environment: 'test',
+      generation: 2,
+      assembly: { assemblyIdentity: ASSEMBLY_B },
+      ingress: new RuntimeAssemblyIngressIndex(assembly(ASSEMBLY_B).globalIngress)
+    });
+    fixture.assemblyRegistry.activate(fixture.snapshots.get());
+    fixture.assemblyRegistry.setConnectionPinCounter({
+      connectionPinCount: () => 1,
+      connectionReleaseAckCount: () => 0
+    });
+
+    const pinned = nextRuntimeFrame(ws, 'actor.find.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.find.request'],
+      rpcId: 'actor-draining-pinned',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: oldActivation,
+      actorKey: actorKey()
+    }));
+    await expect(pinned).resolves.toMatchObject({
+      header: { type: 'actor.find.response', rpcId: 'actor-draining-pinned' }
+    });
+
+    fixture.assemblyRegistry.setConnectionPinCounter({
+      connectionPinCount: () => 0,
+      connectionReleaseAckCount: () => 0
+    });
+    const drained = nextRuntimeFrame(ws, 'actor.find.error');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.find.request'],
+      rpcId: 'actor-draining-finished',
+      runtimeId: RUNTIME_ID,
+      activationIdentity: oldActivation,
+      actorKey: actorKey()
+    }));
+    await expect(drained).resolves.toMatchObject({
+      header: {
+        type: 'actor.find.error',
+        rpcId: 'actor-draining-finished',
+        error: { code: 'RuntimeActivationMismatch', status: 403 }
+      }
+    });
+  });
+
   it('uses capability participants across the initial empty and later old registrations', async () => {
     const fixture = await createFixture({
       generation: 0,
@@ -185,10 +409,13 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
       header: { type: 'runtime.registered', runtimeId }
     });
 
-    const actorResponse = nextRuntimeFrame(ws, 'actor.find.response');
+    const actorResponse = nextRuntimeFrame(ws, 'actor.find.error');
     ws.send(encodeRuntimeFrame(runtimeFrameHeaderFixtures['actor.find.request']));
     await expect(actorResponse).resolves.toMatchObject({
-      header: { type: 'actor.find.response' }
+      header: {
+        type: 'actor.find.error',
+        error: { code: 'RuntimeActivationMismatch', status: 403 }
+      }
     });
 
     const spawnResponse = nextRuntimeFrame(ws, 'spawn.submit.error');
@@ -309,6 +536,7 @@ interface CompositeEndpointFixture {
   coordinator: AssemblyActivationCoordinator;
   endpoint: RuntimeEndpoint;
   runtimeRegistry: RuntimeRegistry;
+  snapshots: RouterActiveAssemblySnapshotStore;
   url: string;
   close(): Promise<void>;
 }
@@ -356,6 +584,7 @@ async function createFixture(
     coordinator,
     endpoint,
     runtimeRegistry,
+    snapshots,
     url: listening.url,
     close: () => endpoint.close()
   };
@@ -414,7 +643,76 @@ function transition(
 }
 
 function assembly(assemblyIdentity: string): LoadedRuntimeAssembly {
-  return { schemaVersion: 'skiff-runtime-assembly-v1', assemblyIdentity, globalIngress: [] };
+  const revision = deploymentRevision(assemblyIdentity);
+  return {
+    schemaVersion: 'skiff-runtime-assembly-v1',
+    assemblyIdentity,
+    resolvedDeployments:
+      assemblyIdentity === EMPTY_ASSEMBLY
+        ? []
+        : [ingressBinding(revision).deployment],
+    resolvedContracts:
+      assemblyIdentity === EMPTY_ASSEMBLY
+        ? []
+        : [ingressBinding(revision).contract],
+    globalIngress:
+      assemblyIdentity === EMPTY_ASSEMBLY
+        ? []
+        : [ingressBinding(revision)]
+  };
+}
+
+function ingressBinding(deploymentRevision: string): RuntimeAssemblyIngressBinding {
+  return {
+    selector: {
+      protocol: 'http',
+      host: 'actors.localhost',
+      method: 'POST',
+      path: '/actors'
+    },
+    deployment: {
+      serviceId: SERVICE_ID,
+      contractVersion: SERVICE_VERSION,
+      deploymentRevision,
+      deploymentArtifactIdentity:
+        `skiff-deployment-artifact-v1:sha256:${'e'.repeat(64)}`
+    },
+    contract: {
+      serviceId: SERVICE_ID,
+      contractVersion: SERVICE_VERSION,
+      serviceProtocolIdentity: SERVICE_PROTOCOL
+    },
+    operationMode: 'unary',
+    contractOperationId:
+      `skiff-contract-operation-v1:sha256:${'f'.repeat(64)}`
+  };
+}
+
+function deploymentRevision(assemblyIdentity: string): string {
+  return assemblyIdentity === ASSEMBLY_A ? 'revision-a' : 'revision-b';
+}
+
+function activation(
+  assemblyIdentity: string,
+  generation: number
+) {
+  return {
+    assemblyIdentity,
+    generation,
+    runtimeReplicaId: RUNTIME_ID,
+    deploymentRevision: deploymentRevision(assemblyIdentity)
+  };
+}
+
+function actorKey() {
+  return {
+    serviceId: SERVICE_ID,
+    actorTypeIdentity: 'actor.example.ThreadActor',
+    actorIdTypeIdentity: 'type.example.ThreadId',
+    actorIdEncodingVersion: 'json-v1',
+    canonicalActorIdKeyBytesBase64:
+      Buffer.from('"thread-1"').toString('base64')
+  };
 }
 
 function identity(character: string): string {

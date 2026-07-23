@@ -2,7 +2,6 @@ import WebSocket from 'ws';
 
 import {
   RUNTIME_FRAME_SCHEMA_VERSION,
-  type ActorSpawnRuntimeRequestFrameHeader,
   type PackageTestStartFrameHeader,
   type RequestStartFrameHeader,
   type RouterToRuntimeFrameHeader,
@@ -565,20 +564,19 @@ export class RuntimeRegistry {
   async handleActorSpawnRuntimeControlFrame(
     ws: WebSocket,
     header: Parameters<ActorSpawnRuntimeControl['handle']>[0],
-    payloadBytes: Uint8Array
+    payloadBytes: Uint8Array,
+    assemblySource?: RuntimeControlSource
   ): Promise<RuntimeControlFrameResponse> {
-    const source =
-      this.runtimeControlSource(ws, header.runtimeId) ??
-      this.packageTestRuntimeControlSource(ws, header);
-    if (source === undefined) {
+    if (assemblySource === undefined) {
       return {
         header: {
           schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
           type: actorSpawnRuntimeControlErrorType(header.type),
           rpcId: header.rpcId,
           error: {
-            code: 'RuntimeNotRegistered',
-            message: `runtime control frame requires a registered runtime connection for ${header.runtimeId}`,
+            code: 'RuntimeActivationMismatch',
+            message:
+              'runtime control frame requires an exact active or pinned-draining assembly registration',
             status: 403
           }
         },
@@ -586,7 +584,11 @@ export class RuntimeRegistry {
       };
     }
 
-    const response = await this.actorSpawnControl.handle(header, payloadBytes, source);
+    const response = await this.actorSpawnControl.handle(
+      header,
+      payloadBytes,
+      assemblySource
+    );
     return {
       header: response.header,
       payloadBytes: response.payloadBytes ?? new Uint8Array()
@@ -668,87 +670,6 @@ export class RuntimeRegistry {
     return request.buildId;
   }
 
-  private runtimeControlSource(
-    ws: WebSocket,
-    runtimeId: string
-  ): RuntimeControlSource | undefined {
-    const runtime = this.runtimes.get(runtimeId);
-    if (
-      runtime === undefined ||
-      runtime.ws !== ws ||
-      runtime.ws.readyState !== WebSocket.OPEN ||
-      runtime.revisionState === 'retired'
-    ) {
-      return undefined;
-    }
-    return {
-      runtimeId: runtime.runtimeId,
-      serviceId: runtime.serviceId,
-      buildId: runtime.buildId,
-      serviceProtocolIdentity: runtime.serviceProtocolIdentity,
-      targets: runtime.targets,
-      inFlightCount: this.countInFlight(runtime),
-      ...(runtime.activationIdentity === undefined
-        ? {}
-        : { activationIdentity: runtime.activationIdentity })
-    };
-  }
-
-  private packageTestRuntimeControlSource(
-    ws: WebSocket,
-    header: ActorSpawnRuntimeRequestFrameHeader
-  ): RuntimeControlSource | undefined {
-    const capability = this.runtimeCapabilitiesByConnection.get(ws);
-    if (
-      capability === undefined ||
-      capability.runtimeId !== header.runtimeId ||
-      capability.ws !== ws ||
-      capability.ws.readyState !== WebSocket.OPEN ||
-      !runtimeSupportsPackageTestDispatch(capability)
-    ) {
-      return undefined;
-    }
-
-    switch (header.type) {
-      case 'spawn.submit.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: header.serviceId,
-          buildId: header.buildId ?? packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: header.serviceProtocolIdentity,
-          targets: new Set([header.target]),
-          inFlightCount: 0,
-          ...(header.activationIdentity === undefined
-            ? {}
-            : { activationIdentity: header.activationIdentity })
-        };
-      case 'spawn.claim.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: header.serviceId,
-          buildId: header.buildId ?? packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: header.serviceProtocolIdentity,
-          targets: new Set(header.supportedTargets),
-          inFlightCount: 0,
-          ...(header.activationIdentity === undefined
-            ? {}
-            : { activationIdentity: header.activationIdentity })
-        };
-      case 'spawn.renew.request':
-      case 'spawn.complete.request':
-      case 'spawn.fail.request':
-        return {
-          runtimeId: header.runtimeId,
-          serviceId: '__skiff.package-test',
-          buildId: packageTestRuntimeControlBuildId(header.runtimeId),
-          serviceProtocolIdentity: '__skiff.package-test',
-          targets: new Set(),
-          inFlightCount: 0
-        };
-      default:
-        return undefined;
-    }
-  }
 
   private pickPackageTestDispatchConnection(
     request: PackageTestStartFrameHeader
@@ -1285,10 +1206,6 @@ function runtimeSupportsPackageTestDispatch(runtime: {
   capabilities?: RuntimeCapabilitiesMetadata;
 }): boolean {
   return runtime.capabilities?.packageTestDispatch === true;
-}
-
-function packageTestRuntimeControlBuildId(runtimeId: string): string {
-  return `skiff-package-test-runtime-control:${runtimeId}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

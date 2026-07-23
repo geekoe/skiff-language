@@ -453,7 +453,11 @@ export class RuntimeEndpoint
           const response = await this.options.registry.handleActorSpawnRuntimeControlFrame(
             ws,
             header,
-            frame.payloadBytes
+            frame.payloadBytes,
+            this.options.assemblyRegistry?.actorSpawnRuntimeControlSource(
+              ws,
+              header
+            )
           );
           this.sendFrame(ws, response.header, response.payloadBytes);
         }

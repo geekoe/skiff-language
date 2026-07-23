@@ -4,6 +4,7 @@ import type {
   AssemblyActivationControl
 } from '../protocol/assemblyActivationProtocol.js';
 import type {
+  ActorSpawnRuntimeRequestFrameHeader,
   RuntimeHealthCounters
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
@@ -18,6 +19,7 @@ import type {
   RuntimeInFlightCounter,
   RuntimeInFlightRequest
 } from './runtimeRegistry.js';
+import type { RuntimeControlSource } from './actorSpawnRuntimeControl.js';
 import {
   canonicalIngressHost,
   RouterActiveAssemblySnapshotStore,
@@ -39,6 +41,12 @@ interface AssemblyReplica extends RuntimeDispatchRuntimeIdentity {
   registeredAt: string;
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
+  deploymentBindingsByService: ReadonlyMap<string, AssemblyDeploymentBinding>;
+}
+
+interface AssemblyDeploymentBinding {
+  deploymentRevision: string;
+  serviceProtocolIdentity: string;
 }
 
 export interface AssemblyReplicaSnapshot {
@@ -119,6 +127,7 @@ export class AssemblyRuntimeRegistry {
       assemblyIdentity: control.assembly.assemblyIdentity,
       state: 'healthy',
       registeredAt: new Date().toISOString(),
+      deploymentBindingsByService: deploymentBindingsByService(active),
       ws
     });
     this.replicaIdByConnection.set(ws, control.replicaId);
@@ -174,6 +183,50 @@ export class AssemblyRuntimeRegistry {
 
   assertReplicaConnection(ws: WebSocket, replicaId: string): void {
     this.registeredReplicaForConnection(ws, replicaId);
+  }
+
+  actorSpawnRuntimeControlSource(
+    ws: WebSocket,
+    header: ActorSpawnRuntimeRequestFrameHeader
+  ): RuntimeControlSource | undefined {
+    const replicaId = this.replicaIdByConnection.get(ws);
+    const replica =
+      replicaId === undefined ? undefined : this.replicas.get(replicaId);
+    if (
+      replica === undefined ||
+      replica.ws !== ws ||
+      replica.ws.readyState !== WebSocket.OPEN ||
+      replica.state === 'disconnected' ||
+      header.runtimeId !== replica.replicaId ||
+      header.activationIdentity.runtimeReplicaId !== replica.replicaId ||
+      header.activationIdentity.assemblyIdentity !== replica.assemblyIdentity ||
+      header.activationIdentity.generation !== replica.generation ||
+      !this.replicaCanUseActivation(replica)
+    ) {
+      return undefined;
+    }
+
+    const serviceId = actorSpawnServiceId(header);
+    const binding = replica.deploymentBindingsByService.get(serviceId);
+    if (
+      binding === undefined ||
+      binding.deploymentRevision !==
+        header.activationIdentity.deploymentRevision ||
+      (isSpawnControl(header) &&
+        binding.serviceProtocolIdentity !== header.serviceProtocolIdentity)
+    ) {
+      return undefined;
+    }
+
+    return {
+      runtimeId: replica.replicaId,
+      serviceId,
+      buildId: actorSpawnBuildId(header, binding.deploymentRevision),
+      serviceProtocolIdentity: binding.serviceProtocolIdentity,
+      targets: actorSpawnTargets(header),
+      inFlightCount: this.countInFlight(replica),
+      activationIdentity: { ...header.activationIdentity }
+    };
   }
 
   removeRuntimeConnection(ws: WebSocket): string | undefined {
@@ -304,6 +357,132 @@ export class AssemblyRuntimeRegistry {
   private countInFlight(replica: AssemblyReplica): number {
     return this.inFlightCounter?.countInFlight(replica) ?? 0;
   }
+
+  private replicaCanUseActivation(replica: AssemblyReplica): boolean {
+    if (replica.state === 'healthy') {
+      return matchesActiveSnapshot(replica, this.snapshots.get());
+    }
+    return (
+      replica.state === 'draining' &&
+      (this.countInFlight(replica) > 0 ||
+        (this.connectionPinCounter?.connectionPinCount(replica.ws) ?? 0) > 0)
+    );
+  }
+}
+
+function actorSpawnServiceId(
+  header: ActorSpawnRuntimeRequestFrameHeader
+): string {
+  switch (header.type) {
+    case 'actor.put.request':
+    case 'actor.find.request':
+    case 'actor.remove.request':
+      return header.actorKey.serviceId;
+    case 'spawn.submit.request':
+    case 'spawn.claim.request':
+      return header.serviceId;
+    case 'spawn.renew.request':
+    case 'spawn.complete.request':
+    case 'spawn.fail.request':
+      return deploymentRevisionServiceSentinel(
+        header.activationIdentity.deploymentRevision
+      );
+  }
+}
+
+function actorSpawnTargets(
+  header: ActorSpawnRuntimeRequestFrameHeader
+): ReadonlySet<string> {
+  switch (header.type) {
+    case 'spawn.submit.request':
+      return new Set([header.target]);
+    case 'spawn.claim.request':
+      return new Set(header.supportedTargets);
+    default:
+      return new Set();
+  }
+}
+
+function actorSpawnBuildId(
+  header: ActorSpawnRuntimeRequestFrameHeader,
+  deploymentRevision: string
+): string {
+  switch (header.type) {
+    case 'spawn.submit.request':
+    case 'spawn.claim.request':
+      return header.buildId ?? deploymentRevision;
+    default:
+      return deploymentRevision;
+  }
+}
+
+function isSpawnControl(
+  header: ActorSpawnRuntimeRequestFrameHeader
+): header is Extract<
+  ActorSpawnRuntimeRequestFrameHeader,
+  { type: 'spawn.submit.request' | 'spawn.claim.request' }
+> {
+  return (
+    header.type === 'spawn.submit.request' ||
+    header.type === 'spawn.claim.request'
+  );
+}
+
+function deploymentRevisionServiceSentinel(deploymentRevision: string): string {
+  return `\u0000deployment:${deploymentRevision}`;
+}
+
+function deploymentBindingsByService(
+  snapshot: RouterActiveAssemblySnapshot
+): ReadonlyMap<string, AssemblyDeploymentBinding> {
+  const bindings = new Map<string, AssemblyDeploymentBinding>();
+  const contracts = new Map(
+    (snapshot.resolvedContracts ?? []).map((contract) => [
+      `${contract.serviceId}\u0000${contract.contractVersion}`,
+      contract
+    ])
+  );
+  for (const deployment of snapshot.resolvedDeployments ?? []) {
+    const contract = contracts.get(
+      `${deployment.serviceId}\u0000${deployment.contractVersion}`
+    );
+    if (contract === undefined) {
+      continue;
+    }
+    setDeploymentBinding(bindings, contract.serviceId, {
+      deploymentRevision: deployment.deploymentRevision,
+      serviceProtocolIdentity: contract.serviceProtocolIdentity
+    });
+  }
+  for (const ingress of snapshot.ingress.values()) {
+    setDeploymentBinding(bindings, ingress.contract.serviceId, {
+      deploymentRevision: ingress.deployment.deploymentRevision,
+      serviceProtocolIdentity: ingress.contract.serviceProtocolIdentity
+    });
+  }
+  return bindings;
+}
+
+function setDeploymentBinding(
+  bindings: Map<string, AssemblyDeploymentBinding>,
+  serviceId: string,
+  binding: AssemblyDeploymentBinding
+): void {
+  const existing = bindings.get(serviceId);
+  if (
+    existing !== undefined &&
+    (existing.deploymentRevision !== binding.deploymentRevision ||
+      existing.serviceProtocolIdentity !== binding.serviceProtocolIdentity)
+  ) {
+    throw new Error(
+      `RuntimeAssembly has conflicting deployment bindings for ${serviceId}`
+    );
+  }
+  bindings.set(serviceId, binding);
+  bindings.set(
+    deploymentRevisionServiceSentinel(binding.deploymentRevision),
+    binding
+  );
 }
 
 function matchesActiveSnapshot(

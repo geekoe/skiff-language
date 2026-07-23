@@ -35,8 +35,6 @@ const buildId =
   'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333';
 const packageTestBuildId =
   'skiff-package-test-build-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444';
-const packageTestActivationA = 'skiff-package-test-run-v1:example.com~hello:test-a:run:1';
-const packageTestActivationB = 'skiff-package-test-run-v1:example.com~hello:test-b:run:1';
 const serviceActivationIdentity = 'skiff-runtime-activation-v1:opaque:runtime-a';
 const serviceProtocolIdentity =
   'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
@@ -83,7 +81,7 @@ describe('actor/spawn runtime control protocol', () => {
     });
   });
 
-  it('handles actor put/find/remove and function spawn submit over runtime WebSocket', async () => {
+  it('rejects canonical actor/spawn control from a legacy runtime.register sender', async () => {
     const { ws } = await openRuntime();
 
     sendRuntimeFrame(ws, {
@@ -92,14 +90,11 @@ describe('actor/spawn runtime control protocol', () => {
       runtimeId,
       actorKey: actorKeyFrame(),
     }, new Uint8Array([1, 2, 3]));
-    const put = await waitForRpcFrame(ws, 'actor.put.response', 'rpc-actor-put-ws');
+    const put = await waitForRpcFrame(ws, 'actor.put.error', 'rpc-actor-put-ws');
     expect(put.header).toMatchObject({
-      type: 'actor.put.response',
+      type: 'actor.put.error',
       rpcId: 'rpc-actor-put-ws',
-      actorRef: {
-        serviceId,
-        epoch: 1,
-      },
+      error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
 
     sendRuntimeFrame(ws, {
@@ -108,14 +103,10 @@ describe('actor/spawn runtime control protocol', () => {
       runtimeId,
       actorKey: actorKeyFrame(),
     });
-    const found = await waitForRpcFrame(ws, 'actor.find.response', 'rpc-actor-find-ws');
+    const found = await waitForRpcFrame(ws, 'actor.find.error', 'rpc-actor-find-ws');
     expect(found.header).toMatchObject({
-      type: 'actor.find.response',
-      found: true,
-      actorRef: {
-        serviceId,
-        epoch: 1,
-      },
+      type: 'actor.find.error',
+      error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
 
     sendRuntimeFrame(ws, {
@@ -124,10 +115,10 @@ describe('actor/spawn runtime control protocol', () => {
       runtimeId,
       actorKey: actorKeyFrame(),
     });
-    const removed = await waitForRpcFrame(ws, 'actor.remove.response', 'rpc-actor-remove-ws');
+    const removed = await waitForRpcFrame(ws, 'actor.remove.error', 'rpc-actor-remove-ws');
     expect(removed.header).toMatchObject({
-      type: 'actor.remove.response',
-      removed: true,
+      type: 'actor.remove.error',
+      error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
 
     sendRuntimeFrame(ws, {
@@ -143,14 +134,13 @@ describe('actor/spawn runtime control protocol', () => {
     }, new Uint8Array([7, 8, 9]));
     const submitted = await waitForRpcFrame(
       ws,
-      'spawn.submit.response',
+      'spawn.submit.error',
       'rpc-spawn-submit-ws'
     );
     expect(submitted.header).toMatchObject({
-      type: 'spawn.submit.response',
+      type: 'spawn.submit.error',
       rpcId: 'rpc-spawn-submit-ws',
-      spawnId: 'spawn-ws-1',
-      status: 'submitted',
+      error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
 
   });
@@ -205,118 +195,7 @@ describe('actor/spawn runtime control protocol', () => {
     });
   });
 
-  it('claims, completes, and fails function spawn work over runtime WebSocket', async () => {
-    const { ws } = await openRuntime();
-
-    await submitFunctionSpawn(ws, 'spawn-complete-ws-1', [4, 5]);
-    const firstClaim = await claimFunctionSpawn(ws, 'rpc-spawn-claim-complete-ws');
-    expect([...firstClaim.payloadBytes]).toEqual([4, 5]);
-    if (
-      firstClaim.header.type !== 'spawn.claim.response' ||
-      firstClaim.header.item === undefined
-    ) {
-      throw new Error('expected claimed spawn item');
-    }
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.renew.request'],
-      rpcId: 'rpc-spawn-renew-ws',
-      runtimeId,
-      itemId: firstClaim.header.item.itemId,
-      leaseId: firstClaim.header.item.leaseId,
-      workerId: 'worker-ws-1',
-    });
-    const renewed = await waitForRpcFrame(ws, 'spawn.renew.response', 'rpc-spawn-renew-ws');
-    expect(renewed.header).toMatchObject({
-      type: 'spawn.renew.response',
-      itemId: firstClaim.header.item.itemId,
-      renewed: true,
-    });
-    expect(renewed.header).toHaveProperty('leaseExpiresAt');
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.complete.request'],
-      rpcId: 'rpc-spawn-complete-ws',
-      runtimeId,
-      itemId: firstClaim.header.item.itemId,
-      leaseId: firstClaim.header.item.leaseId,
-      diagnostics: {
-        ok: true,
-      },
-    });
-    const completed = await waitForRpcFrame(
-      ws,
-      'spawn.complete.response',
-      'rpc-spawn-complete-ws'
-    );
-    expect(completed.header).toMatchObject({
-      type: 'spawn.complete.response',
-      itemId: firstClaim.header.item.itemId,
-      status: 'completed',
-    });
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.renew.request'],
-      rpcId: 'rpc-spawn-renew-stale-ws',
-      runtimeId,
-      itemId: firstClaim.header.item.itemId,
-      leaseId: firstClaim.header.item.leaseId,
-      workerId: 'worker-ws-1',
-    });
-    const staleRenew = await waitForRpcFrame(
-      ws,
-      'spawn.renew.error',
-      'rpc-spawn-renew-stale-ws'
-    );
-    expect(staleRenew.header).toMatchObject({
-      type: 'spawn.renew.error',
-      error: {
-        code: 'SpawnLeaseMismatch',
-        status: 409,
-      },
-    });
-
-    await submitFunctionSpawn(ws, 'spawn-fail-ws-1', [6]);
-    const secondClaim = await claimFunctionSpawn(ws, 'rpc-spawn-claim-fail-ws');
-    if (
-      secondClaim.header.type !== 'spawn.claim.response' ||
-      secondClaim.header.item === undefined
-    ) {
-      throw new Error('expected claimed spawn item');
-    }
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.fail.request'],
-      rpcId: 'rpc-spawn-fail-ws',
-      runtimeId,
-      itemId: secondClaim.header.item.itemId,
-      leaseId: secondClaim.header.item.leaseId,
-      reason: 'failed',
-      diagnostics: {
-        reason: 'test',
-      },
-    });
-    const failed = await waitForRpcFrame(ws, 'spawn.fail.response', 'rpc-spawn-fail-ws');
-    expect(failed.header).toMatchObject({
-      type: 'spawn.fail.response',
-      itemId: secondClaim.header.item.itemId,
-      status: 'failed',
-    });
-  });
-
-  it('omits service runtime activation identity from spawn claim descriptors', async () => {
-    const { ws } = await openRuntime([target], serviceActivationIdentity);
-
-    await submitFunctionSpawn(ws, 'spawn-service-activation-ws', [1]);
-    const claim = await claimFunctionSpawn(ws, 'rpc-spawn-claim-service-activation-ws');
-    expect(claim.header).toMatchObject({
-      type: 'spawn.claim.response',
-      claimed: true,
-    });
-    expect(claim.header).not.toHaveProperty('item.activationIdentity');
-  });
-
-  it('isolates package-test dispatch spawn work by activation without service registration', async () => {
+  it('does not let package-test capability sessions accept canonical assembly control', async () => {
     const runtimeRouter = trackResource(createRuntimeRouter());
     const listen = await runtimeRouter.endpoint.listen({ port: 0 });
     const ws = await openRuntimeCapabilities(listen.url, {
@@ -338,80 +217,16 @@ describe('actor/spawn runtime control protocol', () => {
       target,
       spawnId: 'spawn-package-test-1',
       buildId: packageTestBuildId,
-      activationIdentity: packageTestActivationA,
     });
     const submitted = await waitForRpcFrame(
       ws,
-      'spawn.submit.response',
+      'spawn.submit.error',
       'rpc-package-test-spawn-submit'
     );
     expect(submitted.header).toMatchObject({
-      type: 'spawn.submit.response',
+      type: 'spawn.submit.error',
       rpcId: 'rpc-package-test-spawn-submit',
-      spawnId: 'spawn-package-test-1',
-      status: 'submitted',
-    });
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-      rpcId: 'rpc-package-test-spawn-claim-wrong-activation',
-      runtimeId,
-      workerId: 'package-test-worker-b',
-      serviceId,
-      serviceVersion,
-      serviceProtocolIdentity,
-      supportedTargets: [target],
-      supportedSpawnCompatibilityKeys: [spawnCompatibility],
-      buildId: packageTestBuildId,
-      activationIdentity: packageTestActivationB,
-      maxExecutionMs: 5000,
-      maxConcurrency: 1,
-    });
-    const mismatchedClaim = await waitForRpcFrame(
-      ws,
-      'spawn.claim.response',
-      'rpc-package-test-spawn-claim-wrong-activation'
-    );
-    expect(mismatchedClaim.header).toEqual({
-      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-      type: 'spawn.claim.response',
-      rpcId: 'rpc-package-test-spawn-claim-wrong-activation',
-      claimed: false,
-    });
-
-    sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-      rpcId: 'rpc-package-test-spawn-claim',
-      runtimeId,
-      workerId: 'package-test-worker-a',
-      serviceId,
-      serviceVersion,
-      serviceProtocolIdentity,
-      supportedTargets: [target],
-      supportedSpawnCompatibilityKeys: [spawnCompatibility],
-      buildId: packageTestBuildId,
-      activationIdentity: packageTestActivationA,
-      maxExecutionMs: 5000,
-      maxConcurrency: 1,
-    });
-    const claim = await waitForRpcFrame(
-      ws,
-      'spawn.claim.response',
-      'rpc-package-test-spawn-claim'
-    );
-    expect(claim.header).toMatchObject({
-      type: 'spawn.claim.response',
-      rpcId: 'rpc-package-test-spawn-claim',
-      claimed: true,
-      item: {
-        targetKind: 'function',
-        target,
-        serviceId,
-        serviceVersion,
-        serviceProtocolIdentity,
-        buildId: packageTestBuildId,
-        activationIdentity: packageTestActivationA,
-      },
+      error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
   });
 
@@ -596,6 +411,8 @@ function runtimeControlSource(targets: string[]): RuntimeControlSource {
     serviceProtocolIdentity,
     targets: new Set(targets),
     inFlightCount: 0,
+    activationIdentity:
+      runtimeFrameHeaderFixtures['spawn.submit.request'].activationIdentity,
   };
 }
 

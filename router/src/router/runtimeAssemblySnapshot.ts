@@ -43,6 +43,8 @@ export interface RuntimeAssemblyIngressBinding {
 export interface LoadedRuntimeAssembly {
   schemaVersion: string;
   assemblyIdentity: string;
+  resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
+  resolvedContracts?: readonly RuntimeAssemblyContractRef[];
   globalIngress: readonly RuntimeAssemblyIngressBinding[];
 }
 
@@ -75,6 +77,8 @@ export interface RouterActiveAssemblySnapshot {
   environment: string;
   generation: number;
   assembly: RuntimeAssemblyRef;
+  resolvedDeployments?: readonly RuntimeAssemblyDeploymentRef[];
+  resolvedContracts?: readonly RuntimeAssemblyContractRef[];
   ingress: RuntimeAssemblyIngressIndex;
 }
 
@@ -137,6 +141,12 @@ export async function snapshotFromCommittedActivation(
     environment: state.environment,
     generation: state.committed.generation,
     assembly: state.committed.assembly,
+    ...(assembly.resolvedDeployments === undefined
+      ? {}
+      : { resolvedDeployments: assembly.resolvedDeployments }),
+    ...(assembly.resolvedContracts === undefined
+      ? {}
+      : { resolvedContracts: assembly.resolvedContracts }),
     ingress: new RuntimeAssemblyIngressIndex(assembly.globalIngress)
   };
 }
@@ -222,12 +232,27 @@ function decodeRuntimeAssemblyIngressSurface(
   if (!/^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/.test(assemblyIdentity)) {
     throw new Error('RuntimeAssembly assemblyIdentity is invalid');
   }
-  if (!Array.isArray(value.globalIngress)) {
-    throw new Error('RuntimeAssembly globalIngress must be an array');
+  if (
+    !Array.isArray(value.resolvedDeployments) ||
+    !Array.isArray(value.resolvedContracts) ||
+    !Array.isArray(value.globalIngress)
+  ) {
+    throw new Error(
+      'RuntimeAssembly resolvedDeployments, resolvedContracts and globalIngress must be arrays'
+    );
   }
   return {
     schemaVersion: value.schemaVersion,
     assemblyIdentity,
+    resolvedDeployments: value.resolvedDeployments.map((entry, index) =>
+      decodeDeploymentRef(
+        entry,
+        `RuntimeAssembly.resolvedDeployments[${index}]`
+      )
+    ),
+    resolvedContracts: value.resolvedContracts.map((entry, index) =>
+      decodeContractRef(entry, `RuntimeAssembly.resolvedContracts[${index}]`)
+    ),
     globalIngress: value.globalIngress.map((entry, index) =>
       decodeIngressBinding(
         entry,

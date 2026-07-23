@@ -1,3 +1,5 @@
+import type { ActivationIdentityFrameMetadata } from '../protocol/envelope.js';
+
 export type QueueTrafficClass = 'sync' | 'async';
 
 export type QueueItemStatus =
@@ -28,7 +30,7 @@ export interface QueueItem {
   serviceId: string;
   serviceVersion: string;
   buildId?: string | undefined;
-  activationIdentity?: string | undefined;
+  activationIdentity?: ActivationIdentityFrameMetadata | string | undefined;
   target: string;
   serviceProtocolIdentity?: string | undefined;
   spawnCompatibilityKey?: string | undefined;

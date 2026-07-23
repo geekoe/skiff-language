@@ -404,6 +404,10 @@ function isLeaseExpired(item: QueueItem, now: Date): boolean {
 function cloneItem(item: QueueItem): QueueItem {
   return {
     ...item,
+    activationIdentity:
+      typeof item.activationIdentity !== 'object'
+        ? item.activationIdentity
+        : { ...item.activationIdentity },
     payloadBytes: item.payloadBytes === undefined ? undefined : new Uint8Array(item.payloadBytes),
     visibleAt: new Date(item.visibleAt),
     deadlineAt: item.deadlineAt === undefined ? undefined : new Date(item.deadlineAt),
