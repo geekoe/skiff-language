@@ -39,7 +39,7 @@ const activationIdentity = {
   runtimeReplicaId: runtimeId,
   deploymentRevision,
 } as const;
-const serviceProtocolIdentity = `skiff-protocol-v1:sha256:${'c'.repeat(64)}`;
+const serviceProtocolIdentity = `skiff-service-protocol-v2:sha256:${'c'.repeat(64)}`;
 const serviceVersion = '1.0.0';
 const target = 'function:service.example~com~~default~spawn~probe.Api.run';
 

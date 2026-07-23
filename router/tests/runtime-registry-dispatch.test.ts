@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 
 import { ActivationLookup } from '../src/artifacts/activationLookup.js';
-import { loadManifestFile } from '../src/manifest/loadManifest.js';
+import { loadManifestFile as loadManifestFileSource } from '../src/manifest/loadManifest.js';
 import {
   decodeRuntimeFrame,
   encodeRuntimeFrame,
@@ -15,7 +15,10 @@ import {
 import type { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import { closeSocket, delay, onceWithTimeout } from './helpers/events.js';
 import { findRuntime, hasRuntime, readHealth, waitForRuntimeAbsent } from './helpers/health.js';
-import { DEFAULT_TEST_BUILD_ID, loadWebSocketManifest } from './helpers/manifests.js';
+import {
+  DEFAULT_TEST_BUILD_ID,
+  loadWebSocketManifest as loadWebSocketManifestSource
+} from './helpers/manifests.js';
 import { RouterHarness } from './helpers/routerHarness.js';
 import {
   closeTrackedResources,
@@ -29,6 +32,9 @@ import {
   type RuntimeRequestFrame,
   waitForRuntimeRequestFrame
 } from './helpers/runtime.js';
+
+const CANONICAL_SERVICE_PROTOCOL_IDENTITY =
+  `skiff-service-protocol-v2:sha256:${'c'.repeat(64)}`;
 
 afterEach(closeTrackedResources);
 
@@ -1693,7 +1699,7 @@ describe('router runtime registry dispatch', () => {
     const target = 'service.skiff~run~~hello.HelloApi.hello';
     const protocolA = manifest.service.protocolIdentity;
     const protocolB =
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000004';
+      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000004';
     const buildA =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000aa';
     const buildB =
@@ -1818,7 +1824,7 @@ describe('router runtime registry dispatch', () => {
     const serviceId = manifest.service.id;
     const callerExpectation = manifest.service.protocolIdentity;
     const incompatibleProtocol =
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000009';
+      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000009';
     const currentBuild =
       'skiff-service-build-v1:sha256:00000000000000000000000000000000000000000000000000000000000000ee';
 
@@ -2130,6 +2136,28 @@ describe('router runtime registry dispatch', () => {
     );
   });
 });
+
+async function loadManifestFile(path: string) {
+  const manifest = await loadManifestFileSource(path);
+  return {
+    ...manifest,
+    service: {
+      ...manifest.service,
+      protocolIdentity: CANONICAL_SERVICE_PROTOCOL_IDENTITY
+    }
+  };
+}
+
+function loadWebSocketManifest() {
+  const manifest = loadWebSocketManifestSource();
+  return {
+    ...manifest,
+    service: {
+      ...manifest.service,
+      protocolIdentity: CANONICAL_SERVICE_PROTOCOL_IDENTITY
+    }
+  };
+}
 
 async function dispatchBinaryJson(
   dispatcher: RuntimeDispatcher,

@@ -37,7 +37,7 @@ const packageTestBuildId =
   'skiff-package-test-build-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444';
 const serviceActivationIdentity = 'skiff-runtime-activation-v1:opaque:runtime-a';
 const runtimeRegisterProtocolIdentity =
-  'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+  'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111';
 const serviceProtocolIdentity =
   'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111';
 const serviceVersion = '0.1.0';
