@@ -129,6 +129,93 @@ test('fixture Cargo diagnostic handles empty stderr and silent outcomes', () => 
   assert.equal(silent.diagnosticOmittedCount, 0);
 });
 
+test('fixture Cargo diagnostic finds terminal errors through long warning prefixes and suffixes', () => {
+  const prefix = Array.from(
+    { length: 80 },
+    (_, index) => `warning: prefix ${index}`,
+  );
+  const suffix = Array.from(
+    { length: 80 },
+    (_, index) => `warning: suffix ${index}`,
+  );
+  const compilerError =
+    '\u001B[31merror[E0425]: cannot find value `missing` in this scope\u001B[0m';
+  const compilerContext = '  --> /private/fixture/src/main.rs';
+  const terminalSummary =
+    'error: could not compile `fixture` (bin "fixture") due to 1 previous error';
+  const stderr = [
+    ...prefix,
+    compilerError,
+    compilerContext,
+    terminalSummary,
+    ...suffix,
+  ].join('\n');
+
+  const evidence = captureFixtureCargoDiagnostic(fixtureCargoError({
+    code: 1,
+    stdout: '',
+    stderr,
+  }));
+
+  assert.deepEqual(
+    evidence.diagnostics.map((diagnostic) => diagnostic.originalLineSha256),
+    [sha256(terminalSummary), sha256(compilerError), sha256(compilerContext)],
+  );
+  assert.match(evidence.diagnostics[1].sanitizedExcerpt, /^error\[E0425\]:/);
+  assert.match(evidence.diagnostics[2].sanitizedExcerpt, /^  --> <PATH>$/);
+  assert.equal(evidence.diagnosticOmittedCount, prefix.length + suffix.length);
+  assert.equal(evidence.stderrBytes, Buffer.byteLength(stderr));
+  assert.equal(evidence.stderrSha256, sha256(stderr));
+});
+
+test('fixture Cargo diagnostic ranks Caused by and process outcomes ahead of warnings', () => {
+  const causalError = 'error: failed to run custom build command for `fixture v0.0.0`';
+  const causedBy = 'Caused by:';
+  const processSummary =
+    "  process didn't exit successfully: `/private/fixture/build-script` (exit status: 101)";
+  const stderr = [
+    causalError,
+    ...Array.from({ length: 40 }, (_, index) => `warning: middle ${index}`),
+    causedBy,
+    processSummary,
+    'warning: trailing diagnostic',
+  ].join('\n');
+
+  const evidence = captureFixtureCargoDiagnostic(fixtureCargoError({
+    code: 101,
+    stdout: 'warning: stdout fallback',
+    stderr,
+  }));
+
+  assert.deepEqual(
+    evidence.diagnostics.map((diagnostic) => diagnostic.originalLineSha256),
+    [sha256(processSummary), sha256(causedBy), sha256(causalError)],
+  );
+  assert.match(evidence.diagnostics[0].sanitizedExcerpt, /process didn't exit successfully/);
+  assert.match(evidence.diagnostics[0].sanitizedExcerpt, /<PATH>/);
+  assert.equal(evidence.diagnosticOmittedCount, 42);
+});
+
+test('fixture Cargo warning-only output retains representative stable stream order', () => {
+  const stderr = [
+    'warning: first',
+    'note: second',
+    'help: third',
+    'warning: fourth',
+  ].join('\n');
+  const evidence = captureFixtureCargoDiagnostic(fixtureCargoError({
+    code: 1,
+    stdout: 'warning: stdout fifth',
+    stderr,
+  }));
+
+  assert.deepEqual(
+    evidence.diagnostics.map((diagnostic) => diagnostic.sanitizedExcerpt),
+    ['warning: first', 'note: second', 'help: third'],
+  );
+  assert.equal(evidence.diagnosticOmittedCount, 2);
+});
+
 function fixtureCargoError({
   code,
   signal = null,
