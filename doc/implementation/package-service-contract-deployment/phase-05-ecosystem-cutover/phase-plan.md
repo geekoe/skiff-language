@@ -342,6 +342,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D45 result | [Canonical actor control design result](tasks/P5-D45-canonical-actor-control-design-result.md) | user decision | 完整ActivationIdentity；exact assembly/generation验证 |
 | F45A result | [I02 transaction harness result](tasks/P5-F45A-i02-transaction-harness-result.md) | `ed72cc7` | complete；direct 4/4 |
 | F45B | [Actor control activation wire](tasks/P5-F45B-actor-control-activation-wire.md) | D45 complete | 高；shared Rust/TS wire checkpoint |
+| F45B result | [Actor control activation wire result](tasks/P5-F45B-actor-control-activation-wire-result.md) | `0c5922f` | complete；shared checkpoint |
+| F45C | [Runtime actor activation consumer](tasks/P5-F45C-runtime-actor-activation-consumer.md) | F45B merged | 高；Runtime current-context owner |
+| F45D | [Router actor activation consumer](tasks/P5-F45D-router-actor-activation-consumer.md) | F45B merged | 高；Router registration/snapshot owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
