@@ -291,7 +291,6 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             "service.test.Api.alpha".to_string(),
             "service.test.Api.beta".to_string(),
         ],
-        protocol_version: "skiff-protocol-v1".to_string(),
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
         code_revision_id: SERVICE_REVISION.to_string(),
         implementation_identity:
@@ -332,6 +331,8 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
         Some("skiff-runtime-activation-v1:opaque:activation-fixture")
     );
     assert_eq!(decoded.service_protocol_identity, SERVICE_PROTOCOL_A);
+    let encoded = serde_json::to_value(&decoded).expect("register header should serialize");
+    assert!(encoded.get("protocolVersion").is_none());
     assert_eq!(
         decoded.artifact_identity.as_deref(),
         Some(
@@ -360,6 +361,28 @@ fn runtime_register_frame_header_round_trips_empty_payload() {
             "skiff-gateway-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .to_string()
         ]
+    );
+}
+
+#[test]
+fn runtime_register_frame_header_rejects_legacy_protocol_version() {
+    let error = serde_json::from_value::<RuntimeRegisterFrameHeader>(json!({
+        "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+        "type": "runtime.register",
+        "runtimeId": "runtime-1",
+        "serviceId": "example.com/service-a",
+        "version": "v1",
+        "buildId": "skiff-service-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "revisionId": SERVICE_REVISION,
+        "serviceProtocolIdentity": SERVICE_PROTOCOL_A,
+        "targets": ["service.test.Api.alpha"],
+        "protocolVersion": "skiff-protocol-v1"
+    }))
+    .expect_err("legacy protocolVersion must be rejected");
+
+    assert!(
+        error.to_string().contains("unknown field `protocolVersion`"),
+        "unexpected error: {error}"
     );
 }
 

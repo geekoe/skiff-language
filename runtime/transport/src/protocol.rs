@@ -199,8 +199,6 @@ pub struct RuntimeRegisterFrameHeader {
     pub service_protocol_identity: String,
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_revision_id: Option<String>,
@@ -1388,7 +1386,6 @@ pub struct RuntimeRegisterEnvelope {
     pub service_protocol_identity: String,
     pub contract_identity: String,
     pub targets: Vec<String>,
-    pub protocol_version: String,
     pub runtime_version: String,
     pub code_revision_id: String,
     pub implementation_identity: String,
@@ -1411,7 +1408,6 @@ impl From<RuntimeRegisterEnvelope> for RuntimeRegisterFrameHeader {
             activation_identity: envelope.activation_identity,
             service_protocol_identity: envelope.service_protocol_identity,
             targets: envelope.targets,
-            protocol_version: Some(envelope.protocol_version),
             runtime_version: Some(envelope.runtime_version),
             code_revision_id: Some(envelope.code_revision_id),
             artifact_identity: Some(envelope.artifact_identity),

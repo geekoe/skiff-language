@@ -77,7 +77,7 @@ fn runtime_register_envelope_from_projection(
     targets.sort();
 
     let service_protocol_identity = contract_identity.clone();
-    let protocol_version = protocol_version_from_identity(&service_protocol_identity)?;
+    validate_service_protocol_identity(&service_protocol_identity)?;
     if service_version.is_empty() {
         return Err(RuntimeError::invalid_artifact(
             "runtime program service version is required".to_string(),
@@ -94,7 +94,6 @@ fn runtime_register_envelope_from_projection(
         service_protocol_identity,
         contract_identity,
         targets,
-        protocol_version,
         runtime_version: env!("CARGO_PKG_VERSION").to_string(),
         code_revision_id: revision_id,
         implementation_identity,
@@ -139,23 +138,22 @@ fn is_bare_sha256(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn protocol_version_from_identity(value: &str) -> Result<String> {
-    let Some((version, hash)) = value.rsplit_once(":sha256:") else {
+fn validate_service_protocol_identity(value: &str) -> Result<()> {
+    let Some(hash) = value.strip_prefix("skiff-service-protocol-v2:sha256:") else {
         return Err(RuntimeError::invalid_artifact(format!(
-            "protocolIdentity {value} must be skiff-protocol-v1:sha256:<64 lowercase hex>"
+            "serviceProtocolIdentity {value} must be skiff-service-protocol-v2:sha256:<64 lowercase hex>"
         )));
     };
-    if version != "skiff-protocol-v1"
-        || hash.len() != 64
+    if hash.len() != 64
         || !hash
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
     {
         return Err(RuntimeError::invalid_artifact(format!(
-            "protocolIdentity {value} must be skiff-protocol-v1:sha256:<64 lowercase hex>"
+            "serviceProtocolIdentity {value} must be skiff-service-protocol-v2:sha256:<64 lowercase hex>"
         )));
     }
-    Ok(version.to_string())
+    Ok(())
 }
 
 fn gateway_entry_identities_from_value(value: &Value) -> Vec<String> {
@@ -197,9 +195,9 @@ mod tests {
     };
 
     const SERVICE_PROTOCOL_A: &str =
-        "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SERVICE_PROTOCOL_B: &str =
-        "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        "skiff-service-protocol-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const SERVICE_REVISION: &str =
         "1111111111111111111111111111111111111111111111111111111111111111";
     const SERVICE_BUILD_ID: &str =
@@ -244,7 +242,7 @@ mod tests {
             value["targets"],
             json!(["service.test.Api.alpha", "service.test.Api.beta"])
         );
-        assert_eq!(value["protocolVersion"], "skiff-protocol-v1");
+        assert!(value.get("protocolVersion").is_none());
         assert_eq!(value["runtimeVersion"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["codeRevisionId"], SERVICE_REVISION);
         assert_eq!(value["implementationIdentity"], IMPLEMENTATION_IDENTITY);
@@ -253,7 +251,6 @@ mod tests {
             value["capabilities"],
             json!({
                 "dispatchModes": ["unary"],
-                "packageTestDispatch": false,
                 "requestCancel": true,
                 "runtimeProgram": true
             })
@@ -294,7 +291,7 @@ mod tests {
             json!(["service.test.Api.alpha", "service.test.Api.beta"])
         );
         assert_eq!(value["serviceProtocolIdentity"], SERVICE_PROTOCOL_B);
-        assert_eq!(value["protocolVersion"], "skiff-protocol-v1");
+        assert!(value.get("protocolVersion").is_none());
     }
 
     #[test]
@@ -388,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_register_envelope_requires_protocol_identity_version() {
+    fn runtime_register_envelope_requires_canonical_service_protocol_identity() {
         let (identity, image, activation) = runtime_program_layers_fixture();
 
         let error = runtime_register_envelope_from_program_layers(
@@ -397,7 +394,7 @@ mod tests {
             &image,
             &activation,
             SERVICE_REVISION.to_string(),
-            "skiff-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
             IMPLEMENTATION_IDENTITY.to_string(),
             ARTIFACT_IDENTITY.to_string(),
@@ -405,8 +402,8 @@ mod tests {
         )
         .expect_err("wrong protocol version should be rejected");
 
-        assert!(error.to_string().contains("protocolIdentity"));
-        assert!(error.to_string().contains("skiff-protocol-v1"));
+        assert!(error.to_string().contains("serviceProtocolIdentity"));
+        assert!(error.to_string().contains("skiff-service-protocol-v2"));
     }
 
     fn runtime_program_layers_fixture() -> (
