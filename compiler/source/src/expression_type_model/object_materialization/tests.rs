@@ -45,6 +45,7 @@ fn build(source_text: &str) -> Result<BuiltModel, ExpressionTypeModelBuildError>
         &BTreeMap::new(),
         &[],
         None,
+        None,
         &PublicationTypeSymbolIndex::default(),
     )
     .expect("object materialization test type resolution should build");

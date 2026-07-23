@@ -513,6 +513,7 @@ mod tests {
             &BTreeMap::new(),
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("stream emit type resolution should build");

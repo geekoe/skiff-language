@@ -1047,6 +1047,7 @@ fn analyze_named_result(
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new(package_id),
             platform_package_authority: None,
         },

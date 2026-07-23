@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{canonical_interface_method_abi_id, interface_instantiation_ref};
 use skiff_artifact_model::{
-    FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, PackageRefIr,
-    PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
+    FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, LiteralIr, PackageArtifact,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeDescriptorIr,
+    TypeRefIr,
 };
 
 use crate::{
@@ -286,6 +287,7 @@ impl TypeResolutionModel {
         package_aliases: &BTreeMap<String, Vec<String>>,
         package_dependencies: &[PackageDependency],
         package_facts: Option<&[TypeResolutionPackageFacts<'_>]>,
+        package_artifacts: Option<&[PackageArtifact]>,
         external_type_symbols: &PublicationTypeSymbolIndex,
     ) -> Result<Self, String> {
         let mut modules = BTreeMap::new();
@@ -331,6 +333,11 @@ impl TypeResolutionModel {
                 index_package_callables(package, &mut package_callables);
                 index_package_interfaces(package, &mut package_interfaces)?;
                 index_package_public_to_internal(package, &mut package_public_to_internal);
+            }
+        }
+        if let Some(package_artifacts) = package_artifacts {
+            for artifact in package_artifacts {
+                index_artifact_package_types(artifact, &mut package_types)?;
             }
         }
         let semantic_publication = type_resolution_semantic_publication(parsed_sources);
@@ -2244,6 +2251,146 @@ impl TypeResolutionModel {
     }
 }
 
+fn index_artifact_package_types(
+    artifact: &PackageArtifact,
+    package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
+) -> Result<(), String> {
+    let local_type_names = artifact
+        .package_local_abi
+        .public_symbols
+        .iter()
+        .filter_map(|(path, symbol)| {
+            matches!(symbol, PackageLocalAbiSymbol::Type { .. })
+                .then(|| path.rsplit('.').next().unwrap_or(path).to_string())
+        })
+        .collect::<BTreeSet<_>>();
+    for (public_path, symbol) in &artifact.package_local_abi.public_symbols {
+        let PackageLocalAbiSymbol::Type {
+            local_type_id,
+            descriptor,
+        } = symbol
+        else {
+            continue;
+        };
+        if local_type_id != &format!("type:{public_path}") {
+            return Err(format!(
+                "package {} exported type {} has mismatched local type identity {}",
+                artifact.package_id, public_path, local_type_id
+            ));
+        }
+        let name = public_path.rsplit('.').next().unwrap_or(public_path);
+        let module_path = public_path
+            .rsplit_once('.')
+            .map_or("", |(module, _)| module);
+        let kind = artifact_type_kind(descriptor).map_err(|message| {
+            format!(
+                "package {} exported type {} has unusable descriptor: {message}",
+                artifact.package_id, public_path
+            )
+        })?;
+        let resolution = SourceTypeResolution {
+            name: name.to_string(),
+            type_params: Vec::new(),
+            local_type_names: local_type_names.clone(),
+            kind,
+            module_path: module_path.to_string(),
+            public_path: Some(public_path.clone()),
+        };
+        for path in [public_path.as_str(), name] {
+            package_types.insert(
+                PackageSymbolKey {
+                    dependency_ref: artifact.package_id.clone(),
+                    symbol_path: path.to_string(),
+                },
+                resolution.clone(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn artifact_type_kind(descriptor: &TypeDescriptorIr) -> Result<SourceTypeKind, String> {
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => Ok(SourceTypeKind::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), artifact_type_text(ty)?)))
+                .collect::<Result<_, String>>()?,
+        }),
+        TypeDescriptorIr::Alias { target } => Ok(SourceTypeKind::Alias {
+            target: artifact_type_text(target)?,
+        }),
+        TypeDescriptorIr::Union { variants } => Ok(SourceTypeKind::Alias {
+            target: variants
+                .iter()
+                .map(artifact_type_text)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" | "),
+        }),
+        TypeDescriptorIr::Native { symbol } => Ok(SourceTypeKind::Representation {
+            target: symbol.clone(),
+        }),
+    }
+}
+
+fn artifact_type_text(ty: &TypeRefIr) -> Result<String, String> {
+    match ty {
+        TypeRefIr::Native { name, args } if args.is_empty() => Ok(name.clone()),
+        TypeRefIr::Native { name, args } => Ok(format!(
+            "{name}<{}>",
+            args.iter()
+                .map(artifact_type_text)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        )),
+        TypeRefIr::PackageSymbol { symbol } => Ok(format!(
+            "{}.{}",
+            match &symbol.package {
+                PackageRefIr::Dependency { dependency_ref } => dependency_ref,
+                PackageRefIr::PackageId { package_id } => package_id,
+            },
+            symbol.symbol_path
+        )),
+        TypeRefIr::Record { fields } => Ok(format!(
+            "{{ {} }}",
+            fields
+                .iter()
+                .map(|(name, ty)| Ok(format!("{name}: {}", artifact_type_text(ty)?)))
+                .collect::<Result<Vec<_>, String>>()?
+                .join(", ")
+        )),
+        TypeRefIr::Union { items } => Ok(items
+            .iter()
+            .map(artifact_type_text)
+            .collect::<Result<Vec<_>, _>>()?
+            .join(" | ")),
+        TypeRefIr::Nullable { inner } => Ok(format!("{}?", artifact_type_text(inner)?)),
+        TypeRefIr::Literal {
+            value: LiteralIr::String { value },
+        } => serde_json::to_string(value).map_err(|error| error.to_string()),
+        TypeRefIr::Literal {
+            value: LiteralIr::Bool { value },
+        } => Ok(value.to_string()),
+        TypeRefIr::Literal {
+            value: LiteralIr::Number { value },
+        } => Ok(value.to_string()),
+        TypeRefIr::Literal {
+            value: LiteralIr::Null,
+        } => Ok("null".to_string()),
+        TypeRefIr::TypeParam { name } => Ok(name.clone()),
+        TypeRefIr::LocalType { type_index } => Err(format!(
+            "local type index {type_index} is not self-describing in PackageLocalAbi"
+        )),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => Err(format!(
+            "publication type {module_path}#{type_index} is not self-describing in PackageLocalAbi"
+        )),
+        other => Err(format!("unsupported artifact type reference {other:?}")),
+    }
+}
+
 fn interface_identity_matches_source_symbol(
     identity: &TypeRefIr,
     interface_symbol: &ServiceSymbolRef,
@@ -3387,6 +3534,7 @@ mod tests {
             &BTreeMap::new(),
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -3467,6 +3615,7 @@ mod tests {
             &package_aliases,
             &[dependency],
             Some(&package_facts),
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution with package facts should build");
@@ -3852,6 +4001,7 @@ mod tests {
             &package_aliases,
             &[agent_dependency, api_dependency],
             Some(&package_facts),
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution with package alias facts should build");
@@ -4077,6 +4227,71 @@ mod tests {
             message.contains("argument"),
             "expected an argument assignability diagnostic, got: {message}"
         );
+    }
+
+    #[test]
+    fn artifact_descriptors_preserve_nested_records_arrays_aliases_and_literal_unions() {
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                (
+                    "items".to_string(),
+                    TypeRefIr::Native {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::Record {
+                            fields: BTreeMap::from([(
+                                "label".to_string(),
+                                TypeRefIr::native("string"),
+                            )]),
+                        }],
+                    },
+                ),
+                (
+                    "state".to_string(),
+                    TypeRefIr::Union {
+                        items: vec![
+                            TypeRefIr::Literal {
+                                value: LiteralIr::String {
+                                    value: "ready".to_string(),
+                                },
+                            },
+                            TypeRefIr::Literal {
+                                value: LiteralIr::String {
+                                    value: "done".to_string(),
+                                },
+                            },
+                        ],
+                    },
+                ),
+            ]),
+        };
+        let SourceTypeKind::Record { fields } =
+            artifact_type_kind(&descriptor).expect("descriptor should be self-contained")
+        else {
+            panic!("record descriptor should remain a record")
+        };
+        assert_eq!(fields["items"], "Array<{ label: string }>");
+        assert_eq!(fields["state"], "\"ready\" | \"done\"");
+
+        let alias = artifact_type_kind(&TypeDescriptorIr::Alias {
+            target: TypeRefIr::Native {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::native("string")],
+            },
+        })
+        .expect("alias descriptor should be self-contained");
+        assert!(matches!(
+            alias,
+            SourceTypeKind::Alias { target } if target == "Array<string>"
+        ));
+    }
+
+    #[test]
+    fn artifact_descriptors_reject_non_self_describing_local_indices() {
+        let error = artifact_type_kind(&TypeDescriptorIr::Alias {
+            target: TypeRefIr::LocalType { type_index: 7 },
+        })
+        .expect_err("ambient FileIR lookup must not be used");
+        assert!(error.contains("not self-describing"));
     }
 }
 

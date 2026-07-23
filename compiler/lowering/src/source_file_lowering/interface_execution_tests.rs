@@ -134,6 +134,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             package_aliases: &package_aliases,
             package_dependencies: &[],
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/contract-interface"),
             platform_package_authority: None,
         },

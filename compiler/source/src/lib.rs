@@ -206,6 +206,7 @@ fn build_from_linked(
         package_dependencies: linked.package_dependencies,
         package_db_metadata_index,
         type_resolution_package_facts: type_resolution_package_facts.as_deref(),
+        type_resolution_package_artifacts: linked.package_artifacts,
         entity_model,
         name_resolution,
         policy: linked.policy,

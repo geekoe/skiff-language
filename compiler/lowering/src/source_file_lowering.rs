@@ -281,6 +281,7 @@ fn single_file_type_resolution(
         package_aliases,
         &[],
         None,
+        None,
         external_type_symbols,
     )
     .map_err(|message| {
@@ -692,6 +693,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
             platform_package_authority: None,
         })
@@ -774,6 +776,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new(package_id),
             platform_package_authority: None,
         })
@@ -814,6 +817,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: None,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new(PACKAGE_ID),
             platform_package_authority: None,
         })
@@ -862,6 +866,7 @@ mod tests {
             package_aliases: &package_aliases,
             package_dependencies: &package_dependencies,
             package_facts: Some(&package_facts),
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
             platform_package_authority: None,
         })

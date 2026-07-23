@@ -15,6 +15,7 @@ use crate::{
     },
 };
 use compiler_input_model::{PackageCompilePolicy, PackageDependency};
+use skiff_artifact_model::PackageArtifact;
 
 use super::config_usage::ConfigUsageSeed;
 use super::entity::PublicationEntityModel;
@@ -148,6 +149,7 @@ pub struct PackageSourceModelInput<'a> {
     pub package_dependencies: &'a [PackageDependency],
     pub package_db_metadata_index: Option<PublicationDbMetadataIndex>,
     pub type_resolution_package_facts: Option<&'a [TypeResolutionPackageFacts<'a>]>,
+    pub type_resolution_package_artifacts: Option<&'a [PackageArtifact]>,
     pub entity_model: PublicationEntityModel,
     pub name_resolution: NameResolutionModel,
     pub policy: PackageCompilePolicy<'a>,
@@ -187,6 +189,7 @@ impl PackageSourceModel {
             input.package_aliases,
             input.package_dependencies,
             input.type_resolution_package_facts,
+            input.type_resolution_package_artifacts,
             indexes.publication_type_symbols(),
         )
         .map_err(|message| PublicationError::ContractValidation {

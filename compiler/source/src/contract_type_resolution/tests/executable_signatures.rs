@@ -172,8 +172,14 @@ fn parsed_type_model(
     let parsed_sources =
         parse_publication_sources(&fixture_root, &[source]).expect("fixture source facts build");
     let type_symbols = crate::publication_type_symbols(&parsed_sources);
-    let type_resolution =
-        TypeResolutionModel::build(&parsed_sources, &BTreeMap::new(), &[], None, &type_symbols)
-            .expect("ordinary source types resolve before exact projection");
+    let type_resolution = TypeResolutionModel::build(
+        &parsed_sources,
+        &BTreeMap::new(),
+        &[],
+        None,
+        None,
+        &type_symbols,
+    )
+    .expect("ordinary source types resolve before exact projection");
     (parsed_sources, type_resolution)
 }

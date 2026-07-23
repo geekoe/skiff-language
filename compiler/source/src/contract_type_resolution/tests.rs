@@ -358,6 +358,7 @@ fn build_model_with_publication_api_and_package_facts(
             package_aliases,
             package_dependencies,
             package_facts,
+            package_artifacts: None,
             policy: PackageCompilePolicy::new("example.com/contract-type-resolution"),
             platform_package_authority: None,
         },

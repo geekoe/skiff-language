@@ -4097,6 +4097,7 @@ mod tests {
             &BTreeMap::new(),
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4417,6 +4418,7 @@ mod tests {
             &BTreeMap::new(),
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4571,6 +4573,7 @@ mod tests {
             &package_aliases,
             &[],
             None,
+            None,
             &PublicationTypeSymbolIndex::default(),
         )
         .expect("type resolution should build");
@@ -4650,6 +4653,7 @@ mod tests {
             &parsed_sources,
             &package_aliases,
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )
@@ -4742,6 +4746,7 @@ mod tests {
             &parsed_sources,
             &package_aliases,
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )
@@ -4847,6 +4852,7 @@ mod tests {
             &parsed_sources,
             &BTreeMap::new(),
             &[],
+            None,
             None,
             &PublicationTypeSymbolIndex::default(),
         )
