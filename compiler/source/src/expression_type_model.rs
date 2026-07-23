@@ -28,6 +28,7 @@ use super::{
 mod contract_call_typing;
 mod db_projection;
 mod expression_assignability;
+mod object_materialization;
 
 use contract_call_typing::{
     contract_source_assignability_with_projections, ContractCallOutcome, ContractCallTyping,
@@ -35,6 +36,13 @@ use contract_call_typing::{
 };
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::{record_type_fields, ExpressionAssignability};
+pub use object_materialization::{
+    MaterializedObjectField, ObjectFieldValueSource, ObjectMaterializationKind,
+    TargetTypedObjectMaterialization,
+};
+use object_materialization::{
+    ObjectLiteralSource, ObjectLiteralSourceField, ObjectMaterializationState,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ExpressionTypeModel {
@@ -42,6 +50,7 @@ pub struct ExpressionTypeModel {
     constructor_validations: BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
+    object_materializations: BTreeMap<ExpressionKey, TargetTypedObjectMaterialization>,
 }
 
 #[derive(Clone, Debug)]
@@ -217,6 +226,7 @@ struct OwnerChecker<'a> {
     constructor_validations: &'a mut BTreeMap<ExpressionKey, ConstructorValidation>,
     representation_constructor_validations:
         &'a mut BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
+    object_materialization: &'a mut ObjectMaterializationState,
     diagnostics: &'a mut Vec<String>,
 }
 
@@ -232,6 +242,7 @@ impl ExpressionTypeModel {
         let mut facts = BTreeMap::new();
         let mut constructor_validations = BTreeMap::new();
         let mut representation_constructor_validations = BTreeMap::new();
+        let mut object_materialization = ObjectMaterializationState::default();
         let mut diagnostics = Vec::new();
         for parsed in parsed_sources {
             check_source(
@@ -245,14 +256,27 @@ impl ExpressionTypeModel {
                 &mut facts,
                 &mut constructor_validations,
                 &mut representation_constructor_validations,
+                &mut object_materialization,
                 &mut diagnostics,
             );
+        }
+
+        for (key, source) in &object_materialization.sources {
+            if object_materialization.targeted.contains(key) {
+                continue;
+            }
+            diagnostics.push(format!(
+                "{}: object literal at {} requires an explicit target type",
+                key.module_path(),
+                span_label(source.span)
+            ));
         }
 
         let model = Self {
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materializations: object_materialization.facts,
         };
         if !diagnostics.is_empty() {
             return Err(ExpressionTypeModelBuildError { model, diagnostics });
@@ -274,6 +298,13 @@ impl ExpressionTypeModel {
         key: &ExpressionKey,
     ) -> Option<&RepresentationConstructorValidation> {
         self.representation_constructor_validations.get(key)
+    }
+
+    pub fn object_materialization(
+        &self,
+        key: &ExpressionKey,
+    ) -> Option<&TargetTypedObjectMaterialization> {
+        self.object_materializations.get(key)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -332,6 +363,7 @@ fn check_source(
         ExpressionKey,
         RepresentationConstructorValidation,
     >,
+    object_materialization: &mut ObjectMaterializationState,
     diagnostics: &mut Vec<String>,
 ) {
     let const_env = const_type_env(
@@ -358,6 +390,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
     }
@@ -385,6 +418,7 @@ fn check_source(
                 facts,
                 constructor_validations,
                 representation_constructor_validations,
+                object_materialization,
                 diagnostics,
             );
         }
@@ -420,6 +454,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
         let value_key = checker.peek_key();
@@ -454,6 +489,7 @@ fn check_source(
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         );
         checker.check_block(&test.body);
@@ -482,6 +518,7 @@ fn check_source(
                     facts,
                     constructor_validations,
                     representation_constructor_validations,
+                    object_materialization,
                     diagnostics,
                 );
                 checker.check_condition(where_expr, "db index where condition");
@@ -549,6 +586,7 @@ fn check_function_owner(
         ExpressionKey,
         RepresentationConstructorValidation,
     >,
+    object_materialization: &mut ObjectMaterializationState,
     diagnostics: &mut Vec<String>,
 ) {
     let type_params = inherited_type_params
@@ -606,6 +644,7 @@ fn check_function_owner(
         facts,
         constructor_validations,
         representation_constructor_validations,
+        object_materialization,
         diagnostics,
     );
     checker.check_block(&function.body);
@@ -632,6 +671,7 @@ impl<'a> OwnerChecker<'a> {
             ExpressionKey,
             RepresentationConstructorValidation,
         >,
+        object_materialization: &'a mut ObjectMaterializationState,
         diagnostics: &'a mut Vec<String>,
     ) -> Self {
         let (contract_projection, projection_diagnostics) = ContractProjectionState::new(
@@ -663,6 +703,7 @@ impl<'a> OwnerChecker<'a> {
             facts,
             constructor_validations,
             representation_constructor_validations,
+            object_materialization,
             diagnostics,
         }
     }
@@ -1440,14 +1481,34 @@ impl<'a> OwnerChecker<'a> {
                 )
             }
             Expr::ObjectLiteral { entries } => {
-                let fields = entries
-                    .iter()
-                    .map(|entry| {
-                        let ty = self.check_expr(&entry.value);
-                        object_literal_key_text(&entry.key).and_then(|key| ty.map(|ty| (key, ty)))
-                    })
-                    .flatten()
-                    .collect::<BTreeMap<_, _>>();
+                let source_fact = self.expression_sources.fact(&key);
+                let mut fields = BTreeMap::new();
+                let mut source_fields = Vec::with_capacity(entries.len());
+                for (index, entry) in entries.iter().enumerate() {
+                    let value_key = self.peek_key();
+                    let actual = self.check_expr(&entry.value);
+                    let Some(name) = object_literal_key_text(&entry.key) else {
+                        continue;
+                    };
+                    if let Some(actual) = &actual {
+                        fields.insert(name.clone(), actual.clone());
+                    }
+                    source_fields.push(ObjectLiteralSourceField {
+                        name,
+                        expression: value_key,
+                        actual,
+                        value_span: record_field_value_source_span(source_fact, index),
+                    });
+                }
+                self.object_materialization.sources.insert(
+                    key.clone(),
+                    ObjectLiteralSource {
+                        span: source_fact
+                            .map(|fact| fact.span)
+                            .unwrap_or_else(SourceSpan::synthetic),
+                        fields: source_fields,
+                    },
+                );
                 Some(ResolvedTypeRef {
                     ir: TypeRefIr::Record {
                         fields: fields
@@ -2916,6 +2977,11 @@ impl<'a> OwnerChecker<'a> {
         context: &str,
         fallback_span: SourceSpan,
     ) -> bool {
+        if matches!(value, Expr::ObjectLiteral { .. }) {
+            return self.materialize_target_typed_object_literal(
+                annotation, value, value_key, actual, expected, context,
+            );
+        }
         let assignability = ExpressionAssignability::new(
             self.module_path,
             self.expression_sources,
@@ -3002,6 +3068,105 @@ impl<'a> OwnerChecker<'a> {
         }
         self.push_type_mismatch(context, fallback_span, expected, actual);
         false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_target_typed_object_literal(
+        &mut self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        context: &str,
+    ) -> bool {
+        self.object_materialization
+            .targeted
+            .insert(value_key.clone());
+        let plan = match ExpressionAssignability::new(
+            self.module_path,
+            self.expression_sources,
+            self.type_resolution,
+            &self.type_context,
+            None,
+        )
+        .object_literal_materialization_plan(
+            annotation, value, value_key, actual, expected, context,
+        ) {
+            Ok(plan) => plan,
+            Err(diagnostics) => {
+                self.diagnostics.extend(diagnostics);
+                return false;
+            }
+        };
+        let Some(source) = self.object_materialization.sources.get(value_key).cloned() else {
+            self.diagnostics.push(format!(
+                "{}: {context} target-typed object literal is missing source facts at {}",
+                self.module_path,
+                self.expression_span_label(value_key)
+            ));
+            return false;
+        };
+        let provided = source
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field))
+            .collect::<BTreeMap<_, _>>();
+        let mut fields = Vec::with_capacity(plan.fields.len());
+        let mut valid = true;
+        for (name, ty) in &plan.fields {
+            let source = if let Some(provided) = provided.get(name.as_str()) {
+                if let Some(actual) = &provided.actual {
+                    valid &= self.check_value_assignable_to_expected(
+                        None,
+                        object_literal_field_value(value, name)
+                            .expect("materialization plan field must exist in object literal"),
+                        &provided.expression,
+                        actual,
+                        ty,
+                        None,
+                        &format!("{context} object literal field `{name}`"),
+                        provided.value_span,
+                    );
+                } else {
+                    self.diagnostics.push(format!(
+                        "{}: {context} object literal field `{name}` has no resolved expression type at {}",
+                        self.module_path,
+                        span_label(provided.value_span)
+                    ));
+                    valid = false;
+                }
+                ObjectFieldValueSource::Provided {
+                    expression: provided.expression.clone(),
+                }
+            } else if self.type_resolution.is_nullable(ty) {
+                ObjectFieldValueSource::SyntheticNull
+            } else {
+                self.diagnostics.push(format!(
+                    "{}: {context} materialization plan omitted required object literal field `{name}` at {}",
+                    self.module_path,
+                    span_label(source.span)
+                ));
+                valid = false;
+                continue;
+            };
+            fields.push(MaterializedObjectField {
+                name: name.clone(),
+                ty: ty.clone(),
+                source,
+            });
+        }
+        if valid {
+            self.object_materialization.facts.insert(
+                value_key.clone(),
+                TargetTypedObjectMaterialization {
+                    resolved_target: plan.resolved_target,
+                    kind: plan.kind,
+                    fields,
+                },
+            );
+        }
+        valid
     }
 
     fn push_type_mismatch(
@@ -3621,6 +3786,15 @@ fn object_literal_key_text(key: &crate::shared::ast::ObjectLiteralKey) -> Option
     match key {
         crate::shared::ast::ObjectLiteralKey::Name(name) => Some(name.clone()),
     }
+}
+
+fn object_literal_field_value<'a>(value: &'a Expr, name: &str) -> Option<&'a Expr> {
+    let Expr::ObjectLiteral { entries } = value else {
+        return None;
+    };
+    entries.iter().find_map(|entry| {
+        (object_literal_key_text(&entry.key).as_deref() == Some(name)).then_some(&entry.value)
+    })
 }
 
 fn expr_is_null_literal(expr: &Expr) -> bool {

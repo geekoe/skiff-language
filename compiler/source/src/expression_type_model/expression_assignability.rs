@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    object_literal_key_text, span_label, type_ir_is_null, type_ref_debug_text, ExpressionKey,
+    object_literal_key_text,
+    object_materialization::{ObjectMaterializationKind, ObjectMaterializationPlan},
+    resolved_type_from_ir, span_label, type_ir_is_null, type_ref_debug_text, ExpressionKey,
     ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_artifact_model::{
@@ -30,6 +32,7 @@ struct ObjectLiteralActualField {
 struct ObjectLiteralTargetCandidate {
     label: String,
     fields: BTreeMap<String, ResolvedTypeRef>,
+    kind: ObjectMaterializationKind,
 }
 
 pub(super) struct ExpressionAssignability<'a, 'ctx> {
@@ -214,6 +217,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual_fields: &BTreeMap<String, TypeRefIr>,
         expected: &ResolvedTypeRef,
     ) -> bool {
+        let expected = non_nullable_object_target(expected);
         self.type_resolution
             .resolve_constructor_target_text(&expected.source_text, self.type_context)
             .ok()
@@ -222,7 +226,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             })
             || self
                 .type_resolution
-                .type_shape_ir(expected, self.type_context)
+                .type_shape_ir(&expected, self.type_context)
                 .is_some_and(|shape| {
                     self.object_fields_assignable_to_expected(actual_fields, &shape)
                 })
@@ -262,6 +266,133 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 )
             })
             .min_by_key(|diagnostics| diagnostics.len())
+    }
+
+    pub(super) fn object_literal_materialization_plan(
+        &self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        context: &str,
+    ) -> Result<ObjectMaterializationPlan, Vec<String>> {
+        let Some(actual_fields) = self.object_literal_actual_fields(value, value_key, actual)
+        else {
+            return Err(vec![format!(
+                "{}: {context} object materialization requires an object literal at {}",
+                self.diagnostic_path,
+                span_label(self.expression_span(value_key))
+            )]);
+        };
+        let target = non_nullable_object_target(expected);
+        if let Some(value_target) = map_object_value_target(&target) {
+            let fields = actual_fields
+                .iter()
+                .map(|field| (field.name.clone(), value_target.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let candidate = ObjectLiteralTargetCandidate {
+                label: target.source_text.clone(),
+                fields: fields.clone(),
+                kind: ObjectMaterializationKind::Map,
+            };
+            let diagnostics =
+                self.object_literal_map_candidate_diagnostics(context, &candidate, &actual_fields);
+            if diagnostics.is_empty() {
+                return Ok(ObjectMaterializationPlan {
+                    resolved_target: expected.clone(),
+                    kind: candidate.kind,
+                    fields,
+                });
+            }
+            return Err(diagnostics);
+        }
+
+        let candidates = self.object_literal_target_candidates(annotation, &target);
+        if candidates.is_empty() {
+            return Err(vec![format!(
+                "{}: {context} object literal target {} is not a record, discriminated union, Map<string, T>, JsonObject, or Json at {}",
+                self.diagnostic_path,
+                expected.source_text,
+                span_label(self.expression_span(value_key))
+            )]);
+        }
+        let evaluated = candidates
+            .into_iter()
+            .map(|candidate| {
+                let diagnostics = self.object_literal_candidate_diagnostics(
+                    context,
+                    &candidate,
+                    &actual_fields,
+                    self.expression_span(value_key),
+                );
+                (candidate, diagnostics)
+            })
+            .collect::<Vec<_>>();
+        let matching = evaluated
+            .iter()
+            .filter(|(_, diagnostics)| diagnostics.is_empty())
+            .collect::<Vec<_>>();
+        match matching.as_slice() {
+            [(candidate, _)] => Ok(ObjectMaterializationPlan {
+                resolved_target: expected.clone(),
+                kind: candidate.kind.clone(),
+                fields: candidate.fields.clone(),
+            }),
+            [] => Err(evaluated
+                .into_iter()
+                .min_by_key(|(_, diagnostics)| diagnostics.len())
+                .map(|(_, diagnostics)| diagnostics)
+                .unwrap_or_default()),
+            many => Err(vec![format!(
+                "{}: {context} ambiguous object literal branch for {} at {}; matching branches: {}",
+                self.diagnostic_path,
+                expected.source_text,
+                span_label(self.expression_span(value_key)),
+                many.iter()
+                    .map(|(candidate, _)| candidate.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )]),
+        }
+    }
+
+    fn object_literal_map_candidate_diagnostics(
+        &self,
+        context: &str,
+        target: &ObjectLiteralTargetCandidate,
+        actual_fields: &[ObjectLiteralActualField],
+    ) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        let mut provided = BTreeMap::<String, &ObjectLiteralActualField>::new();
+        for field in actual_fields {
+            if provided.insert(field.name.clone(), field).is_some() {
+                diagnostics.push(format!(
+                    "{}: {context} duplicate object literal field `{}` at {}",
+                    self.diagnostic_path,
+                    field.name,
+                    span_label(field.name_span)
+                ));
+                continue;
+            }
+            let expected = target
+                .fields
+                .get(&field.name)
+                .expect("map materialization candidate must cover every provided field");
+            if let Some(actual) = &field.ty {
+                if !self.type_ir_assignable_to_resolved_expected(&actual.ir, expected) {
+                    diagnostics.push(format!(
+                        "{}: {context} object literal value for key `{}` type mismatch at {}: expected {}, found {}",
+                        self.diagnostic_path,
+                        field.name,
+                        span_label(field.value_span),
+                        expected.source_text,
+                        actual.source_text
+                    ));
+                }
+            }
+        }
+        diagnostics
     }
 
     fn object_literal_actual_fields(
@@ -315,8 +446,11 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_text(&annotation.name, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text,
+                    label: target.ty.source_text.clone(),
                     fields: target.fields,
+                    kind: ObjectMaterializationKind::Record {
+                        construct_target: target.ty,
+                    },
                 });
             }
         }
@@ -326,8 +460,11 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 .resolve_constructor_target_text(&expected.source_text, self.type_context)
             {
                 candidates.push(ObjectLiteralTargetCandidate {
-                    label: target.ty.source_text,
+                    label: target.ty.source_text.clone(),
                     fields: target.fields,
+                    kind: ObjectMaterializationKind::Record {
+                        construct_target: target.ty,
+                    },
                 });
             }
         }
@@ -339,6 +476,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 candidates.extend(object_literal_target_candidates_from_ir(
                     &expected.source_text,
                     &shape,
+                    expected,
+                    false,
                 ));
             }
         }
@@ -346,6 +485,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             candidates.extend(object_literal_target_candidates_from_ir(
                 &expected.source_text,
                 &expected.ir,
+                expected,
+                false,
             ));
         }
         candidates
@@ -566,41 +707,136 @@ pub(super) fn record_type_fields<const N: usize>(
 fn object_literal_target_candidates_from_ir(
     label: &str,
     ty: &TypeRefIr,
+    construct_target: &ResolvedTypeRef,
+    union_branch: bool,
 ) -> Vec<ObjectLiteralTargetCandidate> {
     match ty {
         TypeRefIr::Record { fields } => vec![ObjectLiteralTargetCandidate {
             label: label.to_string(),
             fields: resolved_fields_from_ir(fields),
+            kind: if union_branch {
+                ObjectMaterializationKind::DiscriminatedUnionBranch {
+                    branch: resolved_type_from_ir(ty),
+                }
+            } else {
+                ObjectMaterializationKind::Record {
+                    construct_target: construct_target.clone(),
+                }
+            },
         }],
         TypeRefIr::Union { items } => items
             .iter()
             .flat_map(|item| {
-                object_literal_target_candidates_from_ir(&type_ref_debug_text(item), item)
+                object_literal_target_candidates_from_ir(
+                    &type_ref_debug_text(item),
+                    item,
+                    construct_target,
+                    true,
+                )
             })
             .collect(),
-        TypeRefIr::Native { name, args } => builtin_object_literal_targets(name, args)
-            .into_iter()
-            .map(|fields| ObjectLiteralTargetCandidate {
-                label: label.to_string(),
-                fields: resolved_fields_from_ir(&fields),
-            })
-            .collect(),
+        TypeRefIr::Native { name, args } => {
+            let targets = builtin_object_literal_targets(name, args);
+            let is_union = union_branch || targets.len() > 1;
+            targets
+                .into_iter()
+                .map(|fields| {
+                    let branch = ResolvedTypeRef {
+                        source_text: type_ref_debug_text(&TypeRefIr::Record {
+                            fields: fields.clone(),
+                        }),
+                        ir: TypeRefIr::Record {
+                            fields: fields.clone(),
+                        },
+                    };
+                    ObjectLiteralTargetCandidate {
+                        label: label.to_string(),
+                        fields: resolved_fields_from_ir(&fields),
+                        kind: if is_union {
+                            ObjectMaterializationKind::DiscriminatedUnionBranch { branch }
+                        } else {
+                            ObjectMaterializationKind::Record {
+                                construct_target: construct_target.clone(),
+                            }
+                        },
+                    }
+                })
+                .collect()
+        }
         TypeRefIr::PackageSymbol { symbol }
             if matches!(
                 &symbol.package,
                 PackageRefIr::PackageId { package_id } if package_id == SKIFF_STD_PUBLICATION_ID
             ) =>
         {
-            standard_library_object_literal_targets(&symbol.symbol_path, &[])
-                .unwrap_or_default()
+            let targets = standard_library_object_literal_targets(&symbol.symbol_path, &[])
+                .unwrap_or_default();
+            let is_union = union_branch || targets.len() > 1;
+            targets
                 .into_iter()
-                .map(|fields| ObjectLiteralTargetCandidate {
-                    label: label.to_string(),
-                    fields: resolved_fields_from_ir(&fields),
+                .map(|fields| {
+                    let branch = resolved_type_from_ir(&TypeRefIr::Record {
+                        fields: fields.clone(),
+                    });
+                    ObjectLiteralTargetCandidate {
+                        label: label.to_string(),
+                        fields: resolved_fields_from_ir(&fields),
+                        kind: if is_union {
+                            ObjectMaterializationKind::DiscriminatedUnionBranch { branch }
+                        } else {
+                            ObjectMaterializationKind::Record {
+                                construct_target: construct_target.clone(),
+                            }
+                        },
+                    }
                 })
                 .collect()
         }
         _ => Vec::new(),
+    }
+}
+
+fn non_nullable_object_target(target: &ResolvedTypeRef) -> ResolvedTypeRef {
+    match &target.ir {
+        TypeRefIr::Nullable { inner } => resolved_type_from_ir(inner),
+        TypeRefIr::Union { items } => {
+            let non_null = items
+                .iter()
+                .filter(|item| !type_ir_is_null(item))
+                .collect::<Vec<_>>();
+            match non_null.as_slice() {
+                [only] => resolved_type_from_ir(only),
+                _ => target.clone(),
+            }
+        }
+        _ => target.clone(),
+    }
+}
+
+fn map_object_value_target(target: &ResolvedTypeRef) -> Option<ResolvedTypeRef> {
+    match &target.ir {
+        TypeRefIr::Native { name, args }
+            if name == "Map"
+                && matches!(
+                    args.as_slice(),
+                    [TypeRefIr::Native { name, args: key_args }, _]
+                        if name == "string" && key_args.is_empty()
+                ) =>
+        {
+            args.get(1).map(resolved_type_from_ir)
+        }
+        TypeRefIr::Native { name, args }
+            if args.is_empty() && matches!(name.as_str(), "Json" | "JsonObject") =>
+        {
+            Some(ResolvedTypeRef {
+                source_text: "Json".to_string(),
+                ir: TypeRefIr::Native {
+                    name: "Json".to_string(),
+                    args: Vec::new(),
+                },
+            })
+        }
+        _ => None,
     }
 }
 
