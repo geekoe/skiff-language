@@ -355,7 +355,36 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let platform = skiff_compiler_input::CompilerPlatformSources::new(&root).unwrap();
+        let bindings = serde_json::json!([{
+            "packageId": "skiff.run/registry",
+            "packageRoot": root.join("registry"),
+            "manifestPath": root.join("registry/package.yml"),
+        }]);
+        let descriptor = std::env::temp_dir().join(format!(
+            "skiff-package-rules-authority-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &descriptor,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": "skiff-official-package-authority-v1",
+                "configIdentity": format!(
+                    "skiff-official-package-authority-v1:sha256:{}",
+                    skiff_compiler_core::json_utils::sha256_hex(
+                        &serde_json::to_vec(&bindings).unwrap()
+                    )
+                ),
+                "bindings": bindings,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let platform =
+            skiff_compiler_input::CompilerPlatformSources::new_with_official_package_authority(
+                &root,
+                Some(&descriptor),
+            )
+            .unwrap();
         crate::prelude_registry::initialize_prelude_registry(&platform).unwrap();
         let authority = platform.trusted_registry_package_authority().unwrap();
         let sources = vec![test_source(

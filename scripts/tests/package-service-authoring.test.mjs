@@ -72,6 +72,41 @@ test('public four-object CLI does not expose the internal platform trust option'
   }
 });
 
+test('official package authority is transported only as an absolute descriptor binding', () => {
+  const descriptor = '/tmp/skiff-official-package-authority.json';
+  const parsed = parseObjectArgs('package', 'build', [
+    '/tmp/official-package',
+    '--artifact-root',
+    '/tmp/artifacts',
+    '--official-package-authority',
+    descriptor,
+  ]);
+  assert.equal(parsed.officialPackageAuthority, descriptor);
+  const invocation = compilerAuthoringInvocation({
+    skiffRoot,
+    kind: 'package',
+    action: 'build',
+    root: parsed.root,
+    artifactRoot: parsed.artifactRoot,
+    officialPackageAuthority: parsed.officialPackageAuthority,
+  });
+  const position = invocation.args.indexOf('--official-package-authority');
+  assert.notEqual(position, -1);
+  assert.equal(invocation.args[position + 1], descriptor);
+  assert.equal(invocation.args.includes('--official-package-root'), false);
+  assert.throws(
+    () => compilerAuthoringInvocation({
+      skiffRoot,
+      kind: 'package',
+      action: 'build',
+      root: '/tmp/official-package',
+      artifactRoot: '/tmp/artifacts',
+      officialPackageAuthority: 'relative/authority.json',
+    }),
+    /descriptor must be absolute/,
+  );
+});
+
 test('contract-first publish compiles a consumer with no provider package', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'skiff-authoring-contract-first-'));
   const artifactRoot = join(temp, 'artifacts');

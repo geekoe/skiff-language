@@ -150,6 +150,8 @@ fn push_source(
 mod tests {
     use super::*;
     use crate::CompilerPlatformSources;
+    use skiff_compiler_core::json_utils::sha256_hex;
+    use std::{fs, path::Path};
 
     #[test]
     fn authority_injects_exact_declaration_only_slice() {
@@ -157,7 +159,10 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let platform = CompilerPlatformSources::new(&root).unwrap();
+        let descriptor = repository_authority_descriptor(&root);
+        let platform =
+            CompilerPlatformSources::new_with_official_package_authority(&root, Some(&descriptor))
+                .unwrap();
         let snapshot_before = platform.prelude_registry_snapshot().unwrap();
         let authority = platform.trusted_registry_package_authority().unwrap();
         let sources = trusted_registry_native_sources(&authority).unwrap();
@@ -206,5 +211,31 @@ mod tests {
                 signature.target
             );
         }
+    }
+
+    fn repository_authority_descriptor(root: &Path) -> PathBuf {
+        let bindings = serde_json::json!([{
+            "packageId": TRUSTED_REGISTRY_PACKAGE_ID,
+            "packageRoot": root.join("registry"),
+            "manifestPath": root.join("registry/package.yml"),
+        }]);
+        let path = std::env::temp_dir().join(format!(
+            "skiff-registry-native-authority-{}.json",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": "skiff-official-package-authority-v1",
+                "configIdentity": format!(
+                    "skiff-official-package-authority-v1:sha256:{}",
+                    sha256_hex(&serde_json::to_vec(&bindings).unwrap())
+                ),
+                "bindings": bindings,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
     }
 }

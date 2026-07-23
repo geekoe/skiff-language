@@ -305,7 +305,34 @@ fn repository_platform_sources() -> CompilerPlatformSources {
         .unwrap()
         .canonicalize()
         .unwrap();
-    CompilerPlatformSources::new(&root).unwrap()
+    static DESCRIPTOR: OnceLock<PathBuf> = OnceLock::new();
+    let descriptor = DESCRIPTOR.get_or_init(|| {
+        let bindings = serde_json::json!([{
+            "packageId": skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID,
+            "packageRoot": root.join("registry"),
+            "manifestPath": root.join("registry/package.yml"),
+        }]);
+        let identity = format!(
+            "skiff-official-package-authority-v1:sha256:{}",
+            skiff_compiler_core::json_utils::sha256_hex(&serde_json::to_vec(&bindings).unwrap())
+        );
+        let path = std::env::temp_dir().join(format!(
+            "skiff-p5-f71-repository-authority-{}.json",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": "skiff-official-package-authority-v1",
+                "configIdentity": identity,
+                "bindings": bindings,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    });
+    CompilerPlatformSources::new_with_official_package_authority(&root, Some(descriptor)).unwrap()
 }
 
 fn record_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {

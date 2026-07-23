@@ -4,7 +4,7 @@ use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
 use skiff_compiler::ecosystem_store::run_ecosystem_store_adapter;
 use skiff_compiler::CompilerPlatformSources;
 
-const USAGE: &str = "usage: skiff-compiler <package|contract|deployment|assembly> <build|publish> <root> --artifact-root <dir> [--json]";
+const USAGE: &str = "usage: skiff-compiler <package|contract|deployment|assembly> <build|publish> <root> --artifact-root <dir> [--official-package-authority <descriptor.json>] [--json]";
 
 fn main() {
     if let Err(error) = run() {
@@ -42,6 +42,7 @@ fn run_with_args(
     let root = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut artifact_root = None;
     let mut platform_source_root = None;
+    let mut official_package_authority = None;
     let mut json = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -62,13 +63,25 @@ fn run_with_args(
                         .ok_or("--platform-source-root requires a path")?,
                 ));
             }
+            "--official-package-authority" => {
+                if official_package_authority.is_some() {
+                    return Err("--official-package-authority was provided more than once".into());
+                }
+                official_package_authority = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--official-package-authority requires a path")?,
+                ));
+            }
             "--json" => json = true,
             _ => return Err(format!("unknown option {argument}\n{USAGE}").into()),
         }
     }
     let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
     let platform_source_root = platform_source_root.ok_or("--platform-source-root is required")?;
-    let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
+    let platform_sources = CompilerPlatformSources::new_with_official_package_authority(
+        &platform_source_root,
+        official_package_authority.as_deref(),
+    )?;
     let receipt = build_authoring_object(
         &platform_sources,
         object,
