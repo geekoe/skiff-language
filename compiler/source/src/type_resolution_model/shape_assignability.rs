@@ -225,6 +225,17 @@ impl TypeResolutionModel {
                 )
             })?
             .instantiate_methods(&interface.args)?;
+        let package_id = match &interface.identity {
+            TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
+                PackageRefIr::Dependency { dependency_ref } => self
+                    .package_dependencies
+                    .get(dependency_ref)
+                    .cloned()
+                    .unwrap_or_else(|| dependency_ref.clone()),
+                PackageRefIr::PackageId { package_id } => package_id.clone(),
+            },
+            _ => unreachable!("package interface identity was checked above"),
+        };
         let canonical =
             interface_instantiation_ref(interface.identity.clone(), interface.args.clone());
         let concrete_self = TypeRefIr::ServiceSymbol {
@@ -273,20 +284,24 @@ impl TypeResolutionModel {
                     .iter()
                     .zip(&expected_params)
                     .any(|(actual, expected)| {
-                        self.canonicalize_impl_signature_type_ref_for_module(
+                        self.canonicalize_package_method_type_ref_for_module(
                             receiver.module_path(),
                             &actual.ty,
-                        ) != self.canonicalize_impl_signature_type_ref_for_module(
+                            &package_id,
+                        ) != self.canonicalize_package_method_type_ref_for_module(
                             receiver.module_path(),
                             &expected.ty,
+                            &package_id,
                         )
                     })
-                || self.canonicalize_impl_signature_type_ref_for_module(
+                || self.canonicalize_package_method_type_ref_for_module(
                     receiver.module_path(),
                     &actual_return,
-                ) != self.canonicalize_impl_signature_type_ref_for_module(
+                    &package_id,
+                ) != self.canonicalize_package_method_type_ref_for_module(
                     receiver.module_path(),
                     &expected_return,
+                    &package_id,
                 )
             {
                 return Ok(None);
@@ -303,14 +318,119 @@ impl TypeResolutionModel {
         Ok(Some(slots))
     }
 
-    fn canonicalize_impl_signature_type_ref_for_module(
+    fn canonicalize_package_method_type_ref_for_module(
         &self,
         module_path: &str,
         ty: &TypeRefIr,
+        package_id: &str,
     ) -> TypeRefIr {
         let context = TypeResolutionContext::source(module_path);
         let transparent = self.transparent_alias_ir(ty, &context);
-        self.canonicalize_type_ref_for_module(module_path, &transparent)
+        self.canonicalize_package_method_type_ref(module_path, &transparent, package_id)
+    }
+
+    fn canonicalize_package_method_type_ref(
+        &self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        package_id: &str,
+    ) -> TypeRefIr {
+        let recurse = |ty| self.canonicalize_package_method_type_ref(module_path, ty, package_id);
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => {
+                let dependency_ref = match &symbol.package {
+                    PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
+                    PackageRefIr::PackageId { package_id } => package_id.as_str(),
+                };
+                let resolved_package_id = self
+                    .package_dependencies
+                    .get(dependency_ref)
+                    .map(String::as_str)
+                    .unwrap_or(dependency_ref);
+                let symbol_path = self
+                    .package_type_resolution(dependency_ref, &symbol.symbol_path)
+                    .map(|resolution| source_path(&resolution.module_path, &resolution.name))
+                    .unwrap_or_else(|| self.canonical_symbol_path(&symbol.symbol_path));
+                TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: resolved_package_id.to_string(),
+                        },
+                        symbol_path,
+                        abi_expectation: None,
+                    },
+                }
+            }
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let source_module = symbol
+                    .module_path
+                    .strip_prefix("root.")
+                    .unwrap_or(&symbol.module_path);
+                let package_type = self
+                    .package_type_resolution(package_id, &symbol.symbol)
+                    .filter(|resolution| {
+                        resolution.name == symbol.symbol
+                            && (resolution.module_path == source_module
+                                || package_id
+                                    .rsplit('/')
+                                    .next()
+                                    .is_some_and(|root| root == source_module))
+                    });
+                if let Some(resolution) = package_type {
+                    TypeRefIr::PackageSymbol {
+                        symbol: PackageSymbolRef {
+                            package: PackageRefIr::PackageId {
+                                package_id: package_id.to_string(),
+                            },
+                            symbol_path: source_path(&resolution.module_path, &resolution.name),
+                            abi_expectation: None,
+                        },
+                    }
+                } else {
+                    self.canonicalize_type_ref_for_module(module_path, ty)
+                }
+            }
+            TypeRefIr::Native { name, args } => TypeRefIr::Native {
+                name: name.clone(),
+                args: args.iter().map(recurse).collect(),
+            },
+            TypeRefIr::Record { fields } => TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), recurse(ty)))
+                    .collect(),
+            },
+            TypeRefIr::Union { items } => TypeRefIr::Union {
+                items: items.iter().map(recurse).collect(),
+            },
+            TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+                inner: Box::new(recurse(inner)),
+            },
+            TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: interface.interface_abi_id.clone(),
+                    canonical_type_args: interface
+                        .canonical_type_args
+                        .iter()
+                        .map(recurse)
+                        .collect(),
+                },
+            },
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|param| FunctionTypeParamIr {
+                        name: param.name.clone(),
+                        ty: recurse(&param.ty),
+                    })
+                    .collect(),
+                return_type: Box::new(recurse(return_type)),
+            },
+            _ => self.canonicalize_type_ref_for_module(module_path, ty),
+        }
     }
 
     pub(super) fn actual_receiver_symbol(
