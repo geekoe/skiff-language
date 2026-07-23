@@ -34,7 +34,7 @@ D35/F24A–D/R25/I24关闭该层。R26唯一smoke前进到ConnectResult return�
 Map并冻结F25A/B、R27、I25。I25T combined PASS后R28在fixture Cargo前失败；D38A–D闭合diagnostic、canonical std
 publication/seed、strict receipt与readiness，冻结F27A–C、I27、R29。I27 PASS后R29在bootstrap strict identity处因
 旧build常量FAIL；D39A/B已重新审计identity传播与仍被遮挡的activation→native尾段，冻结F28A/B/C、I28与R30，R30前不得
-再运行完整探针。FileHandle teardown已由
+再运行完整探针。I28及R30已在`cfeba9d` PASS，F23D完成并解除R24。FileHandle teardown已由
 D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -317,6 +317,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F28C | [Current prelude regression pin](tasks/P5-F28C-current-prelude-regression-pin.md) | D39 complete | 低；compiler source tests only |
 | I28 | [R29 repair combined](tasks/P5-I28-r29-repair-combined.md) | F28A/B/C merged | cheap no-service combined |
 | R30 | [F23D real smoke fourth reacceptance](tasks/P5-R30-f23d-real-smoke-fourth-reacceptance.md) | I28 PASS | 唯一真实smoke owner |
+| R30 result | [F23D real smoke fourth result](tasks/P5-R30-f23d-real-smoke-fourth-reacceptance-result.md) | `cfeba9d` | PASS；真实marker与cleanup闭合 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
