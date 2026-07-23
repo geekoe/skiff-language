@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{CallableProvenanceUnknownReason, TypeRefIr};
+use skiff_artifact_model::{native_callable_semantics, CallableProvenanceUnknownReason, TypeRefIr};
 
 use crate::{
     shared::ast::TypeRef, ExpressionKey, ExpressionTypeModel, ResolvedCallTargetFacts,
@@ -28,6 +28,18 @@ pub(super) fn transfer_callable(
     type_resolution: &TypeResolutionModel,
 ) -> CallableState {
     if definition.function.is_native {
+        if let Some(binding_key) = crate::prelude_registry::prelude_registry()
+            .native_binding_key(&definition.key.to_source_symbol())
+        {
+            if let Some(semantics) = native_callable_semantics(binding_key) {
+                let mut state = CallableState::bottom();
+                state.effects = semantics.effects;
+                state
+                    .return_origins
+                    .insert(semantics.return_provenance.clone().into());
+                return state;
+            }
+        }
         let mut state =
             CallableState::fail_closed(CallableProvenanceUnknownReason::UnknownCallTarget);
         state.escape_lanes = BTreeSet::from([EscapeLane::Native]);

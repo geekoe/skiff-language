@@ -193,7 +193,7 @@ impl TargetCollector<'_> {
             let path_root_is_local = self.local_value_names.contains(path_root);
             if !path_root_is_local {
                 let local_target = self.local_targets.resolve_path(self.module_path, &path);
-                if let Some(binding_key) = prelude_registry().native_binding_key(&path) {
+                if let Some(binding_key) = exact_native_binding_key(&path) {
                     return ResolvedCallTarget::NativeFunction {
                         binding_key: binding_key.to_string(),
                     };
@@ -326,6 +326,13 @@ impl TargetCollector<'_> {
             UnknownCallTargetReason::UnsupportedDynamicDispatch
         })
     }
+}
+
+fn exact_native_binding_key(path: &str) -> Option<&'static str> {
+    let registry = prelude_registry();
+    registry
+        .native_binding_key(path)
+        .or_else(|| crate::prelude_registry::shared_native_binding_key(&format!("std.{path}")))
 }
 
 impl LocalCallTargetIndex {

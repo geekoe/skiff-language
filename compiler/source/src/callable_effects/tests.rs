@@ -730,11 +730,8 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
         "customNative",
         "nativeWrapper",
         "fileWrapper",
-        "httpWrapper",
         "dynamicNativeWrapper",
-        "dynamicWrapper",
         "interfaceWrapper",
-        "mutableReceiver",
     ] {
         let effects = effects_in(&model, "std.effect_test", callable);
         assert!(effects.invokes_unknown_target, "{callable}");
@@ -744,6 +741,31 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             CallableProvenanceSummary::Unknown { .. }
         ));
     }
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "mutableReceiver"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "dynamicWrapper"),
+        no_effects()
+    );
+    assert!(matches!(
+        provenance_in(&model, "std.effect_test", "dynamicWrapper"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "httpWrapper"),
+        suspend_only_effects()
+    );
+    assert!(matches!(
+        provenance_in(&model, "std.effect_test", "httpWrapper"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::Fresh]
+    ));
     assert_eq!(
         effects_in(&model, "std.effect_test", "websocketWrapper"),
         no_effects()
