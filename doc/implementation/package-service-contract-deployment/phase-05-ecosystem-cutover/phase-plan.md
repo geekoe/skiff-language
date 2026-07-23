@@ -36,6 +36,7 @@ publication/seed、strict receipt与readiness，冻结F27A–C、I27、R29。I27
 旧build常量FAIL；D39A/B已重新审计identity传播与仍被遮挡的activation→native尾段，冻结F28A/B/C、I28与R30，R30前不得
 再运行完整探针。I28及R30已在`cfeba9d` PASS，F23D完成并解除R24。FileHandle teardown已由
 D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
+R24首次审查在TS runtime reject缺`code/reason`仍通过时FAIL，冻结F29A Router protocol窄修复；正路径与R30证据仍有效。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
 §9–§15。本文只冻结Phase 05的执行DAG、实现层authoring/storage/control决策、写入
@@ -318,6 +319,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I28 | [R29 repair combined](tasks/P5-I28-r29-repair-combined.md) | F28A/B/C merged | cheap no-service combined |
 | R30 | [F23D real smoke fourth reacceptance](tasks/P5-R30-f23d-real-smoke-fourth-reacceptance.md) | I28 PASS | 唯一真实smoke owner |
 | R30 result | [F23D real smoke fourth result](tasks/P5-R30-f23d-real-smoke-fourth-reacceptance-result.md) | `cfeba9d` | PASS；真实marker与cleanup闭合 |
+| F29A | [Router WebSocket reject strictness](tasks/P5-F29A-router-websocket-reject-strictness.md) | R24 FAIL | 高；TS response trust boundary窄修复 |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
