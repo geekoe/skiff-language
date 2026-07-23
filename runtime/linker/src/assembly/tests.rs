@@ -395,19 +395,6 @@ fn tampered_activation_template_fails_before_a_partial_candidate_exists() {
 }
 
 #[test]
-fn canonical_calls_cannot_fall_back_to_the_service_specific_converter() {
-    let fixture = CycleFixture::new();
-    let shared_file = fixture
-        .resolver
-        .file(&fixture.shared_build, &fixture.shared_file_identity);
-
-    let error = crate::linked_file_unit_from_artifact(shared_file)
-        .expect_err("canonical calls require the assembly linker");
-
-    assert!(error.to_string().contains("RuntimeAssembly"));
-}
-
-#[test]
 fn missing_provider_callable_is_rejected_before_linking_a_candidate() {
     let mut fixture = CycleFixture::new();
     fixture.tamper_deployment_callable();

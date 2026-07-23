@@ -8,24 +8,6 @@ use crate::program::{
     linked::*,
 };
 
-pub fn linked_file_unit_from_artifact(
-    unit: &skiff_artifact_model::FileIrUnit,
-) -> anyhow::Result<LinkedFileUnit> {
-    if unit.required_receiver_builtin_capability_version > RECEIVER_BUILTIN_CAPABILITY_VERSION {
-        anyhow::bail!(
-            "File IR {} requires receiver builtin capability version {}, but runtime supports {}",
-            unit.file_ir_identity,
-            unit.required_receiver_builtin_capability_version,
-            RECEIVER_BUILTIN_CAPABILITY_VERSION
-        );
-    }
-    validate_receiver_builtin_ops(unit)?;
-    reject_canonical_assembly_calls(unit)?;
-    linked_file_unit_from_artifact_with_canonical_calls(unit, &|target| {
-        anyhow::bail!("canonical call target {target:?} requires a RuntimeAssembly resolver")
-    })
-}
-
 pub(crate) fn linked_file_unit_from_assembly_artifact(
     unit: &skiff_artifact_model::FileIrUnit,
     canonical_call: &dyn Fn(&artifact::CallTargetIr) -> anyhow::Result<LinkedCallTarget>,
@@ -69,41 +51,6 @@ fn linked_file_unit_from_artifact_with_canonical_calls(
             .collect::<anyhow::Result<Vec<_>>>()?,
         external_refs: linked_external_refs(&unit.external_refs),
     })
-}
-
-fn reject_canonical_assembly_calls(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
-    if !unit.external_refs.service_call_refs.is_empty()
-        || !unit.external_refs.package_callables.is_empty()
-    {
-        anyhow::bail!(
-            "File IR {} contains canonical package/service call refs and must be linked through RuntimeAssembly",
-            unit.file_ir_identity
-        );
-    }
-    for body in unit
-        .constants
-        .iter()
-        .map(|constant| &constant.body)
-        .chain(unit.executables.iter().map(|executable| &executable.body))
-    {
-        if body.expressions.iter().any(|expression| {
-            matches!(
-                expression,
-                artifact::ExprIr::Call { call }
-                    if matches!(
-                        call.target,
-                        artifact::CallTargetIr::ServiceCall { .. }
-                            | artifact::CallTargetIr::PackageCallable { .. }
-                    )
-            )
-        }) {
-            anyhow::bail!(
-                "File IR {} contains a canonical package/service call and must be linked through RuntimeAssembly",
-                unit.file_ir_identity
-            );
-        }
-    }
-    Ok(())
 }
 
 fn validate_receiver_builtin_ops(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
@@ -1162,7 +1109,10 @@ mod tests {
             },
         );
 
-        let linked = linked_file_unit_from_artifact(&artifact).unwrap();
+        let linked = linked_file_unit_from_assembly_artifact(&artifact, &|target| {
+            anyhow::bail!("unexpected canonical call target {target:?}")
+        })
+        .unwrap();
         assert_eq!(
             linked.declarations.db["Credential"].fields[0].storage,
             DbFieldStorageIr::Encrypted

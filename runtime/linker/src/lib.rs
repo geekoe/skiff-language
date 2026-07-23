@@ -1,22 +1,12 @@
-mod activation_facts;
 mod assembly;
 mod assembly_execution;
-mod json_utils;
 mod linker;
-mod package_config;
 pub mod program;
 pub mod resolver;
 
-pub use activation_facts::{linker_activation_facts, LinkedImageActivationFacts};
 pub use assembly::{
     link_runtime_assembly, AssemblyLinkedCandidate, AssemblyServiceCallError,
     LinkedActivationTemplate, LinkedContractOperation, LinkedServiceBindingTemplate,
-};
-#[cfg(any(test, feature = "test-support"))]
-pub use linker::link_runtime_program_image_from_parts;
-pub use linker::{
-    link_runtime_program_image, linked_file_unit_from_artifact, package_handler_target,
-    LinkOverlay, LinkedProgramImageBuild, LinkerInput, ResolvedSymbol, SymbolOverlay,
 };
 pub use program::{
     anonymous_type_decl, config_and_effect_metadata_shape, package_config_shape,
@@ -38,13 +28,13 @@ pub use program::{
     MetadataValue, NativeTarget, OperationAbiRef, OperationConstReceiverRef, OperationIngressKind,
     OperationMode, OperationRouteBinding, OperationTargetRef, OperationTargetRefRuntimeExt,
     PackageAbiExpectation, PackageAbiIdentity, PackageBuildIdentity, PackageDependencyConstraint,
-    PackageExportIndex, PackageRefIr, PackageSlot, PackageSymbolKey, PackageSymbolRef, PackageUnit,
+    PackageExportIndex, PackageRefIr, PackageSlot, PackageSymbolKey, PackageSymbolRef,
     PackageUsedSymbol, PackageUsedSymbolKind, ParamIr, PatternIr, ReceiverCallAbi,
     RuntimeProgramIdentity, RuntimeTypeContext, ServiceConfigMetadata, ServiceDependencyConstraint,
     ServiceDependencyOperationRef, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
-    ServiceSymbolKey, ServiceSymbolRef, ServiceTimeoutConfig, ServiceUnit, SlotBindingIr, SlotIr,
-    SlotLayoutIr, SourceAstHash, SourceMapDto, SpawnTargetIr, SpawnTargetKindIr, StmtRefIr,
-    TypeAddr, TypeDeclIr, TypeExport, TypeIndex, UnaryOpIr, UnitAddr,
+    ServiceSymbolKey, ServiceSymbolRef, ServiceTimeoutConfig, SlotBindingIr, SlotIr, SlotLayoutIr,
+    SourceAstHash, SourceMapDto, SpawnTargetIr, SpawnTargetKindIr, StmtRefIr, TypeAddr, TypeDeclIr,
+    TypeExport, TypeIndex, UnaryOpIr, UnitAddr,
 };
 pub use resolver::{
     LinkedProgramImageResolverExt, ProgramError, ProgramResult, ResolvedLinkedExecutable,
