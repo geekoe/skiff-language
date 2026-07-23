@@ -3451,8 +3451,8 @@ function validateWebSocketConnectResponseFrameMetadata(
         'code',
         'reason'
       ]) ??
-      optionalPositiveInteger(envelope, 'response.end', 'websocketConnect.code') ??
-      optionalString(envelope, 'response.end', 'websocketConnect.reason');
+      requireUnsigned16Integer(envelope, 'response.end', 'websocketConnect.code') ??
+      requireString(envelope, 'response.end', 'websocketConnect.reason');
     if (rejectError) {
       return rejectError;
     }
@@ -3976,6 +3976,17 @@ function requirePositiveInteger(
   return Number.isInteger(value) && Number(value) > 0
     ? null
     : `invalid ${envelopeType} envelope: ${field} must be a positive integer`;
+}
+
+function requireUnsigned16Integer(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const value = getPathValue(envelope, field);
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 65_535
+    ? null
+    : `invalid ${envelopeType} envelope: ${field} must be an unsigned 16-bit integer`;
 }
 
 function optionalPositiveInteger(
