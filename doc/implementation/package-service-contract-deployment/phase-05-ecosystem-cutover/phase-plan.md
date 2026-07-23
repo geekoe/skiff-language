@@ -355,6 +355,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I35A | [Spawn submit fixture reacceptance](tasks/P5-I35A-spawn-submit-fixture-reacceptance.md) | I35 exact FAIL | 只复验fixture compile/test |
 | I35A result | [Spawn submit fixture reacceptance result](tasks/P5-I35A-spawn-submit-fixture-reacceptance-result.md) | `dada6d5` | FAIL；empty root缺canonical std |
 | D47 | [I35 fixture artifact provisioning audit](tasks/P5-D47-i35-fixture-artifact-provisioning-audit.md) | I35A FAIL | 只读熔断；第三次前冻结seed入口 |
+| D47 result | [I35 fixture artifact provisioning audit result](tasks/P5-D47-i35-fixture-artifact-provisioning-audit-result.md) | `dada6d5` | COMPLETE；复用canonical bootstrap-only seed |
+| I35B | [Spawn submit fixture final reacceptance](tasks/P5-I35B-spawn-submit-fixture-final-reacceptance.md) | D47 complete | 第三次且最后一次fixture复验 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
