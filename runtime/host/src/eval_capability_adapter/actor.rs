@@ -10,7 +10,7 @@ pub(super) struct RuntimeOwnedActorParts {
     pub(super) request_build_id: String,
     pub(super) request_service_protocol_identity: String,
     pub(super) operation_service_protocol_identity: Option<String>,
-    pub(super) activation_identity: Option<String>,
+    pub(super) activation_identity: Option<ActivationIdentityControl>,
     pub(super) trace_id: Option<String>,
     pub(super) router_sender: Option<mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     pub(super) outbound_requests: Arc<OutboundRequestRegistry>,
@@ -69,7 +69,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
     fn operation_service_protocol_identity(&self) -> Option<&str> {
         self.context.operation_service_protocol_identity()
     }
-    fn activation_identity(&self) -> Option<&str> {
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.context.activation_identity()
     }
     fn trace_id(&self) -> Option<&str> {
@@ -146,7 +146,7 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
             &self.0.request_build_id,
             &self.0.request_service_protocol_identity,
             self.0.operation_service_protocol_identity.as_deref(),
-            self.0.activation_identity.as_deref(),
+            self.0.activation_identity.as_ref(),
             self.0.trace_id.as_deref(),
             self.0.router_sender.as_ref(),
             self.0.outbound_requests.as_ref(),
@@ -185,8 +185,8 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
     fn operation_service_protocol_identity(&self) -> Option<&str> {
         self.0.operation_service_protocol_identity.as_deref()
     }
-    fn activation_identity(&self) -> Option<&str> {
-        self.0.activation_identity.as_deref()
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.0.activation_identity.as_ref()
     }
     fn trace_id(&self) -> Option<&str> {
         self.0.trace_id.as_deref()
@@ -263,6 +263,7 @@ async fn submit_spawn_and_wake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
     use skiff_runtime_transport::protocol::{
         SpawnSubmitResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
@@ -280,6 +281,7 @@ mod tests {
         let wake = spawn_workers
             .wake_signal_for_test(&registration, BUILD_ID)
             .expect("test registration should exist");
+        let activation_identity = spawn_submit_request().activation_identity;
         let context = concrete::ActorClientContext::from_parts(
             "runtime-test",
             "service-test",
@@ -289,7 +291,7 @@ mod tests {
             BUILD_ID,
             "protocol-test",
             Some("protocol-test"),
-            None,
+            Some(&activation_identity),
             None,
             Some(&router_sender),
             outbound_requests.as_ref(),
@@ -341,7 +343,14 @@ mod tests {
             target: "function:program.test".to_string(),
             spawn_id: None,
             build_id: Some(BUILD_ID.to_string()),
-            activation_identity: None,
+            activation_identity: ActivationIdentityControl {
+                assembly_identity: AssemblyIdentity::new(
+                    "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ),
+                generation: 7,
+                runtime_replica_id: "runtime-replica-7".to_string(),
+                deployment_revision: DeploymentRevision::new("deployment-revision-7"),
+            },
             caller_request_id: Some("request-test".to_string()),
             trace_id: None,
             caller_target: Some("program.test".to_string()),

@@ -85,6 +85,7 @@ pub(crate) fn actor_from_request<'a>(
     service_version: &'a str,
     request: &'a RequestEnvelope,
     operation: &'a RuntimeOperation,
+    activation_identity: Option<&'a ActivationIdentityControl>,
     router_sender: Option<&'a mpsc::UnboundedSender<concrete::RouterWriterMessage>>,
     outbound_requests: &'a Arc<OutboundRequestRegistry>,
     spawn_workers: &'a Arc<crate::host::spawn_worker::SpawnWorkerRegistry>,
@@ -99,6 +100,7 @@ pub(crate) fn actor_from_request<'a>(
     );
     let context = concrete::ActorClientContext::new(
         invocation,
+        activation_identity,
         router_sender,
         outbound_requests.as_ref(),
         cancellation.clone(),
@@ -114,7 +116,7 @@ pub(crate) fn actor_from_request<'a>(
         operation_service_protocol_identity: context
             .operation_service_protocol_identity()
             .map(str::to_string),
-        activation_identity: context.activation_identity().map(str::to_string),
+        activation_identity: context.activation_identity().cloned(),
         trace_id: context.trace_id().map(str::to_string),
         router_sender: router_sender.cloned(),
         outbound_requests: outbound_requests.clone(),
@@ -149,6 +151,7 @@ impl TestActorCapabilityFactory {
             service_version,
             request,
             operation,
+            None,
             router_sender,
             outbound_requests,
             &self.spawn_workers,

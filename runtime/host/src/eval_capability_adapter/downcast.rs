@@ -21,7 +21,7 @@ pub(super) fn concrete_actor_context_from_owned(
         &parts.request_build_id,
         &parts.request_service_protocol_identity,
         parts.operation_service_protocol_identity.as_deref(),
-        parts.activation_identity.as_deref(),
+        parts.activation_identity.as_ref(),
         parts.trace_id.as_deref(),
         parts.router_sender.as_ref(),
         parts.outbound_requests.as_ref(),

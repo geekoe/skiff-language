@@ -1,9 +1,10 @@
 use serde::de::DeserializeOwned;
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken,
-    InvocationContext, OutboundControlMessage, OutboundRequestCancelSendError,
-    OutboundRequestCancelSender, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
+    ActorRemoveControlRequest, CancellationToken, InvocationContext, OutboundControlMessage,
+    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
+    OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver, RequestCancelControl,
+    RouterWriterMessage, SpawnSubmitControlRequest,
 };
 use tokio::sync::mpsc;
 
@@ -39,6 +40,7 @@ impl<'a> ActorClient<'a> {
     ) -> Result<ActorRef> {
         request.rpc_id = self.control_rpc_id(ACTOR_PUT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
+        request.activation_identity = self.context.current_activation_identity(ACTOR_PUT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorPut {
             request,
@@ -53,6 +55,7 @@ impl<'a> ActorClient<'a> {
     pub async fn find(&self, mut request: ActorFindControlRequest) -> Result<Option<ActorRef>> {
         request.rpc_id = self.control_rpc_id(ACTOR_FIND_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
+        request.activation_identity = self.context.current_activation_identity(ACTOR_FIND_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorFind { request };
         let response: ActorFindResponseFrameHeader = self
@@ -71,6 +74,8 @@ impl<'a> ActorClient<'a> {
     pub async fn remove(&self, mut request: ActorRemoveControlRequest) -> Result<bool> {
         request.rpc_id = self.control_rpc_id(ACTOR_REMOVE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
+        request.activation_identity =
+            self.context.current_activation_identity(ACTOR_REMOVE_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorRemove { request };
         let response: ActorRemoveResponseFrameHeader = self
@@ -86,6 +91,8 @@ impl<'a> ActorClient<'a> {
     ) -> Result<SpawnSubmitResponseFrameHeader> {
         request.rpc_id = self.control_rpc_id(SPAWN_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
+        request.activation_identity =
+            self.context.current_activation_identity(SPAWN_SUBMIT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::SpawnSubmit {
             request,
@@ -150,7 +157,7 @@ pub struct ActorClientContext<'a> {
     request_build_id: &'a str,
     request_service_protocol_identity: &'a str,
     operation_service_protocol_identity: Option<&'a str>,
-    activation_identity: Option<&'a str>,
+    activation_identity: Option<&'a ActivationIdentityControl>,
     trace_id: Option<&'a str>,
     router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
     outbound_requests: &'a OutboundRequestRegistry,
@@ -162,6 +169,7 @@ pub type ActorCapabilityContext<'a> = ActorClientContext<'a>;
 impl<'a> ActorClientContext<'a> {
     pub fn new(
         invocation: InvocationContext<'a>,
+        activation_identity: Option<&'a ActivationIdentityControl>,
         router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
         outbound_requests: &'a OutboundRequestRegistry,
         cancellation: CancellationToken,
@@ -175,7 +183,7 @@ impl<'a> ActorClientContext<'a> {
             request_build_id: invocation.request_build_id(),
             request_service_protocol_identity: invocation.actor_service_protocol_identity(),
             operation_service_protocol_identity: Some(invocation.spawn_service_protocol_identity()),
-            activation_identity: invocation.activation_identity(),
+            activation_identity,
             trace_id: invocation.trace_id(),
             router_sender,
             outbound_requests,
@@ -193,7 +201,7 @@ impl<'a> ActorClientContext<'a> {
         request_build_id: &'a str,
         request_service_protocol_identity: &'a str,
         operation_service_protocol_identity: Option<&'a str>,
-        activation_identity: Option<&'a str>,
+        activation_identity: Option<&'a ActivationIdentityControl>,
         trace_id: Option<&'a str>,
         router_sender: Option<&'a mpsc::UnboundedSender<RouterWriterMessage>>,
         outbound_requests: &'a OutboundRequestRegistry,
@@ -253,8 +261,17 @@ impl<'a> ActorClientContext<'a> {
         self.operation_service_protocol_identity
     }
 
-    pub fn activation_identity(&self) -> Option<&'a str> {
+    pub fn activation_identity(&self) -> Option<&'a ActivationIdentityControl> {
         self.activation_identity
+    }
+
+    fn current_activation_identity(&self, target: &str) -> Result<ActivationIdentityControl> {
+        self.activation_identity
+            .cloned()
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: target.to_string(),
+                message: format!("{target} requires a current pinned ActivationContext"),
+            })
     }
 
     pub fn trace_id(&self) -> Option<&'a str> {

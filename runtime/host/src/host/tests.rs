@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
-use skiff_artifact_model::{ConfigShape, RecoverableArtifactMetadata};
+use skiff_artifact_model::{
+    AssemblyIdentity, ConfigShape, DeploymentRevision, RecoverableArtifactMetadata,
+};
 use skiff_runtime_boundary::binary::{decode_payload, encode_payload, encode_recoverable_payload};
 use skiff_runtime_boundary::{
     payload::{PayloadBoundary, PayloadBoundaryKind},
@@ -14,14 +16,16 @@ use skiff_runtime_model::{
     runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
 };
 use skiff_runtime_request::{
-    cancellation::CancellationToken, ActorFindControlRequest, ActorKeyControlMetadata,
-    ActorPutControlRequest, ExecutionBudget, OutboundResponse, RequestEnvelope,
+    cancellation::CancellationToken, ActivationIdentityControl, ActorFindControlRequest,
+    ActorKeyControlMetadata, ActorPutControlRequest, ExecutionBudget, OutboundResponse,
+    RequestEnvelope,
 };
 use skiff_runtime_transport::control_mapper::encode_outbound_control_message;
 use skiff_runtime_transport::control_response_mapper::spawn_claim_response_control_payload;
 use skiff_runtime_transport::protocol::{
-    decode_typed_binary_frame, ActorPutRequestFrameHeader, ActorPutResponseFrameHeader,
-    ActorRefFrameMetadata, ConnectionSendFrameHeader, RequestStartFrameHeader,
+    decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorPutRequestFrameHeader,
+    ActorPutResponseFrameHeader, ActorRefFrameMetadata, ConnectionSendFrameHeader,
+    RequestStartFrameHeader,
     ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
     ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
     RouterControlPackageConfig, RouterControlServiceConfig, RuntimeCallerFrameHeader,
@@ -72,10 +76,30 @@ const PROTOCOL_B: &str =
 const BUILD_A: &str = "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BUILD_B: &str = "skiff-service-build-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PACKAGE_TEST_BUILD: &str = "skiff-package-test-build-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-const PACKAGE_TEST_ACTIVATION_A: &str = "skiff-package-test-run-v1:example.com~hello:test-a:run:1";
-const PACKAGE_TEST_ACTIVATION_B: &str = "skiff-package-test-run-v1:example.com~hello:test-b:run:1";
 #[allow(dead_code)]
 const BUILD_C: &str = "skiff-service-build-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+fn actor_control_activation_identity() -> ActivationIdentityControl {
+    ActivationIdentityControl {
+        assembly_identity: AssemblyIdentity::new(
+            "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        generation: 7,
+        runtime_replica_id: "runtime-replica-7".to_string(),
+        deployment_revision: DeploymentRevision::new("deployment-revision-7"),
+    }
+}
+
+fn actor_frame_activation_identity() -> ActivationIdentityFrameMetadata {
+    ActivationIdentityFrameMetadata {
+        assembly_identity:
+            "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+        generation: 7,
+        runtime_replica_id: "runtime-replica-7".to_string(),
+        deployment_revision: "deployment-revision-7".to_string(),
+    }
+}
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
@@ -2810,6 +2834,7 @@ async fn actor_client_send_failure_removes_pending_response() {
         .find(ActorFindControlRequest {
             rpc_id: String::new(),
             runtime_id: String::new(),
+            activation_identity: actor_control_activation_identity(),
             actor_key: ActorKeyControlMetadata {
                 service_id: "service-program".to_string(),
                 actor_type_identity: "internal.ThreadActor".to_string(),
@@ -2849,10 +2874,13 @@ async fn actor_client_put_sends_rpc_and_decodes_response_header() {
         ),
     };
     let client = ActorClient::new(actor_client_context(&frame));
+    let mut untrusted_activation_identity = actor_control_activation_identity();
+    untrusted_activation_identity.generation = 99;
     let put = client.put(
         ActorPutControlRequest {
             rpc_id: String::new(),
             runtime_id: String::new(),
+            activation_identity: untrusted_activation_identity,
             actor_key: actor_key.clone(),
             object_schema_identity: "internal.ThreadActor".to_string(),
             object_encoding_version: "runtime-json-v1".to_string(),
@@ -2871,6 +2899,10 @@ async fn actor_client_put_sends_rpc_and_decodes_response_header() {
     assert_eq!(request.envelope_type, "actor.put.request");
     assert_eq!(request.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
     assert_eq!(request.runtime_id, "runtime-test");
+    assert_eq!(
+        request.activation_identity,
+        actor_frame_activation_identity()
+    );
     assert_eq!(request.actor_key.service_id, actor_key.service_id);
     assert_eq!(
         request.actor_key.actor_type_identity,
@@ -3090,6 +3122,7 @@ async fn spawn_worker_claim_executes_function_and_completes_item() {
         sender,
         service,
         "test-worker".to_string(),
+        actor_frame_activation_identity(),
     );
     tokio::pin!(claim_once);
 
@@ -3107,7 +3140,10 @@ async fn spawn_worker_claim_executes_function_and_completes_item() {
     assert_eq!(claim_header.service_version, "v1");
     assert_eq!(claim_header.service_protocol_identity, PROTOCOL_A);
     assert_eq!(claim_header.build_id.as_deref(), Some(BUILD_A));
-    assert_eq!(claim_header.activation_identity, None);
+    assert_eq!(
+        claim_header.activation_identity,
+        actor_frame_activation_identity()
+    );
     assert_eq!(
         claim_header.supported_targets,
         vec!["function:program.target".to_string()]
@@ -3169,6 +3205,7 @@ async fn spawn_worker_rejects_claimed_item_from_different_build_before_execution
         sender,
         service,
         "test-worker".to_string(),
+        actor_frame_activation_identity(),
     );
     tokio::pin!(claim_once);
 
@@ -3219,7 +3256,7 @@ async fn spawn_worker_rejects_claimed_item_from_different_build_before_execution
 }
 
 #[tokio::test]
-async fn package_test_spawn_worker_claims_with_activation_and_rejects_mismatched_descriptor() {
+async fn spawn_worker_rejects_mismatched_structured_activation_descriptor() {
     let program = Arc::new(runtime_program_configured_for_spawn_path(BUILD_A));
     let host = RuntimeHost::new(RuntimeConfig {
         db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
@@ -3237,7 +3274,6 @@ async fn package_test_spawn_worker_claims_with_activation_and_rejects_mismatched
     .expect("host should build");
     let mut package_test_service = (*host.service_snapshot()[0]).clone();
     package_test_service.build_id = PACKAGE_TEST_BUILD.to_string();
-    package_test_service.activation_identity = Some(PACKAGE_TEST_ACTIVATION_A.to_string());
     let service = Arc::new(package_test_service);
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let mut spawned_request = request(PACKAGE_TEST_BUILD, "program.target");
@@ -3248,6 +3284,7 @@ async fn package_test_spawn_worker_claims_with_activation_and_rejects_mismatched
         sender,
         service,
         "package-test-worker".to_string(),
+        actor_frame_activation_identity(),
     );
     tokio::pin!(claim_once);
 
@@ -3261,13 +3298,13 @@ async fn package_test_spawn_worker_claims_with_activation_and_rejects_mismatched
     assert!(payload.is_empty());
     assert_eq!(claim_header.build_id.as_deref(), Some(PACKAGE_TEST_BUILD));
     assert_eq!(
-        claim_header.activation_identity.as_deref(),
-        Some(PACKAGE_TEST_ACTIVATION_A)
+        claim_header.activation_identity,
+        actor_frame_activation_identity()
     );
 
     let mut descriptor = spawn_claim_descriptor("function:program.target");
     descriptor.build_id = PACKAGE_TEST_BUILD.to_string();
-    descriptor.activation_identity = Some(PACKAGE_TEST_ACTIVATION_B.to_string());
+    descriptor.activation_identity.runtime_replica_id = "runtime-replica-mismatch".to_string();
     deliver_spawn_claim_response(
         &host,
         &claim_header.rpc_id,
@@ -3330,6 +3367,7 @@ async fn spawn_worker_sends_renew_request_and_accepts_response() {
         sender,
         service,
         "test-worker".to_string(),
+        actor_frame_activation_identity(),
         descriptor,
     );
     tokio::pin!(renew_once);
@@ -3379,6 +3417,7 @@ async fn spawn_worker_reports_failed_item_when_execution_errors() {
         sender,
         service,
         "test-worker".to_string(),
+        actor_frame_activation_identity(),
     );
     tokio::pin!(claim_once);
 
@@ -3437,7 +3476,7 @@ fn spawn_claim_descriptor(target: &str) -> SpawnClaimDescriptorFrameMetadata {
         service_version: "v1".to_string(),
         service_protocol_identity: PROTOCOL_A.to_string(),
         build_id: BUILD_A.to_string(),
-        activation_identity: None,
+        activation_identity: actor_frame_activation_identity(),
         payload_schema_identity: Some(format!("skiff-spawn-payload-v1:{PROTOCOL_A}:{target}")),
         lease_expires_at: Some("2026-06-06T10:00:30.000Z".to_string()),
     }
@@ -4761,6 +4800,7 @@ fn test_actor_client_invocation_with_router_sender(
         },
         runtime_id: "runtime-test".to_string(),
         service_id: "service-program".to_string(),
+        activation_identity: actor_control_activation_identity(),
         cancelled: Arc::new(AtomicBool::new(false)),
         router_sender: Some(sender),
         outbound_requests: Arc::new(super::OutboundRequestRegistry::default()),
@@ -4772,6 +4812,7 @@ struct ActorClientTestInvocation {
     operation: RuntimeOperation,
     runtime_id: String,
     service_id: String,
+    activation_identity: ActivationIdentityControl,
     cancelled: Arc<AtomicBool>,
     router_sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,
     outbound_requests: Arc<super::OutboundRequestRegistry>,
@@ -4797,6 +4838,7 @@ fn actor_client_context(frame: &ActorClientTestInvocation) -> ActorClientContext
     );
     ActorClientContext::new(
         invocation,
+        Some(&frame.activation_identity),
         frame.router_sender.as_ref(),
         frame.outbound_requests.as_ref(),
         CancellationToken::from_flag(frame.cancelled.clone()),

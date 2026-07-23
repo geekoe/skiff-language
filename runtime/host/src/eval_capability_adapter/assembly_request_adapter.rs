@@ -26,6 +26,7 @@ pub(crate) fn assembly_request_eval_adapter(
         &input.activation.owned_bindings().config_literals,
     )?;
     let deployment = &input.activation.identity().deployment;
+    let activation_identity = activation_identity_control(input.activation.as_ref());
     let runtime_activation = Arc::new(RuntimeActivation {
         service: ServiceMeta {
             id: deployment.service_id.clone(),
@@ -44,6 +45,7 @@ pub(crate) fn assembly_request_eval_adapter(
     Ok(Arc::new(RuntimeAssemblyRequestEvalAdapter {
         runtime_id: input.runtime_id,
         activation: input.activation,
+        activation_identity,
         config,
         runtime_activation,
         file_source: input.file_source,
@@ -59,6 +61,7 @@ pub(crate) fn assembly_request_eval_adapter(
 struct RuntimeAssemblyRequestEvalAdapter {
     runtime_id: String,
     activation: Arc<ActivationContext>,
+    activation_identity: ActivationIdentityControl,
     config: crate::config_view::RuntimeConfigView,
     runtime_activation: Arc<RuntimeActivation>,
     file_source: concrete::FileCapabilitySource,
@@ -124,6 +127,7 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
                 .as_str(),
             request,
             operation,
+            Some(&self.activation_identity),
             self.router_sender.as_ref(),
             &self.outbound_requests,
             &self.spawn_workers,
@@ -156,5 +160,15 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             request_heap_limits,
         })
         .with_runtime_assembly_target(target.eval().clone())
+    }
+}
+
+fn activation_identity_control(activation: &ActivationContext) -> ActivationIdentityControl {
+    let identity = activation.identity();
+    ActivationIdentityControl {
+        assembly_identity: identity.assembly_identity.clone(),
+        generation: identity.assembly_generation,
+        runtime_replica_id: identity.runtime_replica_id.clone(),
+        deployment_revision: identity.deployment.deployment_revision.clone(),
     }
 }

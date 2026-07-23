@@ -37,9 +37,10 @@ use crate::error::{eval_error_to_native, Result};
 pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 pub use skiff_runtime_capability_context::{
-    ActorCapabilityApi, ActorCapabilityContext, ActorClient, ActorFindControlRequest,
-    ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError, CapabilityFuture,
-    CapabilityResult, ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext,
+    ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorClient,
+    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError,
+    CapabilityFuture, CapabilityResult, ConfigCapabilityApi, ConfigCapabilityContext,
+    DbCapabilityContext,
     DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture, DbCapabilityLeaseHandle,
     DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore,
     DbCapabilityStoreApi, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
@@ -649,6 +650,10 @@ impl NativeConfigCapability for RuntimeNativeConfigCapabilityContext<'_> {
 impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
     fn service_id(&self) -> &str {
         self.0.service_id()
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.0.activation_identity()
     }
 
     fn put_actor<'a>(

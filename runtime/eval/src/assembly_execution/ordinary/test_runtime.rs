@@ -407,7 +407,7 @@ impl ActorCapabilityApi for TestActor {
     fn operation_service_protocol_identity(&self) -> Option<&str> {
         None
     }
-    fn activation_identity(&self) -> Option<&str> {
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         None
     }
     fn trace_id(&self) -> Option<&str> {

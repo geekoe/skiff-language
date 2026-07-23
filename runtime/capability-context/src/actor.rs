@@ -3,8 +3,8 @@ use std::sync::Arc;
 use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CapabilityFuture,
-    CapabilityResult, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
+    ActorRemoveControlRequest, CapabilityFuture, CapabilityResult, SpawnSubmitControlRequest,
 };
 
 pub trait ActorCapabilityApi: Send + Sync {
@@ -21,7 +21,7 @@ pub trait ActorCapabilityApi: Send + Sync {
     fn spawn_service_protocol_identity(&self) -> &str;
     fn request_service_protocol_identity(&self) -> &str;
     fn operation_service_protocol_identity(&self) -> Option<&str>;
-    fn activation_identity(&self) -> Option<&str>;
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
     fn trace_id(&self) -> Option<&str>;
 
     // Actor storage and spawn control operations provided by the host/runtime.
@@ -105,7 +105,7 @@ impl<'a> ActorCapabilityContext<'a> {
         self.inner.operation_service_protocol_identity()
     }
 
-    pub fn activation_identity(&self) -> Option<&str> {
+    pub fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.inner.activation_identity()
     }
 

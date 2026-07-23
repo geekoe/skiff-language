@@ -63,6 +63,14 @@ impl ActorNativeDispatch {
             canonical_actor_id_key_bytes_base64: encode_base64(&canonical_actor_id_key_bytes),
             actor_id_hash: Some(actor_id_hash.clone()),
         };
+        let activation_identity = actor_context
+            .activation_identity()
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::Unsupported(format!(
+                    "{diagnostic_target} requires a current pinned ActivationContext"
+                ))
+            })?;
 
         let output = match binding_key {
             "actor.put" | "std.actor.put" => {
@@ -78,6 +86,7 @@ impl ActorNativeDispatch {
                         ActorPutControlRequest {
                             rpc_id: String::new(),
                             runtime_id: String::new(),
+                            activation_identity,
                             actor_key,
                             object_schema_identity: actor_type_identity,
                             object_encoding_version: ACTOR_ID_ENCODING_VERSION.to_string(),
@@ -105,6 +114,7 @@ impl ActorNativeDispatch {
                     .find_actor(ActorFindControlRequest {
                         rpc_id: String::new(),
                         runtime_id: String::new(),
+                        activation_identity,
                         actor_key,
                     })
                     .await?;
@@ -117,6 +127,7 @@ impl ActorNativeDispatch {
                     .remove_actor(ActorRemoveControlRequest {
                         rpc_id: String::new(),
                         runtime_id: String::new(),
+                        activation_identity,
                         actor_key,
                     })
                     .await?;

@@ -15,10 +15,11 @@ use skiff_runtime_request::{
 use skiff_runtime_transport::{
     control_response_mapper::{spawn_claim_response_payload_bytes, SpawnClaimControlResponse},
     protocol::{
-        encode_binary_frame, SpawnClaimDescriptorFrameMetadata, SpawnClaimRequestFrameHeader,
-        SpawnCompleteRequestFrameHeader, SpawnCompleteResponseFrameHeader,
-        SpawnFailRequestFrameHeader, SpawnFailResponseFrameHeader, SpawnRenewRequestFrameHeader,
-        SpawnRenewResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        encode_binary_frame, ActivationIdentityFrameMetadata, SpawnClaimDescriptorFrameMetadata,
+        SpawnClaimRequestFrameHeader, SpawnCompleteRequestFrameHeader,
+        SpawnCompleteResponseFrameHeader, SpawnFailRequestFrameHeader,
+        SpawnFailResponseFrameHeader, SpawnRenewRequestFrameHeader, SpawnRenewResponseFrameHeader,
+        RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -45,8 +46,6 @@ const SPAWN_RENEW_INTERVAL: Duration = Duration::from_secs(10);
 const EMPTY_CLAIM_BACKOFF_MIN: Duration = Duration::from_millis(100);
 const EMPTY_CLAIM_BACKOFF_MAX: Duration = Duration::from_secs(2);
 const SPAWN_WORKERS_PER_BUILD: usize = 4;
-const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
-const PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX: &str = "skiff-package-test-run-v1:";
 
 #[derive(Default)]
 pub(crate) struct SpawnWorkerRegistry {
@@ -290,6 +289,7 @@ pub(super) fn start_spawn_workers_for_services(
                 service: service.clone(),
                 sender: sender.clone(),
                 worker_id: worker_id.clone(),
+                activation_identity: None,
                 renew_interval: SPAWN_RENEW_INTERVAL,
                 stop: stop.clone(),
                 wake: wake.clone(),
@@ -312,6 +312,7 @@ struct SpawnWorker {
     service: Arc<ServiceRuntimeContext>,
     sender: mpsc::UnboundedSender<super::RouterWriterMessage>,
     worker_id: String,
+    activation_identity: Option<ActivationIdentityFrameMetadata>,
     renew_interval: Duration,
     stop: Arc<SpawnWorkerStop>,
     wake: Arc<Notify>,
@@ -326,6 +327,15 @@ enum RetryWaitOutcome {
 
 impl SpawnWorker {
     async fn run(self) {
+        if self.activation_identity.is_none() {
+            warn!(
+                event = "runtime.spawn_worker_missing_activation_context",
+                runtime_id = %self.service.runtime_id,
+                service_id = %self.service.service_id,
+                "legacy service worker was not started because no pinned ActivationContext is available"
+            );
+            return;
+        }
         let mut backoff = EMPTY_CLAIM_BACKOFF_MIN;
         while !self.sender.is_closed() && !self.stop.is_stopped() {
             match self.claim_once().await {
@@ -402,11 +412,7 @@ impl SpawnWorker {
     }
 
     async fn claim_spawn(&self) -> Result<Option<(SpawnClaimDescriptorFrameMetadata, Vec<u8>)>> {
-        let activation_identity = package_test_activation_identity(
-            &self.service.build_id,
-            self.service.activation_identity.as_deref(),
-        )?
-        .map(str::to_string);
+        let activation_identity = self.current_activation_identity(CLAIM_CONTROL_TARGET)?;
         let header = SpawnClaimRequestFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "spawn.claim.request".to_string(),
@@ -444,6 +450,7 @@ impl SpawnWorker {
             envelope_type: "spawn.complete.request".to_string(),
             rpc_id: self.control_rpc_id(COMPLETE_CONTROL_TARGET),
             runtime_id: self.service.runtime_id.clone(),
+            activation_identity: self.current_activation_identity(COMPLETE_CONTROL_TARGET)?,
             item_id: descriptor.item_id.clone(),
             lease_id: descriptor.lease_id.clone(),
             diagnostics: None,
@@ -464,6 +471,7 @@ impl SpawnWorker {
             envelope_type: "spawn.fail.request".to_string(),
             rpc_id: self.control_rpc_id(FAIL_CONTROL_TARGET),
             runtime_id: self.service.runtime_id.clone(),
+            activation_identity: self.current_activation_identity(FAIL_CONTROL_TARGET)?,
             item_id: descriptor.item_id.clone(),
             lease_id: descriptor.lease_id.clone(),
             reason: "failed".to_string(),
@@ -484,6 +492,7 @@ impl SpawnWorker {
             envelope_type: "spawn.renew.request".to_string(),
             rpc_id: self.control_rpc_id(RENEW_CONTROL_TARGET),
             runtime_id: self.service.runtime_id.clone(),
+            activation_identity: self.current_activation_identity(RENEW_CONTROL_TARGET)?,
             item_id: descriptor.item_id.clone(),
             lease_id: descriptor.lease_id.clone(),
             worker_id: self.worker_id.clone(),
@@ -736,21 +745,29 @@ impl SpawnWorker {
                 ),
             });
         }
-        if let Some(expected_activation_identity) = package_test_activation_identity(
-            &self.service.build_id,
-            self.service.activation_identity.as_deref(),
-        )? {
-            if descriptor.activation_identity.as_deref() != Some(expected_activation_identity) {
-                return Err(RuntimeError::Protocol {
-                    target: CLAIM_CONTROL_TARGET.to_string(),
-                    message: format!(
-                        "claimed package-test activationIdentity {:?} does not match worker activation {}",
-                        descriptor.activation_identity, expected_activation_identity
-                    ),
-                });
-            }
+        let expected_activation_identity =
+            self.current_activation_identity(CLAIM_CONTROL_TARGET)?;
+        if descriptor.activation_identity != expected_activation_identity {
+            return Err(RuntimeError::Protocol {
+                target: CLAIM_CONTROL_TARGET.to_string(),
+                message:
+                    "claimed spawn activationIdentity does not match the pinned worker activation"
+                        .to_string(),
+            });
         }
         Ok(())
+    }
+
+    fn current_activation_identity(
+        &self,
+        target: &str,
+    ) -> Result<ActivationIdentityFrameMetadata> {
+        self.activation_identity
+            .clone()
+            .ok_or_else(|| RuntimeError::Protocol {
+                target: target.to_string(),
+                message: "spawn control requires a current pinned ActivationContext".to_string(),
+            })
     }
 
     fn supported_targets(&self) -> Vec<String> {
@@ -902,30 +919,6 @@ impl SpawnWorker {
     }
 }
 
-fn package_test_activation_identity<'a>(
-    build_id: &str,
-    activation_identity: Option<&'a str>,
-) -> Result<Option<&'a str>> {
-    if !build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX) {
-        return Ok(None);
-    }
-    let activation_identity = activation_identity.ok_or_else(|| RuntimeError::Protocol {
-        target: CLAIM_CONTROL_TARGET.to_string(),
-        message: format!(
-            "package-test spawn worker for build {build_id} is missing activationIdentity"
-        ),
-    })?;
-    if !activation_identity.starts_with(PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX) {
-        return Err(RuntimeError::Protocol {
-            target: CLAIM_CONTROL_TARGET.to_string(),
-            message: format!(
-                "package-test spawn worker activationIdentity must start with {PACKAGE_TEST_ACTIVATION_IDENTITY_PREFIX}"
-            ),
-        });
-    }
-    Ok(Some(activation_identity))
-}
-
 async fn wait_for_retry_signal(
     stop: &SpawnWorkerStop,
     wake: &Notify,
@@ -1018,12 +1011,14 @@ pub(super) async fn claim_once_for_test(
     sender: mpsc::UnboundedSender<super::RouterWriterMessage>,
     service: Arc<ServiceRuntimeContext>,
     worker_id: String,
+    activation_identity: ActivationIdentityFrameMetadata,
 ) -> Result<ClaimOutcome> {
     SpawnWorker {
         host,
         service,
         sender,
         worker_id,
+        activation_identity: Some(activation_identity),
         renew_interval: SPAWN_RENEW_INTERVAL,
         stop: Arc::new(SpawnWorkerStop::new()),
         wake: Arc::new(Notify::new()),
@@ -1038,6 +1033,7 @@ pub(super) async fn renew_once_for_test(
     sender: mpsc::UnboundedSender<super::RouterWriterMessage>,
     service: Arc<ServiceRuntimeContext>,
     worker_id: String,
+    activation_identity: ActivationIdentityFrameMetadata,
     descriptor: SpawnClaimDescriptorFrameMetadata,
 ) -> Result<()> {
     SpawnWorker {
@@ -1045,6 +1041,7 @@ pub(super) async fn renew_once_for_test(
         service,
         sender,
         worker_id,
+        activation_identity: Some(activation_identity),
         renew_interval: SPAWN_RENEW_INTERVAL,
         stop: Arc::new(SpawnWorkerStop::new()),
         wake: Arc::new(Notify::new()),
@@ -1057,25 +1054,6 @@ pub(super) async fn renew_once_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn package_test_worker_activation_fails_closed_without_package_test_identity() {
-        let package_test_build = "skiff-package-test-build-v1:sha256:aaaaaaaa";
-        assert!(package_test_activation_identity(package_test_build, None).is_err());
-        assert!(package_test_activation_identity(
-            package_test_build,
-            Some("skiff-runtime-activation-v1:opaque:runtime-a")
-        )
-        .is_err());
-        assert_eq!(
-            package_test_activation_identity(
-                "skiff-service-build-v1:sha256:aaaaaaaa",
-                Some("skiff-package-test-run-v1:example:test:run")
-            )
-            .expect("service builds should not acquire package-test affinity"),
-            None
-        );
-    }
 
     #[tokio::test]
     async fn build_wake_preserves_a_permit_before_worker_waits() {

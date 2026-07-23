@@ -20,8 +20,9 @@ use promoted_runtime::{
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest,
-    FileCapabilityFuture, NativeFileCapabilityContext as ContractNativeFileCapabilityContext,
+    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
+    ActorRemoveControlRequest, FileCapabilityFuture,
+    NativeFileCapabilityContext as ContractNativeFileCapabilityContext,
     NativeHttpClientCapabilityContext as ContractNativeHttpClientCapabilityContext,
     NativeHttpResponseStreamCapabilityContext as ContractNativeHttpResponseStreamCapabilityContext,
     NativeTelemetryCapabilityContext as ContractNativeTelemetryCapabilityContext,
@@ -330,6 +331,10 @@ impl<'execution> NativeConfigCapability for ConfigCapabilityContext<'execution> 
 impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
     fn service_id(&self) -> &str {
         self.service_id()
+    }
+
+    fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
+        self.activation_identity()
     }
 
     fn put_actor<'a>(
