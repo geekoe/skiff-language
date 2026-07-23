@@ -506,6 +506,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F55E | [Host linked cache residual](tasks/P5-F55E-host-linked-cache-residual.md) | I55AB classified | host owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | I07 | [skiff-packages runtime reacceptance](tasks/P5-I07-skiff-packages-runtime-reacceptance.md) | T07 merged | dependency-provisioned exact source |
+| T07 result | [skiff-packages cutover result](tasks/P5-T07-skiff-packages-cutover-result.md) | `ecb74852` | implementation complete；I07 pending |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T08 blocker | [Registry/platform blocker](tasks/P5-T08-registry-platform-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；无callable |
 | D56 | [Trusted registry callable audit](tasks/P5-D56-trusted-registry-callable-audit.md) | T08 blocked | capability/design双分片 |
@@ -514,6 +515,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
 | T09B | [AIHub contract](tasks/P5-T09B-internals-aihub-contract.md) | R02 exact Skiff | 高；contract ABI/schema |
 | T09C | [Agine contract](tasks/P5-T09C-internals-agine-contract.md) | R02 exact Skiff | 高；contract/API owner split |
+| T09ABC result | [Internals contract checkpoint result](tasks/P5-T09ABC-contract-checkpoint-result.md) | `5bed040` | complete；解除T09D |
 | T09D | [Internals canonical workflow](tasks/P5-T09D-internals-canonical-workflow.md) | T09A–T09C merged | 高；shared workflow checkpoint |
 | R09 | [Internals contract/workflow acceptance](tasks/P5-R09-internals-contract-acceptance.md) | T09D exact commit | 高；独立只读 |
 | T10 | [Codex Relay](tasks/P5-T10-internals-codex-relay.md) | R09 PASS | 高；service/deployment/host |
