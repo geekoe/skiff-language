@@ -14,6 +14,9 @@ import {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import type {
+  WebSocketGenerationLifecycleTuple
+} from '../protocol/webSocketGenerationLifecycle.js';
 import {
   REQUEST_CANCEL_SITUATION,
   requestCancelReasonForSituation
@@ -92,7 +95,7 @@ export interface RuntimeUnaryFrameInvocation extends RuntimeInvocationBase {
 
 export interface RuntimeStreamInvocation extends RuntimeInvocationBase {
   kind: 'stream';
-  request: RequestStartFrameHeader;
+  request: RuntimeUnaryDispatchFrameHeader;
   resolve(response: RuntimeBinaryDispatchResponse): void;
   streamState: StreamPendingState;
   nextSeq: number;
@@ -306,6 +309,32 @@ export class RuntimeDispatcher {
     return this.connectionByReceipt.get(receipt)?.connection.ws === sender;
   }
 
+  isPendingWebSocketAcquireSender(
+    sender: WebSocket,
+    tuple: WebSocketGenerationLifecycleTuple
+  ): boolean {
+    for (const pending of this.pending.values()) {
+      if (
+        pending.kind !== 'unary' ||
+        pending.responsePhase !== 'websocketConnect' ||
+        pending.ws !== sender ||
+        !isRuntimeAssemblyRequestDispatchHeader(pending.request)
+      ) {
+        continue;
+      }
+      const request = pending.request;
+      if (
+        request.routing.assemblyIdentity === tuple.assemblyIdentity &&
+        request.routing.assemblyGeneration === tuple.assemblyGeneration &&
+        request.websocketEntryId === tuple.websocketEntryId &&
+        webSocketAdapterConnectionId(request.websocketAdapter) === tuple.connectionId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   dispatchBinaryFrame(
     request: RuntimeBinaryDispatchInput<RuntimeDispatchFrameHeader>,
     timeoutMs: number,
@@ -369,7 +398,7 @@ export class RuntimeDispatcher {
   }
 
   dispatchBinaryStream(
-    request: RuntimeBinaryDispatchInput<RequestStartFrameHeader>,
+    request: RuntimeBinaryDispatchInput<RuntimeUnaryDispatchFrameHeader>,
     timeoutMs: number,
     handlers: RuntimeBinaryStreamHandlers,
     options: RuntimeBinaryDispatchOptions = {}

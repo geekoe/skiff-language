@@ -8,13 +8,22 @@ import {
 
 import {
   RUNTIME_FRAME_SCHEMA_VERSION,
-  type HttpRequestFrameMetadata,
-  type RequestStartFrameHeader
+  type HttpRequestFrameMetadata
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeProtocol.js';
+import {
+  REQUEST_CANCEL_SITUATION,
+  requestCancelReasonForSituation
+} from '../protocol/cancelReason.js';
 import { GatewayError, toGatewayError } from './errors.js';
 import type { RuntimeDispatcher } from './runtimeDispatcher.js';
+import {
+  DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS,
+  HttpStreamResponseWriter,
+  type HttpStreamLifecycleCounters
+} from './httpStreamResponseWriter.js';
+import { readOriginFormUrlForGatewayMetadata } from './bind.js';
 import {
   canonicalIngressHost,
   type RouterActiveAssemblySnapshot,
@@ -28,6 +37,7 @@ export interface AssemblyHttpGatewayOptions {
   host?: string;
   port: number;
   bodyLimitBytes?: number;
+  backpressureDrainTimeoutMs?: number;
   requestTimeoutMs?: number;
 }
 
@@ -40,6 +50,11 @@ export interface AssemblyHttpGatewayListenResult {
 
 export class AssemblyHttpGateway {
   private server: HttpServer | undefined;
+  private readonly streamCounters: HttpStreamLifecycleCounters = {
+    activeWriters: 0,
+    backpressureWaiters: 0,
+    backpressureCancels: 0
+  };
 
   constructor(private readonly options: AssemblyHttpGatewayOptions) {}
 
@@ -86,6 +101,10 @@ export class AssemblyHttpGateway {
     this.server = undefined;
   }
 
+  streamLifecycleCounters(): HttpStreamLifecycleCounters {
+    return { ...this.streamCounters };
+  }
+
   private async handleRequest(
     request: IncomingMessage,
     response: ServerResponse
@@ -95,24 +114,66 @@ export class AssemblyHttpGateway {
     const body = await readRequestBody(request, this.options.bodyLimitBytes ?? 64 * 1024 * 1024);
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
     const requestId = randomUUID();
-    const controller = new AbortController();
-    const abort = () => controller.abort();
-    request.once('aborted', abort);
-    response.once('close', abort);
+    const clientDisconnect = clientDisconnectSignal(request, response);
+    const header = assemblyHttpRequestHeader({
+      snapshot,
+      binding: selection.binding,
+      requestId,
+      timeoutMs,
+      httpRequest: buildHttpRequestMetadata(request, selection.url)
+    });
     try {
+      if (header.mode === 'serverStream') {
+        const writer = new HttpStreamResponseWriter({
+          response,
+          clientDisconnectSignal: clientDisconnect.signal,
+          backpressureDrainTimeoutMs:
+            this.options.backpressureDrainTimeoutMs ??
+            DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS,
+          counters: this.streamCounters,
+          writeHeaders: writeResponseHeaders
+        });
+        try {
+          await this.options.dispatcher.dispatchBinaryStream(
+            { header, payloadBytes: body },
+            timeoutMs,
+            {
+              onStart: (runtimeResponse, terminal) =>
+                writer.enqueueStart(runtimeResponse, terminal),
+              onChunk: (runtimeResponse, terminal) =>
+                writer.enqueueChunk(runtimeResponse, terminal),
+              onEnd: (runtimeResponse, terminal) => {
+                writer.enqueueEnd(runtimeResponse, terminal);
+                writer.markEndReceived();
+              },
+              closeFromPendingTerminal: (terminal) =>
+                writer.closeFromPendingTerminal(terminal)
+            },
+            {
+              signal: clientDisconnect.signal,
+              cancelReason: requestCancelReasonForSituation(
+                REQUEST_CANCEL_SITUATION.clientDisconnect
+              )
+            }
+          );
+        } finally {
+          writer.dispose();
+        }
+        if (!response.writableEnded) response.end();
+        return;
+      }
       const runtimeResponse = await this.options.dispatcher.dispatchBinary(
         {
-          header: assemblyHttpUnaryRequestHeader({
-            snapshot,
-            binding: selection.binding,
-            requestId,
-            timeoutMs,
-            httpRequest: buildHttpRequestMetadata(request, selection.url, selection.host)
-          }),
+          header,
           payloadBytes: body
         },
         timeoutMs,
-        { signal: controller.signal }
+        {
+          signal: clientDisconnect.signal,
+          cancelReason: requestCancelReasonForSituation(
+            REQUEST_CANCEL_SITUATION.clientDisconnect
+          )
+        }
       );
       if (runtimeResponse.header.httpResponse !== undefined) {
         response.statusCode = runtimeResponse.header.httpResponse.status;
@@ -122,8 +183,7 @@ export class AssemblyHttpGateway {
       }
       response.end(Buffer.from(runtimeResponse.payloadBytes));
     } finally {
-      request.off('aborted', abort);
-      response.off('close', abort);
+      clientDisconnect.complete();
     }
   }
 
@@ -138,7 +198,7 @@ export class AssemblyHttpGateway {
   }
 }
 
-export function assemblyHttpUnaryRequestHeader(input: {
+export function assemblyHttpRequestHeader(input: {
   snapshot: RouterActiveAssemblySnapshot;
   binding: RuntimeAssemblyIngressBinding;
   requestId: string;
@@ -153,7 +213,7 @@ export function assemblyHttpUnaryRequestHeader(input: {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     type: 'request.start',
     requestId: input.requestId,
-    mode: 'unary',
+    mode: input.binding.operationMode,
     caller: {
       kind: 'gateway',
       target: '__skiff.runtime-assembly-ingress'
@@ -189,57 +249,10 @@ export function assemblyHttpUnaryRequestHeader(input: {
   return validation.envelope;
 }
 
-/** Legacy WebSocket request writer retained until the typed WS cutover. */
-export function assemblyRequestHeader(input: {
-  snapshot: RouterActiveAssemblySnapshot;
-  binding: RuntimeAssemblyIngressBinding;
-  requestId: string;
-  timeoutMs: number;
-  httpRequest?: HttpRequestFrameMetadata;
-  websocketAdapter?: RequestStartFrameHeader['websocketAdapter'];
-}): RequestStartFrameHeader {
-  const selector = input.binding.selector;
-  return {
-    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'request.start',
-    requestId: input.requestId,
-    mode: 'unary',
-    caller: {
-      kind: 'gateway',
-      target: '__skiff.runtime-assembly-ingress'
-    },
-    target: input.binding.contractOperationId,
-    operationAbiId: input.binding.contractOperationId,
-    buildId: input.snapshot.assembly.assemblyIdentity,
-    serviceProtocolIdentity: input.binding.contract.serviceProtocolIdentity,
-    assemblyIdentity: input.snapshot.assembly.assemblyIdentity,
-    assemblyGeneration: input.snapshot.generation,
-    contractOperationId: input.binding.contractOperationId,
-    ingress: {
-      protocol: selector.protocol,
-      host: canonicalIngressHost(selector.host),
-      method: selector.method === null ? null : selector.method.toUpperCase(),
-      path: selector.path
-    },
-    deadline: {
-      timeoutMs: input.timeoutMs,
-      expiresAt: new Date(Date.now() + input.timeoutMs).toISOString()
-    },
-    trace: {
-      traceId: randomUUID(),
-      spanId: randomUUID()
-    },
-    ...(input.httpRequest !== undefined ? { httpRequest: input.httpRequest } : {}),
-    ...(input.websocketAdapter !== undefined
-      ? { websocketAdapter: input.websocketAdapter }
-      : {})
-  };
-}
-
 function selectHttpIngress(
   snapshot: RouterActiveAssemblySnapshot,
   request: IncomingMessage
-): { binding: RuntimeAssemblyIngressBinding; host: string; url: URL } {
+): { binding: RuntimeAssemblyIngressBinding; url: URL } {
   const rawHost = request.headers.host;
   if (typeof rawHost !== 'string' || rawHost.length === 0 || rawHost.includes(',')) {
     throw new GatewayError(421, 'IngressHostRequired', 'request Host must be singular and present');
@@ -252,9 +265,14 @@ function selectHttpIngress(
   }
   let url: URL;
   try {
-    url = new URL(request.url ?? '/', `http://${host}`);
+    url = readOriginFormUrlForGatewayMetadata(request.url, 'http', host);
   } catch (error) {
-    throw new GatewayError(400, 'RequestUrlInvalid', 'request URL is invalid', error);
+    throw new GatewayError(
+      400,
+      'RequestUrlInvalid',
+      'request target must be canonical origin-form',
+      error
+    );
   }
   const binding = snapshot.ingress.get({
     protocol: 'http',
@@ -269,7 +287,7 @@ function selectHttpIngress(
       `No committed RuntimeAssembly ingress matches ${host} ${request.method ?? 'GET'} ${url.pathname}`
     );
   }
-  return { binding, host, url };
+  return { binding, url };
 }
 
 async function readRequestBody(request: IncomingMessage, limit: number): Promise<Buffer> {
@@ -288,10 +306,8 @@ async function readRequestBody(request: IncomingMessage, limit: number): Promise
 
 function buildHttpRequestMetadata(
   request: IncomingMessage,
-  url: URL,
-  host: string
+  url: URL
 ): HttpRequestFrameMetadata {
-  url.host = host;
   return {
     method: (request.method ?? 'GET').toUpperCase(),
     url: url.toString(),
@@ -319,4 +335,21 @@ function writeResponseHeaders(
     }
     response.appendHeader(header.name, header.value);
   }
+}
+
+function clientDisconnectSignal(
+  request: IncomingMessage,
+  response: ServerResponse
+): { signal: AbortSignal; complete(): void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  request.once('aborted', abort);
+  response.once('close', abort);
+  return {
+    signal: controller.signal,
+    complete: () => {
+      request.off('aborted', abort);
+      response.off('close', abort);
+    }
+  };
 }

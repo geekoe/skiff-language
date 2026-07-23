@@ -49,6 +49,7 @@ export interface AssemblyReplicaSnapshot {
   state: AssemblyReplicaState;
   connected: boolean;
   inFlightCount: number;
+  connectionPinCount: number;
   registeredAt: string;
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
@@ -67,12 +68,21 @@ export class AssemblyRuntimeRegistry {
   private readonly replicas = new Map<string, AssemblyReplica>();
   private readonly replicaIdByConnection = new Map<WebSocket, string>();
   private inFlightCounter: RuntimeInFlightCounter | undefined;
+  private connectionPinCounter:
+    | { connectionPinCount(ws: WebSocket): number }
+    | undefined;
   private nextReplicaCursor = 0;
 
   constructor(private readonly snapshots: RouterActiveAssemblySnapshotStore) {}
 
   setInFlightCounter(counter: RuntimeInFlightCounter | undefined): void {
     this.inFlightCounter = counter;
+  }
+
+  setConnectionPinCounter(
+    counter: { connectionPinCount(ws: WebSocket): number } | undefined
+  ): void {
+    this.connectionPinCounter = counter;
   }
 
   register(ws: WebSocket, control: AssemblyRegisterControl): void {
@@ -195,6 +205,8 @@ export class AssemblyRuntimeRegistry {
       state: replica.state,
       connected: replica.ws.readyState === WebSocket.OPEN,
       inFlightCount: this.countInFlight(replica),
+      connectionPinCount:
+        this.connectionPinCounter?.connectionPinCount(replica.ws) ?? 0,
       registeredAt: replica.registeredAt,
       ...(replica.lastHealthAt !== undefined ? { lastHealthAt: replica.lastHealthAt } : {}),
       ...(replica.healthCounters !== undefined
@@ -310,12 +322,11 @@ function validateAssemblyRequest(
   }
   const request = validation.envelope;
   if (
-    request.mode !== 'unary' ||
     request.testEffectsEnabled !== false ||
     Object.keys(request.testEffectDoubles).length !== 0
   ) {
     return new ServiceProtocolBoundaryError(
-      'active RuntimeAssembly dispatch only accepts canonical unary ingress requests'
+      'active RuntimeAssembly dispatch rejects test effect controls'
     );
   }
   if (
@@ -355,6 +366,11 @@ function validateAssemblyRequest(
   ) {
     return new ServiceProtocolBoundaryError(
       `request canonical ingress ${runtimeAssemblyIngressKey(request.routing.ingress)} does not match the committed assembly`
+    );
+  }
+  if (request.mode !== binding.operationMode) {
+    return new ServiceProtocolBoundaryError(
+      'request mode does not match the exact ServiceContract operation'
     );
   }
   return canonicalIngress.protocol === 'http'
@@ -398,6 +414,7 @@ function validateAssemblyWebSocketRequest(
   binding: RuntimeAssemblyIngressBinding
 ): ServiceProtocolBoundaryError | undefined {
   if (
+    request.mode !== 'unary' ||
     request.websocketAdapter === undefined ||
     request.httpRequest !== undefined ||
     request.httpAdapter !== undefined

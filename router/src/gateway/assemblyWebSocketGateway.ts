@@ -31,6 +31,9 @@ import type {
   ConnectionSendDisposition,
   RuntimeConnectionSendSource
 } from '../router/runtimeEndpoint.js';
+import type {
+  WebSocketGenerationLifecycleRouter
+} from '../router/webSocketGenerationLifecycleRouter.js';
 import {
   canonicalIngressHost,
   type RouterActiveAssemblySnapshot,
@@ -57,6 +60,7 @@ export interface AssemblyWebSocketGatewayOptions {
   snapshots: RouterActiveAssemblySnapshotStore;
   dispatcher: RuntimeDispatcher;
   runtimeConnectionSend: RuntimeConnectionSendSource;
+  generationLifecycle: WebSocketGenerationLifecycleRouter;
   host?: string;
   port?: number;
   connectionLimit?: number;
@@ -92,28 +96,44 @@ export class AssemblyWebSocketGateway {
     RuntimeDispatchConnectionReceipt
   >;
   private readonly unsubscribeConnectionSend: () => void;
+  private readonly unsubscribeConnectionLost: () => void;
   private ownsServer = false;
   private server: HttpServer | undefined;
   private webSocketServer: WebSocketServer | undefined;
   private upgradeHandler: ((request: IncomingMessage, socket: Socket, head: Buffer) => void) | undefined;
 
   constructor(private readonly options: AssemblyWebSocketGatewayOptions) {
-    this.lifecycle = new WebSocketConnectionLifecycle({
-      ...(options.connectionLimit !== undefined
-        ? { connectionLimit: options.connectionLimit }
-        : {}),
-      ...(options.receiveQueueLimit !== undefined
-        ? { receiveQueueLimit: options.receiveQueueLimit }
-        : {}),
-      ...(options.slowClientBudgetBytes !== undefined
-        ? { slowClientBudgetBytes: options.slowClientBudgetBytes }
-        : {}),
-      ...(options.shutdownTimeoutMs !== undefined
-        ? { shutdownTimeoutMs: options.shutdownTimeoutMs }
-        : {})
-    });
+    this.lifecycle = new WebSocketConnectionLifecycle(
+      {
+        ...(options.connectionLimit !== undefined
+          ? { connectionLimit: options.connectionLimit }
+          : {}),
+        ...(options.receiveQueueLimit !== undefined
+          ? { receiveQueueLimit: options.receiveQueueLimit }
+          : {}),
+        ...(options.slowClientBudgetBytes !== undefined
+          ? { slowClientBudgetBytes: options.slowClientBudgetBytes }
+          : {}),
+        ...(options.shutdownTimeoutMs !== undefined
+          ? { shutdownTimeoutMs: options.shutdownTimeoutMs }
+          : {})
+      },
+      (connection) => {
+        void options.generationLifecycle
+          .releaseConnection(connection.id)
+          .catch(() => undefined);
+      }
+    );
     this.unsubscribeConnectionSend = options.runtimeConnectionSend.onConnectionSend(
       (message, sender) => this.handleConnectionSend(message, sender)
+    );
+    this.unsubscribeConnectionLost = options.generationLifecycle.onConnectionLost(
+      (connectionId) => {
+        this.lifecycle.close(connectionId, {
+          code: 1011,
+          reason: 'websocket runtime disconnected'
+        });
+      }
     );
   }
 
@@ -154,7 +174,19 @@ export class AssemblyWebSocketGateway {
     if (this.server !== undefined && this.upgradeHandler !== undefined) {
       this.server.off('upgrade', this.upgradeHandler);
     }
-    await this.lifecycle.shutdown();
+    const lifecycleFailures: unknown[] = [];
+    try {
+      await this.lifecycle.shutdown();
+    } catch (error) {
+      lifecycleFailures.push(error);
+    }
+    try {
+      await this.options.generationLifecycle.flush();
+    } catch (error) {
+      lifecycleFailures.push(error);
+    } finally {
+      this.unsubscribeConnectionLost();
+    }
     await new Promise<void>((resolveClose) => {
       this.webSocketServer?.close(() => resolveClose());
       if (this.webSocketServer === undefined) {
@@ -176,6 +208,15 @@ export class AssemblyWebSocketGateway {
     this.server = undefined;
     this.upgradeHandler = undefined;
     this.ownsServer = false;
+    if (lifecycleFailures.length === 1) {
+      throw lifecycleFailures[0];
+    }
+    if (lifecycleFailures.length > 1) {
+      throw new AggregateError(
+        lifecycleFailures,
+        'Assembly WebSocket gateway lifecycle shutdown failed'
+      );
+    }
   }
 
   receiveLifecycleCounters(): WebSocketReceiveLifecycleCounters {
@@ -206,8 +247,16 @@ export class AssemblyWebSocketGateway {
         connectAbort.abort();
         socket.destroy();
       });
+      this.options.generationLifecycle.expectConnection({
+        serviceId: connection.binding.contract.serviceId,
+        assemblyIdentity: connection.snapshot.assembly.assemblyIdentity,
+        assemblyGeneration: connection.snapshot.generation,
+        websocketEntryId: connection.websocketEntryId,
+        connectionId
+      });
     } catch (error) {
       connectAbort.complete();
+      this.lifecycle.release(connectionId);
       if (error instanceof WebSocketConnectionLimitExceededError) {
         throw new GatewayError(503, 'WebSocketConnectionLimitExceeded', error.message);
       }
@@ -236,6 +285,10 @@ export class AssemblyWebSocketGateway {
         { signal: connectAbort.signal }
       );
       const accepted = decodeConnectResponse(connectResponse);
+      this.options.generationLifecycle.requireAcquired(
+        connectionId,
+        connectResponse.connectionReceipt
+      );
       connection.contextBytes = accepted.contextBytes;
       connection.connectionReceipt = connectResponse.connectionReceipt;
       if (accepted.contextCodec !== undefined) {
@@ -514,7 +567,11 @@ export function assemblyWebSocketRequestHeader(input: {
   websocketAdapter: WebSocketAdapterFrameMetadata;
 }): RuntimeAssemblyRequestStartFrameHeader {
   const selector = input.binding.selector;
-  if (selector.protocol !== 'webSocket' || selector.method !== null) {
+  if (
+    selector.protocol !== 'webSocket' ||
+    selector.method !== null ||
+    input.binding.operationMode !== 'unary'
+  ) {
     throw new Error('canonical WebSocket requests require a WebSocket ingress binding');
   }
   const candidate = {

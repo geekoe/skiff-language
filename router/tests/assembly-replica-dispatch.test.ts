@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { expect, it, vi } from 'vitest';
 
-import { assemblyHttpUnaryRequestHeader } from '../src/router/assemblyHttpGateway.js';
+import { assemblyHttpRequestHeader } from '../src/router/assemblyHttpGateway.js';
 import { validateRuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeProtocol.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
@@ -32,6 +32,7 @@ const binding: RuntimeAssemblyIngressBinding = {
     contractVersion: '1.0.0',
     serviceProtocolIdentity: PROTOCOL
   },
+  operationMode: 'unary',
   contractOperationId: OPERATION
 };
 
@@ -43,7 +44,7 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   const socketB = fakeSocket();
   register(registry, socketA, 'replica-a', 1, ASSEMBLY_A);
   register(registry, socketB, 'replica-b', 1, ASSEMBLY_A);
-  const request = assemblyHttpUnaryRequestHeader({
+  const request = assemblyHttpRequestHeader({
     snapshot: snapshots.get(),
     binding,
     requestId: 'request-1',
@@ -65,7 +66,7 @@ it('round-robins only healthy replicas of the exact committed assembly generatio
   registry.activate(snapshots.get());
   const staleRequest = registry.pickDispatchConnection(request);
   expect(staleRequest).toBeInstanceOf(ServiceProtocolBoundaryError);
-  const currentRequest = assemblyHttpUnaryRequestHeader({
+  const currentRequest = assemblyHttpRequestHeader({
     snapshot: snapshots.get(),
     binding,
     requestId: 'request-2',

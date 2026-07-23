@@ -15,6 +15,12 @@ import {
 } from '../src/protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../src/protocol/runtimeAssemblyRequest.js';
 import { runtimeFrameHeaderFixtures } from '../src/protocol/runtimeProtocol.js';
+import {
+  decodeWebSocketGenerationLifecycleFrame,
+  encodeWebSocketGenerationLifecycleFrame,
+  WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+  type WebSocketGenerationLifecycleTuple
+} from '../src/protocol/webSocketGenerationLifecycle.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import { RuntimeDispatcher } from '../src/router/runtimeDispatcher.js';
 import {
@@ -22,6 +28,7 @@ import {
   type RuntimeConnectionSendObservation
 } from '../src/router/runtimeEndpoint.js';
 import { RuntimeRegistry } from '../src/router/runtimeRegistry.js';
+import { WebSocketGenerationLifecycleRouter } from '../src/router/webSocketGenerationLifecycleRouter.js';
 import {
   RouterActiveAssemblySnapshotStore,
   RuntimeAssemblyIngressIndex,
@@ -29,6 +36,7 @@ import {
 } from '../src/router/runtimeAssemblySnapshot.js';
 
 const ASSEMBLY = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
+const ASSEMBLY_B = `skiff-runtime-assembly-v1:sha256:${'9'.repeat(64)}`;
 const OPERATION = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
 const PROTOCOL = `skiff-service-protocol-v2:sha256:${'c'.repeat(64)}`;
 const HOST = 'component-websocket.skiff.localhost';
@@ -50,6 +58,7 @@ const binding: RuntimeAssemblyIngressBinding = {
     contractVersion: '1.0.0',
     serviceProtocolIdentity: PROTOCOL
   },
+  operationMode: 'unary',
   contractOperationId: OPERATION
 };
 
@@ -142,6 +151,13 @@ describe('AssemblyWebSocketGateway production component', () => {
       queued: 0,
       abortOnClose: 0
     });
+    expect(harness.assemblyRegistry.snapshot()[0]?.connectionPinCount).toBe(1);
+    await closeWebSocket(client);
+    await until(() =>
+      runtime.releases.length === 1 &&
+      harness.assemblyRegistry.snapshot()[0]?.connectionPinCount === 0
+    );
+    expect(harness.assemblyRegistry.snapshot()[0]?.connectionPinCount).toBe(0);
   });
 
   it.each([
@@ -195,7 +211,11 @@ describe('AssemblyWebSocketGateway production component', () => {
       )
     );
     expect(await sender.closed).toEqual([1008, 'connection.send protocol violation']);
-    expect(client.readyState).toBe(WebSocket.OPEN);
+    if (testCase.foreignSender) {
+      expect(client.readyState).toBe(WebSocket.OPEN);
+    } else {
+      await until(() => client.readyState === WebSocket.CLOSED);
+    }
   });
 
   it('reports a closed direct-send race without closing the sender runtime', async () => {
@@ -219,11 +239,59 @@ describe('AssemblyWebSocketGateway production component', () => {
     );
     expect(runtime.socket.readyState).toBe(WebSocket.OPEN);
   });
+
+  it('keeps an old-generation connection pinned while new connects select the committed generation', async () => {
+    const harness = await createHarness();
+    const runtimeA = await harness.addRuntime('runtime-generation-a');
+    const clientA = await harness.openClient(PATH);
+    await until(() => runtimeA.requests.length === 1);
+
+    harness.activateGeneration(8, ASSEMBLY_B);
+    const runtimeB = await harness.addRuntime(
+      'runtime-generation-b',
+      8,
+      ASSEMBLY_B
+    );
+    const clientB = await harness.openClient(PATH);
+    await until(() => runtimeB.requests.length === 1);
+    expect(runtimeB.requests[0]?.routing).toMatchObject({
+      assemblyIdentity: ASSEMBLY_B,
+      assemblyGeneration: 8
+    });
+    expect(harness.assemblyRegistry.snapshot()).toEqual([
+      expect.objectContaining({
+        replicaId: 'runtime-generation-a',
+        state: 'draining',
+        connectionPinCount: 1
+      }),
+      expect.objectContaining({
+        replicaId: 'runtime-generation-b',
+        state: 'healthy',
+        connectionPinCount: 1
+      })
+    ]);
+
+    const oldMarker = nextMessage(clientA);
+    clientA.send('old-generation');
+    expect(await oldMarker).toBe(MARKER);
+    await until(() => runtimeA.requests.length === 2);
+    expect(runtimeA.requests[1]?.routing).toMatchObject({
+      assemblyIdentity: ASSEMBLY,
+      assemblyGeneration: 7
+    });
+
+    await closeWebSocket(clientA);
+    await closeWebSocket(clientB);
+    await until(() =>
+      runtimeA.releases.length === 1 && runtimeB.releases.length === 1
+    );
+  });
 });
 
 interface RuntimePeer {
   socket: WebSocket;
   requests: RuntimeAssemblyRequestStartFrameHeader[];
+  releases: WebSocketGenerationLifecycleTuple[];
   closed: Promise<[number, string]>;
   sendDirect(input: {
     connectionId: string;
@@ -233,10 +301,16 @@ interface RuntimePeer {
 }
 
 interface ProductionHarness {
+  assemblyRegistry: AssemblyRuntimeRegistry;
   gateway: AssemblyWebSocketGateway;
   observations: RuntimeConnectionSendObservation[];
   port: number;
-  addRuntime(runtimeId: string): Promise<RuntimePeer>;
+  activateGeneration(generation: number, assemblyIdentity: string): void;
+  addRuntime(
+    runtimeId: string,
+    generation?: number,
+    assemblyIdentity?: string
+  ): Promise<RuntimePeer>;
   openClient(path: string, headers?: Record<string, string | string[]>): Promise<WebSocket>;
   close(): Promise<void>;
 }
@@ -258,11 +332,19 @@ async function createHarness(): Promise<ProductionHarness> {
   });
   const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
   endpoint.setDispatcher(dispatcher);
+  const generationLifecycle = new WebSocketGenerationLifecycleRouter({
+    dispatcher,
+    sender: endpoint,
+    releaseTimeoutMs: 1_000
+  });
+  endpoint.setWebSocketGenerationLifecycle(generationLifecycle);
+  assemblyRegistry.setConnectionPinCounter(generationLifecycle);
   const endpointListen = await endpoint.listen({ port: 0 });
   const gateway = new AssemblyWebSocketGateway({
     snapshots,
     dispatcher,
     runtimeConnectionSend: endpoint,
+    generationLifecycle,
     port: 0,
     requestTimeoutMs: 1_000,
     shutdownTimeoutMs: 50
@@ -272,10 +354,21 @@ async function createHarness(): Promise<ProductionHarness> {
   const runtimes = new Set<WebSocket>();
 
   const harness: ProductionHarness = {
+    assemblyRegistry,
     gateway,
     observations,
     port: gatewayListen.port,
-    addRuntime: async (runtimeId) => {
+    activateGeneration: (generation, assemblyIdentity) => {
+      const snapshot = {
+        environment: 'component-test',
+        generation,
+        assembly: { assemblyIdentity },
+        ingress: new RuntimeAssemblyIngressIndex([binding])
+      };
+      snapshots.replace(snapshot);
+      assemblyRegistry.activate(snapshot);
+    },
+    addRuntime: async (runtimeId, generation = 7, assemblyIdentity = ASSEMBLY) => {
       const socket = new WebSocket(endpointListen.url);
       runtimes.add(socket);
       await opened(socket);
@@ -283,13 +376,48 @@ async function createHarness(): Promise<ProductionHarness> {
       const closed = new Promise<[number, string]>((resolve) => {
         socket.once('close', (code, reason) => resolve([code, reason.toString('utf8')]));
       });
+      const releases: WebSocketGenerationLifecycleTuple[] = [];
+      const routerSessionId = `skiff-router-session-v1:opaque:${runtimeId}`;
+      let nextAcquireId = 1;
       socket.on('message', (data, isBinary) => {
         if (!isBinary) return;
         const frame = decodeBinaryFrame(data);
+        if (frame.header.type === WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE) {
+          const control = decodeWebSocketGenerationLifecycleFrame(data, 'routerToRuntime');
+          if (control.action === 'release') {
+            releases.push(control.tuple);
+            socket.send(encodeWebSocketGenerationLifecycleFrame({
+              schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+              type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+              action: 'ack',
+              operation: 'release',
+              requestId: control.requestId,
+              sender: 'runtime',
+              tuple: control.tuple
+            }, 'runtimeToRouter'));
+          }
+          return;
+        }
         if (frame.header.type !== 'request.start' || !('routing' in frame.header)) return;
         const request = frame.header as unknown as RuntimeAssemblyRequestStartFrameHeader;
         requests.push(request);
         if (request.websocketAdapter?.kind === 'connect') {
+          socket.send(encodeWebSocketGenerationLifecycleFrame({
+            schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+            type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+            action: 'acquire',
+            requestId:
+              `skiff-websocket-lifecycle-request-v1:opaque:${runtimeId}-${nextAcquireId++}`,
+            sender: 'runtime',
+            tuple: {
+              routerSessionId,
+              serviceId: SERVICE,
+              assemblyIdentity: request.routing.assemblyIdentity,
+              assemblyGeneration: request.routing.assemblyGeneration,
+              websocketEntryId: request.websocketEntryId!,
+              connectionId: request.websocketAdapter.connectRequest!.connectionId
+            }
+          }, 'runtimeToRouter'));
           socket.send(encodeRuntimeFrame({
             schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
             type: 'response.end',
@@ -329,14 +457,15 @@ async function createHarness(): Promise<ProductionHarness> {
       socket.send(encodeAssemblyActivationFrame('runtimeToRouter', {
         type: 'register',
         environment: 'component-test',
-        generation: 7,
-        assembly: { assemblyIdentity: ASSEMBLY },
+        generation,
+        assembly: { assemblyIdentity },
         replicaId: runtimeId
       }));
       await until(() => assemblyRegistry.healthyParticipantReplicaIds().includes(runtimeId));
       return {
         socket,
         requests,
+        releases,
         closed,
         sendDirect: (input) => socket.send(connectionSendFrame({ ...input, marker: 'direct' }))
       };

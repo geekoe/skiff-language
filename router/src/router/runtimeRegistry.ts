@@ -325,6 +325,17 @@ export class RuntimeRegistry {
     if (registered !== undefined && registered.runtimeId !== envelope.runtimeId) {
       throw new Error('runtime connection cannot change runtime identity');
     }
+    for (const connection of this.runtimeCapabilitiesByConnection.values()) {
+      if (
+        connection.ws !== ws &&
+        connection.runtimeId === envelope.runtimeId &&
+        connection.ws.readyState === WebSocket.OPEN
+      ) {
+        throw new Error(
+          `runtime capability participant ${envelope.runtimeId} already has a live connection`
+        );
+      }
+    }
     this.runtimeCapabilitiesByConnection.set(ws, {
       runtimeId: envelope.runtimeId,
       capabilities: envelope.capabilities,
@@ -362,6 +373,32 @@ export class RuntimeRegistry {
           Buffer.from(`${right.runtimeId}\u0000${right.registeredAt}`)
         )
       );
+  }
+
+  healthyParticipantReplicaIds(): readonly string[] {
+    return [...this.capabilityParticipants().keys()].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right))
+    );
+  }
+
+  connectedParticipantReplicaIds(replicaIds: readonly string[]): readonly string[] {
+    const participants = this.capabilityParticipants();
+    return replicaIds.filter((replicaId) => participants.has(replicaId));
+  }
+
+  isReplicaConnected(replicaId: string): boolean {
+    return this.capabilityParticipants().has(replicaId);
+  }
+
+  connectionForReplica(replicaId: string): WebSocket | undefined {
+    return this.capabilityParticipants().get(replicaId)?.ws;
+  }
+
+  assertReplicaConnection(ws: WebSocket, replicaId: string): void {
+    const participant = this.capabilityParticipants().get(replicaId);
+    if (participant === undefined || participant.ws !== ws) {
+      throw new Error(`runtime capability connection is not participant ${replicaId}`);
+    }
   }
 
   recordRuntimeHealth(ws: WebSocket, envelope: RuntimeHealthEnvelope): void {
@@ -578,6 +615,22 @@ export class RuntimeRegistry {
     version: string
   ): string | undefined {
     return this.serviceVersionBuildIds.get(serviceId)?.get(version);
+  }
+
+  private capabilityParticipants(): ReadonlyMap<string, RuntimeCapabilityRegistration> {
+    const participants = new Map<string, RuntimeCapabilityRegistration>();
+    for (const connection of this.runtimeCapabilitiesByConnection.values()) {
+      if (connection.ws.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      if (participants.has(connection.runtimeId)) {
+        throw new Error(
+          `runtime capability participant ${connection.runtimeId} has multiple live connections`
+        );
+      }
+      participants.set(connection.runtimeId, connection);
+    }
+    return participants;
   }
 
   private resolveEffectiveBuildId(

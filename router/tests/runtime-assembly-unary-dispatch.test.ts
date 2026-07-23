@@ -16,8 +16,7 @@ import {
   validateRuntimeAssemblyRequestStartFrameHeader
 } from '../src/protocol/runtimeProtocol.js';
 import {
-  assemblyHttpUnaryRequestHeader,
-  assemblyRequestHeader,
+  assemblyHttpRequestHeader,
   AssemblyHttpGateway
 } from '../src/router/assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
@@ -125,12 +124,11 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
   it('fails closed before the socket for legacy, flat, unknown, stream, adapter, and HTTP mismatches', async () => {
     const fixture = await createFixture();
     const valid = canonicalHeader(fixture.snapshot, 'valid');
-    const legacy = assemblyRequestHeader({
-      snapshot: fixture.snapshot,
-      binding: BINDING,
-      requestId: 'legacy',
-      timeoutMs: 1000,
-      httpRequest: requestMetadata()
+    const legacy = mutate(valid, (header) => {
+      header.assemblyIdentity = header.routing.assemblyIdentity;
+      header.assemblyGeneration = header.routing.assemblyGeneration;
+      header.contractOperationId = header.routing.contractOperationId;
+      delete header.routing;
     });
     const invalid: RuntimeUnaryDispatchFrameHeader[] = [
       legacy,
@@ -338,6 +336,7 @@ const BINDING: RuntimeAssemblyIngressBinding = {
     contractVersion: '1.0.0',
     serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${'d'.repeat(64)}`
   },
+  operationMode: 'unary',
   contractOperationId: OPERATION
 };
 
@@ -396,7 +395,7 @@ function canonicalHeader(
   snapshot: RouterActiveAssemblySnapshot,
   requestId: string
 ): RuntimeAssemblyRequestStartFrameHeader {
-  return assemblyHttpUnaryRequestHeader({
+  return assemblyHttpRequestHeader({
     snapshot,
     binding: BINDING,
     requestId,

@@ -6,20 +6,10 @@ import {
   type PendingActivation
 } from '../protocol/assemblyActivationProtocol.js';
 import {
-  AssemblyActivationFilePersistence,
-  type ActivationPersistenceFailpoint
-} from './assemblyActivationFilePersistence.js';
-import {
-  withActivationFileLock,
-  type ActivationFileLockOptions
-} from './assemblyActivationFileLock.js';
-import {
   abortActivationState,
   commitActivationState,
   prepareActivationState
 } from './assemblyActivationStateReducer.js';
-
-export { canonicalActivationJson } from './assemblyActivationFilePersistence.js';
 
 export interface AssemblyActivationStateStore {
   read(environment: string): Promise<EnvironmentActivationState>;
@@ -39,79 +29,7 @@ export interface AssemblyActivationStateStore {
   ): Promise<EnvironmentActivationState>;
 }
 
-export type FileAssemblyActivationStateStoreOptions = Readonly<{
-  lock?: ActivationFileLockOptions;
-  persistenceFailpoint?: ActivationPersistenceFailpoint;
-}>;
-
-export class FileAssemblyActivationStateStore implements AssemblyActivationStateStore {
-  private readonly persistence: AssemblyActivationFilePersistence;
-
-  constructor(
-    artifactRoot: string,
-    private readonly options: FileAssemblyActivationStateStoreOptions = {}
-  ) {
-    this.persistence = new AssemblyActivationFilePersistence(
-      artifactRoot,
-      options.persistenceFailpoint
-    );
-  }
-
-  async read(environment: string): Promise<EnvironmentActivationState> {
-    return this.persistence.read(environment);
-  }
-
-  prepare(
-    request: AssemblyActivationRequest,
-    participantReplicaIds: readonly string[]
-  ): Promise<EnvironmentActivationState> {
-    return this.mutate(request.environment, (current) =>
-      prepareActivationState(current, request, participantReplicaIds)
-    );
-  }
-
-  abort(
-    environment: string,
-    pending: PendingActivation
-  ): Promise<EnvironmentActivationState> {
-    return this.mutate(environment, (current) =>
-      abortActivationState(current, environment, pending)
-    );
-  }
-
-  commit(
-    environment: string,
-    pending: PendingActivation,
-    connectedReplicaIds: readonly string[],
-    preparedReplicaIds: readonly string[]
-  ): Promise<EnvironmentActivationState> {
-    return this.mutate(environment, (current) =>
-      commitActivationState(
-        current,
-        environment,
-        pending,
-        connectedReplicaIds,
-        preparedReplicaIds
-      )
-    );
-  }
-
-  private async mutate(
-    environment: string,
-    update: (current: EnvironmentActivationState) => EnvironmentActivationState
-  ): Promise<EnvironmentActivationState> {
-    const { lock } = await this.persistence.paths(environment);
-    return withActivationFileLock(lock, async () => {
-      const current = await this.read(environment);
-      const next = update(current);
-      if (next !== current) {
-        await this.persistence.replace(environment, next);
-      }
-      return next;
-    }, this.options.lock);
-  }
-}
-
+/** Direct-test fake. Production must use EcosystemStoreClient. */
 export class MemoryAssemblyActivationStateStore implements AssemblyActivationStateStore {
   private state: EnvironmentActivationState;
 

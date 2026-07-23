@@ -20,12 +20,21 @@ export interface AssemblyActivationControlSender {
   sendAssemblyControl(ws: WebSocket, control: AssemblyActivationControl): void;
 }
 
+export interface AssemblyActivationParticipantRegistry {
+  healthyParticipantReplicaIds(): readonly string[];
+  connectedParticipantReplicaIds(replicaIds: readonly string[]): readonly string[];
+  isReplicaConnected(replicaId: string): boolean;
+  connectionForReplica(replicaId: string): WebSocket | undefined;
+  assertReplicaConnection(ws: WebSocket, replicaId: string): void;
+}
+
 export interface AssemblyActivationCoordinatorOptions {
   environment: string;
   stateStore: AssemblyActivationStateStore;
   assemblyLoader: RuntimeAssemblySnapshotLoader;
   snapshots: RouterActiveAssemblySnapshotStore;
   registry: AssemblyRuntimeRegistry;
+  participants: AssemblyActivationParticipantRegistry;
   controlSender: AssemblyActivationControlSender;
   prepareTimeoutMs?: number;
 }
@@ -103,7 +112,7 @@ export class AssemblyActivationCoordinator {
         request,
         this.options.assemblyLoader
       );
-      const participants = this.options.registry.healthyParticipantReplicaIds();
+      const participants = this.options.participants.healthyParticipantReplicaIds();
       if (participants.length === 0) {
         throw new Error('assembly activation requires at least one healthy participant replica');
       }
@@ -145,7 +154,7 @@ export class AssemblyActivationCoordinator {
         return;
       }
       const transaction = this.requireExactTransaction(response);
-      this.options.registry.assertReplicaConnection(ws, response.replicaId);
+      this.options.participants.assertReplicaConnection(ws, response.replicaId);
       if (!transaction.pending.participantReplicaIds.includes(response.replicaId)) {
         throw new Error(`replica ${response.replicaId} is not a frozen activation participant`);
       }
@@ -165,7 +174,7 @@ export class AssemblyActivationCoordinator {
     });
   }
 
-  handleReplicaRegistered(replicaId: string): void {
+  handleParticipantConnected(replicaId: string): void {
     void this.enqueue(async () => {
       const transaction = this.transaction;
       if (
@@ -245,7 +254,7 @@ export class AssemblyActivationCoordinator {
 
   private sendPrepareToConnectedParticipants(transaction: PendingTransaction): void {
     for (const replicaId of transaction.pending.participantReplicaIds) {
-      if (this.options.registry.isReplicaConnected(replicaId)) {
+      if (this.options.participants.isReplicaConnected(replicaId)) {
         this.sendPrepare(transaction, replicaId);
       }
     }
@@ -255,7 +264,7 @@ export class AssemblyActivationCoordinator {
     if (transaction.prepareSentReplicaIds.has(replicaId)) {
       return;
     }
-    const ws = this.options.registry.connectionForReplica(replicaId);
+    const ws = this.options.participants.connectionForReplica(replicaId);
     if (ws === undefined) {
       return;
     }
@@ -270,7 +279,7 @@ export class AssemblyActivationCoordinator {
     if (transaction.settled || this.transaction !== transaction) {
       return;
     }
-    const connected = this.options.registry.connectedParticipantReplicaIds(
+    const connected = this.options.participants.connectedParticipantReplicaIds(
       transaction.pending.participantReplicaIds
     );
     if (connected.length !== transaction.pending.participantReplicaIds.length) {
@@ -283,12 +292,62 @@ export class AssemblyActivationCoordinator {
     const prepared = [...transaction.preparedReplicaIds].sort((left, right) =>
       Buffer.compare(Buffer.from(left), Buffer.from(right))
     );
-    const state = await this.options.stateStore.commit(
-      this.options.environment,
-      transaction.pending,
-      connected,
-      prepared
+    let state: EnvironmentActivationState;
+    try {
+      state = await this.options.stateStore.commit(
+        this.options.environment,
+        transaction.pending,
+        connected,
+        prepared
+      );
+    } catch (error) {
+      await this.reconcileCommitFailure(transaction, toError(error));
+      return;
+    }
+    this.publishCommittedTransaction(transaction, state);
+  }
+
+  private async reconcileCommitFailure(
+    transaction: PendingTransaction,
+    commitError: Error
+  ): Promise<void> {
+    let durable: EnvironmentActivationState;
+    try {
+      durable = await this.options.stateStore.read(this.options.environment);
+    } catch {
+      // The durable outcome is unknown. Keep the transaction installed so its
+      // bounded timeout can retry the fail-closed abort path.
+      throw commitError;
+    }
+    if (matchesCommittedCandidate(durable, transaction.pending)) {
+      this.publishCommittedTransaction(transaction, durable);
+      return;
+    }
+    if (pendingActivationsEqual(durable.pending, transaction.pending)) {
+      await this.abortTransaction(transaction, commitError);
+      return;
+    }
+    if (
+      durable.pending === null &&
+      this.state !== undefined &&
+      committedActivationsEqual(durable, this.state)
+    ) {
+      this.finishAbortedTransaction(transaction, durable, commitError);
+      return;
+    }
+    throw new AggregateError(
+      [commitError],
+      'activation commit adapter failure could not be reconciled to the durable state'
     );
+  }
+
+  private publishCommittedTransaction(
+    transaction: PendingTransaction,
+    state: EnvironmentActivationState
+  ): void {
+    if (!matchesCommittedCandidate(state, transaction.pending)) {
+      throw new Error('activation commit CAS returned a mismatched durable state');
+    }
     this.state = state;
     this.options.snapshots.replace(transaction.candidateSnapshot);
     this.options.registry.activate(transaction.candidateSnapshot);
@@ -297,7 +356,7 @@ export class AssemblyActivationCoordinator {
     this.transaction = undefined;
     transaction.resolve(state);
     for (const replicaId of transaction.pending.participantReplicaIds) {
-      const ws = this.options.registry.connectionForReplica(replicaId);
+      const ws = this.options.participants.connectionForReplica(replicaId);
       if (ws !== undefined) {
         try {
           this.options.controlSender.sendAssemblyControl(
@@ -323,13 +382,28 @@ export class AssemblyActivationCoordinator {
       this.options.environment,
       transaction.pending
     );
+    this.finishAbortedTransaction(transaction, state, reason);
+  }
+
+  private finishAbortedTransaction(
+    transaction: PendingTransaction,
+    state: EnvironmentActivationState,
+    reason: Error
+  ): void {
+    if (
+      state.pending !== null ||
+      this.state === undefined ||
+      !committedActivationsEqual(state, this.state)
+    ) {
+      throw new Error('activation abort CAS returned a mismatched durable state');
+    }
     this.state = state;
     transaction.settled = true;
     clearTimeout(transaction.timeout);
     this.transaction = undefined;
     transaction.reject(reason);
     for (const replicaId of transaction.pending.participantReplicaIds) {
-      const ws = this.options.registry.connectionForReplica(replicaId);
+      const ws = this.options.participants.connectionForReplica(replicaId);
       if (ws !== undefined) {
         try {
           this.options.controlSender.sendAssemblyControl(
@@ -476,4 +550,48 @@ function matchesPendingControl(
     pending.candidateGeneration === control.candidateGeneration &&
     pending.assembly.assemblyIdentity === control.assembly.assemblyIdentity
   );
+}
+
+function pendingActivationsEqual(
+  left: PendingActivation | null,
+  right: PendingActivation
+): boolean {
+  return (
+    left !== null &&
+    left.activationId === right.activationId &&
+    left.expectedGeneration === right.expectedGeneration &&
+    left.candidateGeneration === right.candidateGeneration &&
+    left.assembly.assemblyIdentity === right.assembly.assemblyIdentity &&
+    left.participantReplicaIds.length === right.participantReplicaIds.length &&
+    left.participantReplicaIds.every(
+      (replicaId, index) => replicaId === right.participantReplicaIds[index]
+    )
+  );
+}
+
+function matchesCommittedCandidate(
+  state: EnvironmentActivationState,
+  pending: PendingActivation
+): boolean {
+  return (
+    state.pending === null &&
+    state.committed.generation === pending.candidateGeneration &&
+    state.committed.assembly.assemblyIdentity === pending.assembly.assemblyIdentity
+  );
+}
+
+function committedActivationsEqual(
+  left: EnvironmentActivationState,
+  right: EnvironmentActivationState
+): boolean {
+  return (
+    left.environment === right.environment &&
+    left.committed.generation === right.committed.generation &&
+    left.committed.assembly.assemblyIdentity ===
+      right.committed.assembly.assemblyIdentity
+  );
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

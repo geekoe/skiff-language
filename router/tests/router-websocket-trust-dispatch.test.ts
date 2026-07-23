@@ -43,6 +43,7 @@ const binding: RuntimeAssemblyIngressBinding = {
     contractVersion: '1.0.0',
     serviceProtocolIdentity: PROTOCOL
   },
+  operationMode: 'unary',
   contractOperationId: OPERATION
 };
 

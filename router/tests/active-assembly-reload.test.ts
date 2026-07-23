@@ -5,7 +5,8 @@ import type { AssemblyActivationControl } from '../src/protocol/assemblyActivati
 import { AssemblyActivationCoordinator } from '../src/router/assemblyActivationCoordinator.js';
 import {
   MemoryAssemblyActivationStateStore,
-  initialActivationState
+  initialActivationState,
+  type AssemblyActivationStateStore
 } from '../src/router/assemblyActivationStateStore.js';
 import { AssemblyRuntimeRegistry } from '../src/router/assemblyRuntimeRegistry.js';
 import {
@@ -125,8 +126,8 @@ describe('active RuntimeAssembly activation transaction', () => {
     const runtimeB = fakeSocket();
     register(fixture.registry, runtimeA, 'replica-a', 1, ASSEMBLY_A);
     register(fixture.registry, runtimeB, 'replica-b', 1, ASSEMBLY_A);
-    fixture.coordinator.handleReplicaRegistered('replica-a');
-    fixture.coordinator.handleReplicaRegistered('replica-b');
+    fixture.coordinator.handleParticipantConnected('replica-a');
+    fixture.coordinator.handleParticipantConnected('replica-b');
     await until(() => controlsOfType(fixture.controls, 'prepare').length === 2);
     fixture.coordinator.handleRuntimeControl(
       runtimeA,
@@ -155,6 +156,7 @@ describe('active RuntimeAssembly activation transaction', () => {
       ]),
       snapshots,
       registry,
+      participants: registry,
       controlSender: { sendAssemblyControl: () => undefined },
       prepareTimeoutMs: 10
     });
@@ -191,10 +193,110 @@ describe('active RuntimeAssembly activation transaction', () => {
       replicaId: 'replica-after-crash'
     });
   });
+
+  it('rolls back a durable pending transaction when the commit adapter fails before CAS', async () => {
+    const durable = new MemoryAssemblyActivationStateStore(
+      initialActivationState({
+        environment: 'test',
+        generation: 1,
+        assemblyIdentity: ASSEMBLY_A
+      })
+    );
+    const store: AssemblyActivationStateStore = {
+      read: (environment) => durable.read(environment),
+      prepare: (request, participants) => durable.prepare(request, participants),
+      abort: (environment, pending) => durable.abort(environment, pending),
+      commit: async () => {
+        throw new Error('injected commit adapter failure');
+      }
+    };
+    const fixture = await coordinatorFixture(store);
+    const runtime = fakeSocket();
+    register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v1',
+      environment: 'test',
+      activationId: 'activation-adapter-failure',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B }
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-adapter-failure'
+      )
+    );
+
+    await expect(activation).rejects.toThrow(/injected commit adapter failure/);
+    await expect(durable.read('test')).resolves.toMatchObject({
+      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A } },
+      pending: null
+    });
+    expect(fixture.snapshots.get()).toMatchObject({
+      generation: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_A }
+    });
+    expect(controlsOfType(fixture.controls, 'abort')).toHaveLength(1);
+  });
+
+  it('converges to the durable commit when the adapter response is lost after CAS', async () => {
+    const durable = new MemoryAssemblyActivationStateStore(
+      initialActivationState({
+        environment: 'test',
+        generation: 1,
+        assemblyIdentity: ASSEMBLY_A
+      })
+    );
+    const store: AssemblyActivationStateStore = {
+      read: (environment) => durable.read(environment),
+      prepare: (request, participants) => durable.prepare(request, participants),
+      abort: (environment, pending) => durable.abort(environment, pending),
+      commit: async (environment, pending, connected, prepared) => {
+        await durable.commit(environment, pending, connected, prepared);
+        throw new Error('injected lost commit response');
+      }
+    };
+    const fixture = await coordinatorFixture(store);
+    const runtime = fakeSocket();
+    register(fixture.registry, runtime, 'replica-a', 1, ASSEMBLY_A);
+    const activation = fixture.coordinator.activate({
+      schemaVersion: 'skiff-assembly-activation-request-v1',
+      environment: 'test',
+      activationId: 'activation-lost-response',
+      expectedGeneration: 1,
+      assembly: { assemblyIdentity: ASSEMBLY_B }
+    });
+    await until(() => controlsOfType(fixture.controls, 'prepare').length === 1);
+    fixture.coordinator.handleRuntimeControl(
+      runtime,
+      responseControl(
+        'prepared',
+        'replica-a',
+        ASSEMBLY_B,
+        1,
+        'activation-lost-response'
+      )
+    );
+
+    await expect(activation).resolves.toMatchObject({
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } },
+      pending: null
+    });
+    expect(fixture.snapshots.get()).toMatchObject({
+      generation: 2,
+      assembly: { assemblyIdentity: ASSEMBLY_B }
+    });
+    expect(controlsOfType(fixture.controls, 'commit')).toHaveLength(1);
+  });
 });
 
 async function coordinatorFixture(
-  stateStore = new MemoryAssemblyActivationStateStore(
+  stateStore: AssemblyActivationStateStore = new MemoryAssemblyActivationStateStore(
     initialActivationState({ environment: 'test', generation: 1, assemblyIdentity: ASSEMBLY_A })
   )
 ) {
@@ -211,6 +313,7 @@ async function coordinatorFixture(
     ]),
     snapshots,
     registry,
+    participants: registry,
     controlSender: {
       sendAssemblyControl: (_ws, control) => controls.push(control)
     },

@@ -18,13 +18,18 @@ const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS = 200;
 const DEFAULT_TELEMETRY_BATCH_MAX_BYTES = 262144;
 const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 1000;
 const IDENTITY_CLI_ENV = 'SKIFF_ARTIFACT_IDENTITY_CLI';
+const ECOSYSTEM_STORE_CLI_ENV = 'SKIFF_ECOSYSTEM_STORE_CLI';
 const IDENTITY_CLI_BINARY = process.platform === 'win32'
   ? 'skiff-artifact-identity.exe'
   : 'skiff-artifact-identity';
+const ECOSYSTEM_STORE_CLI_BINARY = process.platform === 'win32'
+  ? 'skiff-compiler.exe'
+  : 'skiff-compiler';
 
 export interface RouterConfig {
   artifactRoots?: string[];
   devReload?: boolean;
+  ecosystemStoreCliPath?: string;
   environment?: string;
   host: string;
   httpBodyLimitBytes?: number;
@@ -46,6 +51,7 @@ export interface RouterConfig {
 export interface RouterConfigOverrides {
   artifactRoots?: string[];
   devReload?: boolean;
+  ecosystemStoreCliPath?: string;
   environment?: string;
   host?: string;
   httpBodyLimitBytes?: string;
@@ -63,6 +69,7 @@ export interface RouterConfigOverrides {
 interface RawRouterConfig {
   artifactRoots?: unknown;
   devReload?: unknown;
+  ecosystemStoreCliPath?: unknown;
   environment?: unknown;
   host?: unknown;
   hosts?: unknown;
@@ -133,6 +140,14 @@ export async function loadRouterConfig(
       : {}),
     ...(releaseMode !== undefined ? { releaseMode } : {}),
   });
+  const ecosystemStoreCliPath = readEcosystemStoreCliPath({
+    raw: raw.ecosystemStoreCliPath,
+    configDir,
+    ...(overrides.ecosystemStoreCliPath !== undefined
+      ? { override: overrides.ecosystemStoreCliPath }
+      : {}),
+    ...(releaseMode !== undefined ? { releaseMode } : {})
+  });
   rejectRemovedValuesConfig(raw.values);
   rejectRemovedArtifactRootConfig(raw);
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
@@ -194,6 +209,9 @@ export async function loadRouterConfig(
   }
   if (identityCliPath !== undefined) {
     config.identityCliPath = identityCliPath;
+  }
+  if (ecosystemStoreCliPath !== undefined) {
+    config.ecosystemStoreCliPath = ecosystemStoreCliPath;
   }
   const fileBackend = readFileBackendConfig(raw.fileBackend, configDir);
   if (fileBackend !== undefined) {
@@ -403,11 +421,42 @@ function readIdentityCliPath(input: {
 }
 
 function defaultDevIdentityCliPath(): string {
+  return join(defaultDevBinDir(), IDENTITY_CLI_BINARY);
+}
+
+function readEcosystemStoreCliPath(input: {
+  override?: string;
+  raw: unknown;
+  configDir: string;
+  releaseMode?: boolean;
+}): string | undefined {
+  if (input.override !== undefined) {
+    return resolveProcessPath(
+      readString(input.override, 'ecosystemStoreCliPath', input.override)
+    );
+  }
+  if (input.raw !== undefined && input.raw !== null) {
+    return resolveConfigPath(
+      input.configDir,
+      readString(input.raw, 'ecosystemStoreCliPath', String(input.raw))
+    );
+  }
+  const envPath = process.env[ECOSYSTEM_STORE_CLI_ENV];
+  if (envPath !== undefined && envPath.trim().length > 0) {
+    return resolveProcessPath(envPath);
+  }
+  if (input.releaseMode === true) {
+    return undefined;
+  }
+  return join(defaultDevBinDir(), ECOSYSTEM_STORE_CLI_BINARY);
+}
+
+function defaultDevBinDir(): string {
   const devHome =
     process.env.SKIFF_DEV_HOME && process.env.SKIFF_DEV_HOME.trim().length > 0
       ? process.env.SKIFF_DEV_HOME
       : join(process.cwd(), '.skiff-instance', 'dev-home');
-  return join(resolve(devHome), 'bin', IDENTITY_CLI_BINARY);
+  return join(resolve(devHome), 'bin');
 }
 
 function resolveProcessPath(value: string): string {

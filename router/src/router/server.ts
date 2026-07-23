@@ -2,23 +2,22 @@ import { parseArgs } from 'node:util';
 
 import { AssemblyWebSocketGateway } from '../gateway/assemblyWebSocketGateway.js';
 import { AssemblyActivationCoordinator } from './assemblyActivationCoordinator.js';
-import { FileAssemblyActivationStateStore } from './assemblyActivationStateStore.js';
 import { AssemblyControlPlane } from './assemblyControlPlane.js';
 import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import { loadRouterConfig, type RouterConfigOverrides } from './config.js';
+import { EcosystemStoreClient } from './ecosystemStoreClient.js';
 import { RuntimeDispatcher } from './runtimeDispatcher.js';
 import { RuntimeEndpoint } from './runtimeEndpoint.js';
 import { RuntimeRegistry } from './runtimeRegistry.js';
-import {
-  FileRuntimeAssemblySnapshotLoader,
-  RouterActiveAssemblySnapshotStore
-} from './runtimeAssemblySnapshot.js';
+import { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapshot.js';
+import { WebSocketGenerationLifecycleRouter } from './webSocketGenerationLifecycleRouter.js';
 
 const args = parseArgs({
   options: {
     config: { type: 'string', default: 'router.yml' },
     'artifact-root': { type: 'string', multiple: true },
+    'ecosystem-store-cli': { type: 'string' },
     environment: { type: 'string' },
     host: { type: 'string' },
     'http-body-limit-bytes': { type: 'string' },
@@ -32,6 +31,9 @@ const args = parseArgs({
 const overrides: RouterConfigOverrides = {};
 if (args.values['artifact-root'] !== undefined) {
   overrides.artifactRoots = args.values['artifact-root'];
+}
+if (args.values['ecosystem-store-cli'] !== undefined) {
+  overrides.ecosystemStoreCliPath = args.values['ecosystem-store-cli'];
 }
 if (args.values.environment !== undefined) {
   overrides.environment = args.values.environment;
@@ -65,10 +67,19 @@ if (config.artifactRoots?.length !== 1) {
 if (config.rewrite.length > 0) {
   throw new Error('router rewrite-to-service rules are not supported by RuntimeAssembly ingress');
 }
+if (config.ecosystemStoreCliPath === undefined) {
+  throw new Error(
+    'router active RuntimeAssembly mode requires an explicit ecosystemStoreCliPath'
+  );
+}
 const artifactRoot = config.artifactRoots[0]!;
 const snapshots = new RouterActiveAssemblySnapshotStore();
-const assemblyLoader = new FileRuntimeAssemblySnapshotLoader(artifactRoot);
-const stateStore = new FileAssemblyActivationStateStore(artifactRoot);
+const ecosystemStore = new EcosystemStoreClient({
+  compilerPath: config.ecosystemStoreCliPath,
+  artifactRoot,
+  timeoutMs: config.requestTimeoutMs
+});
+await ecosystemStore.ensureEnvironmentBootstrap(config.environment);
 const registry = new AssemblyRuntimeRegistry(snapshots);
 const runtimeRegistry = new RuntimeRegistry();
 const runtimeEndpoint = new RuntimeEndpoint({
@@ -77,10 +88,11 @@ const runtimeEndpoint = new RuntimeEndpoint({
 });
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
-  stateStore,
-  assemblyLoader,
+  stateStore: ecosystemStore,
+  assemblyLoader: ecosystemStore,
   snapshots,
   registry,
+  participants: runtimeRegistry,
   controlSender: runtimeEndpoint,
   prepareTimeoutMs: config.requestTimeoutMs
 });
@@ -89,6 +101,13 @@ await coordinator.initialize();
 
 const dispatcher = new RuntimeDispatcher({ registry, frameSender: runtimeEndpoint });
 runtimeEndpoint.setDispatcher(dispatcher);
+const generationLifecycle = new WebSocketGenerationLifecycleRouter({
+  dispatcher,
+  sender: runtimeEndpoint,
+  releaseTimeoutMs: config.requestTimeoutMs
+});
+runtimeEndpoint.setWebSocketGenerationLifecycle(generationLifecycle);
+registry.setConnectionPinCounter(generationLifecycle);
 const controlPlane = new AssemblyControlPlane({
   coordinator,
   registry,
@@ -116,6 +135,7 @@ const webSocketGateway = new AssemblyWebSocketGateway({
   snapshots,
   dispatcher,
   runtimeConnectionSend: runtimeEndpoint,
+  generationLifecycle,
   server: httpServer.server,
   host: config.host,
   requestTimeoutMs: config.requestTimeoutMs
@@ -141,9 +161,21 @@ console.log(
 );
 
 async function shutdown(): Promise<void> {
-  await webSocketGateway.close();
-  await httpGateway.close();
-  await runtimeEndpoint.close();
+  const failures: unknown[] = [];
+  for (const close of [
+    () => webSocketGateway.close(),
+    () => httpGateway.close(),
+    () => runtimeEndpoint.close()
+  ]) {
+    try {
+      await close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'router shutdown failed');
+  }
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

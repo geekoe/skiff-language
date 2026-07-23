@@ -33,6 +33,8 @@ import {
 const ASSEMBLY_A = identity('a');
 const ASSEMBLY_B = identity('b');
 const ASSEMBLY_C = identity('c');
+const EMPTY_ASSEMBLY =
+  'skiff-runtime-assembly-v1:sha256:4176e39122928fcf47db987c34884f2f7ab4a1833c502a33bb6fd0c861a5acf6';
 const RUNTIME_ID = 'runtime-assembly-a';
 const fixtures: CompositeEndpointFixture[] = [];
 
@@ -114,6 +116,56 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     ]);
   });
 
+  it('uses capability participants across the initial empty and later old registrations', async () => {
+    const fixture = await createFixture({
+      generation: 0,
+      assemblyIdentity: EMPTY_ASSEMBLY
+    });
+    const ws = await openSocket(fixture.url);
+    sendCapabilities(ws, RUNTIME_ID);
+    sendActivation(ws, registration(0, EMPTY_ASSEMBLY));
+    await until(() =>
+      fixture.runtimeRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID) &&
+      fixture.assemblyRegistry.healthyParticipantReplicaIds().includes(RUNTIME_ID)
+    );
+
+    const firstPrepare = nextActivation(ws, 'prepare');
+    const firstActivation = fixture.coordinator.activate(
+      activationRequest('activation-first', 0, ASSEMBLY_A)
+    );
+    expect(await firstPrepare).toEqual(
+      transition('prepare', 'activation-first', 0, ASSEMBLY_A)
+    );
+    const firstCommit = nextActivation(ws, 'commit');
+    sendActivation(ws, transition('prepared', 'activation-first', 0, ASSEMBLY_A));
+    await expect(firstActivation).resolves.toMatchObject({
+      committed: { generation: 1, assembly: { assemblyIdentity: ASSEMBLY_A } }
+    });
+    await firstCommit;
+    expect(fixture.assemblyRegistry.snapshot()).toEqual([
+      expect.objectContaining({
+        generation: 0,
+        assemblyIdentity: EMPTY_ASSEMBLY,
+        state: 'draining'
+      })
+    ]);
+
+    const secondPrepare = nextActivation(ws, 'prepare');
+    const secondActivation = fixture.coordinator.activate(
+      activationRequest('activation-second', 1, ASSEMBLY_B)
+    );
+    expect(await secondPrepare).toEqual(
+      transition('prepare', 'activation-second', 1, ASSEMBLY_B)
+    );
+    const secondCommit = nextActivation(ws, 'commit');
+    sendActivation(ws, transition('prepared', 'activation-second', 1, ASSEMBLY_B));
+    await expect(secondActivation).resolves.toMatchObject({
+      committed: { generation: 2, assembly: { assemblyIdentity: ASSEMBLY_B } }
+    });
+    await secondCommit;
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+  });
+
   it('keeps the complete generic runtime switch on the composite endpoint', async () => {
     const fixture = await createFixture();
     const ws = await openSocket(fixture.url);
@@ -179,6 +231,24 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     ]);
   });
 
+  it('keeps the first capability session when a duplicate live runtime identity connects', async () => {
+    const fixture = await createFixture();
+    const owner = await openSocket(fixture.url);
+    sendCapabilities(owner, RUNTIME_ID);
+    await until(() =>
+      fixture.runtimeRegistry.capabilityConnectionsSnapshot().length === 1
+    );
+
+    await expectPolicyClose(
+      fixture.url,
+      (duplicate) => sendCapabilities(duplicate, RUNTIME_ID)
+    );
+    expect(owner.readyState).toBe(WebSocket.OPEN);
+    expect(fixture.runtimeRegistry.capabilityConnectionsSnapshot()).toEqual([
+      expect.objectContaining({ runtimeId: RUNTIME_ID, connected: true })
+    ]);
+  });
+
   it('fails closed with 1008 before session mutation for invalid bootstrap frames', async () => {
     const fixture = await createFixture();
     await expectPolicyClose(fixture.url, (ws) => sendActivation(ws, registration(1, ASSEMBLY_A)));
@@ -235,7 +305,9 @@ interface CompositeEndpointFixture {
   close(): Promise<void>;
 }
 
-async function createFixture(): Promise<CompositeEndpointFixture> {
+async function createFixture(
+  initial = { generation: 1, assemblyIdentity: ASSEMBLY_A }
+): Promise<CompositeEndpointFixture> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
@@ -244,16 +316,18 @@ async function createFixture(): Promise<CompositeEndpointFixture> {
     environment: 'test',
     stateStore: new MemoryAssemblyActivationStateStore(initialActivationState({
       environment: 'test',
-      generation: 1,
-      assemblyIdentity: ASSEMBLY_A
+      generation: initial.generation,
+      assemblyIdentity: initial.assemblyIdentity
     })),
     assemblyLoader: new MemoryRuntimeAssemblySnapshotLoader([
+      assembly(EMPTY_ASSEMBLY),
       assembly(ASSEMBLY_A),
       assembly(ASSEMBLY_B),
       assembly(ASSEMBLY_C)
     ]),
     snapshots,
     registry: assemblyRegistry,
+    participants: runtimeRegistry,
     controlSender: endpoint,
     prepareTimeoutMs: 1000
   });

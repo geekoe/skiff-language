@@ -27,6 +27,12 @@ import {
 } from '../protocol/envelope.js';
 import type { RuntimeAssemblyRequestStartFrameHeader } from '../protocol/runtimeAssemblyRequest.js';
 import { validateRuntimeToRouterFrameHeader } from '../protocol/runtimeProtocol.js';
+import {
+  WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+  decodeWebSocketGenerationLifecycleFrame,
+  encodeWebSocketGenerationLifecycleFrame,
+  type WebSocketGenerationLifecycleControl
+} from '../protocol/webSocketGenerationLifecycle.js';
 import type {
   AssemblyActivationControlSender,
   AssemblyActivationCoordinator
@@ -34,6 +40,10 @@ import type {
 import type { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import type { RuntimeDispatcher, RuntimeFrameSendCallback, RuntimeFrameSender } from './runtimeDispatcher.js';
 import type { RuntimeRegistry } from './runtimeRegistry.js';
+import type {
+  WebSocketGenerationLifecycleControlSender,
+  WebSocketGenerationLifecycleRouter
+} from './webSocketGenerationLifecycleRouter.js';
 
 const CONNECTION_SEND_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
@@ -120,12 +130,14 @@ export class RuntimeEndpoint
     RuntimeFrameSender,
     RuntimeConnectionSendSource,
     RuntimeControlBroadcaster,
-    AssemblyActivationControlSender
+    AssemblyActivationControlSender,
+    WebSocketGenerationLifecycleControlSender
 {
   private readonly connectionSendHandlers = new Set<ConnectionSendHandler>();
   private coordinator: AssemblyActivationCoordinator | undefined;
   private control: Omit<RouterControlEnvelope, 'type'> | undefined;
   private dispatcherInstance: RuntimeDispatcher | undefined;
+  private generationLifecycle: WebSocketGenerationLifecycleRouter | undefined;
   private server: HttpServer | undefined;
   private webSocketServer: WebSocketServer | undefined;
 
@@ -144,6 +156,12 @@ export class RuntimeEndpoint
       throw new Error('assembly activation coordinator requires an assembly runtime registry');
     }
     this.coordinator = coordinator;
+  }
+
+  setWebSocketGenerationLifecycle(
+    lifecycle: WebSocketGenerationLifecycleRouter
+  ): void {
+    this.generationLifecycle = lifecycle;
   }
 
   async listen(options: RuntimeEndpointListenOptions): Promise<RuntimeEndpointListenResult> {
@@ -200,9 +218,12 @@ export class RuntimeEndpoint
 
       ws.on('close', () => {
         this.dispatcher().handleRuntimeDisconnect(ws);
+        this.generationLifecycle?.handleRuntimeDisconnect(ws);
+        const participantId =
+          this.options.registry.runtimeCapabilityIdentityForConnection(ws);
         const replicaId = this.options.assemblyRegistry?.removeRuntimeConnection(ws);
         this.options.registry.removeRuntimeConnection(ws);
-        this.coordinator?.handleReplicaDisconnected(replicaId);
+        this.coordinator?.handleReplicaDisconnected(participantId ?? replicaId);
       });
     });
 
@@ -311,6 +332,19 @@ export class RuntimeEndpoint
     ws.send(encodeAssemblyActivationFrame('routerToRuntime', control));
   }
 
+  sendWebSocketGenerationControl(
+    ws: WebSocket,
+    control: WebSocketGenerationLifecycleControl
+  ): void {
+    this.options.registry.assertRuntimeCapabilityConnection(ws);
+    if (ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket generation lifecycle runtime is disconnected');
+    }
+    ws.send(
+      encodeWebSocketGenerationLifecycleFrame(control, 'routerToRuntime')
+    );
+  }
+
   private async handleMessage(
     ws: WebSocket,
     data: WebSocket.RawData,
@@ -333,6 +367,18 @@ export class RuntimeEndpoint
       this.handleAssemblyControl(
         ws,
         decodeAssemblyActivationFrame('runtimeToRouter', data)
+      );
+      return;
+    }
+    if (frame.header.type === WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE) {
+      const lifecycle = this.generationLifecycle;
+      if (lifecycle === undefined) {
+        throw new Error('WebSocket generation lifecycle is unavailable');
+      }
+      this.options.registry.assertRuntimeCapabilityConnection(ws);
+      lifecycle.handleRuntimeControl(
+        ws,
+        decodeWebSocketGenerationLifecycleFrame(data, 'runtimeToRouter')
       );
       return;
     }
@@ -375,6 +421,7 @@ export class RuntimeEndpoint
           ...header,
           type: 'runtime.capabilities'
         });
+        this.coordinator?.handleParticipantConnected(header.runtimeId);
         return;
       case 'runtime.health':
         if (frame.payloadBytes.byteLength !== 0) {
@@ -562,7 +609,6 @@ export class RuntimeEndpoint
     this.options.registry.assertRuntimeCapabilityConnection(ws, control.replicaId);
     if (control.type === 'register') {
       registry.register(ws, control);
-      this.coordinator?.handleReplicaRegistered(control.replicaId);
       return;
     }
     if (control.type !== 'prepared' && control.type !== 'reject') {

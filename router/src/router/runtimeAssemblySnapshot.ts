@@ -1,11 +1,7 @@
-import { lstat, readFile, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-
 import type {
   EnvironmentActivationState,
   RuntimeAssemblyRef
 } from '../protocol/assemblyActivationProtocol.js';
-import { parseStrictActivationJson } from '../protocol/strictActivationJson.js';
 
 const CONTRACT_OPERATION_IDENTITY_PATTERN =
   /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/;
@@ -41,6 +37,7 @@ export interface RuntimeAssemblyIngressBinding {
   deployment: RuntimeAssemblyDeploymentRef;
   contract: RuntimeAssemblyContractRef;
   contractOperationId: string;
+  operationMode: 'unary' | 'serverStream';
 }
 
 export interface LoadedRuntimeAssembly {
@@ -51,38 +48,6 @@ export interface LoadedRuntimeAssembly {
 
 export interface RuntimeAssemblySnapshotLoader {
   load(ref: RuntimeAssemblyRef): Promise<LoadedRuntimeAssembly>;
-}
-
-export class FileRuntimeAssemblySnapshotLoader implements RuntimeAssemblySnapshotLoader {
-  private root: string | undefined;
-
-  constructor(private readonly artifactRoot: string) {}
-
-  async load(ref: RuntimeAssemblyRef): Promise<LoadedRuntimeAssembly> {
-    const root = this.root ?? (this.root = await realpath(resolve(this.artifactRoot)));
-    const identityHash = ref.assemblyIdentity.slice(
-      'skiff-runtime-assembly-v1:sha256:'.length
-    );
-    const path = join(root, 'records', 'runtime-assemblies', `${identityHash}.json`);
-    const canonicalParent = await realpath(dirname(path));
-    if (canonicalParent !== dirname(path)) {
-      throw new Error('RuntimeAssembly record path must not contain symlinks');
-    }
-    const metadata = await lstat(path);
-    if (metadata.isSymbolicLink()) {
-      throw new Error('RuntimeAssembly record path must not be a symlink');
-    }
-    if (!metadata.isFile()) {
-      throw new Error('RuntimeAssembly record path must be a file');
-    }
-    const bytes = await readFile(path);
-    const value = parseStrictActivationJson(bytes);
-    const assembly = decodeRuntimeAssemblyIngressSurface(value);
-    if (assembly.assemblyIdentity !== ref.assemblyIdentity) {
-      throw new Error('RuntimeAssembly record identity does not match exact reference');
-    }
-    return assembly;
-  }
 }
 
 export class MemoryRuntimeAssemblySnapshotLoader implements RuntimeAssemblySnapshotLoader {
@@ -216,7 +181,27 @@ export function canonicalIngressHost(host: string): string {
   }
 }
 
-function decodeRuntimeAssemblyIngressSurface(input: unknown): LoadedRuntimeAssembly {
+export function decodeRouterSnapshot(
+  input: unknown,
+  expectedAssembly: RuntimeAssemblyRef
+): { assembly: LoadedRuntimeAssembly } {
+  const value = exactObject(input, 'RouterSnapshot');
+  exactFields(value, ['assembly', 'serviceContracts'], 'RouterSnapshot');
+  if (!Array.isArray(value.serviceContracts)) {
+    throw new Error('RouterSnapshot.serviceContracts must be an array');
+  }
+  const operationModes = decodeContractOperationModes(value.serviceContracts);
+  const assembly = decodeRuntimeAssemblyIngressSurface(value.assembly, operationModes);
+  if (assembly.assemblyIdentity !== expectedAssembly.assemblyIdentity) {
+    throw new Error('RouterSnapshot assembly does not match the exact requested reference');
+  }
+  return { assembly };
+}
+
+function decodeRuntimeAssemblyIngressSurface(
+  input: unknown,
+  operationModes: ReadonlyMap<string, 'unary' | 'serverStream'>
+): LoadedRuntimeAssembly {
   const value = exactObject(input, 'RuntimeAssembly');
   exactFields(value, [
     'schemaVersion',
@@ -244,14 +229,19 @@ function decodeRuntimeAssemblyIngressSurface(input: unknown): LoadedRuntimeAssem
     schemaVersion: value.schemaVersion,
     assemblyIdentity,
     globalIngress: value.globalIngress.map((entry, index) =>
-      decodeIngressBinding(entry, `RuntimeAssembly.globalIngress[${index}]`)
+      decodeIngressBinding(
+        entry,
+        `RuntimeAssembly.globalIngress[${index}]`,
+        operationModes
+      )
     )
   };
 }
 
 function decodeIngressBinding(
   input: unknown,
-  label: string
+  label: string,
+  operationModes: ReadonlyMap<string, 'unary' | 'serverStream'>
 ): RuntimeAssemblyIngressBinding {
   const value = exactObject(input, label);
   exactFields(
@@ -286,12 +276,98 @@ function decodeIngressBinding(
   if (!CONTRACT_OPERATION_IDENTITY_PATTERN.test(contractOperationId)) {
     throw new Error(`${label}.contractOperationId is invalid`);
   }
+  const operationMode = operationModes.get(contractOperationKey(contract, contractOperationId));
+  if (operationMode === undefined) {
+    throw new Error(`${label}.contractOperationId is absent from the exact ServiceContract`);
+  }
   return {
     selector,
     deployment,
     contract,
-    contractOperationId
+    contractOperationId,
+    operationMode
   };
+}
+
+function decodeContractOperationModes(
+  contracts: readonly unknown[]
+): ReadonlyMap<string, 'unary' | 'serverStream'> {
+  const modes = new Map<string, 'unary' | 'serverStream'>();
+  const contractCoordinates = new Set<string>();
+  for (const [index, input] of contracts.entries()) {
+    const label = `RouterSnapshot.serviceContracts[${index}]`;
+    const contract = exactObject(input, label);
+    exactFields(contract, [
+      'schemaVersion',
+      'serviceId',
+      'contractVersion',
+      'serviceProtocolIdentity',
+      'operations',
+      'boundarySchema',
+      'diagnosticText'
+    ], label);
+    if (contract.schemaVersion !== 'skiff-service-contract-v2') {
+      throw new Error(`${label}.schemaVersion must be skiff-service-contract-v2`);
+    }
+    const ref: RuntimeAssemblyContractRef = {
+      serviceId: requiredString(contract, 'serviceId'),
+      contractVersion: requiredString(contract, 'contractVersion'),
+      serviceProtocolIdentity: requiredString(contract, 'serviceProtocolIdentity')
+    };
+    if (!SERVICE_PROTOCOL_IDENTITY_PATTERN.test(ref.serviceProtocolIdentity)) {
+      throw new Error(`${label}.serviceProtocolIdentity is invalid`);
+    }
+    const coordinate = contractCoordinateKey(ref);
+    if (contractCoordinates.has(coordinate)) {
+      throw new Error(`${label} duplicates an exact ServiceContract coordinate`);
+    }
+    contractCoordinates.add(coordinate);
+    const operations = exactObject(contract.operations, `${label}.operations`);
+    for (const [operationId, descriptorInput] of Object.entries(operations)) {
+      if (!CONTRACT_OPERATION_IDENTITY_PATTERN.test(operationId)) {
+        throw new Error(`${label}.operations contains an invalid operation identity`);
+      }
+      const descriptor = exactObject(
+        descriptorInput,
+        `${label}.operations.${operationId}`
+      );
+      exactFields(descriptor, ['operationId', 'stableKey', 'contract'], `${label}.operations`);
+      if (descriptor.operationId !== operationId) {
+        throw new Error(`${label}.operations descriptor identity mismatch`);
+      }
+      const operationContract = exactObject(
+        descriptor.contract,
+        `${label}.operations.${operationId}.contract`
+      );
+      const stream = exactObject(
+        operationContract.stream,
+        `${label}.operations.${operationId}.contract.stream`
+      );
+      const kind = requiredString(stream, 'kind');
+      if (kind !== 'unary' && kind !== 'serverStream') {
+        throw new Error(
+          `${label}.operations.${operationId} is not available for Router ingress`
+        );
+      }
+      modes.set(contractOperationKey(ref, operationId), kind);
+    }
+  }
+  return modes;
+}
+
+function contractOperationKey(
+  contract: RuntimeAssemblyContractRef,
+  operationId: string
+): string {
+  return `${contractCoordinateKey(contract)}\u0000${operationId}`;
+}
+
+function contractCoordinateKey(contract: RuntimeAssemblyContractRef): string {
+  return [
+    contract.serviceId,
+    contract.contractVersion,
+    contract.serviceProtocolIdentity
+  ].join('\u0000');
 }
 
 function decodeDeploymentRef(

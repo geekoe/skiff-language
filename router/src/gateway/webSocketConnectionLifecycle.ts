@@ -94,7 +94,10 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
 
-  constructor(options: WebSocketConnectionLifecycleOptions = {}) {
+  constructor(
+    options: WebSocketConnectionLifecycleOptions = {},
+    private readonly onFinish?: (value: TConnection, runtime: TRuntime | undefined) => void
+  ) {
     this.connectionLimit = positiveInteger(
       options.connectionLimit ?? DEFAULT_CONNECTION_LIMIT,
       'connectionLimit'
@@ -455,6 +458,11 @@ export class WebSocketConnectionLifecycle<TConnection, TRuntime = unknown> {
     }
     if (connection.runtime !== undefined) {
       removeFromIndex(this.connectionsByRuntime, connection.runtime, connection);
+    }
+    try {
+      this.onFinish?.(connection.value, connection.runtime);
+    } catch {
+      // The lifecycle is already deindexed; external cleanup cannot restore it.
     }
 
     if (connection.receiveQueue.length > 0) {

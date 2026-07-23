@@ -9,10 +9,12 @@ import { loadRouterConfig } from '../src/router/config.js';
 
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
+const originalEcosystemStoreCliEnv = process.env.SKIFF_ECOSYSTEM_STORE_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
 
 beforeEach(() => {
   delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
+  delete process.env.SKIFF_ECOSYSTEM_STORE_CLI;
   delete process.env.SKIFF_DEV_HOME;
 });
 
@@ -24,6 +26,7 @@ afterEach(async () => {
     }
   }
   restoreEnv('SKIFF_ARTIFACT_IDENTITY_CLI', originalIdentityCliEnv);
+  restoreEnv('SKIFF_ECOSYSTEM_STORE_CLI', originalEcosystemStoreCliEnv);
   restoreEnv('SKIFF_DEV_HOME', originalDevHomeEnv);
 });
 
@@ -235,6 +238,49 @@ describe('router config', () => {
     );
 
     await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty('identityCliPath');
+  });
+
+  it('resolves the ecosystem store adapter from config, override, env, and dev fallback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeFile(
+      configPath,
+      ['profile: dev', 'ecosystemStoreCliPath: bin/skiff-compiler', ''].join('\n')
+    );
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      ecosystemStoreCliPath: join(dir, 'bin/skiff-compiler')
+    });
+
+    await expect(loadRouterConfig(configPath, {
+      ecosystemStoreCliPath: 'override/skiff-compiler'
+    })).resolves.toMatchObject({
+      ecosystemStoreCliPath: resolve('override/skiff-compiler')
+    });
+
+    await writeFile(configPath, 'profile: dev\n');
+    process.env.SKIFF_ECOSYSTEM_STORE_CLI = 'env/skiff-compiler';
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      ecosystemStoreCliPath: resolve('env/skiff-compiler')
+    });
+
+    delete process.env.SKIFF_ECOSYSTEM_STORE_CLI;
+    const devHome = join(dir, 'dev-home');
+    process.env.SKIFF_DEV_HOME = devHome;
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      ecosystemStoreCliPath: join(devHome, 'bin/skiff-compiler')
+    });
+  });
+
+  it('requires an explicit ecosystem store adapter in release mode', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeFile(configPath, 'profile: prod\nreleaseMode: true\n');
+
+    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
+      'ecosystemStoreCliPath'
+    );
   });
 
   it('loads telemetry config with router-owned defaults', async () => {

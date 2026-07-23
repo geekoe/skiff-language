@@ -58,6 +58,17 @@ describe('RuntimeAssembly Host ingress', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it.each([
+    'http://other.localhost/v1/models',
+    '//other.localhost/v1/models',
+    '/v1/models#fragment'
+  ])('rejects non-origin-form HTTP target %s before dispatch', async (target) => {
+    const { gateway, url } = await listenHttp();
+    resources.push(gateway);
+    expect(await rawHttpStatus(url, target, 'codex-relay.localhost')).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
   it('keeps canonical WebSocket entry identity stable across implementation generations and sensitive to ABI', () => {
     const original = binding(
       'webSocket',
@@ -134,6 +145,7 @@ function binding(
       contractVersion: '1.0.0',
       serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${host.startsWith('codex') ? '1'.repeat(64) : host.startsWith('aihub') ? '2'.repeat(64) : '3'.repeat(64)}`
     },
+    operationMode: 'unary',
     contractOperationId: operation
   };
 }
@@ -204,6 +216,34 @@ async function httpWithoutHost(baseUrl: string): Promise<number> {
     let response = '';
     socket.setEncoding('utf8');
     socket.once('connect', () => socket.write('GET /v1/models HTTP/1.0\r\n\r\n'));
+    socket.on('data', (chunk) => {
+      response += chunk;
+    });
+    socket.once('end', () => {
+      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
+      resolve(Number(match?.[1] ?? 0));
+    });
+    socket.once('error', reject);
+  });
+}
+
+async function rawHttpStatus(
+  baseUrl: string,
+  target: string,
+  host: string
+): Promise<number> {
+  const base = new URL(baseUrl);
+  return await new Promise<number>((resolve, reject) => {
+    const socket = connect(Number(base.port), base.hostname);
+    let response = '';
+    socket.setEncoding('utf8');
+    socket.once('connect', () => socket.write([
+      `GET ${target} HTTP/1.1`,
+      `Host: ${host}`,
+      'Connection: close',
+      '',
+      ''
+    ].join('\r\n')));
     socket.on('data', (chunk) => {
       response += chunk;
     });
