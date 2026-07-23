@@ -1024,6 +1024,13 @@ impl TypeResolutionModel {
                 .local_type_name_for_index(module_path, *type_index)
                 .map(|name| canonical_named_symbol(&source_path(module_path, name)))
                 .unwrap_or_else(|| ty.clone()),
+            TypeRefIr::PublicationType {
+                module_path: owner_module,
+                type_index,
+            } => self
+                .local_type_name_for_index(owner_module, *type_index)
+                .map(|name| canonical_named_symbol(&source_path(owner_module, name)))
+                .unwrap_or_else(|| ty.clone()),
             TypeRefIr::Native { name, args } => TypeRefIr::Native {
                 name: name.clone(),
                 args: args
@@ -4909,6 +4916,88 @@ mod tests {
         )
         .expect_err("duplicate receiver must fail closed");
         assert!(duplicate.contains("duplicate receivers"));
+    }
+
+    #[test]
+    fn publication_type_slots_use_their_exact_owner_module() {
+        let cleanup_source = CompilerSourceFile::parse(
+            PathBuf::from("child_cleanup.skiff"),
+            "child_cleanup".to_string(),
+            false,
+            false,
+            r#"
+              alias ChildCleanupEligibilityScope = "force" | "global" | "parent"
+
+              type ChildCleanupConsumeResult {
+                consumed: Bool
+              }
+            "#
+            .to_string(),
+            "child_cleanup.skiff",
+        )
+        .expect("cleanup source should parse");
+        let consumer_source = CompilerSourceFile::parse(
+            PathBuf::from("consumer.skiff"),
+            "consumer".to_string(),
+            false,
+            false,
+            "type Unrelated { value: String }".to_string(),
+            "consumer.skiff",
+        )
+        .expect("consumer source should parse");
+        let parsed =
+            parse_publication_sources(&PathBuf::from("/test"), &[cleanup_source, consumer_source])
+                .expect("multi-file publication should parse");
+        let model = TypeResolutionModel::build(
+            &parsed,
+            &BTreeMap::new(),
+            &[],
+            None,
+            None,
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("type resolution should build");
+
+        let consume_result = model.canonicalize_type_ref_for_module(
+            "consumer",
+            &TypeRefIr::PublicationType {
+                module_path: "child_cleanup".to_string(),
+                type_index: 0,
+            },
+        );
+        assert_eq!(
+            consume_result,
+            canonical_named_symbol("child_cleanup.ChildCleanupConsumeResult")
+        );
+        let eligibility_alias = model
+            .canonicalize_package_interface_signature_type(
+                "child_cleanup",
+                &skiff_artifact_model::PackageTypeRef::Local {
+                    local_type: TypeRefIr::ServiceSymbol {
+                        symbol: ServiceSymbolRef {
+                            module_path: "child_cleanup".to_string(),
+                            symbol: "ChildCleanupEligibilityScope".to_string(),
+                        },
+                    },
+                },
+            )
+            .expect("same-publication alias should canonicalize");
+        assert!(matches!(
+            eligibility_alias,
+            skiff_artifact_model::PackageTypeRef::Local {
+                local_type: TypeRefIr::Union { ref items }
+            } if items.len() == 3
+        ));
+
+        let unknown = TypeRefIr::PublicationType {
+            module_path: "missing".to_string(),
+            type_index: 0,
+        };
+        assert_eq!(
+            model.canonicalize_type_ref_for_module("consumer", &unknown),
+            unknown,
+            "an unknown owner module must not fall back to the caller module"
+        );
     }
 }
 

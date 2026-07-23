@@ -281,7 +281,29 @@ fn validate_receiver_and_signature(
         (
             SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 },
             SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 },
-        ) => executable.parameters.as_slice(),
+        ) => {
+            let Some((_, expected_parameters)) = requirement.parameters.split_first() else {
+                return Err(format!(
+                    "interface `{}.{}` explicit receiver requirement is missing its receiver parameter",
+                    key.interface, operation.name
+                ));
+            };
+            let Some((_, actual_parameters)) = executable.parameters.split_first() else {
+                return Err(format!(
+                    "type `{}` method `{}` explicit receiver is missing",
+                    key.receiver, operation.name
+                ));
+            };
+            return validate_parameter_and_return_types(
+                key,
+                operation,
+                expected_parameters,
+                actual_parameters,
+                &requirement.return_type,
+                &executable.return_type,
+                type_resolution,
+            );
+        }
         (
             SourceExecutableReceiver::ExplicitParameter { parameter_index: 0 },
             SourceExecutableReceiver::Implicit { .. },
@@ -343,20 +365,22 @@ fn validate_parameter_and_return_types(
     actual_return: &PackageTypeRef,
     type_resolution: &TypeResolutionModel,
 ) -> Result<(), String> {
-    let canonicalize = |ty| {
-        type_resolution
-            .canonicalize_package_interface_signature_type(key.interface.module_path(), ty)
+    let canonicalize = |module_path, ty| {
+        type_resolution.canonicalize_package_interface_signature_type(module_path, ty)
     };
     let actual_parameter_types = actual_parameters
         .iter()
-        .map(|parameter| canonicalize(&parameter.ty))
+        .map(|parameter| canonicalize(key.receiver.module_path(), &parameter.ty))
         .collect::<Result<Vec<_>, _>>()?;
     let expected_parameter_types = expected_parameters
         .iter()
-        .map(|parameter| canonicalize(&parameter.ty))
+        .map(|parameter| canonicalize(key.interface.module_path(), &parameter.ty))
         .collect::<Result<Vec<_>, _>>()?;
     let parameter_types_match = actual_parameter_types == expected_parameter_types;
-    if !parameter_types_match || canonicalize(actual_return)? != canonicalize(expected_return)? {
+    if !parameter_types_match
+        || canonicalize(key.receiver.module_path(), actual_return)?
+            != canonicalize(key.interface.module_path(), expected_return)?
+    {
         return Err(format!(
             "type `{}` method `{}` exact signature does not match interface `{}`; expected params {:?} return {:?}, got params {:?} return {:?}",
             key.receiver,

@@ -510,7 +510,13 @@ impl TypeResolutionModel {
                 inner: Box::new(self.canonicalize_source_signature_type(module_path, inner)),
             },
             PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
-                local_type: self.canonicalize_type_ref_for_module(module_path, local_type),
+                local_type: self.canonicalize_type_ref_for_module(
+                    module_path,
+                    &self.transparent_alias_ir(
+                        local_type,
+                        &TypeResolutionContext::source(module_path),
+                    ),
+                ),
             },
             PackageTypeRef::Contract { contract_type_id } => PackageTypeRef::Contract {
                 contract_type_id: contract_type_id.clone(),
