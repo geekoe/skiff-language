@@ -443,6 +443,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F54B | [Remove legacy service register test](tasks/P5-F54B-remove-legacy-service-register-test.md) | D54 complete | host test-only |
 | F54 result | [Runtime config closure result](tasks/P5-F54-runtime-config-closure-result.md) | `ee21b85` | complete |
 | I53A | [Service protocol v2 reacceptance](tasks/P5-I53A-service-protocol-v2-reacceptance.md) | F53H/I+F54 merged | 只复验I53失效面 |
+| I53A result | [Service protocol v2 reacceptance result](tasks/P5-I53A-service-protocol-v2-reacceptance-result.md) | `95e8ef6` | PASS；与I53有效证据合并 |
+| I02F | [Skiff combined final](tasks/P5-I02F-skiff-combined-final.md) | I53/I53A PASS | 唯一完整combined |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
