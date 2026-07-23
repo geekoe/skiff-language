@@ -210,7 +210,7 @@ impl Evaluator<'_, '_> {
         let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
         actuals.push(receiver);
         actuals.extend_from_slice(args);
-        let Some(callee) = receiver_callable_callee(op) else {
+        let Some(mut callee) = receiver_callable_callee(op) else {
             return self.apply_unknown_call_with_callee(
                 callee_value,
                 &actuals,
@@ -218,6 +218,14 @@ impl Evaluator<'_, '_> {
                 EscapeLane::Native,
             );
         };
+        // Receiver mutation and heap-identity requirements are contextual to
+        // the receiver graph, not to values merely embedded into that graph.
+        // A fresh local JsonObject therefore discharges set's W+I facts even
+        // when the inserted value originated at the caller boundary.
+        if !actuals[0].contains_caller_reference() && !actuals[0].unknown {
+            callee.effects.writes_caller_reachable = false;
+            callee.effects.requires_same_heap_identity = false;
+        }
         self.apply_callee(&callee, &actuals, return_reference, None)
     }
 

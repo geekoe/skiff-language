@@ -692,6 +692,67 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
 }
 
 #[test]
+fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
+    let model = analyze_named(
+        r#"
+            function setCallerOwned(object: JsonObject) -> void {
+              return object.set("value", 1)
+            }
+
+            function callerOwnedHop(object: JsonObject) -> void {
+              return setCallerOwned(object)
+            }
+
+            function freshLocal() -> void {
+              const object: JsonObject = {}
+              return object.set("value", 1)
+            }
+
+            function freshLocalCallerValue(value: Json) -> void {
+              const object: JsonObject = {}
+              return object.set("value", value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    let caller_effects = CallableMayEffects {
+        writes_caller_reachable: true,
+        requires_same_heap_identity: true,
+        ..no_effects()
+    };
+    for callable in ["setCallerOwned", "callerOwnedHop"] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            caller_effects,
+            "{callable}"
+        );
+        let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+            provenance_in(&model, "std.effect_test", callable)
+        else {
+            panic!("{callable} must keep exact constant-null provenance");
+        };
+        assert_eq!(return_origins, &vec![ValueProvenance::Constant]);
+    }
+
+    for callable in ["freshLocal", "freshLocalCallerValue"] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            no_effects(),
+            "{callable}"
+        );
+        let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+            provenance_in(&model, "std.effect_test", callable)
+        else {
+            panic!("{callable} must keep exact constant-null provenance");
+        };
+        assert_eq!(return_origins, &vec![ValueProvenance::Constant]);
+    }
+}
+
+#[test]
 fn config_intrinsics_are_exact_detached_sources() {
     let model = analyze(
         r#"

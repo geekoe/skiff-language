@@ -295,6 +295,31 @@ const fn mutating_array_push() -> BuiltinReceiverCallableSemantics {
     }
 }
 
+const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::JsonObject,
+            method: BuiltinReceiverMethod::Set,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::JsonObject,
+                BuiltinReceiverMethod::Set,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: true,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
 pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantics] = &[
     detached_scalar_receiver(BuiltinReceiverRoot::Array, BuiltinReceiverMethod::Length),
     mutating_array_push(),
@@ -326,6 +351,7 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
         BuiltinReceiverRoot::Duration,
         BuiltinReceiverMethod::ToMilliseconds,
     ),
+    mutating_json_object_set(),
 ];
 
 pub fn builtin_receiver_callable_semantics(
@@ -955,6 +981,7 @@ mod tests {
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
+            "receiver:JsonObject.set@1",
             "receiver:bytes.length@1",
             "receiver:number.floor@1",
             "receiver:number.round@1",
@@ -977,22 +1004,25 @@ mod tests {
                 .map(|spec| spec.op)
                 .expect("callable receiver semantics must name a supported exact op");
             assert_eq!(builtin_receiver_callable_semantics(op), Some(semantics));
-            let is_array_push = semantics.op.canonical_key == "receiver:Array.push@1";
+            let mutates_receiver = matches!(
+                semantics.op.canonical_key,
+                "receiver:Array.push@1" | "receiver:JsonObject.set@1"
+            );
             assert_eq!(
                 semantics.effects,
                 CallableMayEffects {
-                    writes_caller_reachable: is_array_push,
+                    writes_caller_reachable: mutates_receiver,
                     returns_caller_alias: false,
                     throws_caller_alias: false,
                     escapes_caller_value: false,
-                    requires_same_heap_identity: is_array_push,
+                    requires_same_heap_identity: mutates_receiver,
                     invokes_unknown_target: false,
                     may_suspend: false,
                 }
             );
             assert_eq!(
                 semantics.return_provenance,
-                if is_array_push {
+                if mutates_receiver {
                     ValueProvenance::Constant
                 } else {
                     ValueProvenance::Fresh
@@ -1003,6 +1033,21 @@ mod tests {
         let mutable_array = builtin_receiver_op_by_name("Array", "push")
             .expect("Array.push must remain a supported runtime receiver op");
         assert!(builtin_receiver_callable_semantics(mutable_array).is_some());
+        let mutable_json_object = builtin_receiver_op_by_name("JsonObject", "set")
+            .expect("JsonObject.set must remain a supported runtime receiver op");
+        assert!(builtin_receiver_callable_semantics(mutable_json_object).is_some());
+
+        for missing in [
+            builtin_receiver_op_by_name("JsonObject", "get").unwrap(),
+            builtin_receiver_op_by_name("JsonObject", "delete").unwrap(),
+        ] {
+            assert_eq!(
+                builtin_receiver_callable_semantics(missing),
+                None,
+                "{} must remain fail closed",
+                missing.canonical_key
+            );
+        }
     }
 
     #[test]
