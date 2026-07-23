@@ -500,10 +500,13 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D55 result | [Terminal legacy consumer audit result](tasks/P5-D55-terminal-legacy-consumer-audit-result.md) | D55A/B/C complete | consumer checkpoint first |
 | F55A | [Host/driver legacy consumer removal](tasks/P5-F55A-host-driver-legacy-consumer-removal.md) | D55 complete | host/driver owner |
 | F55B | [Loader/linker legacy chain removal](tasks/P5-F55B-loader-linker-legacy-chain-removal.md) | D55 complete | loader/linker owner |
+| I55AB | [Terminal consumer combined](tasks/P5-F55AB-terminal-consumer-combined.md) | F55A/B merged | cheap combined |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T08 blocker | [Registry/platform blocker](tasks/P5-T08-registry-platform-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；无callable |
 | D56 | [Trusted registry callable audit](tasks/P5-D56-trusted-registry-callable-audit.md) | T08 blocked | capability/design双分片 |
+| D56 result | [Trusted registry callable audit result](tasks/P5-D56-trusted-registry-callable-audit-result.md) | 用户决定 | Platform DB唯一SOT |
+| F56C0 | [Trusted registry contract checkpoint](tasks/P5-F56C0-trusted-registry-contract-checkpoint.md) | D56 decision | shared typed capability |
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
 | T09B | [AIHub contract](tasks/P5-T09B-internals-aihub-contract.md) | R02 exact Skiff | 高；contract ABI/schema |
 | T09C | [Agine contract](tasks/P5-T09C-internals-agine-contract.md) | R02 exact Skiff | 高；contract/API owner split |

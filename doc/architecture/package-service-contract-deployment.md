@@ -537,6 +537,16 @@ atomic reload在runtime层可观测。
 registry分别存储不可变PackageArtifact、ServiceContract、ServiceDeployment与RuntimeAssembly record。
 release pointer可以选择contract-compatible deployment revision和active assembly。
 
+生产Platform registry以Platform DB作为唯一durable source of truth；四类immutable record、typed release
+pointer current/history都只落该DB。Skiff Rust canonical typed validation、identity与CAS语义通过受信的
+DB-backed capability复用，Platform service不得复制identity、path、raw JSON或CAS算法。文件型
+`CanonicalArtifactStore`只作为local/dev/CLI backend，不参与Platform production，也不与Platform DB dual-write。
+
+Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。它通过同一受信DB backend
+持久化activation state，状态变更与Platform audit在同一事务中追加；registry service不能直接写prepared/connected
+集合、伪造participant ACK或维护第二份activation state。trusted capability必须按deployment principal、operation
+scope与request lifetime注入，普通package或仅声明binding但未获授权的service一律fail closed。
+
 `publish`是操作：校验typed artifact、写入不可变内容、更新允许更新的pointer。它不产生
 `Publication`对象，也不要求四类artifact实现共同kind enum。registry可以在一个事务/workflow中发布
 多个artifact，但每个artifact保持独立schema与identity。
