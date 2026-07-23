@@ -24,10 +24,7 @@ use skiff_runtime_activation::{
 const DEFAULT_MACHINE_MEMORY_BYTES: usize = 8 * 1024 * 1024 * 1024;
 const MIN_ARTIFACT_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARTIFACT_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
-const MIN_REQUEST_HEAP_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-const MAX_REQUEST_HEAP_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const ARTIFACT_CACHE_BUDGET_ENV: &str = "SKIFF_RUNTIME_ARTIFACT_CACHE_BYTES";
-const REQUEST_HEAP_BUDGET_ENV: &str = "SKIFF_RUNTIME_REQUEST_HEAP_BYTES";
 const MACHINE_MEMORY_ENV: &str = "SKIFF_RUNTIME_MACHINE_MEMORY_BYTES";
 
 #[derive(Debug)]
@@ -36,7 +33,7 @@ pub struct RuntimeArtifactCaches {
     pub packages: PackageCache,
     pub images: LinkedProgramImageCache,
     pub activation_cache: RuntimeActivationCache,
-    budgets: RuntimeMemoryBudgets,
+    budget: RuntimeArtifactCacheBudget,
 }
 
 impl Default for RuntimeArtifactCaches {
@@ -47,29 +44,27 @@ impl Default for RuntimeArtifactCaches {
 
 impl RuntimeArtifactCaches {
     pub fn new() -> Self {
-        Self::with_memory_budgets(RuntimeMemoryBudgets::default())
+        Self::with_artifact_budget(RuntimeArtifactCacheBudget::default())
     }
 
     pub fn with_artifact_budget_bytes(artifact_cache_bytes: usize) -> Self {
-        let default = RuntimeMemoryBudgets::default();
-        Self::with_memory_budgets(RuntimeMemoryBudgets {
-            artifact_cache_bytes,
-            request_heap_bytes: default.request_heap_bytes,
+        Self::with_artifact_budget(RuntimeArtifactCacheBudget {
+            bytes: artifact_cache_bytes,
         })
     }
 
-    pub fn with_memory_budgets(budgets: RuntimeMemoryBudgets) -> Self {
+    fn with_artifact_budget(budget: RuntimeArtifactCacheBudget) -> Self {
         Self {
             files: FileIrCache::new(),
             packages: PackageCache::new(),
             images: LinkedProgramImageCache::new(),
             activation_cache: RuntimeActivationCache::new(),
-            budgets,
+            budget,
         }
     }
 
-    pub fn memory_budgets(&self) -> RuntimeMemoryBudgets {
-        self.budgets
+    pub fn artifact_budget_bytes(&self) -> usize {
+        self.budget.bytes
     }
 
     pub fn stats(&self) -> RuntimeArtifactCacheStats {
@@ -87,8 +82,7 @@ impl RuntimeArtifactCaches {
                 .saturating_add(packages.estimated_size_bytes)
                 .saturating_add(images.estimated_size_bytes)
                 .saturating_add(activation_cache.estimated_size_bytes),
-            artifact_cache_budget_bytes: self.budgets.artifact_cache_bytes,
-            request_heap_budget_bytes: self.budgets.request_heap_bytes,
+            artifact_cache_budget_bytes: self.budget.bytes,
         }
     }
 
@@ -97,7 +91,7 @@ impl RuntimeArtifactCaches {
     }
 
     pub fn evict_lru_to_budget(&self) -> RuntimeArtifactCacheEviction {
-        self.evict_lru_until_under(self.budgets.artifact_cache_bytes)
+        self.evict_lru_until_under(self.budget.bytes)
     }
 
     pub fn evict_lru_until_under(&self, target_bytes: usize) -> RuntimeArtifactCacheEviction {
@@ -154,44 +148,33 @@ impl RuntimeArtifactCaches {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeMemoryBudgets {
-    pub artifact_cache_bytes: usize,
-    pub request_heap_bytes: usize,
+struct RuntimeArtifactCacheBudget {
+    bytes: usize,
 }
 
-impl RuntimeMemoryBudgets {
+impl RuntimeArtifactCacheBudget {
     pub fn from_machine_memory_bytes(machine_memory_bytes: usize) -> Self {
-        let artifact_cache_bytes = clamp_budget(
-            machine_memory_bytes / 16,
-            MIN_ARTIFACT_CACHE_BUDGET_BYTES,
-            MAX_ARTIFACT_CACHE_BUDGET_BYTES,
-        );
-        let request_heap_bytes = clamp_budget(
-            machine_memory_bytes / 8,
-            MIN_REQUEST_HEAP_BUDGET_BYTES,
-            MAX_REQUEST_HEAP_BUDGET_BYTES,
-        );
         Self {
-            artifact_cache_bytes,
-            request_heap_bytes,
+            bytes: clamp_budget(
+                machine_memory_bytes / 16,
+                MIN_ARTIFACT_CACHE_BUDGET_BYTES,
+                MAX_ARTIFACT_CACHE_BUDGET_BYTES,
+            ),
         }
     }
 
     pub fn from_env_or_machine() -> Self {
         let machine_memory_bytes =
             configured_machine_memory_bytes().unwrap_or(DEFAULT_MACHINE_MEMORY_BYTES);
-        let mut budgets = Self::from_machine_memory_bytes(machine_memory_bytes);
+        let mut budget = Self::from_machine_memory_bytes(machine_memory_bytes);
         if let Some(value) = env_usize(ARTIFACT_CACHE_BUDGET_ENV) {
-            budgets.artifact_cache_bytes = value;
+            budget.bytes = value;
         }
-        if let Some(value) = env_usize(REQUEST_HEAP_BUDGET_ENV) {
-            budgets.request_heap_bytes = value;
-        }
-        budgets
+        budget
     }
 }
 
-impl Default for RuntimeMemoryBudgets {
+impl Default for RuntimeArtifactCacheBudget {
     fn default() -> Self {
         Self::from_env_or_machine()
     }
@@ -219,7 +202,6 @@ pub struct RuntimeArtifactCacheStats {
     pub activation_cache: RuntimeArtifactCacheBucketStats,
     pub total_estimated_size_bytes: usize,
     pub artifact_cache_budget_bytes: usize,
-    pub request_heap_budget_bytes: usize,
 }
 
 impl From<RuntimeActivationCacheStats> for RuntimeArtifactCacheBucketStats {

@@ -1456,7 +1456,7 @@ fn artifact_loader_evicts_lru_cache_entries_after_load_when_over_budget() {
     .expect("program should load even when cache entries are evicted");
 
     assert_eq!(layers.activation.service.id, "example.com/svc");
-    assert!(caches.total_estimated_size_bytes() <= caches.memory_budgets().artifact_cache_bytes);
+    assert!(caches.total_estimated_size_bytes() <= caches.artifact_budget_bytes());
 }
 
 #[test]

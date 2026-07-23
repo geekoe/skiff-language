@@ -1,14 +1,11 @@
 pub(crate) mod activation;
-pub mod artifact_cache;
 pub(crate) mod capability_context;
 pub mod config;
 pub mod config_view;
 pub mod error;
 pub mod eval;
 pub mod host;
-pub(crate) mod http_boundary;
 pub mod loader;
-pub(crate) mod program;
 pub mod request;
 pub mod telemetry;
 pub mod transport;

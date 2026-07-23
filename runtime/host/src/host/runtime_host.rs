@@ -10,8 +10,9 @@ use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
 use crate::{
-    artifact_cache::RuntimeArtifactCaches, config::skiff_file_tmp_dir,
-    config_view::RuntimeConfigView, error::Result,
+    config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
+    config_view::RuntimeConfigView,
+    error::Result,
     loader::assembly_admission::AssemblyAdmissionController,
 };
 
@@ -97,7 +98,7 @@ pub struct RuntimeHost {
     pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
     #[cfg(test)]
     pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
-    pub(super) artifact_caches: Arc<RuntimeArtifactCaches>,
+    pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(crate) state: Arc<RwLock<ServiceRouteState>>,
@@ -191,7 +192,7 @@ impl RuntimeHost {
                 artifact_roots: config.artifact_roots,
                 epoch: 0,
             })),
-            artifact_caches: Arc::new(RuntimeArtifactCaches::new()),
+            memory_budgets: RuntimeMemoryBudgets::default(),
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
                 config.base_runtime_id.clone(),
             )),
@@ -234,7 +235,7 @@ impl RuntimeHost {
 
     pub(crate) fn request_heap_limits(&self) -> RequestHeapLimits {
         let mut limits = RequestHeapLimits::default();
-        limits.max_estimated_bytes = self.artifact_caches.memory_budgets().request_heap_bytes;
+        limits.max_estimated_bytes = self.memory_budgets.request_heap_bytes;
         limits
     }
 

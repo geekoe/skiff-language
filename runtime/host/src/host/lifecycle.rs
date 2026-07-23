@@ -140,22 +140,8 @@ impl RuntimeHost {
         &self,
         idle_for: Duration,
     ) -> Result<RuntimeMemoryMaintenanceReport> {
-        let artifact_eviction = self.artifact_caches.evict_lru_to_budget();
-        if !artifact_eviction.entries.is_empty() {
-            info!(
-                event = "runtime.artifact_cache_evicted",
-                entry_count = artifact_eviction.entries.len(),
-                estimated_bytes = artifact_eviction.estimated_bytes,
-                remaining_estimated_bytes = artifact_eviction.remaining_estimated_size_bytes
-            );
-        }
         let idle_builds = self.release_idle_builds(idle_for).await?;
-        Ok(RuntimeMemoryMaintenanceReport {
-            idle_builds,
-            artifact_cache_evicted_entries: artifact_eviction.entries.len(),
-            artifact_cache_evicted_bytes: artifact_eviction.estimated_bytes,
-            artifact_cache_remaining_bytes: artifact_eviction.remaining_estimated_size_bytes,
-        })
+        Ok(RuntimeMemoryMaintenanceReport { idle_builds })
     }
 }
 

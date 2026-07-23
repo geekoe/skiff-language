@@ -25,11 +25,10 @@ use skiff_runtime_transport::control_response_mapper::spawn_claim_response_contr
 use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorPutRequestFrameHeader,
     ActorPutResponseFrameHeader, ActorRefFrameMetadata, ConnectionSendFrameHeader,
-    RequestStartFrameHeader,
-    ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
-    ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
-    RouterControlPackageConfig, RouterControlServiceConfig, RuntimeCallerFrameHeader,
-    RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability,
+    RequestStartFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
+    ResponseEndFrameMetadata, ResponseErrorFrameHeader, ResponseStartFrameHeader,
+    RouterControlEnvelope, RouterControlPackageConfig, RouterControlServiceConfig,
+    RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability,
     RuntimeHttpAdapterArgFrameHeader, RuntimeHttpAdapterCallableFrameHeader,
     RuntimeHttpAdapterFrameHeader, RuntimeHttpAdapterKindFrameHeader,
     RuntimeHttpAdapterSourceFrameHeader, RuntimeHttpNameValueFrameHeader,
@@ -834,7 +833,7 @@ async fn request_heap_limit_uses_runtime_memory_budget() {
 
     assert_eq!(
         host.request_heap_limits().max_estimated_bytes,
-        host.artifact_caches.memory_budgets().request_heap_bytes
+        host.memory_budgets.request_heap_bytes
     );
 }
 

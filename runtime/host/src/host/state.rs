@@ -49,9 +49,6 @@ pub(crate) struct ReleaseIdleBuildsReport {
 #[allow(dead_code)]
 pub(crate) struct RuntimeMemoryMaintenanceReport {
     pub(super) idle_builds: ReleaseIdleBuildsReport,
-    pub(super) artifact_cache_evicted_entries: usize,
-    pub(super) artifact_cache_evicted_bytes: usize,
-    pub(super) artifact_cache_remaining_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
