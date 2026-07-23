@@ -72,14 +72,15 @@ test('successful sync sends exactly one activation transaction after all immutab
     },
     fetchImpl: async (_url, options) => {
       events.push('prepare');
-      const body = JSON.parse(options.body);
-      assert.deepEqual(body, {
+      const expectedBody = {
         schemaVersion: 'skiff-assembly-activation-request-v1',
         environment: 'dev',
         activationId: 'activation-8',
         expectedGeneration: 7,
         assembly: { assemblyIdentity: assemblyIdentity },
-      });
+      };
+      assert.equal(options.body, JSON.stringify(expectedBody));
+      const body = JSON.parse(options.body);
       return jsonResponse({ committed: { generation: 8, assembly: body.assembly } });
     },
   });
@@ -241,7 +242,7 @@ const oldAssemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'4'.repeat(64)}`
 const dummyContractRef = {
   serviceId: 'example.com/health',
   contractVersion: '1.0.0',
-  serviceProtocolIdentity: `skiff-service-protocol-v1:sha256:${'5'.repeat(64)}`,
+  serviceProtocolIdentity: `skiff-service-protocol-v2:sha256:${'5'.repeat(64)}`,
 };
 const dummyPackageRef = {
   packageId: 'example.com/provider',
