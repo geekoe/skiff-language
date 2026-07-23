@@ -387,6 +387,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I48A | [Fixture projection reacceptance](tasks/P5-I48A-fixture-projection-reacceptance.md) | I48 classified | 只补非空fixture projection |
 | I48A result | [Fixture projection reacceptance result](tasks/P5-I48A-fixture-projection-reacceptance-result.md) | `e597044` | PASS；与I48有效证据合并 |
 | I02C | [Skiff combined closure](tasks/P5-I02C-skiff-combined-closure.md) | I48/I48A PASS；R05C有效 | 第三次且唯一完整combined |
+| I02C result | [Skiff combined closure result](tasks/P5-I02C-skiff-combined-closure-result.md) | `21e479f` | FAIL；recoverable owner duplicate |
+| D49 | [Recoverable owner closure audit](tasks/P5-D49-recoverable-owner-closure-audit.md) | I02C classified | 三个只读分片并行后汇总 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
