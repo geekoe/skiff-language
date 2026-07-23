@@ -14,8 +14,8 @@ use std::{
 use serde_json::{json, Map, Value};
 use skiff_artifact_identity::{
     package_artifact_ref, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    PackageArtifactPointerPath, PackageFileIrRecordPath, PackageResourceRecordPath,
-    RuntimeAssemblyPointerPath, ServiceContractPointerPath, ServiceDeploymentPointerPath,
+    PackageArtifactPointerPath, RuntimeAssemblyPointerPath, ServiceContractPointerPath,
+    ServiceDeploymentPointerPath,
 };
 use skiff_artifact_model::{
     parse_runtime_assembly_yml, parse_service_contract_definition_yml,
@@ -40,8 +40,13 @@ use skiff_deployment::{
 
 use crate::{
     compile_contract, compile_package, PackageCompileInput, PackageContractCompileDependency,
-    PackageSourceInput, PublishedPackageArtifact, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
+    PackageSourceInput, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
+};
+
+mod package_publication;
+
+pub use package_publication::{
+    author_official_std_package, publish_package_artifact_records, PublishedPackageArtifactReceipt,
 };
 
 pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -79,10 +84,12 @@ pub fn build_authoring_object(
         match object {
             AuthoringObject::Package => {
                 return run_after_platform_context_guard(platform_sources, || {
+                    let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
                     let store = CanonicalArtifactStore::create(artifact_root)?;
                     build_package_after_platform_context_guard(
                         platform_sources,
                         root,
+                        &manifest,
                         &store,
                         publish_pointer,
                     )
@@ -107,10 +114,10 @@ fn run_after_platform_context_guard<T>(
 fn build_package_after_platform_context_guard(
     platform_sources: &CompilerPlatformSources,
     root: &Path,
+    manifest: &PackageManifest,
     store: &CanonicalArtifactStore,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
-    let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
     let dependencies = read_package_dependencies(store, &manifest)?;
     let contracts = read_contract_dependencies(store, &manifest)?;
     let aliases = package_aliases(&manifest, &dependencies);
@@ -122,8 +129,11 @@ fn build_package_after_platform_context_guard(
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available);
     let published = compile_package(input)?;
-    let receipt = write_package_records(store, &published)?;
-    let mut output = Map::from_iter([("packageArtifactReceipt".to_string(), receipt)]);
+    let receipt = publish_package_artifact_records(store, &published)?;
+    let mut output = Map::from_iter([(
+        "packageArtifactReceipt".to_string(),
+        serde_json::to_value(receipt)?,
+    )]);
 
     if publish_pointer {
         let reference = package_artifact_ref(&published.artifact)?;
@@ -408,70 +418,6 @@ fn package_aliases(
             Some((alias, roots))
         })
         .collect()
-}
-
-fn write_package_records(
-    store: &CanonicalArtifactStore,
-    published: &PublishedPackageArtifact,
-) -> AuthoringResult<Value> {
-    let mut artifact = published.artifact.clone();
-    for file in &mut artifact.files {
-        file.artifact_path = None;
-    }
-    for resource in &mut artifact.static_resources {
-        resource.artifact_path = None;
-    }
-    let reference = package_artifact_ref(&artifact)?;
-    for file in &mut artifact.files {
-        file.artifact_path = Some(PackageFileIrRecordPath::new(&reference, file)?.to_string());
-    }
-    for resource in &mut artifact.static_resources {
-        resource.artifact_path =
-            Some(PackageResourceRecordPath::new(&reference, resource)?.to_string());
-    }
-    let mut file_paths = Vec::new();
-    for file_ref in &artifact.files {
-        let file = published
-            .file_ir_units
-            .iter()
-            .find(|candidate| {
-                candidate.identity == file_ref.file_ir_identity
-                    && candidate.module_path == file_ref.module_path
-            })
-            .ok_or_else(|| {
-                invalid_input(format!(
-                    "PackageArtifact FileIrUnit {} has no emitted typed payload",
-                    file_ref.file_ir_identity
-                ))
-            })?;
-        let path = store.write_file_ir(&reference, file_ref, &file.unit)?;
-        file_paths.push(relative_path(store, &path)?);
-    }
-    let mut resource_paths = Vec::new();
-    for resource_ref in &artifact.static_resources {
-        let resource = published
-            .resource_blobs
-            .iter()
-            .find(|candidate| {
-                candidate.logical_path == resource_ref.path
-                    && candidate.sha256 == resource_ref.sha256
-            })
-            .ok_or_else(|| {
-                invalid_input(format!(
-                    "PackageArtifact resource {} has no emitted typed payload",
-                    resource_ref.path
-                ))
-            })?;
-        let path = store.write_static_resource(&reference, resource_ref, &resource.bytes)?;
-        resource_paths.push(relative_path(store, &path)?);
-    }
-    let record_path = store.write_package_artifact(&artifact)?;
-    Ok(json!({
-        "artifact": reference,
-        "recordPath": relative_path(store, &record_path)?,
-        "fileIrRecordPaths": file_paths,
-        "resourceRecordPaths": resource_paths,
-    }))
 }
 
 fn read_assembly_contracts(
