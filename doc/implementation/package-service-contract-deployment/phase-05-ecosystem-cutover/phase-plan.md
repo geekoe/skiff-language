@@ -506,6 +506,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F55E | [Host linked cache residual](tasks/P5-F55E-host-linked-cache-residual.md) | I55AB classified | host owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | I07 | [skiff-packages runtime reacceptance](tasks/P5-I07-skiff-packages-runtime-reacceptance.md) | T07 merged | dependency-provisioned exact source |
+| I07A | [skiff-packages runtime reacceptance](tasks/P5-I07A-skiff-packages-runtime-reacceptance.md) | I07 no verdict | explicit SKIFF_ROOT |
 | T07 result | [skiff-packages cutover result](tasks/P5-T07-skiff-packages-cutover-result.md) | `ecb74852` | implementation complete；I07 pending |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T08 blocker | [Registry/platform blocker](tasks/P5-T08-registry-platform-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；无callable |
