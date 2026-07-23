@@ -506,6 +506,133 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
 }
 
 #[test]
+fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() {
+    let model = analyze_named(
+        r#"
+            type Payload { value: string }
+
+            function emptyArray() -> Array<string> {
+              return Array.empty<string>()
+            }
+
+            function utf8() -> bytes {
+              return bytes.fromUtf8("value")
+            }
+
+            function json() -> string {
+              return std.json.encode(Payload { value: "ok" })
+            }
+
+            function join(items: Array<string>) -> string {
+              return string.join(items, ",")
+            }
+
+            function split(value: string) -> Array<string> {
+              return string.split(value, ",")
+            }
+
+            function arrayLength(items: Array<string>) -> number {
+              return items.length()
+            }
+
+            function bytesLength(value: bytes) -> number {
+              return value.length()
+            }
+
+            function floor(value: number) -> number {
+              return value.floor()
+            }
+
+            function round(value: number) -> number {
+              return value.round()
+            }
+
+            function concat(value: string) -> string {
+              return value.concat("!")
+            }
+
+            function endsWith(value: string) -> bool {
+              return value.endsWith("!")
+            }
+
+            function lowercase(value: string) -> string {
+              return value.lowercase()
+            }
+
+            function startsWith(value: string) -> bool {
+              return value.startsWith("!")
+            }
+
+            function request(input: std.http.HttpClientRequest) -> std.http.HttpClientResponse {
+              return std.http.request(input)
+            }
+
+            function push(items: Array<string>) -> void {
+              return items.push("value")
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    for callable in [
+        "emptyArray",
+        "utf8",
+        "json",
+        "join",
+        "split",
+        "arrayLength",
+        "bytesLength",
+        "floor",
+        "round",
+        "concat",
+        "endsWith",
+        "lowercase",
+        "startsWith",
+    ] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            no_effects(),
+            "{callable}"
+        );
+        assert!(
+            matches!(
+                provenance_in(&model, "std.effect_test", callable),
+                CallableProvenanceSummary::Analyzed { .. }
+            ),
+            "{callable}"
+        );
+    }
+
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "request"),
+        suspend_only_effects()
+    );
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance_in(&model, "std.effect_test", "request")
+    else {
+        panic!("HTTP response must keep exact detached provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "push"),
+        CallableMayEffects {
+            writes_caller_reachable: true,
+            requires_same_heap_identity: true,
+            ..no_effects()
+        }
+    );
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance_in(&model, "std.effect_test", "push")
+    else {
+        panic!("Array.push must keep exact constant-null provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Constant]);
+}
+
+#[test]
 fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     let model = analyze_named(
         r#"
