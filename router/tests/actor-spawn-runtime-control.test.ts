@@ -36,8 +36,10 @@ const buildId =
 const packageTestBuildId =
   'skiff-package-test-build-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444';
 const serviceActivationIdentity = 'skiff-runtime-activation-v1:opaque:runtime-a';
-const serviceProtocolIdentity =
+const runtimeRegisterProtocolIdentity =
   'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+const serviceProtocolIdentity =
+  'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111';
 const serviceVersion = '0.1.0';
 const target = 'function:service.example~com~~hello.HelloApi.hello';
 const actorMethodTarget = 'internal.example.ThreadActor.receive';
@@ -334,7 +336,7 @@ async function openRuntime(
     revisionId,
     buildId,
     ...(activationIdentity === undefined ? {} : { activationIdentity }),
-    serviceProtocolIdentity,
+    serviceProtocolIdentity: runtimeRegisterProtocolIdentity,
     targets,
   };
   const ws = await openBinaryRegisteredRuntime(listen.url, register);

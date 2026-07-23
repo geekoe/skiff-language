@@ -309,17 +309,30 @@ describe('runtime protocol fixtures and schemas', () => {
     });
   });
 
-  it('rejects non-canonical router request identities', () => {
+  it('requires ServiceProtocolIdentity v2 on retained legacy request.start', () => {
     expect(
       validateRouterToRuntimeFrameHeader({
         ...runtimeFrameHeaderFixtures['request.start'],
-        serviceProtocolIdentity: 'skiff-protocol-v1:sha256:not-a-real-hash'
+        serviceProtocolIdentity:
+          'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
       })
     ).toEqual({
       ok: false,
       error:
-        'invalid request.start envelope: serviceProtocolIdentity must be skiff-protocol-v1:sha256:<64 lowercase hex>'
+        'invalid request.start envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
     });
+
+    for (const serviceProtocolIdentity of [
+      'skiff-service-protocol-v2:sha256:1111',
+      'skiff-service-protocol-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    ]) {
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...runtimeFrameHeaderFixtures['request.start'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+    }
 
     expect(
       validateRouterToRuntimeFrameHeader({
@@ -331,6 +344,39 @@ describe('runtime protocol fixtures and schemas', () => {
       error:
         'invalid request.start envelope: gatewayEntryIdentity must be skiff-gateway-v1:sha256:<64 lowercase hex>'
     });
+  });
+
+  it('requires ServiceProtocolIdentity v2 on spawn submit, claim, and claimed items', () => {
+    const legacyV1 =
+      'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    const invalidV2 = [
+      'skiff-service-protocol-v2:sha256:1111',
+      'skiff-service-protocol-v2:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    ];
+
+    for (const serviceProtocolIdentity of [legacyV1, ...invalidV2]) {
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.submit.request'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+      expect(
+        validateRuntimeToRouterFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.claim.request'],
+          serviceProtocolIdentity
+        })
+      ).toMatchObject({ ok: false });
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...runtimeFrameHeaderFixtures['spawn.claim.response'],
+          item: {
+            ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
+            serviceProtocolIdentity
+          }
+        })
+      ).toMatchObject({ ok: false });
+    }
   });
 
   it('accepts optional serviceId on router request.start frames', () => {

@@ -1403,6 +1403,8 @@ export const runtimeFrameHeaderSchemas = {
 
 const runtimeRegisterTargetFixture = 'service.example~com~~hello.HelloApi.hello' as const;
 const spawnTargetFixture = `function:${runtimeRegisterTargetFixture}` as const;
+const serviceProtocolIdentityFixture =
+  'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111' as const;
 
 const runtimeRegisterFixture = {
   type: 'runtime.register',
@@ -1476,8 +1478,7 @@ const requestStartFrameFixture = {
   serviceId: 'example.com/hello',
   buildId:
     'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333',
-  serviceProtocolIdentity:
-    'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+  serviceProtocolIdentity: serviceProtocolIdentityFixture,
   deadline: {
     timeoutMs: 2000,
     expiresAt: '2026-01-01T00:00:02.000Z'
@@ -1567,10 +1568,10 @@ const spawnFixture = {
   workerId: 'spawn-worker-fixture-1',
   serviceId: runtimeRegisterFixture.serviceId,
   serviceVersion: '0.1.0',
-  serviceProtocolIdentity: runtimeRegisterFixture.serviceProtocolIdentity,
+  serviceProtocolIdentity: serviceProtocolIdentityFixture,
   buildId: runtimeRegisterFixture.buildId,
   target: spawnTargetFixture,
-  spawnCompatibilityKey: `${'0.1.0'}:${runtimeRegisterFixture.serviceProtocolIdentity}:${spawnTargetFixture}`,
+  spawnCompatibilityKey: `${'0.1.0'}:${serviceProtocolIdentityFixture}:${spawnTargetFixture}`,
   spawnId: 'spawn-fixture-1',
   itemId: 'spawn-item-fixture-1',
   leaseId: 'spawn-lease-fixture-1',
@@ -2398,8 +2399,8 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       envelope,
       'spawn.submit.request',
       'serviceProtocolIdentity',
-      PROTOCOL_IDENTITY_PATTERN,
-      'skiff-protocol-v1:sha256:<64 lowercase hex>'
+      SERVICE_PROTOCOL_IDENTITY_PATTERN,
+      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
     ) ??
     requireString(envelope, 'spawn.submit.request', 'target') ??
     forbiddenField(envelope, 'spawn.submit.request', 'actorRef') ??
@@ -2438,8 +2439,8 @@ function validateSpawnClaimRequest(envelope: Record<string, unknown>): string | 
       envelope,
       'spawn.claim.request',
       'serviceProtocolIdentity',
-      PROTOCOL_IDENTITY_PATTERN,
-      'skiff-protocol-v1:sha256:<64 lowercase hex>'
+      SERVICE_PROTOCOL_IDENTITY_PATTERN,
+      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
     ) ??
     requireNonEmptyStringArray(envelope, 'spawn.claim.request', 'supportedTargets') ??
     requireNonEmptyStringArray(
@@ -2494,8 +2495,8 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
       envelope,
       'spawn.claim.response',
       'item.serviceProtocolIdentity',
-      PROTOCOL_IDENTITY_PATTERN,
-      'skiff-protocol-v1:sha256:<64 lowercase hex>'
+      SERVICE_PROTOCOL_IDENTITY_PATTERN,
+      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
     ) ??
     requireStringPattern(
       envelope,
@@ -2916,8 +2917,8 @@ function validateRequestProtocolIdentity(envelope: Record<string, unknown>): str
     envelope,
     'request.start',
     'serviceProtocolIdentity',
-    PROTOCOL_IDENTITY_PATTERN,
-    'skiff-protocol-v1:sha256:<64 lowercase hex>'
+    SERVICE_PROTOCOL_IDENTITY_PATTERN,
+    'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
   );
 }
 
