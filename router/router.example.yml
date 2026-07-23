@@ -3,6 +3,7 @@ environment: dev
 host: 127.0.0.1
 artifactRoots:
   - ../var/skiff-artifacts
+ecosystemStoreCliPath: /opt/skiff/bin/skiff-compiler
 # The router reads environments/<environment>/activation.json and only routes
 # the committed RuntimeAssembly. globalIngress (protocol, Host, method, path)
 # is the sole public selector.

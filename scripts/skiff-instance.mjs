@@ -244,6 +244,9 @@ async function buildInstance(rawArgs, configPath) {
     runtime: {
       path: config.paths.runtimeBinary,
     },
+    ecosystemStoreCli: {
+      path: config.paths.ecosystemStoreCli,
+    },
     identityCli: {
       path: config.paths.identityCli,
     },
@@ -475,6 +478,7 @@ function routerConfigText(config) {
     host: '127.0.0.1',
     environment: config.environment,
     artifactRoots: [config.paths.artifactRoot],
+    ecosystemStoreCliPath: config.paths.ecosystemStoreCli,
     identityCliPath: config.paths.identityCli,
     devReload: true,
     requestTimeoutMs: 20000,
@@ -518,6 +522,18 @@ async function buildComponentBinaries(config) {
     bin: 'runtime',
     source: join(config.paths.cargoTargetDir, 'debug', process.platform === 'win32' ? 'runtime.exe' : 'runtime'),
     destination: config.paths.runtimeBinary,
+    config,
+  });
+
+  await buildRustBinary({
+    manifest: join(skiffRoot, 'compiler', 'Cargo.toml'),
+    bin: 'skiff-compiler',
+    source: join(
+      config.paths.cargoTargetDir,
+      'debug',
+      process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+    ),
+    destination: config.paths.ecosystemStoreCli,
     config,
   });
 

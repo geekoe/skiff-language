@@ -79,7 +79,12 @@ export async function installManagedBinary(source, destination, options = {}) {
     try {
       const installedIdentity = await binaryIdentity(destination);
       if (binaryIdentitiesEqual(candidateIdentity, installedIdentity)) {
-        return installedIdentity;
+        if (
+          process.platform === 'win32'
+          || ((await stat(destination)).mode & 0o7777) === (options.mode ?? 0o755)
+        ) {
+          return installedIdentity;
+        }
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') {

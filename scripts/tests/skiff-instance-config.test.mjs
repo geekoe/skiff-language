@@ -45,9 +45,21 @@ test('instance init writes the configured environment and root into router/runti
     const config = await readInstanceConfig({ configPath, repoRoot: skiffRoot });
     assert.equal(config.environment, 'f04-host-test');
     assert.equal(instanceSummary(config).environment, 'f04-host-test');
+    const expectedCompiler = join(
+      devHome,
+      'bin',
+      process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+    );
+    assert.equal(config.paths.ecosystemStoreCli, expectedCompiler);
+    assert.equal(instanceSummary(config).ecosystemStoreCli, expectedCompiler);
+    const routerConfig = await readFile(join(devHome, 'router.yml'), 'utf8');
     assert.match(
-      await readFile(join(devHome, 'router.yml'), 'utf8'),
+      routerConfig,
       /^environment: "f04-host-test"$/m,
+    );
+    assert.match(
+      routerConfig,
+      new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(expectedCompiler)}$`, 'm'),
     );
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);

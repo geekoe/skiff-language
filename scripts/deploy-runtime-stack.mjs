@@ -148,6 +148,13 @@ try {
     );
   }
 
+  if (deploySelection.has('compiler')) {
+    await uploadBinary(
+      await binaryPathFor('compiler'),
+      `${remoteSkiff}/bin/skiff-compiler`,
+    );
+  }
+
   if (deploySelection.has('telemetry')) {
     await rsync(
       path.join(configDir, 'telemetry.yml'),
@@ -324,6 +331,7 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     host: '127.0.0.1',
     environment: 'prod',
     artifactRoots: [`${remoteSkiff}/artifacts`],
+    ecosystemStoreCliPath: `${remoteSkiff}/bin/skiff-compiler`,
     identityCliPath: `${remoteSkiff}/bin/skiff-artifact-identity`,
     releaseMode: true,
     devReload: false,
@@ -377,7 +385,7 @@ module.exports = {
       script: 'src/router/server.ts',
       interpreter: NODE_BIN + '/node',
       interpreter_args: '--import tsx',
-      args: '--config ${options.remoteSkiff}/config/router.yml --release-mode',
+      args: '--config ${options.remoteSkiff}/config/router.yml',
       watch: false,
       autorestart: true,
       max_restarts: 5,
@@ -507,11 +515,11 @@ function selectedDeployTargetsFrom(rawOnly) {
 function expandDeploySelector(rawOnly) {
   switch (rawOnly) {
     case 'all':
-      return ['telemetry', 'router', 'runtime', 'artifact-identity'];
+      return ['telemetry', 'router', 'runtime', 'artifact-identity', 'compiler'];
     case 'runtime':
       return ['runtime', 'artifact-identity'];
     case 'router':
-      return ['router', 'artifact-identity'];
+      return ['router', 'artifact-identity', 'compiler'];
     case 'artifact-identity':
     case 'telemetry':
       return [rawOnly];

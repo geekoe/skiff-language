@@ -332,6 +332,7 @@ async function devInit(rawArgs) {
   const writes = [];
   writes.push(await writeDevInitFile(join(devHome, 'router.yml'), routerDevConfig({
     artifactRoot,
+    ecosystemStoreCliPath: runtimePaths.ecosystemStoreCli,
     identityCliPath: runtimePaths.identityCli,
     serviceDbMongoUrl,
   }), force));
@@ -371,6 +372,7 @@ async function devPaths(rawArgs) {
     runtimeHome: paths.runtimeHome,
     runtimeBinDir: paths.runtimeBinDir,
     runtimeBinary: paths.runtimeBinary,
+    ecosystemStoreCli: paths.ecosystemStoreCli,
     identityCli: paths.identityCli,
     cargoTargetDir: cargoTargetDir(skiffRoot),
   };
@@ -684,6 +686,7 @@ function routerDevConfig(options) {
     host: '0.0.0.0',
     environment: 'dev',
     artifactRoots: [options.artifactRoot],
+    ecosystemStoreCliPath: options.ecosystemStoreCliPath,
     identityCliPath: options.identityCliPath,
     devReload: true,
     requestTimeoutMs: 20000,
@@ -692,10 +695,6 @@ function routerDevConfig(options) {
     runtimePath: '/runtime',
     serviceDbMongoUrl: options.serviceDbMongoUrl,
     telemetryEndpoint: 'ws://127.0.0.1:4002/telemetry',
-    rewrite: [
-      { host: 'account.localhost', service: 'skiff.run/account', version: '0.1.0' },
-      { host: 'registry.localhost', service: 'skiff.run/registry', version: '0.1.0' },
-    ],
   });
 }
 

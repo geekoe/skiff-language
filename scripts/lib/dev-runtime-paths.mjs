@@ -26,6 +26,10 @@ export function identityCliBinaryName(platform = process.platform) {
   return platform === 'win32' ? 'skiff-artifact-identity.exe' : 'skiff-artifact-identity';
 }
 
+export function ecosystemStoreCliBinaryName(platform = process.platform) {
+  return platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler';
+}
+
 export function devRuntimePaths({ devHome, env = process.env, platform = process.platform } = {}) {
   const resolvedDevHome = resolveDevHome(devHome ?? env.SKIFF_DEV_HOME, env);
   const runtimeBinDir = join(resolvedDevHome, 'bin');
@@ -36,6 +40,7 @@ export function devRuntimePaths({ devHome, env = process.env, platform = process
     runtimeConfig: join(resolvedDevHome, 'runtime.yml'),
     runtimeHome: join(resolvedDevHome, 'runtime-home'),
     runtimeBinDir,
+    ecosystemStoreCli: join(runtimeBinDir, ecosystemStoreCliBinaryName(platform)),
     identityCli: join(runtimeBinDir, identityCliBinaryName(platform)),
     runtimeBinary: join(runtimeBinDir, runtimeBinaryName(platform)),
     routerConfig: join(resolvedDevHome, 'router.yml'),

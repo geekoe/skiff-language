@@ -18,6 +18,7 @@ import {
   isolatedTestInstanceConfigText,
   isolatedTestRunnerEnvironment,
 } from '../lib/isolated-test-runtime-instance.mjs';
+import { readInstanceConfig } from '../lib/local-instance-config.mjs';
 import { leaseConsecutiveLocalPorts } from '../lib/local-port-lease.mjs';
 import { runOwnedCommand } from '../lib/owned-command.mjs';
 import {
@@ -64,6 +65,35 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
   assert.equal(environment.SKIFF_TEST_RUNTIME_ARTIFACT_ROOT, `${devHome}/artifacts`);
   assert.equal(environment.SKIFF_TEST_INGRESS_URL, 'http://127.0.0.1:46042');
   assert.equal(environment.SKIFF_TEST_PLATFORM_SOURCE_ROOT, '/checkout');
+});
+
+test('isolated instance derives its ecosystem store CLI inside its owned dev-home', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-store-cli-'));
+  const configPath = join(root, 'instance', 'config.yml');
+  const devHome = join(root, 'instance', 'dev-home');
+  try {
+    await mkdir(join(root, 'instance'), { recursive: true });
+    await writeFile(configPath, isolatedTestInstanceConfigText({
+      devHome,
+      cargoTarget: join(root, 'checkout', 'build', 'cargo-target'),
+      basePort: 46042,
+    }));
+    const config = await readInstanceConfig({
+      configPath,
+      repoRoot: join(root, 'checkout'),
+    });
+    assert.equal(
+      config.paths.ecosystemStoreCli,
+      join(
+        devHome,
+        'bin',
+        process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler',
+      ),
+    );
+    assert.equal(config.paths.ecosystemStoreCli.startsWith(`${devHome}/`), true);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 test('bootstrap comes from current checkout and writes only canonical generation zero', () => {

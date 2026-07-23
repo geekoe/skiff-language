@@ -129,6 +129,45 @@ describe('EcosystemStoreClient production adapter boundary', () => {
     );
     await expect(fixture.client.read('test')).resolves.toEqual(before);
   });
+
+  it('fails closed for missing, non-executable, and wrong adapter binaries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'skiff-router-store-client-negative-'));
+    roots.push(root);
+    const artifactRoot = join(root, 'artifacts');
+    const missing = join(root, 'missing-skiff-compiler');
+    await expect(new EcosystemStoreClient({
+      compilerPath: missing,
+      artifactRoot,
+      timeoutMs: 1_000
+    }).ensureEnvironmentBootstrap('test')).rejects.toThrow(
+      /failed to start ecosystem-store adapter/
+    );
+
+    const nonExecutable = join(root, 'non-executable-skiff-compiler');
+    await writeFile(nonExecutable, '#!/usr/bin/env node\n');
+    await chmod(nonExecutable, 0o644);
+    await expect(new EcosystemStoreClient({
+      compilerPath: nonExecutable,
+      artifactRoot,
+      timeoutMs: 1_000
+    }).ensureEnvironmentBootstrap('test')).rejects.toThrow(
+      /failed to start ecosystem-store adapter/
+    );
+
+    const wrong = join(root, 'wrong-skiff-compiler');
+    await writeFile(
+      wrong,
+      '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ wrong: true }));\n'
+    );
+    await chmod(wrong, 0o755);
+    await expect(new EcosystemStoreClient({
+      compilerPath: wrong,
+      artifactRoot,
+      timeoutMs: 1_000
+    }).ensureEnvironmentBootstrap('test')).rejects.toThrow(
+      /environment activation state fields must be exactly/
+    );
+  });
 });
 
 async function adapterFixture() {

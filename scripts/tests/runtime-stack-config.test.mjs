@@ -19,6 +19,7 @@ const routerConfig = {
   host: '127.0.0.1',
   environment: 'f04-host-test',
   artifactRoots: ['/tmp/skiff/artifacts'],
+  ecosystemStoreCliPath: '/tmp/skiff/bin/skiff-compiler',
   identityCliPath: '/tmp/skiff/bin/artifact-identity',
   devReload: true,
   releaseMode: false,
@@ -37,6 +38,10 @@ test('router config renders an explicit environment', () => {
   const rendered = renderRouterConfig(routerConfig);
 
   assert.match(rendered, /^environment: "f04-host-test"$/m);
+  assert.match(
+    rendered,
+    /^ecosystemStoreCliPath: "\/tmp\/skiff\/bin\/skiff-compiler"$/m,
+  );
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
 });
 
@@ -49,6 +54,18 @@ test('router config fails closed when environment is omitted or empty', () => {
   assert.throws(
     () => renderRouterConfig({ ...routerConfig, environment: '' }),
     /router environment is required/,
+  );
+});
+
+test('router config fails closed when ecosystemStoreCliPath is omitted or empty', () => {
+  const { ecosystemStoreCliPath: _ecosystemStoreCliPath, ...withoutStoreCli } = routerConfig;
+  assert.throws(
+    () => renderRouterConfig(withoutStoreCli),
+    /router ecosystemStoreCliPath is required/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, ecosystemStoreCliPath: '   ' }),
+    /router ecosystemStoreCliPath is required/,
   );
 });
 
@@ -118,10 +135,16 @@ test('local dev config caller writes dev and one canonical artifact root', async
       '--no-bin',
     ]);
     const rendered = await readFile(join(devHome, 'runtime.yml'), 'utf8');
+    const router = await readFile(join(devHome, 'router.yml'), 'utf8');
 
     assert.match(rendered, /^environment: "dev"$/m);
     assert.match(rendered, new RegExp(`^artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
     assert.doesNotMatch(rendered, /^artifactRoots:/m);
+    assert.match(
+      router,
+      new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(join(devHome, 'bin', process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler'))}$`, 'm'),
+    );
+    assert.doesNotMatch(router, /^rewrite:/m);
   } finally {
     await rm(devHome, { recursive: true, force: true });
   }

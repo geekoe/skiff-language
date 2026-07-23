@@ -3,6 +3,7 @@ export function renderRouterConfig({
   host,
   environment,
   artifactRoots,
+  ecosystemStoreCliPath,
   identityCliPath,
   devReload,
   releaseMode,
@@ -17,12 +18,16 @@ export function renderRouterConfig({
   if (typeof environment !== 'string' || environment.length === 0) {
     throw new Error('router environment is required');
   }
+  if (typeof ecosystemStoreCliPath !== 'string' || ecosystemStoreCliPath.trim().length === 0) {
+    throw new Error('router ecosystemStoreCliPath is required');
+  }
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
     `environment: ${quoteYamlString(environment)}`,
     'artifactRoots:',
     ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
+    `ecosystemStoreCliPath: ${quoteYamlString(ecosystemStoreCliPath)}`,
     `identityCliPath: ${quoteYamlString(identityCliPath)}`,
   ];
   if (releaseMode !== undefined) {

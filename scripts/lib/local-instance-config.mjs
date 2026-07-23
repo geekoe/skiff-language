@@ -3,7 +3,11 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { identityCliBinaryName, runtimeBinaryName } from './dev-runtime-paths.mjs';
+import {
+  ecosystemStoreCliBinaryName,
+  identityCliBinaryName,
+  runtimeBinaryName,
+} from './dev-runtime-paths.mjs';
 import { parseSimpleYamlObject, parseYamlStringScalar, yamlStringScalarHasContent } from './simple-yaml.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -105,6 +109,7 @@ export function instanceSummary(config) {
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
     binDir: config.paths.binDir,
     runtimeBinary: config.paths.runtimeBinary,
+    ecosystemStoreCli: config.paths.ecosystemStoreCli,
     identityCli: config.paths.identityCli,
     routerConfig: config.paths.routerConfig,
     telemetryConfig: config.paths.telemetryConfig,
@@ -166,6 +171,7 @@ function normalizeInstanceConfig(raw, context) {
       serviceDbEncryptionKeyringFile: join(secretsDir, 'service-db-keyring.json'),
       binDir,
       runtimeBinary: join(binDir, runtimeBinaryName()),
+      ecosystemStoreCli: join(binDir, ecosystemStoreCliBinaryName()),
       identityCli: join(binDir, identityCliBinaryName()),
       routerConfig: join(devHome, 'router.yml'),
       telemetryConfig: join(devHome, 'telemetry.yml'),

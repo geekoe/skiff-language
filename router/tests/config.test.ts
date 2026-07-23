@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -31,6 +32,13 @@ afterEach(async () => {
 });
 
 describe('router config', () => {
+  it('keeps the checked-in example explicit about the ecosystem store adapter', async () => {
+    const examplePath = fileURLToPath(new URL('../router.example.yml', import.meta.url));
+    await expect(loadRouterConfig(examplePath)).resolves.toMatchObject({
+      ecosystemStoreCliPath: '/opt/skiff/bin/skiff-compiler'
+    });
+  });
+
   it('loads router.yml values and resolves manifest relative to the config file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
@@ -240,39 +248,49 @@ describe('router config', () => {
     await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty('identityCliPath');
   });
 
-  it('resolves the ecosystem store adapter from config, override, env, and dev fallback', async () => {
+  it('accepts only explicit absolute ecosystem store adapter paths', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
+    const configuredPath = join(dir, 'bin', 'skiff-compiler');
     await writeFile(
       configPath,
-      ['profile: dev', 'ecosystemStoreCliPath: bin/skiff-compiler', ''].join('\n')
+      ['profile: dev', `ecosystemStoreCliPath: ${JSON.stringify(configuredPath)}`, ''].join('\n')
     );
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      ecosystemStoreCliPath: join(dir, 'bin/skiff-compiler')
+      ecosystemStoreCliPath: configuredPath
     });
 
+    const overridePath = join(dir, 'override', 'skiff-compiler');
     await expect(loadRouterConfig(configPath, {
-      ecosystemStoreCliPath: 'override/skiff-compiler'
+      ecosystemStoreCliPath: overridePath
     })).resolves.toMatchObject({
-      ecosystemStoreCliPath: resolve('override/skiff-compiler')
+      ecosystemStoreCliPath: overridePath
     });
 
     await writeFile(configPath, 'profile: dev\n');
     process.env.SKIFF_ECOSYSTEM_STORE_CLI = 'env/skiff-compiler';
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      ecosystemStoreCliPath: resolve('env/skiff-compiler')
-    });
+    process.env.SKIFF_DEV_HOME = join(dir, 'hostile-dev-home');
+    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
+      'ecosystemStoreCliPath'
+    );
 
-    delete process.env.SKIFF_ECOSYSTEM_STORE_CLI;
-    const devHome = join(dir, 'dev-home');
-    process.env.SKIFF_DEV_HOME = devHome;
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      ecosystemStoreCliPath: join(devHome, 'bin/skiff-compiler')
-    });
+    await writeFile(
+      configPath,
+      'profile: dev\necosystemStoreCliPath: bin/skiff-compiler\n'
+    );
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /ecosystemStoreCliPath must be an absolute executable path/
+    );
+    await writeFile(configPath, 'profile: dev\n');
+    await expect(loadRouterConfig(configPath, {
+      ecosystemStoreCliPath: 'override/skiff-compiler'
+    })).rejects.toThrow(
+      /ecosystemStoreCliPath must be an absolute executable path/
+    );
   });
 
-  it('requires an explicit ecosystem store adapter in release mode', async () => {
+  it('does not invent an ecosystem store adapter when it is omitted', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');

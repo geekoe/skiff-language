@@ -18,13 +18,9 @@ const DEFAULT_TELEMETRY_BATCH_MAX_EVENTS = 200;
 const DEFAULT_TELEMETRY_BATCH_MAX_BYTES = 262144;
 const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 1000;
 const IDENTITY_CLI_ENV = 'SKIFF_ARTIFACT_IDENTITY_CLI';
-const ECOSYSTEM_STORE_CLI_ENV = 'SKIFF_ECOSYSTEM_STORE_CLI';
 const IDENTITY_CLI_BINARY = process.platform === 'win32'
   ? 'skiff-artifact-identity.exe'
   : 'skiff-artifact-identity';
-const ECOSYSTEM_STORE_CLI_BINARY = process.platform === 'win32'
-  ? 'skiff-compiler.exe'
-  : 'skiff-compiler';
 
 export interface RouterConfig {
   artifactRoots?: string[];
@@ -142,11 +138,9 @@ export async function loadRouterConfig(
   });
   const ecosystemStoreCliPath = readEcosystemStoreCliPath({
     raw: raw.ecosystemStoreCliPath,
-    configDir,
     ...(overrides.ecosystemStoreCliPath !== undefined
       ? { override: overrides.ecosystemStoreCliPath }
-      : {}),
-    ...(releaseMode !== undefined ? { releaseMode } : {})
+      : {})
   });
   rejectRemovedValuesConfig(raw.values);
   rejectRemovedArtifactRootConfig(raw);
@@ -427,28 +421,28 @@ function defaultDevIdentityCliPath(): string {
 function readEcosystemStoreCliPath(input: {
   override?: string;
   raw: unknown;
-  configDir: string;
-  releaseMode?: boolean;
 }): string | undefined {
   if (input.override !== undefined) {
-    return resolveProcessPath(
-      readString(input.override, 'ecosystemStoreCliPath', input.override)
+    return readAbsoluteExecutablePath(
+      input.override,
+      'ecosystemStoreCliPath'
     );
   }
   if (input.raw !== undefined && input.raw !== null) {
-    return resolveConfigPath(
-      input.configDir,
-      readString(input.raw, 'ecosystemStoreCliPath', String(input.raw))
+    return readAbsoluteExecutablePath(
+      input.raw,
+      'ecosystemStoreCliPath'
     );
   }
-  const envPath = process.env[ECOSYSTEM_STORE_CLI_ENV];
-  if (envPath !== undefined && envPath.trim().length > 0) {
-    return resolveProcessPath(envPath);
+  return undefined;
+}
+
+function readAbsoluteExecutablePath(value: unknown, name: string): string {
+  const path = readString(value, name, String(value));
+  if (!isAbsolute(path)) {
+    throw new Error(`router config ${name} must be an absolute executable path`);
   }
-  if (input.releaseMode === true) {
-    return undefined;
-  }
-  return join(defaultDevBinDir(), ECOSYSTEM_STORE_CLI_BINARY);
+  return path;
 }
 
 function defaultDevBinDir(): string {
