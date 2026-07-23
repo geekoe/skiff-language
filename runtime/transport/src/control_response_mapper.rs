@@ -113,8 +113,8 @@ mod tests {
         SpawnClaimControlResponse,
     };
     use crate::protocol::{
-        SpawnClaimDescriptorFrameMetadata, SpawnClaimResponseFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        ActivationIdentityFrameMetadata, SpawnClaimDescriptorFrameMetadata,
+        SpawnClaimResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     };
 
     #[test]
@@ -201,7 +201,14 @@ mod tests {
             service_version: "v1".to_string(),
             service_protocol_identity: "protocol-1".to_string(),
             build_id: "build-1".to_string(),
-            activation_identity: None,
+            activation_identity: ActivationIdentityFrameMetadata {
+                assembly_identity:
+                    "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                generation: 7,
+                runtime_replica_id: "runtime-replica-7".to_string(),
+                deployment_revision: "deployment-revision-7".to_string(),
+            },
             payload_schema_identity: None,
             lease_expires_at: None,
         }

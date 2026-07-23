@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -114,6 +116,19 @@ const routerToRuntimeFrameHeaderTypes = [
   'response.error',
   'response.chunk'
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
+
+const actorControlActivationIdentityCorpus = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../runtime/transport/testdata/actor-control-activation-identity.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+) as {
+  valid: Record<string, unknown>;
+  invalid: Array<{ label: string; value: unknown }>;
+};
 
 describe('runtime protocol fixtures and schemas', () => {
   it('maps Contract H cancel situations to stable request.cancel reasons', () => {
@@ -925,70 +940,91 @@ describe('runtime binary frame foundations', () => {
       })
     ).toEqual({
       ok: false,
-      error: 'invalid spawn.submit.request envelope: actorRef is not supported'
+      error: 'invalid spawn.submit.request frame header envelope: actorRef is not supported'
     });
   });
 
-  it('requires package-test activation identity on spawn submit, claim, and descriptor frames', () => {
-    const packageTestBuildId =
-      'skiff-package-test-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const activationIdentity = 'skiff-package-test-run-v1:example.com~hello:test-a:run:1';
-    const validSubmit = {
-      ...runtimeFrameHeaderFixtures['spawn.submit.request'],
-      buildId: packageTestBuildId,
-      activationIdentity
-    };
-    const validClaim = {
-      ...runtimeFrameHeaderFixtures['spawn.claim.request'],
-      buildId: packageTestBuildId,
-      activationIdentity
-    };
-    const validResponse = {
-      ...runtimeFrameHeaderFixtures['spawn.claim.response'],
-      item: {
-        ...runtimeFrameHeaderFixtures['spawn.claim.response'].item,
-        buildId: packageTestBuildId,
-        activationIdentity
-      }
-    };
+  it('enforces the shared structured activation identity corpus on every actor/spawn request', () => {
+    const requestTypes = [
+      'actor.put.request',
+      'actor.find.request',
+      'actor.remove.request',
+      'spawn.submit.request',
+      'spawn.claim.request',
+      'spawn.renew.request',
+      'spawn.complete.request',
+      'spawn.fail.request'
+    ] as const;
 
-    for (const header of [validSubmit, validClaim]) {
+    for (const type of requestTypes) {
+      const header = runtimeFrameHeaderFixtures[type];
+      expect(header.activationIdentity).toEqual(
+        actorControlActivationIdentityCorpus.valid
+      );
       expect(validateRuntimeToRouterFrameHeader(header)).toEqual({
         ok: true,
         envelope: header
       });
-      const { activationIdentity: _activationIdentity, ...missingActivation } = header;
-      expect(validateRuntimeToRouterFrameHeader(missingActivation)).toEqual({
-        ok: false,
-        error: expect.stringContaining('package-test build')
+      expect(runtimeFrameHeaderSchemas[type].required).toContain('activationIdentity');
+      expect(runtimeFrameHeaderSchemas[type].properties.activationIdentity).toEqual({
+        type: 'object',
+        required: [
+          'assemblyIdentity',
+          'generation',
+          'runtimeReplicaId',
+          'deploymentRevision'
+        ],
+        properties: {
+          assemblyIdentity: { type: 'string' },
+          generation: { type: 'integer' },
+          runtimeReplicaId: { type: 'string' },
+          deploymentRevision: { type: 'string' }
+        },
+        additionalProperties: false
       });
+
+      const { activationIdentity: _activationIdentity, ...missingActivation } = header;
+      expect(validateRuntimeToRouterFrameHeader(missingActivation).ok).toBe(false);
+
       expect(
         validateRuntimeToRouterFrameHeader({
           ...header,
-          activationIdentity: 'skiff-runtime-activation-v1:opaque:wrong-kind'
+          serviceDisplayName: 'legacy-inference'
         })
       ).toEqual({
         ok: false,
-        error: expect.stringContaining('skiff-package-test-run-v1')
+        error: `invalid ${type} frame header envelope: serviceDisplayName is not supported`
       });
-    }
 
-    expect(validateRouterToRuntimeFrameHeader(validResponse)).toEqual({
-      ok: true,
-      envelope: validResponse
-    });
-    const { activationIdentity: _activationIdentity, ...itemWithoutActivation } =
-      validResponse.item;
-    expect(
-      validateRouterToRuntimeFrameHeader({ ...validResponse, item: itemWithoutActivation })
-    ).toEqual({
-      ok: false,
-      error: expect.stringContaining('package-test build')
-    });
-
-    for (const header of [validClaim, validResponse]) {
+      for (const invalid of actorControlActivationIdentityCorpus.invalid) {
+        expect(
+          validateRuntimeToRouterFrameHeader({
+            ...header,
+            activationIdentity: invalid.value
+          }),
+          `${type} accepted ${invalid.label}`
+        ).toMatchObject({ ok: false });
+      }
       const decoded = decodeRuntimeFrame(encodeRuntimeFrame(header));
       expect(decoded.header).toEqual(header);
+    }
+
+    const claimResponse = runtimeFrameHeaderFixtures['spawn.claim.response'];
+    expect(validateRouterToRuntimeFrameHeader(claimResponse)).toEqual({
+      ok: true,
+      envelope: claimResponse
+    });
+    for (const invalid of actorControlActivationIdentityCorpus.invalid) {
+      expect(
+        validateRouterToRuntimeFrameHeader({
+          ...claimResponse,
+          item: {
+            ...claimResponse.item,
+            activationIdentity: invalid.value
+          }
+        }),
+        `spawn claim descriptor accepted ${invalid.label}`
+      ).toMatchObject({ ok: false });
     }
   });
 

@@ -1,20 +1,22 @@
 use serde::Serialize;
 use skiff_runtime_request_contract::{
-    ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest,
-    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage, RequestCancelControl,
-    RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl,
-    RuntimeTraceContextControl, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata,
+    ActorPutControlRequest, ActorRemoveControlRequest, ConnectionSendControl,
+    OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
+    RuntimeCallerControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+    SpawnSubmitControlRequest,
 };
 
 use crate::{
     cancel_reason::request_cancel_wire_reason_for_internal,
     error::TransportResult,
     protocol::{
-        encode_binary_frame, ActorFindRequestFrameHeader, ActorKeyFrameMetadata,
-        ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RequestStartFrameHeader, RequestTestEffectDouble,
-        RuntimeCallerFrameHeader, RuntimeDeadlineFrameHeader, RuntimeTraceContextFrameHeader,
-        SpawnSubmitRequestFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
+        encode_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+        ActorKeyFrameMetadata, ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader,
+        ConnectionSendFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
+        RequestTestEffectDouble, RuntimeCallerFrameHeader, RuntimeDeadlineFrameHeader,
+        RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
+        RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
@@ -101,6 +103,7 @@ fn actor_put_request_frame_header(request: ActorPutControlRequest) -> ActorPutRe
         envelope_type: "actor.put.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
         object_schema_identity: request.object_schema_identity,
         object_encoding_version: request.object_encoding_version,
@@ -115,6 +118,7 @@ fn actor_find_request_frame_header(
         envelope_type: "actor.find.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
     }
 }
@@ -127,6 +131,7 @@ fn actor_remove_request_frame_header(
         envelope_type: "actor.remove.request".to_string(),
         rpc_id: request.rpc_id,
         runtime_id: request.runtime_id,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         actor_key: actor_key_frame_metadata(request.actor_key),
     }
 }
@@ -139,6 +144,17 @@ fn actor_key_frame_metadata(metadata: ActorKeyControlMetadata) -> ActorKeyFrameM
         actor_id_encoding_version: metadata.actor_id_encoding_version,
         canonical_actor_id_key_bytes_base64: metadata.canonical_actor_id_key_bytes_base64,
         actor_id_hash: metadata.actor_id_hash,
+    }
+}
+
+fn activation_identity_frame_metadata(
+    identity: ActivationIdentityControl,
+) -> ActivationIdentityFrameMetadata {
+    ActivationIdentityFrameMetadata {
+        assembly_identity: identity.assembly_identity.into_string(),
+        generation: identity.generation,
+        runtime_replica_id: identity.runtime_replica_id,
+        deployment_revision: identity.deployment_revision.into_string(),
     }
 }
 
@@ -157,7 +173,7 @@ fn spawn_submit_request_frame_header(
         target: request.target,
         spawn_id: request.spawn_id,
         build_id: request.build_id,
-        activation_identity: request.activation_identity,
+        activation_identity: activation_identity_frame_metadata(request.activation_identity),
         caller_request_id: request.caller_request_id,
         trace_id: request.trace_id,
         caller_target: request.caller_target,
@@ -276,18 +292,19 @@ mod tests {
         request_start_frame, spawn_submit_request_frame,
     };
     use crate::protocol::{
-        decode_typed_binary_frame, ActorFindRequestFrameHeader, ActorKeyFrameMetadata,
-        ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader, ConnectionSendFrameHeader,
-        RequestCancelFrameHeader, RequestStartFrameHeader, RuntimeCallerFrameHeader,
-        RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
+        decode_typed_binary_frame, ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+        ActorKeyFrameMetadata, ActorPutRequestFrameHeader, ActorRemoveRequestFrameHeader,
+        ConnectionSendFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
+        RuntimeCallerFrameHeader, RuntimeTraceContextFrameHeader, SpawnSubmitRequestFrameHeader,
         RUNTIME_FRAME_SCHEMA_VERSION,
     };
     use serde_json::json;
+    use skiff_artifact_model::{AssemblyIdentity, DeploymentRevision};
     use skiff_runtime_request_contract::{
-        ActorKeyControlMetadata, ActorPutControlRequest, OutboundControlMessage,
-        RequestCancelControl, RequestEffectDoubleControl, RequestStartControl,
-        RuntimeCallerControl, RuntimeClientSessionControl, RuntimeDeadlineControl,
-        RuntimeTraceContextControl,
+        ActivationIdentityControl, ActorKeyControlMetadata, ActorPutControlRequest,
+        OutboundControlMessage, RequestCancelControl, RequestEffectDoubleControl,
+        RequestStartControl, RuntimeCallerControl, RuntimeClientSessionControl,
+        RuntimeDeadlineControl, RuntimeTraceContextControl,
     };
     use std::collections::HashMap;
 
@@ -321,6 +338,7 @@ mod tests {
             envelope_type: "actor.put.request".to_string(),
             rpc_id: "rpc-put".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key: actor_key.clone(),
             object_schema_identity: "schema:object".to_string(),
             object_encoding_version: "v1".to_string(),
@@ -340,6 +358,7 @@ mod tests {
             envelope_type: "actor.find.request".to_string(),
             rpc_id: "rpc-find".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key: actor_key.clone(),
         };
 
@@ -356,6 +375,7 @@ mod tests {
             envelope_type: "actor.remove.request".to_string(),
             rpc_id: "rpc-remove".to_string(),
             runtime_id: "runtime-1".to_string(),
+            activation_identity: activation_identity_frame(),
             actor_key,
         };
 
@@ -382,7 +402,7 @@ mod tests {
             target: "Worker.run".to_string(),
             spawn_id: Some("spawn-1".to_string()),
             build_id: Some("build-1".to_string()),
-            activation_identity: Some("activation-1".to_string()),
+            activation_identity: activation_identity_frame(),
             caller_request_id: Some("request-1".to_string()),
             trace_id: Some("trace-1".to_string()),
             caller_target: Some("Caller.start".to_string()),
@@ -580,6 +600,7 @@ mod tests {
             request: ActorPutControlRequest {
                 rpc_id: "rpc-put-1".to_string(),
                 runtime_id: "runtime-1".to_string(),
+                activation_identity: activation_identity_control(),
                 actor_key: actor_key_control(),
                 object_schema_identity: "schema:object".to_string(),
                 object_encoding_version: "v1".to_string(),
@@ -608,6 +629,28 @@ mod tests {
             actor_id_encoding_version: "v1".to_string(),
             canonical_actor_id_key_bytes_base64: "YWN0b3Ita2V5".to_string(),
             actor_id_hash: Some("actor-hash-1".to_string()),
+        }
+    }
+
+    fn activation_identity_frame() -> ActivationIdentityFrameMetadata {
+        ActivationIdentityFrameMetadata {
+            assembly_identity:
+                "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            generation: 7,
+            runtime_replica_id: "runtime-replica-7".to_string(),
+            deployment_revision: "deployment-revision-7".to_string(),
+        }
+    }
+
+    fn activation_identity_control() -> ActivationIdentityControl {
+        ActivationIdentityControl {
+            assembly_identity: AssemblyIdentity::new(
+                "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            generation: 7,
+            runtime_replica_id: "runtime-replica-7".to_string(),
+            deployment_revision: DeploymentRevision::new("deployment-revision-7"),
         }
     }
 

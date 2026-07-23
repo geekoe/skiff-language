@@ -3,7 +3,10 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::TransportError;
 use serde::{de, de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use skiff_artifact_model::ConfigShape;
+use skiff_artifact_model::{
+    validate_activation_generation, validate_activation_token, validate_runtime_assembly_identity,
+    ConfigShape,
+};
 use skiff_runtime_request_contract::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
 };
@@ -880,6 +883,45 @@ pub struct ActorRefFrameMetadata {
     pub epoch: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivationIdentityFrameMetadata {
+    pub assembly_identity: String,
+    pub generation: u64,
+    pub runtime_replica_id: String,
+    pub deployment_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawActivationIdentityFrameMetadata {
+    assembly_identity: String,
+    generation: u64,
+    runtime_replica_id: String,
+    deployment_revision: String,
+}
+
+impl<'de> Deserialize<'de> for ActivationIdentityFrameMetadata {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawActivationIdentityFrameMetadata::deserialize(deserializer)?;
+        validate_runtime_assembly_identity(&raw.assembly_identity).map_err(de::Error::custom)?;
+        validate_activation_generation(raw.generation, "generation").map_err(de::Error::custom)?;
+        validate_activation_token(&raw.runtime_replica_id, "runtimeReplicaId")
+            .map_err(de::Error::custom)?;
+        validate_activation_token(&raw.deployment_revision, "deploymentRevision")
+            .map_err(de::Error::custom)?;
+        Ok(Self {
+            assembly_identity: raw.assembly_identity,
+            generation: raw.generation,
+            runtime_replica_id: raw.runtime_replica_id,
+            deployment_revision: raw.deployment_revision,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActorPutRequestFrameHeader {
@@ -888,6 +930,7 @@ pub struct ActorPutRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
     pub object_schema_identity: String,
     pub object_encoding_version: String,
@@ -911,6 +954,7 @@ pub struct ActorFindRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
 }
 
@@ -934,6 +978,7 @@ pub struct ActorRemoveRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
 }
 
@@ -964,8 +1009,7 @@ pub struct SpawnSubmitRequestFrameHeader {
     pub spawn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1004,8 +1048,7 @@ pub struct SpawnClaimRequestFrameHeader {
     pub supported_spawn_compatibility_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_execution_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1026,8 +1069,7 @@ pub struct SpawnClaimDescriptorFrameMetadata {
     pub service_version: String,
     pub service_protocol_identity: String,
     pub build_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_identity: Option<String>,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_schema_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1054,6 +1096,7 @@ pub struct SpawnRenewRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     pub worker_id: String,
@@ -1080,6 +1123,7 @@ pub struct SpawnCompleteRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1105,6 +1149,7 @@ pub struct SpawnFailRequestFrameHeader {
     pub envelope_type: String,
     pub rpc_id: String,
     pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
     pub item_id: String,
     pub lease_id: String,
     pub reason: String,

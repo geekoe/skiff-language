@@ -25,6 +25,11 @@ import {
   normalizeRuntimeAssemblyRequestMetadata,
   validateRuntimeAssemblyRequestMetadata
 } from './runtimeAssemblyRequestMetadata.js';
+import {
+  activationGeneration,
+  activationToken,
+  runtimeAssemblyIdentity
+} from './assemblyActivationLexical.js';
 
 export type RuntimeProtocolFrameHeaderName = RuntimeFrameHeaderName;
 export type RuntimeToRouterFrameHeaderName = RuntimeToRouterFrameHeader['type'];
@@ -389,9 +394,27 @@ const actorRefSchema = {
   additionalProperties: false
 } as const satisfies ProtocolSchemaProperty;
 
+const activationIdentitySchema = {
+  type: 'object',
+  required: [
+    'assemblyIdentity',
+    'generation',
+    'runtimeReplicaId',
+    'deploymentRevision'
+  ],
+  properties: {
+    assemblyIdentity: { type: 'string' },
+    generation: { type: 'integer' },
+    runtimeReplicaId: { type: 'string' },
+    deploymentRevision: { type: 'string' }
+  },
+  additionalProperties: false
+} as const satisfies ProtocolSchemaProperty;
+
 const runtimeRpcRequestBaseProperties = {
   rpcId: { type: 'string' },
-  runtimeId: { type: 'string' }
+  runtimeId: { type: 'string' },
+  activationIdentity: activationIdentitySchema
 } as const satisfies Record<string, ProtocolSchemaProperty>;
 
 const runtimeRpcResponseBaseProperties = {
@@ -425,7 +448,7 @@ const spawnClaimDescriptorProperties = {
   serviceVersion: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
   buildId: { type: 'string' },
-  activationIdentity: { type: 'string' },
+  activationIdentity: activationIdentitySchema,
   payloadSchemaIdentity: { type: 'string' },
   leaseExpiresAt: { type: 'string' }
 } as const satisfies Record<string, ProtocolSchemaProperty>;
@@ -743,6 +766,7 @@ export const runtimeFrameHeaderSchemas = {
       'type',
       'rpcId',
       'runtimeId',
+      'activationIdentity',
       'actorKey',
       'objectSchemaIdentity',
       'objectEncodingVersion'
@@ -780,7 +804,14 @@ export const runtimeFrameHeaderSchemas = {
   },
   'actor.find.request': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'runtimeId', 'actorKey'],
+    required: [
+      'schemaVersion',
+      'type',
+      'rpcId',
+      'runtimeId',
+      'activationIdentity',
+      'actorKey'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['actor.find.request'] },
@@ -813,7 +844,14 @@ export const runtimeFrameHeaderSchemas = {
   },
   'actor.remove.request': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'runtimeId', 'actorKey'],
+    required: [
+      'schemaVersion',
+      'type',
+      'rpcId',
+      'runtimeId',
+      'activationIdentity',
+      'actorKey'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['actor.remove.request'] },
@@ -850,6 +888,7 @@ export const runtimeFrameHeaderSchemas = {
       'type',
       'rpcId',
       'runtimeId',
+      'activationIdentity',
       'targetKind',
       'serviceId',
       'serviceVersion',
@@ -867,7 +906,6 @@ export const runtimeFrameHeaderSchemas = {
       target: { type: 'string' },
       spawnId: { type: 'string' },
       buildId: { type: 'string' },
-      activationIdentity: { type: 'string' },
       callerRequestId: { type: 'string' },
       traceId: { type: 'string' },
       callerTarget: { type: 'string' },
@@ -905,6 +943,7 @@ export const runtimeFrameHeaderSchemas = {
       'type',
       'rpcId',
       'runtimeId',
+      'activationIdentity',
       'workerId',
       'serviceId',
       'serviceVersion',
@@ -923,7 +962,6 @@ export const runtimeFrameHeaderSchemas = {
       supportedTargets: { type: 'array', items: { type: 'string' } },
       supportedSpawnCompatibilityKeys: { type: 'array', items: { type: 'string' } },
       buildId: { type: 'string' },
-      activationIdentity: { type: 'string' },
       maxExecutionMs: { type: 'number' },
       maxConcurrency: { type: 'number' }
     },
@@ -950,7 +988,8 @@ export const runtimeFrameHeaderSchemas = {
           'serviceId',
           'serviceVersion',
           'serviceProtocolIdentity',
-          'buildId'
+          'buildId',
+          'activationIdentity'
         ],
         properties: spawnClaimDescriptorProperties,
         additionalProperties: false
@@ -970,7 +1009,16 @@ export const runtimeFrameHeaderSchemas = {
   },
   'spawn.renew.request': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'runtimeId', 'itemId', 'leaseId', 'workerId'],
+    required: [
+      'schemaVersion',
+      'type',
+      'rpcId',
+      'runtimeId',
+      'activationIdentity',
+      'itemId',
+      'leaseId',
+      'workerId'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.renew.request'] },
@@ -1006,7 +1054,15 @@ export const runtimeFrameHeaderSchemas = {
   },
   'spawn.complete.request': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'runtimeId', 'itemId', 'leaseId'],
+    required: [
+      'schemaVersion',
+      'type',
+      'rpcId',
+      'runtimeId',
+      'activationIdentity',
+      'itemId',
+      'leaseId'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.complete.request'] },
@@ -1041,7 +1097,16 @@ export const runtimeFrameHeaderSchemas = {
   },
   'spawn.fail.request': {
     type: 'object',
-    required: ['schemaVersion', 'type', 'rpcId', 'runtimeId', 'itemId', 'leaseId', 'reason'],
+    required: [
+      'schemaVersion',
+      'type',
+      'rpcId',
+      'runtimeId',
+      'activationIdentity',
+      'itemId',
+      'leaseId',
+      'reason'
+    ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
       type: { type: 'string', enum: ['spawn.fail.request'] },
@@ -1489,6 +1554,14 @@ const actorRefFixture = {
   epoch: 1
 } as const;
 
+const actorControlActivationIdentityFixture = {
+  assemblyIdentity:
+    'skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  generation: 7,
+  runtimeReplicaId: 'runtime-replica-7',
+  deploymentRevision: 'deployment-revision-7'
+} as const;
+
 const spawnFixture = {
   runtimeId: runtimeRegisterFixture.runtimeId,
   workerId: 'spawn-worker-fixture-1',
@@ -1531,6 +1604,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'actor.put.request',
     rpcId: 'actor-put-rpc-fixture-1',
     runtimeId: runtimeRegisterFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
     objectSchemaIdentity: 'schema.example.ThreadActorState',
     objectEncodingVersion: 'json-v1'
@@ -1555,6 +1629,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'actor.find.request',
     rpcId: 'actor-find-rpc-fixture-1',
     runtimeId: runtimeRegisterFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture
   },
   'actor.find.response': {
@@ -1578,6 +1653,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'actor.remove.request',
     rpcId: 'actor-remove-rpc-fixture-1',
     runtimeId: runtimeRegisterFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture
   },
   'actor.remove.response': {
@@ -1600,6 +1676,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.submit.request',
     rpcId: 'spawn-submit-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     targetKind: 'function',
     serviceId: spawnFixture.serviceId,
     serviceVersion: spawnFixture.serviceVersion,
@@ -1634,6 +1711,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.claim.request',
     rpcId: 'spawn-claim-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     workerId: spawnFixture.workerId,
     serviceId: spawnFixture.serviceId,
     serviceVersion: spawnFixture.serviceVersion,
@@ -1660,6 +1738,7 @@ export const runtimeFrameHeaderFixtures = {
       serviceVersion: spawnFixture.serviceVersion,
       serviceProtocolIdentity: spawnFixture.serviceProtocolIdentity,
       buildId: spawnFixture.buildId,
+      activationIdentity: actorControlActivationIdentityFixture,
       payloadSchemaIdentity: `skiff-spawn-payload-v1:${spawnFixture.serviceProtocolIdentity}:${spawnFixture.target}`,
       leaseExpiresAt: '2026-06-06T10:00:30.000Z'
     }
@@ -1678,6 +1757,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.renew.request',
     rpcId: 'spawn-renew-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     itemId: spawnFixture.itemId,
     leaseId: spawnFixture.leaseId,
     workerId: spawnFixture.workerId
@@ -1704,6 +1784,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.complete.request',
     rpcId: 'spawn-complete-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     itemId: spawnFixture.itemId,
     leaseId: spawnFixture.leaseId,
     diagnostics: {
@@ -1731,6 +1812,7 @@ export const runtimeFrameHeaderFixtures = {
     type: 'spawn.fail.request',
     rpcId: 'spawn-fail-rpc-fixture-1',
     runtimeId: spawnFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
     itemId: spawnFixture.itemId,
     leaseId: spawnFixture.leaseId,
     reason: 'failed',
@@ -2196,10 +2278,58 @@ function validateRuntimeRpcRequestBase(
   envelope: Record<string, unknown>,
   envelopeType: string
 ): string | null {
+  const schema =
+    runtimeFrameHeaderSchemas[envelopeType as RuntimeProtocolFrameHeaderName];
   return (
+    rejectUnsupportedFrameHeaderFields(
+      envelope,
+      envelopeType,
+      Object.keys(schema.properties)
+    ) ??
     validateRuntimeRpcBase(envelope, envelopeType) ??
-    requireString(envelope, envelopeType, 'runtimeId')
+    requireString(envelope, envelopeType, 'runtimeId') ??
+    validateControlActivationIdentity(
+      envelope,
+      envelopeType,
+      'activationIdentity'
+    )
   );
+}
+
+function validateControlActivationIdentity(
+  envelope: Record<string, unknown>,
+  envelopeType: string,
+  field: string
+): string | null {
+  const value = getPathValue(envelope, field);
+  if (!isRecord(value)) {
+    return `invalid ${envelopeType} envelope: ${field} must be an object`;
+  }
+  const unknownField = rejectUnsupportedObjectFields(
+    value,
+    envelopeType,
+    field,
+    [
+      'assemblyIdentity',
+      'generation',
+      'runtimeReplicaId',
+      'deploymentRevision'
+    ]
+  );
+  if (unknownField !== null) {
+    return unknownField;
+  }
+  try {
+    runtimeAssemblyIdentity(value.assemblyIdentity);
+    activationGeneration(value.generation, `${field}.generation`);
+    activationToken(value.runtimeReplicaId, `${field}.runtimeReplicaId`);
+    activationToken(value.deploymentRevision, `${field}.deploymentRevision`);
+    return null;
+  } catch (error) {
+    return `invalid ${envelopeType} envelope: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
 }
 
 function validateActorPutRequest(envelope: Record<string, unknown>): string | null {
@@ -2282,12 +2412,6 @@ function validateSpawnSubmitRequest(envelope: Record<string, unknown>): string |
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
-    validateSpawnActivationIdentityForBuild(
-      envelope,
-      'spawn.submit.request',
-      'buildId',
-      'activationIdentity'
-    ) ??
     optionalString(envelope, 'spawn.submit.request', 'callerRequestId') ??
     optionalString(envelope, 'spawn.submit.request', 'traceId') ??
     optionalString(envelope, 'spawn.submit.request', 'callerTarget') ??
@@ -2330,12 +2454,6 @@ function validateSpawnClaimRequest(envelope: Record<string, unknown>): string | 
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
-    validateSpawnActivationIdentityForBuild(
-      envelope,
-      'spawn.claim.request',
-      'buildId',
-      'activationIdentity'
-    ) ??
     optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxExecutionMs') ??
     optionalPositiveNumber(envelope, 'spawn.claim.request', 'maxConcurrency')
   );
@@ -2357,6 +2475,12 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
     return 'invalid spawn.claim.response envelope: item must be an object';
   }
   return (
+    rejectUnsupportedObjectFields(
+      envelope.item,
+      'spawn.claim.response',
+      'item',
+      Object.keys(spawnClaimDescriptorProperties)
+    ) ??
     requireString(envelope, 'spawn.claim.response', 'item.itemId') ??
     requireString(envelope, 'spawn.claim.response', 'item.leaseId') ??
     requireString(envelope, 'spawn.claim.response', 'item.spawnExecutionId') ??
@@ -2380,39 +2504,13 @@ function validateSpawnClaimResponse(envelope: Record<string, unknown>): string |
       SERVICE_OR_PACKAGE_TEST_BUILD_ID_PATTERN,
       'skiff-service-build-v1:sha256:<64 lowercase hex> or skiff-package-test-build-v1:sha256:<64 lowercase hex>'
     ) ??
-    validateSpawnActivationIdentityForBuild(
+    validateControlActivationIdentity(
       envelope,
       'spawn.claim.response',
-      'item.buildId',
       'item.activationIdentity'
     ) ??
     optionalString(envelope, 'spawn.claim.response', 'item.payloadSchemaIdentity') ??
     optionalString(envelope, 'spawn.claim.response', 'item.leaseExpiresAt')
-  );
-}
-
-function validateSpawnActivationIdentityForBuild(
-  envelope: Record<string, unknown>,
-  envelopeType: string,
-  buildIdField: string,
-  activationIdentityField: string
-): string | null {
-  const buildId = getPathValue(envelope, buildIdField);
-  if (typeof buildId === 'string' && PACKAGE_TEST_BUILD_ID_PATTERN.test(buildId)) {
-    return requireStringPattern(
-      envelope,
-      envelopeType,
-      activationIdentityField,
-      PACKAGE_TEST_ACTIVATION_ID_PATTERN,
-      'skiff-package-test-run-v1:<test run id> for a package-test build'
-    );
-  }
-  return optionalStringPattern(
-    envelope,
-    envelopeType,
-    activationIdentityField,
-    ACTIVATION_IDENTITY_PATTERN,
-    'skiff-runtime-activation-v1:opaque:<opaque id>'
   );
 }
 

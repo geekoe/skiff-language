@@ -11,10 +11,12 @@ pub use envelope::{
     WebSocketPayloadSegmentKind, WebSocketReceiveRequest,
 };
 pub use outbound::{
-    ActorFindControlRequest, ActorKeyControlMetadata, ActorPutControlRequest,
-    ActorRemoveControlRequest, ConnectionSendControl, OutboundControlMessage, OutboundResponse,
-    RequestCancelControl, RequestEffectDoubleControl, RequestStartControl, RuntimeCallerControl,
-    RuntimeDeadlineControl, RuntimeTraceContextControl, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata,
+    ActorPutControlRequest, ActorRemoveControlRequest, ConnectionSendControl,
+    OutboundControlMessage, OutboundResponse, RequestCancelControl, RequestEffectDoubleControl,
+    RequestStartControl, RuntimeCallerControl, RuntimeDeadlineControl, RuntimeTraceContextControl,
+    SpawnClaimControlRequest, SpawnCompleteControlRequest, SpawnFailControlRequest,
+    SpawnRenewControlRequest, SpawnSubmitControlRequest,
 };
 pub use response_event::{
     BoundaryResponse, HttpResponseMetadata, ResponseEnd, ResponseError, ResponseEvent,

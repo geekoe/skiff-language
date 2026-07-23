@@ -1,0 +1,110 @@
+{
+  "valid": {
+    "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 7,
+    "runtimeReplicaId": "runtime-replica-7",
+    "deploymentRevision": "deployment-revision-7"
+  },
+  "invalid": [
+    {
+      "label": "legacy string",
+      "value": "skiff-runtime-activation-v1:opaque:legacy"
+    },
+    {
+      "label": "missing assembly identity",
+      "value": {
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "missing generation",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "missing runtime replica",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "missing deployment revision",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7"
+      }
+    },
+    {
+      "label": "unknown field",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7",
+        "serviceId": "example.com/legacy-inference"
+      }
+    },
+    {
+      "label": "invalid assembly identity",
+      "value": {
+        "assemblyIdentity": "assembly-plain",
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "negative generation",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": -1,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "fractional generation",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7.5,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "unsafe generation",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 9007199254740992,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "empty runtime replica",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "runtimeReplicaId": "",
+        "deploymentRevision": "deployment-revision-7"
+      }
+    },
+    {
+      "label": "invalid deployment revision",
+      "value": {
+        "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 7,
+        "runtimeReplicaId": "runtime-replica-7",
+        "deploymentRevision": "deployment revision 7"
+      }
+    }
+  ]
+}

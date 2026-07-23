@@ -583,9 +583,17 @@ export interface RuntimeRpcFrameHeaderBase<TType extends RuntimeFrameHeaderName>
   rpcId: string;
 }
 
+export interface ActivationIdentityFrameMetadata {
+  assemblyIdentity: string;
+  generation: number;
+  runtimeReplicaId: string;
+  deploymentRevision: string;
+}
+
 export interface RuntimeControlRequestFrameHeaderBase<TType extends RuntimeFrameHeaderName>
   extends RuntimeRpcFrameHeaderBase<TType> {
   runtimeId: string;
+  activationIdentity: ActivationIdentityFrameMetadata;
 }
 
 export interface ActorPutRequestFrameHeader
@@ -632,7 +640,6 @@ export interface SpawnSubmitRequestFrameHeader
   target: string;
   spawnId?: string;
   buildId?: string;
-  activationIdentity?: string;
   callerRequestId?: string;
   traceId?: string;
   callerTarget?: string;
@@ -655,7 +662,6 @@ export interface SpawnClaimRequestFrameHeader
   supportedTargets: string[];
   supportedSpawnCompatibilityKeys: string[];
   buildId?: string;
-  activationIdentity?: string;
   maxExecutionMs?: number;
   maxConcurrency?: number;
 }
@@ -672,7 +678,7 @@ export interface SpawnClaimDescriptorFrameMetadata {
   serviceVersion: string;
   serviceProtocolIdentity: string;
   buildId: string;
-  activationIdentity?: string;
+  activationIdentity: ActivationIdentityFrameMetadata;
   payloadSchemaIdentity?: string;
   leaseExpiresAt?: string;
 }
