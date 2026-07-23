@@ -23,6 +23,7 @@ use skiff_test_runner::{
         CanonicalTestRecords,
     },
     canonical_package::compile_package_project,
+    canonical_std_seed::seed_canonical_std,
     ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
     package_service_host_fixture::{
         prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
@@ -32,10 +33,13 @@ use skiff_test_runner::{
     SkiffTestError, SkiffTestOptions,
 };
 
+// Explicit identity regressions refreshed when c277e45 added the canonical
+// std.websocket.WebSocketIngressEvent surface. Production code derives these
+// identities from the F27A authoring receipt rather than these test pins.
 const EXPECTED_PRELUDE_IDENTITY: &str =
-    "skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d";
+    "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4";
+    "skiff-package-build-v4:sha256:2541456b050e08ff03af24c0e80549b25c960fd48f19a91cb275764e413a5335";
 
 #[test]
 fn platform_source_context_contract() {
@@ -821,6 +825,19 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         "test \"smoke\" { assert true }\n",
     )
     .unwrap();
+    let missing_std =
+        compile_package_project(&platform_sources(), &package, &artifacts).unwrap_err();
+    assert!(
+        missing_std.to_string().contains(
+            "references platform std, but the same compile graph has no canonical PackageArtifact"
+        ),
+        "{missing_std}"
+    );
+    let std = seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    assert_eq!(
+        std.package.artifact.package_build_id.as_str(),
+        EXPECTED_STD_PACKAGE_BUILD_ID
+    );
     let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
     let production =
         skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
@@ -837,6 +854,14 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
     assert_eq!(websocket.selector.protocol, IngressProtocol::WebSocket);
     assert_eq!(websocket.selector.path, "/socket");
     assert_eq!(fixture.records.assembly.roots.len(), 2);
+    assert_eq!(fixture.records.deployments.len(), 2);
+    assert_eq!(fixture.records.contracts.len(), 2);
+    assert_eq!(fixture.records.assembly.resolved_packages.len(), 3);
+    assert!(fixture
+        .records
+        .assembly
+        .resolved_packages
+        .contains(&std.package.artifact));
 }
 
 struct BaseAssemblyScenario {

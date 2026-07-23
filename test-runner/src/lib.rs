@@ -14,6 +14,7 @@ use thiserror::Error;
 
 pub mod canonical_fixture;
 pub mod canonical_package;
+pub mod canonical_std_seed;
 pub mod canonical_store;
 pub mod ecosystem_smoke_fixture;
 pub mod package_service_host_fixture;

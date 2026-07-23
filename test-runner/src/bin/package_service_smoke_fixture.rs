@@ -11,6 +11,7 @@ use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, EnvironmentActivationState};
 use skiff_test_runner::{
     canonical_fixture::discover_package_test_cases, canonical_package::compile_package_project,
+    canonical_std_seed::seed_canonical_std,
     ecosystem_smoke_fixture::assemble_ecosystem_smoke_fixture,
     package_service_host_fixture::prepare_package_service_host_fixture,
     test_overlay::compile_package_test_overlay,
@@ -29,7 +30,11 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     let args = parse_args()?;
     if args.bootstrap_only {
-        return emit_bootstrap(&args.artifact_root, &args.environment);
+        return emit_bootstrap(
+            &args.platform_sources,
+            &args.artifact_root,
+            &args.environment,
+        );
     }
     if let Some(fixture_root) = args.prepare_host_base.as_deref() {
         let receipt = prepare_package_service_host_fixture(
@@ -164,7 +169,12 @@ fn parse_args() -> anyhow::Result<FixtureArgs> {
     })
 }
 
-fn emit_bootstrap(artifact_root: &std::path::Path, environment: &str) -> anyhow::Result<()> {
+fn emit_bootstrap(
+    platform_sources: &CompilerPlatformSources,
+    artifact_root: &std::path::Path,
+    environment: &str,
+) -> anyhow::Result<()> {
+    let std = seed_canonical_std(platform_sources, artifact_root)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
     let bootstrap = initialize_empty_environment(&store, environment)?;
     println!(
@@ -172,7 +182,11 @@ fn emit_bootstrap(artifact_root: &std::path::Path, environment: &str) -> anyhow:
         serde_json::to_string(&json!({
             "schemaVersion": "skiff-package-service-bootstrap-v1",
             "environment": environment,
-            "bootstrap": bootstrap,
+            "bootstrap": {
+                "assembly": bootstrap["assembly"],
+                "generation": bootstrap["generation"],
+                "std": std.to_json(),
+            },
         }))?
     );
     Ok(())
@@ -183,6 +197,7 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         .package_root
         .ok_or_else(|| anyhow::anyhow!("missing package root"))?;
 
+    seed_canonical_std(&args.platform_sources, &args.artifact_root)?;
     let project =
         compile_package_project(&args.platform_sources, &package_root, &args.artifact_root)?;
     let cases = discover_package_test_cases(&package_root, &package_root, false)?;

@@ -23,6 +23,10 @@ path = "src/bin/package_service_smoke_fixture.rs"
 name = "package_service_contract_deployment"
 path = "tests/package_service_contract_deployment.rs"
 
+[[test]]
+name = "canonical_std_seed_bootstrap"
+path = "tests/canonical_std_seed_bootstrap.rs"
+
 [dependencies]
 anyhow = "1.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }

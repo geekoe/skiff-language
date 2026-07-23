@@ -5,10 +5,10 @@ use std::{
 
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
-    AssemblyIdentity, PackageArtifact, PackageArtifactRef, PackageOperationTarget, RuntimeAssembly,
-    RuntimeAssemblyRef, ServiceContract, ServiceDeployment,
+    AssemblyIdentity, PackageArtifact, PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef,
+    ServiceContract, ServiceDeployment,
 };
-use skiff_compiler::PublishedPackageArtifact;
+use skiff_compiler::{authoring::publish_package_artifact_records, PublishedPackageArtifact};
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::canonical_fixture::CanonicalFixtureError;
@@ -171,87 +171,15 @@ fn publish_package(
     package: &PublishedPackageArtifact,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
-    let package = storage_canonical_package(package);
-    let reference = package_artifact_ref(&package.artifact)
+    let receipt = publish_package_artifact_records(store, package)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
-    for file in &package.file_ir_units {
-        let file_ref = package
-            .artifact
-            .files
+    written.extend(
+        receipt
+            .file_ir_record_paths
             .iter()
-            .find(|candidate| candidate.file_ir_identity == file.unit.file_ir_identity)
-            .ok_or_else(|| {
-                CanonicalFixtureError::InvalidInput(format!(
-                    "package {} emitted File IR {} outside its canonical refs",
-                    package.artifact.package_build_id, file.unit.file_ir_identity
-                ))
-            })?;
-        written.push(store.write_file_ir(&reference, file_ref, &file.unit)?);
-    }
-    for resource_ref in &package.artifact.static_resources {
-        let blob = package
-            .resource_blobs
-            .iter()
-            .find(|candidate| {
-                candidate.logical_path == resource_ref.path
-                    && candidate.sha256 == resource_ref.sha256
-                    && candidate.byte_len == resource_ref.byte_len
-            })
-            .ok_or_else(|| {
-                CanonicalFixtureError::InvalidInput(format!(
-                    "package {} resource {} has no exact emitted blob",
-                    package.artifact.package_build_id, resource_ref.path
-                ))
-            })?;
-        written.push(store.write_static_resource(&reference, resource_ref, &blob.bytes)?);
-    }
-    written.push(store.write_package_artifact(&package.artifact)?);
+            .chain(&receipt.resource_record_paths)
+            .chain(std::iter::once(&receipt.record_path))
+            .map(|path| store.root().join(path)),
+    );
     Ok(())
-}
-
-fn storage_canonical_package(package: &PublishedPackageArtifact) -> PublishedPackageArtifact {
-    let mut package = package.clone();
-    for file in &mut package.artifact.files {
-        file.artifact_path = None;
-    }
-    for resource in &mut package.artifact.static_resources {
-        resource.artifact_path = None;
-    }
-    for link in package.artifact.callable_links.values_mut() {
-        link.target.file_ref.artifact_path = None;
-    }
-    for export in package.artifact.implementation_links.types.values_mut() {
-        export.file.artifact_path = None;
-    }
-    for export in package.artifact.implementation_links.constants.values_mut() {
-        export.file.artifact_path = None;
-    }
-    for export in package.artifact.implementation_links.functions.values_mut() {
-        export.file.artifact_path = None;
-    }
-    for export in package
-        .artifact
-        .implementation_links
-        .impl_methods
-        .values_mut()
-    {
-        export.file.artifact_path = None;
-    }
-    for target in package
-        .artifact
-        .implementation_links
-        .operation_targets
-        .values_mut()
-    {
-        match target {
-            PackageOperationTarget::LocalExecutable { target, .. } => {
-                target.file_ref.artifact_path = None;
-            }
-            PackageOperationTarget::LocalConstReceiverExecutable { target, .. } => {
-                target.receiver.file_ref.artifact_path = None;
-                target.executable_target.file_ref.artifact_path = None;
-            }
-        }
-    }
-    package
 }

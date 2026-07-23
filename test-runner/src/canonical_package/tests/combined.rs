@@ -15,10 +15,12 @@ use super::{
 };
 use crate::canonical_package::compile_package_project;
 
+// Explicit F18 identity probe pins refreshed for c277e45's canonical WebSocket
+// std surface; the production seed consumes the F27A typed receipt instead.
 const EXPECTED_PRELUDE_IDENTITY: &str =
-    "skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d";
+    "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699";
 const EXPECTED_STD_PACKAGE_BUILD_ID: &str =
-    "skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4";
+    "skiff-package-build-v4:sha256:2541456b050e08ff03af24c0e80549b25c960fd48f19a91cb275764e413a5335";
 
 #[test]
 #[ignore = "merge-only F18A/F18B compiler repair probe"]
