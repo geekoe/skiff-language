@@ -5,12 +5,14 @@ import {
   packageServiceAssemblyReadiness,
   readPackageServiceFixtureReceipt,
 } from './package-service-ecosystem-smoke-oracle.mjs';
+import { decodeRuntimePayload } from './runtime-payload-codec.mjs';
 
 const PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
 const PACKAGE_VERSION = '1.0.0';
 const PACKAGE_TEST_NAME = 'generation lifecycle source fixture compiles';
 const READINESS_TIMEOUT_MS = 30_000;
 const READINESS_INTERVAL_MS = 100;
+const GENERATION_UNARY_RETURN_SCHEMA = Object.freeze({ type: 'string' });
 
 export function readPackageServiceGenerationFixtureReceipt(
   stdout,
@@ -62,6 +64,7 @@ export async function waitForPackageServiceGenerationState({
   assemblyIdentity,
   connectionPinCount,
   inFlightCount,
+  connectionReleaseAckCount,
   signal,
   readHealth = readControlHealth,
   now = Date.now,
@@ -83,6 +86,7 @@ export async function waitForPackageServiceGenerationState({
         assemblyIdentity,
         connectionPinCount,
         inFlightCount,
+        connectionReleaseAckCount,
       });
       if (observed.ready) return observed;
       lastReason = observed.reason;
@@ -107,6 +111,10 @@ export function packageServiceGenerationState(health, expected) {
   if (!readiness.ready) return readiness;
   const connectionPinCount = sumReplicaCounter(health.replicas, 'connectionPinCount');
   const inFlightCount = sumReplicaCounter(health.replicas, 'inFlightCount');
+  const connectionReleaseAckCount = sumReplicaCounter(
+    health.replicas,
+    'connectionReleaseAckCount',
+  );
   if (connectionPinCount !== expected.connectionPinCount) {
     return {
       ready: false,
@@ -120,11 +128,20 @@ export function packageServiceGenerationState(health, expected) {
       reason: `in-flight count ${inFlightCount} does not equal ${expected.inFlightCount}`,
     };
   }
+  if (connectionReleaseAckCount !== expected.connectionReleaseAckCount) {
+    return {
+      ready: false,
+      reason:
+        `connection release ACK count ${connectionReleaseAckCount} does not equal `
+        + expected.connectionReleaseAckCount,
+    };
+  }
   return {
     ready: true,
     replicaId: readiness.replicaId,
     connectionPinCount,
     inFlightCount,
+    connectionReleaseAckCount,
   };
 }
 
@@ -133,12 +150,8 @@ export function validatePackageServiceGenerationUnaryResponse(
   expectedMarker,
 ) {
   assert.equal(response.status, 200, 'generation B unary request must return HTTP 200');
-  let value;
-  try {
-    value = JSON.parse(response.body);
-  } catch (error) {
-    throw new Error(`generation B unary response returned invalid JSON: ${error.message}`);
-  }
+  assert.ok(Buffer.isBuffer(response.body), 'generation B unary response body must be raw bytes');
+  const value = decodeRuntimePayload(response.body, GENERATION_UNARY_RETURN_SCHEMA);
   assert.equal(value, expectedMarker);
   return value;
 }

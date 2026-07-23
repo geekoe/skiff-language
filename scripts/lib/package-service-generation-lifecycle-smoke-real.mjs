@@ -103,6 +103,7 @@ export async function runPackageServiceGenerationLifecycleSmoke({
           assemblyIdentity: receiptA.candidate.assembly.assemblyIdentity,
           connectionPinCount: 0,
           inFlightCount: 0,
+          connectionReleaseAckCount: 0,
         });
 
         const websocketA = receiptA.candidate.entrypoints[2];
@@ -137,6 +138,7 @@ export async function runPackageServiceGenerationLifecycleSmoke({
           assemblyIdentity: receiptB.candidate.assembly.assemblyIdentity,
           connectionPinCount: 1,
           inFlightCount: 0,
+          connectionReleaseAckCount: 0,
         });
 
         await sendAndExpect(clientA, EXPECTED_MARKERS.A, lifecycle.signal);
@@ -154,6 +156,7 @@ export async function runPackageServiceGenerationLifecycleSmoke({
           assemblyIdentity: receiptB.candidate.assembly.assemblyIdentity,
           connectionPinCount: 2,
           inFlightCount: 0,
+          connectionReleaseAckCount: 0,
         });
         await sendAndExpect(clientB, EXPECTED_MARKERS.B, lifecycle.signal);
 
@@ -188,6 +191,7 @@ export async function runPackageServiceGenerationLifecycleSmoke({
           assemblyIdentity: receiptB.candidate.assembly.assemblyIdentity,
           connectionPinCount: 1,
           inFlightCount: 0,
+          connectionReleaseAckCount: 1,
         });
 
         await closePackageServiceSmokeWebSocket(
@@ -205,6 +209,7 @@ export async function runPackageServiceGenerationLifecycleSmoke({
           assemblyIdentity: receiptB.candidate.assembly.assemblyIdentity,
           connectionPinCount: 0,
           inFlightCount: 0,
+          connectionReleaseAckCount: 2,
         });
 
         result = {
@@ -315,6 +320,7 @@ function waitForState({
   assemblyIdentity,
   connectionPinCount,
   inFlightCount,
+  connectionReleaseAckCount,
 }) {
   return lifecycle.wait((ioSignal) => waitForPackageServiceGenerationState({
     healthUrl: `${stack.controlUrl}/__router/health`,
@@ -323,6 +329,7 @@ function waitForState({
     assemblyIdentity,
     connectionPinCount,
     inFlightCount,
+    connectionReleaseAckCount,
     signal: ioSignal,
     readHealth: dependencies.readHealth,
     now: dependencies.readinessNow,
@@ -384,10 +391,21 @@ export async function requestGenerationUnary({
 }
 
 function assertGenerationUnaryHttpSuccess(request, response) {
-  if (response.status === 200) return;
+  if (response.status === 200) {
+    assert.equal(
+      response.bodyTruncated,
+      false,
+      `generation B unary response exceeded ${UNARY_RESPONSE_BODY_MAX_BYTES} bytes`,
+    );
+    assert.ok(
+      Buffer.isBuffer(response.body),
+      'generation B unary response body must remain raw bytes',
+    );
+    return;
+  }
   const body = boundedUnaryDiagnostic(
     sanitizeFixtureCargoDiagnostic(
-      typeof response.body === 'string' ? response.body : '',
+      Buffer.isBuffer(response.body) ? response.body.toString('utf8') : '',
     ),
   );
   throw new Error([
@@ -397,7 +415,7 @@ function assertGenerationUnaryHttpSuccess(request, response) {
     `wireHost=${request.host}`,
     `status=${response.status}`,
     `responseBody=${JSON.stringify(body.value)}`,
-    `responseBodyBytes=${response.bodyBytes ?? Buffer.byteLength(response.body ?? '')}`,
+    `responseBodyBytes=${response.bodyBytes ?? response.body?.byteLength ?? 0}`,
     `responseBodyTruncated=${response.bodyTruncated === true || body.truncated}`,
   ].join(' '));
 }
@@ -432,7 +450,7 @@ async function readBoundedUnaryResponseBody(response) {
     retainedBytes += retained.byteLength;
   }
   return {
-    value: Buffer.concat(chunks).toString('utf8'),
+    value: Buffer.concat(chunks),
     bytes,
     truncated: bytes > retainedBytes,
   };

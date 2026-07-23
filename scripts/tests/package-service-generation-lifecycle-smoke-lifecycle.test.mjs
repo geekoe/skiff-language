@@ -228,6 +228,7 @@ function lifecycleHealth(receipt, environment, generation, connectionPinCount) {
       connected: true,
       inFlightCount: 0,
       connectionPinCount,
+      connectionReleaseAckCount: 0,
       registeredAt: '2026-07-23T00:00:00.000Z',
     }],
   };

@@ -26,6 +26,7 @@ import {
   validBootstrapReceipt,
   validSmokeFixtureReceipt,
 } from './helpers/package-service-ecosystem-smoke-fixtures.mjs';
+import { encodeRuntimePayload } from '../lib/runtime-payload-codec.mjs';
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const environment = 'r05-generation-lifecycle-test';
@@ -73,16 +74,19 @@ test('generation lifecycle transcript authors A then B and closes both generatio
   const activationCalls = [];
   const healthCalls = [];
   const healthSequence = [
-    lifecycleHealth(receipts.A, 1, 0),
-    lifecycleHealth(receipts.B, 2, 1),
-    lifecycleHealth(receipts.B, 2, 2),
-    lifecycleHealth(receipts.B, 2, 1),
-    lifecycleHealth(receipts.B, 2, 0),
+    lifecycleHealth(receipts.A, 1, 0, 0),
+    lifecycleHealth(receipts.B, 2, 1, 0),
+    lifecycleHealth(receipts.B, 2, 2, 0),
+    lifecycleHealth(receipts.B, 2, 1, 1),
+    lifecycleHealth(receipts.B, 2, 0, 2),
   ];
   GenerationWebSocket.instances.length = 0;
   const unaryServer = await listenUnaryServer({
     status: 200,
-    body: JSON.stringify(packageServiceGenerationLifecycleExpectedMarkers.B),
+    body: encodeRuntimePayload(
+      packageServiceGenerationLifecycleExpectedMarkers.B,
+      { type: 'string' },
+    ),
   });
 
   let result;
@@ -174,6 +178,107 @@ test('generation lifecycle transcript authors A then B and closes both generatio
   assert.deepEqual(result.markers, packageServiceGenerationLifecycleExpectedMarkers);
 });
 
+test('generation decode error remains primary when finally cleanup also fails', async () => {
+  const receipts = lifecycleReceipts(environment);
+  const healthSequence = [
+    lifecycleHealth(receipts.A, 1, 0, 0),
+    lifecycleHealth(receipts.B, 2, 1, 0),
+    lifecycleHealth(receipts.B, 2, 2, 0),
+  ];
+  let commandCount = 0;
+  const cleanupError = new Error('generation cleanup failed');
+  GenerationWebSocket.instances.length = 0;
+  CleanupFailingWebSocket.cleanupError = cleanupError;
+  const unaryServer = await listenUnaryServer({
+    status: 200,
+    body: Buffer.from(JSON.stringify(packageServiceGenerationLifecycleExpectedMarkers.B)),
+  });
+
+  let observed;
+  try {
+    await assert.rejects(
+      runPackageServiceGenerationLifecycleSmoke({
+        checkout,
+        replicaCount: 1,
+        environment,
+      }, {
+        runtimeOwner: fakeRuntimeOwner(environment, unaryServer.origin),
+        runCommand: async () => {
+          commandCount += 1;
+          return {
+            stdout: JSON.stringify(commandCount === 1 ? receipts.A : receipts.B),
+            stderr: '',
+          };
+        },
+        activate: async ({ expectedGeneration }) => {
+          const receipt = expectedGeneration === 0 ? receipts.A : receipts.B;
+          return activationReceipt(
+            environment,
+            receipt.candidate.assembly.assemblyIdentity,
+            expectedGeneration,
+          );
+        },
+        readHealth: async () => healthSequence.shift(),
+        readinessSleep: async () => {},
+        loadWebSocket: async () => CleanupFailingWebSocket,
+      }),
+      (error) => {
+        observed = error;
+        return true;
+      },
+    );
+  } finally {
+    await unaryServer.close();
+  }
+
+  assert.notEqual(observed, cleanupError);
+  assert.match(observed.message, /runtime payload bytes missing SKPV magic/);
+  assert.doesNotMatch(observed.message, /cleanup failed/);
+  assert.deepEqual(
+    GenerationWebSocket.instances.map((client) => client.closeCalls),
+    [1, 1],
+  );
+});
+
+test('generation unary client preserves bounded raw 200 bytes', async () => {
+  const encoded = encodeRuntimePayload('raw-success', { type: 'string' });
+  const unaryServer = await listenUnaryServer({ status: 200, body: encoded });
+
+  try {
+    const response = await requestGenerationUnary({
+      url: `${unaryServer.origin}/probe`,
+      host: 'ecosystem-smoke.skiff.localhost',
+      signal: new AbortController().signal,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, encoded);
+    assert.equal(response.bodyBytes, encoded.byteLength);
+    assert.equal(response.bodyTruncated, false);
+  } finally {
+    await unaryServer.close();
+  }
+});
+
+test('generation unary client fails closed when a 200 body exceeds 512 bytes', async () => {
+  const unaryServer = await listenUnaryServer({
+    status: 200,
+    body: Buffer.alloc(513, 0x61),
+  });
+
+  try {
+    await assert.rejects(
+      requestGenerationUnary({
+        url: `${unaryServer.origin}/probe`,
+        host: 'ecosystem-smoke.skiff.localhost',
+        signal: new AbortController().signal,
+      }),
+      /generation B unary response exceeded 512 bytes/,
+    );
+  } finally {
+    await unaryServer.close();
+  }
+});
+
 test('generation unary client reports bounded redacted 404 wire diagnostics', async () => {
   const secret = 'token=R05_UNARY_SECRET';
   const responseBody = `${secret} ${'/private/fixture/main.skiff '.repeat(40)}`;
@@ -250,7 +355,7 @@ test('generation fixture Cargo failures retain bounded evidence with the A or B 
             receipts.A.candidate.assembly.assemblyIdentity,
             expectedGeneration,
           ),
-          readHealth: async () => lifecycleHealth(receipts.A, 1, 0),
+          readHealth: async () => lifecycleHealth(receipts.A, 1, 0, 0),
           readinessSleep: async () => {},
           loadWebSocket: async () => GenerationWebSocket,
         }),
@@ -344,6 +449,19 @@ class GenerationWebSocket extends EventEmitter {
   }
 }
 
+class CleanupFailingWebSocket extends GenerationWebSocket {
+  static cleanupError;
+
+  close() {
+    this.closeCalls += 1;
+    throw CleanupFailingWebSocket.cleanupError;
+  }
+
+  terminate() {
+    throw CleanupFailingWebSocket.cleanupError;
+  }
+}
+
 function lifecycleReceipts(targetEnvironment) {
   const A = generationReceipt(targetEnvironment, {
     assembly: 'a',
@@ -432,7 +550,12 @@ function activationReceipt(
   };
 }
 
-function lifecycleHealth(receipt, generation, connectionPinCount) {
+function lifecycleHealth(
+  receipt,
+  generation,
+  connectionPinCount,
+  connectionReleaseAckCount,
+) {
   const replicaId = 'runtime-r05';
   return {
     ok: true,
@@ -458,6 +581,7 @@ function lifecycleHealth(receipt, generation, connectionPinCount) {
       connected: true,
       inFlightCount: 0,
       connectionPinCount,
+      connectionReleaseAckCount,
       registeredAt: '2026-07-23T00:00:00.000Z',
     }],
   };
