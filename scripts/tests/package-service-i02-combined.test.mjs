@@ -113,17 +113,36 @@ test('I02 oracle requires the typed spawn submit receipt in the unary business r
 });
 
 test('I02 fixture uses the canonical normal-source spawn statement', async () => {
-  const source = await readFile(join(
+  const fixtureRoot = join(
     'test-runner',
     'fixtures',
     'package-service-i02-spawn-submit',
-    'main.skiff',
-  ), 'utf8');
+  );
+  const [api, source] = await Promise.all([
+    readFile(join(fixtureRoot, 'api.yml'), 'utf8'),
+    readFile(join(fixtureRoot, 'main.skiff'), 'utf8'),
+  ]);
+  assert.equal(
+    api,
+    'marker: main.submitSpawnReceipt\nwebsocket: main.websocket\n',
+  );
   assert.match(
     source,
-    /spawn acceptSubmittedReceipt\("P5-F45E-SPAWN-SUBMIT"\)/,
+    /function submitSpawnReceipt\(\) -> string \{\s+spawn acceptSubmittedReceipt\("P5-F45E-SPAWN-SUBMIT"\)/,
   );
   assert.match(source, new RegExp(packageServiceI02SpawnSubmitBusinessResult));
+  assert.match(
+    source,
+    /function marker\(\) -> string \{\s+return "P5-F45E-WEBSOCKET-MARKER"\s+\}/,
+  );
+  assert.match(
+    source,
+    /sendTextToConnection\(event\.receiveEvent\.connection\.id, marker\(\)\)/,
+  );
+  assert.doesNotMatch(
+    source.match(/function marker\(\)[\s\S]*?\n\}/)?.[0] ?? '',
+    /SPAWN-SUBMIT-TYPED-RESPONSE|spawn /,
+  );
   assert.doesNotMatch(source, /std\.actor|runtime\.register|spawn\.(?:claim|renew|complete|fail)/);
 });
 
@@ -178,6 +197,25 @@ test('I02 deadline remains armed until the isolated runtime owner finishes clean
 test('I02 combined owner performs valid commit, two zero-I/O requests, and real rollback', async () => {
   const environment = 'skiff-cutover';
   const fixture = validI02SpawnSubmitFixtureReceipt(environment);
+  assert.deepEqual(
+    fixture.candidate.entrypoints.map(({ kind, name }) => ({ kind, name })),
+    [
+      {
+        kind: 'packageTest',
+        name: 'I02 normal source fixture compiles canonical spawn submit',
+      },
+      { kind: 'unary', name: 'marker' },
+      { kind: 'websocket', name: 'websocket' },
+    ],
+  );
+  assert.deepEqual(
+    fixture.candidate.entrypoints[1].contract,
+    fixture.candidate.entrypoints[2].contract,
+  );
+  assert.deepEqual(
+    fixture.candidate.entrypoints[1].deployment,
+    fixture.candidate.entrypoints[2].deployment,
+  );
   const bootstrap = validBootstrapReceipt(environment);
   const parentSignalTarget = new EventEmitter();
   const unaryRootPresence = [];

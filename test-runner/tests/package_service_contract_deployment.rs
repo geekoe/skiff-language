@@ -7,9 +7,10 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryUnavailableReason, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, IngressProtocol, PackageArtifactRef,
-    PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
+    BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, IngressProtocol,
+    PackageArtifactRef, PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef,
+    ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -862,6 +863,92 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         .assembly
         .resolved_packages
         .contains(&std.package.artifact));
+}
+
+#[test]
+fn i02_spawn_submit_fixture_splits_unary_and_websocket_effects() {
+    let root = TestRoot::new("i02-spawn-submit-effects");
+    let artifacts = root.child("artifacts");
+    create_store(&artifacts);
+    seed_canonical_std(&platform_sources(), &artifacts).unwrap();
+    let package =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/package-service-i02-spawn-submit");
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+
+    assert_eq!(
+        project
+            .package
+            .artifact
+            .package_local_abi
+            .public_symbols
+            .len(),
+        2
+    );
+    let marker = public_operation_projection(&project, "marker");
+    assert!(marker.may_suspend);
+    assert_eq!(
+        marker.cancellation,
+        BoundaryCancellationContract::Cooperative
+    );
+    let websocket = public_operation_projection(&project, "websocket");
+    assert!(!websocket.may_suspend);
+    assert_eq!(
+        websocket.cancellation,
+        BoundaryCancellationContract::NotCancellable
+    );
+
+    let cases = discover_package_test_cases(&package, &package, false).unwrap();
+    assert_eq!(cases.len(), 1);
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+    let fixture = assemble_ecosystem_smoke_fixture(&project, overlay).unwrap();
+    let websocket = fixture
+        .websocket
+        .as_ref()
+        .expect("I02 websocket entrypoint");
+    assert_eq!(fixture.unary.contract, websocket.contract);
+    assert_eq!(fixture.unary.deployment, websocket.deployment);
+    let smoke_contract = fixture
+        .records
+        .contracts
+        .iter()
+        .find(|contract| {
+            skiff_artifact_identity::service_contract_ref(contract).unwrap()
+                == fixture.unary.contract
+        })
+        .expect("I02 smoke contract");
+    assert_eq!(smoke_contract.operations.len(), 2);
+    assert_eq!(
+        smoke_contract
+            .operations
+            .values()
+            .filter(|descriptor| descriptor.contract.may_suspend)
+            .count(),
+        1
+    );
+}
+
+fn public_operation_projection<'a>(
+    project: &'a skiff_test_runner::canonical_package::CanonicalPackageProject,
+    public_path: &str,
+) -> &'a skiff_artifact_model::BoundaryOperationContract {
+    let PackageLocalAbiSymbol::Callable { callable_id, .. } = project
+        .package
+        .artifact
+        .package_local_abi
+        .public_symbols
+        .get(public_path)
+        .unwrap_or_else(|| panic!("missing public callable {public_path}"))
+    else {
+        panic!("{public_path} must be callable")
+    };
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = &project.package.artifact.boundary_projections[callable_id]
+    else {
+        panic!("{public_path} must remain boundary available")
+    };
+    operation_contract
 }
 
 struct BaseAssemblyScenario {
