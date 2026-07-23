@@ -21,6 +21,12 @@ pub struct BinaryFrame {
     pub payload_bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryFrameParts {
+    pub header_bytes: Vec<u8>,
+    pub payload_bytes: Vec<u8>,
+}
+
 pub use crate::BinaryFrameError;
 
 pub fn encode_binary_frame<THeader: Serialize>(
@@ -62,6 +68,27 @@ pub fn encode_binary_frame<THeader: Serialize>(
 }
 
 pub fn decode_binary_frame(frame: &[u8]) -> std::result::Result<BinaryFrame, BinaryFrameError> {
+    let parts = decode_binary_frame_parts(frame)?;
+    let header: Value = serde_json::from_slice(&parts.header_bytes).map_err(|error| {
+        TransportError::decode(format!(
+            "invalid skiff binary frame: header is not valid JSON: {error}"
+        ))
+    })?;
+    if !header.is_object() {
+        return Err(TransportError::decode(
+            "invalid skiff binary frame: header must be an object",
+        ));
+    }
+
+    Ok(BinaryFrame {
+        header,
+        payload_bytes: parts.payload_bytes,
+    })
+}
+
+pub fn decode_binary_frame_parts(
+    frame: &[u8],
+) -> std::result::Result<BinaryFrameParts, BinaryFrameError> {
     if frame.len() < BINARY_FRAME_FIXED_HEADER_BYTES {
         return Err(TransportError::decode(
             "invalid skiff binary frame: frame is too short",
@@ -109,20 +136,8 @@ pub fn decode_binary_frame(frame: &[u8]) -> std::result::Result<BinaryFrame, Bin
 
     let header_start = BINARY_FRAME_FIXED_HEADER_BYTES;
     let payload_start = header_start + header_length;
-    let header: Value =
-        serde_json::from_slice(&frame[header_start..payload_start]).map_err(|error| {
-            TransportError::decode(format!(
-                "invalid skiff binary frame: header is not valid JSON: {error}"
-            ))
-        })?;
-    if !header.is_object() {
-        return Err(TransportError::decode(
-            "invalid skiff binary frame: header must be an object",
-        ));
-    }
-
-    Ok(BinaryFrame {
-        header,
+    Ok(BinaryFrameParts {
+        header_bytes: frame[header_start..payload_start].to_vec(),
         payload_bytes: frame[payload_start..].to_vec(),
     })
 }

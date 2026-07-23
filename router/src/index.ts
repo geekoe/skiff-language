@@ -8,6 +8,7 @@ export * from './protocol/assemblyActivationFrame.js';
 export * from './protocol/assemblyActivationProtocol.js';
 export * from './protocol/runtimeAssemblyRequest.js';
 export * from './protocol/runtimeAssemblyRequestFrame.js';
+export * from './protocol/webSocketGenerationLifecycle.js';
 export * from './queue/index.js';
 export * from './router/bind.js';
 export * from './router/errors.js';
