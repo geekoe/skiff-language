@@ -2,9 +2,157 @@ use std::{future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    PackageArtifact, PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    NativeSignatureDef, NativeTypeExprDef, PackageArtifact, PackageArtifactRef, RuntimeAssembly,
+    RuntimeAssemblyRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef,
 };
+
+macro_rules! native_signature {
+    ($target:literal, $key:literal, $request:literal, $response:literal) => {
+        NativeSignatureDef {
+            target: $target,
+            binding_key: $key,
+            aliases: &[],
+            type_param_count: 0,
+            params: &[NativeTypeExprDef::Builtin($request)],
+            return_type: NativeTypeExprDef::Builtin($response),
+        }
+    };
+}
+
+/// Canonical low-level ABI for the trusted registry package.
+///
+/// This slice deliberately contains only typed call signatures. Runtime
+/// context, capability, and dispatch policy are consumers of this contract,
+/// not owners of it.
+pub const TRUSTED_REGISTRY_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
+    native_signature!(
+        "skiff.registry.packageArtifact.put",
+        "registry.packageArtifact.put",
+        "skiff.registry.PackageArtifact",
+        "skiff.registry.PackageArtifactRef"
+    ),
+    native_signature!(
+        "skiff.registry.packageArtifact.read",
+        "registry.packageArtifact.read",
+        "skiff.registry.PackageArtifactRef",
+        "skiff.registry.PackageArtifact"
+    ),
+    native_signature!(
+        "skiff.registry.packageArtifact.pointer.read",
+        "registry.packageArtifact.pointer.read",
+        "skiff.registry.PackageArtifactPointerKey",
+        "skiff.registry.PackageArtifactPointerReadResponse"
+    ),
+    native_signature!(
+        "skiff.registry.packageArtifact.pointer.cas",
+        "registry.packageArtifact.pointer.cas",
+        "skiff.registry.PackageArtifactPointerCasRequest",
+        "skiff.registry.PackageArtifactPointerReceipt"
+    ),
+    native_signature!(
+        "skiff.registry.packageArtifact.pointer.history",
+        "registry.packageArtifact.pointer.history",
+        "skiff.registry.PackageArtifactPointerHistoryQuery",
+        "skiff.registry.PackageArtifactPointerHistoryResponse"
+    ),
+    native_signature!(
+        "skiff.registry.serviceContract.put",
+        "registry.serviceContract.put",
+        "skiff.registry.ServiceContract",
+        "skiff.registry.ServiceContractRef"
+    ),
+    native_signature!(
+        "skiff.registry.serviceContract.read",
+        "registry.serviceContract.read",
+        "skiff.registry.ServiceContractRef",
+        "skiff.registry.ServiceContract"
+    ),
+    native_signature!(
+        "skiff.registry.serviceContract.pointer.read",
+        "registry.serviceContract.pointer.read",
+        "skiff.registry.ServiceContractPointerKey",
+        "skiff.registry.ServiceContractPointerReadResponse"
+    ),
+    native_signature!(
+        "skiff.registry.serviceContract.pointer.cas",
+        "registry.serviceContract.pointer.cas",
+        "skiff.registry.ServiceContractPointerCasRequest",
+        "skiff.registry.ServiceContractPointerReceipt"
+    ),
+    native_signature!(
+        "skiff.registry.serviceContract.pointer.history",
+        "registry.serviceContract.pointer.history",
+        "skiff.registry.ServiceContractPointerHistoryQuery",
+        "skiff.registry.ServiceContractPointerHistoryResponse"
+    ),
+    native_signature!(
+        "skiff.registry.serviceDeployment.put",
+        "registry.serviceDeployment.put",
+        "skiff.registry.ServiceDeployment",
+        "skiff.registry.ServiceDeploymentRef"
+    ),
+    native_signature!(
+        "skiff.registry.serviceDeployment.read",
+        "registry.serviceDeployment.read",
+        "skiff.registry.ServiceDeploymentRef",
+        "skiff.registry.ServiceDeployment"
+    ),
+    native_signature!(
+        "skiff.registry.serviceDeployment.pointer.read",
+        "registry.serviceDeployment.pointer.read",
+        "skiff.registry.ServiceDeploymentPointerKey",
+        "skiff.registry.ServiceDeploymentPointerReadResponse"
+    ),
+    native_signature!(
+        "skiff.registry.serviceDeployment.pointer.cas",
+        "registry.serviceDeployment.pointer.cas",
+        "skiff.registry.ServiceDeploymentPointerCasRequest",
+        "skiff.registry.ServiceDeploymentPointerReceipt"
+    ),
+    native_signature!(
+        "skiff.registry.serviceDeployment.pointer.history",
+        "registry.serviceDeployment.pointer.history",
+        "skiff.registry.ServiceDeploymentPointerHistoryQuery",
+        "skiff.registry.ServiceDeploymentPointerHistoryResponse"
+    ),
+    native_signature!(
+        "skiff.registry.runtimeAssembly.put",
+        "registry.runtimeAssembly.put",
+        "skiff.registry.RuntimeAssembly",
+        "skiff.registry.RuntimeAssemblyRef"
+    ),
+    native_signature!(
+        "skiff.registry.runtimeAssembly.read",
+        "registry.runtimeAssembly.read",
+        "skiff.registry.RuntimeAssemblyRef",
+        "skiff.registry.RuntimeAssembly"
+    ),
+    native_signature!(
+        "skiff.registry.runtimeAssembly.pointer.read",
+        "registry.runtimeAssembly.pointer.read",
+        "skiff.registry.RuntimeAssemblyPointerKey",
+        "skiff.registry.RuntimeAssemblyPointerReadResponse"
+    ),
+    native_signature!(
+        "skiff.registry.runtimeAssembly.pointer.cas",
+        "registry.runtimeAssembly.pointer.cas",
+        "skiff.registry.RuntimeAssemblyPointerCasRequest",
+        "skiff.registry.RuntimeAssemblyPointerReceipt"
+    ),
+    native_signature!(
+        "skiff.registry.runtimeAssembly.pointer.history",
+        "registry.runtimeAssembly.pointer.history",
+        "skiff.registry.RuntimeAssemblyPointerHistoryQuery",
+        "skiff.registry.RuntimeAssemblyPointerHistoryResponse"
+    ),
+    native_signature!(
+        "skiff.registry.activation.activate",
+        "registry.activation.activate",
+        "skiff.registry.ActivationRequest",
+        "skiff.registry.ActivationReceipt"
+    ),
+];
 
 pub const TRUSTED_REGISTRY_CAPABILITY_ID: &str = "skiff.registry.trusted";
 pub const TRUSTED_REGISTRY_CAPABILITY_VERSION: u32 = 1;
@@ -291,6 +439,8 @@ pub trait TrustedRegistryStoreApi: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -318,5 +468,23 @@ mod tests {
             "preparedReplicaIds": []
         });
         assert!(serde_json::from_value::<ActivationRequest>(value).is_err());
+    }
+
+    #[test]
+    fn native_signatures_are_the_exact_canonical_registry_slice() {
+        assert_eq!(TRUSTED_REGISTRY_NATIVE_SIGNATURES.len(), 21);
+        let mut targets = BTreeSet::new();
+        let mut keys = BTreeSet::new();
+        for signature in TRUSTED_REGISTRY_NATIVE_SIGNATURES {
+            assert!(targets.insert(signature.target));
+            assert!(keys.insert(signature.binding_key));
+            assert!(signature.target.starts_with("skiff.registry."));
+            assert!(signature.binding_key.starts_with("registry."));
+            assert_eq!(signature.params.len(), 1);
+        }
+        assert!(keys.contains("registry.activation.activate"));
+        assert!(!keys.iter().any(|key| {
+            key.starts_with("registry.activation.") && *key != "registry.activation.activate"
+        }));
     }
 }

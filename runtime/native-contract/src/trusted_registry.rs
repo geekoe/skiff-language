@@ -1,152 +1,9 @@
-use skiff_artifact_model::{NativeSignatureDef, NativeTypeExprDef};
 use skiff_trusted_registry_contract::{
     TrustedRegistryOperationScope, TRUSTED_REGISTRY_CAPABILITY_ID,
-    TRUSTED_REGISTRY_CAPABILITY_VERSION,
+    TRUSTED_REGISTRY_CAPABILITY_VERSION, TRUSTED_REGISTRY_NATIVE_SIGNATURES,
 };
 
 use crate::{NativeBindingKey, NativeBindingSpec, NativeRequiredContext};
-
-macro_rules! signature {
-    ($target:literal, $key:literal, $request:literal, $response:literal) => {
-        NativeSignatureDef {
-            target: $target,
-            binding_key: $key,
-            aliases: &[],
-            type_param_count: 0,
-            params: &[NativeTypeExprDef::Builtin($request)],
-            return_type: NativeTypeExprDef::Builtin($response),
-        }
-    };
-}
-
-const TRUSTED_REGISTRY_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
-    signature!(
-        "skiff.registry.packageArtifact.put",
-        "registry.packageArtifact.put",
-        "skiff.registry.PackageArtifact",
-        "skiff.registry.PackageArtifactRef"
-    ),
-    signature!(
-        "skiff.registry.packageArtifact.read",
-        "registry.packageArtifact.read",
-        "skiff.registry.PackageArtifactRef",
-        "skiff.registry.PackageArtifact"
-    ),
-    signature!(
-        "skiff.registry.packageArtifact.pointer.read",
-        "registry.packageArtifact.pointer.read",
-        "skiff.registry.PackageArtifactPointerKey",
-        "skiff.registry.PackageArtifactPointerReadResponse"
-    ),
-    signature!(
-        "skiff.registry.packageArtifact.pointer.cas",
-        "registry.packageArtifact.pointer.cas",
-        "skiff.registry.PackageArtifactPointerCasRequest",
-        "skiff.registry.PackageArtifactPointerReceipt"
-    ),
-    signature!(
-        "skiff.registry.packageArtifact.pointer.history",
-        "registry.packageArtifact.pointer.history",
-        "skiff.registry.PackageArtifactPointerHistoryQuery",
-        "skiff.registry.PackageArtifactPointerHistoryResponse"
-    ),
-    signature!(
-        "skiff.registry.serviceContract.put",
-        "registry.serviceContract.put",
-        "skiff.registry.ServiceContract",
-        "skiff.registry.ServiceContractRef"
-    ),
-    signature!(
-        "skiff.registry.serviceContract.read",
-        "registry.serviceContract.read",
-        "skiff.registry.ServiceContractRef",
-        "skiff.registry.ServiceContract"
-    ),
-    signature!(
-        "skiff.registry.serviceContract.pointer.read",
-        "registry.serviceContract.pointer.read",
-        "skiff.registry.ServiceContractPointerKey",
-        "skiff.registry.ServiceContractPointerReadResponse"
-    ),
-    signature!(
-        "skiff.registry.serviceContract.pointer.cas",
-        "registry.serviceContract.pointer.cas",
-        "skiff.registry.ServiceContractPointerCasRequest",
-        "skiff.registry.ServiceContractPointerReceipt"
-    ),
-    signature!(
-        "skiff.registry.serviceContract.pointer.history",
-        "registry.serviceContract.pointer.history",
-        "skiff.registry.ServiceContractPointerHistoryQuery",
-        "skiff.registry.ServiceContractPointerHistoryResponse"
-    ),
-    signature!(
-        "skiff.registry.serviceDeployment.put",
-        "registry.serviceDeployment.put",
-        "skiff.registry.ServiceDeployment",
-        "skiff.registry.ServiceDeploymentRef"
-    ),
-    signature!(
-        "skiff.registry.serviceDeployment.read",
-        "registry.serviceDeployment.read",
-        "skiff.registry.ServiceDeploymentRef",
-        "skiff.registry.ServiceDeployment"
-    ),
-    signature!(
-        "skiff.registry.serviceDeployment.pointer.read",
-        "registry.serviceDeployment.pointer.read",
-        "skiff.registry.ServiceDeploymentPointerKey",
-        "skiff.registry.ServiceDeploymentPointerReadResponse"
-    ),
-    signature!(
-        "skiff.registry.serviceDeployment.pointer.cas",
-        "registry.serviceDeployment.pointer.cas",
-        "skiff.registry.ServiceDeploymentPointerCasRequest",
-        "skiff.registry.ServiceDeploymentPointerReceipt"
-    ),
-    signature!(
-        "skiff.registry.serviceDeployment.pointer.history",
-        "registry.serviceDeployment.pointer.history",
-        "skiff.registry.ServiceDeploymentPointerHistoryQuery",
-        "skiff.registry.ServiceDeploymentPointerHistoryResponse"
-    ),
-    signature!(
-        "skiff.registry.runtimeAssembly.put",
-        "registry.runtimeAssembly.put",
-        "skiff.registry.RuntimeAssembly",
-        "skiff.registry.RuntimeAssemblyRef"
-    ),
-    signature!(
-        "skiff.registry.runtimeAssembly.read",
-        "registry.runtimeAssembly.read",
-        "skiff.registry.RuntimeAssemblyRef",
-        "skiff.registry.RuntimeAssembly"
-    ),
-    signature!(
-        "skiff.registry.runtimeAssembly.pointer.read",
-        "registry.runtimeAssembly.pointer.read",
-        "skiff.registry.RuntimeAssemblyPointerKey",
-        "skiff.registry.RuntimeAssemblyPointerReadResponse"
-    ),
-    signature!(
-        "skiff.registry.runtimeAssembly.pointer.cas",
-        "registry.runtimeAssembly.pointer.cas",
-        "skiff.registry.RuntimeAssemblyPointerCasRequest",
-        "skiff.registry.RuntimeAssemblyPointerReceipt"
-    ),
-    signature!(
-        "skiff.registry.runtimeAssembly.pointer.history",
-        "registry.runtimeAssembly.pointer.history",
-        "skiff.registry.RuntimeAssemblyPointerHistoryQuery",
-        "skiff.registry.RuntimeAssemblyPointerHistoryResponse"
-    ),
-    signature!(
-        "skiff.registry.activation.activate",
-        "registry.activation.activate",
-        "skiff.registry.ActivationRequest",
-        "skiff.registry.ActivationReceipt"
-    ),
-];
 
 macro_rules! spec {
     ($index:literal, $scope:ident) => {
@@ -192,6 +49,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use skiff_artifact_model::NativeTypeExprDef;
 
     #[test]
     fn binding_specs_are_exact_typed_and_authoritative() {
