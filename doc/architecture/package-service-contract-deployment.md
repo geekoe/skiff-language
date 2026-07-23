@@ -512,6 +512,11 @@ ActivationIdentity，至少包含assembly identity、generation、runtime replic
 从发起控制动作的当前ActivationContext填充该identity；callback、continuation或spawn source不能重建、删减
 或用ambient connection state替代它。
 
+`runtime.register.serviceProtocolIdentity`必须原样携带canonical
+`skiff-service-protocol-v2:sha256:<64 lowercase hex>`。register frame不得再包含`protocolVersion`：runtime
+transport版本只由frame的`schemaVersion`（当前为`skiff-runtime-frame-v1`）表达，禁止从
+ServiceProtocolIdentity前缀推导、复制或兼容读取第二份runtime protocol版本。
+
 Router先把frame绑定到发送者的exact assembly registration，再按该registration对应的active或draining
 generation snapshot验证完整identity。active generation可发起新控制动作；仍被request、stream、WebSocket或
 callback显式pin住的draining generation只在其pin生命周期内继续使用原ActivationContext。未注册sender、
