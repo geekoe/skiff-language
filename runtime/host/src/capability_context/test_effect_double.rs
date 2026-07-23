@@ -10,7 +10,7 @@ use skiff_runtime_boundary::{contract::RuntimeBoundaryContract, plan::BoundaryUs
 use skiff_runtime_model::{
     request_heap::RequestHeap,
     runtime_value::{HeapNode, RuntimeMap, RuntimeValue},
-    type_plan::RuntimeTypePlan,
+    type_plan::{RuntimeTypeNode, RuntimeTypePlan},
 };
 
 use super::{StreamRuntime, TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM};
@@ -18,12 +18,6 @@ use crate::{
     config_view::materialize_internal_json,
     error::{Result, RuntimeError},
 };
-fn runtime_from_wire(value: &Value, heap: &mut RequestHeap) -> Result<RuntimeValue> {
-    Ok(skiff_runtime_boundary::json::decode_untyped_wire_json(
-        value, heap,
-    )?)
-}
-
 fn runtime_from_wire_required_plan(
     value: &Value,
     expected_type: Option<&RuntimeTypePlan>,
@@ -259,7 +253,7 @@ impl TestEffectDoubleContext {
         &self,
         target: &str,
         input: Option<&RuntimeValue>,
-        _arg_plan: Option<&RuntimeTypePlan>,
+        arg_plan: Option<&RuntimeTypePlan>,
         return_plan: Option<&RuntimeTypePlan>,
         heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValue>> {
@@ -272,7 +266,13 @@ impl TestEffectDoubleContext {
         if let Some(expected) = &double.expect_request {
             let actual = input.unwrap_or(&RuntimeValue::Null);
             let mut expected_heap = RequestHeap::default();
-            let expected_runtime = match runtime_from_wire(expected, &mut expected_heap) {
+            let expected_plan = arg_plan.map(|plan| fixture_subset_plan(plan, expected));
+            let expected_runtime = match runtime_from_wire_required_plan(
+                expected,
+                expected_plan.as_ref(),
+                &format!("test double request {target}"),
+                &mut expected_heap,
+            ) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
             };
@@ -311,6 +311,54 @@ impl TestEffectDoubleContext {
             runtime_from_wire_required_plan(&response, return_plan, &boundary, heap)
         })
     }
+}
+
+fn fixture_subset_plan(plan: &RuntimeTypePlan, fixture: &Value) -> RuntimeTypePlan {
+    let mut subset = plan.clone();
+    subset.node = match plan.node() {
+        RuntimeTypeNode::Alias(inner) => {
+            RuntimeTypeNode::Alias(Box::new(fixture_subset_plan(inner, fixture)))
+        }
+        RuntimeTypeNode::Nullable(inner) if !fixture.is_null() => {
+            RuntimeTypeNode::Nullable(Box::new(fixture_subset_plan(inner, fixture)))
+        }
+        RuntimeTypeNode::Representation { type_name, payload } => RuntimeTypeNode::Representation {
+            type_name: type_name.clone(),
+            payload: Box::new(fixture_subset_plan(payload, fixture)),
+        },
+        RuntimeTypeNode::Record {
+            fields,
+            boundary_record_kind,
+        } => {
+            let fixture = fixture.as_object();
+            RuntimeTypeNode::Record {
+                fields: fields
+                    .iter()
+                    .filter_map(|field| {
+                        fixture
+                            .and_then(|object| object.get(&field.name))
+                            .map(|value| {
+                                let mut field = field.clone();
+                                field.ty = fixture_subset_plan(&field.ty, value);
+                                field
+                            })
+                    })
+                    .collect(),
+                boundary_record_kind: boundary_record_kind.clone(),
+            }
+        }
+        RuntimeTypeNode::Array(item) => RuntimeTypeNode::Array(Box::new(
+            fixture
+                .as_array()
+                .and_then(|items| items.first())
+                .map_or_else(
+                    || (**item).clone(),
+                    |value| fixture_subset_plan(item, value),
+                ),
+        )),
+        _ => plan.node().clone(),
+    };
+    subset
 }
 
 fn json_contains(actual: &Value, expected: &Value) -> bool {
@@ -433,4 +481,106 @@ fn runtime_map_contains(
             };
             runtime_value_contains(actual_value, actual_heap, expected_value, expected_heap)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use skiff_runtime_model::type_plan::RuntimeRecordFieldPlan;
+
+    use super::*;
+
+    fn leaf(label: &str, node: RuntimeTypeNode) -> RuntimeTypePlan {
+        RuntimeTypePlan::new(label, None, node)
+    }
+
+    fn http_request_plan() -> RuntimeTypePlan {
+        let header = RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("name", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("value", leaf("String", RuntimeTypeNode::String), true),
+        ]);
+        RuntimeTypePlan::synthetic_request_record(vec![
+            RuntimeRecordFieldPlan::new("method", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("url", leaf("String", RuntimeTypeNode::String), true),
+            RuntimeRecordFieldPlan::new("headers", RuntimeTypePlan::synthetic_array(header), true),
+            RuntimeRecordFieldPlan::new("body", leaf("Bytes", RuntimeTypeNode::Bytes), true),
+            RuntimeRecordFieldPlan::new(
+                "timeoutMs",
+                RuntimeTypePlan::synthetic_nullable(leaf("Integer", RuntimeTypeNode::Integer)),
+                false,
+            ),
+        ])
+    }
+
+    fn typed_fixture_matches(actual: &Value, fixture: &Value) -> Result<bool> {
+        let plan = http_request_plan();
+        let mut actual_heap = RequestHeap::default();
+        let actual = runtime_from_wire_required_plan(
+            actual,
+            Some(&plan),
+            "actual HTTP request",
+            &mut actual_heap,
+        )?;
+        let fixture_plan = fixture_subset_plan(&plan, fixture);
+        let mut fixture_heap = RequestHeap::default();
+        let fixture = runtime_from_wire_required_plan(
+            fixture,
+            Some(&fixture_plan),
+            "fixture HTTP request",
+            &mut fixture_heap,
+        )?;
+        runtime_value_contains(&actual, &actual_heap, &fixture, &fixture_heap)
+    }
+
+    fn actual_request() -> Value {
+        json!({
+            "method": "PUT",
+            "url": "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/photos/a.txt",
+            "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ],
+            "body": { "__skiffBytesBase64": "aGVsbG8=" },
+            "timeoutMs": 5000
+        })
+    }
+
+    #[test]
+    fn typed_http_fixture_matches_record_headers_bytes_and_allows_omitted_fields() {
+        let actual = actual_request();
+        let fixture = json!({
+            "method": "PUT",
+            "url": "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/photos/a.txt",
+            "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ],
+            "body": { "__skiffBytesBase64": "aGVsbG8=" }
+        });
+
+        assert!(typed_fixture_matches(&actual, &fixture).expect("typed fixture should decode"));
+    }
+
+    #[test]
+    fn typed_http_fixture_rejects_method_url_header_body_and_signature_mismatches() {
+        let actual = actual_request();
+        for fixture in [
+            json!({ "method": "POST" }),
+            json!({ "url": "https://example.test/wrong" }),
+            json!({ "headers": [
+                { "name": "Content-Type", "value": "application/json" },
+                { "name": "Authorization", "value": "OSS test-id:signature" }
+            ] }),
+            json!({ "body": { "__skiffBytesBase64": "d3Jvbmc=" } }),
+            json!({ "headers": [
+                { "name": "Content-Type", "value": "text/plain" },
+                { "name": "Authorization", "value": "OSS test-id:wrong" }
+            ] }),
+        ] {
+            assert!(
+                !typed_fixture_matches(&actual, &fixture).expect("typed fixture should decode"),
+                "fixture unexpectedly matched: {fixture}"
+            );
+        }
+    }
 }
