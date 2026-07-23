@@ -430,6 +430,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F53D | [Router manifest v2 residuals](tasks/P5-F53D-router-manifest-v2-residuals.md) | D53 complete | manifest/artifact owner |
 | F53E | [Router control v2 fixtures](tasks/P5-F53E-router-control-v2-fixtures.md) | D53 complete | assembly/control fixtures |
 | F53F | [Node assembly v2 fixture](tasks/P5-F53F-node-assembly-v2-fixture.md) | D53 complete | Node fixture |
+| F53 result | [Service protocol v1 residual cleanup result](tasks/P5-F53-service-protocol-v1-residual-cleanup-result.md) | `f8e7168` | six owners complete |
+| I53 | [Service protocol v2 combined](tasks/P5-I53-service-protocol-v2-combined.md) | F52/F53 merged | cheap combined；只解除I02F |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
