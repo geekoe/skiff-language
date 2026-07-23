@@ -332,6 +332,71 @@ mod tests {
             .expect("successful submit should preserve a build wake permit");
     }
 
+    #[tokio::test]
+    async fn rejected_spawn_submit_receipt_does_not_wake_the_target_build() {
+        let (router_sender, mut router_receiver) = mpsc::unbounded_channel();
+        let outbound_requests = Arc::new(OutboundRequestRegistry::default());
+        let spawn_workers = Arc::new(crate::host::spawn_worker::SpawnWorkerRegistry::default());
+        let registration = spawn_workers.registration_for_test();
+        let wake = spawn_workers
+            .wake_signal_for_test(&registration, BUILD_ID)
+            .expect("test registration should exist");
+        let activation_identity = spawn_submit_request().activation_identity;
+        let context = concrete::ActorClientContext::from_parts(
+            "runtime-test",
+            "service-test",
+            "v1",
+            "request-test",
+            "program.test",
+            BUILD_ID,
+            "protocol-test",
+            Some("protocol-test"),
+            Some(&activation_identity),
+            None,
+            Some(&router_sender),
+            outbound_requests.as_ref(),
+            CancellationToken::new(),
+        );
+        let submit =
+            submit_spawn_and_wake(context, spawn_workers, spawn_submit_request(), Vec::new());
+        tokio::pin!(submit);
+
+        let rpc_id = tokio::select! {
+            result = &mut submit => panic!("spawn submit completed before its response: {result:?}"),
+            message = router_receiver.recv() => match message.expect("spawn.submit request should be sent") {
+                concrete::RouterWriterMessage::Control(
+                    capability_contract::OutboundControlMessage::SpawnSubmit { request, .. }
+                ) => request.rpc_id,
+                other => panic!("unexpected router message: {other:?}"),
+            }
+        };
+        let response = SpawnSubmitResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "spawn.submit.response".to_string(),
+            rpc_id: rpc_id.clone(),
+            spawn_id: "spawn-test".to_string(),
+            item_id: "item-test".to_string(),
+            status: "queued".to_string(),
+        };
+        outbound_requests
+            .complete_for_test(&rpc_id)
+            .expect("spawn submit response should be pending")
+            .send(skiff_runtime_request::OutboundResponse::End {
+                payload: serde_json::to_vec(&response).expect("response should serialize"),
+            })
+            .expect("spawn submit response should be delivered");
+
+        submit
+            .await
+            .expect_err("non-submitted receipt must fail through the adapter");
+        assert!(
+            timeout(Duration::from_millis(20), wake.notified())
+                .await
+                .is_err(),
+            "failed submit receipt must not wake a spawn worker"
+        );
+    }
+
     fn spawn_submit_request() -> SpawnSubmitControlRequest {
         SpawnSubmitControlRequest {
             rpc_id: String::new(),

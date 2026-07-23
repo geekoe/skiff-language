@@ -1,4 +1,5 @@
 use serde::de::DeserializeOwned;
+use skiff_artifact_model::validate_activation_token;
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
     ActorRemoveControlRequest, CancellationToken, InvocationContext, OutboundControlMessage,
@@ -55,7 +56,9 @@ impl<'a> ActorClient<'a> {
     pub async fn find(&self, mut request: ActorFindControlRequest) -> Result<Option<ActorRef>> {
         request.rpc_id = self.control_rpc_id(ACTOR_FIND_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
-        request.activation_identity = self.context.current_activation_identity(ACTOR_FIND_TARGET)?;
+        request.activation_identity = self
+            .context
+            .current_activation_identity(ACTOR_FIND_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorFind { request };
         let response: ActorFindResponseFrameHeader = self
@@ -74,8 +77,9 @@ impl<'a> ActorClient<'a> {
     pub async fn remove(&self, mut request: ActorRemoveControlRequest) -> Result<bool> {
         request.rpc_id = self.control_rpc_id(ACTOR_REMOVE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
-        request.activation_identity =
-            self.context.current_activation_identity(ACTOR_REMOVE_TARGET)?;
+        request.activation_identity = self
+            .context
+            .current_activation_identity(ACTOR_REMOVE_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::ActorRemove { request };
         let response: ActorRemoveResponseFrameHeader = self
@@ -91,15 +95,19 @@ impl<'a> ActorClient<'a> {
     ) -> Result<SpawnSubmitResponseFrameHeader> {
         request.rpc_id = self.control_rpc_id(SPAWN_SUBMIT_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
-        request.activation_identity =
-            self.context.current_activation_identity(SPAWN_SUBMIT_TARGET)?;
+        request.activation_identity = self
+            .context
+            .current_activation_identity(SPAWN_SUBMIT_TARGET)?;
         let rpc_id = request.rpc_id.clone();
         let command = OutboundControlMessage::SpawnSubmit {
             request,
             payload: args_payload,
         };
-        self.send_control_request(SPAWN_SUBMIT_TARGET, &rpc_id, command)
-            .await
+        let response: SpawnSubmitResponseFrameHeader = self
+            .send_control_request(SPAWN_SUBMIT_TARGET, &rpc_id, command)
+            .await?;
+        validate_spawn_submit_response(&response, &rpc_id)?;
+        Ok(response)
     }
 
     async fn send_control_request<TResponse>(
@@ -399,3 +407,39 @@ fn actor_ref_from_metadata(frame: ActorRefFrameMetadata) -> Result<ActorRef> {
         frame.epoch,
     ))
 }
+
+fn validate_spawn_submit_response(
+    response: &SpawnSubmitResponseFrameHeader,
+    expected_rpc_id: &str,
+) -> Result<()> {
+    if response.rpc_id != expected_rpc_id {
+        return Err(RuntimeError::Protocol {
+            target: SPAWN_SUBMIT_TARGET.to_string(),
+            message: format!(
+                "spawn.submit.response rpcId {} does not match request {}",
+                response.rpc_id, expected_rpc_id
+            ),
+        });
+    }
+    if response.status != "submitted" {
+        return Err(RuntimeError::Protocol {
+            target: SPAWN_SUBMIT_TARGET.to_string(),
+            message: format!(
+                "spawn.submit.response status must be submitted, got {}",
+                response.status
+            ),
+        });
+    }
+    validate_spawn_submit_identity("spawnId", &response.spawn_id)?;
+    validate_spawn_submit_identity("itemId", &response.item_id)
+}
+
+fn validate_spawn_submit_identity(label: &str, value: &str) -> Result<()> {
+    validate_activation_token(value, label).map_err(|message| RuntimeError::Protocol {
+        target: SPAWN_SUBMIT_TARGET.to_string(),
+        message: format!("spawn.submit.response {message}"),
+    })
+}
+
+#[cfg(test)]
+mod tests;
