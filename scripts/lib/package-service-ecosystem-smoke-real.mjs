@@ -5,6 +5,7 @@ import { captureCheckedCommand } from './command-execution.mjs';
 import { runInIsolatedTestRuntime } from './isolated-test-runtime.mjs';
 import { loadRouterWebSocket } from './loop-risk-stress-node.mjs';
 import { requestAssemblyActivation } from './package-service-authoring.mjs';
+import { retainFixtureCargoDiagnostic } from './package-service-ecosystem-smoke-diagnostic.mjs';
 
 const FIXTURE_RELATIVE_ROOT = join(
   'test-runner',
@@ -35,16 +36,21 @@ export async function runPackageServiceEcosystemSmoke({
     environment,
     runTest: async (isolatedEnv, signal, stack) => {
       const fixtureRoot = packageServiceEcosystemSmokeFixtureRoot(checkout);
-      const fixtureOutcome = await runCommand(
-        'cargo',
-        packageServiceEcosystemSmokeFixtureCargoArgs({
-          checkout,
-          fixtureRoot,
-          artifactRoot: stack.artifactRoot,
-          environment,
-        }),
-        { cwd: checkout, env: isolatedEnv, signal },
-      );
+      let fixtureOutcome;
+      try {
+        fixtureOutcome = await runCommand(
+          'cargo',
+          packageServiceEcosystemSmokeFixtureCargoArgs({
+            checkout,
+            fixtureRoot,
+            artifactRoot: stack.artifactRoot,
+            environment,
+          }),
+          { cwd: checkout, env: isolatedEnv, signal },
+        );
+      } catch (error) {
+        throw retainFixtureCargoDiagnostic(error);
+      }
       const receipt = readFixtureReceipt(fixtureOutcome.stdout, environment);
       const activation = await activate({
         activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
