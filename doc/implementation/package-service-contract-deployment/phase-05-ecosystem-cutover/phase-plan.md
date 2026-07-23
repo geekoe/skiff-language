@@ -307,6 +307,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F30A result | [Ecosystem Store CLI provisioning result](tasks/P5-F30A-ecosystem-store-cli-provisioning-result.md) | `4a7b145` | complete |
 | I30 result | [Lifecycle consumer/provisioning combined result](tasks/P5-I30-lifecycle-consumer-provisioning-combined-result.md) | `4a7b145` | PASS；92/92 |
 | D41 | [R05 real transcript entry preflight](tasks/P5-D41-r05-real-transcript-entry-preflight.md) | I30 PASS | 只读；冻结唯一真实入口/缺失harness |
+| D41 result | [R05 real transcript entry preflight result](tasks/P5-D41-r05-real-transcript-entry-preflight-result.md) | `09004e0` | COMPLETE；确认scripts/test-infrastructure缺口 |
+| F41 | [R05 generation lifecycle harness](tasks/P5-F41-r05-generation-lifecycle-harness.md) | D41 complete | 高；唯一scripts/test-infrastructure owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
