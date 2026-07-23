@@ -400,6 +400,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D50 | [Canonical unary stall audit](tasks/P5-D50-canonical-unary-stall-audit.md) | I02D classified | 三个只读分片并行后汇总 |
 | D50 result | [Canonical unary stall audit result](tasks/P5-D50-canonical-unary-stall-audit-result.md) | D50A/B/C/D complete | 需host内存闭环定位 |
 | F50A | [Host spawn continuation probe](tasks/P5-F50A-host-spawn-continuation-probe.md) | D50 complete | test-only；不得改production |
+| F50A result | [Host spawn continuation probe result](tasks/P5-F50A-host-spawn-continuation-probe-result.md) | `486379d` | PASS；排除host continuation |
+| D51 | [Router spawn store audit](tasks/P5-D51-router-spawn-store-audit.md) | F50A PASS | Router/store与harness双分片 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
