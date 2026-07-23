@@ -1,6 +1,6 @@
 # P5-R24：F05 WebSocket ABI / Owner Checkpoint
 
-未参与F23–F25实现的全新只读Agent。输入为R25、R27、I25、R28均PASS的exact clean candidate。不得编辑、
+未参与F23–F27实现的全新只读Agent。输入为R25、R27、I27、R29均PASS的exact clean candidate。不得编辑、
 修复、提交、运行full/I16/Host/stable或给R05/R02/Phase verdict。
 
 必验正常source→typed ABI→wire→Runtime boundary→production Router component marker；四对象schema与frozen ABI不变；
