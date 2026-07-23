@@ -357,6 +357,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D47 | [I35 fixture artifact provisioning audit](tasks/P5-D47-i35-fixture-artifact-provisioning-audit.md) | I35A FAIL | 只读熔断；第三次前冻结seed入口 |
 | D47 result | [I35 fixture artifact provisioning audit result](tasks/P5-D47-i35-fixture-artifact-provisioning-audit-result.md) | `dada6d5` | COMPLETE；复用canonical bootstrap-only seed |
 | I35B | [Spawn submit fixture final reacceptance](tasks/P5-I35B-spawn-submit-fixture-final-reacceptance.md) | D47 complete | 第三次且最后一次fixture复验 |
+| I35B result | [Spawn submit fixture final reacceptance result](tasks/P5-I35B-spawn-submit-fixture-final-reacceptance-result.md) | `dada6d5` | FAIL；test-runner health字段过期 |
+| F46A | [Test-runner replica health parity](tasks/P5-F46A-test-runner-replica-health-parity.md) | I35B exact FAIL | 中；strict Rust consumer |
+| I36 | [Test-runner health combined](tasks/P5-I36-test-runner-health-combined.md) | F46A merged | cheap combined；只解锁I35C |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
