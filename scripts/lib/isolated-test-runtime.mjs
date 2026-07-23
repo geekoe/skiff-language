@@ -32,6 +32,7 @@ export async function runInIsolatedTestRuntime({
   baseEnv = process.env,
   environment = 'skiff-test',
   signalTarget = process,
+  validateBootstrapReceipt,
   dependencies = {},
 }) {
   const absoluteSkiffRoot = resolve(skiffRoot);
@@ -65,6 +66,7 @@ export async function runInIsolatedTestRuntime({
       environment,
       ops,
       signal: abortController.signal,
+      validateBootstrapReceipt,
     });
     value = await runTest(stack.testRunnerEnv, abortController.signal, stack);
   } catch (error) {
@@ -107,6 +109,7 @@ async function startIsolatedTestRuntime({
   environment,
   ops,
   signal,
+  validateBootstrapReceipt,
 }) {
   const portLease = await ops.leasePorts();
   let tempRoot;
@@ -150,6 +153,7 @@ async function startIsolatedTestRuntime({
       env: isolatedEnv,
       signal,
     });
+    validateBootstrapReceipt?.(bootstrap);
     signal.throwIfAborted();
     supervisorAttempted = true;
     supervisor = ops.spawnSupervisor({ skiffRoot, configPath, env: isolatedEnv });

@@ -75,6 +75,7 @@ test('bootstrap comes from current checkout and writes only canonical generation
   assert.deepEqual(args, [
     'run',
     '--quiet',
+    '--locked',
     '--manifest-path',
     '/checkout/skiff/test-runner/Cargo.toml',
     '--bin',
@@ -243,7 +244,8 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     writeConfig: async (_configPath, config) => { observed.config = config; },
     seedBootstrap: async (input) => {
       observed.bootstrap = input;
-      return { environment: 'skiff-test', bootstrap: {} };
+      observed.bootstrapReceipt = { environment: 'skiff-test', bootstrap: {} };
+      return observed.bootstrapReceipt;
     },
     spawnSupervisor: (input) => {
       observed.supervisor = input;
@@ -260,6 +262,10 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     },
     signalTarget: new EventEmitter(),
     dependencies,
+    validateBootstrapReceipt: (receipt) => {
+      observed.validatedBootstrapReceipt = receipt;
+      assert.equal(observed.supervisor, undefined);
+    },
     runTest: async (environment) => { observed.runnerEnv = environment; },
   });
 
@@ -272,6 +278,7 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
   assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);
   assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
   assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
+  assert.strictEqual(observed.validatedBootstrapReceipt, observed.bootstrapReceipt);
   assert.equal(observed.supervisor.skiffRoot, expectedSkiffRoot);
   assert.strictEqual(observed.supervisor.env, observed.bootstrap.env);
   assert.strictEqual(observed.runnerEnv, observed.bootstrap.env);

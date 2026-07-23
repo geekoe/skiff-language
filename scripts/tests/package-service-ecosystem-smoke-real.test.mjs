@@ -23,6 +23,13 @@ import {
   packageServiceEcosystemSmokeFixtureRoot,
   runPackageServiceEcosystemSmoke,
 } from '../lib/package-service-ecosystem-smoke-real.mjs';
+import {
+  readyAssemblyHealth,
+  smokeFixtureIdentities,
+  validActivationReceipt,
+  validBootstrapReceipt,
+  validSmokeFixtureReceipt,
+} from './helpers/package-service-ecosystem-smoke-fixtures.mjs';
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -146,67 +153,75 @@ test('fixture Cargo failure evidence remains visible after isolated cleanup', as
   }
 });
 
-test('successful ecosystem smoke output and fixture command count remain unchanged', async () => {
-  const assemblyIdentity = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
-  const operation = `skiff-contract-operation-v1:sha256:${'b'.repeat(64)}`;
+test('ecosystem smoke waits for exact delayed readiness and creates one WebSocket', async () => {
+  const environment = 'f27c-success';
   const commandCalls = [];
   const activationCalls = [];
+  const healthCalls = [];
+  const healthSequence = [
+    readyAssemblyHealth(environment, {
+      activeAssembly: { generation: 0 },
+      replicas: [],
+      capabilityConnections: [],
+    }),
+    readyAssemblyHealth(environment, {
+      pendingActivation: {
+        candidateGeneration: 1,
+        assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
+      },
+    }),
+    readyAssemblyHealth(environment, { capabilityConnections: [] }),
+    readyAssemblyHealth(environment),
+  ];
   FakeWebSocket.instances.length = 0;
   const result = await runPackageServiceEcosystemSmoke({
     checkout,
     replicaCount: 1,
-    environment: 'f26a-success',
+    environment,
   }, {
-    runtimeOwner: async ({ runTest }) => runTest(
-      { SKIFF_TEST_ENVIRONMENT: 'f26a-success' },
-      new AbortController().signal,
-      {
-        artifactRoot: '/isolated/artifacts',
-        controlUrl: 'http://127.0.0.1:46001',
-        routerHttpUrl: 'http://127.0.0.1:46000',
-      },
-    ),
+    runtimeOwner: fakeRuntimeOwner(environment),
     runCommand: async (...args) => {
       commandCalls.push(args);
       return {
-        stdout: JSON.stringify({
-          schemaVersion: 'skiff-package-service-smoke-fixture-v1',
-          environment: 'f26a-success',
-          candidate: {
-            assembly: { assemblyIdentity },
-            entrypoints: [{
-              kind: 'websocket',
-              host: 'fixture.skiff.test',
-              path: '/socket',
-              operation,
-            }],
-          },
-        }),
+        stdout: JSON.stringify(validSmokeFixtureReceipt(environment)),
         stderr: '',
       };
     },
     activate: async (input) => {
       activationCalls.push(input);
-      return {
-        response: {
-          ok: true,
-          activeAssembly: { assemblyIdentity, generation: 0 },
-        },
-      };
+      return validActivationReceipt(environment);
     },
+    readHealth: async (url) => {
+      healthCalls.push(url);
+      return healthSequence.shift();
+    },
+    readinessSleep: async () => {},
     loadWebSocket: async () => FakeWebSocket,
   });
 
   assert.equal(commandCalls.length, 1);
   assert.equal(commandCalls[0][0], 'cargo');
   assert.equal(activationCalls.length, 1);
+  assert.deepEqual(activationCalls[0], {
+    activationUrl: 'http://127.0.0.1:46001/__skiff/activate-assembly',
+    expectedGeneration: 0,
+    environment,
+    assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
+  });
+  assert.deepEqual(healthCalls, Array(4).fill(
+    'http://127.0.0.1:46001/__router/health',
+  ));
   assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(FakeWebSocket.instances[0].url, 'ws://127.0.0.1:46000/socket');
+  assert.deepEqual(FakeWebSocket.instances[0].options, {
+    headers: { Host: 'ecosystem-smoke.skiff.localhost' },
+  });
   assert.deepEqual(result, {
     status: 'PASS',
     probe: 'skiff-cutover-production-websocket-component',
     replicas: 1,
-    generation: 0,
-    assembly: assemblyIdentity,
+    generation: 1,
+    assembly: smokeFixtureIdentities.assembly,
     sourceFixture: join(
       'test-runner',
       'fixtures',
@@ -222,13 +237,342 @@ test('successful ecosystem smoke output and fixture command count remain unchang
       'clientMarker',
     ],
     websocket: {
-      host: 'fixture.skiff.test',
+      host: 'ecosystem-smoke.skiff.localhost',
       path: '/socket',
-      operation,
+      operation: smokeFixtureIdentities.websocketOperation,
       marker: packageServiceEcosystemSmokeExpectedMarker,
     },
   });
   assert.equal(Object.hasOwn(result, FIXTURE_CARGO_DIAGNOSTIC_PROPERTY), false);
+});
+
+test('fixture receipt mutations fail before activation, health, or WebSocket creation', async (t) => {
+  const environment = 'f27c-fixture-mutation';
+  const cases = [
+    {
+      name: 'unknown top-level field',
+      mutate: (receipt) => { receipt.extra = true; },
+      error: /fixture receipt must have exact keys/,
+    },
+    {
+      name: 'missing production ref',
+      mutate: (receipt) => { delete receipt.candidate.production; },
+      error: /fixture candidate must have exact keys/,
+    },
+    {
+      name: 'overlay record points at another build',
+      mutate: (receipt) => { receipt.candidate.overlayRecordPath += '.wrong'; },
+      error: /overlayRecordPath must select the exact overlay/,
+    },
+    {
+      name: 'contract ref is incomplete',
+      mutate: (receipt) => {
+        receipt.candidate.entrypoints[2].contract = {
+          ...receipt.candidate.entrypoints[2].contract,
+        };
+        delete receipt.candidate.entrypoints[2].contract.serviceProtocolIdentity;
+      },
+      error: /websocket contract must have exact keys/,
+    },
+    {
+      name: 'deployment does not bind its contract',
+      mutate: (receipt) => {
+        receipt.candidate.entrypoints[1].deployment.serviceId = 'wrong/service';
+      },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'entrypoint set is incomplete',
+      mutate: (receipt) => { receipt.candidate.entrypoints.pop(); },
+      error: /exactly 3 entrypoints/,
+    },
+    {
+      name: 'WebSocket selector is not fixed',
+      mutate: (receipt) => { receipt.candidate.entrypoints[2].path = '/wrong'; },
+      error: /Expected values to be strictly equal/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const receipt = validSmokeFixtureReceipt(environment);
+      scenario.mutate(receipt);
+      const calls = { activation: 0, health: 0, websocket: 0 };
+      FakeWebSocket.instances.length = 0;
+      await assert.rejects(
+        runPackageServiceEcosystemSmoke({
+          checkout,
+          replicaCount: 1,
+          environment,
+        }, {
+          runtimeOwner: fakeRuntimeOwner(environment),
+          runCommand: async () => ({ stdout: JSON.stringify(receipt), stderr: '' }),
+          activate: async () => {
+            calls.activation += 1;
+            return validActivationReceipt(environment);
+          },
+          readHealth: async () => {
+            calls.health += 1;
+            return readyAssemblyHealth(environment);
+          },
+          loadWebSocket: async () => {
+            calls.websocket += 1;
+            return FakeWebSocket;
+          },
+        }),
+        scenario.error,
+      );
+      assert.deepEqual(calls, { activation: 0, health: 0, websocket: 0 });
+      assert.equal(FakeWebSocket.instances.length, 0);
+    });
+  }
+});
+
+test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creation', async (t) => {
+  const environment = 'f27c-bootstrap-mutation';
+  const cases = [
+    {
+      name: 'unknown top-level field',
+      mutate: (receipt) => { receipt.extra = true; },
+      error: /bootstrap receipt must have exact keys/,
+    },
+    {
+      name: 'wrong canonical std build',
+      mutate: (receipt) => {
+        receipt.bootstrap.std.package.artifact.packageBuildId =
+          `skiff-package-build-v4:sha256:${'f'.repeat(64)}`;
+      },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'pointer does not bind the published std record',
+      mutate: (receipt) => { receipt.bootstrap.std.pointer.recordPath += '.wrong'; },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'pointer path is absent',
+      mutate: (receipt) => { delete receipt.bootstrap.std.pointerPath; },
+      error: /bootstrap std must have exact keys/,
+    },
+    {
+      name: 'File IR record escapes the exact std record root',
+      mutate: (receipt) => {
+        receipt.bootstrap.std.package.fileIrRecordPaths[0] =
+          `records/package-artifacts/other/1.0.0/${'e'.repeat(64)}.json`;
+      },
+      error: /File IR records must stay under the exact package record root/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const bootstrap = validBootstrapReceipt(environment);
+      scenario.mutate(bootstrap);
+      const calls = { cargo: 0, websocket: 0 };
+      FakeWebSocket.instances.length = 0;
+      await assert.rejects(
+        runPackageServiceEcosystemSmoke({
+          checkout,
+          replicaCount: 1,
+          environment,
+        }, {
+          runtimeOwner: fakeRuntimeOwner(environment, bootstrap),
+          runCommand: async () => {
+            calls.cargo += 1;
+            return {
+              stdout: JSON.stringify(validSmokeFixtureReceipt(environment)),
+              stderr: '',
+            };
+          },
+          loadWebSocket: async () => {
+            calls.websocket += 1;
+            return FakeWebSocket;
+          },
+        }),
+        scenario.error,
+      );
+      assert.deepEqual(calls, { cargo: 0, websocket: 0 });
+      assert.equal(FakeWebSocket.instances.length, 0);
+    });
+  }
+});
+
+test('activation receipt mutations fail before health or WebSocket creation', async (t) => {
+  const environment = 'f27c-activation-mutation';
+  const cases = [
+    {
+      name: 'generation zero remains active',
+      mutate: (activation) => { activation.response.activeAssembly.generation = 0; },
+      error: /Expected values to be strictly deep-equal/,
+    },
+    {
+      name: 'committed assembly is wrong',
+      mutate: (activation) => {
+        activation.response.committed.assembly.assemblyIdentity =
+          `skiff-runtime-assembly-v1:sha256:${'f'.repeat(64)}`;
+      },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'active environment is wrong',
+      mutate: (activation) => {
+        activation.response.activeAssembly.environment = 'wrong-environment';
+      },
+      error: /Expected values to be strictly deep-equal/,
+    },
+    {
+      name: 'response is missing committed tuple',
+      mutate: (activation) => { delete activation.response.committed; },
+      error: /activation response must have exact keys/,
+    },
+    {
+      name: 'response contains an untyped extra field',
+      mutate: (activation) => { activation.response.status = 'accepted'; },
+      error: /activation response must have exact keys/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const activation = validActivationReceipt(environment);
+      scenario.mutate(activation);
+      const calls = { health: 0, websocket: 0 };
+      FakeWebSocket.instances.length = 0;
+      await assert.rejects(
+        runPackageServiceEcosystemSmoke({
+          checkout,
+          replicaCount: 1,
+          environment,
+        }, {
+          runtimeOwner: fakeRuntimeOwner(environment),
+          runCommand: async () => ({
+            stdout: JSON.stringify(validSmokeFixtureReceipt(environment)),
+            stderr: '',
+          }),
+          activate: async () => activation,
+          readHealth: async () => {
+            calls.health += 1;
+            return readyAssemblyHealth(environment);
+          },
+          loadWebSocket: async () => {
+            calls.websocket += 1;
+            return FakeWebSocket;
+          },
+        }),
+        scenario.error,
+      );
+      assert.deepEqual(calls, { health: 0, websocket: 0 });
+      assert.equal(FakeWebSocket.instances.length, 0);
+    });
+  }
+});
+
+test('readiness failures stay on the control plane and never create a WebSocket', async (t) => {
+  const environment = 'f27c-readiness-negative';
+  const cases = [
+    {
+      name: 'generation zero',
+      health: readyAssemblyHealth(environment, {
+        activeAssembly: { generation: 0 },
+      }),
+      error: /active assembly tuple does not match/,
+    },
+    {
+      name: 'wrong assembly tuple',
+      health: readyAssemblyHealth(environment, {
+        activeAssembly: {
+          assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'f'.repeat(64)}`,
+        },
+      }),
+      error: /active assembly tuple does not match/,
+    },
+    {
+      name: 'pending activation',
+      health: readyAssemblyHealth(environment, {
+        pendingActivation: { candidateGeneration: 2 },
+      }),
+      error: /activation is still pending/,
+    },
+    {
+      name: 'no matching healthy replica',
+      health: readyAssemblyHealth(environment, { replicas: [] }),
+      error: /no healthy connected replica/,
+    },
+    {
+      name: 'no matching capability connection',
+      health: readyAssemblyHealth(environment, { capabilityConnections: [] }),
+      error: /no matching replica has its own connected capability/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const calls = { health: 0, websocket: 0 };
+      FakeWebSocket.instances.length = 0;
+      await assert.rejects(
+        runPackageServiceEcosystemSmoke({
+          checkout,
+          replicaCount: 1,
+          environment,
+        }, {
+          runtimeOwner: fakeRuntimeOwner(environment),
+          runCommand: async () => ({
+            stdout: JSON.stringify(validSmokeFixtureReceipt(environment)),
+            stderr: '',
+          }),
+          activate: async () => validActivationReceipt(environment),
+          readHealth: async () => {
+            calls.health += 1;
+            return scenario.health;
+          },
+          readinessTimeoutMs: 0,
+          loadWebSocket: async () => {
+            calls.websocket += 1;
+            return FakeWebSocket;
+          },
+        }),
+        scenario.error,
+      );
+      assert.deepEqual(calls, { health: 1, websocket: 0 });
+      assert.equal(FakeWebSocket.instances.length, 0);
+    });
+  }
+});
+
+test('control health timeout is bounded and never retries the business WebSocket', async () => {
+  const environment = 'f27c-readiness-timeout';
+  let healthCalls = 0;
+  let websocketLoads = 0;
+  FakeWebSocket.instances.length = 0;
+  await assert.rejects(
+    runPackageServiceEcosystemSmoke({
+      checkout,
+      replicaCount: 1,
+      environment,
+    }, {
+      runtimeOwner: fakeRuntimeOwner(environment),
+      runCommand: async () => ({
+        stdout: JSON.stringify(validSmokeFixtureReceipt(environment)),
+        stderr: '',
+      }),
+      activate: async () => validActivationReceipt(environment),
+      readHealth: async (_url, signal) => {
+        healthCalls += 1;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      readinessTimeoutMs: 5,
+      loadWebSocket: async () => {
+        websocketLoads += 1;
+        return FakeWebSocket;
+      },
+    }),
+    /timed out waiting for generation 1 assembly readiness: control health was not observed/,
+  );
+  assert.equal(healthCalls, 1);
+  assert.equal(websocketLoads, 0);
+  assert.equal(FakeWebSocket.instances.length, 0);
 });
 
 class FakeWebSocket extends EventEmitter {
@@ -285,4 +629,22 @@ function fixtureCargoError({
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function fakeRuntimeOwner(
+  environment,
+  bootstrap = validBootstrapReceipt(environment),
+) {
+  return async ({ runTest, validateBootstrapReceipt }) => {
+    validateBootstrapReceipt(bootstrap);
+    return runTest(
+      { SKIFF_TEST_ENVIRONMENT: environment },
+      new AbortController().signal,
+      {
+        artifactRoot: '/isolated/artifacts',
+        controlUrl: 'http://127.0.0.1:46001',
+        routerHttpUrl: 'http://127.0.0.1:46000',
+      },
+    );
+  };
 }

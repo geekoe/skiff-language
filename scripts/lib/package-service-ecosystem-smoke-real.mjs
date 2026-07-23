@@ -6,6 +6,12 @@ import { runInIsolatedTestRuntime } from './isolated-test-runtime.mjs';
 import { loadRouterWebSocket } from './loop-risk-stress-node.mjs';
 import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import { retainFixtureCargoDiagnostic } from './package-service-ecosystem-smoke-diagnostic.mjs';
+import {
+  readPackageServiceFixtureReceipt,
+  validatePackageServiceActivationReceipt,
+  validatePackageServiceBootstrapReceipt,
+  waitForPackageServiceAssemblyReady,
+} from './package-service-ecosystem-smoke-oracle.mjs';
 
 const FIXTURE_RELATIVE_ROOT = join(
   'test-runner',
@@ -13,8 +19,6 @@ const FIXTURE_RELATIVE_ROOT = join(
   'package-service-websocket-smoke',
 );
 const EXPECTED_MARKER = 'P5-F23D-REAL-COMPONENT-MARKER';
-const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v1';
-
 export async function runPackageServiceEcosystemSmoke({
   checkout,
   replicaCount,
@@ -28,12 +32,15 @@ export async function runPackageServiceEcosystemSmoke({
   const runtimeOwner = dependencies.runtimeOwner ?? runInIsolatedTestRuntime;
   const runCommand = dependencies.runCommand ?? captureCheckedCommand;
   const activate = dependencies.activate ?? requestAssemblyActivation;
+  const readHealth = dependencies.readHealth;
   const loadWebSocket = dependencies.loadWebSocket ?? (() =>
     loadRouterWebSocket(new URL('../run-package-service-ecosystem-smoke.mjs', import.meta.url)));
 
   return runtimeOwner({
     skiffRoot: checkout,
     environment,
+    validateBootstrapReceipt: (receipt) =>
+      validatePackageServiceBootstrapReceipt(receipt, environment),
     runTest: async (isolatedEnv, signal, stack) => {
       const fixtureRoot = packageServiceEcosystemSmokeFixtureRoot(checkout);
       let fixtureOutcome;
@@ -51,20 +58,30 @@ export async function runPackageServiceEcosystemSmoke({
       } catch (error) {
         throw retainFixtureCargoDiagnostic(error);
       }
-      const receipt = readFixtureReceipt(fixtureOutcome.stdout, environment);
+      const receipt = readPackageServiceFixtureReceipt(fixtureOutcome.stdout, environment);
       const activation = await activate({
         activationUrl: `${stack.controlUrl}/__skiff/activate-assembly`,
         expectedGeneration: 0,
         environment,
         assembly: receipt.candidate.assembly,
       });
-      assert.equal(activation.response?.ok, true, 'production Router must commit the fixture');
-      assert.equal(
-        activation.response?.activeAssembly?.assemblyIdentity,
-        receipt.candidate.assembly.assemblyIdentity,
-        'production Router must expose the exact compiled assembly',
-      );
-      const websocket = requiredEntrypoint(receipt, 'websocket');
+      const activationResponse = validatePackageServiceActivationReceipt(activation, {
+        environment,
+        assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
+      });
+      await waitForPackageServiceAssemblyReady({
+        healthUrl: `${stack.controlUrl}/__router/health`,
+        environment,
+        generation: activationResponse.activeAssembly.generation,
+        assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
+        signal,
+        readHealth,
+        now: dependencies.readinessNow,
+        sleep: dependencies.readinessSleep,
+        timeoutMs: dependencies.readinessTimeoutMs,
+        intervalMs: dependencies.readinessIntervalMs,
+      });
+      const websocket = receipt.candidate.entrypoints[2];
       const WebSocket = await loadWebSocket();
       const client = new WebSocket(
         `${stack.routerHttpUrl.replace(/^http:/, 'ws:')}${websocket.path}`,
@@ -83,7 +100,7 @@ export async function runPackageServiceEcosystemSmoke({
         status: 'PASS',
         probe: 'skiff-cutover-production-websocket-component',
         replicas: 1,
-        generation: activation.response.activeAssembly.generation,
+        generation: activationResponse.activeAssembly.generation,
         assembly: receipt.candidate.assembly.assemblyIdentity,
         sourceFixture: FIXTURE_RELATIVE_ROOT,
         productionPath: [
@@ -133,35 +150,6 @@ export function packageServiceEcosystemSmokeFixtureCargoArgs({
     '--environment',
     environment,
   ];
-}
-
-function readFixtureReceipt(stdout, expectedEnvironment) {
-  let receipt;
-  try {
-    receipt = JSON.parse(stdout);
-  } catch (error) {
-    throw new Error(`ecosystem smoke fixture returned invalid JSON: ${error.message}`);
-  }
-  assert.equal(receipt.schemaVersion, FIXTURE_SCHEMA_VERSION);
-  assert.equal(receipt.environment, expectedEnvironment);
-  assert.match(
-    receipt.candidate?.assembly?.assemblyIdentity ?? '',
-    /^skiff-runtime-assembly-v1:sha256:[a-f0-9]{64}$/,
-  );
-  requiredEntrypoint(receipt, 'websocket');
-  return receipt;
-}
-
-function requiredEntrypoint(receipt, kind) {
-  const entrypoint = receipt.candidate?.entrypoints?.find((entry) => entry.kind === kind);
-  assert.ok(entrypoint, `ecosystem smoke fixture must publish a ${kind} entrypoint`);
-  assert.equal(typeof entrypoint.host, 'string');
-  assert.equal(typeof entrypoint.path, 'string');
-  assert.match(
-    entrypoint.operation ?? '',
-    /^skiff-contract-operation-v1:sha256:[a-f0-9]{64}$/,
-  );
-  return entrypoint;
 }
 
 async function opened(client, WebSocket) {
