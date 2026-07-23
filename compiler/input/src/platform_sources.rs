@@ -61,6 +61,11 @@ impl CompilerPlatformPackageAuthority {
     pub fn package_root(&self) -> &Path {
         &self.package_root
     }
+
+    pub fn native_signatures(&self) -> &'static [skiff_artifact_model::NativeSignatureDef] {
+        debug_assert_eq!(self.package_id, TRUSTED_REGISTRY_PACKAGE_ID);
+        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES
+    }
 }
 
 impl CompilerPlatformSourceSnapshot {

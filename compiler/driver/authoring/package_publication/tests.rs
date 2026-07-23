@@ -12,7 +12,7 @@ use skiff_artifact_identity::{
     assign_package_artifact_identities, PackageArtifactRecordPath, PackageFileIrRecordPath,
     PackageResourceRecordPath,
 };
-use skiff_artifact_model::PublicationResourceRef;
+use skiff_artifact_model::{CallTargetIr, ExprIr, PublicationResourceRef};
 use skiff_compiler_core::json_utils::sha256_hex;
 use skiff_compiler_emission::artifact::PublishedResourceArtifact;
 use skiff_compiler_input::CompilerPlatformSources;
@@ -124,21 +124,63 @@ fn official_registry_cli_authoring_path_compiles_all_canonical_native_declaratio
 
     let store = CanonicalArtifactStore::open(artifact_root.path()).unwrap();
     let artifact = store.read_package_artifact(&reference).unwrap();
-    let executable_count = artifact
+    let file_ir_units = artifact
         .files
         .iter()
-        .map(|file| {
-            store
-                .read_file_ir(&reference, file)
-                .unwrap()
-                .declarations
-                .executables
-                .len()
-        })
+        .map(|file| store.read_file_ir(&reference, file).unwrap())
+        .collect::<Vec<_>>();
+    let executable_count = file_ir_units
+        .iter()
+        .map(|unit| unit.declarations.executables.len())
         .sum::<usize>();
     assert_eq!(
         executable_count,
         skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES.len()
+    );
+
+    let mut actual_binding_keys = file_ir_units
+        .iter()
+        .flat_map(|unit| &unit.executables)
+        .flat_map(|executable| &executable.body.expressions)
+        .filter_map(|expression| {
+            let ExprIr::Call { call } = expression else {
+                return None;
+            };
+            let CallTargetIr::Native { target } = &call.target else {
+                return None;
+            };
+            Some(
+                target
+                    .binding_key
+                    .clone()
+                    .expect("compiler-owned native target must carry its canonical binding key"),
+            )
+        })
+        .collect::<Vec<_>>();
+    actual_binding_keys.sort();
+    let mut expected_binding_keys =
+        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_SIGNATURES
+            .iter()
+            .map(|signature| signature.binding_key.to_string())
+            .collect::<Vec<_>>();
+    expected_binding_keys.sort();
+    assert_eq!(actual_binding_keys, expected_binding_keys);
+
+    let mut expected_scopes =
+        skiff_trusted_registry_contract::TRUSTED_REGISTRY_NATIVE_CAPABILITY_SPECS
+            .iter()
+            .map(|spec| spec.operation_scope.as_str().to_string())
+            .collect::<Vec<_>>();
+    expected_scopes.sort();
+    expected_scopes.dedup();
+    assert_eq!(
+        artifact.runtime_requirements.runtime_capabilities,
+        vec![skiff_artifact_model::PackageRuntimeCapabilityRequirement {
+            capability: skiff_trusted_registry_contract::TRUSTED_REGISTRY_CAPABILITY_ID.to_string(),
+            required_version: skiff_trusted_registry_contract::TRUSTED_REGISTRY_CAPABILITY_VERSION
+                .to_string(),
+            operation_scopes: expected_scopes,
+        }]
     );
     assert!(
         !artifact_root.path().join("pointers").exists(),

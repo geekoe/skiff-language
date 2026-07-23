@@ -90,6 +90,7 @@ fn lowering_error_with_expression_model(
                 package_aliases: model.name_resolution().package_aliases_map(),
                 package_interface_methods: &package_interface_methods,
                 resolved_call_targets: model.resolved_call_targets(),
+                compiler_native_binding_keys: model.compiler_native_binding_keys(),
                 external_type_symbols: model.indexes().publication_type_symbols(),
                 publication_db_metadata: model.indexes().publication_db_metadata_index(),
                 semantic_context: &source_context,
