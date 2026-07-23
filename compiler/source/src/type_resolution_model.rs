@@ -52,6 +52,7 @@ pub struct TypeResolutionModel {
     package_types: BTreeMap<PackageSymbolKey, SourceTypeResolution>,
     package_callables: BTreeMap<PackageSymbolKey, PackageCallableResolution>,
     package_interfaces: BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
+    package_type_slots: BTreeMap<(String, String, u32), String>,
     package_dependencies: BTreeMap<String, String>,
     package_aliases: BTreeMap<String, Vec<String>>,
     external_type_symbols: PublicationTypeSymbolIndex,
@@ -127,6 +128,7 @@ struct InterfaceInstantiationResolution {
 struct PackageInterfaceFact {
     type_params: Vec<String>,
     methods: Vec<InterfaceMethodSignature>,
+    source_module: String,
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +232,7 @@ pub struct PackageInterfaceResolution {
     pub identity: TypeRefIr,
     pub type_params: Vec<String>,
     pub methods: Vec<InterfaceMethodSignature>,
+    pub source_module: String,
 }
 
 impl PackageInterfaceResolution {
@@ -249,6 +252,7 @@ impl PackageInterfaceResolution {
             identity: self.identity,
             type_params: self.type_params,
             methods,
+            source_module: self.source_module,
         })
     }
 }
@@ -326,12 +330,14 @@ impl TypeResolutionModel {
         let mut package_types = BTreeMap::new();
         let mut package_callables = BTreeMap::new();
         let mut package_interfaces = BTreeMap::new();
+        let mut package_type_slots = BTreeMap::new();
         let mut package_public_to_internal = BTreeMap::new();
         if let Some(package_facts) = package_facts {
             for package in package_facts {
                 index_package_types(package, &mut package_types);
                 index_package_callables(package, &mut package_callables);
                 index_package_interfaces(package, &mut package_interfaces)?;
+                index_package_type_slots(package, &mut package_type_slots)?;
                 index_package_public_to_internal(package, &mut package_public_to_internal);
             }
         }
@@ -341,6 +347,7 @@ impl TypeResolutionModel {
                     artifact,
                     &mut package_types,
                     &mut package_interfaces,
+                    &mut package_type_slots,
                 )?;
             }
         }
@@ -355,6 +362,7 @@ impl TypeResolutionModel {
             package_types,
             package_callables,
             package_interfaces,
+            package_type_slots,
             package_dependencies,
             package_aliases: package_aliases.clone(),
             external_type_symbols: external_type_symbols.clone(),
@@ -715,6 +723,7 @@ impl TypeResolutionModel {
             },
             type_params: fact.type_params.clone(),
             methods: fact.methods.clone(),
+            source_module: fact.source_module.clone(),
         })
     }
 
@@ -753,6 +762,7 @@ impl TypeResolutionModel {
             },
             type_params: fact.type_params.clone(),
             methods: fact.methods.clone(),
+            source_module: fact.source_module.clone(),
         })
     }
 
@@ -2269,8 +2279,22 @@ fn index_artifact_package_types(
     artifact: &PackageArtifact,
     package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
     package_interfaces: &mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
+    package_type_slots: &mut BTreeMap<(String, String, u32), String>,
 ) -> Result<(), String> {
     let symbolic_types = artifact_symbolic_type_index(artifact)?;
+    for (public_path, export) in &artifact.implementation_links.types {
+        let key = (
+            artifact.package_id.clone(),
+            export.file.module_path.clone(),
+            export.type_index,
+        );
+        if let Some(existing) = package_type_slots.insert(key, public_path.clone()) {
+            return Err(format!(
+                "package {} local type slot for {} is ambiguously exported as {} and {}",
+                artifact.package_id, export.file.module_path, existing, public_path
+            ));
+        }
+    }
     let local_type_names = artifact
         .package_local_abi
         .public_symbols
@@ -2340,6 +2364,14 @@ fn index_artifact_package_types(
                 let fact = PackageInterfaceFact {
                     type_params: type_params.clone(),
                     methods,
+                    source_module: artifact
+                        .implementation_links
+                        .types
+                        .get(public_path)
+                        .expect("symbolic type index validated the implementation link")
+                        .file
+                        .module_path
+                        .clone(),
                 };
                 if package_interfaces.insert(key, fact).is_some() {
                     return Err(format!(
@@ -2872,6 +2904,7 @@ fn index_package_interfaces(
         let fact = PackageInterfaceFact {
             type_params: interface.type_params.clone(),
             methods,
+            source_module: binding.source_module.to_string(),
         };
         for path in [
             binding.public_path.to_string(),
@@ -2885,6 +2918,32 @@ fn index_package_interfaces(
                 },
                 fact.clone(),
             );
+        }
+    }
+    Ok(())
+}
+
+fn index_package_type_slots(
+    package: &TypeResolutionPackageFacts<'_>,
+    package_type_slots: &mut BTreeMap<(String, String, u32), String>,
+) -> Result<(), String> {
+    for binding in &package.schema_types {
+        let Some(type_index) = type_indices(binding.source_ast)
+            .get(binding.source_symbol)
+            .copied()
+        else {
+            continue;
+        };
+        let key = (
+            package.package_id.to_string(),
+            binding.source_module.to_string(),
+            type_index,
+        );
+        if let Some(existing) = package_type_slots.insert(key, binding.public_path.to_string()) {
+            return Err(format!(
+                "package {} local type slot for {} is ambiguously exported as {} and {}",
+                package.package_id, binding.source_module, existing, binding.public_path
+            ));
         }
     }
     Ok(())
@@ -4607,10 +4666,20 @@ mod tests {
                 },
                 FunctionTypeParamIr {
                     name: "input".to_string(),
-                    ty: TypeRefIr::native("string"),
+                    ty: TypeRefIr::Native {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::Nullable {
+                            inner: Box::new(TypeRefIr::LocalType { type_index: 7 }),
+                        }],
+                    },
                 },
             ],
-            return_type: TypeRefIr::native("string"),
+            return_type: TypeRefIr::Union {
+                items: vec![
+                    TypeRefIr::LocalType { type_index: 7 },
+                    TypeRefIr::native("null"),
+                ],
+            },
             is_native: false,
             is_provider: false,
             is_static: false,
@@ -4618,6 +4687,9 @@ mod tests {
         };
         let descriptor = TypeDescriptorIr::Native {
             symbol: "interface:LlmClient".to_string(),
+        };
+        let tool_descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([("name".to_string(), TypeRefIr::native("string"))]),
         };
         let artifact = PackageArtifact {
             schema_version: "skiff-package-artifact-v2".to_string(),
@@ -4628,30 +4700,56 @@ mod tests {
             static_resources: Vec::new(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("abi"),
-                public_symbols: BTreeMap::from([(
-                    "types.LlmClient".to_string(),
-                    PackageLocalAbiSymbol::Type {
-                        local_type_id: "type:types.LlmClient".to_string(),
-                        descriptor: descriptor.clone(),
-                        is_interface: true,
-                        type_params: Vec::new(),
-                        interface_methods: vec![method.clone()],
-                    },
-                )]),
+                public_symbols: BTreeMap::from([
+                    (
+                        "types.LlmClient".to_string(),
+                        PackageLocalAbiSymbol::Type {
+                            local_type_id: "type:types.LlmClient".to_string(),
+                            descriptor: descriptor.clone(),
+                            is_interface: true,
+                            type_params: Vec::new(),
+                            interface_methods: vec![method.clone()],
+                        },
+                    ),
+                    (
+                        "tools.ToolDeclaration".to_string(),
+                        PackageLocalAbiSymbol::Type {
+                            local_type_id: "type:tools.ToolDeclaration".to_string(),
+                            descriptor: tool_descriptor.clone(),
+                            is_interface: false,
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                ]),
             },
             implementation_links: PackageImplementationLinks {
-                types: BTreeMap::from([(
-                    "types.LlmClient".to_string(),
-                    TypeExport {
-                        file,
-                        type_index: 0,
-                        symbol: "LlmClient".to_string(),
-                        is_interface: true,
-                        descriptor: Some(descriptor),
-                        type_params: Vec::new(),
-                        interface_methods: vec![method],
-                    },
-                )]),
+                types: BTreeMap::from([
+                    (
+                        "types.LlmClient".to_string(),
+                        TypeExport {
+                            file: file.clone(),
+                            type_index: 0,
+                            symbol: "LlmClient".to_string(),
+                            is_interface: true,
+                            descriptor: Some(descriptor),
+                            type_params: Vec::new(),
+                            interface_methods: vec![method],
+                        },
+                    ),
+                    (
+                        "tools.ToolDeclaration".to_string(),
+                        TypeExport {
+                            file,
+                            type_index: 7,
+                            symbol: "ToolDeclaration".to_string(),
+                            is_interface: false,
+                            descriptor: Some(tool_descriptor),
+                            type_params: Vec::new(),
+                            interface_methods: Vec::new(),
+                        },
+                    ),
+                ]),
                 ..PackageImplementationLinks::default()
             },
             callable_links: BTreeMap::new(),
@@ -4669,8 +4767,13 @@ mod tests {
         };
         let mut package_types = BTreeMap::new();
         let mut package_interfaces = BTreeMap::new();
-        index_artifact_package_types(&artifact, &mut package_types, &mut package_interfaces)
-            .expect("identity-verified artifact ABI facts should index");
+        index_artifact_package_types(
+            &artifact,
+            &mut package_types,
+            &mut package_interfaces,
+            &mut BTreeMap::new(),
+        )
+        .expect("identity-verified artifact ABI facts should index");
 
         let interface = package_interfaces
             .get(&PackageSymbolKey {
@@ -4680,10 +4783,10 @@ mod tests {
             .expect("exported interface classification should survive publication");
         assert_eq!(interface.methods.len(), 1);
         assert_eq!(interface.methods[0].name, "complete");
-        assert_eq!(
+        assert!(matches!(
             interface.methods[0].return_type,
-            TypeRefIr::native("string")
-        );
+            TypeRefIr::Union { .. }
+        ));
         assert_eq!(interface.methods[0].params[0].name, "self");
         assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::native("Self"));
 
@@ -4694,8 +4797,8 @@ mod tests {
               type LocalClient implements llmApi.LlmClient {}
 
               impl LocalClient {
-                function complete(input: string) -> string {
-                  return input
+                function complete(input: Array<llmApi.ToolDeclaration?>) -> llmApi.ToolDeclaration | null {
+                  return null
                 }
               }
             "#,
@@ -4743,9 +4846,13 @@ mod tests {
             .unwrap()
             .interface_methods
             .clear();
-        let error =
-            index_artifact_package_types(&tampered, &mut BTreeMap::new(), &mut BTreeMap::new())
-                .expect_err("mismatched artifact interface facts must fail closed");
+        let error = index_artifact_package_types(
+            &tampered,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("mismatched artifact interface facts must fail closed");
         assert!(error.contains("interface facts disagree"));
     }
 

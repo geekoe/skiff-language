@@ -225,6 +225,11 @@ impl TypeResolutionModel {
                 )
             })?
             .instantiate_methods(&interface.args)?;
+        let package_interface_module = self
+            .package_interface_for_type_ref(&interface.identity)
+            .expect("package interface was resolved above")
+            .source_module
+            .clone();
         let package_id = match &interface.identity {
             TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
                 PackageRefIr::Dependency { dependency_ref } => self
@@ -289,7 +294,7 @@ impl TypeResolutionModel {
                             &actual.ty,
                             &package_id,
                         ) != self.canonicalize_package_method_type_ref_for_module(
-                            receiver.module_path(),
+                            &package_interface_module,
                             &expected.ty,
                             &package_id,
                         )
@@ -299,7 +304,7 @@ impl TypeResolutionModel {
                     &actual_return,
                     &package_id,
                 ) != self.canonicalize_package_method_type_ref_for_module(
-                    receiver.module_path(),
+                    &package_interface_module,
                     &expected_return,
                     &package_id,
                 )
@@ -337,6 +342,15 @@ impl TypeResolutionModel {
     ) -> TypeRefIr {
         let recurse = |ty| self.canonicalize_package_method_type_ref(module_path, ty, package_id);
         match ty {
+            TypeRefIr::LocalType { type_index } => self
+                .canonical_package_local_type_slot(package_id, module_path, *type_index)
+                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty)),
+            TypeRefIr::PublicationType {
+                module_path: owner_module,
+                type_index,
+            } => self
+                .canonical_package_local_type_slot(package_id, owner_module, *type_index)
+                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty)),
             TypeRefIr::PackageSymbol { symbol } => {
                 let dependency_ref = match &symbol.package {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),
@@ -431,6 +445,118 @@ impl TypeResolutionModel {
             },
             _ => self.canonicalize_type_ref_for_module(module_path, ty),
         }
+    }
+
+    fn canonical_package_local_type_slot(
+        &self,
+        package_id: &str,
+        module_path: &str,
+        type_index: u32,
+    ) -> Option<TypeRefIr> {
+        let public_path = self.package_type_slots.get(&(
+            package_id.to_string(),
+            module_path.to_string(),
+            type_index,
+        ))?;
+        Some(TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.to_string(),
+                },
+                symbol_path: public_path.clone(),
+                abi_expectation: None,
+            },
+        })
+    }
+
+    pub(crate) fn canonicalize_package_interface_signature_type(
+        &self,
+        interface_module: &str,
+        ty: &skiff_artifact_model::PackageTypeRef,
+    ) -> Result<skiff_artifact_model::PackageTypeRef, String> {
+        let package_ids = self
+            .package_type_slots
+            .keys()
+            .filter(|(_, module, _)| module == interface_module)
+            .map(|(package_id, _, _)| package_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let package_ids = package_ids.into_iter().collect::<Vec<_>>();
+        if package_ids.is_empty() {
+            return Ok(self.canonicalize_source_signature_type(interface_module, ty));
+        }
+        let [package_id] = package_ids.as_slice() else {
+            return Err(format!(
+                "interface module `{interface_module}` has ambiguous package ownership"
+            ));
+        };
+        self.canonicalize_package_signature_type_for_owner(interface_module, package_id, ty)
+    }
+
+    fn canonicalize_source_signature_type(
+        &self,
+        module_path: &str,
+        ty: &skiff_artifact_model::PackageTypeRef,
+    ) -> skiff_artifact_model::PackageTypeRef {
+        use skiff_artifact_model::PackageTypeRef;
+        match ty {
+            PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
+                name: name.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.canonicalize_source_signature_type(module_path, argument))
+                    .collect(),
+            },
+            PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+                inner: Box::new(self.canonicalize_source_signature_type(module_path, inner)),
+            },
+            PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
+                local_type: self.canonicalize_type_ref_for_module(module_path, local_type),
+            },
+            PackageTypeRef::Contract { contract_type_id } => PackageTypeRef::Contract {
+                contract_type_id: contract_type_id.clone(),
+            },
+        }
+    }
+
+    fn canonicalize_package_signature_type_for_owner(
+        &self,
+        interface_module: &str,
+        package_id: &str,
+        ty: &skiff_artifact_model::PackageTypeRef,
+    ) -> Result<skiff_artifact_model::PackageTypeRef, String> {
+        use skiff_artifact_model::PackageTypeRef;
+        Ok(match ty {
+            PackageTypeRef::Container { name, arguments } => PackageTypeRef::Container {
+                name: name.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        self.canonicalize_package_signature_type_for_owner(
+                            interface_module,
+                            package_id,
+                            argument,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+            PackageTypeRef::Nullable { inner } => PackageTypeRef::Nullable {
+                inner: Box::new(self.canonicalize_package_signature_type_for_owner(
+                    interface_module,
+                    package_id,
+                    inner,
+                )?),
+            },
+            PackageTypeRef::Local { local_type } => PackageTypeRef::Local {
+                local_type: self.canonicalize_package_method_type_ref(
+                    interface_module,
+                    local_type,
+                    package_id,
+                ),
+            },
+            PackageTypeRef::Contract { contract_type_id } => PackageTypeRef::Contract {
+                contract_type_id: contract_type_id.clone(),
+            },
+        })
     }
 
     pub(super) fn actual_receiver_symbol(
