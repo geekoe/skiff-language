@@ -367,6 +367,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R05C | [Generation lifecycle wire reacceptance](tasks/P5-R05C-generation-lifecycle-wire-reacceptance.md) | I35 closed | 高；新wire周期一次真实transcript |
 | R05C result | [Generation lifecycle wire reacceptance result](tasks/P5-R05C-generation-lifecycle-wire-reacceptance-result.md) | `9529624` | PASS；只解锁I02A |
 | I02A | [Skiff consumer combined final](tasks/P5-I02A-skiff-combined-final.md) | R05C PASS | one-replica；只解锁R02 |
+| I02A result | [Skiff consumer combined final result](tasks/P5-I02A-skiff-combined-final-result.md) | `9529624` | FAIL；Cargo terminal error未保留 |
+| F46B | [Fixture Cargo causal diagnostic](tasks/P5-F46B-fixture-cargo-causal-diagnostic.md) | I02A exact FAIL | 中；bounded causal owner |
+| I37 | [Fixture diagnostic combined](tasks/P5-I37-fixture-diagnostic-combined.md) | F46B merged | cheap combined；只解锁I02B |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
