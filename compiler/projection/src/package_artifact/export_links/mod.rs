@@ -77,10 +77,8 @@ pub(super) fn project_package_export_links(
         })?;
         if let Some(type_index) = type_link_target_index(file_unit, symbol) {
             let ty = type_export_decl(package, public_symbol, module, file_unit, type_index)?;
-            let interface_methods = file_unit
-                .declarations
-                .interfaces
-                .get(&ty.name)
+            let interface = file_unit.declarations.interfaces.get(&ty.name);
+            let interface_methods = interface
                 .map(|interface| {
                     package_interface_method_signatures(
                         package.package_id,
@@ -107,6 +105,7 @@ pub(super) fn project_package_export_links(
                     file: file_ref,
                     type_index,
                     symbol: ty.name.clone(),
+                    is_interface: interface.is_some(),
                     descriptor: Some(projection_visible_type_descriptor(
                         module,
                         &ty.descriptor,

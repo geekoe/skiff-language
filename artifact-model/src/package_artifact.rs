@@ -11,7 +11,7 @@ use crate::{
     },
     contract_types::PackageTypeRef,
     executable_target::OperationTargetRef,
-    package_unit::PackageImplementationLinks,
+    package_unit::{InterfaceMethodSignature, PackageImplementationLinks},
     refs::FileIrRef,
     resources::PublicationResourceRef,
     types::{TypeDescriptorIr, TypeRefIr},
@@ -44,6 +44,12 @@ pub enum PackageLocalAbiSymbol {
     Type {
         local_type_id: String,
         descriptor: TypeDescriptorIr,
+        #[serde(default)]
+        is_interface: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_params: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        interface_methods: Vec<InterfaceMethodSignature>,
     },
     Callable {
         callable_id: PackageCallableId,

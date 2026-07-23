@@ -145,6 +145,8 @@ pub struct TypeExport {
     pub type_index: u32,
     #[serde(default)]
     pub symbol: String,
+    #[serde(default)]
+    pub is_interface: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<TypeDescriptorIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

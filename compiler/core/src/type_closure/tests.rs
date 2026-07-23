@@ -240,6 +240,7 @@ fn resolves_package_dependency_and_records_nominal_trace() {
                 source_ast_hash: Some(package_file.source_ast_hash.clone()),
             },
             type_index: 0,
+            is_interface: false,
             descriptor: Some(package_file.type_table[0].descriptor.clone()),
             type_params: Vec::new(),
             interface_methods: Vec::new(),

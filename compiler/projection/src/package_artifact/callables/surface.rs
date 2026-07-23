@@ -93,6 +93,9 @@ fn project_non_callable_symbols(
             PackageLocalAbiSymbol::Type {
                 local_type_id: format!("type:{public_path}"),
                 descriptor,
+                is_interface: export.is_interface,
+                type_params: export.type_params.clone(),
+                interface_methods: export.interface_methods.clone(),
             },
         )?;
     }
