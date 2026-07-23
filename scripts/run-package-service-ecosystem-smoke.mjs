@@ -5,7 +5,7 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runPackageServiceEcosystemSmoke } from './lib/package-service-ecosystem-smoke-real.mjs';
+import { runPackageServiceI02Combined } from './lib/package-service-i02-combined-real.mjs';
 import { runPackageServiceSmokeSelfTest } from './lib/package-service-ecosystem-smoke-self-test.mjs';
 
 const scriptCheckout = await realpath(
@@ -25,7 +25,7 @@ assert.equal(args.probe, 'skiff-cutover', '--probe must be skiff-cutover');
 
 const result = args.selfTest
   ? await runPackageServiceSmokeSelfTest(args.replicas)
-  : await runPackageServiceEcosystemSmoke({
+  : await runPackageServiceI02Combined({
       checkout,
       replicaCount: args.replicas,
       environment,
