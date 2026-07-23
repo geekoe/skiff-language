@@ -2322,9 +2322,14 @@ fn index_artifact_package_types(
                 ));
             }
             if *is_interface {
+                let methods = reconstruct_artifact_interface_methods(
+                    &artifact.package_id,
+                    public_path,
+                    interface_methods,
+                )?;
                 let fact = PackageInterfaceFact {
                     type_params: type_params.clone(),
-                    methods: interface_methods.clone(),
+                    methods,
                 };
                 if package_interfaces.insert(key, fact).is_some() {
                     return Err(format!(
@@ -2341,6 +2346,90 @@ fn index_artifact_package_types(
         }
     }
     Ok(())
+}
+
+fn reconstruct_artifact_interface_methods(
+    package_id: &str,
+    public_path: &str,
+    methods: &[InterfaceMethodSignature],
+) -> Result<Vec<InterfaceMethodSignature>, String> {
+    let mut method_names = BTreeSet::new();
+    methods
+        .iter()
+        .map(|method| {
+            if !method_names.insert(method.name.as_str()) {
+                return Err(format!(
+                    "package {package_id} exported interface {public_path} has duplicate method {}",
+                    method.name
+                ));
+            }
+            let mut method = method.clone();
+            if method.is_static {
+                if method.implicit_self.is_some()
+                    || method.params.iter().any(|param| param.name == "self")
+                {
+                    return Err(format!(
+                        "package {package_id} exported interface {public_path} static method {} carries a receiver",
+                        method.name
+                    ));
+                }
+                return Ok(method);
+            }
+            let explicit_receivers = method
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, param)| param.name == "self")
+                .collect::<Vec<_>>();
+            if method.implicit_self.is_some() && !explicit_receivers.is_empty()
+                || explicit_receivers.len() > 1
+            {
+                return Err(format!(
+                    "package {package_id} exported interface {public_path} method {} has duplicate receivers",
+                    method.name
+                ));
+            }
+            if let Some(receiver) = method.implicit_self.as_mut() {
+                canonicalize_artifact_self_type(receiver).map_err(|actual| {
+                    format!(
+                        "package {package_id} exported interface {public_path} method {} has non-Self receiver {actual}",
+                        method.name
+                    )
+                })?;
+                return Ok(method);
+            }
+            let Some((index, _receiver)) = explicit_receivers.into_iter().next() else {
+                return Err(format!(
+                    "package {package_id} exported interface {public_path} method {} is missing self: Self",
+                    method.name
+                ));
+            };
+            if index != 0 {
+                return Err(format!(
+                    "package {package_id} exported interface {public_path} method {} has a non-leading receiver",
+                    method.name
+                ));
+            }
+            canonicalize_artifact_self_type(&mut method.params[0].ty).map_err(|actual| {
+                format!(
+                    "package {package_id} exported interface {public_path} method {} has non-Self receiver {actual}",
+                    method.name
+                )
+            })?;
+            Ok(method)
+        })
+        .collect()
+}
+
+fn canonicalize_artifact_self_type(ty: &mut TypeRefIr) -> Result<(), String> {
+    match ty {
+        TypeRefIr::TypeParam { name } if name == "Self" => {
+            *ty = TypeRefIr::native("Self");
+            Ok(())
+        }
+        TypeRefIr::Native { name, args } if name == "Self" && args.is_empty() => Ok(()),
+        actual => Err(format!("{actual:?}")),
+    }
 }
 
 type ArtifactSymbolicTypeIndex = BTreeMap<(String, String), String>;
@@ -4489,15 +4578,23 @@ mod tests {
         let method = InterfaceMethodSignature {
             name: "complete".to_string(),
             type_params: Vec::new(),
-            params: vec![FunctionTypeParamIr {
-                name: "input".to_string(),
-                ty: TypeRefIr::native("string"),
-            }],
+            params: vec![
+                FunctionTypeParamIr {
+                    name: "self".to_string(),
+                    ty: TypeRefIr::TypeParam {
+                        name: "Self".to_string(),
+                    },
+                },
+                FunctionTypeParamIr {
+                    name: "input".to_string(),
+                    ty: TypeRefIr::native("string"),
+                },
+            ],
             return_type: TypeRefIr::native("string"),
             is_native: false,
             is_provider: false,
             is_static: false,
-            implicit_self: Some(TypeRefIr::native("Self")),
+            implicit_self: None,
         };
         let descriptor = TypeDescriptorIr::Native {
             symbol: "interface:LlmClient".to_string(),
@@ -4567,6 +4664,8 @@ mod tests {
             interface.methods[0].return_type,
             TypeRefIr::native("string")
         );
+        assert_eq!(interface.methods[0].params[0].name, "self");
+        assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::native("Self"));
 
         let mut tampered = artifact;
         tampered
@@ -4580,6 +4679,61 @@ mod tests {
             index_artifact_package_types(&tampered, &mut BTreeMap::new(), &mut BTreeMap::new())
                 .expect_err("mismatched artifact interface facts must fail closed");
         assert!(error.contains("interface facts disagree"));
+    }
+
+    #[test]
+    fn artifact_interface_receiver_reconstruction_fails_closed() {
+        let method = |params, implicit_self| InterfaceMethodSignature {
+            name: "streamChat".to_string(),
+            type_params: vec!["Chunk".to_string()],
+            params,
+            return_type: TypeRefIr::native("string"),
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self,
+        };
+        let self_param = FunctionTypeParamIr {
+            name: "self".to_string(),
+            ty: TypeRefIr::TypeParam {
+                name: "Self".to_string(),
+            },
+        };
+
+        let missing = reconstruct_artifact_interface_methods(
+            "llm-api",
+            "LlmClient",
+            &[method(Vec::new(), None)],
+        )
+        .expect_err("missing receiver must fail closed");
+        assert!(missing.contains("missing self: Self"));
+
+        let wrong = reconstruct_artifact_interface_methods(
+            "llm-api",
+            "LlmClient",
+            &[method(
+                vec![FunctionTypeParamIr {
+                    name: "self".to_string(),
+                    ty: TypeRefIr::native("string"),
+                }],
+                None,
+            )],
+        )
+        .expect_err("non-Self receiver must fail closed");
+        assert!(wrong.contains("non-Self receiver"));
+
+        let duplicate = reconstruct_artifact_interface_methods(
+            "llm-api",
+            "LlmClient",
+            &[method(
+                vec![self_param],
+                Some(TypeRefIr::TypeParam {
+                    name: "Self".to_string(),
+                }),
+            )],
+        )
+        .expect_err("duplicate receiver must fail closed");
+        assert!(duplicate.contains("duplicate receivers"));
     }
 }
 
