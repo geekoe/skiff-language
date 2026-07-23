@@ -26,6 +26,7 @@ use super::{
     service_context::ServiceRuntimeContext,
     spawn_worker,
     telemetry::{TelemetryConfig, TelemetryExporterHandle, TelemetryProducer},
+    websocket_generation::WebSocketGenerationRegistry,
     LoadedBuildRegistry, OutboundRequestRegistry, ServiceRouteState,
 };
 
@@ -42,6 +43,23 @@ pub struct RuntimeConfig {
     pub artifact_root: PathBuf,
     #[cfg(test)]
     pub artifact_roots: Vec<PathBuf>,
+    pub http_response_max_bytes: usize,
+    pub http_egress_proxy: Option<String>,
+}
+
+/// Production startup input for the canonical committed-assembly lifecycle.
+///
+/// Unlike the focused host-test configuration, this surface cannot carry legacy service
+/// definitions. Startup recovers the exact environment tuple from the canonical artifact root.
+#[derive(Clone)]
+#[cfg(not(test))]
+pub struct RuntimeProductionConfig {
+    pub db_provider: DbProviderSource,
+    pub router_url: String,
+    pub base_runtime_id: String,
+    pub runtime_home: PathBuf,
+    pub environment: String,
+    pub artifact_root: PathBuf,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -86,12 +104,28 @@ pub struct RuntimeHost {
     pub(super) loaded_builds: Arc<LoadedBuildRegistry>,
     pub(super) spawn_workers: Arc<spawn_worker::SpawnWorkerRegistry>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
+    pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
 }
 
 impl RuntimeHost {
+    #[cfg(not(test))]
+    pub fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
+        Self::new(RuntimeConfig {
+            db_provider: config.db_provider,
+            services: Vec::new(),
+            router_url: config.router_url,
+            base_runtime_id: config.base_runtime_id,
+            runtime_home: config.runtime_home,
+            environment: config.environment,
+            artifact_root: config.artifact_root,
+            http_response_max_bytes: config.http_response_max_bytes,
+            http_egress_proxy: config.http_egress_proxy,
+        })
+    }
+
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
@@ -166,6 +200,7 @@ impl RuntimeHost {
             loaded_builds,
             spawn_workers: Arc::new(spawn_worker::SpawnWorkerRegistry::default()),
             request_supervisor: Arc::new(RequestSupervisor::new()),
+            websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),

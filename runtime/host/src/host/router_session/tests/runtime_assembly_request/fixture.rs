@@ -47,6 +47,72 @@ pub(super) async fn reloaded_nested_host() -> (RuntimeHost, ActiveAssemblyRoute,
     (host, pinned, current)
 }
 
+pub(crate) async fn reloaded_websocket_host(
+) -> (RuntimeHost, ActiveAssemblyRoute, ActiveAssemblyRoute) {
+    let mut projected = ProjectedFixture::new_with_consumer_service_id(
+        TypedExecutionContract::unary(),
+        "example.com/consumer",
+    );
+    let consumer_index = projected
+        .resolver
+        .deployments
+        .iter()
+        .position(|(reference, _)| reference == &projected.consumer_deployment)
+        .expect("consumer deployment fixture");
+    let mut consumer = projected.resolver.deployments[consumer_index]
+        .1
+        .as_ref()
+        .clone();
+    consumer.ingress[0].selector.protocol = IngressProtocol::WebSocket;
+    consumer.ingress[0].selector.method = None;
+    skiff_artifact_identity::assign_service_deployment_identity(&mut consumer)
+        .expect("WebSocket deployment identity");
+    let consumer_ref = skiff_artifact_identity::service_deployment_ref(&consumer);
+    projected.resolver.deployments[consumer_index] = (consumer_ref.clone(), Arc::new(consumer));
+    let deployments = projected
+        .resolver
+        .deployments
+        .iter()
+        .map(|(_, deployment)| deployment.as_ref().clone())
+        .collect::<Vec<_>>();
+    let contracts = projected
+        .resolver
+        .contracts
+        .iter()
+        .map(|(_, contract)| contract.as_ref().clone())
+        .collect::<Vec<_>>();
+    let packages = projected
+        .resolver
+        .packages
+        .iter()
+        .map(|(_, package)| package.as_ref().clone())
+        .collect::<Vec<_>>();
+    projected.assembly = skiff_deployment::assembly::resolve_runtime_assembly(
+        std::slice::from_ref(&consumer_ref),
+        &deployments,
+        &contracts,
+        &packages,
+    )
+    .expect("WebSocket RuntimeAssembly should resolve");
+    let selector = projected.assembly.global_ingress[0].selector.clone();
+    let host = super::super::test_host();
+    host.assembly_admission
+        .admit(projected.assembly.clone(), &projected.resolver)
+        .await
+        .expect("WebSocket generation one should admit");
+    let pinned = host
+        .lookup_active_assembly_request_route(&selector)
+        .expect("WebSocket generation one route");
+    host.assembly_admission
+        .admit(projected.assembly, &projected.resolver)
+        .await
+        .expect("WebSocket generation two should admit");
+    let current = host
+        .lookup_active_assembly_request_route(&selector)
+        .expect("WebSocket generation two route");
+    (host, pinned, current)
+}
+
 async fn admit(
     assembly: RuntimeAssembly,
     resolver: TypedResolver,

@@ -24,6 +24,7 @@ use super::{route_registry, RuntimeHost, ServiceOperationContext, ServiceRuntime
 
 mod assembly;
 mod assembly_wire;
+mod websocket_generation;
 
 struct RouterResponseEventSink {
     sender: Option<mpsc::UnboundedSender<RouterWriterMessage>>,

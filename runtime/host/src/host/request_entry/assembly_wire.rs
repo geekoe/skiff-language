@@ -20,7 +20,10 @@ use tokio::sync::mpsc;
 use tracing::error;
 use url::{Position, Url};
 
-use super::response_event_into_transport_message;
+use super::{
+    response_event_into_transport_message,
+    websocket_generation::{websocket_connect_generation_pin, WebSocketConnectGenerationPin},
+};
 use crate::{
     capability_context::response_error_from_runtime_error,
     error::{Result, RuntimeError},
@@ -31,14 +34,15 @@ use crate::{
 impl RuntimeHost {
     pub(crate) async fn spawn_runtime_assembly_request(
         &self,
+        router_session_id: &str,
         header: RuntimeAssemblyRequestStartFrameHeader,
         payload: Vec<u8>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let request_id = header.request_id.clone();
-        match self.runtime_assembly_request_from_wire(header, payload) {
-            Ok((route, request)) => {
-                self.spawn_request_on_active_assembly_route(route, request, sender)
+        match self.runtime_assembly_request_from_wire(router_session_id, header, payload) {
+            Ok((route, request, connect_pin)) => {
+                self.spawn_request_on_active_assembly_route(route, request, connect_pin, sender)
                     .await;
             }
             Err(runtime_error) => {
@@ -64,15 +68,34 @@ impl RuntimeHost {
 
     fn runtime_assembly_request_from_wire(
         &self,
+        router_session_id: &str,
         header: RuntimeAssemblyRequestStartFrameHeader,
         payload: Vec<u8>,
-    ) -> Result<(ActiveAssemblyRoute, RequestEnvelope)> {
+    ) -> Result<(
+        ActiveAssemblyRoute,
+        RequestEnvelope,
+        Option<WebSocketConnectGenerationPin>,
+    )> {
         validate_narrow_unary_header(&header)?;
         let selector = ingress_selector(&header)?;
-        let route = self.lookup_active_assembly_request_route(&selector)?;
+        let route = self.runtime_assembly_route_for_wire(router_session_id, &header, &selector)?;
         validate_route(&header, &selector, &route)?;
         let request = request_envelope_from_route(header, payload, &route)?;
-        Ok((route, request))
+        let connect_pin = websocket_connect_generation_pin(router_session_id, &request)?;
+        Ok((route, request, connect_pin))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_assembly_request_route_from_wire_for_test(
+        &self,
+        router_session_id: &str,
+        header: &RuntimeAssemblyRequestStartFrameHeader,
+    ) -> Result<ActiveAssemblyRoute> {
+        validate_narrow_unary_header(header)?;
+        let selector = ingress_selector(header)?;
+        let route = self.runtime_assembly_route_for_wire(router_session_id, header, &selector)?;
+        validate_route(header, &selector, &route)?;
+        Ok(route)
     }
 }
 

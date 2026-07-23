@@ -22,14 +22,15 @@ use skiff_runtime_transport::control_response_mapper::spawn_claim_response_contr
 use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, ActorPutRequestFrameHeader, ActorPutResponseFrameHeader,
     ActorRefFrameMetadata, ConnectionSendFrameHeader, RequestStartFrameHeader,
-    ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseErrorFrameHeader,
-    ResponseStartFrameHeader, RouterControlEnvelope, RouterControlPackageConfig,
-    RouterControlServiceConfig, RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeHttpAdapterArgFrameHeader,
-    RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
-    RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
-    RuntimeHttpNameValueFrameHeader, RuntimeHttpRequestFrameHeader, RuntimeHttpResponseFrameHeader,
-    RuntimeRegisterFrameHeader, RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
+    ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseEndFrameMetadata,
+    ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
+    RouterControlPackageConfig, RouterControlServiceConfig, RuntimeCallerFrameHeader,
+    RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability,
+    RuntimeHttpAdapterArgFrameHeader, RuntimeHttpAdapterCallableFrameHeader,
+    RuntimeHttpAdapterFrameHeader, RuntimeHttpAdapterKindFrameHeader,
+    RuntimeHttpAdapterSourceFrameHeader, RuntimeHttpNameValueFrameHeader,
+    RuntimeHttpRequestFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisterFrameHeader,
+    RuntimeTraceContextFrameHeader, SpawnClaimDescriptorFrameMetadata,
     SpawnClaimRequestFrameHeader, SpawnClaimResponseFrameHeader, SpawnCompleteRequestFrameHeader,
     SpawnCompleteResponseFrameHeader, SpawnFailRequestFrameHeader, SpawnFailResponseFrameHeader,
     SpawnRenewRequestFrameHeader, SpawnRenewResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
@@ -1957,8 +1958,8 @@ async fn runtime_binary_http_request_returns_binary_http_response_body() {
     assert_eq!(header.envelope_type, "response.end");
     assert_eq!(header.request_id, "request-http-1");
     assert_eq!(
-        header.http_response,
-        Some(RuntimeHttpResponseFrameHeader {
+        header.metadata,
+        ResponseEndFrameMetadata::Http(RuntimeHttpResponseFrameHeader {
             status: 201,
             headers: vec![RuntimeHttpNameValueFrameHeader {
                 name: "x-runtime".to_string(),
@@ -1988,8 +1989,8 @@ async fn runtime_typed_http_adapter_decodes_body_and_encodes_json_response() {
     assert_eq!(header.envelope_type, "response.end");
     assert_eq!(header.request_id, "request-http-typed-body");
     assert_eq!(
-        header.http_response,
-        Some(RuntimeHttpResponseFrameHeader {
+        header.metadata,
+        ResponseEndFrameMetadata::Http(RuntimeHttpResponseFrameHeader {
             status: 200,
             headers: vec![RuntimeHttpNameValueFrameHeader {
                 name: "content-type".to_string(),
@@ -2070,8 +2071,8 @@ async fn runtime_typed_http_adapter_guard_short_circuits_before_body_decode() {
     let (header, payload) = run_runtime_program_binary_http_request(program, request).await;
 
     assert_eq!(
-        header.http_response,
-        Some(RuntimeHttpResponseFrameHeader {
+        header.metadata,
+        ResponseEndFrameMetadata::Http(RuntimeHttpResponseFrameHeader {
             status: 201,
             headers: vec![RuntimeHttpNameValueFrameHeader {
                 name: "x-runtime".to_string(),
@@ -2129,8 +2130,8 @@ async fn runtime_raw_http_adapter_passes_pre_context_to_handler() {
     let (header, payload) = run_runtime_program_binary_http_request(program, request).await;
 
     assert_eq!(
-        header.http_response,
-        Some(RuntimeHttpResponseFrameHeader {
+        header.metadata,
+        ResponseEndFrameMetadata::Http(RuntimeHttpResponseFrameHeader {
             status: 203,
             headers: vec![RuntimeHttpNameValueFrameHeader {
                 name: "x-context".to_string(),
@@ -2215,7 +2216,7 @@ async fn runtime_raw_http_adapter_stream_passes_pre_context_to_handler() {
     assert_eq!(end.envelope_type, "response.end");
     assert_eq!(end.request_id, "request-http-raw-stream-context");
     assert!(!end.payload_present);
-    assert_eq!(end.http_response, None);
+    assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
     assert_eq!(end_payload, Vec::<u8>::new());
 }
 
@@ -2280,7 +2281,7 @@ async fn runtime_binary_http_server_stream_sends_start_chunks_and_end() {
     assert_eq!(end.envelope_type, "response.end");
     assert_eq!(end.request_id, "request-http-stream");
     assert!(!end.payload_present);
-    assert_eq!(end.http_response, None);
+    assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
     assert_eq!(end_payload, Vec::<u8>::new());
 }
 
@@ -2562,7 +2563,7 @@ async fn runtime_binary_operation_decodes_payload_args_and_encodes_response_payl
 
     assert_eq!(header.envelope_type, "response.end");
     assert_eq!(header.request_id, "request-1");
-    assert_eq!(header.http_response, None);
+    assert_eq!(header.metadata, ResponseEndFrameMetadata::None);
     let mut response_heap = RequestHeap::default();
     let decoded = decode_payload(
         &payload,

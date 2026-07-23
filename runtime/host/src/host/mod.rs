@@ -16,9 +16,12 @@ mod service_context;
 pub(crate) mod spawn_worker;
 mod state;
 pub mod telemetry;
+mod websocket_generation;
 
 mod request_trace;
 
+#[cfg(not(test))]
+pub use runtime_host::RuntimeProductionConfig;
 pub use runtime_host::{RuntimeConfig, RuntimeHost, RuntimeServiceConfig};
 pub use skiff_runtime_capability_context::{DbProviderConfig, DbProviderSource};
 pub use skiff_runtime_request::execution_budget::ExecutionBudget;

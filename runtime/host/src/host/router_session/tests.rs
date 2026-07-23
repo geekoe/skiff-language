@@ -9,14 +9,15 @@ use skiff_runtime_transport::{
     },
     protocol::{
         encode_binary_frame, RequestCancelFrameHeader, ResponseChunkFrameHeader,
-        ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
-        RouterControlFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-        RuntimeHealthFrameHeader, RuntimeHttpResponseFrameHeader, RuntimeRegisteredFrameHeader,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
+        ResponseStartFrameHeader, RouterControlFrameHeader, RuntimeErrorFramePayload,
+        RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpResponseFrameHeader,
+        RuntimeRegisteredFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
 };
 
 mod runtime_assembly_request;
+mod websocket_generation_lifecycle;
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
@@ -303,7 +304,7 @@ async fn binary_runtime_registered_rejects_non_empty_payload() {
 }
 
 #[tokio::test]
-async fn binary_router_control_rejects_non_empty_payload() {
+async fn binary_router_control_is_rejected_before_legacy_payload_decode() {
     let host = test_host();
     let (sender, _receiver) = mpsc::unbounded_channel();
     let mut control = None;
@@ -333,12 +334,12 @@ async fn binary_router_control_rejects_non_empty_payload() {
         &mut artifact_fingerprint,
     )
     .await
-    .expect_err("non-empty router.control payload should fail");
+    .expect_err("legacy router.control should fail");
 
     assert!(matches!(error, RuntimeError::Decode(_)));
     assert!(error
         .to_string()
-        .contains("router.control binary frame payload must be empty"));
+        .contains("router.control artifactRoots/serviceConfig reload is not supported"));
     assert!(control.is_none());
     assert!(artifact_fingerprint.is_none());
 }
@@ -461,8 +462,7 @@ async fn binary_response_end_completes_pending_outbound_request() {
             envelope_type: "response.end".to_string(),
             request_id: "request-outbound-1".to_string(),
             payload_present: true,
-            http_response: None,
-            websocket_connect: None,
+            metadata: ResponseEndFrameMetadata::None,
         },
         b"encoded-result",
     )

@@ -1,18 +1,25 @@
 use std::sync::Arc;
 
 use skiff_runtime_request::{
-    self as request_runner, RequestEnvelope, ResponseEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, RequestEnvelope, ResponseEnd, ResponseEvent,
+    RouterWriterMessage, WebSocketResponse,
+};
+use skiff_runtime_transport::websocket_generation_lifecycle::{
+    encode_websocket_generation_lifecycle_frame, WebSocketGenerationLifecycleDirection,
 };
 use tokio::sync::mpsc;
 use tracing::error;
 
 use super::{
     request_error_into_runtime_error, response_event_into_transport_message,
-    response_into_transport_message,
+    response_into_transport_message, websocket_generation::WebSocketConnectGenerationPin,
 };
 use crate::{
     error::{Result, RuntimeError},
-    host::{request_supervisor::CompletionTrace, RuntimeHost},
+    host::{
+        request_supervisor::{CompletionTrace, SupervisedRequest},
+        RuntimeHost,
+    },
     loader::assembly_admission::ActiveAssemblyRoute,
     telemetry::RequestTelemetryContext,
 };
@@ -22,6 +29,7 @@ impl RuntimeHost {
         &self,
         route: ActiveAssemblyRoute,
         request: RequestEnvelope,
+        connect_pin: Option<WebSocketConnectGenerationPin>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let target = match route.request_target() {
@@ -41,7 +49,7 @@ impl RuntimeHost {
                 return;
             }
         };
-        self.spawn_assembly_request(route, target, handles, request, sender)
+        self.spawn_assembly_request(route, target, handles, request, connect_pin, sender)
             .await;
     }
 
@@ -51,6 +59,7 @@ impl RuntimeHost {
         target: request_runner::RuntimeAssemblyRequestTarget,
         handles: request_runner::AssemblyRequestExecutionHandles,
         request: RequestEnvelope,
+        connect_pin: Option<WebSocketConnectGenerationPin>,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let telemetry_context = self.assembly_request_telemetry_context(&request, &route);
@@ -63,9 +72,6 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let host = self.clone();
         tokio::spawn(async move {
-            // `route` is retained by this task so reload cannot drop the activation/context set
-            // while cancellation, response encoding, or request supervision is still active.
-            let _pinned_route = route;
             let request_id = request.request_id.clone();
             let result = request_runner::execute_runtime_assembly_request(
                 request_runner::AssemblyRequestExecutionInput {
@@ -80,6 +86,24 @@ impl RuntimeHost {
             .await;
             let writer_message = match result {
                 Ok(response) => {
+                    if websocket_connect_accepted(&response) {
+                        if let Some(connect_pin) = connect_pin {
+                            if let Err(error) = host.queue_websocket_generation_acquire(
+                                &route,
+                                connect_pin,
+                                &sender,
+                            ) {
+                                host.send_websocket_generation_acquire_error(
+                                    &supervised_request,
+                                    request_id,
+                                    &error,
+                                    &sender,
+                                )
+                                .await;
+                                return;
+                            }
+                        }
+                    }
                     host.request_supervisor
                         .complete_success(
                             &supervised_request,
@@ -124,7 +148,93 @@ impl RuntimeHost {
                 Ok(None) => {}
                 Err(error) => error!(event = "runtime.response_encode_error", error = %error),
             }
+            // `route` is retained by this task so reload cannot drop the activation/context set
+            // while cancellation, response encoding, or request supervision is still active.
+            drop(route);
         });
+    }
+
+    async fn send_websocket_generation_acquire_error(
+        &self,
+        supervised_request: &SupervisedRequest,
+        request_id: String,
+        error: &RuntimeError,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let response_error = crate::capability_context::response_error_from_runtime_error(error);
+        self.request_supervisor
+            .complete_error(
+                supervised_request,
+                "request.error",
+                &response_error,
+                CompletionTrace::RUNTIME,
+            )
+            .await;
+        match response_event_into_transport_message(
+            request_id,
+            ResponseEvent::Error(response_error),
+        ) {
+            Ok(message) => {
+                let _ = sender.send(message);
+            }
+            Err(error) => {
+                error!(
+                    event = "runtime.response_encode_error",
+                    error = %error
+                );
+            }
+        }
+    }
+
+    fn queue_websocket_generation_acquire(
+        &self,
+        route: &ActiveAssemblyRoute,
+        connect_pin: WebSocketConnectGenerationPin,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<()> {
+        let request = self.websocket_generations.begin_acquire(
+            &connect_pin.router_session_id,
+            route.clone(),
+            connect_pin.websocket_entry_id,
+            connect_pin.connection_id,
+        )?;
+        let frame = match encode_websocket_generation_lifecycle_frame(
+            WebSocketGenerationLifecycleDirection::RuntimeToRouter,
+            &request,
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.websocket_generations.rollback_acquire(&request)?;
+                return Err(RuntimeError::Decode(error.to_string()));
+            }
+        };
+        if sender.send(RouterWriterMessage::Binary(frame)).is_err() {
+            self.websocket_generations.rollback_acquire(&request)?;
+            return Err(RuntimeError::Decode(
+                "failed to queue WebSocket generation acquire".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_websocket_generation_acquire_for_test(
+        &self,
+        route: &ActiveAssemblyRoute,
+        router_session_id: &str,
+        websocket_entry_id: &str,
+        connection_id: &str,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) -> Result<()> {
+        self.queue_websocket_generation_acquire(
+            route,
+            WebSocketConnectGenerationPin {
+                router_session_id: router_session_id.to_string(),
+                websocket_entry_id: websocket_entry_id.to_string(),
+                connection_id: connection_id.to_string(),
+            },
+            sender,
+        )
     }
 
     fn assembly_request_execution_handles(
@@ -182,4 +292,13 @@ impl RuntimeHost {
         );
         context
     }
+}
+
+fn websocket_connect_accepted(response: &BoundaryResponse) -> bool {
+    matches!(
+        response,
+        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::WebSocket(
+            WebSocketResponse::ConnectAccept(_)
+        )))
+    )
 }

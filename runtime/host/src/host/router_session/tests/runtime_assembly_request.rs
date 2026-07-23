@@ -6,7 +6,7 @@ use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
-        ResponseEndFrameHeader, ResponseErrorFrameHeader, TypedEnvelope,
+        ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader, TypedEnvelope,
         BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
         RUNTIME_FRAME_SCHEMA_VERSION,
     },
@@ -23,7 +23,7 @@ use tokio::{sync::mpsc, time::timeout};
 
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
-mod fixture;
+pub(super) mod fixture;
 
 #[tokio::test]
 async fn runtime_assembly_request_executes_zero_payload_unary_with_nested_provider() {
@@ -52,8 +52,7 @@ async fn runtime_assembly_request_executes_zero_payload_unary_with_nested_provid
         decoded,
         skiff_runtime_model::value::RuntimeValue::Bool(true)
     );
-    assert!(response.http_response.is_none());
-    assert!(response.websocket_connect.is_none());
+    assert_eq!(response.metadata, ResponseEndFrameMetadata::None);
     assert_eq!(host.request_supervisor.active_count().await, 0);
     assert_no_second_terminal(&mut receiver).await;
 }
@@ -82,8 +81,7 @@ async fn runtime_assembly_request_executes_zero_payload_zero_arg_void_unary() {
     )
     .expect("void response should decode on the ordinary unary lane");
     assert_eq!(decoded, skiff_runtime_model::value::RuntimeValue::Null);
-    assert!(response.http_response.is_none());
-    assert!(response.websocket_connect.is_none());
+    assert_eq!(response.metadata, ResponseEndFrameMetadata::None);
     assert_eq!(host.request_supervisor.active_count().await, 0);
     assert_no_second_terminal(&mut receiver).await;
 }
@@ -168,11 +166,11 @@ async fn runtime_assembly_request_rejects_wrong_tuple_http_effects_adapter_and_s
     stream.mode = "serverStream".to_string();
     cases.push(("server-stream", stream));
 
-    let mut websocket = exact;
-    websocket.routing.ingress.protocol = RuntimeAssemblyRequestIngressProtocol::WebSocket;
-    websocket.routing.ingress.method = None;
-    websocket.http_request = None;
-    cases.push(("websocket", websocket));
+    let mut websocket_without_adapter = exact;
+    websocket_without_adapter.routing.ingress.protocol =
+        RuntimeAssemblyRequestIngressProtocol::WebSocket;
+    websocket_without_adapter.routing.ingress.method = None;
+    websocket_without_adapter.http_request = None;
 
     for (name, mut header) in cases {
         header.request_id = format!("runtime-assembly-reject-{name}");
@@ -188,6 +186,22 @@ async fn runtime_assembly_request_rejects_wrong_tuple_http_effects_adapter_and_s
         assert_eq!(response.request_id, header.request_id, "{name}");
         assert_no_second_terminal(&mut receiver).await;
     }
+
+    websocket_without_adapter.request_id =
+        "runtime-assembly-reject-websocket-without-adapter".to_string();
+    let frame = encode_binary_frame(&websocket_without_adapter, &[])
+        .expect("structurally encodable WebSocket request");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let error = dispatch(&host, &frame, &sender)
+        .await
+        .expect_err("shared strict decoder must reject WebSocket metadata before the bridge");
+    assert!(error
+        .to_string()
+        .contains("canonical WebSocket ingress requires websocketAdapter metadata"));
+    assert!(
+        receiver.try_recv().is_err(),
+        "decoder rejection must not enter request terminal ownership"
+    );
 }
 
 #[tokio::test]

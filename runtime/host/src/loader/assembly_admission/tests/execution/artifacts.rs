@@ -292,6 +292,13 @@ pub(super) struct ProjectedFixture {
 
 impl ProjectedFixture {
     pub(super) fn new(contract_fixture: TypedExecutionContract) -> Self {
+        Self::new_with_consumer_service_id(contract_fixture, "example.phase-four.consumer")
+    }
+
+    pub(super) fn new_with_consumer_service_id(
+        contract_fixture: TypedExecutionContract,
+        consumer_service_id: &str,
+    ) -> Self {
         let consumer_operation_contract = contract_fixture.consumer_operation;
         let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
         let provider_operation_contract = contract_fixture.provider_operation;
@@ -306,7 +313,7 @@ impl ProjectedFixture {
         );
         let provider_contract_ref = contract_ref(&provider_contract);
         let (consumer_contract, consumer_operation) = service_contract(
-            "example.phase-four.consumer",
+            consumer_service_id,
             "consume",
             consumer_operation_contract.clone(),
             consumer_boundary_schema,

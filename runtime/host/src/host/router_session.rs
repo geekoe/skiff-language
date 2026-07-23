@@ -29,6 +29,7 @@ use skiff_runtime_transport::{
         response_start_to_outbound,
     },
     runtime_assembly_request::decode_runtime_assembly_request_start_frame,
+    websocket_generation_lifecycle::WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
 };
 use tokio::{
     sync::mpsc,
@@ -49,8 +50,10 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     );
     let (writer, mut reader) = ws.split();
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
+    let router_session_id = format!("skiff-router-session-v1:opaque:{}", uuid::Uuid::new_v4());
 
     host.queue_connection_registration(sender.clone())?;
+    host.websocket_generations.connect(&router_session_id)?;
     let spawn_registration = super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
 
     let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
@@ -77,6 +80,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                         Message::Binary(bytes) => {
                             dispatch_router_binary_frame_with_health(
                                 &host,
+                                &router_session_id,
                                 &bytes,
                                 &sender,
                                 &mut health_reporter,
@@ -99,12 +103,13 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     }
     .await;
 
+    let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
     host.spawn_workers
         .stop_registration(&spawn_registration)
         .await;
     drop(sender);
     let _ = writer_task.await;
-    session_result
+    session_result.and(disconnect_result)
 }
 
 #[derive(Default)]
@@ -222,20 +227,36 @@ async fn dispatch_router_binary_frame(
     artifact_fingerprint: &mut Option<String>,
 ) -> Result<()> {
     let _ = (control, artifact_fingerprint);
-    dispatch_router_binary_frame_inner(host, bytes, sender, None).await
+    dispatch_router_binary_frame_inner(
+        host,
+        "skiff-router-session-v1:opaque:test-session",
+        bytes,
+        sender,
+        None,
+    )
+    .await
 }
 
 async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
+    router_session_id: &str,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
 ) -> Result<()> {
-    dispatch_router_binary_frame_inner(host, bytes, sender, Some(health_reporter)).await
+    dispatch_router_binary_frame_inner(
+        host,
+        router_session_id,
+        bytes,
+        sender,
+        Some(health_reporter),
+    )
+    .await
 }
 
 async fn dispatch_router_binary_frame_inner(
     host: &super::RuntimeHost,
+    router_session_id: &str,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
@@ -257,6 +278,10 @@ async fn dispatch_router_binary_frame_inner(
             {
                 super::RuntimeHost::queue_assembly_activation(sender.clone(), &reply)?;
             }
+        }
+        WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE => {
+            host.websocket_generations
+                .dispatch_router_control(router_session_id, bytes, sender)?;
         }
         "runtime.registered" => {
             let (header, payload) =
@@ -290,7 +315,7 @@ async fn dispatch_router_binary_frame_inner(
         "request.start" => {
             let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            host.spawn_runtime_assembly_request(header, payload, sender.clone())
+            host.spawn_runtime_assembly_request(router_session_id, header, payload, sender.clone())
                 .await;
         }
         "request.cancel" => {

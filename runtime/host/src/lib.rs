@@ -8,6 +8,8 @@ pub mod host;
 pub mod loader;
 pub mod telemetry;
 
+#[cfg(not(test))]
+pub use host::RuntimeProductionConfig;
 pub use host::{
     DbProviderConfig, DbProviderSource, RuntimeConfig, RuntimeHost, RuntimeServiceConfig,
 };
