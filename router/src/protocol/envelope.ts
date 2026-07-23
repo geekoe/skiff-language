@@ -190,7 +190,6 @@ export interface RuntimeRegisterEnvelope {
   buildId: string;
   serviceProtocolIdentity: string;
   targets: string[];
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;

@@ -236,7 +236,6 @@ export class RouterHarness {
     activationIdentity?: string;
     targets?: string[];
     gatewayEntryIdentities?: string[];
-    protocolVersion?: string;
     runtimeVersion?: string;
     codeRevisionId?: string;
     artifactIdentity?: string;
@@ -263,9 +262,6 @@ export class RouterHarness {
     }
     if (input.gatewayEntryIdentities) {
       register.gatewayEntryIdentities = input.gatewayEntryIdentities;
-    }
-    if (input.protocolVersion) {
-      register.protocolVersion = input.protocolVersion;
     }
     if (input.runtimeVersion) {
       register.runtimeVersion = input.runtimeVersion;

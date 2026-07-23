@@ -114,7 +114,6 @@ const routerToRuntimeFrameHeaderTypes = [
   'response.error'
 ] as const satisfies readonly RouterToRuntimeFrameHeaderName[];
 
-const PROTOCOL_IDENTITY_PATTERN = /^skiff-protocol-v1:sha256:[0-9a-f]{64}$/;
 const SERVICE_PROTOCOL_IDENTITY_PATTERN =
   /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
@@ -193,7 +192,6 @@ const runtimeRegisterProperties = {
   buildId: { type: 'string' },
   serviceProtocolIdentity: { type: 'string' },
   targets: { type: 'array', items: { type: 'string' } },
-  protocolVersion: { type: 'string' },
   runtimeVersion: { type: 'string' },
   codeRevisionId: { type: 'string' },
   artifactIdentity: { type: 'string' },
@@ -1414,9 +1412,8 @@ const runtimeRegisterFixture = {
   buildId:
     'skiff-service-build-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333',
   serviceProtocolIdentity:
-    'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    'skiff-service-protocol-v2:sha256:1111111111111111111111111111111111111111111111111111111111111111',
   targets: [runtimeRegisterTargetFixture] as string[],
-  protocolVersion: 'skiff-protocol-v1',
   runtimeVersion: 'fixture-runtime-1',
   codeRevisionId: 'code-fixture-1',
   artifactIdentity: 'artifact-fixture-1',
@@ -2096,6 +2093,23 @@ function validateEnvelopeType<const TType extends string>(
 
 function validateRuntimeRegister(envelope: Record<string, unknown>): string | null {
   return (
+    rejectUnsupportedFrameHeaderFields(envelope, 'runtime.register', [
+      'schemaVersion',
+      'type',
+      'runtimeId',
+      'serviceId',
+      'version',
+      'revisionId',
+      'activationIdentity',
+      'buildId',
+      'serviceProtocolIdentity',
+      'targets',
+      'runtimeVersion',
+      'codeRevisionId',
+      'artifactIdentity',
+      'gatewayEntryIdentities',
+      'capabilities'
+    ]) ??
     requireString(envelope, 'runtime.register', 'runtimeId') ??
     requirePublicationId(envelope, 'runtime.register', 'serviceId') ??
     requireStringPattern(
@@ -2117,11 +2131,10 @@ function validateRuntimeRegister(envelope: Record<string, unknown>): string | nu
       envelope,
       'runtime.register',
       'serviceProtocolIdentity',
-      PROTOCOL_IDENTITY_PATTERN,
-      'skiff-protocol-v1:sha256:<64 lowercase hex>'
+      SERVICE_PROTOCOL_IDENTITY_PATTERN,
+      'skiff-service-protocol-v2:sha256:<64 lowercase hex>'
     ) ??
     requireNonEmptyStringArray(envelope, 'runtime.register', 'targets') ??
-    optionalString(envelope, 'runtime.register', 'protocolVersion') ??
     optionalString(envelope, 'runtime.register', 'runtimeVersion') ??
     optionalString(envelope, 'runtime.register', 'codeRevisionId') ??
     optionalString(envelope, 'runtime.register', 'artifactIdentity') ??

@@ -340,7 +340,6 @@ describe('router runtime registry dispatch', () => {
       runtimeId: 'runtime-revision-1',
       revisionId: 'revision-1',
       targets: [target],
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '1.0.0',
       codeRevisionId: 'code-1',
       artifactIdentity: 'artifact-1',
@@ -365,7 +364,6 @@ describe('router runtime registry dispatch', () => {
       runtimeId: 'runtime-revision-2',
       revisionId: 'revision-2',
       targets: [target],
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '2.0.0',
       codeRevisionId: 'code-2',
       artifactIdentity: 'artifact-2'
@@ -380,7 +378,6 @@ describe('router runtime registry dispatch', () => {
       draining: true,
       inFlightCount: 1,
       registeredAt: expect.any(String),
-      protocolVersion: 'skiff-protocol-v1',
       runtimeVersion: '1.0.0',
       codeRevisionId: 'code-1',
       artifactIdentity: 'artifact-1',

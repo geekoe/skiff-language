@@ -201,7 +201,8 @@ The Skiff docs define the conceptual envelope shape, not a final wire encoding. 
 
 - internal router-to-runtime transport is JSON messages over WebSocket;
 - runtime registration uses a `runtime.register` message with `runtimeId`, `serviceId`, `revisionId`, required `buildId`, `serviceProtocolIdentity`, and supported `targets`;
-- `runtime.register` may also include `protocolVersion`, `runtimeVersion`, `codeRevisionId`, `artifactIdentity`, `gatewayEntryIdentities`, and `capabilities` for publish introspection;
+- `runtime.register.serviceProtocolIdentity` accepts only canonical `skiff-service-protocol-v2:sha256:<64 lowercase hex>`; transport versioning is expressed solely by the frame `schemaVersion` (`skiff-runtime-frame-v1`);
+- `runtime.register` may also include `runtimeVersion`, `codeRevisionId`, `artifactIdentity`, `gatewayEntryIdentities`, and `capabilities` for publish introspection;
 - dev and published-version request dispatch require `buildId`; the router chooses a registered runtime by exact `serviceId + buildId + target`. `serviceProtocolIdentity` and `gatewayEntryIdentity` remain additional binding metadata where the current implementation registers or requests them;
 - activation is tracked by `serviceId + serviceProtocolIdentity + target + gatewayEntryIdentity` to an active revision, so multiple live runtime instances of the same revision can share traffic;
 - a later runtime registration for the same service, protocol identity, and target becomes active for new requests; replaced runtimes move through `draining` while their existing requests finish, then `retained`;

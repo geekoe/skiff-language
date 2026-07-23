@@ -270,7 +270,29 @@ describe('runtime protocol fixtures and schemas', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-protocol-v1:sha256:<64 lowercase hex>'
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.register'],
+        serviceProtocolIdentity:
+          'skiff-protocol-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111'
+      })
+    ).toEqual({
+      ok: false,
+      error:
+        'invalid runtime.register envelope: serviceProtocolIdentity must be skiff-service-protocol-v2:sha256:<64 lowercase hex>'
+    });
+
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['runtime.register'],
+        protocolVersion: 'skiff-protocol-v1'
+      })
+    ).toEqual({
+      ok: false,
+      error: 'invalid runtime.register frame header envelope: protocolVersion is not supported'
     });
 
     expect(

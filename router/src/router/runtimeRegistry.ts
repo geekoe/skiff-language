@@ -53,7 +53,6 @@ export interface RuntimeSnapshot {
   draining: boolean;
   inFlightCount: number;
   registeredAt: string;
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;
@@ -115,7 +114,6 @@ export interface RuntimeRegistryRuntime {
   targets: ReadonlySet<string>;
   revisionState: RuntimeRevisionState;
   registeredAt: Date;
-  protocolVersion?: string;
   runtimeVersion?: string;
   codeRevisionId?: string;
   artifactIdentity?: string;
@@ -281,9 +279,6 @@ export class RuntimeRegistry {
       targets: new Set(envelope.targets),
       revisionState: 'registered',
       registeredAt: new Date(),
-      ...(envelope.protocolVersion !== undefined
-        ? { protocolVersion: envelope.protocolVersion }
-        : {}),
       ...(envelope.runtimeVersion !== undefined ? { runtimeVersion: envelope.runtimeVersion } : {}),
       ...(envelope.codeRevisionId !== undefined
         ? { codeRevisionId: envelope.codeRevisionId }
@@ -1082,9 +1077,6 @@ export class RuntimeRegistry {
     };
     if (runtime.version !== undefined) {
       snapshot.version = runtime.version;
-    }
-    if (runtime.protocolVersion !== undefined) {
-      snapshot.protocolVersion = runtime.protocolVersion;
     }
     if (runtime.runtimeVersion !== undefined) {
       snapshot.runtimeVersion = runtime.runtimeVersion;
