@@ -330,6 +330,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I33 | [R05 tail closure combined](tasks/P5-I33-r05-tail-closure-combined.md) | F42/F43/F44 merged | cheap combined；第三次probe前置 |
 | I33 result | [R05 tail closure combined result](tasks/P5-I33-r05-tail-closure-combined-result.md) | `c59b4ba` | PASS；scripts 13/13，Router 12/12 |
 | R05B | [Canonical WebSocket ingress final reacceptance](tasks/P5-R05B-canonical-websocket-ingress-final-reacceptance.md) | I33 PASS | 高；熔断后第三次且仅一次probe |
+| R05B result | [Canonical WebSocket ingress final reacceptance result](tasks/P5-R05B-canonical-websocket-ingress-final-reacceptance-result.md) | `c59b4ba` | PASS；R05关闭，解锁lock refresh |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
