@@ -10,7 +10,6 @@ const ACTIVATION_REQUEST_SCHEMA_VERSION = 'skiff-assembly-activation-request-v1'
 const PRODUCTION_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
 const PRODUCTION_PACKAGE_VERSION = '1.0.0';
 const SMOKE_SERVICE_ID = 'test.skiff/ecosystem-smoke';
-const PACKAGE_TEST_SERVICE_ID = `test.skiff/package/${PRODUCTION_PACKAGE_ID}`;
 const STD_PACKAGE_ID = 'skiff.run/std';
 const STD_PACKAGE_VERSION = '1.0.0';
 
@@ -25,7 +24,15 @@ const OPERATION_IDENTITY = new RegExp(`^skiff-contract-operation-v1:sha256:${HAS
 const READINESS_TIMEOUT_MS = 30_000;
 const READINESS_INTERVAL_MS = 100;
 
-export function readPackageServiceFixtureReceipt(stdout, expectedEnvironment) {
+export function readPackageServiceFixtureReceipt(
+  stdout,
+  expectedEnvironment,
+  {
+    packageId = PRODUCTION_PACKAGE_ID,
+    packageVersion = PRODUCTION_PACKAGE_VERSION,
+    packageTestName = 'normal source fixture compiles',
+  } = {},
+) {
   const receipt = parseJson(stdout, 'ecosystem smoke fixture');
   exactObject(receipt, ['bootstrap', 'candidate', 'environment', 'schemaVersion'], 'fixture receipt');
   assert.equal(receipt.schemaVersion, FIXTURE_SCHEMA_VERSION);
@@ -40,8 +47,8 @@ export function readPackageServiceFixtureReceipt(stdout, expectedEnvironment) {
   const assembly = runtimeAssemblyRef(candidate.assembly, 'fixture candidate assembly');
   const production = packageArtifactRef(candidate.production, 'fixture production');
   const overlay = packageArtifactRef(candidate.overlay, 'fixture overlay');
-  assert.equal(production.packageId, PRODUCTION_PACKAGE_ID);
-  assert.equal(production.packageVersion, PRODUCTION_PACKAGE_VERSION);
+  assert.equal(production.packageId, packageId);
+  assert.equal(production.packageVersion, packageVersion);
   assert.equal(overlay.packageId, production.packageId);
   assert.equal(overlay.packageVersion, production.packageVersion);
   assert.notEqual(
@@ -60,12 +67,12 @@ export function readPackageServiceFixtureReceipt(stdout, expectedEnvironment) {
   const [packageTest, unary, websocket] = candidate.entrypoints;
   entrypoint(packageTest, {
     kind: 'packageTest',
-    name: 'normal source fixture compiles',
+    name: packageTestName,
     host: 'case-0.package-test.skiff.localhost',
     method: 'POST',
     path: '/__skiff/package-test/0',
-    serviceId: PACKAGE_TEST_SERVICE_ID,
-    contractVersion: PRODUCTION_PACKAGE_VERSION,
+    serviceId: `test.skiff/package/${packageId}`,
+    contractVersion: packageVersion,
     deploymentRevision: `test-${identityHash(overlay.packageBuildId, PACKAGE_BUILD_IDENTITY)}`,
   });
   entrypoint(unary, {
@@ -165,7 +172,7 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironm
 
 export function validatePackageServiceActivationReceipt(
   activation,
-  { environment, assemblyIdentity },
+  { environment, assemblyIdentity, expectedGeneration = 0 },
 ) {
   exactObject(activation, ['request', 'response'], 'assembly activation receipt');
   const request = exactObject(
@@ -175,7 +182,7 @@ export function validatePackageServiceActivationReceipt(
   );
   assert.equal(request.schemaVersion, ACTIVATION_REQUEST_SCHEMA_VERSION);
   assert.equal(request.environment, environment);
-  assert.equal(request.expectedGeneration, 0);
+  assert.equal(request.expectedGeneration, expectedGeneration);
   assert.equal(typeof request.activationId, 'string');
   assert.ok(request.activationId.length > 0);
   assert.equal(runtimeAssemblyRef(request.assembly, 'activation request assembly').assemblyIdentity,
@@ -193,7 +200,8 @@ export function validatePackageServiceActivationReceipt(
     ['assembly', 'generation'],
     'activation committed tuple',
   );
-  assert.equal(committed.generation, 1);
+  const committedGeneration = expectedGeneration + 1;
+  assert.equal(committed.generation, committedGeneration);
   assert.equal(
     runtimeAssemblyRef(committed.assembly, 'activation committed assembly').assemblyIdentity,
     assemblyIdentity,
@@ -203,7 +211,11 @@ export function validatePackageServiceActivationReceipt(
     ['assemblyIdentity', 'environment', 'generation'],
     'activation active tuple',
   );
-  assert.deepEqual(active, { environment, generation: 1, assemblyIdentity });
+  assert.deepEqual(active, {
+    environment,
+    generation: committedGeneration,
+    assemblyIdentity,
+  });
   return response;
 }
 

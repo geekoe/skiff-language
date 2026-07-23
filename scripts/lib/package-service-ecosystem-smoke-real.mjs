@@ -355,3 +355,9 @@ class SmokeIoDeadlineError extends Error {
 }
 
 export const packageServiceEcosystemSmokeExpectedMarker = EXPECTED_MARKER;
+export {
+  opened as openPackageServiceSmokeWebSocket,
+  nextMessage as nextPackageServiceSmokeWebSocketMessage,
+  closeWebSocket as closePackageServiceSmokeWebSocket,
+  createSmokeIoLifecycle as createPackageServiceSmokeDeadline,
+};

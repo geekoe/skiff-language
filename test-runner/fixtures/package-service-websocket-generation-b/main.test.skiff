@@ -1,0 +1,3 @@
+test "generation lifecycle source fixture compiles" {
+  assert root.main.marker() == "P5-R05-GENERATION-B-MARKER"
+}
