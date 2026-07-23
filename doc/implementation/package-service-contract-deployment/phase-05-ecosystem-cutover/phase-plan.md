@@ -337,6 +337,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I34 result | [Shared lock no-op check result](tasks/P5-I34-shared-lock-noop-check-result.md) | `c59b4ba` | PASS；lock no-op，compiler locked PASS |
 | I02 result | [Skiff combined probe result](tasks/P5-I02-skiff-combined-probe-result.md) | `c59b4ba` | FAIL；旧smoke缺rollback/control证据入口 |
 | D44 | [I02 entry closure audit](tasks/P5-D44-i02-entry-closure-audit.md) | I02 exact FAIL | 只读；冻结剩余combined入口/DAG |
+| D44 result | [I02 entry closure audit result](tasks/P5-D44-i02-entry-closure-audit-result.md) | `c59b4ba` | COMPLETE；F45A可立即，actor/spawn需D45设计 |
+| F45A | [I02 transaction harness](tasks/P5-F45A-i02-transaction-harness.md) | D44 complete | 高；scripts transaction/rollback owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
