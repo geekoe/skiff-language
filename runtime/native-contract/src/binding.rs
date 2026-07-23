@@ -1,4 +1,5 @@
 use skiff_artifact_model::{NativeSignatureDef, NativeTarget};
+use skiff_trusted_registry_contract::TrustedRegistryOperationScope;
 
 use super::NativeRequiredContext;
 
@@ -6,7 +7,7 @@ use super::NativeRequiredContext;
 pub struct NativeBindingKey(&'static str);
 
 impl NativeBindingKey {
-    pub fn from_static(value: &'static str) -> Self {
+    pub const fn from_static(value: &'static str) -> Self {
         Self(value)
     }
 
@@ -20,6 +21,9 @@ pub struct NativeBindingSpec {
     pub key: NativeBindingKey,
     pub signature: &'static NativeSignatureDef,
     pub required_context: NativeRequiredContext,
+    pub capability_id: Option<&'static str>,
+    pub capability_version: Option<u32>,
+    pub operation_scope: Option<TrustedRegistryOperationScope>,
 }
 
 impl NativeBindingSpec {
@@ -29,6 +33,9 @@ impl NativeBindingSpec {
             key: NativeBindingKey::from_static(signature.binding_key),
             signature,
             required_context,
+            capability_id: None,
+            capability_version: None,
+            operation_scope: None,
         })
     }
 }

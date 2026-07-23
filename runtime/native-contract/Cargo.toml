@@ -7,3 +7,4 @@ publish = false
 [dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-runtime-model = { path = "../model" }
+skiff-trusted-registry-contract = { path = "../../trusted-registry-contract" }

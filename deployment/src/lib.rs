@@ -9,7 +9,6 @@ pub mod error;
 pub mod fixtures;
 pub mod projection;
 pub mod storage;
-pub mod trusted_registry;
 pub mod validation;
 
 pub use error::{DeploymentError, Result};

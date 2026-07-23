@@ -6,12 +6,8 @@ use skiff_artifact_model::{
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
-use crate::storage::{
-    PackageArtifactPointer, RuntimeAssemblyPointer, ServiceContractPointer,
-    ServiceDeploymentPointer,
-};
-
-pub const TRUSTED_REGISTRY_CAPABILITY: &str = "skiff.registry.trusted@1";
+pub const TRUSTED_REGISTRY_CAPABILITY_ID: &str = "skiff.registry.trusted";
+pub const TRUSTED_REGISTRY_CAPABILITY_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TrustedRegistryOperationScope {
@@ -20,6 +16,7 @@ pub enum TrustedRegistryOperationScope {
     PointerRead,
     PointerCas,
     HistoryRead,
+    ActivationActivate,
 }
 
 impl TrustedRegistryOperationScope {
@@ -30,8 +27,34 @@ impl TrustedRegistryOperationScope {
             Self::PointerRead => "pointer.read",
             Self::PointerCas => "pointer.cas",
             Self::HistoryRead => "history.read",
+            Self::ActivationActivate => "activation.activate",
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageArtifactPointer {
+    pub artifact: PackageArtifactRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceContractPointer {
+    pub contract: ServiceContractRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeploymentPointer {
+    pub deployment: ServiceDeploymentRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAssemblyPointer {
+    pub release: String,
+    pub assembly: RuntimeAssemblyRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,11 +65,7 @@ pub struct PointerHistorySelector {
 }
 
 macro_rules! pointer_contract {
-    (
-        $key:ident { $($field:ident : $field_ty:ty),+ },
-        $cas:ident($pointer:ty),
-        $query:ident
-    ) => {
+    ($key:ident { $($field:ident : $field_ty:ty),+ }, $cas:ident($pointer:ty), $query:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         pub struct $key {
@@ -99,61 +118,73 @@ pointer_contract!(
     RuntimeAssemblyPointerHistoryQuery
 );
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageArtifactPointerReceipt {
-    pub sequence: u64,
-    pub pointer: PackageArtifactPointer,
+macro_rules! pointer_receipt {
+    ($name:ident, $pointer:ty) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub struct $name {
+            pub sequence: u64,
+            pub pointer: $pointer,
+        }
+    };
 }
+
+pointer_receipt!(PackageArtifactPointerReceipt, PackageArtifactPointer);
+pointer_receipt!(ServiceContractPointerReceipt, ServiceContractPointer);
+pointer_receipt!(ServiceDeploymentPointerReceipt, ServiceDeploymentPointer);
+pointer_receipt!(RuntimeAssemblyPointerReceipt, RuntimeAssemblyPointer);
+
+macro_rules! pointer_responses {
+    ($read:ident, $history:ident, $receipt:ty) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub struct $read {
+            pub current: Option<$receipt>,
+        }
+
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub struct $history {
+            pub entries: Vec<$receipt>,
+        }
+    };
+}
+
+pointer_responses!(
+    PackageArtifactPointerReadResponse,
+    PackageArtifactPointerHistoryResponse,
+    PackageArtifactPointerReceipt
+);
+pointer_responses!(
+    ServiceContractPointerReadResponse,
+    ServiceContractPointerHistoryResponse,
+    ServiceContractPointerReceipt
+);
+pointer_responses!(
+    ServiceDeploymentPointerReadResponse,
+    ServiceDeploymentPointerHistoryResponse,
+    ServiceDeploymentPointerReceipt
+);
+pointer_responses!(
+    RuntimeAssemblyPointerReadResponse,
+    RuntimeAssemblyPointerHistoryResponse,
+    RuntimeAssemblyPointerReceipt
+);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceContractPointerReceipt {
-    pub sequence: u64,
-    pub pointer: ServiceContractPointer,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceDeploymentPointerReceipt {
-    pub sequence: u64,
-    pub pointer: ServiceDeploymentPointer,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyPointerReceipt {
-    pub sequence: u64,
-    pub pointer: RuntimeAssemblyPointer,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationTuple {
+pub struct ActivationRequest {
     pub environment: String,
+    pub activation_id: String,
     pub expected_generation: u64,
-    pub candidate_generation: u64,
     pub assembly: RuntimeAssemblyRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationPrepare {
-    pub activation_id: String,
-    pub tuple: ActivationTuple,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationRef {
-    pub environment: String,
-    pub activation_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationReceipt {
-    pub activation: ActivationRef,
+    pub activation_id: String,
+    pub environment: String,
     pub generation: u64,
     pub assembly: RuntimeAssemblyRef,
 }
@@ -172,10 +203,7 @@ pub type TrustedRegistryResult<T> = Result<T, TrustedRegistryError>;
 pub type TrustedRegistryFuture<'a, T> =
     Pin<Box<dyn Future<Output = TrustedRegistryResult<T>> + Send + 'a>>;
 
-/// Backend-neutral production boundary. Each method deliberately names one
-/// typed object or pointer; implementations cannot accept kind tags, paths,
-/// raw JSON, or byte payloads.
-pub trait TrustedRegistry: Send + Sync {
+pub trait TrustedRegistryStoreApi: Send + Sync {
     fn put_package_artifact(
         &self,
         value: PackageArtifact,
@@ -211,82 +239,54 @@ pub trait TrustedRegistry: Send + Sync {
 
     fn read_package_artifact_pointer(
         &self,
-        package_id: String,
-        package_version: String,
+        key: PackageArtifactPointerKey,
     ) -> TrustedRegistryFuture<'_, Option<PackageArtifactPointerReceipt>>;
     fn cas_package_artifact_pointer(
         &self,
-        expected: Option<PackageArtifactPointer>,
-        candidate: PackageArtifactPointer,
+        request: PackageArtifactPointerCas,
     ) -> TrustedRegistryFuture<'_, PackageArtifactPointerReceipt>;
     fn package_artifact_pointer_history(
         &self,
-        package_id: String,
-        package_version: String,
-        selector: PointerHistorySelector,
+        query: PackageArtifactPointerHistoryQuery,
     ) -> TrustedRegistryFuture<'_, Vec<PackageArtifactPointerReceipt>>;
-
     fn read_service_contract_pointer(
         &self,
-        service_id: String,
-        contract_version: String,
+        key: ServiceContractPointerKey,
     ) -> TrustedRegistryFuture<'_, Option<ServiceContractPointerReceipt>>;
     fn cas_service_contract_pointer(
         &self,
-        expected: Option<ServiceContractPointer>,
-        candidate: ServiceContractPointer,
+        request: ServiceContractPointerCas,
     ) -> TrustedRegistryFuture<'_, ServiceContractPointerReceipt>;
     fn service_contract_pointer_history(
         &self,
-        service_id: String,
-        contract_version: String,
-        selector: PointerHistorySelector,
+        query: ServiceContractPointerHistoryQuery,
     ) -> TrustedRegistryFuture<'_, Vec<ServiceContractPointerReceipt>>;
-
     fn read_service_deployment_pointer(
         &self,
-        service_id: String,
-        contract_version: String,
+        key: ServiceDeploymentPointerKey,
     ) -> TrustedRegistryFuture<'_, Option<ServiceDeploymentPointerReceipt>>;
     fn cas_service_deployment_pointer(
         &self,
-        expected: Option<ServiceDeploymentPointer>,
-        candidate: ServiceDeploymentPointer,
+        request: ServiceDeploymentPointerCas,
     ) -> TrustedRegistryFuture<'_, ServiceDeploymentPointerReceipt>;
     fn service_deployment_pointer_history(
         &self,
-        service_id: String,
-        contract_version: String,
-        selector: PointerHistorySelector,
+        query: ServiceDeploymentPointerHistoryQuery,
     ) -> TrustedRegistryFuture<'_, Vec<ServiceDeploymentPointerReceipt>>;
-
     fn read_runtime_assembly_pointer(
         &self,
-        release: String,
+        key: RuntimeAssemblyPointerKey,
     ) -> TrustedRegistryFuture<'_, Option<RuntimeAssemblyPointerReceipt>>;
     fn cas_runtime_assembly_pointer(
         &self,
-        expected: Option<RuntimeAssemblyPointer>,
-        candidate: RuntimeAssemblyPointer,
+        request: RuntimeAssemblyPointerCas,
     ) -> TrustedRegistryFuture<'_, RuntimeAssemblyPointerReceipt>;
     fn runtime_assembly_pointer_history(
         &self,
-        release: String,
-        selector: PointerHistorySelector,
+        query: RuntimeAssemblyPointerHistoryQuery,
     ) -> TrustedRegistryFuture<'_, Vec<RuntimeAssemblyPointerReceipt>>;
 
-    fn prepare_activation(
-        &self,
-        request: ActivationPrepare,
-    ) -> TrustedRegistryFuture<'_, ActivationReceipt>;
-    fn commit_activation(
-        &self,
-        activation: ActivationRef,
-    ) -> TrustedRegistryFuture<'_, ActivationReceipt>;
-    fn abort_activation(
-        &self,
-        activation: ActivationRef,
-    ) -> TrustedRegistryFuture<'_, ActivationReceipt>;
+    fn activate(&self, request: ActivationRequest) -> TrustedRegistryFuture<'_, ActivationReceipt>;
 }
 
 #[cfg(test)]
@@ -294,28 +294,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operation_scopes_are_exact_and_backend_neutral() {
-        assert_eq!(
-            [
-                TrustedRegistryOperationScope::ArtifactRead.as_str(),
-                TrustedRegistryOperationScope::ArtifactWrite.as_str(),
-                TrustedRegistryOperationScope::PointerRead.as_str(),
-                TrustedRegistryOperationScope::PointerCas.as_str(),
-                TrustedRegistryOperationScope::HistoryRead.as_str(),
-            ],
-            [
-                "artifact.read",
-                "artifact.write",
-                "pointer.read",
-                "pointer.cas",
-                "history.read",
-            ]
-        );
+    fn public_pointer_wire_is_path_free_and_strict() {
+        let value = serde_json::json!({
+            "artifact": {
+                "packageId": "example/pkg",
+                "packageVersion": "1.0.0",
+                "packageBuildId": "skiff-package-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "recordPath": "must/not/be/accepted"
+        });
+        assert!(serde_json::from_value::<PackageArtifactPointer>(value).is_err());
     }
 
     #[test]
-    fn activation_wire_rejects_coordinator_state_fields() {
-        let json = r#"{"activationId":"a","tuple":{"environment":"prod","expectedGeneration":1,"candidateGeneration":2,"assembly":{"assemblyIdentity":"skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},"preparedReplicaIds":[]}"#;
-        assert!(serde_json::from_str::<ActivationPrepare>(json).is_err());
+    fn activation_wire_has_no_coordinator_transaction_commands() {
+        let value = serde_json::json!({
+            "environment": "prod",
+            "activationId": "a",
+            "expectedGeneration": 1,
+            "assembly": {
+                "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "preparedReplicaIds": []
+        });
+        assert!(serde_json::from_value::<ActivationRequest>(value).is_err());
     }
 }

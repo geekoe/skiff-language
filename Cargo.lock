@@ -2338,6 +2338,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
+ "skiff-trusted-registry-contract",
  "thiserror",
 ]
 
@@ -2539,6 +2540,7 @@ version = "0.1.0"
 dependencies = [
  "skiff-artifact-model",
  "skiff-runtime-model",
+ "skiff-trusted-registry-contract",
 ]
 
 [[package]]
@@ -2641,6 +2643,15 @@ dependencies = [
  "skiff-deployment",
  "skiff-syntax",
  "thiserror",
+]
+
+[[package]]
+name = "skiff-trusted-registry-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "skiff-artifact-model",
 ]
 
 [[package]]

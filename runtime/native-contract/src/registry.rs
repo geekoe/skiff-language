@@ -3,7 +3,7 @@ use skiff_artifact_model::{NativeSignatureDef, NativeTarget, STD_NATIVE_SIGNATUR
 use super::{
     is_reserved_std_native_target, native_target_binding_key, native_target_name,
     validate_native_call_arg_count, validate_native_call_type_arg_refs, NativeBindingSpec,
-    NativeTypeArgRef,
+    NativeTypeArgRef, TRUSTED_REGISTRY_NATIVE_BINDING_SPECS,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,13 +38,21 @@ impl NativeSignatureRegistry {
     }
 
     pub fn signature(&self, binding_key: &str) -> Option<&'static NativeSignatureDef> {
-        self.signatures
-            .iter()
-            .find(|signature| signature.binding_key == binding_key)
+        self.binding_spec(binding_key).map(|spec| spec.signature)
     }
 
     pub fn binding_spec(&self, binding_key: &str) -> Option<NativeBindingSpec> {
-        NativeBindingSpec::from_signature(self.signature(binding_key)?)
+        if let Some(spec) = TRUSTED_REGISTRY_NATIVE_BINDING_SPECS
+            .iter()
+            .find(|spec| spec.key.as_str() == binding_key)
+        {
+            return Some(*spec);
+        }
+        NativeBindingSpec::from_signature(
+            self.signatures
+                .iter()
+                .find(|signature| signature.binding_key == binding_key)?,
+        )
     }
 
     pub fn validate_native_call_artifact<'a>(
@@ -136,7 +144,10 @@ mod tests {
 
     use skiff_artifact_model::{MetadataValue, NativeTarget};
 
-    use crate::{NativeDispatchTarget, NativeRequiredContext, NativeSignatureRegistry};
+    use crate::{
+        NativeDispatchTarget, NativeRequiredContext, NativeSignatureRegistry,
+        TRUSTED_REGISTRY_NATIVE_BINDING_SPECS,
+    };
 
     #[test]
     fn native_signature_registry_resolves_every_declared_binding_key_to_contract_spec() {
@@ -168,12 +179,36 @@ mod tests {
     fn native_signature_registry_binding_keys_are_unique() {
         let mut names = BTreeSet::new();
 
-        for signature in STD_NATIVE_SIGNATURES {
+        for signature in STD_NATIVE_SIGNATURES.iter().chain(
+            TRUSTED_REGISTRY_NATIVE_BINDING_SPECS
+                .iter()
+                .map(|spec| spec.signature),
+        ) {
             assert!(
                 names.insert(signature.binding_key),
                 "duplicate native signature binding key {}",
                 signature.binding_key
             );
+        }
+    }
+
+    #[test]
+    fn trusted_registry_specs_are_the_builtin_registry_source() {
+        let registry = NativeSignatureRegistry::builtins();
+
+        for expected in TRUSTED_REGISTRY_NATIVE_BINDING_SPECS {
+            let actual = registry
+                .binding_spec(expected.key.as_str())
+                .expect("trusted registry binding must be registered");
+            assert_eq!(actual.key, expected.key);
+            assert_eq!(actual.signature, expected.signature);
+            assert_eq!(
+                actual.required_context,
+                NativeRequiredContext::TrustedRegistry
+            );
+            assert_eq!(actual.capability_id, expected.capability_id);
+            assert_eq!(actual.capability_version, expected.capability_version);
+            assert_eq!(actual.operation_scope, expected.operation_scope);
         }
     }
 

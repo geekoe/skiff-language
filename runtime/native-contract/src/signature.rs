@@ -50,6 +50,10 @@ pub fn type_arg_key(index: usize) -> String {
 pub fn is_reserved_std_native_target(target: &str) -> bool {
     target == "std"
         || target.starts_with("std.")
+        || target == "skiff.registry"
+        || target.starts_with("skiff.registry.")
+        || target == "registry"
+        || target.starts_with("registry.")
         || STD_NATIVE_SIGNATURES
             .iter()
             .any(|signature| signature.binding_key == target)
