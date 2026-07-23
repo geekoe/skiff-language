@@ -502,6 +502,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F55B | [Loader/linker legacy chain removal](tasks/P5-F55B-loader-linker-legacy-chain-removal.md) | D55 complete | loader/linker owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
+| T08 blocker | [Registry/platform blocker](tasks/P5-T08-registry-platform-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；无callable |
+| D56 | [Trusted registry callable audit](tasks/P5-D56-trusted-registry-callable-audit.md) | T08 blocked | capability/design双分片 |
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
 | T09B | [AIHub contract](tasks/P5-T09B-internals-aihub-contract.md) | R02 exact Skiff | 高；contract ABI/schema |
 | T09C | [Agine contract](tasks/P5-T09C-internals-agine-contract.md) | R02 exact Skiff | 高；contract/API owner split |
