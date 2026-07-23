@@ -14,7 +14,7 @@ use skiff_runtime_loader::{
     ArtifactGraphLoader, ArtifactIndexPointer, RuntimeProgramArtifactSelection,
 };
 
-use crate::artifact_cache::{LinkedProgramImageCache, RuntimeArtifactCaches};
+use crate::artifact_cache::RuntimeArtifactCaches;
 use skiff_runtime_activation::{
     build_runtime_activation_for_image, RuntimeActivation, RuntimeActivationCache,
 };
@@ -89,7 +89,6 @@ fn runtime_program_layers_from_parts(
 
 pub(super) struct RuntimeProgramPartsLoader<'a> {
     graph_loader: ArtifactGraphLoader<'a>,
-    image_cache: &'a LinkedProgramImageCache,
     activation_cache: &'a RuntimeActivationCache,
 }
 
@@ -100,7 +99,6 @@ impl<'a> RuntimeProgramPartsLoader<'a> {
                 artifact_root,
                 ArtifactGraphCache::new(&caches.files, &caches.packages),
             ),
-            image_cache: &caches.images,
             activation_cache: &caches.activation_cache,
         }
     }
@@ -147,9 +145,7 @@ impl<'a> RuntimeProgramPartsLoader<'a> {
         let image_build = link_runtime_program_image(graph)
             .map_err(|error| anyhow::anyhow!("failed to link runtime program: {error}"))?;
         let identity = image_build.identity;
-        let image = self
-            .image_cache
-            .insert(identity.linked_image_identity.clone(), image_build.image);
+        let image = Arc::new(image_build.image);
         let activation = Arc::new(
             build_runtime_activation_for_image(image.as_ref(), image_build.activation_facts)
                 .map_err(|error| anyhow::anyhow!("failed to build runtime activation: {error}"))?,

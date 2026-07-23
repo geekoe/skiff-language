@@ -1274,7 +1274,7 @@ fn artifact_loader_reuses_artifact_file_cache_across_service_versions() {
         layers_v1.identity.linked_image_identity,
         layers_v2.identity.linked_image_identity
     );
-    assert!(Arc::ptr_eq(&layers_v1.image, &layers_v2.image));
+    assert!(!Arc::ptr_eq(&layers_v1.image, &layers_v2.image));
     assert!(!Arc::ptr_eq(&layers_v1.activation, &layers_v2.activation));
     assert_eq!(layers_v1.activation.version, "v1");
     assert_eq!(layers_v2.activation.version, "v2");
@@ -1296,7 +1296,6 @@ fn artifact_loader_reuses_artifact_file_cache_across_service_versions() {
         layers_v2.image.service_files[0].file_ir_identity
     );
     assert_eq!(caches.files.len(), 1);
-    assert_eq!(caches.images.len(), 1);
     assert_eq!(caches.activation_cache.len(), 2);
 }
 
@@ -1344,7 +1343,6 @@ fn artifact_loader_exposes_loaded_artifact_graph_before_linking() {
     assert!(graph.identities.package_build_identities.is_empty());
     assert!(graph.identities.package_file_ir_identities.is_empty());
     assert_eq!(caches.files.len(), 1);
-    assert!(caches.images.is_empty());
     assert!(caches.activation_cache.is_empty());
 
     let parts = loader
@@ -1356,7 +1354,6 @@ fn artifact_loader_exposes_loaded_artifact_graph_before_linking() {
         .identity
         .linked_image_identity
         .starts_with("skiff-linked-program-image-v1:sha256:"));
-    assert_eq!(caches.images.len(), 1);
     assert_eq!(caches.activation_cache.len(), 1);
 }
 

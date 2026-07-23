@@ -1,20 +1,9 @@
-use std::{
-    collections::HashMap,
-    env, fs, mem,
-    process::Command,
-    sync::{Arc, RwLock},
-    time::Instant,
-};
-
-use serde::Serialize;
-use skiff_runtime_linked_program::{
-    ArtifactFileIrUnit as FileIrUnit, LinkedProgramImage, PackageUnit,
-};
 use skiff_runtime_loader::{
     ArtifactCacheBucketStats, ArtifactCacheEvictionCandidate, ArtifactCacheKind,
     RemovedArtifactCacheEntry,
 };
 pub use skiff_runtime_loader::{FileIrCache, PackageCache};
+use std::{env, fs, process::Command, time::Instant};
 
 pub use skiff_runtime_activation::RuntimeActivationCache;
 use skiff_runtime_activation::{
@@ -31,7 +20,6 @@ const MACHINE_MEMORY_ENV: &str = "SKIFF_RUNTIME_MACHINE_MEMORY_BYTES";
 pub struct RuntimeArtifactCaches {
     pub files: FileIrCache,
     pub packages: PackageCache,
-    pub images: LinkedProgramImageCache,
     pub activation_cache: RuntimeActivationCache,
     budget: RuntimeArtifactCacheBudget,
 }
@@ -57,7 +45,6 @@ impl RuntimeArtifactCaches {
         Self {
             files: FileIrCache::new(),
             packages: PackageCache::new(),
-            images: LinkedProgramImageCache::new(),
             activation_cache: RuntimeActivationCache::new(),
             budget,
         }
@@ -70,17 +57,14 @@ impl RuntimeArtifactCaches {
     pub fn stats(&self) -> RuntimeArtifactCacheStats {
         let files = RuntimeArtifactCacheBucketStats::from(self.files.stats());
         let packages = RuntimeArtifactCacheBucketStats::from(self.packages.stats());
-        let images = self.images.stats();
         let activation_cache = RuntimeArtifactCacheBucketStats::from(self.activation_cache.stats());
         RuntimeArtifactCacheStats {
             files,
             packages,
-            images,
             activation_cache,
             total_estimated_size_bytes: files
                 .estimated_size_bytes
                 .saturating_add(packages.estimated_size_bytes)
-                .saturating_add(images.estimated_size_bytes)
                 .saturating_add(activation_cache.estimated_size_bytes),
             artifact_cache_budget_bytes: self.budget.bytes,
         }
@@ -108,7 +92,6 @@ impl RuntimeArtifactCaches {
                 RuntimeArtifactCacheKind::Package => {
                     self.packages.remove(&candidate.identity).map(Into::into)
                 }
-                RuntimeArtifactCacheKind::LinkedImage => self.images.remove(&candidate.identity),
                 RuntimeArtifactCacheKind::RuntimeActivation => self
                     .activation_cache
                     .remove(&candidate.identity)
@@ -136,7 +119,6 @@ impl RuntimeArtifactCaches {
         [
             self.files.oldest_candidate().map(Into::into),
             self.packages.oldest_candidate().map(Into::into),
-            self.images.oldest_candidate(),
             self.activation_cache
                 .oldest_candidate()
                 .map(EvictionCandidate::from),
@@ -184,7 +166,6 @@ impl Default for RuntimeArtifactCacheBudget {
 pub enum RuntimeArtifactCacheKind {
     FileIr,
     Package,
-    LinkedImage,
     RuntimeActivation,
 }
 
@@ -198,7 +179,6 @@ pub struct RuntimeArtifactCacheBucketStats {
 pub struct RuntimeArtifactCacheStats {
     pub files: RuntimeArtifactCacheBucketStats,
     pub packages: RuntimeArtifactCacheBucketStats,
-    pub images: RuntimeArtifactCacheBucketStats,
     pub activation_cache: RuntimeArtifactCacheBucketStats,
     pub total_estimated_size_bytes: usize,
     pub artifact_cache_budget_bytes: usize,
@@ -234,121 +214,6 @@ pub struct RuntimeArtifactCacheEviction {
     pub entries: Vec<EvictedArtifactCacheEntry>,
     pub estimated_bytes: usize,
     pub remaining_estimated_size_bytes: usize,
-}
-
-#[derive(Debug)]
-pub struct LinkedProgramImageCache {
-    entries: RwLock<HashMap<String, CacheEntry<LinkedProgramImage>>>,
-}
-
-impl Default for LinkedProgramImageCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LinkedProgramImageCache {
-    pub fn new() -> Self {
-        Self {
-            entries: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn get(&self, identity: impl AsRef<str>) -> Option<Arc<LinkedProgramImage>> {
-        self.entries
-            .write()
-            .expect("linked program image cache lock poisoned")
-            .get_mut(identity.as_ref())
-            .map(CacheEntry::touch)
-    }
-
-    pub fn insert(
-        &self,
-        identity: impl Into<String>,
-        image: LinkedProgramImage,
-    ) -> Arc<LinkedProgramImage> {
-        let estimated_size_bytes = linked_program_image_estimated_size(&image);
-        self.insert_arc_with_estimate(identity, Arc::new(image), estimated_size_bytes)
-    }
-
-    pub fn insert_arc(
-        &self,
-        identity: impl Into<String>,
-        image: Arc<LinkedProgramImage>,
-    ) -> Arc<LinkedProgramImage> {
-        let estimated_size_bytes = linked_program_image_estimated_size(image.as_ref());
-        self.insert_arc_with_estimate(identity, image, estimated_size_bytes)
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries
-            .read()
-            .expect("linked program image cache lock poisoned")
-            .len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn stats(&self) -> RuntimeArtifactCacheBucketStats {
-        bucket_stats(&self.entries, "linked program image cache")
-    }
-
-    fn insert_arc_with_estimate(
-        &self,
-        identity: impl Into<String>,
-        image: Arc<LinkedProgramImage>,
-        estimated_size_bytes: usize,
-    ) -> Arc<LinkedProgramImage> {
-        let identity = identity.into();
-        let mut entries = self
-            .entries
-            .write()
-            .expect("linked program image cache lock poisoned");
-        if let Some(existing) = entries.get_mut(&identity) {
-            return existing.touch();
-        }
-        entries.insert(
-            identity,
-            CacheEntry::new(Arc::clone(&image), estimated_size_bytes),
-        );
-        image
-    }
-
-    fn remove(&self, identity: &str) -> Option<RemovedCacheEntry> {
-        remove_entry(&self.entries, identity, "linked program image cache")
-    }
-
-    fn oldest_candidate(&self) -> Option<EvictionCandidate> {
-        oldest_candidate(
-            &self.entries,
-            RuntimeArtifactCacheKind::LinkedImage,
-            "linked program image cache",
-        )
-    }
-}
-
-#[derive(Debug)]
-struct CacheEntry<T> {
-    value: Arc<T>,
-    last_used: Instant,
-    estimated_size_bytes: usize,
-}
-
-impl<T> CacheEntry<T> {
-    fn new(value: Arc<T>, estimated_size_bytes: usize) -> Self {
-        Self {
-            value,
-            last_used: Instant::now(),
-            estimated_size_bytes,
-        }
-    }
-
-    fn touch(&mut self) -> Arc<T> {
-        self.last_used = Instant::now();
-        Arc::clone(&self.value)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -402,84 +267,6 @@ impl From<RemovedArtifactCacheEntry> for RemovedCacheEntry {
     }
 }
 
-fn bucket_stats<T>(
-    entries: &RwLock<HashMap<String, CacheEntry<T>>>,
-    label: &str,
-) -> RuntimeArtifactCacheBucketStats {
-    let entries = entries
-        .read()
-        .unwrap_or_else(|_| panic!("{label} lock poisoned"));
-    RuntimeArtifactCacheBucketStats {
-        entries: entries.len(),
-        estimated_size_bytes: entries
-            .values()
-            .map(|entry| entry.estimated_size_bytes)
-            .sum(),
-    }
-}
-
-fn oldest_candidate<T>(
-    entries: &RwLock<HashMap<String, CacheEntry<T>>>,
-    kind: RuntimeArtifactCacheKind,
-    label: &str,
-) -> Option<EvictionCandidate> {
-    let entries = entries
-        .read()
-        .unwrap_or_else(|_| panic!("{label} lock poisoned"));
-    entries
-        .iter()
-        .min_by_key(|(_, entry)| entry.last_used)
-        .map(|(identity, entry)| EvictionCandidate {
-            kind,
-            identity: identity.clone(),
-            last_used: entry.last_used,
-        })
-}
-
-fn remove_entry<T>(
-    entries: &RwLock<HashMap<String, CacheEntry<T>>>,
-    identity: &str,
-    label: &str,
-) -> Option<RemovedCacheEntry> {
-    entries
-        .write()
-        .unwrap_or_else(|_| panic!("{label} lock poisoned"))
-        .remove(identity)
-        .map(|entry| RemovedCacheEntry {
-            estimated_size_bytes: entry.estimated_size_bytes,
-        })
-}
-
-fn serialized_estimated_size<T: Serialize>(value: &T) -> usize {
-    serde_json::to_vec(value)
-        .map(|bytes| bytes.len())
-        .unwrap_or_else(|_| mem::size_of_val(value))
-}
-
-fn linked_program_image_estimated_size(image: &LinkedProgramImage) -> usize {
-    mem::size_of::<LinkedProgramImage>()
-        .saturating_add(image.service_files.len() * mem::size_of::<Arc<FileIrUnit>>())
-        .saturating_add(image.packages.len() * mem::size_of::<Arc<PackageUnit>>())
-        .saturating_add(
-            image
-                .package_files
-                .iter()
-                .map(|files| files.len() * mem::size_of::<Arc<FileIrUnit>>())
-                .sum::<usize>(),
-        )
-        .saturating_add(string_map_estimated_size(&image.routes))
-        .saturating_add(string_map_estimated_size(&image.operations))
-        .saturating_add(string_map_estimated_size(&image.operation_receivers))
-        .saturating_add(serialized_estimated_size(&image.link_overlay))
-        .saturating_add(serialized_estimated_size(&image.types))
-}
-
-fn string_map_estimated_size<T>(map: &HashMap<String, T>) -> usize {
-    mem::size_of_val(map)
-        .saturating_add(map.keys().map(String::len).sum::<usize>())
-        .saturating_add(map.len() * mem::size_of::<T>())
-}
-
 fn clamp_budget(value: usize, min: usize, max: usize) -> usize {
     value.max(min).min(max)
 }
@@ -519,106 +306,4 @@ fn machine_memory_bytes_from_sysctl() -> Option<usize> {
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{collections::HashMap, sync::Arc};
-
-    use super::*;
-    use skiff_runtime_activation::RuntimeActivation;
-    use skiff_runtime_linked_program::{
-        ExecutableKind, ExternalRefTable, FileDeclarations, FileLinkTargets, GatewayConfig,
-        LinkOverlay, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit,
-        RuntimeProgramIdentity, RuntimeTypeContext, ServiceMeta, ServiceTimeoutConfig,
-        SlotLayoutIr, SourceMapDto,
-    };
-
-    #[test]
-    fn linked_program_image_cache_is_separate_from_runtime_activation_cache() {
-        let image_cache = LinkedProgramImageCache::new();
-        let activation_cache = RuntimeActivationCache::new();
-        let file = Arc::new(linked_file_unit("file:image", "service.image"));
-        let image = Arc::new(linked_program_image(vec![Arc::clone(&file)]));
-        let identity = RuntimeProgramIdentity::new("build:image", "image:shared");
-        let cached_image =
-            image_cache.insert_arc(identity.linked_image_identity.clone(), Arc::clone(&image));
-        let fetched_image = image_cache
-            .get(&identity.linked_image_identity)
-            .expect("expected cached linked image");
-        let cached_activation = activation_cache.insert(identity, runtime_activation("v1"));
-
-        assert!(Arc::ptr_eq(&cached_image, &fetched_image));
-        assert_eq!(image_cache.len(), 1);
-        assert_eq!(activation_cache.len(), 1);
-        assert_eq!(cached_activation.dynamic_build_id(), "build:image");
-        assert_eq!(cached_activation.linked_image_identity(), "image:shared");
-        assert!(Arc::ptr_eq(&cached_image.service_files[0], &file));
-    }
-
-    fn linked_program_image(service_files: Vec<Arc<LinkedFileUnit>>) -> LinkedProgramImage {
-        LinkedProgramImage {
-            service_files,
-            packages: Vec::new(),
-            package_files: Vec::new(),
-            service_resources: Default::default(),
-            package_resources: Vec::new(),
-            routes: HashMap::new(),
-            spawn_routes: HashMap::new(),
-            operations: HashMap::new(),
-            operation_receivers: HashMap::new(),
-            link_overlay: LinkOverlay::default(),
-            types: RuntimeTypeContext::default(),
-        }
-    }
-
-    fn runtime_activation(version: &str) -> RuntimeActivation {
-        RuntimeActivation {
-            service: ServiceMeta {
-                id: "svc".to_string(),
-                display_name: Some("Service".to_string()),
-                metadata: Default::default(),
-            },
-            version: version.to_string(),
-            package_configs: Vec::new(),
-            service_dependencies: Vec::new(),
-            timeout: ServiceTimeoutConfig::default(),
-            operation_route_bindings: Vec::new(),
-            db: Vec::new(),
-            actors: Vec::new(),
-            gateway: GatewayConfig::default(),
-        }
-    }
-
-    fn linked_file_unit(identity: &str, symbol: &str) -> LinkedFileUnit {
-        LinkedFileUnit {
-            schema_version: "skiff-file-ir-v3".to_string(),
-            file_ir_identity: identity.to_string(),
-            source_ast_hash: format!("source:{identity}"),
-            module_path: if symbol.starts_with("pkg.") {
-                "pkg.main".to_string()
-            } else {
-                "svc.main".to_string()
-            },
-            ir_format_version: None,
-            opcode_table_version: None,
-            source_map: SourceMapDto::default(),
-            declarations: FileDeclarations::default(),
-            link_targets: FileLinkTargets::default(),
-            types: Vec::new(),
-            constants: Vec::new(),
-            executables: vec![LinkedExecutable {
-                kind: ExecutableKind::Function,
-                symbol: symbol.to_string(),
-                type_params: Vec::new(),
-                params: Vec::new(),
-                return_type: None,
-                self_type: None,
-                slots: SlotLayoutIr::default(),
-                may_suspend: false,
-                body: LinkedExecutableBody::default(),
-            }],
-            external_refs: ExternalRefTable::default(),
-        }
-    }
 }
