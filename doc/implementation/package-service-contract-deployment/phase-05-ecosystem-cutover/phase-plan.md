@@ -436,6 +436,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F53G | [Runtime config v2 fixtures](tasks/P5-F53G-runtime-config-v2-fixtures.md) | I53 classified | host test fixture |
 | F53H | [Router positive v2 residuals](tasks/P5-F53H-router-positive-v2-residuals.md) | I53 classified | Router tests |
 | F53I | [Runtime README v2](tasks/P5-F53I-runtime-readme-v2.md) | I53 classified | docs-only |
+| F53G result | [Runtime config v2 fixtures result](tasks/P5-F53G-runtime-config-v2-fixtures-result.md) | F53G | TASK_NOT_EXECUTABLE；拆D54 |
+| D54 | [Runtime config two-failure audit](tasks/P5-D54-runtime-config-two-failure-audit.md) | F53G classified | loader/assembly双分片 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
