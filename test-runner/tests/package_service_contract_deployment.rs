@@ -9,8 +9,8 @@ use std::{
 use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCancellationContract, BoundaryUnavailableReason,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, IngressProtocol,
-    PackageArtifactRef, PackageLocalAbiSymbol, RuntimeAssemblyRef, ServiceContractRef,
-    ServiceDeploymentRef,
+    MetadataValue, PackageArtifactRef, PackageConfigRequirement, PackageLocalAbiSymbol,
+    RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -29,6 +29,7 @@ use skiff_test_runner::{
     package_service_host_fixture::{
         prepare_package_service_host_fixture, PACKAGE_SERVICE_HOST_FIXTURE_SCHEMA_VERSION,
     },
+    package_test_assembly::{assemble_package_test_fixture_with_config, PackageTestConfigLiteral},
     run_skiff_tests_with_options,
     test_overlay::compile_package_test_overlay,
     SkiffTestError, SkiffTestOptions,
@@ -527,6 +528,123 @@ fn base_assembly_supplies_provider_selectors_and_real_owner_bindings() {
 }
 
 #[test]
+fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
+    let BaseAssemblyScenario {
+        _root,
+        artifacts,
+        consumer,
+        base,
+        ..
+    } = create_base_assembly_scenario();
+    let mut project = compile_package_project(&platform_sources(), &consumer, &artifacts).unwrap();
+    project.dependency_packages[0]
+        .runtime_requirements
+        .config
+        .push(PackageConfigRequirement {
+            path: "helper.token".to_string(),
+            value_type: "number".to_string(),
+            required: true,
+        });
+    project.dependency_packages[0]
+        .runtime_requirements
+        .config
+        .push(PackageConfigRequirement {
+            path: "helper.optional".to_string(),
+            value_type: "bool".to_string(),
+            required: false,
+        });
+    skiff_artifact_identity::assign_package_artifact_identities(
+        &mut project.dependency_packages[0],
+    )
+    .unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut project.package.artifact)
+        .unwrap();
+    let exact_dependency =
+        skiff_artifact_identity::package_artifact_ref(&project.dependency_packages[0]).unwrap();
+    let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
+    let probe_overlay =
+        compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+    let exact_package =
+        skiff_artifact_identity::package_artifact_ref(&probe_overlay.overlay.artifact).unwrap();
+
+    let assemble = |literals: &[PackageTestConfigLiteral]| {
+        let overlay =
+            compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
+        assemble_package_test_fixture_with_config(&project, overlay, base.clone(), literals)
+    };
+    let required = PackageTestConfigLiteral {
+        package: exact_package.clone(),
+        key: "app.token".to_string(),
+        value: MetadataValue::String("owned-by-base".to_string()),
+    };
+    let dependency_required = PackageTestConfigLiteral {
+        package: exact_dependency.clone(),
+        key: "helper.token".to_string(),
+        value: MetadataValue::Number(7.into()),
+    };
+    let fixture = assemble(&[required.clone(), dependency_required.clone()]).unwrap();
+    assert_eq!(
+        fixture.records.deployments[0].config_literals,
+        vec![
+            skiff_artifact_model::ConfigLiteralBinding {
+                path: "app.token".to_string(),
+                value: MetadataValue::String("owned-by-base".to_string()),
+            },
+            skiff_artifact_model::ConfigLiteralBinding {
+                path: "helper.token".to_string(),
+                value: MetadataValue::Number(7.into()),
+            },
+        ]
+    );
+
+    let missing = assemble(&[]).unwrap_err().to_string();
+    assert!(missing.contains("required test config literal helper.token"));
+    let wrong_type = assemble(&[
+        PackageTestConfigLiteral {
+            value: MetadataValue::Bool(true),
+            ..required.clone()
+        },
+        dependency_required.clone(),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_type.contains("must be string"));
+    let unknown = assemble(&[
+        PackageTestConfigLiteral {
+            key: "app.unknown".to_string(),
+            ..required.clone()
+        },
+        dependency_required.clone(),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(unknown.contains("unknown requirement"));
+    let duplicate = assemble(&[
+        required.clone(),
+        required.clone(),
+        dependency_required.clone(),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(duplicate.contains("repeats exact package requirement"));
+
+    let with_optional = assemble(&[
+        required,
+        dependency_required,
+        PackageTestConfigLiteral {
+            package: exact_dependency,
+            key: "helper.optional".to_string(),
+            value: MetadataValue::Bool(true),
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        with_optional.records.deployments[0].config_literals.len(),
+        3
+    );
+}
+
+#[test]
 fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
     let root = TestRoot::new("overlay");
     let artifacts = root.child("artifacts");
@@ -678,6 +796,7 @@ fn non_live_runtime_root_cannot_be_nested_under_the_external_store() {
             platform_sources: platform_sources(),
             runtime_artifact_root: Some(runtime),
             base_assembly: None,
+            test_config_literals: Vec::new(),
             activation_url: Some("http://127.0.0.1:9/__skiff/activate-assembly".to_string()),
             ingress_url: Some("http://127.0.0.1:9".to_string()),
             environment: "nested-runtime-root".to_string(),

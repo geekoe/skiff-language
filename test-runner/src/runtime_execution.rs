@@ -9,7 +9,9 @@ use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::CanonicalPackageProject,
     canonical_store::CanonicalBaseAssembly,
-    package_test_assembly::{assemble_package_test_fixture, CanonicalPackageTestEntrypoint},
+    package_test_assembly::{
+        assemble_package_test_fixture_with_config, CanonicalPackageTestEntrypoint,
+    },
     test_discovery::PackageTestCase,
     test_overlay::compile_package_test_overlay,
     SkiffTestOptions, SkiffTestResult, SkiffTestSummary,
@@ -41,7 +43,12 @@ pub fn run_package_cases(
     let base = CanonicalBaseAssembly::load(source_artifact_root, options.base_assembly.as_deref())?;
     let overlay =
         compile_package_test_overlay(&options.platform_sources, package_root, &project, &cases)?;
-    let fixture = assemble_package_test_fixture(&project, overlay, base)?;
+    let fixture = assemble_package_test_fixture_with_config(
+        &project,
+        overlay,
+        base,
+        &options.test_config_literals,
+    )?;
     fixture
         .records
         .publish(source_artifact_root, runtime_artifact_root)?;

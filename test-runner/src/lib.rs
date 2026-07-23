@@ -49,6 +49,7 @@ pub struct SkiffTestOptions {
     /// Harness-owned writable canonical root. It has no public CLI spelling.
     pub runtime_artifact_root: Option<PathBuf>,
     pub base_assembly: Option<String>,
+    pub test_config_literals: Vec<package_test_assembly::PackageTestConfigLiteral>,
     pub activation_url: Option<String>,
     pub ingress_url: Option<String>,
     pub environment: String,

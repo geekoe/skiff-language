@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use skiff_artifact_identity::{package_artifact_ref, service_contract_ref, service_deployment_ref};
 use skiff_artifact_model::{
-    ActivationPolicy, BoundaryCallableProjection, DeploymentDiagnosticText,
+    ActivationPolicy, BoundaryCallableProjection, ConfigLiteralBinding, DeploymentDiagnosticText,
     DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
-    IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageRequirementKey,
-    ResourcePolicy, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentInput,
-    ServiceDeploymentOperationInput, ServiceRequirementKey, ServiceSelectorBinding,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    IngressSelector, MetadataValue, PackageArtifact, PackageArtifactRef, PackageBinding,
+    PackageRequirementKey, ResourcePolicy, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentInput, ServiceDeploymentOperationInput, ServiceRequirementKey,
+    ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_contract, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
@@ -41,10 +42,27 @@ pub struct CanonicalPackageTestFixture {
     pub entrypoints: Vec<CanonicalPackageTestEntrypoint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageTestConfigLiteral {
+    pub package: PackageArtifactRef,
+    pub key: String,
+    pub value: MetadataValue,
+}
+
 pub fn assemble_package_test_fixture(
     project: &CanonicalPackageProject,
     overlay: PublishedPackageTestOverlay,
     base: CanonicalBaseAssembly,
+) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
+    assemble_package_test_fixture_with_config(project, overlay, base, &[])
+}
+
+pub fn assemble_package_test_fixture_with_config(
+    project: &CanonicalPackageProject,
+    overlay: PublishedPackageTestOverlay,
+    base: CanonicalBaseAssembly,
+    test_config_literals: &[PackageTestConfigLiteral],
 ) -> Result<CanonicalPackageTestFixture, CanonicalFixtureError> {
     let contract = compile_package_test_contract(&overlay)?;
     let contract_ref = service_contract_ref(&contract)
@@ -60,6 +78,8 @@ pub fn assemble_package_test_fixture(
     let package_bindings = canonical_package_bindings(&deployment_packages)?;
     let service_selectors = package_test_service_selectors(&deployment_packages, &base)?;
     let owner = binding_owner(&base, &production_ref)?;
+    let config_literals =
+        package_test_config_literals(&deployment_packages, owner, test_config_literals)?;
     let deployment = project_service_deployment(
         package_test_deployment_input(
             &overlay,
@@ -70,6 +90,7 @@ pub fn assemble_package_test_fixture(
             service_selectors,
             ingress.clone(),
             owner,
+            config_literals,
         ),
         &contract,
         &deployment_packages,
@@ -331,6 +352,7 @@ fn package_test_deployment_input(
     service_selectors: Vec<ServiceSelectorBinding>,
     ingress: Vec<DeploymentIngressBinding>,
     owner: Option<&ServiceDeployment>,
+    config_literals: Vec<ConfigLiteralBinding>,
 ) -> ServiceDeploymentInput {
     let revision = implementation
         .package_build_id
@@ -347,9 +369,7 @@ fn package_test_deployment_input(
         package_bindings,
         service_selectors,
         ingress,
-        config_literals: owner
-            .map(|value| value.config_literals.clone())
-            .unwrap_or_default(),
+        config_literals,
         secret_refs: owner
             .map(|value| value.secret_refs.clone())
             .unwrap_or_default(),
@@ -383,6 +403,128 @@ fn package_test_deployment_input(
             ]),
         },
     }
+}
+
+fn package_test_config_literals(
+    packages: &[PackageArtifact],
+    owner: Option<&ServiceDeployment>,
+    supplied: &[PackageTestConfigLiteral],
+) -> Result<Vec<ConfigLiteralBinding>, CanonicalFixtureError> {
+    let package_by_ref = packages
+        .iter()
+        .map(|package| {
+            package_artifact_ref(package)
+                .map(|reference| (reference, package))
+                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut supplied_by_key = BTreeMap::new();
+    for literal in supplied {
+        let exact_key = (literal.package.clone(), literal.key.clone());
+        if supplied_by_key.insert(exact_key, literal).is_some() {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test config literal repeats exact package requirement {} {}",
+                literal.package.package_build_id, literal.key
+            )));
+        }
+        let package = package_by_ref.get(&literal.package).ok_or_else(|| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "test config literal names package {} outside the exact deployment closure",
+                literal.package.package_build_id
+            ))
+        })?;
+        let requirement = package
+            .runtime_requirements
+            .config
+            .iter()
+            .find(|requirement| requirement.path == literal.key)
+            .ok_or_else(|| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "test config literal names unknown requirement {} for package {}",
+                    literal.key, literal.package.package_build_id
+                ))
+            })?;
+        validate_test_literal_type(requirement.value_type.as_str(), &literal.value).map_err(
+            |actual| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "test config literal {} for package {} must be {}, got {actual}",
+                    literal.key, literal.package.package_build_id, requirement.value_type
+                ))
+            },
+        )?;
+    }
+
+    let mut projected = owner
+        .map(|deployment| deployment.config_literals.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|literal| (literal.path.clone(), literal))
+        .collect::<BTreeMap<_, _>>();
+    let inherited_secret_paths = owner
+        .into_iter()
+        .flat_map(|deployment| &deployment.secret_refs)
+        .map(|binding| binding.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for literal in supplied {
+        if inherited_secret_paths.contains(literal.key.as_str()) {
+            return Err(CanonicalFixtureError::InvalidInput(format!(
+                "test config literal {} conflicts with the exact base-assembly secret binding",
+                literal.key
+            )));
+        }
+        match projected.get(&literal.key) {
+            Some(inherited) if inherited.value != literal.value => {
+                return Err(CanonicalFixtureError::InvalidInput(format!(
+                    "test config literal {} conflicts with the exact base-assembly binding",
+                    literal.key
+                )));
+            }
+            Some(_) => {}
+            None => {
+                projected.insert(
+                    literal.key.clone(),
+                    ConfigLiteralBinding {
+                        path: literal.key.clone(),
+                        value: literal.value.clone(),
+                    },
+                );
+            }
+        }
+    }
+    for (package_ref, package) in &package_by_ref {
+        for requirement in &package.runtime_requirements.config {
+            if requirement.required
+                && !projected.contains_key(&requirement.path)
+                && !inherited_secret_paths.contains(requirement.path.as_str())
+            {
+                return Err(CanonicalFixtureError::InvalidInput(format!(
+                    "required test config literal {} for package {} is missing",
+                    requirement.path, package_ref.package_build_id
+                )));
+            }
+        }
+    }
+    Ok(projected.into_values().collect())
+}
+
+fn validate_test_literal_type(value_type: &str, value: &MetadataValue) -> Result<(), &'static str> {
+    let actual = match value {
+        MetadataValue::String(_) => "string",
+        MetadataValue::Number(_) => "number",
+        MetadataValue::Bool(_) => "bool",
+        MetadataValue::Array(_) => "json",
+        MetadataValue::Object(_) => "jsonObject",
+        MetadataValue::Null => "json",
+    };
+    let valid = match value_type {
+        "string" => matches!(value, MetadataValue::String(_)),
+        "number" => matches!(value, MetadataValue::Number(_)),
+        "bool" => matches!(value, MetadataValue::Bool(_)),
+        "json" => true,
+        "jsonObject" => matches!(value, MetadataValue::Object(_)),
+        _ => false,
+    };
+    valid.then_some(()).ok_or(actual)
 }
 
 fn unique_packages(

@@ -2639,6 +2639,7 @@ name = "skiff-test-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",

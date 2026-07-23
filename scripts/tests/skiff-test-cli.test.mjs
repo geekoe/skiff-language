@@ -22,7 +22,9 @@ test('skiff test selects the canonical binary once for absolute and relative roo
   const fixture = await fakeCargoFixture();
   try {
     const artifactRoot = join(fixture.root, 'artifacts');
+    const testConfigLiterals = join(fixture.root, 'test-config-literals.json');
     await mkdir(artifactRoot);
+    await writeFile(testConfigLiterals, '[]\n');
     const assembly = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
     for (const testRoot of [input, relative(root, input)]) {
       const result = await runProcess(process.execPath, [
@@ -33,6 +35,8 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         artifactRoot,
         '--base-assembly',
         assembly,
+        '--test-config-literals',
+        testConfigLiterals,
         '--live',
         '--activation-url',
         'http://router.test:4101/__skiff/activate-assembly',
@@ -70,6 +74,8 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         root,
         '--base-assembly',
         assembly,
+        '--test-config-literals',
+        testConfigLiterals,
         '--activation-url',
         'http://router.test:4101/__skiff/activate-assembly',
         '--ingress-url',

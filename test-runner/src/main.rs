@@ -5,7 +5,7 @@ use skiff_test_runner::{
     run_skiff_tests_with_options, validate_activation_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir> --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--test-config-literals <json-file>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]";
 
 fn main() {
     if let Err(message) = run() {
@@ -35,6 +35,7 @@ struct RawCliArgs {
     artifact_root: Option<PathBuf>,
     platform_source_root: Option<PathBuf>,
     base_assembly: Option<String>,
+    test_config_literals: Option<PathBuf>,
     activation_url: Option<String>,
     ingress_url: Option<String>,
     environment: Option<String>,
@@ -62,6 +63,11 @@ fn parse_args() -> Result<Option<CliArgs>, String> {
                 &arg,
             )?,
             "--base-assembly" => set_once(&mut parsed.base_assembly, next(&mut args, &arg)?, &arg)?,
+            "--test-config-literals" => set_once_path(
+                &mut parsed.test_config_literals,
+                next(&mut args, &arg)?,
+                &arg,
+            )?,
             "--activation-url" => {
                 let value = next(&mut args, &arg)?;
                 validate_activation_url(&value)?;
@@ -103,6 +109,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         artifact_root,
         platform_source_root,
         base_assembly,
+        test_config_literals,
         activation_url,
         ingress_url,
         environment,
@@ -117,6 +124,20 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         platform_source_root.ok_or_else(|| "missing --platform-source-root".to_string())?;
     let platform_sources =
         CompilerPlatformSources::new(&platform_source_root).map_err(|error| error.to_string())?;
+    let test_config_literals = match test_config_literals {
+        Some(path) => {
+            let source = std::fs::read(&path).map_err(|error| {
+                format!(
+                    "failed to read --test-config-literals {}: {error}",
+                    path.display()
+                )
+            })?;
+            serde_json::from_slice(&source).map_err(|error| {
+                format!("invalid --test-config-literals {}: {error}", path.display())
+            })?
+        }
+        None => Vec::new(),
+    };
     if live
         && (activation_url.is_none()
             || ingress_url.is_none()
@@ -179,6 +200,7 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
             platform_sources,
             runtime_artifact_root,
             base_assembly,
+            test_config_literals,
             activation_url,
             ingress_url,
             environment,
