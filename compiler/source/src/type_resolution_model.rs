@@ -2255,13 +2255,13 @@ fn index_artifact_package_types(
     artifact: &PackageArtifact,
     package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
 ) -> Result<(), String> {
+    let symbolic_types = artifact_symbolic_type_index(artifact)?;
     let local_type_names = artifact
         .package_local_abi
         .public_symbols
         .iter()
         .filter_map(|(path, symbol)| {
-            matches!(symbol, PackageLocalAbiSymbol::Type { .. })
-                .then(|| path.rsplit('.').next().unwrap_or(path).to_string())
+            matches!(symbol, PackageLocalAbiSymbol::Type { .. }).then(|| path.clone())
         })
         .collect::<BTreeSet<_>>();
     for (public_path, symbol) in &artifact.package_local_abi.public_symbols {
@@ -2282,7 +2282,7 @@ fn index_artifact_package_types(
         let module_path = public_path
             .rsplit_once('.')
             .map_or("", |(module, _)| module);
-        let kind = artifact_type_kind(descriptor).map_err(|message| {
+        let kind = artifact_type_kind(descriptor, &symbolic_types).map_err(|message| {
             format!(
                 "package {} exported type {} has unusable descriptor: {message}",
                 artifact.package_id, public_path
@@ -2309,21 +2309,83 @@ fn index_artifact_package_types(
     Ok(())
 }
 
-fn artifact_type_kind(descriptor: &TypeDescriptorIr) -> Result<SourceTypeKind, String> {
+type ArtifactSymbolicTypeIndex = BTreeMap<(String, String), String>;
+
+fn artifact_symbolic_type_index(
+    artifact: &PackageArtifact,
+) -> Result<ArtifactSymbolicTypeIndex, String> {
+    let mut index = BTreeMap::new();
+    for (public_path, export) in &artifact.implementation_links.types {
+        let Some(PackageLocalAbiSymbol::Type {
+            local_type_id,
+            descriptor,
+        }) = artifact.package_local_abi.public_symbols.get(public_path)
+        else {
+            return Err(format!(
+                "package {} implementation type {} is not a public ABI type",
+                artifact.package_id, public_path
+            ));
+        };
+        if local_type_id != &format!("type:{public_path}") {
+            return Err(format!(
+                "package {} exported type {} has mismatched local type identity {}",
+                artifact.package_id, public_path, local_type_id
+            ));
+        }
+        if export.descriptor.as_ref() != Some(descriptor) {
+            return Err(format!(
+                "package {} exported type {} descriptor disagrees with its implementation link",
+                artifact.package_id, public_path
+            ));
+        }
+        if export.symbol.is_empty() || export.file.module_path.is_empty() {
+            return Err(format!(
+                "package {} exported type {} has an incomplete symbolic implementation link",
+                artifact.package_id, public_path
+            ));
+        }
+        let key = (export.file.module_path.clone(), export.symbol.clone());
+        if let Some(existing) = index.insert(key.clone(), public_path.clone()) {
+            return Err(format!(
+                "package {} exported types {} and {} ambiguously identify {}.{}",
+                artifact.package_id, existing, public_path, key.0, key.1
+            ));
+        }
+    }
+    for (public_path, symbol) in &artifact.package_local_abi.public_symbols {
+        if matches!(symbol, PackageLocalAbiSymbol::Type { .. })
+            && !artifact
+                .implementation_links
+                .types
+                .contains_key(public_path)
+        {
+            return Err(format!(
+                "package {} public ABI type {} has no symbolic implementation link",
+                artifact.package_id, public_path
+            ));
+        }
+    }
+    Ok(index)
+}
+
+fn artifact_type_kind(
+    descriptor: &TypeDescriptorIr,
+    symbolic_types: &ArtifactSymbolicTypeIndex,
+) -> Result<SourceTypeKind, String> {
     match descriptor {
         TypeDescriptorIr::Record { fields } => Ok(SourceTypeKind::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), artifact_type_text(ty)?)))
+                .map(|(name, ty)| Ok((name.clone(), artifact_type_text(ty, symbolic_types)?)))
                 .collect::<Result<_, String>>()?,
         }),
         TypeDescriptorIr::Alias { target } => Ok(SourceTypeKind::Alias {
-            target: artifact_type_text(target)?,
+            target: artifact_type_text(target, symbolic_types)?,
         }),
         TypeDescriptorIr::Union { variants } => Ok(SourceTypeKind::Alias {
             target: variants
                 .iter()
-                .map(artifact_type_text)
+                .map(|variant| artifact_type_text(variant, symbolic_types))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(" | "),
         }),
@@ -2333,15 +2395,31 @@ fn artifact_type_kind(descriptor: &TypeDescriptorIr) -> Result<SourceTypeKind, S
     }
 }
 
-fn artifact_type_text(ty: &TypeRefIr) -> Result<String, String> {
+fn artifact_type_text(
+    ty: &TypeRefIr,
+    symbolic_types: &ArtifactSymbolicTypeIndex,
+) -> Result<String, String> {
     match ty {
         TypeRefIr::Native { name, args } if args.is_empty() => Ok(name.clone()),
         TypeRefIr::Native { name, args } => Ok(format!(
             "{name}<{}>",
             args.iter()
-                .map(artifact_type_text)
+                .map(|arg| artifact_type_text(arg, symbolic_types))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ")
+        )),
+        TypeRefIr::ServiceSymbol { symbol } => symbolic_types
+            .get(&(symbol.module_path.clone(), symbol.symbol.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "service symbol {}.{} is not an identity-validated public artifact type",
+                    symbol.module_path, symbol.symbol
+                )
+            }),
+        TypeRefIr::DbObjectSymbol { symbol } => Err(format!(
+            "db object symbol {}.{} has no public package artifact type semantics",
+            symbol.module_path, symbol.symbol
         )),
         TypeRefIr::PackageSymbol { symbol } => Ok(format!(
             "{}.{}",
@@ -2355,16 +2433,23 @@ fn artifact_type_text(ty: &TypeRefIr) -> Result<String, String> {
             "{{ {} }}",
             fields
                 .iter()
-                .map(|(name, ty)| Ok(format!("{name}: {}", artifact_type_text(ty)?)))
+                .map(|(name, ty)| {
+                    Ok(format!(
+                        "{name}: {}",
+                        artifact_type_text(ty, symbolic_types)?
+                    ))
+                })
                 .collect::<Result<Vec<_>, String>>()?
                 .join(", ")
         )),
         TypeRefIr::Union { items } => Ok(items
             .iter()
-            .map(artifact_type_text)
+            .map(|item| artifact_type_text(item, symbolic_types))
             .collect::<Result<Vec<_>, _>>()?
             .join(" | ")),
-        TypeRefIr::Nullable { inner } => Ok(format!("{}?", artifact_type_text(inner)?)),
+        TypeRefIr::Nullable { inner } => {
+            Ok(format!("{}?", artifact_type_text(inner, symbolic_types)?))
+        }
         TypeRefIr::Literal {
             value: LiteralIr::String { value },
         } => serde_json::to_string(value).map_err(|error| error.to_string()),
@@ -4264,20 +4349,23 @@ mod tests {
                 ),
             ]),
         };
-        let SourceTypeKind::Record { fields } =
-            artifact_type_kind(&descriptor).expect("descriptor should be self-contained")
+        let SourceTypeKind::Record { fields } = artifact_type_kind(&descriptor, &BTreeMap::new())
+            .expect("descriptor should be self-contained")
         else {
             panic!("record descriptor should remain a record")
         };
         assert_eq!(fields["items"], "Array<{ label: string }>");
         assert_eq!(fields["state"], "\"ready\" | \"done\"");
 
-        let alias = artifact_type_kind(&TypeDescriptorIr::Alias {
-            target: TypeRefIr::Native {
-                name: "Array".to_string(),
-                args: vec![TypeRefIr::native("string")],
+        let alias = artifact_type_kind(
+            &TypeDescriptorIr::Alias {
+                target: TypeRefIr::Native {
+                    name: "Array".to_string(),
+                    args: vec![TypeRefIr::native("string")],
+                },
             },
-        })
+            &BTreeMap::new(),
+        )
         .expect("alias descriptor should be self-contained");
         assert!(matches!(
             alias,
@@ -4287,11 +4375,56 @@ mod tests {
 
     #[test]
     fn artifact_descriptors_reject_non_self_describing_local_indices() {
-        let error = artifact_type_kind(&TypeDescriptorIr::Alias {
-            target: TypeRefIr::LocalType { type_index: 7 },
-        })
+        let error = artifact_type_kind(
+            &TypeDescriptorIr::Alias {
+                target: TypeRefIr::LocalType { type_index: 7 },
+            },
+            &BTreeMap::new(),
+        )
         .expect_err("ambient FileIR lookup must not be used");
         assert!(error.contains("not self-describing"));
+    }
+
+    #[test]
+    fn artifact_descriptors_resolve_only_exported_symbolic_type_closure() {
+        let symbol = ServiceSymbolRef {
+            module_path: "types".to_string(),
+            symbol: "LlmContentPart".to_string(),
+        };
+        let descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "content".to_string(),
+                TypeRefIr::Native {
+                    name: "Array".to_string(),
+                    args: vec![TypeRefIr::ServiceSymbol {
+                        symbol: symbol.clone(),
+                    }],
+                },
+            )]),
+        };
+        let symbolic_types = BTreeMap::from([(
+            (symbol.module_path.clone(), symbol.symbol.clone()),
+            "LlmContentPart".to_string(),
+        )]);
+        let SourceTypeKind::Record { fields } = artifact_type_kind(&descriptor, &symbolic_types)
+            .expect("public symbolic type should reconstruct")
+        else {
+            panic!("record descriptor should remain a record")
+        };
+        assert_eq!(fields["content"], "Array<LlmContentPart>");
+
+        let error = artifact_type_kind(&descriptor, &BTreeMap::new())
+            .expect_err("a private or missing symbolic type must fail closed");
+        assert!(error.contains("identity-validated public artifact type"));
+
+        let db_error = artifact_type_kind(
+            &TypeDescriptorIr::Alias {
+                target: TypeRefIr::DbObjectSymbol { symbol },
+            },
+            &symbolic_types,
+        )
+        .expect_err("db object symbols are not package-public type facts");
+        assert!(db_error.contains("no public package artifact type semantics"));
     }
 }
 
