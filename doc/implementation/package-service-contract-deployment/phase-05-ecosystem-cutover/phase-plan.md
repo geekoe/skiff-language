@@ -363,6 +363,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F46A result | [Test-runner replica health parity result](tasks/P5-F46A-test-runner-replica-health-parity-result.md) | `9529624` | complete；wire 9/9 |
 | I36 result | [Test-runner health combined result](tasks/P5-I36-test-runner-health-combined-result.md) | `9529624` | PASS；producer/consumer parity |
 | I35C | [Spawn submit fixture post-repair acceptance](tasks/P5-I35C-spawn-submit-fixture-post-repair.md) | I36 PASS | 新candidate真实fixture复验 |
+| I35C result | [Spawn submit fixture post-repair result](tasks/P5-I35C-spawn-submit-fixture-post-repair-result.md) | `9529624` | PASS；I35关闭 |
+| R05C | [Generation lifecycle wire reacceptance](tasks/P5-R05C-generation-lifecycle-wire-reacceptance.md) | I35 closed | 高；新wire周期一次真实transcript |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
