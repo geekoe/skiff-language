@@ -59,6 +59,40 @@ async fn package_direct_same_heap_uses_canonical_executor_and_exposes_callee_mut
     assert_array_item(&heap, caller_handle, "package-callee");
 }
 
+#[tokio::test]
+async fn object_materialization_interpreter_heap_shape_distinguishes_construct_and_map_literal() {
+    let (object, object_heap) = execute_materialization_expression(ExprIr::Construct {
+        type_ref: TypeRefIr::Record {
+            fields: BTreeMap::from([("value".to_string(), TypeRefIr::native("string"))]),
+        },
+        fields: BTreeMap::from([("value".to_string(), ExprRefIr { expression: 0 })]),
+    })
+    .await;
+    let RuntimeValue::Heap(object_handle) = object else {
+        panic!("Construct should return a heap value")
+    };
+    assert!(matches!(
+        object_heap
+            .get(object_handle)
+            .expect("Construct heap handle should resolve"),
+        HeapNode::Object(_)
+    ));
+
+    let (map, map_heap) = execute_materialization_expression(ExprIr::MapLiteral {
+        entries: BTreeMap::from([("value".to_string(), ExprRefIr { expression: 0 })]),
+    })
+    .await;
+    let RuntimeValue::Heap(map_handle) = map else {
+        panic!("MapLiteral should return a heap value")
+    };
+    assert!(matches!(
+        map_heap
+            .get(map_handle)
+            .expect("MapLiteral heap handle should resolve"),
+        HeapNode::Map(_)
+    ));
+}
+
 #[test]
 fn ordinary_in_process_keeps_lane_specific_type_arguments_out_of_shared_planner() {
     let descriptor = BoundaryOperationDescriptor {
@@ -93,6 +127,111 @@ fn ordinary_in_process_keeps_lane_specific_type_arguments_out_of_shared_planner(
 struct PackageDirectFixture {
     eval_target: RuntimeAssemblyEvalTarget,
     caller_addr: skiff_runtime_linked_program::ExecutableAddr,
+}
+
+async fn execute_materialization_expression(expression: ExprIr) -> (RuntimeValue, RequestHeap) {
+    let fixture = materialization_fixture(expression);
+    let interpreter = Interpreter::for_runtime_assembly(test_runtime::runtime_factory());
+    let context = execution_context(&interpreter, fixture.eval_target);
+    let mut heap = RequestHeap::default();
+    let value = interpreter
+        .execute_runtime_assembly_addr(context, &mut heap, &fixture.caller_addr, Vec::new())
+        .await
+        .expect("materialization expression should execute");
+    (value, heap)
+}
+
+fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {
+    let mut file = FileIrUnit::empty("object_materialization.heap_shape", "source:heap-shape");
+    file.executables.push(ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "heapShape".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::native("Json"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body: ExecutableBody {
+            blocks: vec![BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            }],
+            statements: vec![StmtIr::Return {
+                value: Some(ExprRefIr { expression: 1 }),
+            }],
+            expressions: vec![
+                ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "materialized".to_string(),
+                    },
+                },
+                expression,
+            ],
+        },
+        source_span: None,
+    });
+    skiff_artifact_identity::assign_file_ir_identity(&mut file)
+        .expect("materialization File IR should receive a canonical identity");
+    let mut package = private_package("example.object-materialization", &file);
+    skiff_artifact_identity::assign_package_artifact_identities(&mut package)
+        .expect("materialization package should receive canonical identities");
+    let package_ref = package_ref(&package);
+    let assembly = RuntimeAssembly {
+        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
+        assembly_identity: AssemblyIdentity::new("assembly:object-materialization-heap-shape"),
+        roots: Vec::new(),
+        resolved_deployments: Vec::new(),
+        resolved_contracts: Vec::new(),
+        resolved_packages: vec![package_ref.clone()],
+        package_link_plan: CanonicalPackageLinkPlan {
+            code_slots: vec![PackageCodeSlot {
+                package: package_ref.clone(),
+            }],
+            package_links: Vec::new(),
+        },
+        service_binding_templates: Vec::new(),
+        activation_templates: Vec::new(),
+        global_ingress: Vec::new(),
+    };
+    let shared = Arc::new(
+        SharedPackageLinkedImage::from_runtime_assembly(
+            &assembly,
+            [HydratedPackageCode::new(
+                Arc::new(package),
+                vec![Arc::new(file.clone())],
+                PublicationResourceTable::default(),
+            )],
+        )
+        .expect("materialization package should hydrate"),
+    );
+    let linked_file = skiff_runtime_linker::linked_file_unit_from_artifact(&file)
+        .expect("materialization File IR should link");
+    let code = Arc::new(
+        AssemblyPackageExecutionCode::try_new(&shared.code_slots()[0], vec![Arc::new(linked_file)])
+            .expect("materialization execution slot should match the canonical source"),
+    );
+    let image = Arc::new(
+        AssemblyExecutionImage::try_new(shared, vec![code], RuntimeTypeContext::default())
+            .expect("materialization execution image should build"),
+    );
+    let caller_addr = skiff_runtime_linked_program::ExecutableAddr {
+        unit: skiff_runtime_linked_program::UnitAddr::Package(0),
+        file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(0),
+        executable: 0,
+    };
+    let activation = activation_context(assembly.assembly_identity, package_ref.package_build_id);
+    let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::new(TestResolver {
+        activation: Arc::clone(&activation),
+    });
+    let request = RequestActivationContext::begin(activation)
+        .expect("materialization request generation should begin");
+    let eval_target = RuntimeAssemblyEvalTarget::new(image, request, resolver)
+        .expect("materialization image and activation should form an eval target");
+    PackageDirectFixture {
+        eval_target,
+        caller_addr,
+    }
 }
 
 fn package_direct_fixture() -> PackageDirectFixture {

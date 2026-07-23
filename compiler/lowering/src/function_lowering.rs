@@ -40,6 +40,8 @@ use super::{
     },
 };
 
+mod object_literal;
+
 const SPAWN_SUBMIT_METADATA_KEY: &str = "spawnSubmit";
 const SPAWN_FUNCTION_TARGET_PREFIX: &str = "function:";
 
@@ -1035,18 +1037,7 @@ impl<'a> FunctionLowerer<'a> {
                 right: self.lower_expr(right)?,
             },
             Expr::ObjectLiteral { entries } => {
-                let mut lowered = BTreeMap::new();
-                for entry in entries {
-                    let key = self.lower_object_literal_key(&entry.key)?;
-                    if lowered.contains_key(&key) {
-                        return Err(CompileError::Semantic(format!(
-                            "duplicate object literal key `{key}` in File IR unit expression"
-                        )));
-                    }
-                    let value = self.lower_expr(&entry.value)?;
-                    lowered.insert(key, value);
-                }
-                ExprIr::MapLiteral { entries: lowered }
+                self.lower_target_typed_object_literal(expression_key.as_ref(), entries)?
             }
             Expr::Patch { target, operations } => self.lower_patch_expr(target, operations)?,
             Expr::Record {

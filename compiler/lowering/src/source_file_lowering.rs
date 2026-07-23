@@ -565,6 +565,9 @@ fn unsupported(message: impl Into<String>) -> CompileError {
 mod interface_execution_tests;
 
 #[cfg(test)]
+mod object_materialization_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
