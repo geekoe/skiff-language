@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    native_signature_for_receiver_op, BuiltinReceiverCallableSemantics, NativeCallableSemantics,
-    NativeSignatureDef, BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS,
-    STD_NATIVE_SIGNATURES,
+    validate_supported_receiver_builtin_op, BuiltinReceiverCallableSemantics,
+    NativeCallableSemantics, NativeSignatureDef, BUILTIN_RECEIVER_CALLABLE_SEMANTICS,
+    STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_native_contract::{NativeRequiredContext, NativeSignatureRegistry};
 
@@ -100,6 +100,20 @@ pub(super) fn validate_native_callable_semantics_registry(
             ));
         }
 
+        let Some(canonical_semantics) = STD_NATIVE_CALLABLE_SEMANTICS
+            .iter()
+            .find(|entry| entry.binding_key == binding_key)
+        else {
+            return Err(format!(
+                "native callable semantics entry {binding_key} is not in the exact audited registry"
+            ));
+        };
+        if semantics != canonical_semantics {
+            return Err(format!(
+                "native callable semantics entry {binding_key} does not match the exact audited semantics"
+            ));
+        }
+
         let Some(canonical_signature) = STD_NATIVE_SIGNATURES
             .iter()
             .find(|signature| signature.binding_key == binding_key)
@@ -136,20 +150,33 @@ pub(super) fn validate_native_callable_semantics_registry(
             .iter()
             .filter(|entry| entry.binding_key == binding_key)
             .count();
-        if required_context == NativeRequiredContext::None && handler_count == 0 {
-            return Err(format!(
-                "native callable semantics entry {binding_key} is missing a runtime handler"
-            ));
-        }
-        let route = runtime_shared_native_route_for_validation(binding_key, handler_count > 0)
-            .ok_or_else(|| {
-                format!("native callable semantics entry {binding_key} has no runtime route")
-            })?;
-        let route_matches = match (binding_key, required_context, route) {
-            ("core.date.now", NativeRequiredContext::Time, RuntimeNativeRoute::NativeRegistry)
-            | ("std.time.sleep", NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
-            (_, NativeRequiredContext::Websocket, RuntimeNativeRoute::Websocket) => true,
-            (_, NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry) => true,
+        let canonical_registry_handler = NATIVE_BINDINGS
+            .iter()
+            .any(|entry| entry.binding_key == binding_key);
+        let route =
+            runtime_shared_native_route_for_validation(binding_key, canonical_registry_handler)
+                .ok_or_else(|| {
+                    format!("native callable semantics entry {binding_key} has no runtime route")
+                })?;
+        let route_matches = match (required_context, route) {
+            (NativeRequiredContext::Actor, RuntimeNativeRoute::Actor)
+            | (NativeRequiredContext::File, RuntimeNativeRoute::File)
+            | (NativeRequiredContext::HttpClient, RuntimeNativeRoute::Http)
+            | (NativeRequiredContext::HttpResponseStream, RuntimeNativeRoute::Http)
+            | (NativeRequiredContext::Websocket, RuntimeNativeRoute::Websocket)
+            | (NativeRequiredContext::Telemetry, RuntimeNativeRoute::Telemetry)
+            | (NativeRequiredContext::Resource, RuntimeNativeRoute::Resource)
+            | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
+            | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
+            | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
+            | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
+            // Date.now is synchronously backed by the registry, but still requires
+            // the invocation layer to provide the audited Time context.
+            (NativeRequiredContext::Time, RuntimeNativeRoute::NativeRegistry)
+                if binding_key == "core.date.now" =>
+            {
+                true
+            }
             _ => false,
         };
         if !route_matches {
@@ -157,7 +184,10 @@ pub(super) fn validate_native_callable_semantics_registry(
                 "native callable semantics entry {binding_key} has runtime parity mismatch: context {required_context:?}, route {route:?}"
             ));
         }
-        let expected_handler_count = usize::from(route == RuntimeNativeRoute::NativeRegistry);
+        let expected_handler_count = usize::from(matches!(
+            route,
+            RuntimeNativeRoute::NativeRegistry | RuntimeNativeRoute::Json
+        ));
         if handler_count != expected_handler_count {
             return Err(format!(
                 "native callable semantics entry {binding_key} expected {expected_handler_count} runtime registry handler(s), found {handler_count}"
@@ -170,7 +200,7 @@ pub(super) fn validate_native_callable_semantics_registry(
 
 pub(super) fn validate_receiver_callable_semantics_registry(
     semantics_entries: &[BuiltinReceiverCallableSemantics],
-    signatures: &[NativeSignatureDef],
+    _signatures: &[NativeSignatureDef],
     handler_entries: &[NativeHandlerEntry],
 ) -> RegistryValidationResult {
     let mut registered_keys = BTreeSet::new();
@@ -182,52 +212,35 @@ pub(super) fn validate_receiver_callable_semantics_registry(
                 op.canonical_key
             ));
         }
-        let canonical_signature = native_signature_for_receiver_op(op).ok_or_else(|| {
+        validate_supported_receiver_builtin_op(&op).map_err(|error| {
             format!(
-                "receiver callable semantics entry {} has no exact native signature",
+                "receiver callable semantics entry {} is not an exact supported runtime operation: {error}",
                 op.canonical_key
             )
         })?;
-        let mut matching_signatures = signatures
+        let canonical_semantics = BUILTIN_RECEIVER_CALLABLE_SEMANTICS
             .iter()
-            .filter(|signature| signature.binding_key == canonical_signature.binding_key);
-        let signature = matching_signatures.next().ok_or_else(|| {
-            format!(
-                "receiver callable semantics entry {} is missing signature {}",
-                op.canonical_key, canonical_signature.binding_key
-            )
-        })?;
-        if matching_signatures.next().is_some() || signature != canonical_signature {
-            return Err(format!(
-                "receiver callable semantics entry {} does not match exact signature {}",
-                op.canonical_key, canonical_signature.binding_key
-            ));
-        }
-        let context = NativeRequiredContext::for_binding_key(canonical_signature.binding_key)
+            .find(|entry| entry.op.canonical_key == op.canonical_key)
             .ok_or_else(|| {
                 format!(
-                    "receiver callable semantics entry {} has no known required context",
+                    "receiver callable semantics entry {} is not in the exact audited registry",
                     op.canonical_key
                 )
             })?;
+        if semantics != canonical_semantics {
+            return Err(format!(
+                "receiver callable semantics entry {} does not match exact audited semantics",
+                op.canonical_key
+            ));
+        }
         let handler_count = handler_entries
             .iter()
-            .filter(|entry| entry.binding_key == canonical_signature.binding_key)
+            .filter(|entry| entry.binding_key == op.canonical_key)
             .count();
-        let route = runtime_shared_native_route_for_validation(
-            canonical_signature.binding_key,
-            handler_count > 0,
-        )
-        .ok_or_else(|| {
-            format!(
-                "receiver callable semantics entry {} has no runtime route",
-                op.canonical_key
-            )
-        })?;
-        if context != NativeRequiredContext::None || route != RuntimeNativeRoute::ReceiverMethod {
+        if handler_count != 0 {
             return Err(format!(
-                "receiver callable semantics entry {} has runtime parity mismatch: binding {}, context {context:?}, route {route:?}",
-                op.canonical_key, canonical_signature.binding_key
+                "receiver callable semantics entry {} expected 0 runtime registry handler(s), found {handler_count}",
+                op.canonical_key
             ));
         }
     }

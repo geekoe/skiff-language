@@ -679,9 +679,43 @@ mod json_object_receiver_tests {
 mod tests {
     use super::*;
     use skiff_artifact_model::builtin_receiver_op_by_name;
+    use skiff_runtime_model::runtime_value::HeapNode;
 
     fn receiver_op(root: &str, method: &str) -> BuiltinReceiverOp {
         builtin_receiver_op_by_name(root, method).expect("receiver op must exist")
+    }
+
+    #[test]
+    fn array_push_mutates_the_same_heap_array_and_returns_null() {
+        let mut heap = RequestHeap::default();
+        let handle = heap
+            .alloc_array(vec![RuntimeValue::Number(1.0)])
+            .expect("array allocation should succeed");
+        let receiver = RuntimeValue::Heap(handle);
+
+        let result = ReceiverMethodDispatch::new(&mut heap)
+            .dispatch_op(
+                &receiver_op("Array", "push"),
+                receiver.clone(),
+                vec![RuntimeValue::Number(2.0)],
+            )
+            .expect("Array.push should dispatch");
+
+        assert_eq!(result, RuntimeValue::Null, "Array.push return must be null");
+        assert_eq!(
+            receiver,
+            RuntimeValue::Heap(handle),
+            "Array.push must preserve receiver identity"
+        );
+        let HeapNode::Array(items) = heap.get(handle).expect("array handle should remain live")
+        else {
+            panic!("Array.push receiver must remain an array");
+        };
+        assert_eq!(
+            items,
+            &vec![RuntimeValue::Number(1.0), RuntimeValue::Number(2.0)],
+            "Array.push must mutate the caller-reachable receiver"
+        );
     }
 
     #[test]

@@ -81,6 +81,7 @@ fn native_callable_semantics_registry_validates_exact_receiver_matrix() {
 fn native_callable_semantics_registry_rejects_duplicate_receiver_descriptor() {
     let descriptor: BuiltinReceiverCallableSemantics =
         BUILTIN_RECEIVER_CALLABLE_SEMANTICS[0].clone();
+    let canonical_key = descriptor.op.canonical_key;
     let error = validate_receiver_callable_semantics_registry(
         &[descriptor.clone(), descriptor],
         STD_NATIVE_SIGNATURES,
@@ -88,7 +89,7 @@ fn native_callable_semantics_registry_rejects_duplicate_receiver_descriptor() {
     )
     .expect_err("duplicate receiver semantics should fail validation");
     assert!(
-        error.contains("receiver:Date.isBefore@1") && error.contains("more than once"),
+        error.contains(canonical_key) && error.contains("more than once"),
         "unexpected error: {error}"
     );
 }
@@ -104,7 +105,8 @@ fn native_callable_semantics_registry_rejects_forged_receiver_identity() {
     )
     .expect_err("forged receiver identity should fail validation");
     assert!(
-        error.contains("receiver:Date.isAfter@1") && error.contains("no exact native signature"),
+        error.contains("receiver:Date.isAfter@1")
+            && error.contains("not an exact supported runtime operation"),
         "unexpected error: {error}"
     );
 }
@@ -119,7 +121,7 @@ fn native_callable_semantics_registry_rejects_unknown_descriptor() {
     .expect_err("unknown semantics binding should fail validation");
 
     assert!(
-        error.contains("std.unknown.safe") && error.contains("unknown binding key"),
+        error.contains("std.unknown.safe") && error.contains("not in the exact audited registry"),
         "unexpected error: {error}"
     );
 }
@@ -220,6 +222,63 @@ fn native_callable_semantics_registry_accepts_exact_websocket_route_matrix() {
 }
 
 #[test]
+fn native_callable_semantics_registry_accepts_http_suspend_detachment_route() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == "std.http.client.request")
+        .cloned()
+        .expect("HTTP request must have exact callable semantics");
+    assert!(semantics.effects.may_suspend);
+    assert!(!semantics.effects.returns_caller_alias);
+    assert!(!semantics.effects.throws_caller_alias);
+    assert!(!semantics.effects.escapes_caller_value);
+    let handler_count = NATIVE_BINDINGS
+        .iter()
+        .filter(|entry| entry.binding_key == semantics.binding_key)
+        .count();
+
+    assert_eq!(
+        NativeRequiredContext::for_binding_key(semantics.binding_key),
+        Some(NativeRequiredContext::HttpClient)
+    );
+    assert_eq!(
+        runtime_shared_native_route_for_validation(semantics.binding_key, handler_count > 0),
+        Some(RuntimeNativeRoute::Http)
+    );
+    validate_native_callable_semantics_registry(
+        &[semantics],
+        STD_NATIVE_SIGNATURES,
+        NATIVE_BINDINGS,
+    )
+    .expect("detached, suspending HTTP request should match its runtime route");
+}
+
+#[test]
+fn native_callable_semantics_registry_rejects_http_registry_handler() {
+    let semantics = STD_NATIVE_CALLABLE_SEMANTICS
+        .iter()
+        .find(|semantics| semantics.binding_key == "std.http.client.request")
+        .cloned()
+        .expect("HTTP request must have exact callable semantics");
+    let handler_entries = &[NativeHandlerEntry {
+        binding_key: semantics.binding_key,
+        handler: array_empty,
+    }];
+    let error = validate_native_callable_semantics_registry(
+        &[semantics],
+        STD_NATIVE_SIGNATURES,
+        handler_entries,
+    )
+    .expect_err("HTTP client calls must not acquire a JSON registry handler");
+
+    assert!(
+        error.contains("std.http.client.request")
+            && error.contains("expected 0 runtime registry handler(s), found 1"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn native_callable_semantics_registry_rejects_websocket_registry_handler() {
     let binding_key = "std.websocket.sendTextToConnection";
     let semantics = STD_NATIVE_CALLABLE_SEMANTICS
@@ -254,9 +313,7 @@ fn native_callable_semantics_registry_rejects_unaudited_file_capability_descript
     .expect_err("unaudited file descriptor should fail validation");
 
     assert!(
-        error.contains("std.file.readText")
-            && error.contains("context File")
-            && error.contains("route File"),
+        error.contains("std.file.readText") && error.contains("not in the exact audited registry"),
         "unexpected error: {error}"
     );
 }
@@ -272,7 +329,27 @@ fn native_callable_semantics_registry_rejects_missing_handler() {
 
     assert!(
         error.contains("std.string.truncateUtf8Bytes")
-            && error.contains("missing a runtime handler"),
+            && error.contains("expected 1 runtime registry handler(s), found 0"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn receiver_callable_semantics_registry_rejects_registry_handler() {
+    let semantics = BUILTIN_RECEIVER_CALLABLE_SEMANTICS[0].clone();
+    let handlers = &[NativeHandlerEntry {
+        binding_key: semantics.op.canonical_key,
+        handler: array_empty,
+    }];
+    let error = validate_receiver_callable_semantics_registry(
+        &[semantics],
+        STD_NATIVE_SIGNATURES,
+        handlers,
+    )
+    .expect_err("receiver methods must remain on receiver dispatch");
+
+    assert!(
+        error.contains("expected 0 runtime registry handler(s), found 1"),
         "unexpected error: {error}"
     );
 }
@@ -281,7 +358,6 @@ fn native_callable_semantics_registry_rejects_missing_handler() {
 fn native_callable_semantics_registry_keeps_unaudited_non_websocket_capabilities_unregistered() {
     for binding_key in [
         "std.file.readText",
-        "std.http.client.request",
         "actor.put",
         "std.telemetry.emit",
         "std.resource.text",
