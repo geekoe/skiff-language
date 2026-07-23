@@ -270,7 +270,53 @@ const fn detached_scalar_receiver(
     }
 }
 
+const fn mutating_array_push() -> BuiltinReceiverCallableSemantics {
+    BuiltinReceiverCallableSemantics {
+        op: BuiltinReceiverOp {
+            receiver: BuiltinReceiverRoot::Array,
+            method: BuiltinReceiverMethod::Push,
+            signature_version: 1,
+            canonical_key: canonical_key(
+                BuiltinReceiverRoot::Array,
+                BuiltinReceiverMethod::Push,
+                1,
+            ),
+        },
+        effects: CallableMayEffects {
+            writes_caller_reachable: true,
+            returns_caller_alias: false,
+            throws_caller_alias: false,
+            escapes_caller_value: false,
+            requires_same_heap_identity: true,
+            invokes_unknown_target: false,
+            may_suspend: false,
+        },
+        return_provenance: ValueProvenance::Constant,
+    }
+}
+
 pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantics] = &[
+    detached_scalar_receiver(BuiltinReceiverRoot::Array, BuiltinReceiverMethod::Length),
+    mutating_array_push(),
+    detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::Length),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Floor),
+    detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Round),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Concat,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::EndsWith,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::Lowercase,
+    ),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::StringText,
+        BuiltinReceiverMethod::StartsWith,
+    ),
     detached_scalar_receiver(BuiltinReceiverRoot::Date, BuiltinReceiverMethod::IsBefore),
     detached_scalar_receiver(
         BuiltinReceiverRoot::Date,
@@ -904,9 +950,18 @@ mod tests {
     #[test]
     fn callable_semantics_registry_is_sparse_exact_and_safe() {
         let expected = BTreeSet::from([
+            "receiver:Array.length@1",
+            "receiver:Array.push@1",
             "receiver:Date.isBefore@1",
             "receiver:Date.toEpochMilliseconds@1",
             "receiver:Duration.toMilliseconds@1",
+            "receiver:bytes.length@1",
+            "receiver:number.floor@1",
+            "receiver:number.round@1",
+            "receiver:string.concat@1",
+            "receiver:string.endsWith@1",
+            "receiver:string.lowercase@1",
+            "receiver:string.startsWith@1",
         ]);
         let actual = BUILTIN_RECEIVER_CALLABLE_SEMANTICS
             .iter()
@@ -922,24 +977,32 @@ mod tests {
                 .map(|spec| spec.op)
                 .expect("callable receiver semantics must name a supported exact op");
             assert_eq!(builtin_receiver_callable_semantics(op), Some(semantics));
+            let is_array_push = semantics.op.canonical_key == "receiver:Array.push@1";
             assert_eq!(
                 semantics.effects,
                 CallableMayEffects {
-                    writes_caller_reachable: false,
+                    writes_caller_reachable: is_array_push,
                     returns_caller_alias: false,
                     throws_caller_alias: false,
                     escapes_caller_value: false,
-                    requires_same_heap_identity: false,
+                    requires_same_heap_identity: is_array_push,
                     invokes_unknown_target: false,
                     may_suspend: false,
                 }
             );
-            assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+            assert_eq!(
+                semantics.return_provenance,
+                if is_array_push {
+                    ValueProvenance::Constant
+                } else {
+                    ValueProvenance::Fresh
+                }
+            );
         }
 
         let mutable_array = builtin_receiver_op_by_name("Array", "push")
             .expect("Array.push must remain a supported runtime receiver op");
-        assert_eq!(builtin_receiver_callable_semantics(mutable_array), None);
+        assert!(builtin_receiver_callable_semantics(mutable_array).is_some());
     }
 
     #[test]

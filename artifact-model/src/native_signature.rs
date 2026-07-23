@@ -60,10 +60,15 @@ const fn detached_native(binding_key: &'static str, may_suspend: bool) -> Native
 }
 
 pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
+    detached_scalar_native("core.array.empty"),
+    detached_scalar_native("core.bytes.fromUtf8"),
     detached_scalar_native("core.date.now"),
     detached_scalar_native("core.duration.milliseconds"),
     detached_scalar_native("core.duration.seconds"),
     detached_scalar_native("core.number.assertSafeInteger"),
+    detached_scalar_native("std.json.encode"),
+    detached_scalar_native("std.string.join"),
+    detached_scalar_native("std.string.split"),
     detached_scalar_native("std.string.isAsciiDigits"),
     detached_scalar_native("std.string.truncateUtf8Bytes"),
     detached_scalar_native("std.string.encodeQueryComponent"),
@@ -73,6 +78,7 @@ pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
     detached_scalar_native("std.crypto.randomToken"),
     detached_scalar_native("std.crypto.uuid"),
     detached_scalar_native("std.crypto.uuidSimple"),
+    detached_native("std.http.client.request", true),
     detached_native("std.time.sleep", true),
     detached_scalar_native("std.websocket.sendTextToConnection"),
     detached_scalar_native("std.websocket.sendBinaryToConnection"),
@@ -817,6 +823,8 @@ mod tests {
     #[test]
     fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         let expected = BTreeSet::from([
+            "core.array.empty",
+            "core.bytes.fromUtf8",
             "core.date.now",
             "core.duration.milliseconds",
             "core.duration.seconds",
@@ -826,6 +834,10 @@ mod tests {
             "std.crypto.sha256",
             "std.crypto.uuid",
             "std.crypto.uuidSimple",
+            "std.http.client.request",
+            "std.json.encode",
+            "std.string.join",
+            "std.string.split",
             "std.string.encodePath",
             "std.string.encodeQueryComponent",
             "std.string.isAsciiDigits",
@@ -856,7 +868,10 @@ mod tests {
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: semantics.binding_key == "std.time.sleep",
+                    may_suspend: matches!(
+                        semantics.binding_key,
+                        "std.http.client.request" | "std.time.sleep"
+                    ),
                 }
             );
             assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
@@ -866,11 +881,7 @@ mod tests {
             );
         }
 
-        for missing in [
-            "std.file.readText",
-            "std.http.client.request",
-            "custom.native",
-        ] {
+        for missing in ["std.file.readText", "custom.native"] {
             assert_eq!(native_callable_semantics(missing), None, "{missing}");
         }
     }
