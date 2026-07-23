@@ -383,6 +383,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F48B result | [Canonical Runtime spawn eval result](tasks/P5-F48B-canonical-runtime-spawn-eval-result.md) | `bf19fc8` | complete |
 | F48C result | [Runtime submit receipt validation result](tasks/P5-F48C-runtime-submit-receipt-validation-result.md) | `ad847f7` | complete |
 | I48 | [I02 closure combined](tasks/P5-I48-i02-closure-combined.md) | F48A/B/C merged | cheap combined；只解锁I02C |
+| I48 result | [I02 closure combined result](tasks/P5-I48-i02-closure-combined-result.md) | `d8aee92` | FAIL；test-runner空选择器 |
+| I48A | [Fixture projection reacceptance](tasks/P5-I48A-fixture-projection-reacceptance.md) | I48 classified | 只补非空fixture projection |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |

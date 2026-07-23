@@ -8,7 +8,7 @@ DAG节点I48，依赖F48A/B/C合流到commit
 全新只读owner各运行一次：
 
 ```bash
-cargo test --locked -p skiff-test-runner package_service_contract_deployment
+cargo test --locked -p skiff-test-runner i02_spawn_submit_fixture_splits_unary_and_websocket_effects
 cargo test --locked -p skiff-runtime-eval spawn
 cargo test --locked -p skiff-runtime-host spawn_submit -- --test-threads=1
 node --test scripts/tests/package-service-i02-combined.test.mjs
