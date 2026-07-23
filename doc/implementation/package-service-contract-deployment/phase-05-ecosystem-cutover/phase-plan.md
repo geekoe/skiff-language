@@ -390,6 +390,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I02C result | [Skiff combined closure result](tasks/P5-I02C-skiff-combined-closure-result.md) | `21e479f` | FAIL；recoverable owner duplicate |
 | D49 | [Recoverable owner closure audit](tasks/P5-D49-recoverable-owner-closure-audit.md) | I02C classified | 三个只读分片并行后汇总 |
 | D49 fragments | [Recoverable owner audit fragments](tasks/P5-D49-recoverable-owner-closure-audit-fragments.md) | D49A/B/C complete | 汇总durable owner契约分歧 |
+| D49 result | [Recoverable owner closure audit result](tasks/P5-D49-recoverable-owner-closure-audit-result.md) | D49 reconcile | complete；规范无冲突 |
+| F49 | [Recoverable owner lazy validation](tasks/P5-F49-recoverable-owner-lazy-validation.md) | D49 complete | runtime/eval唯一写入owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
