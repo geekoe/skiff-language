@@ -30,6 +30,7 @@ describe('Router WebSocket generation lifecycle consumer', () => {
       tuple: TUPLE
     });
     expect(fixture.lifecycle.connectionPinCount(fixture.ws)).toBe(1);
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
     expect(
       fixture.lifecycle.requireAcquired('connection-1', fixture.receipt)
     ).toEqual(TUPLE);
@@ -42,9 +43,20 @@ describe('Router WebSocket generation lifecycle consumer', () => {
       tuple: TUPLE
     });
     expect(fixture.lifecycle.connectionPinCount(fixture.ws)).toBe(1);
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
     if (release?.action !== 'release') {
       throw new Error('expected a release request');
     }
+    expect(() => fixture.lifecycle.handleRuntimeControl(fixture.ws, {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+      action: 'ack',
+      operation: 'release',
+      requestId: release.requestId,
+      sender: 'runtime',
+      tuple: { ...release.tuple, connectionId: 'connection-mismatch' }
+    })).toThrow();
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
     fixture.lifecycle.handleRuntimeControl(fixture.ws, {
       schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
       type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
@@ -58,6 +70,7 @@ describe('Router WebSocket generation lifecycle consumer', () => {
     await expect(released).resolves.toBeUndefined();
     await expect(fixture.lifecycle.flush()).resolves.toBeUndefined();
     expect(fixture.lifecycle.connectionPinCount(fixture.ws)).toBe(0);
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(1);
   });
 
   it('rejects a mismatched acquire and clears an acquired pin on runtime-session disconnect', () => {
@@ -81,6 +94,7 @@ describe('Router WebSocket generation lifecycle consumer', () => {
 
     expect(disconnected).toHaveBeenCalledWith('connection-1');
     expect(fixture.lifecycle.connectionPinCount(fixture.ws)).toBe(0);
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
   });
 
   it('fails the release and isolates the runtime when it rejects the exact request', async () => {
@@ -112,6 +126,100 @@ describe('Router WebSocket generation lifecycle consumer', () => {
     await expect(fixture.lifecycle.flush()).rejects.toThrow(
       /WebSocket generation release failed/
     );
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
+  });
+
+  it('does not count send failures or release timeouts as ACKs', async () => {
+    const sendFailure = lifecycleFixture({
+      send: (_sender, control) => {
+        if (control.action === 'release') {
+          throw new Error('release send failed');
+        }
+      }
+    });
+    sendFailure.lifecycle.expectConnection(expectation());
+    sendFailure.lifecycle.handleRuntimeControl(
+      sendFailure.ws,
+      acquire(TUPLE, 'acquire-send-failure')
+    );
+
+    await expect(
+      sendFailure.lifecycle.releaseConnection('connection-1')
+    ).rejects.toThrow(/release send failed/);
+    expect(
+      sendFailure.lifecycle.connectionReleaseAckCount(sendFailure.ws)
+    ).toBe(0);
+    await expect(sendFailure.lifecycle.flush()).rejects.toThrow(
+      /WebSocket generation release failed/
+    );
+
+    const timeout = lifecycleFixture({ releaseTimeoutMs: 1 });
+    timeout.lifecycle.expectConnection(expectation());
+    timeout.lifecycle.handleRuntimeControl(
+      timeout.ws,
+      acquire(TUPLE, 'acquire-timeout')
+    );
+
+    await expect(timeout.lifecycle.releaseConnection('connection-1')).rejects.toThrow(
+      /release timed out/
+    );
+    expect(timeout.lifecycle.connectionReleaseAckCount(timeout.ws)).toBe(0);
+    expect(timeout.ws.close).toHaveBeenCalledWith(
+      1008,
+      'websocket generation release timed out'
+    );
+    await expect(timeout.lifecycle.flush()).rejects.toThrow(
+      /WebSocket generation release failed/
+    );
+  });
+
+  it('clears the per-connection ACK count on disconnect and starts a new connection at zero', async () => {
+    const fixture = lifecycleFixture();
+    fixture.lifecycle.expectConnection(expectation());
+    fixture.lifecycle.handleRuntimeControl(
+      fixture.ws,
+      acquire(TUPLE, 'acquire-disconnect')
+    );
+    const released = fixture.lifecycle.releaseConnection('connection-1');
+    const release = fixture.sent.at(-1);
+    if (release?.action !== 'release') {
+      throw new Error('expected a release request');
+    }
+    fixture.lifecycle.handleRuntimeControl(fixture.ws, {
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: WEBSOCKET_GENERATION_LIFECYCLE_FRAME_TYPE,
+      action: 'ack',
+      operation: 'release',
+      requestId: release.requestId,
+      sender: 'runtime',
+      tuple: release.tuple
+    });
+    await released;
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(1);
+
+    fixture.lifecycle.handleRuntimeDisconnect(fixture.ws);
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
+    const newConnection = {
+      readyState: WebSocket.OPEN,
+      close: vi.fn()
+    } as unknown as WebSocket;
+    expect(fixture.lifecycle.connectionReleaseAckCount(newConnection)).toBe(0);
+  });
+
+  it('does not count a pending release completed by disconnect', async () => {
+    const fixture = lifecycleFixture();
+    fixture.lifecycle.expectConnection(expectation());
+    fixture.lifecycle.handleRuntimeControl(
+      fixture.ws,
+      acquire(TUPLE, 'acquire-pending-disconnect')
+    );
+    const released = fixture.lifecycle.releaseConnection('connection-1');
+
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
+    fixture.lifecycle.handleRuntimeDisconnect(fixture.ws);
+
+    await expect(released).resolves.toBeUndefined();
+    expect(fixture.lifecycle.connectionReleaseAckCount(fixture.ws)).toBe(0);
   });
 });
 
@@ -147,7 +255,13 @@ function lifecycleRequestId(suffix: string): string {
   return `skiff-websocket-lifecycle-request-v1:opaque:${suffix}`;
 }
 
-function lifecycleFixture() {
+function lifecycleFixture(options: {
+  releaseTimeoutMs?: number;
+  send?: (
+    sender: WebSocket,
+    control: WebSocketGenerationLifecycleControl
+  ) => void;
+} = {}) {
   const ws = {
     readyState: WebSocket.OPEN,
     close: vi.fn()
@@ -166,9 +280,12 @@ function lifecycleFixture() {
   const lifecycle = new WebSocketGenerationLifecycleRouter({
     dispatcher,
     sender: {
-      sendWebSocketGenerationControl: (_sender, control) => sent.push(control)
+      sendWebSocketGenerationControl: (sender, control) => {
+        sent.push(control);
+        options.send?.(sender, control);
+      }
     },
-    releaseTimeoutMs: 1_000
+    releaseTimeoutMs: options.releaseTimeoutMs ?? 1_000
   });
   return { dispatcher, lifecycle, receipt, sent, ws };
 }

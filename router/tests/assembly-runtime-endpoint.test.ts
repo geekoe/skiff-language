@@ -95,6 +95,13 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await expect(connectionSend).resolves.toMatchObject({ type: 'connection.send' });
     expect(ws.readyState).toBe(WebSocket.OPEN);
 
+    const runtimeConnection = fixture.assemblyRegistry.connectionForReplica(RUNTIME_ID);
+    expect(runtimeConnection).toBeDefined();
+    fixture.assemblyRegistry.setConnectionPinCounter({
+      connectionPinCount: () => 0,
+      connectionReleaseAckCount: (candidate) =>
+        candidate === runtimeConnection ? 1 : 0
+    });
     const health = await fetch(`${fixture.controlUrl}/__router/health`).then(async (response) => {
       expect(response.ok).toBe(true);
       return await response.json() as {
@@ -111,7 +118,8 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
         generation: 2,
         assemblyIdentity: ASSEMBLY_B,
         state: 'healthy',
-        connected: true
+        connected: true,
+        connectionReleaseAckCount: 1
       })
     ]);
   });

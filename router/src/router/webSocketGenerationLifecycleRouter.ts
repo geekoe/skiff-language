@@ -67,6 +67,7 @@ export class WebSocketGenerationLifecycleRouter {
   private readonly cachedAcquireByRequestId = new Map<string, CachedAcquire>();
   private readonly routerSessionByRuntime = new Map<WebSocket, string>();
   private readonly runtimeByRouterSession = new Map<string, WebSocket>();
+  private readonly releaseAckCountByRuntime = new Map<WebSocket, number>();
   private readonly disconnectHandlers =
     new Set<(connectionId: string) => void>();
   private readonly releaseFailures: unknown[] = [];
@@ -184,6 +185,7 @@ export class WebSocketGenerationLifecycleRouter {
   }
 
   handleRuntimeDisconnect(ws: WebSocket): void {
+    this.releaseAckCountByRuntime.delete(ws);
     const disconnectedIds: string[] = [];
     for (const [connectionId, expected] of this.expectedByConnectionId) {
       if (expected.acquired?.ws === ws) {
@@ -229,6 +231,10 @@ export class WebSocketGenerationLifecycleRouter {
       if (pending.ws === ws) count += 1;
     }
     return count;
+  }
+
+  connectionReleaseAckCount(ws: WebSocket): number {
+    return this.releaseAckCountByRuntime.get(ws) ?? 0;
   }
 
   async flush(): Promise<void> {
@@ -352,6 +358,10 @@ export class WebSocketGenerationLifecycleRouter {
       ws.close(1008, 'websocket generation release rejected');
       return;
     }
+    this.releaseAckCountByRuntime.set(
+      ws,
+      this.connectionReleaseAckCount(ws) + 1
+    );
     this.finishRelease(response.requestId);
   }
 

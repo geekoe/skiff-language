@@ -50,6 +50,7 @@ export interface AssemblyReplicaSnapshot {
   connected: boolean;
   inFlightCount: number;
   connectionPinCount: number;
+  connectionReleaseAckCount: number;
   registeredAt: string;
   lastHealthAt?: string;
   healthCounters?: RuntimeHealthCounters;
@@ -69,7 +70,10 @@ export class AssemblyRuntimeRegistry {
   private readonly replicaIdByConnection = new Map<WebSocket, string>();
   private inFlightCounter: RuntimeInFlightCounter | undefined;
   private connectionPinCounter:
-    | { connectionPinCount(ws: WebSocket): number }
+    | {
+        connectionPinCount(ws: WebSocket): number;
+        connectionReleaseAckCount(ws: WebSocket): number;
+      }
     | undefined;
   private nextReplicaCursor = 0;
 
@@ -80,7 +84,12 @@ export class AssemblyRuntimeRegistry {
   }
 
   setConnectionPinCounter(
-    counter: { connectionPinCount(ws: WebSocket): number } | undefined
+    counter:
+      | {
+          connectionPinCount(ws: WebSocket): number;
+          connectionReleaseAckCount(ws: WebSocket): number;
+        }
+      | undefined
   ): void {
     this.connectionPinCounter = counter;
   }
@@ -207,6 +216,8 @@ export class AssemblyRuntimeRegistry {
       inFlightCount: this.countInFlight(replica),
       connectionPinCount:
         this.connectionPinCounter?.connectionPinCount(replica.ws) ?? 0,
+      connectionReleaseAckCount:
+        this.connectionPinCounter?.connectionReleaseAckCount(replica.ws) ?? 0,
       registeredAt: replica.registeredAt,
       ...(replica.lastHealthAt !== undefined ? { lastHealthAt: replica.lastHealthAt } : {}),
       ...(replica.healthCounters !== undefined
