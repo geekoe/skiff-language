@@ -413,6 +413,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I02E result | [Skiff combined diagnostic result](tasks/P5-I02E-skiff-combined-diagnostic-result.md) | `8d8a38b` | FAIL；protocol identity非法 |
 | D52 | [Spawn protocol identity audit](tasks/P5-D52-spawn-protocol-identity-audit.md) | I02E classified | Runtime producer/测试覆盖双分片 |
 | D52 fragments | [Spawn protocol identity audit fragments](tasks/P5-D52-spawn-protocol-identity-audit-fragments.md) | D52A/B complete | 汇总全部同族production面 |
+| D52 result | [Spawn protocol identity audit result](tasks/P5-D52-spawn-protocol-identity-audit-result.md) | D52 reconcile | register protocolVersion待设计决定 |
+| F52A | [Router service protocol v2](tasks/P5-F52A-router-service-protocol-v2.md) | D52 complete | register面除外 |
+| F52B | [Host loader service protocol v2](tasks/P5-F52B-host-loader-service-protocol-v2.md) | D52 complete | register mapper除外 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
