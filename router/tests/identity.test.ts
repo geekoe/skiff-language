@@ -17,12 +17,12 @@ const EXPECTED_WEBSOCKET_RECEIVE_IDENTITY =
 describe('gateway entry identity', () => {
   it('generates websocket entry, connect, and receive identities', () => {
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/hello',
         revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
         protocolIdentity:
-          'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000002'
+          'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000002'
       },
       operations: [
         {

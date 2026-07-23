@@ -1,9 +1,9 @@
 {
-  "schemaVersion": "skiff-runtime-manifest-v1",
+  "schemaVersion": "skiff-runtime-manifest-v2",
   "service": {
     "id": "skiff.run/hello",
     "revisionId": "1111111111111111111111111111111111111111111111111111111111111111",
-    "protocolIdentity": "skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    "protocolIdentity": "skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000001"
   },
   "operations": [
     {

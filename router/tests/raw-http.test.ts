@@ -371,7 +371,7 @@ describe('router raw HTTP gateway', () => {
     const registryManifest = loadRawHttpManifest({
       serviceId: 'skiff.run/registry',
       protocolIdentity:
-        'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666'
+        'skiff-service-protocol-v2:sha256:6666666666666666666666666666666666666666666666666666666666666666'
     });
     const manifest = mergeLoadedManifests([accountManifest, registryManifest]);
     const harness = await RouterHarness.create({ manifest });
@@ -441,7 +441,7 @@ describe('router raw HTTP gateway', () => {
     const fallbackManifest = loadRawHttpManifest({
       serviceId: 'skiff.run/fallback',
       protocolIdentity:
-        'skiff-protocol-v1:sha256:7777777777777777777777777777777777777777777777777777777777777777'
+        'skiff-service-protocol-v2:sha256:7777777777777777777777777777777777777777777777777777777777777777'
     });
     const manifest = mergeLoadedManifests([accountManifest, fallbackManifest]);
     const harness = await RouterHarness.create({ manifest });
@@ -860,11 +860,11 @@ describe('router raw HTTP gateway', () => {
   it('forwards typed HTTP adapter metadata on route dispatch frames', async () => {
     const typedTarget = 'service.skiff~run~~sample.internal.todos.create';
     const manifest = withBuildId(loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
-        protocolIdentity: 'skiff-protocol-v1:sha256:7777777777777777777777777777777777777777777777777777777777777777'
+        protocolIdentity: 'skiff-service-protocol-v2:sha256:7777777777777777777777777777777777777777777777777777777777777777'
       },
       operations: [
         {
@@ -1013,11 +1013,11 @@ describe('router raw HTTP gateway', () => {
   it('dispatches package handler HTTP routes without requiring an app operation', async () => {
     const packageTarget = packageHttpHandlerTarget('skiff.run/http-session', 'issue');
     const manifest = withBuildId(loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/sample',
         revisionId: '4444444444444444444444444444444444444444444444444444444444444444',
-        protocolIdentity: 'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+        protocolIdentity: 'skiff-service-protocol-v2:sha256:5555555555555555555555555555555555555555555555555555555555555555'
       },
       operations: [
         {
@@ -1099,11 +1099,11 @@ describe('router raw HTTP gateway', () => {
   it('loads package-only HTTP routes without service operations', () => {
     const packageTarget = packageHttpHandlerTarget('skiff.run/http-session', 'issue');
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/sample',
         revisionId: '5555555555555555555555555555555555555555555555555555555555555555',
-        protocolIdentity: 'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666'
+        protocolIdentity: 'skiff-service-protocol-v2:sha256:6666666666666666666666666666666666666666666666666666666666666666'
       },
       operations: [],
       gateway: {
@@ -1301,7 +1301,7 @@ describe('router raw HTTP gateway', () => {
 
   it('resolves raw HTTP activation by service and operation when services share a protocol', async () => {
     const sharedProtocolIdentity =
-      'skiff-protocol-v1:sha256:6666666666666666666666666666666666666666666666666666666666666666';
+      'skiff-service-protocol-v2:sha256:6666666666666666666666666666666666666666666666666666666666666666';
     const serviceA = loadRawHttpManifest({
       serviceId: 'skiff.run/sample-a',
       protocolIdentity: sharedProtocolIdentity
@@ -1528,12 +1528,12 @@ describe('router raw HTTP gateway', () => {
       'skiff-service-build-v1:sha256:abababababababababababababababababababababababababababababababab';
     const manifest = withBuildId(
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v1',
+        schemaVersion: 'skiff-runtime-manifest-v2',
         service: {
           id: 'skiff.run/sample',
           revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
           protocolIdentity:
-            'skiff-protocol-v1:sha256:5555555555555555555555555555555555555555555555555555555555555555'
+            'skiff-service-protocol-v2:sha256:5555555555555555555555555555555555555555555555555555555555555555'
         },
         operations: [
           {
@@ -1779,11 +1779,11 @@ describe('router raw HTTP gateway', () => {
 
   it('does not dispatch raw-shaped HTTP operations without explicit raw metadata', async () => {
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/sample',
         revisionId: '7777777777777777777777777777777777777777777777777777777777777777',
-        protocolIdentity: 'skiff-protocol-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333'
+        protocolIdentity: 'skiff-service-protocol-v2:sha256:3333333333333333333333333333333333333333333333333333333333333333'
       },
       operations: [
         {
@@ -1817,11 +1817,11 @@ describe('router raw HTTP gateway', () => {
 
   it('uses explicit raw HTTP metadata instead of scanning multiple raw-shaped operations', async () => {
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v1',
+      schemaVersion: 'skiff-runtime-manifest-v2',
       service: {
         id: 'skiff.run/sample',
         revisionId: '8888888888888888888888888888888888888888888888888888888888888888',
-        protocolIdentity: 'skiff-protocol-v1:sha256:4444444444444444444444444444444444444444444444444444444444444444'
+        protocolIdentity: 'skiff-service-protocol-v2:sha256:4444444444444444444444444444444444444444444444444444444444444444'
       },
       operations: [
         {

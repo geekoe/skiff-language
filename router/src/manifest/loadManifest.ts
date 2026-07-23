@@ -32,7 +32,7 @@ import type {
   WebSocketReceiveManifest
 } from './types.js';
 
-const PROTOCOL_IDENTITY_PATTERN = /^skiff-protocol-v1:sha256:[0-9a-f]{64}$/;
+const PROTOCOL_IDENTITY_PATTERN = /^skiff-service-protocol-v2:sha256:[0-9a-f]{64}$/;
 const GATEWAY_IDENTITY_PATTERN = /^skiff-gateway-v1:sha256:[0-9a-f]{64}$/;
 const HTTP_INGRESS_IDENTITY_PATTERN = /^skiff-http-ingress-v1:sha256:[0-9a-f]{64}$/;
 const GATEWAY_ADAPTER_SOURCE_KINDS = new Set<GatewayAdapterSourceKind>([
@@ -86,8 +86,8 @@ export function loadManifest(value: unknown): LoadedManifest {
   assertRecord(value, 'manifest');
   const manifest = value as unknown as SkiffRuntimeManifest;
 
-  if (manifest.schemaVersion !== 'skiff-runtime-manifest-v1') {
-    throw new Error('manifest.schemaVersion must be skiff-runtime-manifest-v1');
+  if (manifest.schemaVersion !== 'skiff-runtime-manifest-v2') {
+    throw new Error('manifest.schemaVersion must be skiff-runtime-manifest-v2');
   }
 
   assertRecord(manifest.service, 'manifest.service');
@@ -208,7 +208,7 @@ export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifes
 
   const [first] = manifests;
   return {
-    schemaVersion: 'skiff-runtime-manifest-v1',
+    schemaVersion: 'skiff-runtime-manifest-v2',
     service: {
       id: '__multi__',
       revisionId: multiManifestRevisionId(manifests),
@@ -1459,7 +1459,7 @@ function assertHttpIngressIdentity(value: string, name: string): void {
 
 function assertProtocolIdentity(value: string, name: string): void {
   if (!PROTOCOL_IDENTITY_PATTERN.test(value)) {
-    throw new Error(`${name} must be skiff-protocol-v1:sha256:<64 lowercase hex>`);
+    throw new Error(`${name} must be skiff-service-protocol-v2:sha256:<64 lowercase hex>`);
   }
 }
 
@@ -1478,7 +1478,7 @@ function multiManifestProtocolIdentity(manifests: LoadedManifest[]): string {
     revisionId: manifest.service.revisionId,
     protocolIdentity: manifest.service.protocolIdentity
   }));
-  return `skiff-protocol-v1:sha256:${sha256Hex(stableStringify(body))}`;
+  return `skiff-service-protocol-v2:sha256:${sha256Hex(stableStringify(body))}`;
 }
 
 function assertRecord(value: unknown, name: string): asserts value is Record<string, unknown> {

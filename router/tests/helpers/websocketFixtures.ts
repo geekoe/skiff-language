@@ -71,7 +71,7 @@ export function baseWebSocketManifest(): any {
     serviceId: 'skiff.run/hello',
     revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
     protocolIdentity:
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000002',
+      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000002',
     connectOperation: 'HelloSocket.connect',
     connectTarget: 'service.skiff~run~~hello.HelloSocket.connect',
     connectParameters: [
@@ -113,7 +113,7 @@ export function webSocketManifestValue(): any {
     serviceId: 'example.com/websocket_fixture',
     revisionId: '2222222222222222222222222222222222222222222222222222222222222222',
     protocolIdentity:
-      'skiff-protocol-v1:sha256:0000000000000000000000000000000000000000000000000000000000000003',
+      'skiff-service-protocol-v2:sha256:0000000000000000000000000000000000000000000000000000000000000003',
     connectOperation: 'WebSocketFixtureConnection.connect',
     connectTarget: 'service.example~com~~websocket_fixture.WebSocketFixtureConnection.connect',
     connectParameters: [
@@ -195,7 +195,7 @@ function websocketManifestValue(options: {
   timeoutMs?: number;
 }): any {
   const manifest = {
-    schemaVersion: 'skiff-runtime-manifest-v1',
+    schemaVersion: 'skiff-runtime-manifest-v2',
     service: {
       id: options.serviceId,
       revisionId: options.revisionId,

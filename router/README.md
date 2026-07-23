@@ -145,7 +145,7 @@ Dev reload pointer shape at `dev/services/<storage-projected-service-id>.json`:
   "serviceId": "websocket_fixture",
   "profile": "dev",
   "contractHash": "<contract-hash>",
-  "protocolIdentity": "skiff-protocol-v1:sha256:<contract-hash>",
+  "protocolIdentity": "skiff-service-protocol-v2:sha256:<contract-hash>",
   "serviceAssembly": {
     "assemblyIdentity": "skiff-service-assembly-v1:sha256:<assembly-hash>",
     "assemblyPath": "assemblies/services/websocket_fixture/<assembly-hash>.json"
@@ -187,7 +187,9 @@ Use `router.example.yml` as the checked-in template and keep the environment-spe
 
 ## Example Manifest
 
-`fixtures/hello/manifest.json` is a hand-written router manifest projection. It lets the router run before a service assembly has been published for a real service fixture.
+`fixtures/hello/manifest.json` is a hand-written canonical
+`skiff-runtime-manifest-v2` router manifest projection. It lets the router run before a
+service assembly has been published for a real service fixture.
 
 The router uses it to know:
 

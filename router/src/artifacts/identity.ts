@@ -1,4 +1,4 @@
-const PROTOCOL_IDENTITY_PREFIX = "skiff-protocol-v1";
+const PROTOCOL_IDENTITY_PREFIX = "skiff-service-protocol-v2";
 const SERVICE_BUILD_ID_PATTERN =
   /^skiff-service-build-v1:sha256:([0-9a-f]{64})$/;
 
