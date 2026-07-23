@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { request as requestHttp } from 'node:http';
 import { join, resolve } from 'node:path';
 
 import { captureCheckedCommand } from './command-execution.mjs';
@@ -8,6 +9,7 @@ import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import {
   FIXTURE_CARGO_DIAGNOSTIC_PROPERTY,
   retainFixtureCargoDiagnostic,
+  sanitizeFixtureCargoDiagnostic,
 } from './package-service-ecosystem-smoke-diagnostic.mjs';
 import {
   validatePackageServiceActivationReceipt,
@@ -36,6 +38,7 @@ const EXPECTED_MARKERS = Object.freeze({
   B: 'P5-R05-GENERATION-B-MARKER',
 });
 const DEFAULT_TRANSCRIPT_TIMEOUT_MS = 120_000;
+const UNARY_RESPONSE_BODY_MAX_BYTES = 512;
 export const GENERATION_LIFECYCLE_FIXTURE_DIAGNOSTIC_PROPERTY =
   'generationLifecycleFixtureCargoDiagnostic';
 
@@ -155,11 +158,16 @@ export async function runPackageServiceGenerationLifecycleSmoke({
         await sendAndExpect(clientB, EXPECTED_MARKERS.B, lifecycle.signal);
 
         const unary = receiptB.candidate.entrypoints[1];
-        const unaryResponse = await lifecycle.wait((ioSignal) => requestUnary({
+        const unaryRequest = {
+          method: 'POST',
           url: `${stack.routerHttpUrl}${unary.path}`,
           host: unary.host,
+        };
+        const unaryResponse = await lifecycle.wait((ioSignal) => requestUnary({
+          ...unaryRequest,
           signal: ioSignal,
         }));
+        assertGenerationUnaryHttpSuccess(unaryRequest, unaryResponse);
         validatePackageServiceGenerationUnaryResponse(
           unaryResponse,
           EXPECTED_MARKERS.B,
@@ -342,15 +350,91 @@ async function sendAndExpect(client, expectedMarker, signal) {
   }
 }
 
-async function requestGenerationUnary({ url, host, signal }) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { Host: host },
-    signal,
+export async function requestGenerationUnary({
+  method = 'POST',
+  url,
+  host,
+  signal,
+}) {
+  assert.equal(method, 'POST', 'generation B unary request must use POST');
+  const target = new URL(url);
+  assert.equal(
+    target.protocol,
+    'http:',
+    'generation B unary request must target the isolated HTTP ingress',
+  );
+  const response = await new Promise((resolveResponse, rejectResponse) => {
+    const request = requestHttp(target, {
+      method,
+      headers: { Host: host },
+      signal,
+    }, resolveResponse);
+    request.once('error', rejectResponse);
+    request.end();
   });
+  const body = await readBoundedUnaryResponseBody(response);
+  const result = {
+    status: response.statusCode,
+    body: body.value,
+    bodyBytes: body.bytes,
+    bodyTruncated: body.truncated,
+  };
+  assertGenerationUnaryHttpSuccess({ method, url, host }, result);
+  return result;
+}
+
+function assertGenerationUnaryHttpSuccess(request, response) {
+  if (response.status === 200) return;
+  const body = boundedUnaryDiagnostic(
+    sanitizeFixtureCargoDiagnostic(
+      typeof response.body === 'string' ? response.body : '',
+    ),
+  );
+  throw new Error([
+    'generation B unary request failed',
+    `method=${request.method}`,
+    `url=${request.url}`,
+    `wireHost=${request.host}`,
+    `status=${response.status}`,
+    `responseBody=${JSON.stringify(body.value)}`,
+    `responseBodyBytes=${response.bodyBytes ?? Buffer.byteLength(response.body ?? '')}`,
+    `responseBodyTruncated=${response.bodyTruncated === true || body.truncated}`,
+  ].join(' '));
+}
+
+function boundedUnaryDiagnostic(value) {
+  let bytes = 0;
+  let bounded = '';
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > UNARY_RESPONSE_BODY_MAX_BYTES) {
+      return { value: bounded, truncated: true };
+    }
+    bounded += character;
+    bytes += characterBytes;
+  }
+  return { value: bounded, truncated: false };
+}
+
+async function readBoundedUnaryResponseBody(response) {
+  const chunks = [];
+  let retainedBytes = 0;
+  let bytes = 0;
+  for await (const chunk of response) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    bytes += buffer.byteLength;
+    if (retainedBytes >= UNARY_RESPONSE_BODY_MAX_BYTES) continue;
+    const retained = buffer.subarray(
+      0,
+      UNARY_RESPONSE_BODY_MAX_BYTES - retainedBytes,
+    );
+    chunks.push(retained);
+    retainedBytes += retained.byteLength;
+  }
   return {
-    status: response.status,
-    body: await response.text(),
+    value: Buffer.concat(chunks).toString('utf8'),
+    bytes,
+    truncated: bytes > retainedBytes,
   };
 }
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,7 @@ import {
   GENERATION_LIFECYCLE_FIXTURE_DIAGNOSTIC_PROPERTY,
   packageServiceGenerationFixtureRoot,
   packageServiceGenerationLifecycleExpectedMarkers,
+  requestGenerationUnary,
   runPackageServiceGenerationLifecycleSmoke,
 } from '../lib/package-service-generation-lifecycle-smoke-real.mjs';
 import {
@@ -70,7 +72,6 @@ test('generation lifecycle transcript authors A then B and closes both generatio
   const commandCalls = [];
   const activationCalls = [];
   const healthCalls = [];
-  const unaryCalls = [];
   const healthSequence = [
     lifecycleHealth(receipts.A, 1, 0),
     lifecycleHealth(receipts.B, 2, 1),
@@ -79,41 +80,43 @@ test('generation lifecycle transcript authors A then B and closes both generatio
     lifecycleHealth(receipts.B, 2, 0),
   ];
   GenerationWebSocket.instances.length = 0;
-
-  const result = await runPackageServiceGenerationLifecycleSmoke({
-    checkout,
-    replicaCount: 1,
-    environment,
-  }, {
-    runtimeOwner: fakeRuntimeOwner(environment),
-    runCommand: async (command, args) => {
-      commandCalls.push({ command, args });
-      const candidate = commandCalls.length === 1 ? 'A' : 'B';
-      return { stdout: JSON.stringify(receipts[candidate]), stderr: '' };
-    },
-    activate: async (input) => {
-      activationCalls.push(input);
-      const candidate = input.expectedGeneration === 0 ? receipts.A : receipts.B;
-      return activationReceipt(
-        environment,
-        candidate.candidate.assembly.assemblyIdentity,
-        input.expectedGeneration,
-      );
-    },
-    readHealth: async (url) => {
-      healthCalls.push(url);
-      return healthSequence.shift();
-    },
-    readinessSleep: async () => {},
-    loadWebSocket: async () => GenerationWebSocket,
-    requestUnary: async (input) => {
-      unaryCalls.push(input);
-      return {
-        status: 200,
-        body: JSON.stringify(packageServiceGenerationLifecycleExpectedMarkers.B),
-      };
-    },
+  const unaryServer = await listenUnaryServer({
+    status: 200,
+    body: JSON.stringify(packageServiceGenerationLifecycleExpectedMarkers.B),
   });
+
+  let result;
+  try {
+    result = await runPackageServiceGenerationLifecycleSmoke({
+      checkout,
+      replicaCount: 1,
+      environment,
+    }, {
+      runtimeOwner: fakeRuntimeOwner(environment, unaryServer.origin),
+      runCommand: async (command, args) => {
+        commandCalls.push({ command, args });
+        const candidate = commandCalls.length === 1 ? 'A' : 'B';
+        return { stdout: JSON.stringify(receipts[candidate]), stderr: '' };
+      },
+      activate: async (input) => {
+        activationCalls.push(input);
+        const candidate = input.expectedGeneration === 0 ? receipts.A : receipts.B;
+        return activationReceipt(
+          environment,
+          candidate.candidate.assembly.assemblyIdentity,
+          input.expectedGeneration,
+        );
+      },
+      readHealth: async (url) => {
+        healthCalls.push(url);
+        return healthSequence.shift();
+      },
+      readinessSleep: async () => {},
+      loadWebSocket: async () => GenerationWebSocket,
+    });
+  } finally {
+    await unaryServer.close();
+  }
 
   assert.equal(commandCalls.length, 2);
   assert.ok(commandCalls[0].args.includes(
@@ -157,9 +160,11 @@ test('generation lifecycle transcript authors A then B and closes both generatio
       },
     ],
   );
-  assert.equal(unaryCalls.length, 1);
-  assert.equal(unaryCalls[0].url, 'http://127.0.0.1:46000/probe');
-  assert.equal(unaryCalls[0].host, 'ecosystem-smoke.skiff.localhost');
+  assert.deepEqual(unaryServer.requests, [{
+    method: 'POST',
+    url: '/probe',
+    host: 'ecosystem-smoke.skiff.localhost',
+  }]);
   assert.equal(result.status, 'PASS');
   assert.deepEqual(result.generations, { A: 1, B: 2 });
   assert.equal(result.candidates.A.packageBuildId,
@@ -167,6 +172,42 @@ test('generation lifecycle transcript authors A then B and closes both generatio
   assert.equal(result.candidates.B.packageBuildId,
     receipts.B.candidate.production.packageBuildId);
   assert.deepEqual(result.markers, packageServiceGenerationLifecycleExpectedMarkers);
+});
+
+test('generation unary client reports bounded redacted 404 wire diagnostics', async () => {
+  const secret = 'token=R05_UNARY_SECRET';
+  const responseBody = `${secret} ${'/private/fixture/main.skiff '.repeat(40)}`;
+  const unaryServer = await listenUnaryServer({ status: 404, body: responseBody });
+
+  try {
+    await assert.rejects(
+      requestGenerationUnary({
+        url: `${unaryServer.origin}/probe`,
+        host: 'ecosystem-smoke.skiff.localhost',
+        signal: new AbortController().signal,
+      }),
+      (error) => {
+        assert.match(error.message, /method=POST/);
+        assert.match(error.message, new RegExp(`url=${unaryServer.origin}/probe`));
+        assert.match(error.message, /wireHost=ecosystem-smoke\.skiff\.localhost/);
+        assert.match(error.message, /status=404/);
+        assert.match(error.message, /responseBodyBytes=/);
+        assert.match(error.message, /responseBodyTruncated=true/);
+        assert.match(error.message, /<REDACTED_SECRET>/);
+        assert.doesNotMatch(error.message, /R05_UNARY_SECRET/);
+        assert.doesNotMatch(error.message, /private\/fixture/);
+        return true;
+      },
+    );
+  } finally {
+    await unaryServer.close();
+  }
+
+  assert.deepEqual(unaryServer.requests, [{
+    method: 'POST',
+    url: '/probe',
+    host: 'ecosystem-smoke.skiff.localhost',
+  }]);
 });
 
 test('generation fixture Cargo failures retain bounded evidence with the A or B label', async (t) => {
@@ -422,7 +463,10 @@ function lifecycleHealth(receipt, generation, connectionPinCount) {
   };
 }
 
-function fakeRuntimeOwner(targetEnvironment) {
+function fakeRuntimeOwner(
+  targetEnvironment,
+  routerHttpUrl = 'http://127.0.0.1:46000',
+) {
   return async ({ runTest, validateBootstrapReceipt }) => {
     validateBootstrapReceipt(validBootstrapReceipt(targetEnvironment));
     return runTest(
@@ -431,9 +475,37 @@ function fakeRuntimeOwner(targetEnvironment) {
       {
         artifactRoot: '/isolated/artifacts',
         controlUrl: 'http://127.0.0.1:46001',
-        routerHttpUrl: 'http://127.0.0.1:46000',
+        routerHttpUrl,
       },
     );
+  };
+}
+
+async function listenUnaryServer({ status, body }) {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      host: request.headers.host,
+    });
+    response.statusCode = status;
+    response.end(body);
+  });
+  await new Promise((resolveListen) => {
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== 'string');
+  return {
+    close: () => new Promise((resolveClose, rejectClose) => {
+      server.close((error) => {
+        if (error !== undefined) rejectClose(error);
+        else resolveClose();
+      });
+    }),
+    origin: `http://127.0.0.1:${address.port}`,
+    requests,
   };
 }
 
