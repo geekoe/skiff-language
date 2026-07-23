@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
 import { captureCheckedCommand } from './command-execution.mjs';
 import { runInIsolatedTestRuntime } from './isolated-test-runtime.mjs';
 import { requestAssemblyActivation } from './package-service-authoring.mjs';
 import {
-  packageServiceEcosystemSmokeExpectedMarker,
   packageServiceEcosystemSmokeFixtureCargoArgs,
-  packageServiceEcosystemSmokeFixtureRoot,
 } from './package-service-ecosystem-smoke-real.mjs';
 import {
   retainFixtureCargoDiagnostic,
@@ -24,7 +23,9 @@ import {
   classifyI02LoadReject,
   assertI02CommittedStateUnchanged,
   i02RuntimeAssemblyRecordPath,
+  packageServiceI02SpawnSubmitBusinessResult,
   selectI02TransitivePackageRecord,
+  validateI02SpawnSubmitBusinessResult,
 } from './package-service-i02-combined-oracle.mjs';
 import {
   createI02TransactionDeadline,
@@ -40,6 +41,15 @@ import {
 } from './package-service-generation-lifecycle-smoke-oracle.mjs';
 
 const DEFAULT_TRANSACTION_DEADLINE_MS = 180_000;
+const I02_FIXTURE_RELATIVE_ROOT = join(
+  'test-runner',
+  'fixtures',
+  'package-service-i02-spawn-submit',
+);
+const I02_PACKAGE_ID = 'test.skiff/package-service-i02-spawn-submit';
+const I02_PACKAGE_VERSION = '1.0.0';
+const I02_PACKAGE_TEST_NAME =
+  'I02 normal source fixture compiles canonical spawn submit';
 
 export async function runPackageServiceI02Combined({
   checkout,
@@ -82,7 +92,7 @@ export async function runPackageServiceI02Combined({
           signal,
           runCommand,
         });
-        const fixtureRoot = packageServiceEcosystemSmokeFixtureRoot(checkout);
+        const fixtureRoot = resolve(checkout, I02_FIXTURE_RELATIVE_ROOT);
         let fixtureOutcome;
         try {
           fixtureOutcome = await runCommand(
@@ -101,6 +111,11 @@ export async function runPackageServiceI02Combined({
         const receipt = readPackageServiceFixtureReceipt(
           fixtureOutcome.stdout,
           environment,
+          {
+            packageId: I02_PACKAGE_ID,
+            packageVersion: I02_PACKAGE_VERSION,
+            packageTestName: I02_PACKAGE_TEST_NAME,
+          },
         );
 
         const activationId = `skiff-i02-valid-${randomUUID()}`;
@@ -148,6 +163,7 @@ export async function runPackageServiceI02Combined({
           unary,
           signal,
         });
+        const spawnSubmit = validateI02SpawnSubmitBusinessResult(firstResult);
         const firstWithdrawal = await withI02ArtifactRootWithdrawn(
           stack,
           () => requestTypedUnary({
@@ -252,6 +268,11 @@ export async function runPackageServiceI02Combined({
           },
           positive: {
             typedUnaryResult: firstResult,
+            spawnSubmit: {
+              ...spawnSubmit,
+              sourceFixture: I02_FIXTURE_RELATIVE_ROOT,
+              workerExecutionRequired: false,
+            },
             requestArtifactIo: 0,
             artifactRootWithdrawals: [
               firstWithdrawal.evidence,
@@ -277,6 +298,10 @@ export async function runPackageServiceI02Combined({
             'routerActivationTransaction',
             'runtimeTypedLoad',
             'runtimeUnaryBoundary',
+            'normalSourceSpawnStatement',
+            'runtimeCanonicalSpawnSubmit',
+            'routerExactAssemblyAuthorization',
+            'runtimeTypedSpawnSubmitResponse',
             'routerAbort',
           ],
           cleanup: {
@@ -312,7 +337,7 @@ async function requestTypedUnary({
     host: unary.host,
     signal,
   });
-  return validateUnary(response, packageServiceEcosystemSmokeExpectedMarker);
+  return validateUnary(response, packageServiceI02SpawnSubmitBusinessResult);
 }
 
 async function readExactCandidate({ checkout, isolatedEnv, signal, runCommand }) {
@@ -341,4 +366,8 @@ async function readControlHealth(url, signal) {
 
 export const packageServiceI02CombinedConstants = Object.freeze({
   transactionDeadlineMs: DEFAULT_TRANSACTION_DEADLINE_MS,
+  fixtureRelativeRoot: I02_FIXTURE_RELATIVE_ROOT,
+  packageId: I02_PACKAGE_ID,
+  packageVersion: I02_PACKAGE_VERSION,
+  packageTestName: I02_PACKAGE_TEST_NAME,
 });

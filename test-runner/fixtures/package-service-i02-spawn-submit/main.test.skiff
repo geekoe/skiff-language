@@ -1,0 +1,3 @@
+test "I02 normal source fixture compiles canonical spawn submit" {
+  assert true
+}

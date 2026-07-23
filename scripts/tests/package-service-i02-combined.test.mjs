@@ -18,10 +18,12 @@ import {
   withI02ArtifactRootWithdrawn,
 } from '../lib/package-service-i02-combined-transaction.mjs';
 import {
+  packageServiceI02SpawnSubmitBusinessResult,
   captureI02CommittedState,
   classifyI02LoadReject,
   assertI02CommittedStateUnchanged,
   selectI02TransitivePackageRecord,
+  validateI02SpawnSubmitBusinessResult,
 } from '../lib/package-service-i02-combined-oracle.mjs';
 import {
   captureIsolatedTestConfig,
@@ -94,6 +96,37 @@ test('I02 oracle selects a transitive package and freezes rollback invariants', 
   );
 });
 
+test('I02 oracle requires the typed spawn submit receipt in the unary business result', () => {
+  assert.deepEqual(
+    validateI02SpawnSubmitBusinessResult(
+      packageServiceI02SpawnSubmitBusinessResult,
+    ),
+    {
+      businessResult: packageServiceI02SpawnSubmitBusinessResult,
+      responseStatus: 'submitted',
+    },
+  );
+  assert.throws(
+    () => validateI02SpawnSubmitBusinessResult('submitted-without-canonical-source'),
+    /typed spawn submit receipt/,
+  );
+});
+
+test('I02 fixture uses the canonical normal-source spawn statement', async () => {
+  const source = await readFile(join(
+    'test-runner',
+    'fixtures',
+    'package-service-i02-spawn-submit',
+    'main.skiff',
+  ), 'utf8');
+  assert.match(
+    source,
+    /spawn acceptSubmittedReceipt\("P5-F45E-SPAWN-SUBMIT"\)/,
+  );
+  assert.match(source, new RegExp(packageServiceI02SpawnSubmitBusinessResult));
+  assert.doesNotMatch(source, /std\.actor|runtime\.register|spawn\.(?:claim|renew|complete|fail)/);
+});
+
 test('I02 artifact-root withdrawal restores the exact owned directory after failure', async () => {
   const owned = await createOwnedStack();
   try {
@@ -144,7 +177,7 @@ test('I02 deadline remains armed until the isolated runtime owner finishes clean
 
 test('I02 combined owner performs valid commit, two zero-I/O requests, and real rollback', async () => {
   const environment = 'skiff-cutover';
-  const fixture = validSmokeFixtureReceipt(environment);
+  const fixture = validI02SpawnSubmitFixtureReceipt(environment);
   const bootstrap = validBootstrapReceipt(environment);
   const parentSignalTarget = new EventEmitter();
   const unaryRootPresence = [];
@@ -261,7 +294,7 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
     },
     validateUnary: (response, expected) => {
       assert.equal(response.status, 200);
-      assert.equal(expected, 'P5-F23D-REAL-COMPONENT-MARKER');
+      assert.equal(expected, packageServiceI02SpawnSubmitBusinessResult);
       return expected;
     },
   });
@@ -277,6 +310,13 @@ test('I02 combined owner performs valid commit, two zero-I/O requests, and real 
   assert.equal(result.rollback.activation.stagedAllocated, false);
   assert.equal(result.rollback.pendingActivation, null);
   assert.equal(result.rollback.tamperedPackage.recordRestored, true);
+  assert.deepEqual(result.positive.spawnSubmit, {
+    businessResult: packageServiceI02SpawnSubmitBusinessResult,
+    responseStatus: 'submitted',
+    sourceFixture:
+      'test-runner/fixtures/package-service-i02-spawn-submit',
+    workerExecutionRequired: false,
+  });
   assert.equal(result.cleanup.status, 'complete');
   assert.ok(Buffer.isBuffer(restoredRecord));
   assert.equal(parentSignalTarget.listenerCount('SIGINT'), 0);
@@ -336,6 +376,22 @@ function assemblyRecord(fixture, bootstrap) {
     ],
     globalIngress: [],
   };
+}
+
+function validI02SpawnSubmitFixtureReceipt(environment) {
+  const fixture = structuredClone(validSmokeFixtureReceipt(environment));
+  const packageId = 'test.skiff/package-service-i02-spawn-submit';
+  fixture.candidate.production.packageId = packageId;
+  fixture.candidate.overlay.packageId = packageId;
+  fixture.candidate.overlayRecordPath = fixture.candidate.overlayRecordPath
+    .replace('package-service-websocket-smoke', 'package-service-i02-spawn-submit');
+  fixture.candidate.entrypoints[0].name =
+    'I02 normal source fixture compiles canonical spawn submit';
+  fixture.candidate.entrypoints[0].contract.serviceId =
+    `test.skiff/package/${packageId}`;
+  fixture.candidate.entrypoints[0].deployment.serviceId =
+    `test.skiff/package/${packageId}`;
+  return fixture;
 }
 
 async function inode(path) {

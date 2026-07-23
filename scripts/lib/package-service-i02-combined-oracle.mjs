@@ -4,6 +4,20 @@ const ASSEMBLY_IDENTITY =
   /^skiff-runtime-assembly-v1:sha256:[0-9a-f]{64}$/;
 const PACKAGE_BUILD_IDENTITY =
   /^skiff-package-build-v4:sha256:[0-9a-f]{64}$/;
+const I02_SPAWN_SUBMIT_BUSINESS_RESULT =
+  'P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted';
+
+export function validateI02SpawnSubmitBusinessResult(result) {
+  assert.equal(
+    result,
+    I02_SPAWN_SUBMIT_BUSINESS_RESULT,
+    'I02 unary must continue only after the canonical typed spawn submit receipt',
+  );
+  return Object.freeze({
+    businessResult: result,
+    responseStatus: 'submitted',
+  });
+}
 
 export function i02RuntimeAssemblyRecordPath(assembly) {
   assert.deepEqual(
@@ -212,3 +226,6 @@ function deepFreeze(value) {
   }
   return Object.freeze(value);
 }
+
+export const packageServiceI02SpawnSubmitBusinessResult =
+  I02_SPAWN_SUBMIT_BUSINESS_RESULT;

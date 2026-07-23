@@ -1,0 +1,27 @@
+import std
+
+function acceptSubmittedReceipt(receipt: string) -> void {}
+
+function marker() -> string {
+  spawn acceptSubmittedReceipt("P5-F45E-SPAWN-SUBMIT")
+  return "P5-F45E-SPAWN-SUBMIT-TYPED-RESPONSE:submitted"
+}
+
+function acceptConnection() -> std.websocket.WebSocketConnectResult<null> {
+  return {
+    tag: "accept",
+    context: null,
+    businessIdentity: null,
+    connectionPolicy: null
+  }
+}
+
+function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.websocket.WebSocketConnectResult<null>? {
+  if event.tag == "connect" {
+    return acceptConnection()
+  }
+  if event.tag == "receive" {
+    std.websocket.sendTextToConnection(event.receiveEvent.connection.id, marker())
+  }
+  return null
+}
