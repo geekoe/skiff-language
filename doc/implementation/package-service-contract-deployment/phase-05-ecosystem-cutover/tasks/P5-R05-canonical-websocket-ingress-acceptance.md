@@ -26,5 +26,18 @@ registry/dispatcher/direct-send emitter，且不得重跑full Host/I16/stable。
 handoff，验收Agent不得临时拼装或先试跑。第一行只给`R05 PASS`或`R05 FAIL`。PASS与已通过的I30/必要harness combined共同
 解锁Cargo.lock no-op/refresh验证与I02；FAIL给最小production反例、失效证据与唯一owner，不重试。
 
+本批次exact production candidate为commit
+`c808586546fddc5550f1caf7e520e849162a0946`、tree
+`3db51a012b77137a992a01a8b3c2e10944f57f68`、Cargo.lock blob
+`f3ce5457138c58aec4c84abda431afa96013e3fd`；后续仅允许记录I31/R05的Phase 5文档提交，派发前必须证明没有
+production diff。I31在该candidate上1/1 PASS。唯一真实命令为：
+
+```bash
+node scripts/run-package-service-generation-lifecycle-smoke.mjs \
+  --probe r05-generation-lifecycle \
+  --replicas 1 \
+  --checkout "$PWD"
+```
+
 证据只对最终派发的exact candidate与本次隔离环境有效。Router/Runtime lifecycle、store provisioning、fixture/transcript、
 shared wire、Cargo.lock或环境来源变化会使其失效。
