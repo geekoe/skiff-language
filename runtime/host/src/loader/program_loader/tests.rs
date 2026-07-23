@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     file_ir_identity, package_build_identity, package_local_abi_identity, publication_abi_identity,
-    publication_storage_segment,
+    publication_storage_segment, SERVICE_PROTOCOL_IDENTITY_PREFIX,
 };
 use skiff_runtime_loader::ArtifactGraphIdentities;
 
@@ -2891,8 +2891,9 @@ fn write_release_pointer_with_service_unit_pointer(
             .as_str()
             .expect("canonical service unit pointer path"),
     );
-    let protocol_identity = service_value["protocolIdentity"].as_str().unwrap_or(
-        "skiff-protocol-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    let protocol_identity = service_value["protocolIdentity"].as_str().map_or_else(
+        || format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "a".repeat(64)),
+        str::to_owned,
     );
     let assembly_service_unit = serde_json::from_value(assembly_service_unit)
         .expect("test service unit ref should deserialize");
@@ -2900,7 +2901,7 @@ fn write_release_pointer_with_service_unit_pointer(
         root,
         service_id,
         &sha256_hex(format!("{service_id}:{version}").as_bytes()),
-        protocol_identity,
+        &protocol_identity,
         &assembly_service_unit,
         None,
     );
