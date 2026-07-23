@@ -52,8 +52,9 @@ pub use contract::{
     assign_service_contract_identities, contract_operation_id, contract_type_id,
     normalize_contract_definition_surface, normalize_contract_operation_contract,
     normalize_contract_type_shape, service_contract_from_definition, service_contract_ref,
-    service_protocol_identity, service_protocol_identity_projection,
-    validate_service_contract_identities, ServiceProtocolIdentityProjection,
+    service_protocol_identity, service_protocol_identity_hash,
+    service_protocol_identity_projection, validate_service_contract_identities,
+    ServiceProtocolIdentityProjection,
 };
 pub use deployment::{
     assign_service_deployment_identity, service_deployment_identity,

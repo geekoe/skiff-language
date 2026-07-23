@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use serde_json::{Map, Value};
+use skiff_artifact_identity::service_protocol_identity_hash;
 
 use super::{
-    identity::{identity_hash, identity_hash_with_label, validate_identity_prefix},
+    identity::{identity_hash_with_label, validate_identity_prefix},
     types::{
         ArtifactIndexPointer, PackageUnitArtifactPointer, ServiceAssemblyPointer,
         ServiceUnitArtifactPointer,
@@ -130,7 +131,7 @@ fn validate_contract_hash_field(
         );
     }
 
-    let expected_hash = identity_hash(protocol_identity)?;
+    let expected_hash = service_protocol_identity_hash(protocol_identity)?;
     if hash != expected_hash {
         anyhow::bail!(
             "{} contractHash {} does not match protocolIdentity hash {}",
@@ -141,6 +142,40 @@ fn validate_contract_hash_field(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::validate_contract_hash_field;
+
+    const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const IDENTITY: &str =
+        "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn contract_hash_must_match_canonical_service_protocol_identity() {
+        validate_contract_hash_field(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            IDENTITY,
+            Path::new("dev.json"),
+        )
+        .expect("matching contract hash");
+
+        let error = validate_contract_hash_field(
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            IDENTITY,
+            Path::new("dev.json"),
+        )
+        .expect_err("mismatched contract hash");
+        assert!(error
+            .to_string()
+            .contains("does not match protocolIdentity"));
+
+        let wrong_prefix = format!("skiff-protocol-v1:sha256:{HASH}");
+        assert!(validate_contract_hash_field(HASH, &wrong_prefix, Path::new("dev.json")).is_err());
+    }
 }
 
 pub(super) fn parse_service_assembly_pointer(

@@ -1,4 +1,4 @@
-use super::{utils::is_sha256_hash, PROTOCOL_IDENTITY_PREFIX};
+use super::utils::is_sha256_hash;
 
 pub(crate) fn validate_identity_prefix(
     identity: &str,
@@ -30,23 +30,6 @@ pub(crate) fn identity_hash_with_label<'a>(
     };
     if !is_sha256_hash(hash) {
         anyhow::bail!("{label} identity sha256 hash must be 64 lowercase hex characters");
-    }
-    Ok(hash)
-}
-
-pub(crate) fn identity_hash(identity: &str) -> anyhow::Result<&str> {
-    let Some((prefix, hash)) = identity.rsplit_once(":sha256:") else {
-        anyhow::bail!("contractIdentity must include :sha256:");
-    };
-    if prefix != PROTOCOL_IDENTITY_PREFIX {
-        anyhow::bail!(
-            "contractIdentity prefix must be {}, got {}",
-            PROTOCOL_IDENTITY_PREFIX,
-            prefix
-        );
-    }
-    if !is_sha256_hash(hash) {
-        anyhow::bail!("contractIdentity sha256 hash must be 64 lowercase hex characters");
     }
     Ok(hash)
 }

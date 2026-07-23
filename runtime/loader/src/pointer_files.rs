@@ -5,10 +5,10 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_artifact_identity::service_build_identity_hash;
+use skiff_artifact_identity::{service_build_identity_hash, service_protocol_identity_hash};
 
 use super::{
-    identity::{identity_hash, validate_identity_prefix},
+    identity::validate_identity_prefix,
     paths::{service_id_artifact_json_path, service_id_artifact_path},
     pointer_parse::{
         parse_dev_reload_pointer, parse_package_unit_pointers, parse_service_assembly_pointer,
@@ -331,7 +331,7 @@ fn parse_service_build_record(
     reject_legacy_contract_identity_aliases(object, build_path)?;
     let contract_identity = object_string(object, "contractIdentity");
     if let Some(contract_identity) = contract_identity.as_deref() {
-        identity_hash(contract_identity)?;
+        service_protocol_identity_hash(contract_identity)?;
     }
     let service_assembly = parse_service_assembly_pointer(object, build_path)?;
     let service_unit = parse_service_unit_pointer(object, build_path)?;

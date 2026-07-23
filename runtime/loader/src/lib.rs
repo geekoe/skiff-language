@@ -31,7 +31,6 @@ pub use types::{
     ArtifactIndexPointer, ArtifactPointerFile, RootedArtifactPointerFile, ServiceAssemblyPointer,
 };
 
-use skiff_artifact_identity::SERVICE_PROTOCOL_IDENTITY_PREFIX as PROTOCOL_IDENTITY_PREFIX;
 use skiff_artifact_model::schema::{
     SERVICE_BUILD_SCHEMA_VERSION, SERVICE_VERSION_POINTER_SCHEMA_VERSION,
 };

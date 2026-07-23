@@ -8,6 +8,10 @@ pub enum ArtifactIdentityError {
     SerializeContractOperationIdentity(serde_json::Error),
     #[error("failed to serialize service protocol identity payload: {0}")]
     SerializeServiceProtocolIdentity(serde_json::Error),
+    #[error(
+        "service protocol identity {identity} must use skiff-service-protocol-v2:sha256:<64 lowercase hex>"
+    )]
+    InvalidServiceProtocolIdentity { identity: String },
     #[error("service contract is invalid: {message}")]
     InvalidServiceContract { message: String },
     #[error(

@@ -35,6 +35,29 @@ mod publication_validation;
 mod runtime_program;
 mod semantic;
 
+#[test]
+fn service_protocol_identity_hash_accepts_only_canonical_v2_identity() {
+    let hash = "a".repeat(64);
+    let identity = format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{hash}");
+    assert_eq!(
+        service_protocol_identity_hash(&identity).expect("canonical identity"),
+        hash
+    );
+
+    for invalid in [
+        format!("skiff-protocol-v1:sha256:{hash}"),
+        SERVICE_PROTOCOL_IDENTITY_PREFIX.to_string(),
+        format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "a".repeat(63)),
+        format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "A".repeat(64)),
+        format!("{SERVICE_PROTOCOL_IDENTITY_PREFIX}:{}", "g".repeat(64)),
+    ] {
+        assert!(
+            service_protocol_identity_hash(&invalid).is_err(),
+            "{invalid} must be rejected"
+        );
+    }
+}
+
 fn resource_ref(path: &str, sha256: &str) -> PublicationResourceRef {
     PublicationResourceRef {
         path: path.to_string(),

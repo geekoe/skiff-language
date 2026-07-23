@@ -125,6 +125,22 @@ pub fn service_protocol_identity(contract: &ServiceContract) -> Result<ServicePr
     )))
 }
 
+pub fn service_protocol_identity_hash(identity: &str) -> Result<&str> {
+    let hash = identity
+        .strip_prefix(SERVICE_PROTOCOL_IDENTITY_PREFIX)
+        .and_then(|suffix| suffix.strip_prefix(':'))
+        .filter(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .ok_or_else(|| ArtifactIdentityError::InvalidServiceProtocolIdentity {
+            identity: identity.to_string(),
+        })?;
+    Ok(hash)
+}
+
 /// Assigns the protocol identity after validating the independently assigned
 /// contract type and operation identities.
 pub fn assign_service_contract_identities(
