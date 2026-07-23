@@ -495,6 +495,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
 | R02 result | [Skiff cutover acceptance result](tasks/P5-R02-skiff-cutover-acceptance-result.md) | `713a1d8` | PASS；Wave 3 baseline |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
+| T06 blocker | [Terminal cleanup blocker](tasks/P5-T06-skiff-terminal-cleanup-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；33 consumer |
+| D55 | [Terminal legacy consumer audit](tasks/P5-D55-terminal-legacy-consumer-audit.md) | T06 blocked | 三只读分片并行 |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T09A | [Codex contract](tasks/P5-T09A-internals-codex-contract.md) | R02 exact Skiff | 高；contract ABI checkpoint |
