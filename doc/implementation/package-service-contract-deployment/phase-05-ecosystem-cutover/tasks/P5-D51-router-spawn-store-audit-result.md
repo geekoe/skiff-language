@@ -1,0 +1,9 @@
+# P5-D51：Router Spawn Store Audit Result
+
+结论：COMPLETE。production Router使用进程内`InMemorySpawnQueueStore`，不依赖Mongo、schema、index、transaction或
+外部初始化；默认store方法无外部I/O与自然悬挂点。现有direct覆盖缺少默认RuntimeRegistry wiring下canonical
+submit的bounded positive/rejection探针。
+
+I02D无法进一步归因的明确原因是isolated harness只把临时日志路径写入ledger，失败cleanup随后删除workspace；
+Router/Runtime日志内容不可恢复。下一批并行补Router direct probe与失败日志的bounded/redacted/hash证据保全，
+两者均不得改变production协议或保留整个workspace。

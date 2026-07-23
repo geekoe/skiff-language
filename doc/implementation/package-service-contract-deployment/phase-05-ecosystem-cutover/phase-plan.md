@@ -402,6 +402,9 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F50A | [Host spawn continuation probe](tasks/P5-F50A-host-spawn-continuation-probe.md) | D50 complete | test-only；不得改production |
 | F50A result | [Host spawn continuation probe result](tasks/P5-F50A-host-spawn-continuation-probe-result.md) | `486379d` | PASS；排除host continuation |
 | D51 | [Router spawn store audit](tasks/P5-D51-router-spawn-store-audit.md) | F50A PASS | Router/store与harness双分片 |
+| D51 result | [Router spawn store audit result](tasks/P5-D51-router-spawn-store-audit-result.md) | D51A/B complete | 默认store无外部悬挂；日志证据缺口 |
+| F51A | [Router default spawn probe](tasks/P5-F51A-router-default-spawn-probe.md) | D51 complete | test-only Router owner |
+| F51B | [Isolated failure log evidence](tasks/P5-F51B-isolated-failure-log-evidence.md) | D51 complete | harness diagnostic owner |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
