@@ -2809,7 +2809,7 @@ fn compiler_shaped_gateway_config_and_service_identity_fields_affect_dynamic_bui
         "version": "0.1.0",
         "alias": "account",
         "buildId": "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "serviceProtocolIdentity": "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "serviceProtocolIdentity": "skiff-service-protocol-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "publicationAbi": service_dependency_publication_abi_value(
             "lookup",
             "operation:account:lookup",
@@ -5048,7 +5048,7 @@ fn link_any_interface_file_with_service(
 }
 
 const ANY_INTERFACE_REMOTE_PROTOCOL: &str =
-    "skiff-protocol-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    "skiff-service-protocol-v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const ANY_INTERFACE_REMOTE_OPERATION_ABI_ID: &str = "operation:remoteLlm:managedTools.execute";
 
 fn any_interface_remote_service() -> ServiceUnit {
@@ -6052,7 +6052,7 @@ fn service_dependency_constraint(alias: &str) -> ServiceDependencyConstraint {
             "skiff-service-build-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         service_protocol_identity:
-            "skiff-protocol-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            "skiff-service-protocol-v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
         publication_abi: service_dependency_publication_abi("lookup", "operation:account:lookup"),
     }

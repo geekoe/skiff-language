@@ -31,7 +31,7 @@ use skiff_artifact_model::{builtin_receiver_op_by_name, DbMetadataIr, Publicatio
 use skiff_runtime_linked_program::{LoadedPublicationResource, PublicationResourceTable};
 
 const PROTOCOL_OUTBOUND: &str =
-    "skiff-protocol-v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    "skiff-service-protocol-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const BUILD_OUTBOUND: &str = "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const STD_HTTP_HEADER_TYPE_INDEX: usize = 0;
 const STD_HTTP_QUERY_PARAM_TYPE_INDEX: usize = 1;

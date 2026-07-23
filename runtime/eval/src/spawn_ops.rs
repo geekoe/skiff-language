@@ -382,7 +382,8 @@ mod recoverable_spawn_payload_tests {
         },
     };
 
-    const ARTIFACT_IDENTITY: &str = "skiff-protocol-v1:sha256:test";
+    const ARTIFACT_IDENTITY: &str =
+        "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const BUILD_ID: &str = "skiff-service-build-v1:sha256:test";
     const SERVICE_ID: &str = "skiff.test/provider";
     const INTERFACE_ABI: &str = "pkg.ToolProvider";

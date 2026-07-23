@@ -1520,7 +1520,8 @@ mod recoverable_spawn_payload_tests {
             program: program.projection(),
             addr: &addr,
             executable: &executable,
-            artifact_identity: "skiff-protocol-v1:sha256:test",
+            artifact_identity:
+                "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             build_id: "skiff-service-build-v1:sha256:test",
         };
 
