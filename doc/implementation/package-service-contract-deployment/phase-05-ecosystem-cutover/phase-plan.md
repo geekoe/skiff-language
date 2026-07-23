@@ -314,6 +314,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | I31 result | [Generation lifecycle fixture combined result](tasks/P5-I31-generation-lifecycle-fixture-combined-result.md) | `c808586` | PASS；1/1 |
 | R05 result | [Canonical WebSocket ingress acceptance result](tasks/P5-R05-canonical-websocket-ingress-acceptance-result.md) | `c808586` | FAIL；unary B 404 |
 | F41A | [R05 unary client repair](tasks/P5-F41A-r05-unary-client-repair.md) | R05 exact FAIL | 中；窄scripts harness owner |
+| F41A result | [R05 unary client repair result](tasks/P5-F41A-r05-unary-client-repair-result.md) | `8c832b4` | complete；direct 7/7 |
+| I32 | [R05 unary repair combined](tasks/P5-I32-r05-unary-repair-combined.md) | F41A merged | cheap combined；只解锁R05A |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
