@@ -9,6 +9,7 @@ pub mod error;
 pub mod fixtures;
 pub mod platform_registry;
 pub mod projection;
+pub mod router_activation_backend;
 pub mod storage;
 pub mod validation;
 
