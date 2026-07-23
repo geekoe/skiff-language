@@ -20,6 +20,7 @@ impl Evaluator<'_, '_> {
         env: &mut Environment,
     ) -> AbstractValue {
         let target = self.resolved_call_targets.target(call_key).cloned();
+        let config_intrinsic = direct_config_intrinsic(callee);
         let callee_start = self.next_index;
         let callee_value = if matches!(
             target,
@@ -37,6 +38,9 @@ impl Evaluator<'_, '_> {
             .map(|arg| self.eval_expr(arg, env))
             .collect::<Vec<_>>();
         let return_reference = self.expression_may_be_reference(call_key);
+        if config_intrinsic {
+            return AbstractValue::fresh(return_reference);
+        }
         match target {
             Some(ResolvedCallTarget::LocalFunction { .. })
             | Some(ResolvedCallTarget::LocalImplMethod { .. }) => {
@@ -261,7 +265,8 @@ impl Evaluator<'_, '_> {
         self.state.effects.writes_caller_reachable |=
             callee.effects.writes_caller_reachable && any_caller_reference;
         self.state.effects.requires_same_heap_identity |=
-            callee.effects.requires_same_heap_identity;
+            callee.effects.requires_same_heap_identity
+                && (any_caller_reference || callee.effects.invokes_unknown_target);
         self.state.effects.invokes_unknown_target |= callee.effects.invokes_unknown_target;
         self.state.effects.may_suspend |= callee.effects.may_suspend;
 
@@ -314,15 +319,26 @@ impl Evaluator<'_, '_> {
             || (callee.effects.throws_caller_alias && any_caller_reference)
             || thrown.unknown;
 
-        if returned.unknown || thrown.unknown {
+        if thrown.unknown {
             self.state.join(&CallableState::fail_closed(
                 CallableProvenanceUnknownReason::UnknownCallTarget,
             ));
         }
 
         if let Some(reason) = callee.unknown {
-            self.state.mark_unknown(reason);
-            returned.unknown = true;
+            returned.unknown |= matches!(
+                reason,
+                CallableProvenanceUnknownReason::UnknownCallTarget
+                    | CallableProvenanceUnknownReason::AnalysisPending
+            ) || callee.return_origins.is_empty();
+            // Unknown return provenance is an abstract value, not an
+            // unconditional callable failure. Its consumer (return, throw or
+            // an escape lane) decides whether it becomes caller-visible.
+            // A genuinely unresolved/dynamic call target remains fail-closed
+            // through its explicit invokes_unknown_target effect.
+            if callee.effects.invokes_unknown_target {
+                self.state.mark_unknown(reason);
+            }
         }
         returned.reference = return_reference;
         if !return_reference {
@@ -330,6 +346,18 @@ impl Evaluator<'_, '_> {
         }
         returned
     }
+}
+
+fn direct_config_intrinsic(mut callee: &Expr) -> bool {
+    while let Expr::Generic { callee: inner, .. } = callee {
+        callee = inner;
+    }
+    matches!(
+        callee,
+        Expr::Field { object, field }
+            if matches!(object.as_ref(), Expr::Identifier(root) if root == "config")
+                && matches!(field.as_str(), "require" | "optional" | "has")
+    )
 }
 
 fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
@@ -343,12 +371,28 @@ fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
 }
 
 fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
-    let semantics = builtin_receiver_callable_semantics(op)?;
+    if let Some(semantics) = builtin_receiver_callable_semantics(op) {
+        let mut state = CallableState::bottom();
+        state.effects = semantics.effects;
+        state
+            .return_origins
+            .insert(Origin::from(semantics.return_provenance.clone()));
+        return Some(state);
+    }
     let mut state = CallableState::bottom();
-    state.effects = semantics.effects;
-    state
-        .return_origins
-        .insert(Origin::from(semantics.return_provenance.clone()));
+    match op.canonical_key {
+        "receiver:string.length@1" => {
+            state.return_origins.insert(Origin::Constant);
+        }
+        "receiver:bytes.toUtf8String@1" => {
+            state.return_origins.insert(Origin::Fresh);
+        }
+        "receiver:JsonObject.get@1" => {
+            state.effects.returns_caller_alias = true;
+            state.return_origins.insert(Origin::CallerParameter(0));
+        }
+        _ => return None,
+    }
     Some(state)
 }
 

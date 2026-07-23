@@ -1,5 +1,8 @@
 use std::{fs, os::unix::fs::symlink};
 
+use skiff_artifact_model::{
+    BoundaryCallableProjection, CallableEffectSummary, CallableProvenanceSummary,
+};
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
@@ -14,6 +17,10 @@ use super::{
     MinimalPlatformFixture,
 };
 use crate::canonical_package::compile_package_project;
+use crate::{
+    canonical_fixture::discover_package_test_cases, canonical_std_seed::seed_canonical_std,
+    test_overlay::compile_package_test_overlay,
+};
 
 // Explicit F18 identity probe pins refreshed for c277e45's canonical WebSocket
 // std surface; the production seed consumes the F27A typed receipt instead.
@@ -93,6 +100,68 @@ fn p5_f18_compiler_repair_combined() {
     ] {
         let _ = fs::remove_dir_all(path);
     }
+}
+
+#[test]
+#[ignore = "Phase 5 compile-only real-package provenance probe"]
+fn p5_f76_contextual_callable_provenance_combined() {
+    let packages_root = std::env::var_os("P5_F76_PACKAGES_ROOT")
+        .map(std::path::PathBuf::from)
+        .expect("P5_F76_PACKAGES_ROOT must name the skiff-packages integration checkout");
+    let platform_sources = repository_platform_sources();
+    let artifacts = temporary_path("f76-real-packages");
+    CanonicalArtifactStore::create(&artifacts).unwrap();
+    seed_canonical_std(&platform_sources, &artifacts).unwrap();
+
+    // Compile the shared dependency before its consumers while keeping one
+    // canonical store for the complete compile-only graph.
+    for package in ["http-session", "aliyunoss", "track", "openai"] {
+        let package_root = packages_root.join(package);
+        build_authoring_object(
+            &platform_sources,
+            AuthoringObject::Package,
+            &package_root,
+            &artifacts,
+            true,
+        )
+        .unwrap();
+        let project =
+            compile_package_project(&platform_sources, &package_root, &artifacts).unwrap();
+        let cases = discover_package_test_cases(&package_root, &package_root, false).unwrap();
+        let overlay =
+            compile_package_test_overlay(&platform_sources, &package_root, &project, &cases)
+                .unwrap();
+        let binding = overlay
+            .bindings
+            .iter()
+            .find(|binding| binding.public_path == "testCases.case0")
+            .unwrap_or_else(|| panic!("{package} did not emit testCases.case0"));
+        let facts = &overlay.overlay.artifact.callable_semantic_facts[&binding.callable_id];
+        let CallableEffectSummary::Analyzed { effects } = facts.effects else {
+            panic!("{package} case0 retained unknown effects");
+        };
+        assert!(
+            !effects.writes_caller_reachable,
+            "{package} case0: {facts:?}"
+        );
+        assert!(
+            !effects.requires_same_heap_identity,
+            "{package} case0: {facts:?}"
+        );
+        assert!(!effects.invokes_unknown_target, "{package} case0");
+        assert!(
+            matches!(facts.provenance, CallableProvenanceSummary::Analyzed { .. }),
+            "{package} case0 retained unknown provenance"
+        );
+        assert!(
+            matches!(
+                overlay.overlay.artifact.boundary_projections[&binding.callable_id],
+                BoundaryCallableProjection::Available { .. }
+            ),
+            "{package} case0 is not boundary available"
+        );
+    }
+    fs::remove_dir_all(artifacts).unwrap();
 }
 
 struct EscapedPlatformFixture {

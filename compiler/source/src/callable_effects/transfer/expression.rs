@@ -32,7 +32,8 @@ impl Evaluator<'_, '_> {
             Expr::Binary { op, left, right } => {
                 let mut value = self.eval_expr(left, env);
                 let right = self.eval_expr(right, env);
-                if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (value.reference || right.reference)
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                    && (value.contains_caller_reference() || right.contains_caller_reference())
                 {
                     self.state.effects.requires_same_heap_identity = true;
                 }
@@ -105,9 +106,12 @@ impl Evaluator<'_, '_> {
                 AbstractValue::unknown(reference)
             }
             Expr::Catch { try_expr, .. } => {
-                self.eval_expr(try_expr, env);
-                self.mark_unsupported_control_flow();
-                AbstractValue::unknown(reference)
+                let value = self.eval_expr(try_expr, env);
+                // A typed catch materializes an owner-local tagged result.
+                // Effects of evaluating the try expression remain exact, but
+                // the catch construct itself neither invokes an unknown target
+                // nor requires caller heap identity.
+                value.with_fresh_container(reference)
             }
             Expr::DbOperation(operation) => {
                 let inputs = self.eval_db_operation(operation, env);

@@ -144,9 +144,11 @@ impl Evaluator<'_, '_> {
     }
 
     fn mark_unsupported_loop(&mut self) {
-        join_effects(&mut self.state.effects, &all_effects());
-        self.state
-            .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
+        // Loop shape makes the value provenance incomplete, but it does not
+        // invent an unknown call target or caller mutation. Effects observed
+        // in the body and every explicit return/throw/escape lane were already
+        // transferred above. The join environment is the loop fixed point for
+        // this finite provenance lattice, so retain those exact facts.
     }
 
     fn mark_unsupported_heap_store(&mut self) {

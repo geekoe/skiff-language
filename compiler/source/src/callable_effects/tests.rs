@@ -633,6 +633,81 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
 }
 
 #[test]
+fn receiver_effects_are_contextual_to_caller_reachable_values() {
+    let model = analyze_named(
+        r#"
+            function append(items: Array<string>) -> void {
+              items.push("value")
+            }
+
+            function appendHop(items: Array<string>) -> void {
+              append(items)
+            }
+
+            function callerOwned(items: Array<string>) -> void {
+              appendHop(items)
+            }
+
+            function freshLocal() -> void {
+              const items = Array.empty<string>()
+              appendHop(items)
+            }
+
+            function freshLocalSuspend() -> void {
+              const items = Array.empty<string>()
+              std.time.sleep(Duration.milliseconds(1))
+              appendHop(items)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+        "std.effect_test",
+        crate::shared::id::SKIFF_STD_PUBLICATION_ID,
+    );
+
+    let caller_effects = CallableMayEffects {
+        writes_caller_reachable: true,
+        requires_same_heap_identity: true,
+        ..no_effects()
+    };
+    for callable in ["append", "appendHop", "callerOwned"] {
+        assert_eq!(
+            effects_in(&model, "std.effect_test", callable),
+            caller_effects,
+            "{callable}"
+        );
+    }
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "freshLocal"),
+        no_effects()
+    );
+    assert_eq!(
+        effects_in(&model, "std.effect_test", "freshLocalSuspend"),
+        suspend_only_effects()
+    );
+}
+
+#[test]
+fn config_intrinsics_are_exact_detached_sources() {
+    let model = analyze(
+        r#"
+            type Config { name: string, optional: string? }
+            function load() -> Config {
+              return Config {
+                name: config.require<string>("name"),
+                optional: config.optional<string>("optional"),
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+    assert_eq!(effects(&model, "load"), no_effects());
+    assert!(matches!(
+        provenance(&model, "load"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
 fn exact_date_and_duration_receiver_targets_use_sparse_semantics() {
     let model = analyze_named(
         r#"
