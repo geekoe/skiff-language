@@ -21,7 +21,12 @@ pub(super) async fn admitted_nested_host() -> (RuntimeHost, ActiveAssemblyRoute)
 }
 
 pub(super) async fn admitted_void_host(may_suspend: bool) -> (RuntimeHost, ActiveAssemblyRoute) {
-    let fixture = void_fixture(may_suspend);
+    let fixture = void_fixture(may_suspend, false);
+    admit(fixture.assembly, fixture.resolver).await
+}
+
+pub(super) async fn admitted_spawn_host() -> (RuntimeHost, ActiveAssemblyRoute) {
+    let fixture = void_fixture(true, true);
     admit(fixture.assembly, fixture.resolver).await
 }
 
@@ -134,7 +139,7 @@ struct VoidFixture {
     resolver: TypedResolver,
 }
 
-fn void_fixture(may_suspend: bool) -> VoidFixture {
+fn void_fixture(may_suspend: bool, submits_spawn: bool) -> VoidFixture {
     let operation_contract = void_unary_contract(may_suspend);
     let (contract, operation_id) = void_contract(operation_contract.clone());
     let contract_ref = ServiceContractRef {
@@ -142,7 +147,7 @@ fn void_fixture(may_suspend: bool) -> VoidFixture {
         contract_version: contract.contract_version.clone(),
         service_protocol_identity: contract.service_protocol_identity.clone(),
     };
-    let file = void_file(may_suspend);
+    let file = void_file(may_suspend, submits_spawn);
     let file_ref = FileIrRef {
         file_ir_identity: file.file_ir_identity.clone(),
         module_path: file.module_path.clone(),
@@ -215,8 +220,44 @@ fn void_contract(
     (contract, operation_id)
 }
 
-fn void_file(may_suspend: bool) -> FileIrUnit {
+fn void_file(may_suspend: bool, submits_spawn: bool) -> FileIrUnit {
     let mut file = FileIrUnit::empty("canonical.void", "source:canonical.void".to_string());
+    let (statements, expressions) = if submits_spawn {
+        (
+            vec![
+                StmtIr::Spawn {
+                    call: ExprRefIr { expression: 0 },
+                },
+                StmtIr::Return { value: None },
+            ],
+            vec![ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::LocalExecutable {
+                        executable_index: 1,
+                    },
+                    args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::from([(
+                        "spawnSubmit".to_string(),
+                        MetadataValue::Object(BTreeMap::from([
+                            (
+                                "targetKind".to_string(),
+                                MetadataValue::String("function".to_string()),
+                            ),
+                            (
+                                "target".to_string(),
+                                MetadataValue::String(
+                                    "function:canonical.void.spawnTarget".to_string(),
+                                ),
+                            ),
+                        ])),
+                    )]),
+                },
+            }],
+        )
+    } else {
+        (vec![StmtIr::Return { value: None }], Vec::new())
+    };
     file.executables.push(ExecutableIr {
         kind: ExecutableKind::Function,
         symbol: "invoke".to_string(),
@@ -229,13 +270,38 @@ fn void_file(may_suspend: bool) -> FileIrUnit {
         body: ExecutableBody {
             blocks: vec![BlockIr {
                 label: "entry".to_string(),
-                statements: vec![StmtRefIr { statement: 0 }],
+                statements: (0..statements.len())
+                    .map(|statement| StmtRefIr {
+                        statement: statement as u32,
+                    })
+                    .collect(),
             }],
-            statements: vec![StmtIr::Return { value: None }],
-            expressions: Vec::new(),
+            statements,
+            expressions,
         },
         source_span: None,
     });
+    if submits_spawn {
+        file.executables.push(ExecutableIr {
+            kind: ExecutableKind::Function,
+            symbol: "canonical.void.spawnTarget".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::native("void"),
+            self_type: None,
+            slots: SlotLayout::default(),
+            may_suspend: false,
+            body: ExecutableBody {
+                blocks: vec![BlockIr {
+                    label: "entry".to_string(),
+                    statements: vec![StmtRefIr { statement: 0 }],
+                }],
+                statements: vec![StmtIr::Return { value: None }],
+                expressions: Vec::new(),
+            },
+            source_span: None,
+        });
+    }
     skiff_artifact_identity::assign_file_ir_identity(&mut file).expect("void File IR identity");
     file
 }

@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{AssemblyIdentity, ContractOperationId, IngressProtocol};
-use skiff_runtime_request::RouterWriterMessage;
+use skiff_runtime_request::{OutboundControlMessage, RouterWriterMessage};
 use skiff_runtime_transport::{
     protocol::{
         decode_typed_binary_frame, encode_binary_frame, RequestCancelFrameHeader,
-        ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader, TypedEnvelope,
-        BINARY_FRAME_HEADER_ENCODING_JSON, BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION,
-        RUNTIME_FRAME_SCHEMA_VERSION,
+        ResponseEndFrameHeader, ResponseEndFrameMetadata, ResponseErrorFrameHeader,
+        SpawnSubmitResponseFrameHeader, TypedEnvelope, BINARY_FRAME_HEADER_ENCODING_JSON,
+        BINARY_FRAME_MAGIC, BINARY_FRAME_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
     },
     runtime_assembly_request::{
         RuntimeAssemblyHttpAdapterCallableFrameHeader, RuntimeAssemblyHttpAdapterFrameHeader,
@@ -24,6 +24,87 @@ use tokio::{sync::mpsc, time::timeout};
 use crate::{host::RuntimeHost, loader::assembly_admission::ActiveAssemblyRoute};
 
 pub(super) mod fixture;
+
+#[tokio::test]
+async fn runtime_assembly_spawn_continuation_resumes_on_correlated_submitted_receipt() {
+    let (host, route) = fixture::admitted_spawn_host().await;
+    let header = canonical_header(&route, "runtime-assembly-spawn-continuation");
+    let frame = encode_binary_frame(&header, &[]).expect("canonical request.start should encode");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    dispatch(&host, &frame, &sender)
+        .await
+        .expect("canonical spawn request.start should dispatch");
+
+    let outbound = timeout(Duration::from_secs(5), receiver.recv())
+        .await
+        .expect("spawn.submit request timeout")
+        .expect("router writer channel closed");
+    let RouterWriterMessage::Control(OutboundControlMessage::SpawnSubmit {
+        request,
+        payload: _,
+    }) = outbound
+    else {
+        panic!("canonical eval must emit spawn.submit.request, got {outbound:?}")
+    };
+    assert_eq!(
+        request.activation_identity.assembly_identity,
+        *route.assembly_identity()
+    );
+    assert_eq!(request.activation_identity.generation, route.generation());
+    assert_eq!(
+        request.activation_identity.runtime_replica_id,
+        route.activation().identity().runtime_replica_id
+    );
+    assert_eq!(
+        request.activation_identity.deployment_revision,
+        route.activation().identity().deployment.deployment_revision
+    );
+    assert_eq!(
+        request.caller_request_id.as_deref(),
+        Some(header.request_id.as_str())
+    );
+    assert_eq!(host.outbound_requests.pending_count(), 1);
+    assert_eq!(host.outbound_requests.active_lease_count(), 1);
+
+    let wrong_receipt = spawn_submitted_receipt("rpc:wrong-f50a");
+    let wrong_frame =
+        encode_binary_frame(&wrong_receipt, &[]).expect("wrong-rpc receipt should encode");
+    dispatch(&host, &wrong_frame, &sender)
+        .await
+        .expect("wrong-rpc receipt should be ignored by the same dispatcher");
+    assert!(
+        timeout(Duration::from_millis(25), receiver.recv())
+            .await
+            .is_err(),
+        "wrong rpcId must not resume the request"
+    );
+    assert_eq!(host.outbound_requests.pending_count(), 1);
+    assert_eq!(host.request_supervisor.active_count().await, 1);
+
+    let receipt = spawn_submitted_receipt(&request.rpc_id);
+    let receipt_frame =
+        encode_binary_frame(&receipt, &[]).expect("correlated submitted receipt should encode");
+    dispatch(&host, &receipt_frame, &sender)
+        .await
+        .expect("correlated receipt should dispatch");
+
+    let Terminal::End(response, payload) = recv_terminal(&mut receiver).await else {
+        panic!("spawn continuation must complete with response.end")
+    };
+    assert_eq!(response.request_id, header.request_id);
+    let decoded = skiff_runtime_boundary::binary::decode_payload(
+        &payload,
+        &json!({ "kind": "builtin", "name": "void", "args": [] }),
+        &mut skiff_runtime_model::request_heap::RequestHeap::default(),
+    )
+    .expect("fixture business payload should decode");
+    assert_eq!(decoded, skiff_runtime_model::value::RuntimeValue::Null);
+    assert_eq!(host.outbound_requests.pending_count(), 0);
+    assert_eq!(host.outbound_requests.active_lease_count(), 0);
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+    assert_no_second_terminal(&mut receiver).await;
+}
 
 #[tokio::test]
 async fn runtime_assembly_request_executes_zero_payload_unary_with_nested_provider() {
@@ -328,6 +409,17 @@ async fn runtime_assembly_request_session_rejects_legacy_flat_unknown_and_duplic
             receiver.try_recv().is_err(),
             "{name} must not emit a terminal"
         );
+    }
+}
+
+fn spawn_submitted_receipt(rpc_id: &str) -> SpawnSubmitResponseFrameHeader {
+    SpawnSubmitResponseFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "spawn.submit.response".to_string(),
+        rpc_id: rpc_id.to_string(),
+        spawn_id: "spawn-f50a".to_string(),
+        item_id: "item-f50a".to_string(),
+        status: "submitted".to_string(),
     }
 }
 
