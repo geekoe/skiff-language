@@ -78,8 +78,13 @@ pub fn assemble_package_test_fixture_with_config(
     let package_bindings = canonical_package_bindings(&deployment_packages)?;
     let service_selectors = package_test_service_selectors(&deployment_packages, &base)?;
     let owner = binding_owner(&base, &production_ref)?;
-    let config_literals =
-        package_test_config_literals(&deployment_packages, owner, test_config_literals)?;
+    let config_literals = package_test_config_literals(
+        &deployment_packages,
+        &production_ref,
+        &overlay_ref,
+        owner,
+        test_config_literals,
+    )?;
     let deployment = project_service_deployment(
         package_test_deployment_input(
             &overlay,
@@ -407,6 +412,8 @@ fn package_test_deployment_input(
 
 fn package_test_config_literals(
     packages: &[PackageArtifact],
+    production: &PackageArtifactRef,
+    overlay: &PackageArtifactRef,
     owner: Option<&ServiceDeployment>,
     supplied: &[PackageTestConfigLiteral],
 ) -> Result<Vec<ConfigLiteralBinding>, CanonicalFixtureError> {
@@ -420,14 +427,19 @@ fn package_test_config_literals(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let mut supplied_by_key = BTreeMap::new();
     for literal in supplied {
-        let exact_key = (literal.package.clone(), literal.key.clone());
+        let effective_package = if &literal.package == production {
+            overlay.clone()
+        } else {
+            literal.package.clone()
+        };
+        let exact_key = (effective_package.clone(), literal.key.clone());
         if supplied_by_key.insert(exact_key, literal).is_some() {
             return Err(CanonicalFixtureError::InvalidInput(format!(
                 "test config literal repeats exact package requirement {} {}",
-                literal.package.package_build_id, literal.key
+                effective_package.package_build_id, literal.key
             )));
         }
-        let package = package_by_ref.get(&literal.package).ok_or_else(|| {
+        let package = package_by_ref.get(&effective_package).ok_or_else(|| {
             CanonicalFixtureError::InvalidInput(format!(
                 "test config literal names package {} outside the exact deployment closure",
                 literal.package.package_build_id
@@ -441,14 +453,14 @@ fn package_test_config_literals(
             .ok_or_else(|| {
                 CanonicalFixtureError::InvalidInput(format!(
                     "test config literal names unknown requirement {} for package {}",
-                    literal.key, literal.package.package_build_id
+                    literal.key, effective_package.package_build_id
                 ))
             })?;
         validate_test_literal_type(requirement.value_type.as_str(), &literal.value).map_err(
             |actual| {
                 CanonicalFixtureError::InvalidInput(format!(
                     "test config literal {} for package {} must be {}, got {actual}",
-                    literal.key, literal.package.package_build_id, requirement.value_type
+                    literal.key, effective_package.package_build_id, requirement.value_type
                 ))
             },
         )?;

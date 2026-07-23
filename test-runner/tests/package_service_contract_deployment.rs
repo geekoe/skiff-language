@@ -561,6 +561,8 @@ fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
         .unwrap();
     let exact_dependency =
         skiff_artifact_identity::package_artifact_ref(&project.dependency_packages[0]).unwrap();
+    let exact_production =
+        skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
     let cases = discover_package_test_cases(&consumer, &consumer, false).unwrap();
     let probe_overlay =
         compile_package_test_overlay(&platform_sources(), &consumer, &project, &cases).unwrap();
@@ -573,7 +575,7 @@ fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
         assemble_package_test_fixture_with_config(&project, overlay, base.clone(), literals)
     };
     let required = PackageTestConfigLiteral {
-        package: exact_package.clone(),
+        package: exact_production.clone(),
         key: "app.token".to_string(),
         value: MetadataValue::String("owned-by-base".to_string()),
     };
@@ -621,12 +623,45 @@ fn test_config_literals_are_exact_typed_and_test_deployment_owned() {
     assert!(unknown.contains("unknown requirement"));
     let duplicate = assemble(&[
         required.clone(),
-        required.clone(),
+        PackageTestConfigLiteral {
+            package: exact_package.clone(),
+            ..required.clone()
+        },
         dependency_required.clone(),
     ])
     .unwrap_err()
     .to_string();
     assert!(duplicate.contains("repeats exact package requirement"));
+
+    let mut wrong_production = exact_production.clone();
+    wrong_production.package_build_id = skiff_artifact_model::PackageBuildId::new(
+        "skiff-package-build-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let wrong_production = assemble(&[
+        PackageTestConfigLiteral {
+            package: wrong_production,
+            ..required.clone()
+        },
+        dependency_required.clone(),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_production.contains("outside the exact deployment closure"));
+
+    let mut wrong_overlay = exact_package;
+    wrong_overlay.package_build_id = skiff_artifact_model::PackageBuildId::new(
+        "skiff-package-build-v4:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    let wrong_overlay = assemble(&[
+        PackageTestConfigLiteral {
+            package: wrong_overlay,
+            ..required.clone()
+        },
+        dependency_required.clone(),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_overlay.contains("outside the exact deployment closure"));
 
     let with_optional = assemble(&[
         required,
