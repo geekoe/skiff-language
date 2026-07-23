@@ -18,6 +18,9 @@ import {
   FIXTURE_CARGO_DIAGNOSTIC_PROPERTY,
 } from '../lib/package-service-ecosystem-smoke-diagnostic.mjs';
 import {
+  validatePackageServiceBootstrapReceipt,
+} from '../lib/package-service-ecosystem-smoke-oracle.mjs';
+import {
   packageServiceEcosystemSmokeExpectedMarker,
   packageServiceEcosystemSmokeFixtureCargoArgs,
   packageServiceEcosystemSmokeFixtureRoot,
@@ -328,6 +331,19 @@ test('fixture receipt mutations fail before activation, health, or WebSocket cre
   }
 });
 
+test('bootstrap oracle accepts receipt-owned canonical std build identities', () => {
+  const environment = 'f28a-bootstrap-identity';
+  for (const character of ['1', 'f']) {
+    const receipt = validBootstrapReceipt(environment, {
+      packageBuildId: `skiff-package-build-v4:sha256:${character.repeat(64)}`,
+    });
+    assert.strictEqual(
+      validatePackageServiceBootstrapReceipt(receipt, environment),
+      receipt,
+    );
+  }
+});
+
 test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creation', async (t) => {
   const environment = 'f27c-bootstrap-mutation';
   const cases = [
@@ -337,11 +353,38 @@ test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creatio
       error: /bootstrap receipt must have exact keys/,
     },
     {
-      name: 'wrong canonical std build',
+      name: 'wrong std package coordinate',
+      mutate: (receipt) => {
+        receipt.bootstrap.std.package.artifact.packageId = 'example.com/std';
+      },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'wrong std package version',
+      mutate: (receipt) => {
+        receipt.bootstrap.std.package.artifact.packageVersion = '2.0.0';
+      },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'invalid std build identity framing',
       mutate: (receipt) => {
         receipt.bootstrap.std.package.artifact.packageBuildId =
+          `skiff-package-build-v4:sha256:${'A'.repeat(64)}`;
+      },
+      error: /did not match/,
+    },
+    {
+      name: 'published artifact does not match pointer artifact',
+      mutate: (receipt) => {
+        receipt.bootstrap.std.pointer.artifact.packageBuildId =
           `skiff-package-build-v4:sha256:${'f'.repeat(64)}`;
       },
+      error: /Expected values to be strictly equal/,
+    },
+    {
+      name: 'package record does not match published artifact identity',
+      mutate: (receipt) => { receipt.bootstrap.std.package.recordPath += '.wrong'; },
       error: /Expected values to be strictly equal/,
     },
     {
@@ -352,6 +395,11 @@ test('bootstrap receipt mutations fail before fixture Cargo or WebSocket creatio
     {
       name: 'pointer path is absent',
       mutate: (receipt) => { delete receipt.bootstrap.std.pointerPath; },
+      error: /bootstrap std must have exact keys/,
+    },
+    {
+      name: 'std receipt contains an untyped extra field',
+      mutate: (receipt) => { receipt.bootstrap.std.extra = true; },
       error: /bootstrap std must have exact keys/,
     },
     {

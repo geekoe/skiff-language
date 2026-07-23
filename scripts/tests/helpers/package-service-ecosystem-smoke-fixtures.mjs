@@ -14,8 +14,6 @@ export const smokeFixtureIdentities = Object.freeze({
   packageTestOperation: identity('skiff-contract-operation-v1:sha256', '9'),
   unaryOperation: identity('skiff-contract-operation-v1:sha256', 'b'),
   websocketOperation: identity('skiff-contract-operation-v1:sha256', 'c'),
-  stdBuild:
-    'skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4',
   stdAbi: identity('skiff-package-local-abi-v3:sha256', 'd'),
 });
 
@@ -101,11 +99,13 @@ export function validSmokeFixtureReceipt(environment) {
   };
 }
 
-export function validBootstrapReceipt(environment) {
+export function validBootstrapReceipt(environment, {
+  packageBuildId = identity('skiff-package-build-v4:sha256', 'a'),
+} = {}) {
   const artifact = {
     packageId: 'skiff.run/std',
     packageVersion: '1.0.0',
-    packageBuildId: smokeFixtureIdentities.stdBuild,
+    packageBuildId,
     packageLocalAbiIdentity: smokeFixtureIdentities.stdAbi,
   };
   const recordPath =

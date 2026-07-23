@@ -13,8 +13,6 @@ const SMOKE_SERVICE_ID = 'test.skiff/ecosystem-smoke';
 const PACKAGE_TEST_SERVICE_ID = `test.skiff/package/${PRODUCTION_PACKAGE_ID}`;
 const STD_PACKAGE_ID = 'skiff.run/std';
 const STD_PACKAGE_VERSION = '1.0.0';
-const STD_PACKAGE_BUILD_ID =
-  'skiff-package-build-v4:sha256:3bbab8df662b54826dfbd3112c960446dd8b429f3018e7b0a5f27ffc314b7fa4';
 
 const HASH = '[a-f0-9]{64}';
 const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v1:sha256:${HASH}$`);
@@ -130,7 +128,6 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedEnvironm
   const artifact = packageArtifactRef(packageReceipt.artifact, 'bootstrap std artifact');
   assert.equal(artifact.packageId, STD_PACKAGE_ID);
   assert.equal(artifact.packageVersion, STD_PACKAGE_VERSION);
-  assert.equal(artifact.packageBuildId, STD_PACKAGE_BUILD_ID);
   assert.equal(packageReceipt.recordPath, packageRecordPath(artifact));
   stringArray(packageReceipt.fileIrRecordPaths, 'bootstrap std fileIrRecordPaths', {
     nonempty: true,
@@ -483,5 +480,4 @@ function defaultSleep(milliseconds, signal) {
 export const packageServiceEcosystemSmokeOracleConstants = Object.freeze({
   readinessTimeoutMs: READINESS_TIMEOUT_MS,
   readinessIntervalMs: READINESS_INTERVAL_MS,
-  stdPackageBuildId: STD_PACKAGE_BUILD_ID,
 });
