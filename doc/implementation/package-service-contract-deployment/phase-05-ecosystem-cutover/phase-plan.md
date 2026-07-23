@@ -493,6 +493,7 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F03C | [Runtime integration repair](tasks/P5-F03C-runtime-integration-repair.md) | R24 + F23E | 高；startup/admission/pin |
 | I02 | [Skiff combined probe](tasks/P5-I02-skiff-combined-probe.md) | T02–T05 merged | 主integration owner；便宜动态probe |
 | R02 | [Skiff cutover acceptance](tasks/P5-R02-skiff-cutover-acceptance.md) | I02 PASS | 高；批次验收 |
+| R02 result | [Skiff cutover acceptance result](tasks/P5-R02-skiff-cutover-acceptance-result.md) | `713a1d8` | PASS；Wave 3 baseline |
 | T06 | [Skiff terminal deletion/checker/docs](tasks/P5-T06-skiff-terminal-cleanup.md) | R02 PASS | 中高；terminal owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
