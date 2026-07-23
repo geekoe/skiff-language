@@ -860,7 +860,7 @@ describe('router raw HTTP gateway', () => {
   it('forwards typed HTTP adapter metadata on route dispatch frames', async () => {
     const typedTarget = 'service.skiff~run~~sample.internal.todos.create';
     const manifest = withBuildId(loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
@@ -1013,7 +1013,7 @@ describe('router raw HTTP gateway', () => {
   it('dispatches package handler HTTP routes without requiring an app operation', async () => {
     const packageTarget = packageHttpHandlerTarget('skiff.run/http-session', 'issue');
     const manifest = withBuildId(loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '4444444444444444444444444444444444444444444444444444444444444444',
@@ -1099,7 +1099,7 @@ describe('router raw HTTP gateway', () => {
   it('loads package-only HTTP routes without service operations', () => {
     const packageTarget = packageHttpHandlerTarget('skiff.run/http-session', 'issue');
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '5555555555555555555555555555555555555555555555555555555555555555',
@@ -1528,7 +1528,7 @@ describe('router raw HTTP gateway', () => {
       'skiff-service-build-v1:sha256:abababababababababababababababababababababababababababababababab';
     const manifest = withBuildId(
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/sample',
           revisionId: '6666666666666666666666666666666666666666666666666666666666666666',
@@ -1779,7 +1779,7 @@ describe('router raw HTTP gateway', () => {
 
   it('does not dispatch raw-shaped HTTP operations without explicit raw metadata', async () => {
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '7777777777777777777777777777777777777777777777777777777777777777',
@@ -1817,7 +1817,7 @@ describe('router raw HTTP gateway', () => {
 
   it('uses explicit raw HTTP metadata instead of scanning multiple raw-shaped operations', async () => {
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '8888888888888888888888888888888888888888888888888888888888888888',

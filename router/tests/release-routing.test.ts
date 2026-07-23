@@ -136,7 +136,7 @@ describe('router version routing', () => {
   it('keeps release build selection on typed service route targets', async () => {
     const typedTarget = 'runtime.sample.SampleHttpApi.handle';
     const manifest = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/sample',
         revisionId: '6666666666666666666666666666666666666666666666666666666666666666',

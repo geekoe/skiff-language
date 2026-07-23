@@ -40,7 +40,7 @@ export function loadRawHttpManifest(
   const stream = input.stream ?? false;
   const handleTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;
   return withBuildId(loadManifest({
-    schemaVersion: 'skiff-runtime-manifest-v2',
+    schemaVersion: 'skiff-runtime-manifest-v1',
     service: {
       id: serviceId,
       revisionId: testRevisionId(`${serviceId}:raw`),
@@ -100,7 +100,7 @@ export function loadHttpRouteManifest(
   const trackTarget = `service.${serviceTargetComponent}.TrackApi.handle`;
   const rawTarget = `service.${serviceTargetComponent}.SampleHttpApi.handle`;
   return withBuildId(loadManifest({
-    schemaVersion: 'skiff-runtime-manifest-v2',
+    schemaVersion: 'skiff-runtime-manifest-v1',
     service: {
       id: serviceId,
       revisionId: testRevisionId(`${serviceId}:route`),

@@ -195,7 +195,7 @@ function websocketManifestValue(options: {
   timeoutMs?: number;
 }): any {
   const manifest = {
-    schemaVersion: 'skiff-runtime-manifest-v2',
+    schemaVersion: 'skiff-runtime-manifest-v1',
     service: {
       id: options.serviceId,
       revisionId: options.revisionId,

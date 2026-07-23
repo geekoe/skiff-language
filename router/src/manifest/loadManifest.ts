@@ -86,8 +86,8 @@ export function loadManifest(value: unknown): LoadedManifest {
   assertRecord(value, 'manifest');
   const manifest = value as unknown as SkiffRuntimeManifest;
 
-  if (manifest.schemaVersion !== 'skiff-runtime-manifest-v2') {
-    throw new Error('manifest.schemaVersion must be skiff-runtime-manifest-v2');
+  if (manifest.schemaVersion !== 'skiff-runtime-manifest-v1') {
+    throw new Error('manifest.schemaVersion must be skiff-runtime-manifest-v1');
   }
 
   assertRecord(manifest.service, 'manifest.service');
@@ -208,7 +208,7 @@ export function mergeLoadedManifests(manifests: LoadedManifest[]): LoadedManifes
 
   const [first] = manifests;
   return {
-    schemaVersion: 'skiff-runtime-manifest-v2',
+    schemaVersion: 'skiff-runtime-manifest-v1',
     service: {
       id: '__multi__',
       revisionId: multiManifestRevisionId(manifests),

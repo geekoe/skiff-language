@@ -187,9 +187,7 @@ Use `router.example.yml` as the checked-in template and keep the environment-spe
 
 ## Example Manifest
 
-`fixtures/hello/manifest.json` is a hand-written canonical
-`skiff-runtime-manifest-v2` router manifest projection. It lets the router run before a
-service assembly has been published for a real service fixture.
+`fixtures/hello/manifest.json` is a hand-written router manifest projection. It lets the router run before a service assembly has been published for a real service fixture.
 
 The router uses it to know:
 

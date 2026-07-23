@@ -94,7 +94,7 @@ describe('router manifest validation', () => {
 
   it('accepts typed HTTP route metadata and exposes it on loaded routes', () => {
     const loaded = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -181,7 +181,7 @@ describe('router manifest validation', () => {
 
   it('accepts typed HTTP adapter metadata for non-raw unary route operations', () => {
     const loaded = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
@@ -270,7 +270,7 @@ describe('router manifest validation', () => {
 
   it('rejects old HTTP adapter handlerArgs manifest shape', () => {
     const manifestValue = {
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/typed-http',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
@@ -322,7 +322,7 @@ describe('router manifest validation', () => {
   it('rejects malformed typed HTTP route metadata', () => {
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/typed-http',
           revisionId: 'abababababababababababababababababababababababababababababababab',
@@ -364,7 +364,7 @@ describe('router manifest validation', () => {
     };
 
     const loaded = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/raw-http-stream',
         revisionId: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
@@ -398,7 +398,7 @@ describe('router manifest validation', () => {
 
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/raw-http-stream',
           revisionId: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
@@ -427,7 +427,7 @@ describe('router manifest validation', () => {
 
   it('keeps raw HTTP routes without typed metadata unchanged', () => {
     const loaded = loadManifest({
-      schemaVersion: 'skiff-runtime-manifest-v2',
+      schemaVersion: 'skiff-runtime-manifest-v1',
       service: {
         id: 'skiff.run/raw-http-route',
         revisionId: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
@@ -484,7 +484,7 @@ describe('router manifest validation', () => {
 
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/http-route-abi',
           revisionId: 'abababababababababababababababababababababababababababababababab',
@@ -529,7 +529,7 @@ describe('router manifest validation', () => {
 
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/http-route-abi',
           revisionId: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
@@ -575,7 +575,7 @@ describe('router manifest validation', () => {
   it('rejects old HTTP route bind/responseMode manifest shape', () => {
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'example.com/legacy-http',
           revisionId: '1111111111111111111111111111111111111111111111111111111111111111',
@@ -715,7 +715,7 @@ describe('router manifest validation', () => {
   it('rejects raw publication ids in gateway targets', () => {
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/sample',
           revisionId: '4444444444444444444444444444444444444444444444444444444444444444',
@@ -760,7 +760,7 @@ describe('router manifest validation', () => {
   it('accepts projected service and gateway targets in direct manifests', () => {
     expect(() =>
       loadManifest({
-        schemaVersion: 'skiff-runtime-manifest-v2',
+        schemaVersion: 'skiff-runtime-manifest-v1',
         service: {
           id: 'skiff.run/sample',
           revisionId: '5555555555555555555555555555555555555555555555555555555555555555',
@@ -912,7 +912,7 @@ describe('router manifest validation', () => {
     expect(
       () =>
         loadManifest({
-          schemaVersion: 'skiff-runtime-manifest-v2',
+          schemaVersion: 'skiff-runtime-manifest-v1',
           service: {
             id: 'example.com/sample',
             revisionId: '3333333333333333333333333333333333333333333333333333333333333333',

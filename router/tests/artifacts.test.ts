@@ -3211,7 +3211,7 @@ describe("router artifact root", () => {
     ];
 
     const directManifest = loadManifest({
-      schemaVersion: "skiff-runtime-manifest-v2",
+      schemaVersion: "skiff-runtime-manifest-v1",
       service: {
         id: assembly.service.id,
         revisionId: assembly.service.revisionId,
@@ -3493,7 +3493,7 @@ describe("router artifact root", () => {
 
 function routerManifest(serviceId: string) {
   return {
-    schemaVersion: "skiff-runtime-manifest-v2",
+    schemaVersion: "skiff-runtime-manifest-v1",
     service: {
       id: serviceId,
       revisionId: revisionIdFixture(`${serviceId}:router-manifest`),

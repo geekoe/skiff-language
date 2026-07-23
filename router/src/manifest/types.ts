@@ -216,7 +216,7 @@ export interface WebSocketEntryManifest {
 }
 
 export interface SkiffRuntimeManifest {
-  schemaVersion: 'skiff-runtime-manifest-v2';
+  schemaVersion: 'skiff-runtime-manifest-v1';
   service: {
     id: string;
     revisionId: string;

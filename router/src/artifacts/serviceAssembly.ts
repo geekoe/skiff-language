@@ -148,7 +148,7 @@ async function routerManifestFromServiceAssembly(
   );
   const access = accessFromServiceAssembly(service);
   const manifest: SkiffRuntimeManifest = {
-    schemaVersion: "skiff-runtime-manifest-v2",
+    schemaVersion: "skiff-runtime-manifest-v1",
     service: {
       id: serviceId,
       revisionId,
