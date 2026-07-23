@@ -42,6 +42,28 @@ fn user_packages_reject_native_declarations() {
 }
 
 #[test]
+fn registry_package_id_alone_does_not_authorize_native_declarations() {
+    let temp = TestDir::new("skiff-compiler", "forged-registry-native");
+    temp.write("package.yml", "id: skiff.run/registry\nversion: 1.0.0\n");
+    temp.write(
+        "main.skiff",
+        "native type ForgedRegistryType\nnative function read(request: string) -> string\n",
+    );
+
+    let error = compile_package_project(temp.path())
+        .expect_err("registry package id must not mint compiler platform authority")
+        .to_string();
+    assert!(
+        error.contains("cannot declare native function read"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("cannot declare native type ForgedRegistryType"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn truncate_utf8_bytes_projects_available() {
     let temp = TestDir::new("skiff-compiler", "truncate-utf8-bytes-projection");
     temp.write(

@@ -693,6 +693,7 @@ mod tests {
             package_dependencies: &package_dependencies,
             package_facts: None,
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
+            platform_package_authority: None,
         })
         .expect("source model should build");
         let lowered = crate::lower(&model).expect("publication should lower");
@@ -774,6 +775,7 @@ mod tests {
             package_dependencies: &package_dependencies,
             package_facts: None,
             policy: PackageCompilePolicy::new(package_id),
+            platform_package_authority: None,
         })
         .expect("source model should build");
         crate::lower(&model)
@@ -813,6 +815,7 @@ mod tests {
             package_dependencies: &package_dependencies,
             package_facts: None,
             policy: PackageCompilePolicy::new(PACKAGE_ID),
+            platform_package_authority: None,
         })
         .expect("package source model should build");
         assert_eq!(
@@ -860,6 +863,7 @@ mod tests {
             package_dependencies: &package_dependencies,
             package_facts: Some(&package_facts),
             policy: PackageCompilePolicy::new("example.com/any-lowering"),
+            platform_package_authority: None,
         })
         .expect("source model with package facts should build");
         let lowered = crate::lower(&model).expect("publication should lower");

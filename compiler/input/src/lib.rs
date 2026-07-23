@@ -10,6 +10,7 @@ pub mod package_config;
 pub mod package_source_helpers;
 pub mod package_sources;
 pub mod platform_sources;
+mod registry_native_sources;
 pub mod resources;
 pub mod source_tree;
 pub mod test_rules;
@@ -36,7 +37,10 @@ pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
     ManifestProvenance, PublicationManifest,
 };
-pub use platform_sources::{CompilerPlatformSources, CompilerPlatformSourcesError};
+pub use platform_sources::{
+    CompilerPlatformPackageAuthority, CompilerPlatformSources, CompilerPlatformSourcesError,
+};
+pub use registry_native_sources::trusted_registry_native_sources;
 pub use resources::{
     collect_publication_resource_spec_violations, read_publication_resources,
     validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,

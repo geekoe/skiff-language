@@ -191,6 +191,7 @@ fn build_from_linked(
         package_dependencies: linked.package_dependencies,
         dependency_package_config_facts: dependency_package_config_facts.as_deref(),
         policy: linked.policy,
+        platform_package_authority: linked.platform_package_authority,
         publication_api: linked.publication_api,
         dependency_analysis,
     })?;

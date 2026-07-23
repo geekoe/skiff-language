@@ -72,6 +72,7 @@ fn build<'a>(
                 package_dependencies: input.package_dependencies,
                 package_facts: None,
                 policy: PackageCompilePolicy::new(input.package_id),
+                platform_package_authority: input.platform_package_authority(),
             },
             dependency_analysis,
         )?,

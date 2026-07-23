@@ -9,6 +9,7 @@ use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID,
     registry_helpers::{validate_official_registry_package_path, validate_std_registry_package_id},
 };
+use skiff_trusted_registry_contract::TRUSTED_REGISTRY_PACKAGE_ID;
 use thiserror::Error;
 
 use crate::{package_config::PackageManifest, ManifestOwner};
@@ -36,6 +37,22 @@ pub struct CompilerPlatformSources {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompilerPlatformSourceSnapshot {
     sources: Box<[(PathBuf, String)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompilerPlatformPackageAuthority {
+    package_id: &'static str,
+    platform_root: PathBuf,
+}
+
+impl CompilerPlatformPackageAuthority {
+    pub fn package_id(&self) -> &'static str {
+        self.package_id
+    }
+
+    pub(crate) fn platform_root(&self) -> &Path {
+        &self.platform_root
+    }
 }
 
 impl CompilerPlatformSourceSnapshot {
@@ -151,6 +168,16 @@ impl CompilerPlatformSources {
             )));
         }
         Ok(())
+    }
+
+    pub fn trusted_registry_package_authority(
+        &self,
+    ) -> Result<CompilerPlatformPackageAuthority, CompilerPlatformSourcesError> {
+        self.revalidate()?;
+        Ok(CompilerPlatformPackageAuthority {
+            package_id: TRUSTED_REGISTRY_PACKAGE_ID,
+            platform_root: self.root.clone(),
+        })
     }
 
     /// Captures every official `.skiff` source consumed by PreludeRegistry.

@@ -156,6 +156,7 @@ pub const TRUSTED_REGISTRY_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
 
 pub const TRUSTED_REGISTRY_CAPABILITY_ID: &str = "skiff.registry.trusted";
 pub const TRUSTED_REGISTRY_CAPABILITY_VERSION: u32 = 1;
+pub const TRUSTED_REGISTRY_PACKAGE_ID: &str = "skiff.run/registry";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TrustedRegistryOperationScope {

@@ -84,6 +84,7 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
             package_dependencies: &[],
             package_facts: None,
             policy: PackageCompilePolicy::new("example.com/public-instance"),
+            platform_package_authority: None,
         },
         &dependency_analysis,
     )

@@ -44,6 +44,7 @@ fn source_model(source_text: &str) -> PackageSourceModel {
         package_dependencies: &[],
         package_facts: None,
         policy: PackageCompilePolicy::new("example.com/object-construct-lowering"),
+        platform_package_authority: None,
     })
     .expect("object materialization source model should build")
 }
