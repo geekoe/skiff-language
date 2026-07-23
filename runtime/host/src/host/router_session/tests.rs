@@ -55,11 +55,11 @@ fn test_db_provider() -> skiff_runtime_capability_context::DbProviderSource {
 fn test_host() -> super::super::RuntimeHost {
     super::super::RuntimeHost::new(super::super::RuntimeConfig {
         db_provider: test_db_provider(),
-        services: Vec::new(),
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-base".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
-        artifact_roots: Vec::new(),
+        environment: "test".to_string(),
+        artifact_root: std::env::temp_dir().join("skiff-runtime-test-artifacts"),
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

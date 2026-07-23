@@ -1,4 +1,3 @@
-pub mod artifact_cache;
 pub mod capability_context;
 pub mod config;
 pub mod config_view;
@@ -10,9 +9,4 @@ pub mod telemetry;
 
 #[cfg(not(test))]
 pub use host::RuntimeProductionConfig;
-pub use host::{
-    DbProviderConfig, DbProviderSource, RuntimeConfig, RuntimeHost, RuntimeServiceConfig,
-};
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod program;
+pub use host::{DbProviderConfig, DbProviderSource, RuntimeConfig, RuntimeHost};

@@ -54,8 +54,6 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 
     host.queue_connection_registration(sender.clone())?;
     host.websocket_generations.connect(&router_session_id)?;
-    let spawn_registration = super::spawn_worker::start_spawn_workers(host.clone(), sender.clone());
-
     let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
 
     let session_result = async {
@@ -104,9 +102,6 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     .await;
 
     let disconnect_result = host.websocket_generations.disconnect(&router_session_id);
-    host.spawn_workers
-        .stop_registration(&spawn_registration)
-        .await;
     drop(sender);
     let _ = writer_task.await;
     session_result.and(disconnect_result)

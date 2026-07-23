@@ -84,7 +84,6 @@ fn empty_assembly() -> RuntimeAssembly {
 fn runtime_host(replica_id: &str) -> RuntimeHost {
     RuntimeHost::new(RuntimeConfig {
         db_provider: DbProviderSource::unavailable(),
-        services: Vec::new(),
         router_url: "ws://127.0.0.1:1/runtime".to_string(),
         base_runtime_id: replica_id.to_string(),
         runtime_home: std::env::temp_dir().join(replica_id),

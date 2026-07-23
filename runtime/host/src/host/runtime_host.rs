@@ -1,49 +1,36 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, RwLock},
+    sync::{Arc, Mutex as StdMutex},
 };
 
-use skiff_runtime_activation::RuntimeActivation;
-use skiff_runtime_capability_context::{DbProviderConfig, DbProviderSource, HttpRuntimeOptions};
-use skiff_runtime_linked_program::{LinkedProgramImage, RuntimeProgramIdentity};
+use skiff_runtime_capability_context::{DbProviderSource, HttpRuntimeOptions};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
 use crate::{
     config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
-    config_view::RuntimeConfigView,
     error::Result,
     loader::assembly_admission::AssemblyAdmissionController,
 };
 
-#[cfg(test)]
-use super::route_registry;
-#[cfg(test)]
-use super::state::ArtifactLoadState;
 use super::{
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
-    service_context::ServiceRuntimeContext,
     spawn_worker,
     telemetry::{TelemetryConfig, TelemetryExporterHandle, TelemetryProducer},
     websocket_generation::WebSocketGenerationRegistry,
-    LoadedBuildRegistry, OutboundRequestRegistry, ServiceRouteState,
+    OutboundRequestRegistry,
 };
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub db_provider: DbProviderSource,
-    pub services: Vec<RuntimeServiceConfig>,
     pub router_url: String,
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
-    #[cfg(not(test))]
     pub environment: String,
-    #[cfg(not(test))]
     pub artifact_root: PathBuf,
-    #[cfg(test)]
-    pub artifact_roots: Vec<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -66,25 +53,6 @@ pub struct RuntimeProductionConfig {
 }
 
 #[derive(Clone)]
-pub struct RuntimeServiceConfig {
-    pub runtime_program_identity: RuntimeProgramIdentity,
-    pub linked_image: Arc<LinkedProgramImage>,
-    pub runtime_activation: Arc<RuntimeActivation>,
-    pub http_response_max_bytes: usize,
-    pub use_runtime_default_http_response_max_bytes: bool,
-    pub runtime_id: String,
-    pub revision_id: String,
-    pub contract_identity: String,
-    pub implementation_identity: String,
-    pub artifact_identity: String,
-    pub activation_identity: Option<String>,
-    pub resolved_config_identity: Option<String>,
-    pub config: RuntimeConfigView,
-    pub package_configs: Vec<RuntimeConfigView>,
-    pub service_db: Option<DbProviderConfig>,
-}
-
-#[derive(Clone)]
 pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
@@ -94,15 +62,9 @@ pub struct RuntimeHost {
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) db_provider: DbProviderSource,
-    #[cfg(test)]
-    pub(super) configured_artifact_roots: Arc<Vec<PathBuf>>,
-    #[cfg(test)]
-    pub(super) artifact_load_state: Arc<Mutex<ArtifactLoadState>>,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
-    pub(crate) state: Arc<RwLock<ServiceRouteState>>,
-    pub(super) loaded_builds: Arc<LoadedBuildRegistry>,
     pub(super) spawn_workers: Arc<spawn_worker::SpawnWorkerRegistry>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
     pub(super) websocket_generations: Arc<WebSocketGenerationRegistry>,
@@ -116,7 +78,6 @@ impl RuntimeHost {
     pub fn new_production(config: RuntimeProductionConfig) -> anyhow::Result<Self> {
         Self::new(RuntimeConfig {
             db_provider: config.db_provider,
-            services: Vec::new(),
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id,
             runtime_home: config.runtime_home,
@@ -130,7 +91,6 @@ impl RuntimeHost {
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
-        #[cfg(not(test))]
         let (environment, artifact_root) = {
             skiff_artifact_model::validate_activation_environment(&config.environment)
                 .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
@@ -139,28 +99,6 @@ impl RuntimeHost {
             }
             (config.environment.clone(), config.artifact_root.clone())
         };
-        #[cfg(test)]
-        let (environment, artifact_root) = (
-            "test".to_string(),
-            match config.artifact_roots.as_slice() {
-                [artifact_root] => artifact_root.clone(),
-                _ => PathBuf::new(),
-            },
-        );
-        #[cfg(test)]
-        let state = {
-            let services = route_registry::apply_default_http_response_limits(
-                config.services,
-                config.http_response_max_bytes,
-            );
-            route_registry::build_service_route_state(
-                services,
-                config.http_response_max_bytes,
-                &db_provider,
-            )?
-        };
-        #[cfg(not(test))]
-        let state = ServiceRouteState::default();
         let producer_id = format!(
             "{}:proc:{}",
             config.base_runtime_id,
@@ -175,7 +113,6 @@ impl RuntimeHost {
             producer_id,
             config.base_runtime_id.clone(),
         ));
-        let loaded_builds = Arc::new(LoadedBuildRegistry::from_build_ids(state.build_ids()));
         Ok(Self {
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id.clone(),
@@ -185,20 +122,11 @@ impl RuntimeHost {
             default_http_response_max_bytes: config.http_response_max_bytes,
             http_runtime_options,
             db_provider,
-            #[cfg(test)]
-            configured_artifact_roots: Arc::new(config.artifact_roots.clone()),
-            #[cfg(test)]
-            artifact_load_state: Arc::new(Mutex::new(ArtifactLoadState {
-                artifact_roots: config.artifact_roots,
-                epoch: 0,
-            })),
             memory_budgets: RuntimeMemoryBudgets::default(),
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
                 config.base_runtime_id.clone(),
             )),
             blob_store: Arc::new(StdMutex::new(None)),
-            state: Arc::new(RwLock::new(state)),
-            loaded_builds,
             spawn_workers: Arc::new(spawn_worker::SpawnWorkerRegistry::default()),
             request_supervisor: Arc::new(RequestSupervisor::new()),
             websocket_generations: Arc::new(WebSocketGenerationRegistry::default()),
@@ -226,13 +154,6 @@ impl RuntimeHost {
         ))
     }
 
-    pub(crate) fn begin_build_execution(
-        &self,
-        build_id: &str,
-    ) -> Result<super::BuildExecutionGuard> {
-        self.loaded_builds.begin_execution(build_id)
-    }
-
     pub(crate) fn request_heap_limits(&self) -> RequestHeapLimits {
         let mut limits = RequestHeapLimits::default();
         limits.max_estimated_bytes = self.memory_budgets.request_heap_bytes;
@@ -250,13 +171,6 @@ impl RuntimeHost {
         }
         skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
             .map_err(|error| crate::error::RuntimeError::invalid_artifact(error.to_string()))
-    }
-
-    pub(crate) fn service_snapshot(&self) -> Vec<Arc<ServiceRuntimeContext>> {
-        self.state
-            .read()
-            .map(|state| state.services.iter().cloned().collect())
-            .unwrap_or_default()
     }
 }
 

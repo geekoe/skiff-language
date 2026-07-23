@@ -12,7 +12,7 @@ use super::{
     add_diagnostic_frame, add_source_frame, Diagnosed, RuntimeError, RuntimeErrorPayload,
     TypeIdentity, WirePayload,
 };
-use crate::program::{FileAddr, TypeAddr, UnitAddr};
+use skiff_runtime_linked_program::{FileAddr, TypeAddr, UnitAddr};
 
 #[derive(Debug)]
 struct DummyWirePayload;

@@ -21,24 +21,20 @@ use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
     ActorRemoveControlRequest, CancellationToken, ExecutionControlResult, FileCapabilityError,
     FileCapabilityFuture, RequestEffectDoubleControl, SpawnSubmitControlRequest, StreamPoll,
-    StreamPullSource, StreamRuntimeError,
-    StreamRuntimeResult,
+    StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
 };
 use skiff_runtime_eval::{
     capabilities as eval_capabilities,
     error::{Result, RuntimeError},
 };
-use skiff_runtime_linked_program::{
-    ExecutableAddr, ServiceDependencyConstraint, ServiceTimeoutConfig,
-};
+use skiff_runtime_linked_program::{ServiceDependencyConstraint, ServiceTimeoutConfig};
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::{ActorRef, RuntimeValue},
 };
 use skiff_runtime_request::{
     invocation_context_from_request, request_deadline_ms, OutboundRequestRegistry,
-    RequestEffectDouble, RequestEnvelope, RequestEvalAdapter, RequestEvalExecutionInputParts,
-    RuntimeOperation,
+    RequestEffectDouble, RequestEnvelope, RuntimeOperation,
 };
 
 mod actor;
@@ -52,7 +48,6 @@ mod factory;
 mod file_stream;
 mod http;
 mod outbound;
-mod request_adapter;
 mod request_contexts;
 mod websocket;
 
@@ -85,9 +80,6 @@ pub use factory::TestActorCapabilityFactory;
 pub use factory::{
     config_context, db_context, effects, execution_control, file_source, outbound, runtime_factory,
     websocket, websocket_from_request,
-};
-pub(crate) use request_adapter::{
-    attach_request_error_diagnostic_frame, request_eval_adapter, RuntimeRequestEvalAdapterInput,
 };
 pub use request_contexts::{
     effect_dispatch_context_from_request, outbound_service_context_from_request,
