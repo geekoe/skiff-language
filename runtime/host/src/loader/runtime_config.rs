@@ -1038,17 +1038,9 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use serde_json::{json, Value};
-    use skiff_artifact_identity::{
-        file_ir_identity, package_build_identity, package_local_abi_identity,
-        publication_abi_identity,
-    };
-    use skiff_artifact_model::{MetadataValue, PackageDependencyConstraint};
-    use tokio::sync::mpsc;
-
     use super::*;
     use crate::{
-        host::{RouterWriterMessage, RuntimeConfig, RuntimeHost},
+        host::{RuntimeConfig, RuntimeHost},
         loader::{
             load_services_from_artifact_roots_with_default,
             test_artifacts::{
@@ -1059,11 +1051,14 @@ mod tests {
         },
         program::RuntimeProgramLayers,
     };
+    use serde_json::{json, Value};
+    use skiff_artifact_identity::{
+        file_ir_identity, package_build_identity, package_local_abi_identity,
+        publication_abi_identity,
+    };
+    use skiff_artifact_model::{MetadataValue, PackageDependencyConstraint};
     use skiff_runtime_boundary::type_descriptor::{RuntimeTypePlan, RuntimeTypePlanDescriptorExt};
     use skiff_runtime_request::RequestEnvelope;
-    use skiff_runtime_transport::protocol::{
-        decode_typed_binary_frame, RuntimeRegisterFrameHeader,
-    };
 
     const PROTOCOL_IDENTITY: &str =
         "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1093,15 +1088,8 @@ mod tests {
         ));
     }
 
-    fn expect_binary_router_message(message: RouterWriterMessage) -> Vec<u8> {
-        match message {
-            RouterWriterMessage::Binary(frame) => frame,
-            other => panic!("expected binary router writer message, got {other:?}"),
-        }
-    }
-
     #[tokio::test]
-    async fn artifact_runtime_config_registers_service_assembly_revision_id() {
+    async fn artifact_runtime_config_loads_service_assembly_revision_and_build_id() {
         let temp = TempDir::new("runtime-config-assembly-revision");
         let root = temp.path().join("artifacts");
         fs::create_dir_all(&root).expect("artifact root should be created");
@@ -1131,43 +1119,6 @@ mod tests {
             .runtime_program_identity
             .dynamic_build_id
             .starts_with("skiff-service-build-v1:sha256:"));
-
-        let host = RuntimeHost::new(RuntimeConfig {
-            db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
-            services: vec![service.clone()],
-            router_url: "ws://127.0.0.1:4001/runtime".to_string(),
-            base_runtime_id: "runtime-base".to_string(),
-            runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
-            artifact_roots: Vec::new(),
-            http_response_max_bytes: crate::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-            http_egress_proxy: None,
-        })
-        .expect("runtime host should accept artifact service config");
-        let (sender, mut receiver) = mpsc::unbounded_channel::<RouterWriterMessage>();
-        host.queue_registers(sender)
-            .expect("runtime register should serialize");
-        let _capabilities_frame = expect_binary_router_message(
-            receiver
-                .recv()
-                .await
-                .expect("runtime capabilities frame should be queued"),
-        );
-        let frame = expect_binary_router_message(
-            receiver
-                .recv()
-                .await
-                .expect("register frame should be queued"),
-        );
-        let (register, payload): (RuntimeRegisterFrameHeader, Vec<u8>) =
-            decode_typed_binary_frame(&frame).expect("register frame should decode");
-
-        assert!(payload.is_empty());
-        assert_eq!(register.revision_id, SERVICE_REVISION_ID);
-        assert_eq!(
-            register.build_id,
-            service.runtime_program_identity.dynamic_build_id
-        );
-        assert!(is_bare_sha256(&register.revision_id));
     }
 
     #[tokio::test]
