@@ -205,7 +205,10 @@ test('ecosystem smoke waits for exact delayed readiness and creates one WebSocke
   assert.equal(commandCalls.length, 1);
   assert.equal(commandCalls[0][0], 'cargo');
   assert.equal(activationCalls.length, 1);
-  assert.deepEqual(activationCalls[0], {
+  const { signal: activationSignal, ...activationInput } = activationCalls[0];
+  assert.ok(activationSignal instanceof AbortSignal);
+  assert.equal(activationSignal.aborted, false);
+  assert.deepEqual(activationInput, {
     activationUrl: 'http://127.0.0.1:46001/__skiff/activate-assembly',
     expectedGeneration: 0,
     environment,

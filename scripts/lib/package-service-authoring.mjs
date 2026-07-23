@@ -71,6 +71,7 @@ export async function requestAssemblyActivation({
   expectedGeneration,
   environment,
   assembly,
+  signal,
 }) {
   if (
     typeof expectedGeneration !== 'number'
@@ -109,7 +110,7 @@ export async function requestAssemblyActivation({
     expectedGeneration,
     assembly,
   };
-  const response = await postActivation(fetchImpl, activationUrl, request);
+  const response = await postActivation(fetchImpl, activationUrl, request, signal);
   return { request, response };
 }
 
@@ -268,15 +269,17 @@ export function objectUsage(kind) {
   ].join('\n');
 }
 
-async function postActivation(fetchImpl, url, request) {
+async function postActivation(fetchImpl, url, request, signal) {
   let response;
   try {
     response = await fetchImpl(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
+      signal,
     });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     throw new Error(`assembly activation request failed for ${url}: ${error.message}`);
   }
   const text = await response.text();

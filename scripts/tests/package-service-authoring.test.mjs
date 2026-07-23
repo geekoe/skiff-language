@@ -209,3 +209,32 @@ test('activation request construction rejects values outside the frozen T01 wire
   }
   assert.equal(requests, 0);
 });
+
+test('activation request transports its AbortSignal and preserves the abort reason', async () => {
+  const controller = new AbortController();
+  const primaryError = new Error('isolated smoke lifecycle expired');
+  let observedSignal;
+  const activation = requestAssemblyActivation({
+    activationId: 'activation-signal',
+    expectedGeneration: 0,
+    environment: 'dev',
+    assembly: {
+      assemblyIdentity: `skiff-runtime-assembly-v1:sha256:${'1'.repeat(64)}`,
+    },
+    signal: controller.signal,
+    fetchImpl: async (_url, options) => {
+      observedSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          'abort',
+          () => reject(options.signal.reason),
+          { once: true },
+        );
+      });
+    },
+  });
+  controller.abort(primaryError);
+
+  await assert.rejects(activation, (error) => error === primaryError);
+  assert.equal(observedSignal, controller.signal);
+});
