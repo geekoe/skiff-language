@@ -301,6 +301,48 @@ describe('router config', () => {
     );
   });
 
+  it('loads only an explicit strict activation backend command', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    const executablePath = join(dir, 'bin', 'activation-backend');
+    await writeFile(configPath, [
+      'profile: prod',
+      'activationBackend:',
+      `  executablePath: ${JSON.stringify(executablePath)}`,
+      '  args:',
+      '    - serve-router',
+      ''
+    ].join('\n'));
+    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
+      activationBackend: {
+        executablePath,
+        args: ['serve-router']
+      }
+    });
+
+    await writeFile(configPath, [
+      'profile: prod',
+      'activationBackend:',
+      '  executablePath: relative/backend',
+      ''
+    ].join('\n'));
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /activationBackend.executablePath must be an absolute executable path/
+    );
+
+    await writeFile(configPath, [
+      'profile: prod',
+      'activationBackend:',
+      `  executablePath: ${JSON.stringify(executablePath)}`,
+      '  artifactRoot: /forbidden',
+      ''
+    ].join('\n'));
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /activationBackend has unknown fields/
+    );
+  });
+
   it('loads telemetry config with router-owned defaults', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);

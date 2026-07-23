@@ -23,6 +23,7 @@ const IDENTITY_CLI_BINARY = process.platform === 'win32'
   : 'skiff-artifact-identity';
 
 export interface RouterConfig {
+  activationBackend?: RouterActivationBackendConfig;
   artifactRoots?: string[];
   devReload?: boolean;
   ecosystemStoreCliPath?: string;
@@ -44,6 +45,11 @@ export interface RouterConfig {
   websocketPath: string;
 }
 
+export interface RouterActivationBackendConfig {
+  executablePath: string;
+  args: string[];
+}
+
 export interface RouterConfigOverrides {
   artifactRoots?: string[];
   devReload?: boolean;
@@ -63,6 +69,7 @@ export interface RouterConfigOverrides {
 }
 
 interface RawRouterConfig {
+  activationBackend?: unknown;
   artifactRoots?: unknown;
   devReload?: unknown;
   ecosystemStoreCliPath?: unknown;
@@ -175,6 +182,10 @@ export async function loadRouterConfig(
       '/ws'
     )
   };
+  const activationBackend = readActivationBackendConfig(raw.activationBackend);
+  if (activationBackend !== undefined) {
+    config.activationBackend = activationBackend;
+  }
   const environment = readOptionalNonEmptyString(
     overrides.environment ?? raw.environment,
     'environment'
@@ -220,6 +231,32 @@ export async function loadRouterConfig(
     config.serviceDb = serviceDb;
   }
   return config;
+}
+
+function readActivationBackendConfig(value: unknown): RouterActivationBackendConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) {
+    throw new Error('router config activationBackend must be an object');
+  }
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== 'executablePath' && key !== 'args')) {
+    throw new Error('router config activationBackend has unknown fields');
+  }
+  const executablePath = readAbsoluteExecutablePath(
+    value.executablePath,
+    'activationBackend.executablePath'
+  );
+  const args = value.args === undefined
+    ? []
+    : readStringArray(value.args, 'activationBackend.args');
+  return { executablePath, args };
+}
+
+function readStringArray(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`router config ${name} must be a string array`);
+  }
+  return value.map((entry, index) => readString(entry, `${name}[${index}]`, String(entry)));
 }
 
 function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput | undefined {
