@@ -505,6 +505,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F55D | [Activation facts residual](tasks/P5-F55D-activation-facts-residual.md) | I55AB classified | activation owner |
 | F55E | [Host linked cache residual](tasks/P5-F55E-host-linked-cache-residual.md) | I55AB classified | host owner |
 | I55C | [Terminal consumer reacceptance](tasks/P5-I55C-terminal-consumer-reacceptance.md) | F55D/E merged | affected surface only |
+| I55C result | [Terminal consumer reacceptance result](tasks/P5-I55C-terminal-consumer-reacceptance-result.md) | `5fdfd95` | FAIL；Host旧facade |
+| D58 | [Host legacy module closure audit](tasks/P5-D58-host-legacy-module-closure-audit.md) | I55C classified | 一次完整枚举 |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
 | I07 | [skiff-packages runtime reacceptance](tasks/P5-I07-skiff-packages-runtime-reacceptance.md) | T07 merged | dependency-provisioned exact source |
 | I07A | [skiff-packages runtime reacceptance](tasks/P5-I07A-skiff-packages-runtime-reacceptance.md) | I07 no verdict | explicit SKIFF_ROOT |
