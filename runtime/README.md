@@ -35,7 +35,7 @@ Minimal dev reload pointer shape:
   "profile": "dev",
   "buildId": "skiff-service-build-v1:sha256:<build-hash>",
   "contractHash": "<contract-hash>",
-  "protocolIdentity": "skiff-protocol-v1:sha256:<contract-hash>",
+  "protocolIdentity": "skiff-service-protocol-v2:sha256:<contract-hash>",
   "serviceAssembly": {
     "assemblyIdentity": "skiff-service-assembly-v1:sha256:<assembly-hash>",
     "assemblyPath": "assemblies/services/websocket_fixture/<assembly-hash>.json"
