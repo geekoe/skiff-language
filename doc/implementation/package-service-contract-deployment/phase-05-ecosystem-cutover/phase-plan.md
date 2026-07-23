@@ -408,6 +408,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F51A result | [Router default spawn probe result](tasks/P5-F51A-router-default-spawn-probe-result.md) | `daa16ad` | complete |
 | F51B result | [Isolated failure log evidence result](tasks/P5-F51B-isolated-failure-log-evidence-result.md) | `e3b93c4` | complete |
 | I51 | [Router timeout diagnostic combined](tasks/P5-I51-router-timeout-diagnostic-combined.md) | F51A/B merged | cheap combined；只解除I02E |
+| I51 result | [Router timeout diagnostic combined result](tasks/P5-I51-router-timeout-diagnostic-combined-result.md) | `c16bc52` | PASS |
+| I02E | [Skiff combined diagnostic](tasks/P5-I02E-skiff-combined-diagnostic.md) | I51 PASS | 唯一完整combined；失败保留内部日志 |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
 | F23F | WebSocket native parity repair | D34 complete | 低；exact Websocket route/context validator |
