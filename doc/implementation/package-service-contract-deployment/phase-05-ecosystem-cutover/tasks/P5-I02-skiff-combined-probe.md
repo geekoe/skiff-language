@@ -7,6 +7,11 @@
 矩阵与合流后的exact commit/tree。
 不得修改source/tests/fixture/config、创建commit或操作stable。
 
+本批次exact production candidate为commit
+`c59b4baf9752147cc49c141d89642d8b7f5aa507`、tree
+`08051c65166eec977748b5b58c4636d26cb5eff4`、Cargo.lock blob
+`f3ce5457138c58aec4c84abda431afa96013e3fd`。I34已证明shared-lock no-op及locked compiler PASS。
+
 ## 唯一命令与完成态
 
 ```bash
@@ -25,6 +30,10 @@ artifact I/O为零。不得注册stable watch或调用stable reload。
 startup读取并注册committed state；capabilities握手不掉线；binary assembly frames双向；至少一次actor/spawn
 control得到typed response；先激活A并打开server stream或WS，再激活B，证明新unary到B且旧连接/stream继续
 pin A直至自然结束。request.start使用canonical nested assembly routing，Rust/TS无unknown-field漂移。
+
+其中A/B generation lifecycle已由同一exact candidate上的R05B唯一真实transcript建立，不在I02重复；I02本命令只补齐
+authoring→activation transaction→Host最终结果与tampered candidate reject/abort rollback。R05B证据保持有效是I02
+PASS前置，不能用I02旧single-generation smoke替代或重跑。
 
 输出exact commit/tree、命令exit/耗时、activationId/generation/assembly/replica、最终结果与rollback
 断言。PASS才可提交R02；FAIL退回受影响owner，修复合流后只重跑本probe与失效的聚焦证据。
