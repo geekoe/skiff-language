@@ -695,6 +695,11 @@ impl TypeResolutionModel {
             PackageExportResolver::new(&self.package_aliases).resolve_package_symbol_path(path)?;
         let fact = self
             .package_interface_fact(&package_symbol.dependency_ref, &package_symbol.symbol_path)?;
+        let public_path = self
+            .package_type_resolution(&package_symbol.dependency_ref, &package_symbol.symbol_path)?
+            .public_path
+            .as_ref()?
+            .clone();
         let package_id = self
             .package_dependencies
             .get(&package_symbol.dependency_ref)
@@ -704,7 +709,7 @@ impl TypeResolutionModel {
             identity: TypeRefIr::PackageSymbol {
                 symbol: PackageSymbolRef {
                     package: PackageRefIr::PackageId { package_id },
-                    symbol_path: package_symbol.symbol_path,
+                    symbol_path: public_path,
                     abi_expectation: None,
                 },
             },
@@ -725,6 +730,11 @@ impl TypeResolutionModel {
             PackageRefIr::PackageId { package_id } => package_id.as_str(),
         };
         let fact = self.package_interface_fact(dependency_ref, &symbol.symbol_path)?;
+        let public_path = self
+            .package_type_resolution(dependency_ref, &symbol.symbol_path)?
+            .public_path
+            .as_ref()?
+            .clone();
         let package_id = match &symbol.package {
             PackageRefIr::Dependency { dependency_ref } => self
                 .package_dependencies
@@ -737,7 +747,7 @@ impl TypeResolutionModel {
             identity: TypeRefIr::PackageSymbol {
                 symbol: PackageSymbolRef {
                     package: PackageRefIr::PackageId { package_id },
-                    symbol_path: symbol.symbol_path.clone(),
+                    symbol_path: public_path,
                     abi_expectation: symbol.abi_expectation.clone(),
                 },
             },
@@ -4569,6 +4579,16 @@ mod tests {
             PackageRuntimeRequirements, TypeExport,
         };
 
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        crate::prelude_registry::initialize_prelude_registry(
+            &skiff_compiler_input::CompilerPlatformSources::new(&platform_root)
+                .expect("platform sources should load"),
+        )
+        .expect("prelude registry should initialize");
+
         let file = skiff_artifact_model::FileIrRef {
             file_ir_identity: "file-ir".to_string(),
             artifact_path: Some("llm.json".to_string()),
@@ -4609,9 +4629,9 @@ mod tests {
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("abi"),
                 public_symbols: BTreeMap::from([(
-                    "LlmClient".to_string(),
+                    "types.LlmClient".to_string(),
                     PackageLocalAbiSymbol::Type {
-                        local_type_id: "type:LlmClient".to_string(),
+                        local_type_id: "type:types.LlmClient".to_string(),
                         descriptor: descriptor.clone(),
                         is_interface: true,
                         type_params: Vec::new(),
@@ -4621,7 +4641,7 @@ mod tests {
             },
             implementation_links: PackageImplementationLinks {
                 types: BTreeMap::from([(
-                    "LlmClient".to_string(),
+                    "types.LlmClient".to_string(),
                     TypeExport {
                         file,
                         type_index: 0,
@@ -4667,11 +4687,59 @@ mod tests {
         assert_eq!(interface.methods[0].params[0].name, "self");
         assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::native("Self"));
 
+        let consumer_sources = parsed_sources(
+            r#"
+              import llmApi
+
+              type LocalClient implements llmApi.LlmClient {}
+
+              impl LocalClient {
+                function complete(input: string) -> string {
+                  return input
+                }
+              }
+            "#,
+        );
+        let mut dependency = PackageDependency::id("llm-api");
+        dependency.alias = Some("llmApi".to_string());
+        let model = TypeResolutionModel::build(
+            &consumer_sources,
+            &BTreeMap::from([("llmApi".to_string(), vec![String::new()])]),
+            &[dependency],
+            None,
+            Some(std::slice::from_ref(&artifact)),
+            &PublicationTypeSymbolIndex::default(),
+        )
+        .expect("artifact-only package interface facts should build");
+        let actual = model
+            .resolve_type_text("LocalClient", &context())
+            .expect("local implementation type should resolve");
+        let expected = model
+            .resolve_type_text("llmApi.LlmClient", &context())
+            .expect("imported public interface should resolve");
+        let conformance = model
+            .local_any_interface_conformance_for_boxing(&actual, &expected, &context())
+            .expect("artifact-backed interface conformance lookup should not fail")
+            .expect("declared imported interface implementation should match for boxing");
+        let TypeRefIr::PackageSymbol { symbol } =
+            serde_json::from_str::<TypeRefIr>(&conformance.interface.interface_abi_id)
+                .expect("interface ABI identity should decode")
+        else {
+            panic!("imported interface must retain package identity")
+        };
+        assert_eq!(
+            symbol.package,
+            PackageRefIr::PackageId {
+                package_id: "llm-api".to_string()
+            }
+        );
+        assert_eq!(symbol.symbol_path, "types.LlmClient");
+
         let mut tampered = artifact;
         tampered
             .implementation_links
             .types
-            .get_mut("LlmClient")
+            .get_mut("types.LlmClient")
             .unwrap()
             .interface_methods
             .clear();
