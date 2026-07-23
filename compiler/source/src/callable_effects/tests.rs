@@ -429,6 +429,10 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
               return std.number.assertSafeInteger(1)
             }
 
+            function parseNumber(value: string) -> number? {
+              return std.number.parse(value)
+            }
+
             function hmac() -> string {
               return std.crypto.hmacSha1Base64("key", "text")
             }
@@ -463,6 +467,7 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
         "durationMilliseconds",
         "durationSeconds",
         "safeInteger",
+        "parseNumber",
         "hmac",
         "sha256",
         "randomToken",
@@ -494,6 +499,7 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
             "core.date.now",
             "core.duration.milliseconds",
             "core.duration.seconds",
+            "core.number.parse",
             "core.number.assertSafeInteger",
             "std.crypto.hmacSha1Base64",
             "std.crypto.randomToken",
