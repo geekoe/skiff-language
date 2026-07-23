@@ -40,7 +40,9 @@ fn p5_f18a_prelude_loader_snapshot() {
         .expect("loader must consume the captured source texts without re-reading their paths");
     assert_eq!(
         registry.identity(),
-        "skiff-prelude-v1:sha256:aae18f07de6746b8cc769ca3bd9db6b65b6c292fc75016549b58cd253b3f3f0d"
+        // The copied snapshot includes c277e45's
+        // std.websocket.WebSocketIngressEvent platform source/API fingerprint.
+        "skiff-prelude-v1:sha256:5166ba3c306e94624094e0736da821a1b653da5aace1ef8cee2fb654f4106699"
     );
 }
 
