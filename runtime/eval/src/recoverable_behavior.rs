@@ -41,7 +41,10 @@ use skiff_runtime_model::{
     },
 };
 
-use crate::{error::RuntimeError, invocation::EvalProgramProjection};
+use crate::{
+    assembly_execution::RuntimeExecutionProjection, error::RuntimeError,
+    invocation::EvalProgramProjection,
+};
 
 const ABI_TYPE_RESTORE_KEY_PREFIX: &str = "abi-type:";
 
@@ -95,7 +98,13 @@ impl EvalRecoverableBehaviorHooks {
         _artifact_identity: impl Into<String>,
         _build_id: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
-        unique_package_ids(program.packages)?;
+        Self::new_for_execution(&RuntimeExecutionProjection::from(program))
+    }
+
+    pub(crate) fn new_for_execution(
+        program: &RuntimeExecutionProjection<'_>,
+    ) -> Result<Self, RuntimeError> {
+        unique_package_ids(program)?;
         let mut hooks = Self {
             method_tables: HashMap::new(),
             remote_operation_tables: HashMap::new(),
@@ -104,9 +113,12 @@ impl EvalRecoverableBehaviorHooks {
         Ok(hooks)
     }
 
-    fn index_program(&mut self, program: EvalProgramProjection<'_>) -> Result<(), RuntimeError> {
-        self.index_files(program, UnitAddr::Service, program.service_files)?;
-        for (package_slot, files) in program.package_files.iter().enumerate() {
+    fn index_program(
+        &mut self,
+        program: &RuntimeExecutionProjection<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.index_files(program, UnitAddr::Service, program.service_files())?;
+        for (package_slot, files) in program.package_files().iter().enumerate() {
             self.index_files(program, UnitAddr::Package(package_slot), files)?;
         }
         Ok(())
@@ -114,7 +126,7 @@ impl EvalRecoverableBehaviorHooks {
 
     fn index_files(
         &mut self,
-        program: EvalProgramProjection<'_>,
+        program: &RuntimeExecutionProjection<'_>,
         unit: UnitAddr,
         files: &[std::sync::Arc<skiff_runtime_linked_program::LinkedFileUnit>],
     ) -> Result<(), RuntimeError> {
@@ -681,14 +693,18 @@ fn remote_operation_tables_runtime_equivalent(
 }
 
 fn unique_package_ids(
-    packages: &[std::sync::Arc<skiff_runtime_linked_program::PackageUnit>],
+    program: &RuntimeExecutionProjection<'_>,
 ) -> Result<HashSet<String>, RuntimeError> {
     let mut ids = HashSet::new();
-    for package in packages {
-        if !ids.insert(package.package_id.clone()) {
+    for slot in 0..program.package_files().len() {
+        let package_id = program.package_id(slot).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "recoverable local concrete owner package slot {slot} is not loaded"
+            ))
+        })?;
+        if !ids.insert(package_id.to_string()) {
             return Err(RuntimeError::InvalidArtifact(format!(
-                "recoverable local concrete owner lookup found duplicate package id {}",
-                package.package_id
+                "recoverable local concrete owner lookup found duplicate package id {package_id}"
             )));
         }
     }
@@ -696,7 +712,7 @@ fn unique_package_ids(
 }
 
 fn local_concrete_restore_key(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     concrete_type: &LinkedTypeRef,
 ) -> Result<LocalConcreteRestoreKey, RuntimeError> {
     let LinkedTypeRef::Address { addr } = concrete_type else {
@@ -714,39 +730,36 @@ fn local_concrete_restore_key(
 }
 
 fn local_concrete_owner(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     unit: &UnitAddr,
 ) -> Result<LocalConcreteOwner, RuntimeError> {
     match unit {
         UnitAddr::Service => Ok(LocalConcreteOwner::Service),
         UnitAddr::Package(slot) => {
-            let package = program.packages.get(*slot).ok_or_else(|| {
+            let package_id = program.package_id(*slot).ok_or_else(|| {
                 RuntimeError::InvalidArtifact(format!(
                     "recoverable local concrete owner package slot {slot} is not loaded"
                 ))
             })?;
-            if program
-                .packages
-                .iter()
-                .filter(|candidate| candidate.package_id == package.package_id)
+            if (0..program.package_files().len())
+                .filter(|candidate| program.package_id(*candidate) == Some(package_id))
                 .take(2)
                 .count()
                 != 1
             {
                 return Err(RuntimeError::InvalidArtifact(format!(
-                    "recoverable local concrete owner package id {} is ambiguous",
-                    package.package_id
+                    "recoverable local concrete owner package id {package_id} is ambiguous"
                 )));
             }
             Ok(LocalConcreteOwner::Package {
-                package_id: package.package_id.clone(),
+                package_id: package_id.to_string(),
             })
         }
     }
 }
 
 fn concrete_type_identity_for_addr(
-    program: EvalProgramProjection<'_>,
+    program: &RuntimeExecutionProjection<'_>,
     addr: &TypeAddr,
     owner: &LocalConcreteOwner,
 ) -> Result<String, RuntimeError> {
@@ -770,7 +783,15 @@ fn concrete_type_identity_for_addr(
         ))
     })?;
     let publication_id = match owner {
-        LocalConcreteOwner::Service => program.service_id.to_string(),
+        LocalConcreteOwner::Service => program
+            .service_id()
+            .ok_or_else(|| {
+                RuntimeError::InvalidArtifact(
+                    "assembly execution cannot project a legacy service-owned concrete type"
+                        .to_string(),
+                )
+            })?
+            .to_string(),
         LocalConcreteOwner::Package { package_id } => package_id.clone(),
     };
     let input = AbiSourceDeclarationAnchor {

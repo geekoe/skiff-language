@@ -10,18 +10,18 @@ use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, CancellationToken, CapabilityError, CapabilityFuture,
-    ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext, ExecutionControl,
-    ExecutionControlApi, ExecutionControlResult, FileCapabilityApi, FileCapabilityContext,
-    FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
-    FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
-    HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
-    OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
-    SpawnSubmitControlRequest, StreamCancelSignal, StreamLifetimeGuard, StreamPoll,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeResult, StreamSink,
-    TelemetryCapabilityApi, TelemetryCapabilityContext, WebsocketCapabilityApi,
-    WebsocketCapabilityContext,
+    ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
+    ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken, CapabilityError,
+    CapabilityFuture, ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext,
+    ExecutionControl, ExecutionControlApi, ExecutionControlResult, FileCapabilityApi,
+    FileCapabilityContext, FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi,
+    FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture,
+    HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
+    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
+    OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
+    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
+    StreamRuntimeResult, StreamSink, TelemetryCapabilityApi, TelemetryCapabilityContext,
+    WebsocketCapabilityApi, WebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -39,41 +39,41 @@ use crate::{
     error::{Result, RuntimeError},
 };
 
-pub(super) fn runtime_factory() -> EvalRuntimeFactory {
+pub(crate) fn runtime_factory() -> EvalRuntimeFactory {
     EvalRuntimeFactory::new(TestRuntimeFactory)
 }
 
-pub(super) fn execution_control() -> ExecutionControl<'static> {
+pub(crate) fn execution_control() -> ExecutionControl<'static> {
     ExecutionControl::new(TestExecutionControl::default())
 }
 
-pub(super) fn config_context() -> ConfigCapabilityContext<'static> {
+pub(crate) fn config_context() -> ConfigCapabilityContext<'static> {
     ConfigCapabilityContext::new(TestConfig)
 }
 
-pub(super) fn file_context() -> FileCapabilityContext {
+pub(crate) fn file_context() -> FileCapabilityContext {
     FileCapabilityContext::new(TestFile)
 }
 
-pub(super) fn file_source_stream_context(
+pub(crate) fn file_source_stream_context(
     stream_runtime: StreamRuntime,
 ) -> FileSourceStreamContext<'static> {
     FileSourceStreamContext::from_api(TestFileSourceStream { stream_runtime })
 }
 
-pub(super) fn websocket_context() -> WebsocketCapabilityContext<'static> {
+pub(crate) fn websocket_context() -> WebsocketCapabilityContext<'static> {
     WebsocketCapabilityContext::new(TestWebsocket)
 }
 
-pub(super) fn actor_context() -> ActorCapabilityContext<'static> {
+pub(crate) fn actor_context() -> ActorCapabilityContext<'static> {
     ActorCapabilityContext::new(TestActor)
 }
 
-pub(super) fn effects_context() -> EffectDispatchContext {
+pub(crate) fn effects_context() -> EffectDispatchContext {
     EffectDispatchContext::new(TestEffects)
 }
 
-pub(super) fn outbound_context() -> OutboundServiceContext {
+pub(crate) fn outbound_context() -> OutboundServiceContext {
     OutboundServiceContext::new(TestOutbound {
         cancellation: CancellationToken::new(),
     })

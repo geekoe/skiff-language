@@ -11,6 +11,7 @@ use skiff_runtime_model::{
 };
 
 use crate::{
+    assembly_execution::RuntimeExecutionProjection,
     capabilities::ActorClient,
     error::{Result, RuntimeError},
     invocation::EvalProgramProjection,
@@ -35,9 +36,9 @@ pub async fn submit_spawn_statement(
         ));
     };
 
-    let program = context.interpreter.program_projection()?;
+    let projection = context.execution_projection().clone();
     let spawn_context = context.context.spawn_context();
-    let invocation = encode_spawn_request_payload(context, call, program).await?;
+    let invocation = encode_spawn_request_payload(context, call, projection).await?;
 
     ActorClient::new(spawn_context.clone())
         .submit_spawn(
@@ -106,11 +107,11 @@ struct SpawnEncodedCall {
 async fn encode_spawn_request_payload(
     context: &mut EvalContext<'_>,
     call: &CallIr,
-    program: EvalProgramProjection<'_>,
+    projection: RuntimeExecutionProjection<'_>,
 ) -> Result<SpawnEncodedCall> {
     let target = spawn_submit_target(call)?;
     match target.kind.as_str() {
-        "function" => encode_spawn_function_payload(context, call, program, target).await,
+        "function" => encode_spawn_function_payload(context, call, projection, target).await,
         _ => Err(RuntimeError::InvalidArtifact(format!(
             "spawnSubmit metadata targetKind {} is unsupported",
             target.kind
@@ -121,15 +122,21 @@ async fn encode_spawn_request_payload(
 async fn encode_spawn_function_payload(
     context: &mut EvalContext<'_>,
     call: &CallIr,
-    program: EvalProgramProjection<'_>,
+    projection: RuntimeExecutionProjection<'_>,
     target: SpawnSubmitTarget,
 ) -> Result<SpawnEncodedCall> {
-    let LinkedCallTarget::Executable { addr } = &call.target else {
-        return Err(RuntimeError::InvalidArtifact(
-            "spawn function target was not linked to an executable".to_string(),
-        ));
+    let addr = match &projection {
+        RuntimeExecutionProjection::Legacy(_) => {
+            let LinkedCallTarget::Executable { addr } = &call.target else {
+                return Err(RuntimeError::InvalidArtifact(
+                    "spawn function target was not linked to an executable".to_string(),
+                ));
+            };
+            addr
+        }
+        RuntimeExecutionProjection::Assembly(_) => canonical_spawn_executable_addr(call)?,
     };
-    let resolved = program.executable_at(addr)?;
+    let resolved = projection.resolve_executable(addr)?;
     if resolved.executable.params.len() != call.args.len() {
         return Err(RuntimeError::InvalidArtifact(format!(
             "spawn target {} expects {} argument(s), got {}",
@@ -138,6 +145,17 @@ async fn encode_spawn_function_payload(
             call.args.len()
         )));
     }
+    let route_target = match &projection {
+        RuntimeExecutionProjection::Legacy(program) => {
+            spawn_function_route_target(*program, addr, &target.name)?
+        }
+        RuntimeExecutionProjection::Assembly(_) => canonical_spawn_function_target(
+            call,
+            &target,
+            &resolved.executable.kind,
+            &resolved.executable.symbol,
+        )?,
+    };
     let mut fields = RuntimeObjectFields::new();
     for (param, arg_ref) in resolved.executable.params.iter().zip(&call.args) {
         let value = context.eval_program_expr_ref(*arg_ref).await?;
@@ -145,8 +163,8 @@ async fn encode_spawn_function_payload(
     }
     let args_handle = context.heap.alloc_object(RuntimeObject::unshaped(fields))?;
     let recoverable_expected = executable_request_recoverable_expected_plan(
-        program.type_view(),
-        addr,
+        projection.type_view(),
+        &resolved.addr,
         resolved.executable,
     )?;
     let spawn_context = context.context.spawn_context();
@@ -161,18 +179,55 @@ async fn encode_spawn_function_payload(
         &recoverable_expected,
         &boundary,
         context.heap,
-        &EvalRecoverableBehaviorHooks::new(
-            program,
-            spawn_context.spawn_service_protocol_identity(),
-            spawn_context.request_build_id(),
-        )?,
+        &EvalRecoverableBehaviorHooks::new_for_execution(&projection)?,
     )?;
-    let route_target = spawn_function_route_target(program, addr, &target.name)?;
     Ok(SpawnEncodedCall {
         target_kind: "function".to_string(),
         target: route_target,
         args_payload,
     })
+}
+
+fn canonical_spawn_executable_addr(call: &CallIr) -> Result<&ExecutableAddr> {
+    match &call.target {
+        LinkedCallTarget::Executable { addr } => Ok(addr),
+        LinkedCallTarget::PackageDirect { call } => Ok(call.executable_addr()),
+        _ => Err(RuntimeError::InvalidArtifact(
+            "canonical spawn function target is not an exact linked executable".to_string(),
+        )),
+    }
+}
+
+fn canonical_spawn_function_target(
+    call: &CallIr,
+    metadata: &SpawnSubmitTarget,
+    executable_kind: &skiff_runtime_linked_program::ExecutableKind,
+    executable_symbol: &str,
+) -> Result<String> {
+    if executable_kind != &skiff_runtime_linked_program::ExecutableKind::Function {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawn target {} is not a function",
+            executable_symbol
+        )));
+    }
+    let expected_metadata_target = match &call.target {
+        LinkedCallTarget::Executable { .. } => format!("function:{executable_symbol}"),
+        LinkedCallTarget::PackageDirect { call } => {
+            format!("package:{}", call.package_callable_id())
+        }
+        _ => {
+            return Err(RuntimeError::InvalidArtifact(
+                "canonical spawn function target is not an exact linked executable".to_string(),
+            ))
+        }
+    };
+    if metadata.name != expected_metadata_target {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "canonical spawnSubmit metadata target {} does not match linked executable {}",
+            metadata.name, expected_metadata_target
+        )));
+    }
+    Ok(format!("function:{executable_symbol}"))
 }
 
 fn spawn_function_route_target(
@@ -1031,16 +1086,19 @@ mod recoverable_spawn_payload_tests {
     }
 }
 
-#[cfg(all(test, any()))]
-mod tests {
+#[cfg(test)]
+#[path = "spawn_ops/canonical_tests.rs"]
+mod canonical_tests;
+
+#[cfg(test)]
+mod legacy_spawn_tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use crate::{
-        eval::invocation::EvalProgramProjection,
-        eval::program::{
-            ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
-        },
+    use skiff_runtime_linked_program::{
+        ExecutableAddr, LinkOverlay, LinkedFileUnit, PackageUnit, RuntimeTypeContext,
     };
+
+    use crate::invocation::EvalProgramProjection;
 
     use super::{spawn_function_route_target, spawn_submit_build_id};
 

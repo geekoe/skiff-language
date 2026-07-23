@@ -2,7 +2,7 @@ mod async_stream_cancel;
 mod boundary_materialization;
 mod callback_native;
 mod ingress;
-mod ordinary;
+pub(crate) mod ordinary;
 mod projection;
 mod websocket_identity;
 mod websocket_ingress;

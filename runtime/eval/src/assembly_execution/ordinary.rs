@@ -125,4 +125,4 @@ fn validate_ordinary_operation(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

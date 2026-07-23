@@ -1,5 +1,5 @@
 #[path = "test_runtime.rs"]
-mod test_runtime;
+pub(crate) mod test_runtime;
 
 use std::{collections::BTreeMap, sync::Arc};
 

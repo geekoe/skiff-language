@@ -74,6 +74,18 @@ impl RuntimeAssemblyExecutionProjection {
         )
     }
 
+    pub(crate) fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
+        &self.storage.package_files
+    }
+
+    pub(crate) fn package_id(&self, slot: usize) -> Option<&str> {
+        self.image
+            .shared_packages()
+            .code_slots()
+            .get(slot)
+            .map(|code| code.artifact().package_id.as_str())
+    }
+
     pub(crate) fn resolve_file(
         &self,
         unit: &UnitAddr,
@@ -269,6 +281,17 @@ impl<'a> RuntimeExecutionProjection<'a> {
         }
     }
 
+    pub(crate) fn resolve_file(
+        &self,
+        unit: &UnitAddr,
+        file: &FileAddr,
+    ) -> Result<&Arc<LinkedFileUnit>, RuntimeError> {
+        match self {
+            Self::Legacy(program) => program.resolve_file(unit, file),
+            Self::Assembly(projection) => projection.resolve_file(unit, file),
+        }
+    }
+
     pub(crate) fn resolve_nested_executable(
         &self,
         addr: &ExecutableAddr,
@@ -339,6 +362,37 @@ impl<'a> RuntimeExecutionProjection<'a> {
         match self {
             Self::Legacy(program) => program.resource_view(),
             Self::Assembly(projection) => projection.resource_view(),
+        }
+    }
+
+    pub(crate) fn service_id(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(program) => Some(program.service_id),
+            Self::Assembly(_) => None,
+        }
+    }
+
+    pub(crate) fn service_files(&self) -> &[Arc<LinkedFileUnit>] {
+        match self {
+            Self::Legacy(program) => program.service_files,
+            Self::Assembly(_) => &[],
+        }
+    }
+
+    pub(crate) fn package_files(&self) -> &[Vec<Arc<LinkedFileUnit>>] {
+        match self {
+            Self::Legacy(program) => program.package_files,
+            Self::Assembly(projection) => projection.package_files(),
+        }
+    }
+
+    pub(crate) fn package_id(&self, slot: usize) -> Option<&str> {
+        match self {
+            Self::Legacy(program) => program
+                .packages
+                .get(slot)
+                .map(|package| package.package_id.as_str()),
+            Self::Assembly(projection) => projection.package_id(slot),
         }
     }
 }
