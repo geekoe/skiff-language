@@ -33,7 +33,8 @@ F23A/B/C/F23F已合流，F23D Router convergence形成checkpoint；首次真实s
 D35/F24A–D/R25/I24关闭该层。R26唯一smoke前进到ConnectResult return后FAIL；D36定位compiler target-typed object仍降为
 Map并冻结F25A/B、R27、I25。I25T combined PASS后R28在fixture Cargo前失败；D38A–D闭合diagnostic、canonical std
 publication/seed、strict receipt与readiness，冻结F27A–C、I27、R29。I27 PASS后R29在bootstrap strict identity处因
-旧build常量FAIL；第四次完整探针前已触发D39A/B重新审计identity传播与仍被遮挡的activation→native尾段。FileHandle teardown已由
+旧build常量FAIL；D39A/B已重新审计identity传播与仍被遮挡的activation→native尾段，冻结F28A/B/C、I28与R30，R30前不得
+再运行完整探针。FileHandle teardown已由
 D19在`f15c210`给出DESIGN GO，F17已合流；F03B/F03C现锁定至R24+F23E，最终R05移到二者合流后。
 
 唯一权威设计是 `doc/architecture/package-service-contract-deployment.md`，重点 §1–§5、§6.2、
@@ -138,7 +139,8 @@ Wave 2 / Batch B：R01 PASS后Skiff consumers同级扇出（按worker slot滚动
                 └─► R02A second FAIL@5715497 ─► D06 bounded raw/normalization audit
                       └─► F03A2 convergence ─► request combined probe ─► R02A third PASS ─┐
   F04 narrow receive PASS + D05 complete ───────────────────────────────────────────────────────────┴─► F05 typed unified WS ABI ─► R05 FAIL ─► D33
-                                                                                               D33 ─► F23A/B/C+F23F ─► F23D checkpoint ─► D35 ─► F24A ─► R25 ─► F24B/C/D ─► I24 ─► R26 FAIL ─► D36 ─► F25A/B ─► R27 ─► I25T ─► R28 FAIL ─► D38 ─► F27A/B/C ─► I27 ─► R29 FAIL ─► D39A/B ─► repair DAG pending ─► R24 ─► F23E ─┐
+                                                                                               D33 ─► F23A/B/C+F23F ─► F23D checkpoint ─► D35 ─► F24A ─► R25 ─► F24B/C/D ─► I24 ─► R26 FAIL ─► D36 ─► F25A/B ─► R27 ─► I25T ─► R28 FAIL ─► D38 ─► F27A/B/C ─► I27 ─► R29 FAIL ─► D39A/B ─► F28A ─► F28B ─┐
+                                                                                                                                                                                                                                                                                                                               └─► F28C ────────────┴─► I28 ─► R30 ─► R24 ─► F23E ─┐
                                                                                                                         ├─► F03B Router pin ─┐
                                                                                                                         └─► F03C Runtime pin├─► final R05 ─► lock refresh ─► I02 ─► R02
 
@@ -309,6 +311,12 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | R29 | [F23D real smoke third reacceptance](tasks/P5-R29-f23d-real-smoke-third-reacceptance.md) | I27 PASS | 唯一真实smoke owner |
 | D39A | [R29 identity/receipt propagation audit](tasks/P5-D39A-r29-identity-receipt-propagation-audit.md) | R29 FAIL | 只读；identity事实源与consumer矩阵 |
 | D39B | [R29 downstream mask audit](tasks/P5-D39B-r29-downstream-mask-audit.md) | R29 FAIL | 只读；activation→native未观察范围 |
+| D39 | [R29 remaining-range audit result](tasks/P5-D39-r29-remaining-range-audit-result.md) | D39A/B complete | 汇总修复DAG与下次full理由 |
+| F28A | [Smoke canonical identity oracle](tasks/P5-F28A-smoke-canonical-identity-oracle.md) | D39 complete | 高；删除JS第二identity事实源 |
+| F28B | [Smoke I/O lifecycle deadline](tasks/P5-F28B-smoke-io-lifecycle-deadline.md) | F28A merged | 高；activation/open/close/cleanup owner |
+| F28C | [Current prelude regression pin](tasks/P5-F28C-current-prelude-regression-pin.md) | D39 complete | 低；compiler source tests only |
+| I28 | [R29 repair combined](tasks/P5-I28-r29-repair-combined.md) | F28A/B/C merged | cheap no-service combined |
+| R30 | [F23D real smoke fourth reacceptance](tasks/P5-R30-f23d-real-smoke-fourth-reacceptance.md) | I28 PASS | 唯一真实smoke owner |
 | D19 | [Supervisor log-handle teardown audit](tasks/P5-D19-supervisor-log-handle-teardown-audit.md) | F04 cleanup secondary at `40ed693` | 独立只读；不阻塞F16启动 |
 | F17 | [Supervisor log-handle lifecycle repair](tasks/P5-F17-supervisor-log-handle-lifecycle.md) | D19 DESIGN GO | 中；独立resource lifecycle owner |
 | F03A | [Router/runtime shared seam](tasks/P5-F03A-router-runtime-shared-seam.md) | R02 pre-review findings | 高；binary/header/store checkpoint |
