@@ -501,7 +501,11 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | F55A | [Host/driver legacy consumer removal](tasks/P5-F55A-host-driver-legacy-consumer-removal.md) | D55 complete | host/driver owner |
 | F55B | [Loader/linker legacy chain removal](tasks/P5-F55B-loader-linker-legacy-chain-removal.md) | D55 complete | loader/linker owner |
 | I55AB | [Terminal consumer combined](tasks/P5-F55AB-terminal-consumer-combined.md) | F55A/B merged | cheap combined |
+| I55AB result | [Terminal consumer combined result](tasks/P5-I55AB-terminal-consumer-combined-result.md) | `0dd10e5` | FAIL；2 residuals |
+| F55D | [Activation facts residual](tasks/P5-F55D-activation-facts-residual.md) | I55AB classified | activation owner |
+| F55E | [Host linked cache residual](tasks/P5-F55E-host-linked-cache-residual.md) | I55AB classified | host owner |
 | T07 | [skiff-packages cutover](tasks/P5-T07-skiff-packages-cutover.md) | R02 exact Skiff | 中；外部consumer |
+| I07 | [skiff-packages runtime reacceptance](tasks/P5-I07-skiff-packages-runtime-reacceptance.md) | T07 merged | dependency-provisioned exact source |
 | T08 | [Internals registry/platform](tasks/P5-T08-internals-registry-platform.md) | R02 exact Skiff | 高；registry/release |
 | T08 blocker | [Registry/platform blocker](tasks/P5-T08-registry-platform-blocker.md) | R02 checkpoint | TASK_NOT_EXECUTABLE；无callable |
 | D56 | [Trusted registry callable audit](tasks/P5-D56-trusted-registry-callable-audit.md) | T08 blocked | capability/design双分片 |
