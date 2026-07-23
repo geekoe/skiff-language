@@ -19,6 +19,22 @@ pub(crate) fn compile(
     #[cfg(test)]
     TEST_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
     let dependency_analysis = canonical_dependencies::source_dependency_analysis(input)?;
+    if let Some(overlay) = &input.package.test_overlay {
+        let manifest = &input.package.manifest;
+        if overlay.production.package_id != manifest.id.as_str()
+            || overlay.production.package_version != manifest.version
+        {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "test overlay production coordinate {}@{} does not match source package {}@{}",
+                    overlay.production.package_id,
+                    overlay.production.package_version,
+                    manifest.id,
+                    manifest.version
+                ),
+            });
+        }
+    }
     let model = build(input, &dependency_analysis)?;
     let lowered = skiff_compiler_lowering::lower(&model)?;
     Ok(skiff_compiler_compiled::CompiledPackage::new(
@@ -40,7 +56,7 @@ fn build<'a>(
     input: &PackageCompileInput<'a>,
     dependency_analysis: &SourceDependencyAnalysisInput,
 ) -> Result<PackageSourceModel, PackageCompileError> {
-    let production_sources = input.package.production_sources();
+    let production_sources = input.package.compile_sources();
     let parsed_sources = skiff_compiler_source::parsed_sources::parse_publication_sources(
         &input.package.source_tree.root,
         &production_sources,

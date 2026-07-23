@@ -76,7 +76,8 @@ pub fn compile_package_test_overlay(
     }
     let production = package_artifact_ref(&project.package.artifact)
         .map_err(|error| PackageTestOverlayError::Invalid(error.to_string()))?;
-    let (source, manifest) = build_overlay_source(platform_sources, package_root, cases)?;
+    let (source, manifest) =
+        build_overlay_source(platform_sources, package_root, cases, production.clone())?;
     let overlay = compile_overlay_artifact(platform_sources, project, &manifest, &source)?;
     let bindings = overlay_bindings(cases, &overlay)?;
     if package_artifact_ref(&project.package.artifact)
@@ -98,6 +99,7 @@ fn build_overlay_source(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
     cases: &[PackageTestCase],
+    production: PackageArtifactRef,
 ) -> Result<(PackageSourceInput, PackageManifest), PackageTestOverlayError> {
     let manifest = read_root_package_manifest(platform_sources, package_root)?;
     let raw_sources = match manifest.provenance.owner {
@@ -109,7 +111,8 @@ fn build_overlay_source(
     let mut source_tree = raw_sources.source_tree();
     let raw_graph = raw_sources.into_source_graph();
     let parsed_graph = PublicationSourceGraph::parse_raw_publication_sources(&raw_graph)?;
-    let mut compiler_sources = parsed_graph.files().to_vec();
+    let compiler_sources = parsed_graph.files().to_vec();
+    let mut private_test_sources = Vec::new();
     let mut overlay_manifest = manifest.publication.clone();
     let mut grouped = BTreeMap::<PathBuf, Vec<&PackageTestCase>>::new();
     for case in cases {
@@ -131,7 +134,7 @@ fn build_overlay_source(
                 .iter()
                 .map(|case| (case.test_index, case.function_name.as_str())),
         );
-        compiler_sources.push(CompilerSourceFile::from_parsed_ast(
+        private_test_sources.push(CompilerSourceFile::from_parsed_ast(
             relative_path.clone(),
             module_path.clone(),
             true,
@@ -175,7 +178,8 @@ fn build_overlay_source(
         source_tree,
         PublicationSourceGraph::from_compiler_sources(compiler_sources),
         resources,
-    );
+    )
+    .with_test_overlay(production, private_test_sources);
     Ok((source, manifest))
 }
 

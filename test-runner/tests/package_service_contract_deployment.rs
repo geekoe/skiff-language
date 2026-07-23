@@ -552,6 +552,18 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
     let cases = discover_package_test_cases(&package, &package, false).expect("test cases");
     let overlay = compile_package_test_overlay(&platform_sources(), &package, &project, &cases)
         .expect("overlay");
+    assert!(
+        overlay
+            .overlay
+            .artifact
+            .package_requirements
+            .iter()
+            .all(
+                |requirement| requirement.package_id != production.package_id
+                    || requirement.exact_version != production.package_version
+            ),
+        "the typed overlay coordinate must never become a self package requirement"
+    );
     assert_ne!(
         overlay.overlay.artifact.package_build_id,
         production.package_build_id
@@ -574,6 +586,67 @@ fn overlay_is_a_separate_build_and_external_store_remains_read_only() {
         "external store must be read-only"
     );
     assert!(read_tree(&runtime).contains("runtime-assemblies"));
+}
+
+#[test]
+fn test_overlay_resolves_public_private_and_test_local_roots_in_one_compilation() {
+    let root = TestRoot::new("overlay-root-paths");
+    let artifacts = root.child("artifacts");
+    let package = root.child("package");
+    create_store(&artifacts);
+    write_package(
+        &package,
+        "id: example.com/overlay-roots\nversion: 1.0.0\n",
+        Some("public: main.publicHelper\n"),
+        Some(
+            "function publicHelper() -> bool { return true }\n\
+             function privateHelper() -> bool { return true }\n",
+        ),
+    );
+    fs::write(
+        package.join("main.test.skiff"),
+        "function testLocalHelper() -> bool { return true }\n\
+         test \"root visibility\" {\n\
+           assert root.main.publicHelper()\n\
+           assert root.main.privateHelper()\n\
+           assert root.main.__test.testLocalHelper()\n\
+         }\n",
+    )
+    .unwrap();
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    let production =
+        skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap();
+    let cases = discover_package_test_cases(&package, &package, false).unwrap();
+    let overlay =
+        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap();
+
+    assert_eq!(overlay.production, production);
+    assert!(overlay.overlay.artifact.package_requirements.is_empty());
+}
+
+#[test]
+fn test_overlay_missing_root_target_fails_closed_without_self_dependency_fallback() {
+    let root = TestRoot::new("overlay-missing-root");
+    let artifacts = root.child("artifacts");
+    let package = root.child("package");
+    create_store(&artifacts);
+    write_package(
+        &package,
+        "id: example.com/overlay-missing\nversion: 1.0.0\n",
+        None,
+        Some("function privateHelper() -> bool { return true }\n"),
+    );
+    fs::write(
+        package.join("main.test.skiff"),
+        "test \"missing root\" { assert root.main.missingHelper() }\n",
+    )
+    .unwrap();
+    let project = compile_package_project(&platform_sources(), &package, &artifacts).unwrap();
+    let cases = discover_package_test_cases(&package, &package, false).unwrap();
+    let error =
+        compile_package_test_overlay(&platform_sources(), &package, &project, &cases).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("root.main.missingHelper"), "{message}");
 }
 
 #[test]
