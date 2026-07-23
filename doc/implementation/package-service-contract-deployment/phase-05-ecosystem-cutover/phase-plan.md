@@ -323,6 +323,8 @@ consumer输入。最终I03/T13才改用包含T06的frozen Skiff integration tree
 | D42 result | [R05 tail path closure audit result](tasks/P5-D42-r05-tail-path-closure-audit-result.md) | `8c832b4` | COMPLETE；冻结F42/F43→F44→I33 |
 | F42 | [Shared RuntimePayload test codec](tasks/P5-F42-shared-runtime-payload-test-codec.md) | D42 complete | 高；唯一JS test codec owner |
 | F43 | [Router release ACK diagnostic](tasks/P5-F43-router-release-ack-diagnostic.md) | D42 complete | 高；Router health/lifecycle owner |
+| F42 result | [Shared RuntimePayload test codec result](tasks/P5-F42-shared-runtime-payload-test-codec-result.md) | `5c97d13` | complete；codec 8/8，protocol 42/42 |
+| F43 result | [Router release ACK diagnostic result](tasks/P5-F43-router-release-ack-diagnostic-result.md) | `abb8999` | complete；Router 12/12 |
 | F44 | [R05 raw decode and tail oracle](tasks/P5-F44-r05-raw-decode-tail-oracle.md) | F42+F43 merged | 高；scripts lifecycle consumer |
 | H31 | [R05 batch handoff](tasks/P5-H31-r05-batch-handoff.md) | I30 PASS | 新对话从D41恢复 |
 | D34 | [WS native parity audit](tasks/P5-D34-websocket-native-parity-audit-result.md) | F23C1 driver failures | 只读；冻结单一native validator owner |
