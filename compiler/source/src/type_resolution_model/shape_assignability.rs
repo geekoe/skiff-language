@@ -789,6 +789,15 @@ impl TypeResolutionModel {
                 source_text: type_ref_debug_text(ty),
             });
         }
+        if ty.source_text.contains('<') {
+            if let Some(field_ty) = self
+                .resolve_constructor_target_text(&ty.source_text, context)
+                .ok()
+                .and_then(|target| target.fields.get(field).cloned())
+            {
+                return Some(field_ty);
+            }
+        }
         if let Some(shape) = self.type_shape_ir(ty, context) {
             if let Some(field_ty) = record_field_type_from_ir(&shape, field) {
                 return Some(ResolvedTypeRef {
@@ -823,6 +832,18 @@ impl TypeResolutionModel {
                     self.source_type_shape_ir(resolution, context, None, module_path)
                 }),
             TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
+                if let Some(contract) = self.service_api_contracts.get(&symbol.module_path) {
+                    let schema_type = contract
+                        .boundary_schema
+                        .values()
+                        .find(|schema_type| schema_type.stable_key == symbol.symbol)?;
+                    return contract_type_shape_ir(
+                        contract,
+                        &symbol.module_path,
+                        &schema_type.shape.descriptor,
+                    )
+                    .ok();
+                }
                 let key = SourceSymbolKey::new(&symbol.module_path, &symbol.symbol);
                 self.source_types
                     .get(&key)

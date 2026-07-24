@@ -125,10 +125,14 @@ fn package_type_ref_from_resolved_ir(
                 .contract_requirement(&symbol.module_path)
                 .is_ok() =>
         {
-            Err(format!(
-                "resolved contract symbol `{}.{}` has no source-origin exact projection",
-                symbol.module_path, symbol.symbol
-            ))
+            let contract_type_id = dependency_analysis
+                .public_contract_type_id_by_stable_key(
+                    &symbol.module_path,
+                    &symbol.symbol,
+                )
+                .map_err(|error| error.to_string())?
+                .clone();
+            Ok(PackageTypeRef::Contract { contract_type_id })
         }
         TypeRefIr::Record { .. }
         | TypeRefIr::Union { .. }

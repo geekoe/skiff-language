@@ -51,11 +51,6 @@ impl ContractAwareTypeResolver<'_> {
                                 "contract dependency type `{name}` has no stable type key"
                             ));
                         }
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "contract dependency type `{name}` cannot take source type arguments"
-                            ));
-                        }
                         let contract_type_id = self
                             .dependency_analysis
                             .public_contract_type_id_by_stable_key(alias, stable_key)

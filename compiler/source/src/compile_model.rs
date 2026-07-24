@@ -184,7 +184,7 @@ impl PackageSourceModel {
             &input.parsed_sources,
             &name_resolution,
         )?;
-        let type_resolution = TypeResolutionModel::build(
+        let mut type_resolution = TypeResolutionModel::build(
             &input.parsed_sources,
             input.package_aliases,
             input.package_dependencies,
@@ -195,6 +195,11 @@ impl PackageSourceModel {
         .map_err(|message| PublicationError::ContractValidation {
             message: format!("type resolution model failed:\n- {message}"),
         })?;
+        type_resolution
+            .index_service_api_contracts(input.dependency_analysis)
+            .map_err(|message| PublicationError::ContractValidation {
+                message: format!("service API type indexing failed:\n- {message}"),
+            })?;
         super::contract_type_resolution::validate_contract_type_uses(
             &input.parsed_sources,
             input.dependency_analysis,

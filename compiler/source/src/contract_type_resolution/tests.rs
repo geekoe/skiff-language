@@ -4,11 +4,12 @@ use compiler_input_model::{
     PackageCompilePolicy, PackageDependency, PublicationApiEntry,
     PublicationApiPublicInstanceEntry, PublicationApiSpec,
 };
-use skiff_artifact_identity::contract_type_id;
+use skiff_artifact_identity::{assign_service_contract_identities, contract_type_id};
 use skiff_artifact_model::{
     ContractLiteral, ContractTypeRef, FileIrUnit, FunctionTypeParamIr, InterfaceDeclIr,
     InterfaceOperationIr, PackageTypeRef, TypeRefIr,
 };
+use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
 
 use crate::{
     build_package_from_parsed_sources_with_dependency_analysis,
@@ -101,6 +102,106 @@ fn exported_signature_preserves_contract_nominal_nested_types_and_local_domain()
         .signature(&crate::SourceSymbolKey::new("api", "suspendedHelper"))
         .expect("private suspending helper receives an exact signature fact");
     assert!(suspended.may_suspend);
+}
+
+#[test]
+fn service_api_nominal_record_uses_ordinary_constructor_and_field_paths() {
+    let dependency_analysis = contract_dependencies();
+    let model = build_model(
+        r#"
+            function submit(input: payments.User) -> payments.User {
+                let copied = payments.User { value: input.value }
+                payments/submit(copied)
+                return copied
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect("service API records construct and expose fields through the shared type model");
+
+    let signature = model
+        .callable_signatures()
+        .signature("submit")
+        .expect("public signature");
+    let expected = contract_type_id("example.payments", "1.0.0", "User").unwrap();
+    assert!(matches!(
+        &signature.return_type,
+        PackageTypeRef::Contract { contract_type_id } if contract_type_id == &expected
+    ));
+    assert!(matches!(
+        model
+            .resolved_call_targets()
+            .iter()
+            .map(|(_, target)| target)
+            .find(|target| matches!(target, crate::ResolvedCallTarget::ContractOperation { .. })),
+        Some(crate::ResolvedCallTarget::ContractOperation { .. })
+    ));
+}
+
+#[test]
+fn service_api_nominal_record_rejects_unknown_constructor_and_read_fields() {
+    let dependency_analysis = contract_dependencies();
+    for source in [
+        r#"
+            function submit(input: payments.User) -> payments.User {
+                return payments.User { missing: input.value }
+            }
+        "#,
+        r#"
+            function submit(input: payments.User) -> string {
+                return input.missing
+            }
+        "#,
+    ] {
+        let error = build_model(source, &dependency_analysis, &BTreeMap::new())
+            .expect_err("unknown service API fields fail closed")
+            .to_string();
+        assert!(
+            error.contains("missing") || error.contains("field"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn generic_service_api_record_reuses_constructor_type_substitution() {
+    let mut contract = crate::contract_dependency_test_fixture::contract_fixture(
+        "example.generic",
+        "1.0.0",
+        "submit",
+        "Box",
+        "Secret",
+    );
+    let boxed = contract
+        .boundary_schema
+        .values_mut()
+        .find(|schema_type| schema_type.stable_key == "Box")
+        .expect("Box schema");
+    boxed.shape.type_params = vec!["T".to_string()];
+    boxed.shape.descriptor = skiff_artifact_model::ContractTypeDescriptor::Record {
+        fields: BTreeMap::from([(
+            "value".to_string(),
+            ContractTypeRef::TypeParam {
+                name: "T".to_string(),
+            },
+        )]),
+    };
+    assign_service_contract_identities(&mut contract).expect("generic contract identity");
+    let requirement = crate::contract_dependency_test_fixture::requirement("generic", &contract);
+    let dependency = ResolvedContractDependency::validated(requirement, contract).unwrap();
+    let dependency_analysis = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
+
+    build_model(
+        r#"
+            function submit(input: generic.Box<string>) -> generic.Box<string> {
+                return generic.Box<string> { value: input.value }
+            }
+        "#,
+        &dependency_analysis,
+        &BTreeMap::new(),
+    )
+    .expect("generic service API record uses ordinary constructor substitution");
 }
 
 #[test]
@@ -334,6 +435,14 @@ fn build_model_with_publication_api_and_package_facts(
     package_facts: Option<&[SourceCompilePackageFacts<'_>]>,
     publication_api: &PublicationApiSpec,
 ) -> Result<PackageSourceModel, SourceCompileError> {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root resolves");
+    crate::prelude_registry::initialize_prelude_registry(
+        &CompilerPlatformSources::new(&platform_root).expect("platform sources load"),
+    )
+    .expect("prelude registry initializes");
     let source = CompilerSourceFile::parse(
         PathBuf::from("api.skiff"),
         "api".to_string(),

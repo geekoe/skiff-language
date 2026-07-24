@@ -119,10 +119,6 @@ impl ContractTypeUseValidator<'_> {
                             self.violations.insert(format!(
                                 "contract dependency type `{name}` has no stable type key"
                             ));
-                        } else if !args.is_empty() {
-                            self.violations.insert(format!(
-                                "contract dependency type `{name}` cannot take source type arguments"
-                            ));
                         } else if let Err(error) = self
                             .dependency_analysis
                             .public_contract_type_id_by_stable_key(alias, stable_key)
