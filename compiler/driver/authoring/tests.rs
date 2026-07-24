@@ -1,6 +1,7 @@
 use std::{cell::Cell, fs, path::PathBuf};
 
 use serde_json::json;
+use skiff_artifact_identity::package_schema_index_identity;
 use skiff_artifact_model::{PackageArtifact, PackageLocalAbiIdentity, PackageRequirement};
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::prelude_registry::{
@@ -146,6 +147,8 @@ fn package(
     local_abi: &str,
     requirements: impl IntoIterator<Item = PackageRequirement>,
 ) -> PackageArtifact {
+    let package_schema_index_identity =
+        package_schema_index_identity(id, &Default::default()).unwrap();
     serde_json::from_value(json!({
         "schemaVersion": "skiff-package-artifact-v2",
         "packageId": id,
@@ -157,6 +160,11 @@ fn package(
             "localAbiIdentity": local_abi,
             "publicSymbols": {}
         },
+        "packageSchemaIndex": {
+            "packageId": id,
+            "packageSchemaIndexIdentity": package_schema_index_identity
+        },
+        "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
         "packageRequirements": requirements.into_iter().collect::<Vec<_>>(),
