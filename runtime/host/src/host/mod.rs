@@ -3,6 +3,7 @@ mod control_plane;
 pub mod file_runtime;
 mod health;
 pub(crate) mod http_client_runtime;
+mod http_response_ceiling;
 pub(crate) mod http_runtime;
 mod lifecycle;
 #[cfg(test)]

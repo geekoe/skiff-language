@@ -37,13 +37,20 @@ impl RuntimeHost {
         router_session_id: &str,
         header: RuntimeAssemblyRequestStartFrameHeader,
         payload: Vec<u8>,
+        http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let request_id = header.request_id.clone();
         match self.runtime_assembly_request_from_wire(router_session_id, header, payload) {
             Ok((route, request, connect_pin)) => {
-                self.spawn_request_on_active_assembly_route(route, request, connect_pin, sender)
-                    .await;
+                self.spawn_request_on_active_assembly_route(
+                    route,
+                    request,
+                    connect_pin,
+                    http_response_max_bytes,
+                    sender,
+                )
+                .await;
             }
             Err(runtime_error) => {
                 error!(

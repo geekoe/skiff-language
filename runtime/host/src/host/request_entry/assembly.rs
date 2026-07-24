@@ -30,6 +30,7 @@ impl RuntimeHost {
         route: ActiveAssemblyRoute,
         request: RequestEnvelope,
         connect_pin: Option<WebSocketConnectGenerationPin>,
+        http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let target = match route.request_target() {
@@ -41,7 +42,12 @@ impl RuntimeHost {
                 return;
             }
         };
-        let handles = match self.assembly_request_execution_handles(&route, &request, &sender) {
+        let handles = match self.assembly_request_execution_handles(
+            &route,
+            &request,
+            http_response_max_bytes,
+            &sender,
+        ) {
             Ok(handles) => handles,
             Err(error) => {
                 self.emit_request_route_error(&request, &error);
@@ -49,8 +55,16 @@ impl RuntimeHost {
                 return;
             }
         };
-        self.spawn_assembly_request(route, target, handles, request, connect_pin, sender)
-            .await;
+        self.spawn_assembly_request(
+            route,
+            target,
+            handles,
+            request,
+            connect_pin,
+            http_response_max_bytes,
+            sender,
+        )
+        .await;
     }
 
     async fn spawn_assembly_request(
@@ -60,6 +74,7 @@ impl RuntimeHost {
         handles: request_runner::AssemblyRequestExecutionHandles,
         request: RequestEnvelope,
         connect_pin: Option<WebSocketConnectGenerationPin>,
+        http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let telemetry_context = self.assembly_request_telemetry_context(&request, &route);
@@ -70,6 +85,9 @@ impl RuntimeHost {
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
+        let is_http_ingress = request.ingress_selector.as_ref().is_some_and(|selector| {
+            selector.protocol == skiff_artifact_model::IngressProtocol::Http
+        });
         let host = self.clone();
         tokio::spawn(async move {
             let request_id = request.request_id.clone();
@@ -86,6 +104,32 @@ impl RuntimeHost {
             .await;
             let writer_message = match result {
                 Ok(response) => {
+                    if let Err(response_error) =
+                        super::super::http_response_ceiling::validate_unary_response(
+                            &response,
+                            http_response_max_bytes,
+                            is_http_ingress,
+                        )
+                    {
+                        host.request_supervisor
+                            .complete_error(
+                                &supervised_request,
+                                "request.error",
+                                &response_error,
+                                CompletionTrace::RUNTIME,
+                            )
+                            .await;
+                        let message = response_event_into_transport_message(
+                            request_id,
+                            ResponseEvent::Error(response_error),
+                        )
+                        .map(Some);
+                        drop(route);
+                        if let Ok(Some(message)) = message {
+                            let _ = sender.send(message);
+                        }
+                        return;
+                    }
                     if websocket_connect_accepted(&response) {
                         if let Some(connect_pin) = connect_pin {
                             if let Err(error) = host.queue_websocket_generation_acquire(
@@ -241,6 +285,7 @@ impl RuntimeHost {
         &self,
         route: &ActiveAssemblyRoute,
         request: &RequestEnvelope,
+        http_response_max_bytes: usize,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Result<request_runner::AssemblyRequestExecutionHandles> {
         let telemetry = self.assembly_request_telemetry_context(request, route);
@@ -260,7 +305,7 @@ impl RuntimeHost {
                 spawn_workers: Arc::clone(&self.spawn_workers),
                 telemetry_context: Some(telemetry),
                 router_sender: Some(sender.clone()),
-                http_response_max_bytes: self.default_http_response_max_bytes,
+                http_response_max_bytes,
             },
         )
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;

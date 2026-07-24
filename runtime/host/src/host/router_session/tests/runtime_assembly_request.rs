@@ -139,6 +139,28 @@ async fn runtime_assembly_request_executes_zero_payload_unary_with_nested_provid
 }
 
 #[tokio::test]
+async fn runtime_assembly_http_response_ceiling_uses_bootstrap_and_releases_request() {
+    let (host, route) = fixture::admitted_nested_host().await;
+    let header = canonical_header(&route, "runtime-assembly-http-over-limit");
+    let frame = encode_binary_frame(&header, &[]).expect("canonical request.start should encode");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    super::super::dispatch_router_binary_frame_with_http_response_max(
+        &host, &frame, &sender, 1,
+    )
+    .await
+    .expect("oversize request should dispatch to its response terminal");
+
+    let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
+        panic!("oversize HTTP response must terminate with response.error")
+    };
+    assert_eq!(response.request_id, header.request_id);
+    assert_eq!(response.error.code, "ResourceLimitExceeded");
+    assert_eq!(host.request_supervisor.active_count().await, 0);
+    assert_no_second_terminal(&mut receiver).await;
+}
+
+#[tokio::test]
 async fn runtime_assembly_request_executes_zero_payload_zero_arg_void_unary() {
     let (host, route) = fixture::admitted_void_host(false).await;
     let header = canonical_header(&route, "runtime-assembly-void");

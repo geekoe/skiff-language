@@ -111,7 +111,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
 struct ConnectionBootstrap {
     resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
     service_db: skiff_artifact_model::AssemblyActivationServiceDb,
-    max_response_bytes: u64,
+    max_response_bytes: usize,
 }
 
 fn decode_connection_bootstrap(
@@ -137,7 +137,11 @@ fn decode_connection_bootstrap(
     Ok(ConnectionBootstrap {
         resolver,
         service_db,
-        max_response_bytes: header.http.max_response_bytes,
+        max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
+            RuntimeError::Decode(
+                "router.bootstrap http.maxResponseBytes exceeds Runtime address space".to_string(),
+            )
+        })?,
     })
 }
 
@@ -280,6 +284,37 @@ async fn dispatch_router_binary_frame(
     .await
 }
 
+#[cfg(test)]
+async fn dispatch_router_binary_frame_with_http_response_max(
+    host: &super::RuntimeHost,
+    bytes: &[u8],
+    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
+    max_response_bytes: usize,
+) -> Result<()> {
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-test-artifacts");
+    std::fs::create_dir_all(&artifact_path)
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let mut bootstrap = Some(ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
+        },
+        max_response_bytes,
+    });
+    dispatch_router_binary_frame_inner(
+        host,
+        "skiff-router-session-v1:opaque:test-session",
+        bytes,
+        sender,
+        None,
+        &mut bootstrap,
+    )
+    .await
+}
+
 async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
     router_session_id: &str,
@@ -391,8 +426,15 @@ async fn dispatch_router_binary_frame_inner(
             }
             let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
-            host.spawn_runtime_assembly_request(router_session_id, header, payload, sender.clone())
-                .await;
+            let bootstrap = bootstrap.as_ref().expect("bootstrap checked above");
+            host.spawn_runtime_assembly_request(
+                router_session_id,
+                header,
+                payload,
+                bootstrap.max_response_bytes,
+                sender.clone(),
+            )
+            .await;
         }
         "request.cancel" => {
             let (header, payload) = decode_typed_binary_frame::<RequestCancelFrameHeader>(bytes)
