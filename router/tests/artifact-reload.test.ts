@@ -138,6 +138,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -334,6 +335,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -449,6 +451,7 @@ describe('router artifact reload', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);

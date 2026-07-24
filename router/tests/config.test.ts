@@ -6,15 +6,28 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { TELEMETRY_PROTOCOL, TELEMETRY_TOPICS } from '../src/protocol/envelope.js';
-import { loadRouterConfig } from '../src/router/config.js';
+import {
+  loadRouterConfig,
+  runtimeBootstrapForRouterConfig
+} from '../src/router/config.js';
 
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
 
 async function writeRouterConfigFixture(path: string, contents: string): Promise<void> {
+  const withHttpCeilings = /^http:/m.test(contents)
+    ? contents.replace(
+        /^http:\s*$/m,
+        [
+          'http:',
+          /^\s+maxRequestBytes:/m.test(contents) ? '' : '  maxRequestBytes: 67108864',
+          /^\s+maxResponseBytes:/m.test(contents) ? '' : '  maxResponseBytes: 67108864'
+        ].filter(Boolean).join('\n')
+      )
+    : `${contents}\nhttp:\n  maxRequestBytes: 67108864\n  maxResponseBytes: 67108864`;
   const required = [
-    contents,
+    withHttpCeilings,
     /^artifactsPath:/m.test(contents) ? '' : 'artifactsPath: ./artifacts',
     /^serviceDb:/m.test(contents)
       ? ''
@@ -63,7 +76,8 @@ describe('router config', () => {
         'requestTimeoutMs: 7000',
         'http:',
         '  port: 5010',
-        '  bodyLimitBytes: 16777216',
+        '  maxRequestBytes: 16777216',
+        '  maxResponseBytes: 8388608',
         'runtime:',
         '  port: 5011',
         '  path: /runtime-dev',
@@ -95,7 +109,8 @@ describe('router config', () => {
         mongoUrl: 'mongodb://127.0.0.1:27017/skiff',
       },
       host: '0.0.0.0',
-      httpBodyLimitBytes: 16777216,
+      httpMaxRequestBytes: 16777216,
+      httpMaxResponseBytes: 8388608,
       httpPort: 5010,
       manifests: [join(dir, 'manifests/router-manifest.json')],
       profile: 'dev',
@@ -131,6 +146,29 @@ describe('router config', () => {
     });
   });
 
+  it('projects only the configured response ceiling onto Runtime bootstrap', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'router.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'http:',
+        '  maxRequestBytes: 111',
+        '  maxResponseBytes: 222',
+        ''
+      ].join('\n')
+    );
+
+    const config = await loadRouterConfig(configPath);
+    expect(runtimeBootstrapForRouterConfig(config)).toEqual({
+      artifactsPath: join(dir, 'artifacts'),
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff' },
+      http: { maxResponseBytes: 222 }
+    });
+  });
+
   it('allows command line overrides on top of router.yml', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
@@ -141,7 +179,8 @@ describe('router config', () => {
       loadRouterConfig(configPath, {
         host: '127.0.0.2',
         artifactsPath: 'artifact-override',
-        httpBodyLimitBytes: '33554432',
+        httpMaxRequestBytes: '33554432',
+        httpMaxResponseBytes: '16777216',
         httpPort: '6010',
         manifest: 'override.json',
         requestTimeoutMs: '9000',
@@ -154,7 +193,8 @@ describe('router config', () => {
     ).resolves.toMatchObject({
       artifactsPath: join(dir, 'artifact-override'),
       host: '127.0.0.2',
-      httpBodyLimitBytes: 33554432,
+      httpMaxRequestBytes: 33554432,
+      httpMaxResponseBytes: 16777216,
       httpPort: 6010,
       manifests: [join(dir, 'override.json')],
       profile: 'prod',
@@ -621,26 +661,82 @@ describe('router config', () => {
     );
   });
 
-  it('rejects invalid http body limit values', async () => {
+  it.each(['maxRequestBytes', 'maxResponseBytes'])(
+    'rejects invalid and missing http.%s values',
+    async (field) => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
+    const otherField =
+      field === 'maxRequestBytes' ? 'maxResponseBytes' : 'maxRequestBytes';
 
-    const zeroConfig = join(dir, 'zero-body-limit.yml');
+    const zeroConfig = join(dir, `zero-${field}.yml`);
     await writeRouterConfigFixture(
       zeroConfig,
-      ['profile: dev', 'http:', '  bodyLimitBytes: 0', ''].join('\n')
+      ['profile: dev', 'http:', `  ${field}: 0`, `  ${otherField}: 16`, ''].join('\n')
     );
     await expect(loadRouterConfig(zeroConfig)).rejects.toThrow(
-      /router config http\.bodyLimitBytes must be a positive integer/
+      new RegExp(`router config http\\.${field} must be a positive integer`)
     );
 
-    const fractionalConfig = join(dir, 'fractional-body-limit.yml');
+    const fractionalConfig = join(dir, `fractional-${field}.yml`);
     await writeRouterConfigFixture(
       fractionalConfig,
-      ['profile: dev', 'http:', '  bodyLimitBytes: 1.5', ''].join('\n')
+      ['profile: dev', 'http:', `  ${field}: 1.5`, `  ${otherField}: 16`, ''].join('\n')
     );
     await expect(loadRouterConfig(fractionalConfig)).rejects.toThrow(
-      /router config http\.bodyLimitBytes must be a positive integer/
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+
+    const overflowConfig = join(dir, `overflow-${field}.yml`);
+    await writeRouterConfigFixture(
+      overflowConfig,
+      [
+        'profile: dev',
+        'http:',
+        `  ${field}: 9007199254740992`,
+        `  ${otherField}: 16`,
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(overflowConfig)).rejects.toThrow(
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+
+    const missingConfig = join(dir, `missing-${field}.yml`);
+    await writeFileRaw(
+      missingConfig,
+      [
+        'profile: dev',
+        'artifactsPath: ./artifacts',
+        'serviceDb:',
+        '  mongoUrl: mongodb://127.0.0.1:27017/skiff',
+        'http:',
+        `  ${otherField}: 16`,
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(missingConfig)).rejects.toThrow(
+      new RegExp(`router config http\\.${field} must be a positive integer`)
+    );
+  });
+
+  it('rejects the removed http.bodyLimitBytes alias', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
+    tempDirs.push(dir);
+    const configPath = join(dir, 'removed-body-limit.yml');
+    await writeRouterConfigFixture(
+      configPath,
+      [
+        'profile: dev',
+        'http:',
+        '  bodyLimitBytes: 16',
+        '  maxRequestBytes: 16',
+        '  maxResponseBytes: 16',
+        ''
+      ].join('\n')
+    );
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /http\.bodyLimitBytes is no longer supported/
     );
   });
 

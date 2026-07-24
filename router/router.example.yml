@@ -11,8 +11,8 @@ requestTimeoutMs: 20000
 
 http:
   port: 4000
-  # Optional. Defaults to 67108864 when omitted.
-  # bodyLimitBytes: 67108864
+  maxRequestBytes: 67108864
+  maxResponseBytes: 67108864
 
 runtime:
   port: 4001

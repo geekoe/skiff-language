@@ -58,6 +58,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -95,6 +96,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -178,6 +180,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);
@@ -226,6 +229,7 @@ describe('router version routing', () => {
       dispatcher,
       snapshotStore,
       port: 0,
+      maxRequestBytes: 67108864,
       requestTimeoutMs: 2000
     });
     trackResource(gateway);

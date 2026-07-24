@@ -39,7 +39,7 @@ The HTTP gateway expects the runtime to return a standard `std.http.HttpResponse
 
 ## Configuration
 
-`src/router/server.ts` reads `router.yml` by default. A different file can be passed with `--config path/to/router.yml`; `--host`, `--http-port`, `--http-body-limit-bytes`, `--runtime-port`, `--runtime-path`, `--manifest`, `--dev-reload`, and `--request-timeout-ms` are accepted as command-line overrides.
+`src/router/server.ts` reads `router.yml` by default. A different file can be passed with `--config path/to/router.yml`; `--host`, `--http-port`, `--http-max-request-bytes`, `--http-max-response-bytes`, `--runtime-port`, `--runtime-path`, `--manifest`, `--dev-reload`, and `--request-timeout-ms` are accepted as command-line overrides.
 
 Use `artifacts.root` to load service pointers from an artifact root. In local development, set `devReload: true`; the router reads `dev/services/<storage-projected-service-id>.json`, and `skiff-dev-sync` can update those pointers and call the reload endpoint without restarting the HTTP listener. Otherwise the router reads service version pointers from `versions/services/<storage-projected-service-id>/<version>.json`, resolves them to `builds/services/<storage-projected-service-id>/<build-hash>.json`, and routes requests by `serviceId + version` before selecting the target build. URL-like service ids are projected as path components, so `skiff.run/account` maps to `dev/services/skiff~run~~account.json` and `versions/services/skiff~run~~account/<version>.json`.
 
@@ -53,7 +53,8 @@ artifacts:
   root: ../var/skiff-artifacts
 devReload: true
 http:
-  bodyLimitBytes: 67108864
+  maxRequestBytes: 67108864
+  maxResponseBytes: 67108864
 rewrite:
   - host: hello.localhost
     service: skiff.run/hello

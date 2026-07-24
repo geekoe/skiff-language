@@ -121,6 +121,42 @@ describe('RuntimeAssembly canonical HTTP unary dispatch', () => {
     expect(completedOpaque.body).toEqual(Buffer.from([9, 8, 7]));
   });
 
+  it('rejects oversized requests before Runtime dispatch', async () => {
+    const fixture = await createFixture({ maxRequestBytes: 3 });
+
+    const response = await sendHttp(fixture.httpUrl, new Uint8Array([1, 2, 3, 4]));
+    expect(response.status).toBe(413);
+    expect(JSON.parse(response.body.toString())).toMatchObject({
+      error: { code: 'RequestTooLarge' }
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
+
+  it('rejects an oversized unary Runtime response at the Router boundary', async () => {
+    const fixture = await createFixture({ maxResponseBytes: 3 });
+    const response = sendHttp(fixture.httpUrl, new Uint8Array());
+    const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.end',
+      requestId: String(requestFrame.header.requestId),
+      payloadPresent: true
+    }, new Uint8Array([1, 2, 3, 4])));
+
+    const completed = await response;
+    expect(completed).toMatchObject({
+      status: 502,
+      body: expect.any(Buffer)
+    });
+    expect(JSON.parse(completed.body.toString())).toMatchObject({
+      error: { code: 'ResponseTooLarge' }
+    });
+  });
+
   it('fails closed before the socket for legacy, flat, unknown, stream, adapter, and HTTP mismatches', async () => {
     const fixture = await createFixture();
     const valid = canonicalHeader(fixture.snapshot, 'valid');
@@ -340,7 +376,9 @@ const BINDING: RuntimeAssemblyIngressBinding = {
   contractOperationId: OPERATION
 };
 
-async function createFixture(): Promise<UnaryFixture> {
+async function createFixture(
+  limits: { maxRequestBytes?: number; maxResponseBytes?: number } = {}
+): Promise<UnaryFixture> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
@@ -355,7 +393,8 @@ async function createFixture(): Promise<UnaryFixture> {
     assemblyRegistry,
     bootstrap: {
       artifactsPath: '/tmp/skiff-test-artifacts',
-      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' },
+      http: { maxResponseBytes: 67108864 }
     }
   });
   const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });
@@ -365,6 +404,8 @@ async function createFixture(): Promise<UnaryFixture> {
     snapshots,
     dispatcher,
     port: 0,
+    maxRequestBytes: limits.maxRequestBytes ?? 67108864,
+    maxResponseBytes: limits.maxResponseBytes ?? 67108864,
     requestTimeoutMs: 1000
   });
   const httpListen = await gateway.listen();

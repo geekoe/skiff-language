@@ -36,6 +36,7 @@ export class HttpStreamResponseWriter {
       clientDisconnectSignal: AbortSignal;
       backpressureDrainTimeoutMs: number;
       counters: HttpStreamLifecycleCounters;
+      maxResponseBytes?: number;
       writeHeaders(
         response: ServerResponse,
         headers: HttpResponseFrameMetadata['headers']
@@ -44,6 +45,8 @@ export class HttpStreamResponseWriter {
   ) {
     this.input.counters.activeWriters += 1;
   }
+
+  private responseBytes = 0;
 
   enqueueStart(
     runtimeResponse: RuntimeBinaryDispatchStart,
@@ -160,6 +163,17 @@ export class HttpStreamResponseWriter {
 
   private async writeBuffer(buffer: Buffer): Promise<void> {
     if (this.closed || this.terminalRequested) return;
+    this.responseBytes += buffer.byteLength;
+    if (
+      this.input.maxResponseBytes !== undefined &&
+      this.responseBytes > this.input.maxResponseBytes
+    ) {
+      throw new GatewayError(
+        502,
+        'ResponseTooLarge',
+        `runtime response exceeds ${this.input.maxResponseBytes} bytes`
+      );
+    }
     if (
       this.input.response.destroyed ||
       this.input.clientDisconnectSignal.aborted

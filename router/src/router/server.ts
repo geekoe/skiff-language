@@ -7,6 +7,7 @@ import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import {
   loadRouterConfig,
+  runtimeBootstrapForRouterConfig,
   type RouterConfigOverrides
 } from './config.js';
 import { FilesystemRuntimeAssemblySnapshotLoader } from './filesystemRuntimeAssemblySnapshotLoader.js';
@@ -23,7 +24,8 @@ const args = parseArgs({
     'artifacts-path': { type: 'string' },
     environment: { type: 'string' },
     host: { type: 'string' },
-    'http-body-limit-bytes': { type: 'string' },
+    'http-max-request-bytes': { type: 'string' },
+    'http-max-response-bytes': { type: 'string' },
     'http-port': { type: 'string' },
     'request-timeout-ms': { type: 'string' },
     'runtime-path': { type: 'string' },
@@ -41,8 +43,11 @@ if (args.values.environment !== undefined) {
 if (args.values.host !== undefined) {
   overrides.host = args.values.host;
 }
-if (args.values['http-body-limit-bytes'] !== undefined) {
-  overrides.httpBodyLimitBytes = args.values['http-body-limit-bytes'];
+if (args.values['http-max-request-bytes'] !== undefined) {
+  overrides.httpMaxRequestBytes = args.values['http-max-request-bytes'];
+}
+if (args.values['http-max-response-bytes'] !== undefined) {
+  overrides.httpMaxResponseBytes = args.values['http-max-response-bytes'];
 }
 if (args.values['http-port'] !== undefined) {
   overrides.httpPort = args.values['http-port'];
@@ -75,10 +80,7 @@ const runtimeRegistry = new RuntimeRegistry();
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
   assemblyRegistry: registry,
-  bootstrap: {
-    artifactsPath: config.artifactsPath,
-    serviceDb: config.serviceDb
-  }
+  bootstrap: runtimeBootstrapForRouterConfig(config)
 });
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
@@ -120,9 +122,8 @@ const httpGateway = new AssemblyHttpGateway({
   host: config.host,
   port: config.httpPort,
   requestTimeoutMs: config.requestTimeoutMs,
-  ...(config.httpBodyLimitBytes !== undefined
-    ? { bodyLimitBytes: config.httpBodyLimitBytes }
-    : {})
+  maxRequestBytes: config.httpMaxRequestBytes,
+  maxResponseBytes: config.httpMaxResponseBytes
 });
 const httpServer = await httpGateway.listen();
 const webSocketGateway = new AssemblyWebSocketGateway({

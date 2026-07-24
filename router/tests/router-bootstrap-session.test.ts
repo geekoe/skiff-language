@@ -47,13 +47,18 @@ describe('Router runtime bootstrap session', () => {
         'artifactsPath: ../shared/artifacts',
         'serviceDb:',
         '  mongoUrl: mongodb://mongo.internal:27017/skiff',
+        'http:',
+        '  maxRequestBytes: 1048576',
+        '  maxResponseBytes: 2097152',
         ''
       ].join('\n')
     );
 
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
       artifactsPath: resolve(dir, 'shared/artifacts'),
-      serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' }
+      serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
+      httpMaxRequestBytes: 1048576,
+      httpMaxResponseBytes: 2097152
     });
   });
 
@@ -66,7 +71,10 @@ describe('Router runtime bootstrap session', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-bootstrap-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, `${lines.join('\n')}\n`);
+    await writeFile(
+      configPath,
+      `${lines.join('\n')}\nhttp:\n  maxRequestBytes: 1048576\n  maxResponseBytes: 2097152\n`
+    );
     await expect(loadRouterConfig(configPath)).rejects.toThrow(/must be a non-empty string/);
   });
 
@@ -76,7 +84,8 @@ describe('Router runtime bootstrap session', () => {
       registry,
       bootstrap: {
         artifactsPath: '/srv/skiff/artifacts',
-        serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' }
+        serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
+        http: { maxResponseBytes: 2097152 }
       }
     });
     endpoints.push(endpoint);
@@ -96,7 +105,8 @@ describe('Router runtime bootstrap session', () => {
         schemaVersion: 'skiff-runtime-frame-v1',
         type: 'router.bootstrap',
         artifactsPath: '/srv/skiff/artifacts',
-        serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' }
+        serviceDb: { mongoUrl: 'mongodb://mongo.internal:27017/skiff' },
+        http: { maxResponseBytes: 2097152 }
       }
     ]);
 

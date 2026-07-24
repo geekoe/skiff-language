@@ -127,6 +127,46 @@ describe('RuntimeAssembly HTTP serverStream ingress', () => {
       backpressureCancels: 0
     });
   });
+
+  it('enforces maxResponseBytes cumulatively across streaming chunks', async () => {
+    const fixture = await createFixture({ maxResponseBytes: 3 });
+    const response = sendHttp(fixture.url, Buffer.alloc(0));
+    const requestFrame = decodeBinaryFrame(await nextBinaryMessage(fixture.runtime));
+    const requestId = String(requestFrame.header.requestId);
+
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.start',
+      requestId,
+      httpResponse: { status: 200, headers: [] }
+    }));
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.chunk',
+      requestId,
+      seq: 0
+    }, Buffer.from([1, 2])));
+    const cancelFrame = nextBinaryMessage(fixture.runtime);
+    fixture.runtime.send(encodeRuntimeFrame({
+      schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+      type: 'response.chunk',
+      requestId,
+      seq: 1
+    }, Buffer.from([3, 4])));
+
+    await expect(response).resolves.toMatchObject({
+      status: 200,
+      body: Buffer.from([1, 2])
+    });
+    expect(decodeBinaryFrame(await cancelFrame).header).toMatchObject({
+      type: 'request.cancel',
+      requestId
+    });
+    expect(fixture.dispatcher.pendingLifecycleCounters()).toEqual({
+      pendingUnary: 0,
+      pendingStream: 0
+    });
+  });
 });
 
 interface StreamFixture {
@@ -138,7 +178,9 @@ interface StreamFixture {
   close(): Promise<void>;
 }
 
-async function createFixture(): Promise<StreamFixture> {
+async function createFixture(
+  limits: { maxRequestBytes?: number; maxResponseBytes?: number } = {}
+): Promise<StreamFixture> {
   const snapshots = new RouterActiveAssemblySnapshotStore();
   snapshots.replace({
     environment: 'test',
@@ -152,7 +194,8 @@ async function createFixture(): Promise<StreamFixture> {
     assemblyRegistry,
     bootstrap: {
       artifactsPath: '/tmp/skiff-test-artifacts',
-      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' },
+      http: { maxResponseBytes: 67108864 }
     }
   });
   const dispatcher = new RuntimeDispatcher({
@@ -165,6 +208,8 @@ async function createFixture(): Promise<StreamFixture> {
     snapshots,
     dispatcher,
     port: 0,
+    maxRequestBytes: limits.maxRequestBytes ?? 67108864,
+    maxResponseBytes: limits.maxResponseBytes ?? 67108864,
     requestTimeoutMs: 1_000
   });
   const gatewayAddress = await gateway.listen();

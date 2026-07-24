@@ -97,7 +97,9 @@ async function listenHttp() {
   const gateway = new AssemblyHttpGateway({
     snapshots: snapshotStore(),
     dispatcher: fakeDispatcher(),
-    port: 0
+    port: 0,
+    maxRequestBytes: 67108864,
+    maxResponseBytes: 67108864
   });
   const listen = await gateway.listen();
   return { gateway, url: listen.url };

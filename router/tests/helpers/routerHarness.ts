@@ -161,6 +161,7 @@ export class RouterHarness {
       manifest: this.manifest,
       dispatcher: this.dispatcher,
       port: 0,
+      maxRequestBytes: 64 * 1024 * 1024,
       requestTimeoutMs: 2000
     };
     if (input.activationByServiceOperation) {

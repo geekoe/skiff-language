@@ -7,6 +7,7 @@ import {
   TELEMETRY_PROTOCOL,
   TELEMETRY_TOPICS,
   type FileBackendControlConfig,
+  type RouterBootstrapEnvelope,
   type RuntimeServiceDbConfigInput,
   type TelemetryControlConfig,
   type TelemetryTopic
@@ -27,7 +28,8 @@ export interface RouterConfig {
   devReload?: boolean;
   environment?: string;
   host: string;
-  httpBodyLimitBytes?: number;
+  httpMaxRequestBytes: number;
+  httpMaxResponseBytes: number;
   httpPort: number;
   identityCliPath?: string;
   manifests: string[];
@@ -48,7 +50,8 @@ export interface RouterConfigOverrides {
   devReload?: boolean;
   environment?: string;
   host?: string;
-  httpBodyLimitBytes?: string;
+  httpMaxRequestBytes?: string;
+  httpMaxResponseBytes?: string;
   httpPort?: string;
   identityCliPath?: string;
   manifest?: string;
@@ -60,6 +63,16 @@ export interface RouterConfigOverrides {
   websocketPath?: string;
 }
 
+export function runtimeBootstrapForRouterConfig(
+  config: RouterConfig
+): Omit<RouterBootstrapEnvelope, 'type'> {
+  return {
+    artifactsPath: config.artifactsPath,
+    serviceDb: config.serviceDb,
+    http: { maxResponseBytes: config.httpMaxResponseBytes }
+  };
+}
+
 interface RawRouterConfig {
   artifactsPath?: unknown;
   artifactRoots?: unknown;
@@ -69,6 +82,8 @@ interface RawRouterConfig {
   hosts?: unknown;
   http?: {
     bodyLimitBytes?: unknown;
+    maxRequestBytes?: unknown;
+    maxResponseBytes?: unknown;
     port?: unknown;
   };
   httpPort?: unknown;
@@ -115,6 +130,12 @@ export async function loadRouterConfig(
   }
 
   const raw = parsed as RawRouterConfig;
+  if (
+    raw.http !== undefined &&
+    Object.prototype.hasOwnProperty.call(raw.http, 'bodyLimitBytes')
+  ) {
+    throw new Error('router config http.bodyLimitBytes is no longer supported');
+  }
   const configDir = dirname(absoluteConfigPath);
   const manifests = readManifests(overrides.manifest ?? raw.manifests ?? raw.manifest);
   rejectRemovedArtifactRootConfig(raw);
@@ -143,6 +164,14 @@ export async function loadRouterConfig(
   const config: RouterConfig = {
     artifactsPath,
     host: readString(overrides.host ?? raw.host, 'host', '127.0.0.1'),
+    httpMaxRequestBytes: readRequiredPositiveInteger(
+      overrides.httpMaxRequestBytes ?? raw.http?.maxRequestBytes,
+      'http.maxRequestBytes'
+    ),
+    httpMaxResponseBytes: readRequiredPositiveInteger(
+      overrides.httpMaxResponseBytes ?? raw.http?.maxResponseBytes,
+      'http.maxResponseBytes'
+    ),
     httpPort: readPort(overrides.httpPort ?? raw.httpPort ?? raw.http?.port, 'http.port', 4000),
     manifests: manifests.map((manifest) => resolveConfigPath(configDir, manifest)),
     profile,
@@ -184,13 +213,6 @@ export async function loadRouterConfig(
   }
   if (releaseMode !== undefined) {
     config.releaseMode = releaseMode;
-  }
-  const httpBodyLimitBytes = readOptionalPositiveInteger(
-    overrides.httpBodyLimitBytes ?? raw.http?.bodyLimitBytes,
-    'http.bodyLimitBytes'
-  );
-  if (httpBodyLimitBytes !== undefined) {
-    config.httpBodyLimitBytes = httpBodyLimitBytes;
   }
   if (identityCliPath !== undefined) {
     config.identityCliPath = identityCliPath;
@@ -577,7 +599,7 @@ function readOptionalPositiveInteger(value: unknown, name: string): number | und
 
 function readRequiredPositiveInteger(value: unknown, name: string): number {
   const numberValue = typeof value === 'string' ? Number(value) : value;
-  if (!Number.isInteger(numberValue) || Number(numberValue) <= 0) {
+  if (!Number.isSafeInteger(numberValue) || Number(numberValue) <= 0) {
     throw new Error(`router config ${name} must be a positive integer`);
   }
   return Number(numberValue);

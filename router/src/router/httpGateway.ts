@@ -48,7 +48,6 @@ export { DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS };
 export type { HttpStreamLifecycleCounters };
 
 const CORS_ALLOWED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
-export const DEFAULT_HTTP_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_CORS_ALLOWED_HEADERS = [
   'accept',
   'authorization',
@@ -68,7 +67,7 @@ export interface HttpGatewayOptions {
   snapshotStore?: RouterActiveSnapshotStore;
   host?: string;
   port: number;
-  bodyLimitBytes?: number;
+  maxRequestBytes: number;
   backpressureDrainTimeoutMs?: number;
   requestTimeoutMs?: number;
   rewrite?: readonly RouterRewriteRule[];
@@ -138,7 +137,7 @@ interface HttpRequestTelemetryContext {
 
 export class HttpGateway {
   private readonly backpressureDrainTimeoutMs: number;
-  private readonly bodyLimitBytes: number;
+  private readonly maxRequestBytes: number;
   private readonly requestTimeoutMs: number;
   private readonly snapshotStore: RouterActiveSnapshotStore;
   private readonly streamCounters: HttpStreamLifecycleCounters = {
@@ -164,7 +163,7 @@ export class HttpGateway {
   constructor(private readonly options: HttpGatewayOptions) {
     this.backpressureDrainTimeoutMs =
       options.backpressureDrainTimeoutMs ?? DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS;
-    this.bodyLimitBytes = options.bodyLimitBytes ?? DEFAULT_HTTP_BODY_LIMIT_BYTES;
+    this.maxRequestBytes = options.maxRequestBytes;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
     this.snapshotStore =
       options.snapshotStore ??
@@ -578,9 +577,9 @@ export class HttpGateway {
     for await (const chunk of request) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       size += buffer.byteLength;
-      if (size > this.bodyLimitBytes) {
+      if (size > this.maxRequestBytes) {
         throw new DecodeError('request body is too large', {
-          limitBytes: this.bodyLimitBytes
+          limitBytes: this.maxRequestBytes
         });
       }
       chunks.push(buffer);

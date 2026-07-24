@@ -36,7 +36,8 @@ export interface AssemblyHttpGatewayOptions {
   dispatcher: RuntimeDispatcher;
   host?: string;
   port: number;
-  bodyLimitBytes?: number;
+  maxRequestBytes: number;
+  maxResponseBytes: number;
   backpressureDrainTimeoutMs?: number;
   requestTimeoutMs?: number;
 }
@@ -111,7 +112,7 @@ export class AssemblyHttpGateway {
   ): Promise<void> {
     const snapshot = this.options.snapshots.get();
     const selection = selectHttpIngress(snapshot, request);
-    const body = await readRequestBody(request, this.options.bodyLimitBytes ?? 64 * 1024 * 1024);
+    const body = await readRequestBody(request, this.options.maxRequestBytes);
     const timeoutMs = this.options.requestTimeoutMs ?? 120_000;
     const requestId = randomUUID();
     const clientDisconnect = clientDisconnectSignal(request, response);
@@ -131,6 +132,7 @@ export class AssemblyHttpGateway {
             this.options.backpressureDrainTimeoutMs ??
             DEFAULT_HTTP_BACKPRESSURE_DRAIN_TIMEOUT_MS,
           counters: this.streamCounters,
+          maxResponseBytes: this.options.maxResponseBytes,
           writeHeaders: writeResponseHeaders
         });
         try {
@@ -180,6 +182,13 @@ export class AssemblyHttpGateway {
         writeResponseHeaders(response, runtimeResponse.header.httpResponse.headers);
       } else {
         response.statusCode = 200;
+      }
+      if (runtimeResponse.payloadBytes.byteLength > this.options.maxResponseBytes) {
+        throw new GatewayError(
+          502,
+          'ResponseTooLarge',
+          `runtime response exceeds ${this.options.maxResponseBytes} bytes`
+        );
       }
       response.end(Buffer.from(runtimeResponse.payloadBytes));
     } finally {

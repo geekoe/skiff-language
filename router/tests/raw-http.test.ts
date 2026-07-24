@@ -16,7 +16,6 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type RuntimeRegisterEnvelope
 } from '../src/protocol/envelope.js';
-import { DEFAULT_HTTP_BODY_LIMIT_BYTES } from '../src/router/httpGateway.js';
 import {
   DEFAULT_TEST_BUILD_ID,
   loadHttpRouteManifest,
@@ -337,7 +336,7 @@ describe('router raw HTTP gateway', () => {
     );
   });
 
-  it('allows requests above the old 1 MiB limit with the default HTTP body limit', async () => {
+  it('allows requests within the configured HTTP request ceiling', async () => {
     const manifest = loadRawHttpManifest();
     const harness = await RouterHarness.rawHttp({ manifest });
     const runtime = await harness.registerRuntime({
@@ -359,7 +358,6 @@ describe('router raw HTTP gateway', () => {
     });
     const [frame] = await framesPromise;
 
-    expect(DEFAULT_HTTP_BODY_LIMIT_BYTES).toBe(64 * 1024 * 1024);
     expect(response.status).toBe(204);
     expect(frame!.payloadBytes.byteLength).toBe(body.byteLength);
     expect(frame!.payloadBytes[0]).toBe(65);
