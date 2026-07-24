@@ -821,6 +821,38 @@ fn date_from_epoch_milliseconds_wrapper_uses_exact_native_semantics() {
 }
 
 #[test]
+fn bytes_from_base64_wrapper_uses_exact_native_semantics() {
+    let model = analyze(
+        r#"
+            function jwtPayload(value: string) -> bytes {
+              return bytes.fromBase64(value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "jwtPayload"), no_effects());
+    let CallableProvenanceSummary::Analyzed {
+        return_origins,
+        throw_origins,
+        escape_lanes,
+    } = provenance(&model, "jwtPayload")
+    else {
+        panic!("Base64 decoder wrapper should retain exact native provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+    assert!(throw_origins.is_empty());
+    assert!(escape_lanes.is_empty());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::NativeFunction { binding_key }
+                if binding_key == "core.bytes.fromBase64"
+        )
+    }));
+}
+
+#[test]
 fn exact_http_request_natives_transfer_through_local_helpers() {
     let model = analyze(
         r#"

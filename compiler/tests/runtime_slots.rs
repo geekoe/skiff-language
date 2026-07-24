@@ -264,6 +264,81 @@ fn shared_native_alias_callees_win_over_builtin_roots() {
 }
 
 #[test]
+fn bytes_from_base64_lowers_to_exact_native_binding() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function jwtPayload(value: string) -> bytes {
+                return bytes.fromBase64(value)
+            }
+        "#,
+        "internal/base64.skiff",
+        "internal.base64",
+    )
+    .expect("Base64 decoder fixture should compile");
+    let artifact_value = artifact.value();
+    let callable = executable_entry(&artifact_value, "jwtPayload");
+    let calls = call_exprs(callable);
+
+    assert!(
+        has_native_call(
+            &calls,
+            "std.bytes",
+            "fromBase64",
+            "core.bytes.fromBase64"
+        ),
+        "bytes.fromBase64 should lower through the exact canonical native binding"
+    );
+
+    for (name, source, expected) in [
+        (
+            "missing_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64("YQ==", "Yg==")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run() -> bytes {
+                    return bytes.fromBase64(1)
+                }
+            "#,
+            "call `bytes.fromBase64` argument 1",
+        ),
+        (
+            "wrong_return",
+            r#"
+                function run() -> string {
+                    return bytes.fromBase64("YQ==")
+                }
+            "#,
+            "return type mismatch",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/base64_{name}.skiff"),
+            format!("internal.base64_{name}"),
+        )
+        .expect_err("invalid bytes.fromBase64 call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn std_http_json_infers_native_type_arg_from_record_payload() {
     let artifact = compile_package_file_ir(
         r#"
