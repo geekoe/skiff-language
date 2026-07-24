@@ -59,7 +59,8 @@ pub fn compile_package(
         .collect::<Vec<_>>();
     let projection = skiff_compiler_compiled::projection_input::build_projection_input(&compiled)
         .map_err(projection_input_error)?
-        .with_resources(resource_projection_inputs(&input.package.resources));
+        .with_resources(resource_projection_inputs(&input.package.resources))
+        .with_state_requirements(input.package.manifest.state.values().cloned().collect());
     let package_requirements = complete_package_requirement_closure(
         &package_id,
         declared_package_requirements,

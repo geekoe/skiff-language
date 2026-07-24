@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryCallableProjection, FileIrRef, PackageArtifact, PackageLocalAbiSymbol,
-    PublicationResourceRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PublicationResourceRef, StateBindingKind, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -101,6 +101,27 @@ fn validate_requirements(artifact: &PackageArtifact) -> Result<()> {
                 requirement.alias
             ));
         }
+    }
+    let mut state_keys = BTreeSet::new();
+    let mut database_count = 0;
+    for requirement in &artifact.runtime_requirements.state {
+        if requirement.key.trim().is_empty() {
+            return invalid_artifact("package runtime state requirement has an empty key");
+        }
+        if !state_keys.insert(requirement.key.as_str()) {
+            return invalid_artifact(format!(
+                "duplicate package runtime state requirement {}",
+                requirement.key
+            ));
+        }
+        if requirement.kind == StateBindingKind::Database {
+            database_count += 1;
+        }
+    }
+    if database_count > 1 {
+        return invalid_artifact(
+            "package runtime requirements contain more than one database state",
+        );
     }
     Ok(())
 }

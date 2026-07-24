@@ -569,6 +569,7 @@ mod tests {
             service_requirements: Vec::new(),
             runtime_requirements: PackageRuntimeRequirements {
                 config: Vec::new(),
+                state: Vec::new(),
                 resources: Vec::new(),
                 runtime_capabilities: Vec::new(),
             },

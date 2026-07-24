@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::compile_identity::{
-    ContractOperationId, PackageLocalAbiIdentity, ServiceProtocolIdentity,
+use crate::{
+    compile_identity::{ContractOperationId, PackageLocalAbiIdentity, ServiceProtocolIdentity},
+    StateBindingKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +56,13 @@ pub struct PackageResourceRequirement {
     pub capability: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PackageStateRequirement {
+    pub key: String,
+    pub kind: StateBindingKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageRuntimeCapabilityRequirement {
@@ -66,6 +74,7 @@ pub struct PackageRuntimeCapabilityRequirement {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageRuntimeRequirements {
     pub config: Vec<PackageConfigRequirement>,
+    pub state: Vec<PackageStateRequirement>,
     pub resources: Vec<PackageResourceRequirement>,
     pub runtime_capabilities: Vec<PackageRuntimeCapabilityRequirement>,
 }

@@ -62,6 +62,8 @@ pub fn project_compiled_package_artifact(
     let runtime_requirements = project_runtime_requirements(
         input.package_id,
         input.projection.source().config_requirements(),
+        input.projection.state_requirements(),
+        input.projection.lowering(),
     )?;
     let projected = project_package_artifact_facts(ProjectedPackageFacts {
         package_id: input.package_id,
@@ -219,6 +221,10 @@ fn normalize_artifact_lists(artifact: &mut PackageArtifact) {
         .runtime_requirements
         .config
         .sort_by(|left, right| left.path.cmp(&right.path));
+    artifact
+        .runtime_requirements
+        .state
+        .sort_by(|left, right| left.key.cmp(&right.key));
     artifact
         .runtime_requirements
         .resources

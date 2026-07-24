@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use super::{
     is_enabled_standard_package_id, is_reserved_package_alias, is_standard_package_id,
@@ -15,6 +18,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::Value;
 use serde_yaml::Value as YamlValue;
+use skiff_artifact_model::{PackageStateRequirement, StateBindingKind};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,11 +33,19 @@ pub(super) struct RawPackageManifest {
     services: Vec<PackageDependency>,
     #[serde(default)]
     resources: Vec<PublicationResourceSpec>,
+    #[serde(default)]
+    state: BTreeMap<String, RawPackageStateRequirement>,
     requires: Option<RawPackageRequires>,
     dependencies: Option<RawPackageDependencies>,
     #[serde(default)]
     #[serde(rename = "valuesRequirements")]
     values_requirements: Option<Vec<Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPackageStateRequirement {
+    kind: StateBindingKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +99,20 @@ pub(super) fn validate_package_manifest(
     }
     validate_removed_requires(raw.requires, &mut violations);
     collect_publication_resource_spec_violations(&raw.resources, &mut violations);
+    let mut state = BTreeMap::new();
+    for (key, requirement) in raw.state {
+        if key.trim().is_empty() {
+            violations.push("state requirement key cannot be empty".to_string());
+            continue;
+        }
+        state.insert(
+            key.clone(),
+            PackageStateRequirement {
+                key,
+                kind: requirement.kind,
+            },
+        );
+    }
     if raw.values_requirements.is_some() {
         violations.push(
             "valuesRequirements has been removed; use config.require<T>(path) or config.optional<T>(path) in Skiff source".to_string(),
@@ -196,7 +222,8 @@ pub(super) fn validate_package_manifest(
         dependencies,
         raw.resources,
         ManifestProvenance::file(path, owner),
-    );
+    )
+    .with_state(state);
     Ok(PackageManifest::new(publication, services))
 }
 

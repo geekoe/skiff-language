@@ -8,7 +8,8 @@ use skiff_artifact_model::{
     package_schema_descriptor_refs, AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr,
     CallableSemanticFacts, ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact,
     PackageBuildId, PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord, TypeRefIr,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageStateRequirement, TypeRefIr,
+    PackageSchemaIndexRef,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -294,6 +295,7 @@ pub struct ProjectionInput {
     lowering: ProjectionLoweringFacts,
     callable_signatures: ProjectionPackageCallableSignatureFacts,
     resources: Vec<PublicationResourceProjectionInput>,
+    state_requirements: Vec<PackageStateRequirement>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -316,6 +318,7 @@ impl ProjectionInput {
             lowering,
             callable_signatures,
             resources: Vec::new(),
+            state_requirements: Vec::new(),
         }
     }
 
@@ -334,11 +337,20 @@ impl ProjectionInput {
             lowering,
             callable_signatures,
             resources,
+            state_requirements: Vec::new(),
         }
     }
 
     pub fn with_resources(mut self, resources: Vec<PublicationResourceProjectionInput>) -> Self {
         self.resources = resources;
+        self
+    }
+
+    pub fn with_state_requirements(
+        mut self,
+        state_requirements: Vec<PackageStateRequirement>,
+    ) -> Self {
+        self.state_requirements = state_requirements;
         self
     }
 
@@ -370,6 +382,10 @@ impl<'a> ProjectionView<'a> {
 
     pub fn resources(&self) -> &'a [PublicationResourceProjectionInput] {
         &self.input.resources
+    }
+
+    pub fn state_requirements(&self) -> &'a [PackageStateRequirement] {
+        &self.input.state_requirements
     }
 }
 
@@ -1236,6 +1252,7 @@ mod resolved_package_schema_tests {
             "serviceRequirements": [],
             "runtimeRequirements": {
                 "config": [],
+                "state": [],
                 "resources": [],
                 "runtimeCapabilities": []
             },

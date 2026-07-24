@@ -684,6 +684,12 @@ service/package/compiler/deployment artifact，也不由runtime文件配置、�
 `CanonicalArtifactStore`只作为
 local/dev/CLI backend，不参与production registry，也不与Platform DB dual-write。
 
+State requirement由package代码owner在`package.yml`中以`state.<requirement-key>.kind`声明，并进入
+`PackageArtifact.runtimeRequirements.state`；database requirement必须与同一次package lowering产生的
+DB schema事实精确对应。物理`namespace`不属于package声明，只能由`config.<environment>.yml`中同key、同kind
+的deployment binding提供。Compiler、deployment或Runtime都不得从package/service名称、固定key或namespace
+反推state requirement。
+
 Router coordinator仍是environment activation prepare/commit/abort的唯一事务编排者。Router进程直接使用
 自己配置的MongoDB连接持久化activation state；状态CAS与Platform audit在同一事务中追加。不得为了复用其它
 语言实现而要求外部activation backend executable、子进程或NDJSON transport。registry service不能直接写

@@ -277,7 +277,7 @@ fn package_with_source(name: &str, source: &str) -> TestDir {
     let temp = TestDir::new("skiff-compiler", name);
     temp.write(
         "package.yml",
-        "id: example.com/db-fixture\nversion: 1.0.0\n",
+        "id: example.com/db-fixture\nversion: 1.0.0\nstate:\n  database:\n    kind: database\n",
     );
     temp.write("api.yml", "");
     temp.write("main.skiff", source);

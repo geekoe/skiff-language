@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryConfigRequirement, BoundaryStateKind, PackageArtifact, PackageConfigRequirement,
-    PackageResourceRequirement, ServiceDeploymentInput, StateBindingKind,
+    PackageResourceRequirement, PackageStateRequirement, ServiceDeploymentInput, StateBindingKind,
 };
 
 use super::{
@@ -23,12 +23,16 @@ pub(super) fn validate_requirement_bindings(
 
     let implementation_requirements = package_runtime_requirements(closure.implementation(input))?;
     let mut config = BTreeMap::<String, PackageConfigRequirement>::new();
+    let mut states = BTreeMap::<String, StateBindingKind>::new();
     let mut resources = BTreeMap::<String, PackageResourceRequirement>::new();
     let mut capabilities = BTreeMap::<String, String>::new();
     for artifact in closure.artifacts() {
         let package_requirements = package_runtime_requirements(artifact)?;
         for requirement in package_requirements.config.values() {
             merge_config_requirement(&mut config, requirement)?;
+        }
+        for requirement in package_requirements.state.values() {
+            merge_state_requirement(&mut states, requirement)?;
         }
         for requirement in package_requirements.resources.values() {
             merge_resource_requirement(&mut resources, requirement)?;
@@ -52,12 +56,12 @@ pub(super) fn validate_requirement_bindings(
         }
     }
 
-    let mut states = BTreeMap::new();
     let mut native_capabilities = BTreeSet::new();
     for callable in selected {
         validate_selected_requirements(
             callable,
             &implementation_requirements.config,
+            &implementation_requirements.state,
             &implementation_requirements.resources,
             &implementation_requirements.capabilities,
             &mut states,
@@ -73,6 +77,7 @@ pub(super) fn validate_requirement_bindings(
 
 struct RuntimeRequirements {
     config: BTreeMap<String, PackageConfigRequirement>,
+    state: BTreeMap<String, PackageStateRequirement>,
     resources: BTreeMap<String, PackageResourceRequirement>,
     capabilities: BTreeMap<String, String>,
 }
@@ -90,6 +95,19 @@ fn package_runtime_requirements(
                 artifact,
                 "config",
                 &requirement.path,
+            ));
+        }
+    }
+    let mut state = BTreeMap::new();
+    for requirement in &artifact.runtime_requirements.state {
+        if state
+            .insert(requirement.key.clone(), requirement.clone())
+            .is_some()
+        {
+            return Err(repeated_package_requirement(
+                artifact,
+                "state",
+                &requirement.key,
             ));
         }
     }
@@ -124,9 +142,33 @@ fn package_runtime_requirements(
     }
     Ok(RuntimeRequirements {
         config,
+        state,
         resources,
         capabilities,
     })
+}
+
+fn merge_state_requirement(
+    states: &mut BTreeMap<String, StateBindingKind>,
+    requirement: &PackageStateRequirement,
+) -> ProjectionResult<()> {
+    match states.get(&requirement.key) {
+        Some(existing) if existing != &requirement.kind => {
+            Err(ProjectionError::ConflictingRequirement {
+                kind: "state",
+                key: requirement.key.clone(),
+                message: format!(
+                    "required kinds {existing:?} and {:?} differ",
+                    requirement.kind
+                ),
+            })
+        }
+        Some(_) => Ok(()),
+        None => {
+            states.insert(requirement.key.clone(), requirement.kind);
+            Ok(())
+        }
+    }
 }
 
 fn repeated_package_requirement(
@@ -196,6 +238,7 @@ fn merge_resource_requirement(
 fn validate_selected_requirements(
     callable: &SelectedCallable<'_>,
     config: &BTreeMap<String, PackageConfigRequirement>,
+    declared_states: &BTreeMap<String, PackageStateRequirement>,
     resources: &BTreeMap<String, PackageResourceRequirement>,
     capabilities: &BTreeMap<String, String>,
     states: &mut BTreeMap<String, StateBindingKind>,
@@ -233,13 +276,38 @@ fn validate_selected_requirements(
                     });
                 }
             }
-            BoundaryStateKind::Database | BoundaryStateKind::Actor | BoundaryStateKind::Queue => {
+            BoundaryStateKind::Database
+            | BoundaryStateKind::Redis
+            | BoundaryStateKind::Actor
+            | BoundaryStateKind::Queue => {
                 let kind = match requirement.kind {
                     BoundaryStateKind::Database => StateBindingKind::Database,
+                    BoundaryStateKind::Redis => StateBindingKind::Redis,
                     BoundaryStateKind::Actor => StateBindingKind::Actor,
                     BoundaryStateKind::Queue => StateBindingKind::Queue,
                     BoundaryStateKind::ExternalResource => unreachable!(),
                 };
+                match declared_states.get(&requirement.key) {
+                    Some(declared) if declared.kind == kind => {}
+                    Some(declared) => {
+                        return Err(ProjectionError::CallableFactsMismatch {
+                            callable_id: callable.callable_id.clone(),
+                            message: format!(
+                                "state {} kind {:?} does not match package runtime requirement {:?}",
+                                requirement.key, kind, declared.kind
+                            ),
+                        });
+                    }
+                    None => {
+                        return Err(ProjectionError::CallableFactsMismatch {
+                            callable_id: callable.callable_id.clone(),
+                            message: format!(
+                                "state {} is absent from package runtime requirements",
+                                requirement.key
+                            ),
+                        });
+                    }
+                }
                 match states.get(&requirement.key) {
                     Some(existing) if existing != &kind => {
                         return Err(ProjectionError::ConflictingRequirement {

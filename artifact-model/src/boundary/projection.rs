@@ -25,6 +25,7 @@ pub struct BoundaryStateRequirement {
 #[serde(rename_all = "camelCase")]
 pub enum BoundaryStateKind {
     Database,
+    Redis,
     Actor,
     Queue,
     ExternalResource,

@@ -319,6 +319,7 @@ pub(super) fn runtime_requirements(capability: &str) -> PackageRuntimeRequiremen
             value_type: "string".to_string(),
             required: true,
         }],
+        state: Vec::new(),
         resources: vec![PackageResourceRequirement {
             key: "database".to_string(),
             capability: "mongodb".to_string(),

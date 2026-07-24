@@ -87,8 +87,8 @@ pub use compile_identity::{
 };
 pub use compile_requirements::{
     ContractRequirement, PackageConfigRequirement, PackageRequirement, PackageResourceRequirement,
-    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, ServiceCallRef,
-    ServiceRequirement,
+    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageStateRequirement,
+    ServiceCallRef, ServiceRequirement,
 };
 pub use config::{
     config_shape_from_package_requirements, ConfigMetadataFacts, ConfigShape, ConfigShapeEntry,

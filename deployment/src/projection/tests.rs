@@ -176,6 +176,10 @@ impl ProjectionFixture {
                     value_type: "string".to_string(),
                     required: true,
                 }],
+                state: vec![PackageStateRequirement {
+                    key: "echo-state".to_string(),
+                    kind: StateBindingKind::Database,
+                }],
                 resources: vec![PackageResourceRequirement {
                     key: "echo-db".to_string(),
                     capability: "mongodb".to_string(),
@@ -781,6 +785,24 @@ fn required_activation_bindings_and_protocol_identity_are_exact() {
     ));
 
     let mut fixture = ProjectionFixture::new();
+    fixture.input.state_bindings[0].kind = StateBindingKind::Queue;
+    assert!(matches!(
+        fixture.project(),
+        Err(ProjectionError::RequirementBindingMismatch { kind: "state", .. })
+    ));
+
+    let mut fixture = ProjectionFixture::new();
+    fixture.input.state_bindings.push(StateBinding {
+        requirement_key: "unexpected".to_string(),
+        kind: StateBindingKind::Database,
+        namespace: "unexpected".to_string(),
+    });
+    assert!(matches!(
+        fixture.project(),
+        Err(ProjectionError::ExtraRequirementBinding { kind: "state", .. })
+    ));
+
+    let mut fixture = ProjectionFixture::new();
     fixture.input.resource_bindings.clear();
     assert!(matches!(
         fixture.project(),
@@ -1027,6 +1049,7 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements {
             config: Vec::new(),
+            state: Vec::new(),
             resources: Vec::new(),
             runtime_capabilities: Vec::new(),
         },

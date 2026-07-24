@@ -913,6 +913,42 @@ resources:
     );
 }
 
+#[test]
+fn parses_typed_package_state_requirements_without_deployment_namespace() {
+    let manifest = read_temp_manifest(
+        "state-requirement",
+        r#"
+id: example.com/app
+version: 1.0.0
+state:
+  registry-store:
+    kind: database
+"#,
+    )
+    .unwrap();
+    let requirement = &manifest.state["registry-store"];
+    assert_eq!(requirement.key, "registry-store");
+    assert_eq!(
+        requirement.kind,
+        skiff_artifact_model::StateBindingKind::Database
+    );
+
+    let error = read_temp_manifest(
+        "state-requirement-namespace",
+        r#"
+id: example.com/app
+version: 1.0.0
+state:
+  registry-store:
+    kind: database
+    namespace: deployment-owned
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `namespace`"), "{error}");
+}
+
 fn read_temp_manifest(name: &str, text: &str) -> Result<PackageManifest, PackageConfigError> {
     let temp = temp_dir(name);
     let manifest_path = temp.join("package.yml");

@@ -152,7 +152,12 @@ mod tests {
             "packageRequirements": [],
             "contractRequirements": [],
             "serviceRequirements": [],
-            "runtimeRequirements": { "config": [], "resources": [], "runtimeCapabilities": [] },
+            "runtimeRequirements": {
+                "config": [],
+                "state": [],
+                "resources": [],
+                "runtimeCapabilities": []
+            },
             "callableSemanticFacts": {},
             "boundaryProjections": {},
             "serviceCallRefs": []
