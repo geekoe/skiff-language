@@ -47,11 +47,15 @@ test('isolated config is rooted in its temporary dev home and dynamic ports', ()
     devHome: '/tmp/skiff-owned/dev-home',
     cargoTarget: '/tmp/skiff-owned/cargo-target',
     basePort: 46100,
+    mongoPort: 46103,
   });
 
   assert.match(config, /devHome: "\/tmp\/skiff-owned\/dev-home"/);
   assert.match(config, /cargoTargetDir: "\/tmp\/skiff-owned\/cargo-target"/);
   assert.match(config, /base: 46100/);
+  assert.match(config, /mongo: 46103/);
+  assert.match(config, /mongo: managed/);
+  assert.doesNotMatch(config, /27017/);
   assert.match(config, /environment: "skiff-test"/);
   assert.doesNotMatch(config, /\.skiff-instance/);
   assert.doesNotMatch(config, /__skiff\/reload-artifacts/);

@@ -7,7 +7,6 @@ import { cargoTargetDir } from './cargo-target-dir.mjs';
 import {
   isolatedInstanceOperations,
   isolatedTestInstanceConfigText,
-  isolatedTestInstanceConstants,
   isolatedTestRunnerEnvironment,
 } from './isolated-test-runtime-instance.mjs';
 import { assertPortsClosed, leaseConsecutiveLocalPorts } from './local-port-lease.mjs';
@@ -141,10 +140,12 @@ async function startIsolatedTestRuntime({
     const artifactRoot = join(devHome, 'artifacts');
     const basePort = portLease.ports[0];
     const controlPort = basePort + 1;
+    const mongoPort = portLease.ports[3];
     const config = isolatedTestInstanceConfigText({
       devHome,
       cargoTarget,
       basePort,
+      mongoPort,
       environment,
     });
     configOwnershipRequired = true;
@@ -285,7 +286,7 @@ function isolatedRuntimeOperations(overrides, skiffRoot, baseEnv) {
     leasePorts: () => leaseConsecutiveLocalPorts({
       rangeStart: ISOLATED_PORT_MIN,
       rangeEnd: ISOLATED_PORT_MAX,
-      count: 3,
+      count: 4,
     }),
     makeTempRoot: () => mkdtemp(join(tmpdir(), 'skiff-test-runtime-')),
     claimWorkspace: claimIsolatedTestWorkspace,
@@ -317,5 +318,4 @@ async function settleCleanupStep(errors, step, operation) {
 export const isolatedTestRuntimeConstants = {
   portMin: ISOLATED_PORT_MIN,
   portMax: ISOLATED_PORT_MAX,
-  mongoPort: isolatedTestInstanceConstants.mongoPort,
 };

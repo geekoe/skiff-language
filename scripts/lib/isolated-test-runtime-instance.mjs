@@ -9,7 +9,6 @@ import { runOwnedCommand } from './owned-command.mjs';
 import { captureCheckedCommand } from './command-execution.mjs';
 import { assertIsolatedTestWorkspaceOwned } from './isolated-test-runtime-workspace.mjs';
 
-const STABLE_MONGO_PORT = 27017;
 const START_TIMEOUT_MS = 120_000;
 const STOP_TIMEOUT_MS = 20_000;
 
@@ -17,8 +16,12 @@ export function isolatedTestInstanceConfigText({
   devHome,
   cargoTarget,
   basePort,
+  mongoPort,
   environment = 'skiff-test',
 }) {
+  if (!Number.isSafeInteger(mongoPort) || mongoPort <= 0) {
+    throw new Error('isolated test instance mongoPort must be a positive integer');
+  }
   return [
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(cargoTarget)}`,
@@ -26,10 +29,10 @@ export function isolatedTestInstanceConfigText({
     'packageDirs:',
     'ports:',
     `  base: ${basePort}`,
-    `  mongo: ${STABLE_MONGO_PORT}`,
+    `  mongo: ${mongoPort}`,
     'components:',
     '  telemetry: disabled',
-    '  mongo: disabled',
+    '  mongo: managed',
     '  watch: disabled',
     'telemetry:',
     '  memory: true',
@@ -246,7 +249,7 @@ async function verifyInstanceStopped({ skiffRoot, ownershipReceipt, env }) {
   ], { cwd: skiffRoot, env });
   const status = JSON.parse(result.stdout);
   const active = (status.processes ?? []).filter((processStatus) =>
-    ['router', 'runtime'].includes(processStatus.name)
+    ['mongo', 'router', 'runtime'].includes(processStatus.name)
     && processStatus.category !== 'stopped');
   if (active.length > 0) {
     throw new Error(`isolated instance still owns active components: ${active.map((entry) => `${entry.name}:${entry.category}`).join(', ')}`);
@@ -284,7 +287,3 @@ function streamDiagnostic(label, value) {
 function errorMessage(error) {
   return error?.message || String(error);
 }
-
-export const isolatedTestInstanceConstants = {
-  mongoPort: STABLE_MONGO_PORT,
-};

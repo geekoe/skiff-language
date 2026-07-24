@@ -251,7 +251,7 @@ async function createOwnershipLifecycleDouble({
 
   const dependencies = {
     leasePorts: async () => ({
-      ports: [46000, 46001, 46002],
+      ports: [46000, 46001, 46002, 46003],
       release: async () => {
         actions.push('lease:release');
         await mutateOnce('after-lease');

@@ -34,13 +34,14 @@ test('isolated instance config and runner env stay inside dynamic temp boundarie
     devHome,
     cargoTarget: '/checkout/build/cargo-target',
     basePort: 46042,
+    mongoPort: 46045,
   });
   assert.match(config, /devHome: "\/tmp\/skiff-test-runtime\/instance\/dev-home"/);
   assert.match(config, /cargoTargetDir: "\/checkout\/build\/cargo-target"/);
   assert.match(config, /base: 46042/);
-  assert.match(config, /mongo: 27017/);
+  assert.match(config, /mongo: 46045/);
   assert.match(config, /telemetry: disabled/);
-  assert.match(config, /mongo: disabled/);
+  assert.match(config, /mongo: managed/);
   assert.match(config, /watch: disabled/);
   assert.doesNotMatch(config, /400[0-7]/);
 
@@ -77,11 +78,15 @@ test('isolated instance derives its ecosystem store CLI inside its owned dev-hom
       devHome,
       cargoTarget: join(root, 'checkout', 'build', 'cargo-target'),
       basePort: 46042,
+      mongoPort: 46045,
     }));
     const config = await readInstanceConfig({
       configPath,
       repoRoot: join(root, 'checkout'),
     });
+    assert.equal(config.ports.mongo, 46045);
+    assert.equal(config.components.mongo, 'managed');
+    assert.equal(config.paths.serviceDbPath, join(devHome, 'service-db'));
     assert.equal(
       config.paths.ecosystemStoreCli,
       join(
@@ -305,6 +310,8 @@ test('one absolute checkout and Cargo target flow through config, bootstrap, sup
     observed.config.includes(`cargoTargetDir: ${JSON.stringify(expectedCargoTarget)}`),
     true,
   );
+  assert.match(observed.config, /mongo: 46003/);
+  assert.doesNotMatch(observed.config, /27017/);
   assert.equal(observed.bootstrap.skiffRoot, expectedSkiffRoot);
   assert.equal(observed.bootstrap.env.CARGO_TARGET_DIR, expectedCargoTarget);
   assert.equal(observed.bootstrap.env.SKIFF_TEST_PLATFORM_SOURCE_ROOT, expectedSkiffRoot);
@@ -547,13 +554,13 @@ test('live bypass and reserved port leases preserve a foreign token replacement'
   const first = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
-    count: 3,
+    count: 4,
     leaseDir,
   });
   const second = await leaseConsecutiveLocalPorts({
     rangeStart: isolatedTestRuntimeConstants.portMin,
     rangeEnd: isolatedTestRuntimeConstants.portMax,
-    count: 3,
+    count: 4,
     leaseDir,
   });
   try {
@@ -597,7 +604,7 @@ function lifecycleDouble(overrides = {}) {
     leasePorts: async () => {
       actions.push('lease');
       return {
-        ports: [46000, 46001, 46002],
+        ports: [46000, 46001, 46002, 46003],
         release: async () => { actions.push('lease-release'); },
       };
     },
