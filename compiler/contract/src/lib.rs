@@ -10,8 +10,9 @@ pub use compile::{
 pub use definition::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 pub use error::{ContractDefinitionError, Result};
 pub use projection::{
-    project_package_api_visibility, project_service_api, ServiceApiFunction,
-    ServiceApiFunctionStatus, ServiceApiProjection, ServiceApiVisibility,
+    canonicalize_service_owned_operation_contract, project_package_api_visibility,
+    project_service_api, ServiceApiFunction, ServiceApiFunctionStatus, ServiceApiProjection,
+    ServiceApiVisibility,
 };
 
 #[cfg(test)]

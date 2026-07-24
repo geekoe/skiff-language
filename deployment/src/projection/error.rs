@@ -50,6 +50,14 @@ pub enum ProjectionError {
         reasons: Vec<BoundaryUnavailableReason>,
     },
     #[error(
+        "callable {callable_id} boundary contract for operation {operation_id} cannot be canonicalized: {message}"
+    )]
+    OperationContractCanonicalization {
+        operation_id: ContractOperationId,
+        callable_id: PackageCallableId,
+        message: String,
+    },
+    #[error(
         "callable {callable_id} boundary contract does not match operation {operation_id} descriptor"
     )]
     OperationContractMismatch {
