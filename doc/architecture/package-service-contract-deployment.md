@@ -9,12 +9,12 @@ compiler pipeline保留兼容层。
 
 ## 1. 核心结论
 
-目标模型只有四个一等对象：
+目标模型只有四个发布/运行记录：
 
 ```text
-PackageArtifact     唯一用户代码编译/发布owner的聚合产物
-ServiceContract     无代码、可独立发布的service协议
-ServiceDeployment   无源码的contract implementation与运行配置
+PackageArtifact     package源码的不可变编译产物
+ServiceContract     service package公开API的code-free boundary projection
+ServiceDeployment   工具由service package与config profile生成的不可变运行记录
 RuntimeAssembly     一组deployment及其完整依赖闭包的可执行装配
 ```
 
@@ -24,9 +24,9 @@ registry/release写入不可变artifact与更新pointer的动作名称。
 四个对象分别回答不同问题：
 
 - PackageArtifact：有哪些代码，如何在同一linked program内调用。
-- ServiceContract：service调用者可以调用什么，跨boundary的语言语义是什么。
-- ServiceDeployment：哪个package callable实现哪个contract operation，以及用什么配置、状态和
-  ingress运行。
+- ServiceContract：同一个package公开API中哪些函数可作为service调用，以及跨boundary的语言语义。
+- ServiceDeployment：工具把哪个service package build、config profile和生成的routing/resource binding
+  装配为一次不可变运行revision。
 - RuntimeAssembly：哪些deployment放在一起运行，它们的package/service依赖如何闭合。
 
 它们没有共同aggregate。可以共享canonical type、signature、operation、value-plan和identity
@@ -36,27 +36,42 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 
 以下约束是实现和演进的硬边界：
 
-1. Package是唯一用户源码与独立编译单元；service没有用户源码集合。
-2. Package compile不读取宿主deployment配置，也不依赖provider implementation package。
-3. ServiceContract先于具体implementation存在；consumer编译只依赖contract。
-4. ServiceDeployment不解析AST、不重新做type/effect分析，只消费typed PackageArtifact。
-5. package call与service call是不同语义；物理同进程不允许把service call退化成普通package call。
-6. 第一版service binding全部是`InProcessBoundary`；缺少本地provider时assembly失败，不经router
+1. Package是唯一用户源码与独立编译单元；service首先是package，只比普通package多`service.yml`和
+   `config.*.yml`。
+2. 普通package root包含`.skiff`、`package.yml`和`api.yml`；service root在此基础上增加
+   `service.yml`与零个或多个`config.*.yml`。service root不得缺少`package.yml`，也不存在开发者维护的
+   `deployment.yml`。
+3. `api.yml`是package call与service call共用的唯一公开API owner；service不得在`service.yml`中重复声明
+   type、function或interface。
+4. ServiceContract由compiler/tooling从同一份typed package API确定性投影；consumer只依赖发布后的
+   code-free projection，不读取provider实现源码。
+5. ServiceDeployment不解析AST、不重新做type/effect分析；它由工具消费typed PackageArtifact、
+   ServiceContract、`service.yml`和所选`config.*.yml`生成。
+6. package call与service call是不同语义；物理同进程不允许把service call退化成普通package call。
+7. 第一版service binding全部是`InProcessBoundary`；缺少本地provider时assembly失败，不经router
    fallback。
-7. 普通即时service call只要求linkable；跨request或持久边界才要求recoverable。
-8. runtime replica加载完整同一assembly；replica之间heap、CPU调度和lifecycle独立，外部数据层按
+8. 普通即时service call只要求linkable；跨request或持久边界才要求recoverable。
+9. runtime replica加载完整同一assembly；replica之间heap、CPU调度和lifecycle独立，外部数据层按
    deployment配置共享。
-9. code identity、service protocol identity、deployment revision与assembly identity必须分开。
-10. 当前ActivationContext必须随async continuation、stream和callback显式传播；任何service call都以它
+10. code identity、service API identity、deployment revision与assembly identity必须分开；任何人类可读
+    `version`都不参与内容identity计算。
+11. 当前ActivationContext必须随async continuation、stream和callback显式传播；任何service call都以它
     解析caller binding slot并切换到provider owner。
-11. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
+12. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
     exact assembly registration及active/draining generation验证，不能按serviceId、package build、display
     name或legacy runtime registration补事实。
 
 ## 3. Package 与 PackageArtifact
 
-Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成。compiler只接受package
-source root，不存在package/service kind分支。
+Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成。`package.yml`拥有package的人类
+可读`id`/`version`、package dependencies与service dependencies；两类dependency alias共享同一namespace，
+版本selector第一版都必须精确。`version`只用于人类展示和解析坐标，不参与任何artifact、ABI或内容identity
+运算。
+
+Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
+`service.yml`只拥有service id、HTTP/WebSocket ingress及其它service独有声明，不含version、dependency、
+API type/function映射或实现artifact binding。`config.*.yml`只绑定已经声明的config/secret/state/resource
+requirement，不改变package/service dependency graph。
 
 PackageArtifact至少包含：
 
@@ -67,7 +82,6 @@ PackageArtifact
   PackageLocalAbi
   implementation links
   package dependency requirements
-  contract compile requirements
   service runtime requirements
   config/resource/runtime capability requirements
   callable semantic facts
@@ -79,26 +93,15 @@ PackageArtifact
 public instance、const与executable link信息。它允许同一heap引用、alias、原地mutation和其它只在
 local code composition中成立的值。
 
-ContractRequirement引入的`ContractTypeId`可以出现在PackageLocalAbi和package callable signature中；
-它在package内部仍是普通local value type。只有call site进入ServiceBinding时才执行boundary
-materialization。
-
 File IR executable signature与PackageLocalAbi不是同一个type owner。File IR只保存本地执行需要的
-execution type representation，不重复保存contract nominal identity：
+execution type representation。Package API与Service API必须共用同一套parser、name resolution、nominal
+type、field/constructor、generic、interface conformance和typed expression机制；不得从ServiceContract
+descriptor再建立一套只支持签名、不支持普通表达式的contract type system。
 
-- package-local type保留原有local execution type；container与nullable递归保留执行外形；
-- `PackageTypeRef::Contract` leaf统一投影为固定opaque `unknown` execution value；它不编码dependency alias、
-  stable key、`ContractTypeId`或schema；
-- source typecheck、package ABI、contract matching与boundary value plan只能读取source typed facts、
-  PackageArtifact和ServiceContract，不能从opaque File IR signature反推；
-- 这里的`unknown`不表示source类型未知。source已经按精确`ContractTypeId`完成检查；它也不能参与ABI相等、
-  boundary eligibility或protocol identity。
-
-因此File IR无需新增contract type wire variant。Lowering必须消费source-owned exact executable signature facts
-做上述唯一确定性投影，不能重新解析AST type text，也不能用`ServiceSymbol`或display string代替contract
-identity。interface operation同样先形成source-owned exact signature facts：impl/interface conformance在擦除前按
-`ContractTypeId`完成，随后interface与executable共同使用上述execution projection。contract来源的
-`ServiceSymbol`不能留在任何File IR callable/interface signature中。
+Service dependency导入的code-free API module是同一canonical public API representation的materialized view。
+它的nominal type identity由service API schema稳定拥有，不绑定provider build；但其语言行为与package API
+type完全一致。compiler不得用display string、结构相同的临时local type、JSON encode/decode或手写wrapper
+冒充相同identity。
 
 PackageArtifact的public-instance discovery只需要`publicPath + receiver execution target`。它不得把File IR
 execution signature转成public signature、执行conformance比较或生成`OperationAbiRef`/operation protocol
@@ -119,36 +122,36 @@ BoundaryCallableProjection
   | Unavailable([BoundaryUnavailableReason...])
 ```
 
-Package callable在compile时尚未绑定任何ServiceContract operation，因此PackageArtifact中的Available
-projection只保存contract-agnostic的`BoundaryOperationContract` body，不能携带或伪造
-`ContractOperationId`、contract stable key或完整`BoundaryOperationDescriptor`。同一个package callable可以
-被多个ServiceDeployment显式映射到不同contract operations；deployment只在映射后比较双方的operation
-contract body。
+普通package允许同时拥有Available和Unavailable public functions。存在`service.yml`时，`api.yml`中的每个
+Available public function自动成为service operation；Unavailable function仍是合法package API，但不会进入
+ServiceContract。compiler/tooling必须输出完整、稳定、可机器读取的列表及结构化原因；构建摘要、CLI/JSON、
+artifact receipt与IDE应消费同一projection，不能静默排除。
 
 缺字段不表示不可用或尚未分析。PackageArtifact必须保存完成boundary判断所需的typed effect、
 provenance和link facts，使deployment无需读取源码。
 
 `BoundaryOperationContract`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
-公开effect保证。`BoundaryOperationDescriptor`由ServiceContract在该body外增加真实
-`ContractOperationId`与stable key。具体config/state/native capability requirement和完整may-effect属于
+公开effect保证。ServiceContract projection在该body外增加稳定operation key/id。具体
+config/state/native capability requirement和完整may-effect属于
 `BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
 
 同一个PackageArtifact可以同时：
 
 - 被其它package直接链接；
-- 实现一个或多个ServiceContract；
+- 在存在`service.yml`时生成一个ServiceContract并实现其全部自动投影operations；
 - 被多个ServiceDeployment revision复用；
 - 在同一assembly内只链接一份代码，由多个activation context调用。
 
 ## 4. ServiceContract
 
-ServiceContract是独立、无代码、版本化的typed协议artifact。它不是deployment的派生缓存，也不
-引用provider package、build、route、config或runtime replica。
+ServiceContract是独立发布、无代码的typed API projection artifact。它的唯一authoring source是service
+package自己的`.skiff` declarations与`api.yml`，加上`service.yml`中的service id；不存在独立contract
+YAML/IDL、类型映射或第二套函数清单。它不引用provider build、config或runtime replica。
 
 ```text
 ServiceContract
   serviceId
-  contractVersion
+  packageVersionLabel
   serviceProtocolIdentity
   operations: name/id -> BoundaryOperationDescriptor
   boundary schema closure
@@ -157,29 +160,30 @@ ServiceContract
 每个operation descriptor包含canonical参数、返回、throw/error、stream、cancel、callback与value
 plan契约。Contract schema必须闭合，consumer不读取provider源码补充类型事实。
 
-Contract declaration是code-free typed输入。具体文件拼写与authoring UX不属于本文；无论最终使用
-YAML、IDL或从显式interface declaration生成，发布后的ServiceContract都是独立source of truth。
-工具可以从package callable生成contract草稿，但不能让已发布contract随implementation自动漂移。
+Service API identity由canonical boundary surface内容确定；`package.yml.version`只作为人类可读、精确解析
+label，不参与identity运算，`service.yml`没有version。新implementation build可以在identity不变时替换当前
+active revision而无需consumer同意；API内容变化必然产生新identity，即使作者未修改version label也不能
+静默绑定旧consumer。
 
-Contract先于implementation发布，因此循环service调用按两阶段处理：
+为支持循环service dependency，compiler/tooling按两阶段处理同一批service package source：
 
 ```text
-compile/publish all required ServiceContracts
-  -> compile Packages against those contracts
-  -> validate and publish ServiceDeployments
+project/publish all service API declarations
+  -> compile package bodies against exact service API projections
+  -> generate ServiceDeployments
 ```
 
-每份Contract schema closure自包含，因此普通`A -> B -> A`调用循环不形成contract compile循环；它只在
-两个packages的ServiceRequirement graph中出现，等所有contracts发布后再编译。第一版不允许Contract
-schema通过跨contract引用重新制造循环closure。
+这不是第二套语言前端：declaration projection与package compile共用canonical typed API机制，只把函数体
+执行编译推迟到所有service API closure可用之后。第一版不允许ServiceContract schema通过跨contract type
+引用重新制造循环closure。
 
 ## 5. ServiceDeployment
 
-ServiceDeployment是无源码的配置与typed binding artifact：
+ServiceDeployment是无源码的生成artifact，不是开发者维护的`deployment.yml`：
 
 ```text
 ServiceDeployment
-  serviceId / contractVersion / expectedProtocolIdentity
+  serviceId / packageVersionLabel / expectedProtocolIdentity
   deploymentRevision
   implementation PackageArtifact ref
   operationBindings: contractOperationId -> packageCallableId
@@ -190,22 +194,16 @@ ServiceDeployment
   timeout/resource/activation policy
 ```
 
-operation mapping必须显式。人类配置可以写package public path，deployment projection必须把它解析
-成稳定callable id后写入artifact。禁止按同名函数隐式绑定、自动暴露整个package API或在runtime按
-display name猜target。
+operation mapping由同一service package的ServiceContract projection与PackageArtifact public callable
+identity确定性生成。所有Available public functions自动进入；不得要求开发者在`service.yml`或
+`deployment.yml`重复映射。生成artifact必须写入稳定callable id，runtime禁止按display name猜target。
 
 Ingress只绑定ContractOperationId，不直接绑定package path/callable。这样换implementation package时，
 外部entry仍先经过同一个contract，再由operationBindings选择provider executable。
 
-ServiceContract的nominal boundary types使用独立`ContractTypeId`。Provider package在compile时声明
-`ContractRequirement`并直接在boundary callable signature中引用这些contract types；这只引入typed
-compile dependency，不产生runtime service edge。Package自己的nominal type即使结构相同也不能充当
-contract type；需要转换时，开发者在package中编写显式wrapper。
+Package source中的service dependency alias使用现有qualified namespace，不新增另一套type/import语法：
 
-Package source中的contract dependency alias使用现有qualified namespace，不新增另一套type/import语法：
-
-- `payments.User`按`ContractRequirement(alias = payments)`解析到ServiceContract中stable key为`User`的
-  `ContractTypeId`；
+- `payments.User`按`package.yml.services`中的`payments`解析到发布的service API module；
 - `payments/charge(...)`按同一validated ServiceContract中的operation descriptor解析，并在source typed
   analysis阶段检查参数与返回类型；
 - dependency source address复用现有`<dependencyAlias>/<publicPath>`语法。`/`分隔dependency resolver root与
@@ -213,14 +211,13 @@ Package source中的contract dependency alias使用现有qualified namespace，�
   `payments.User`、`payments/managed.charge(...)`；
 - package call与contract/service call都使用`/`地址；linkage kind来自validated dependency alias，不由
   分隔符或物理local/remote binding猜测。`payments.charge(...)`不作为旧兼容拼写接受；
-- package dependency alias与contract dependency alias共享一个dependency alias namespace，任何冲突在
+- package dependency alias与service dependency alias共享一个dependency alias namespace，任何冲突在
   compile input trust boundary fail closed，不能靠type/call上下文猜测；
 - qualified alias只选择typed dependency，不进入ContractTypeId/ContractOperationId本体，也不能从provider
   package、deployment或display name补事实。
 
-这里冻结的是typed compiler binding。contract dependency最终由YAML、IDL、CLI或其它authoring表面如何声明，
-仍留给后续阶段；未冻结authoring UX不允许compiler把contract operation signature降成无类型symbol，或把
-contract nominal type重写成package-local nominal type。
+依赖种类只来自`package.yml`的validated `packages`/`services` entry，不由call syntax、物理local/remote
+binding或运行时猜测。
 
 `dependencyBindings`只表达当前deployment对implementation package requirements的provider selector/约束，
 不拥有全局解析结果。RuntimeAssembly projection负责在root set及闭包中解析唯一provider、验证闭包并生成
@@ -228,17 +225,17 @@ contract nominal type重写成package-local nominal type。
 
 deployment validation必须保证：
 
-- 每个contract operation恰好映射一次；
-- 不存在未声明的额外operation；
+- 每个自动生成的service operation恰好映射到其source public callable；
+- 不存在手工增加、遗漏或重复operation；
 - target callable的boundary projection是`Available`；
-- operation descriptor中的ContractTypeId、schema closure与contract逐项精确匹配；
+- operation descriptor、schema closure与同一canonical API projection逐项精确匹配；
 - implementation may-effect满足contract公开effect保证，且所有implementation requirements得到binding；
-- 第一版不生成用户语义adapter、字段兼容或fallback；package-local type转换必须写在显式wrapper中；
+- 第一版不生成用户语义adapter、字段兼容或fallback；
 - implementation package及其依赖闭包可解析；
 - config、state与runtime capability requirements全部得到唯一binding。
 
-ServiceDeployment可以换package build、config、route或resource policy而保持同一contract version；
-前提是protocol identity完全不变。变化由deployment revision表达。
+ServiceDeployment可以换package build、config或resource policy而保持同一service id/version label；
+前提是service API identity完全不变。变化由deployment revision表达。
 
 ## 6. 两类调用与三层契约
 
@@ -429,29 +426,28 @@ compiler内部不存在`PublicationInput`、`PublicationKind`、`CompiledPublica
 
 ## 10. 依赖与 Identity
 
-package dependency、contract compile dependency和service runtime dependency是三种edge：
+package dependency与service dependency是两种edge，都由`package.yml`声明：
 
 ```text
 PackageRequirement
   alias + packageId + exactVersion + expectedLocalAbi
 
-ContractRequirement
-  alias + serviceId + contractVersion + expectedProtocolIdentity
-
 ServiceRequirement
-  contractRequirement + serviceBindingSlot + usedOperations
+  alias + serviceId + exactVersionLabel + expectedProtocolIdentity
+  serviceBindingSlot + usedOperations
 ```
 
-ContractRequirement允许package解析contract types和operation signatures，但不要求provider。
-只有实际service call sites产生ServiceRequirement和runtime binding slot。二者都不包含provider package、
-provider build、deployment revision或runtime route；最终assembly只为ServiceRequirement选择deployment。
+PackageRequirement在link阶段解析为不可变PackageArtifact。ServiceRequirement允许package解析发布后的
+service API types和operation signatures，但不要求provider implementation；只有实际service call sites产生
+runtime binding slot。它不包含provider package、provider build、deployment revision或runtime route；
+最终assembly只为ServiceRequirement选择deployment。
 
 必须分开的identity：
 
-- PackageId / PackageVersion：代码发布坐标。
+- PackageId / PackageVersion：人类可读代码发布坐标；version不参与任何identity hash。
 - PackageBuildId：具体不可变代码build。
 - PackageLocalAbiIdentity：local public code ABI。
-- ServiceId / ContractVersion：consumer依赖坐标。
+- ServiceId / exact PackageVersion label：consumer依赖坐标；service.yml不重复version。
 - ServiceProtocolIdentity：canonical boundary surface内容身份。
 - DeploymentRevision / DeploymentArtifactIdentity：某次implementation、配置与route revision。
 - AssemblyIdentity：完整resolved deployment/package graph。
@@ -464,14 +460,18 @@ requirement。
 ## 11. Config、State 与 Resource Owner
 
 Package可以声明运行所需config path、外部resource capability、DB/schema或native adapter requirement，
-但不拥有deployment中的实际值和state namespace。
+但不拥有环境中的实际值和state namespace。普通package可以在`package.yml.services`声明service
+dependency；这使其可复用业务编排在最终宿主service的ActivationContext中解析provider，不把具体provider
+写入PackageArtifact。
 
-ServiceDeployment负责：
+Service source的`config.*.yml`选择或提供：
 
-- 绑定package及其transitive requirements；
 - 提供config/secrets；
 - 选择DB、Redis、actor、queue等外部state namespace；
 - 定义timeout、quota、principal与lifecycle policy。
+
+tooling把所选profile与精确PackageArtifact、生成的ServiceContract及闭合dependency resolution投影为
+ServiceDeployment。profile不得增加/删除`package.yml`中的package或service dependency。
 
 Package静态资源随PackageArtifact发布，并按当前执行callable的package owner读取。ServiceDeployment
 没有用户代码资源；deployment-only证书、secret和环境文件属于activation输入，不进入code artifact。
@@ -499,15 +499,15 @@ Package link与service binding使用不同的可变性边界：
 - package requirement在link完成后绑定到不可变`PackageArtifact` identity。最终linked image记录精确
   `PackageArtifactId`；`packageBuildId`可以作为构建过程与诊断标识，但不能成为允许原地覆盖内容的引用。
   package升级必须重新link/build consumer。
-- service requirement在consumer compile/link时只绑定`serviceId + contractVersion +
+- service requirement在consumer compile/link时只绑定`serviceId + exact packageVersion label +
   expectedProtocolIdentity`，不绑定provider package或deployment revision。
 - assembly projection为每个service requirement选择一个精确`ServiceDeployment` revision及其不可变
   implementation `PackageArtifactId`。service owner可以在protocol identity不变时发布并激活新的deployment
   revision，不要求consumer重新编译；已经生成的RuntimeAssembly仍记录原选择，不能随pointer漂移。
 
-因此“service version可更新”表示同一contract version下的active deployment pointer可以切换到新的
-deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。破坏protocol的变化必须发布新的
-contract version。
+因此“service实现可更新”表示同一service id/version label与service API identity下的active deployment
+pointer可以切换到新的deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。
+API内容变化会产生新的service API identity；旧consumer不能仅凭相同人类版本label被静默迁移。
 
 第一版每个environment只有一个active assembly，root set是该环境全部active services。每个runtime
 replica加载完整相同assembly：
@@ -570,8 +570,9 @@ requirement的activation才能得到`std.db` capability，service代码始终看
 registry分别存储不可变PackageArtifact、ServiceContract、ServiceDeployment与RuntimeAssembly record。
 release pointer可以选择contract-compatible deployment revision和active assembly。
 
-生产registry由可选的普通Skiff service `skiff.run/registry`实现。它的service源码、contract与deployment
-和其它官方service一样独立author、编译、发布和部署，可以位于官方`skiff-packages`仓库；它不是
+生产registry由可选的普通Skiff service `skiff.run/registry`实现。它和其它service一样首先是package，
+源码root包含`package.yml`、`api.yml`、`service.yml`与`config.*.yml`，可以位于官方
+`skiff-packages`仓库；其ServiceContract与ServiceDeployment均由tooling生成而非独立author。它不是
 `skiff.run/std`、compiler platform source、语言intrinsic、native adapter或拥有compiler特权的package。
 语言、compiler和runtime在没有该service时仍然完整可用。调用者通过普通typed ServiceContract调用registry；
 compiler不得为`skiff.run/registry`保留package id、注入native declaration、授予特殊capability或要求外部
@@ -605,9 +606,8 @@ prepared/connected集合、伪造participant ACK或维护第二份activation sta
 
 以下情况必须在compile、deployment projection或assembly阶段失败，不能留到请求时猜测：
 
-- contract schema不闭合或operation identity冲突；
-- deployment operation缺失、重复、额外或descriptor不匹配；
-- provider boundary signature使用package-local nominal type冒充ContractTypeId，或descriptor不匹配；
+- service API schema不闭合或operation identity冲突；
+- 自动生成的deployment operation缺失、重复、额外或descriptor不匹配；
 - selected callable boundary unavailable；
 - service/package dependency缺失、版本或identity不匹配；
 - assembly内同一service requirement有零个或多个provider；
