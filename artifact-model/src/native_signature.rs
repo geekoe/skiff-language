@@ -177,7 +177,7 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         aliases: &[],
         type_param_count: 2,
         params: &[T1],
-        return_type: VOID,
+        return_type: BOOL,
     },
     NativeSignatureDef {
         target: "Array.empty",

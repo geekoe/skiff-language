@@ -15,7 +15,8 @@ use skiff_runtime_transport::{
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
         decode_router_bootstrap_frame_header, decode_typed_binary_frame,
-        ActorFindResponseFrameHeader, ActorPutResponseFrameHeader, ActorRemoveResponseFrameHeader,
+        ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
+        ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
         ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, ResponseChunkFrameHeader,
         ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
         RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
@@ -506,15 +507,28 @@ async fn dispatch_router_binary_frame_inner(
                 );
             }
         }
-        "actor.put.response" => {
-            let (header, payload) = decode_typed_binary_frame::<ActorPutResponseFrameHeader>(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
+        "actor.getOrCreate.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorGetOrCreateResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
             dispatch_control_response(
                 host,
                 &header.rpc_id,
                 &header,
                 payload,
-                "actor.put.response",
+                "actor.getOrCreate.response",
+            )?;
+        }
+        "actor.replace.response" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorReplaceResponseFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_response(
+                host,
+                &header.rpc_id,
+                &header,
+                payload,
+                "actor.replace.response",
             )?;
         }
         "actor.find.response" => {
@@ -596,7 +610,7 @@ async fn dispatch_router_binary_frame_inner(
                 "spawn.fail.response",
             )?;
         }
-        "actor.put.error" => {
+        "actor.getOrCreate.error" => {
             let (header, payload) =
                 decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
@@ -605,7 +619,19 @@ async fn dispatch_router_binary_frame_inner(
                 &header.rpc_id,
                 payload,
                 header.error,
-                "actor.put.error",
+                "actor.getOrCreate.error",
+            )?;
+        }
+        "actor.replace.error" => {
+            let (header, payload) =
+                decode_typed_binary_frame::<ActorSpawnRuntimeErrorFrameHeader>(bytes)
+                    .map_err(super::transport_error_into_runtime_error)?;
+            dispatch_control_error(
+                host,
+                &header.rpc_id,
+                payload,
+                header.error,
+                "actor.replace.error",
             )?;
         }
         "actor.find.error" => {

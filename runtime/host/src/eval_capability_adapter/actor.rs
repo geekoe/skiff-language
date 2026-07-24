@@ -76,14 +76,27 @@ impl capability_contract::ActorCapabilityApi for RuntimeActorCapabilityContext<'
         self.context.trace_id()
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             concrete::ActorClient::new(self.context.clone())
-                .put(request, object_payload)
+                .get_or_create(request, bootstrap_payload)
+                .await
+                .map_err(capability_contract::CapabilityError::opaque)
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            concrete::ActorClient::new(self.context.clone())
+                .replace(request, bootstrap_payload)
                 .await
                 .map_err(capability_contract::CapabilityError::opaque)
         })
@@ -192,14 +205,27 @@ impl capability_contract::ActorCapabilityApi for RuntimeOwnedActorCapabilityCont
         self.0.trace_id.as_deref()
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
-                .put(request, object_payload)
+                .get_or_create(request, bootstrap_payload)
+                .await
+                .map_err(capability_contract::CapabilityError::opaque)
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> capability_contract::CapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            concrete::ActorClient::new(concrete_actor_context_from_owned(&self.0))
+                .replace(request, bootstrap_payload)
                 .await
                 .map_err(capability_contract::CapabilityError::opaque)
         })

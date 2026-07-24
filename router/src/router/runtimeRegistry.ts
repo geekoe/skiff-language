@@ -1207,7 +1207,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function actorSpawnRuntimeControlErrorType(
   requestType: Parameters<ActorSpawnRuntimeControl['handle']>[0]['type']
 ):
-  | 'actor.put.error'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.error'
   | 'actor.find.error'
   | 'actor.remove.error'
   | 'spawn.submit.error'
@@ -1216,8 +1217,10 @@ function actorSpawnRuntimeControlErrorType(
   | 'spawn.complete.error'
   | 'spawn.fail.error' {
   switch (requestType) {
-    case 'actor.put.request':
-      return 'actor.put.error';
+    case 'actor.getOrCreate.request':
+      return 'actor.getOrCreate.error';
+    case 'actor.replace.request':
+      return 'actor.replace.error';
     case 'actor.find.request':
       return 'actor.find.error';
     case 'actor.remove.request':

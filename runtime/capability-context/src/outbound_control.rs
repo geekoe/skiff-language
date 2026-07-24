@@ -12,8 +12,12 @@ pub enum RouterWriterMessage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboundControlMessage {
-    ActorPut {
-        request: ActorPutControlRequest,
+    ActorGetOrCreate {
+        request: ActorGetOrCreateControlRequest,
+        payload: Vec<u8>,
+    },
+    ActorReplace {
+        request: ActorReplaceControlRequest,
         payload: Vec<u8>,
     },
     ActorFind {
@@ -58,13 +62,25 @@ pub struct ActivationIdentityControl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorPutControlRequest {
+pub struct ActorGetOrCreateControlRequest {
     pub rpc_id: String,
     pub runtime_id: String,
     pub activation_identity: ActivationIdentityControl,
     pub actor_key: ActorKeyControlMetadata,
-    pub object_schema_identity: String,
-    pub object_encoding_version: String,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorReplaceControlRequest {
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityControl,
+    pub actor_key: ActorKeyControlMetadata,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

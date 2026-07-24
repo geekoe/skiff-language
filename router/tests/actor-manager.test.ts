@@ -9,7 +9,7 @@ describe('ActorManager', () => {
     const manager = new ActorManager();
     const actorKey = actorKeyInput();
 
-    const ref = await manager.put(actorPutInput(actorKey));
+    const ref = await manager.getOrCreate(actorBootstrapInput(actorKey));
     const found = await manager.find(actorKey);
     const removed = await manager.remove(actorKey, new Date(baseTime.getTime() + 1_000));
     const hidden = await manager.find(actorKey);
@@ -26,7 +26,7 @@ describe('ActorManager', () => {
   it('keeps removing actors until active executions finish', async () => {
     const manager = new ActorManager();
     const actorKey = actorKeyInput();
-    const ref = await manager.put(actorPutInput(actorKey));
+    const ref = await manager.getOrCreate(actorBootstrapInput(actorKey));
     const lease = await manager.acquireOwnerLease({
       actorKey,
       expectedEpoch: ref.epoch!,
@@ -76,7 +76,7 @@ describe('ActorManager', () => {
   it('accepts concurrent executions for the same actor owner', async () => {
     const manager = new ActorManager();
     const actorKey = actorKeyInput();
-    const ref = await manager.put(actorPutInput(actorKey));
+    const ref = await manager.getOrCreate(actorBootstrapInput(actorKey));
     const lease = await manager.acquireOwnerLease({
       actorKey,
       expectedEpoch: ref.epoch!,
@@ -140,16 +140,35 @@ describe('ActorManager', () => {
     await expect(manager.entry(actorKey)).resolves.toMatchObject({ status: 'removed' });
   });
 
-  it('advances epochs across remove and put so stale actor refs cannot execute', async () => {
+  it('atomically keeps the first bootstrap and epoch for concurrent getOrCreate', async () => {
+    const manager = new ActorManager();
+    const actorKey = actorKeyInput();
+    const [first, second] = await Promise.all([
+      manager.getOrCreate(actorBootstrapInput(actorKey)),
+      manager.getOrCreate(actorBootstrapInput(actorKey, {
+        encodedBootstrapBytes: new Uint8Array([9]),
+        actorImplementationIdentity: 'implementation:other',
+      })),
+    ]);
+
+    expect(second).toEqual(first);
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      epoch: 1,
+      actorImplementationIdentity: 'implementation:chat:v1',
+      encodedBootstrapBytes: new Uint8Array([1, 2, 3]),
+    });
+  });
+
+  it('replace advances the epoch, installs exact bootstrap facts, and rejects stale refs', async () => {
     const manager = new ActorManager();
     const actorKey = actorKeyInput();
 
-    const first = await manager.put(actorPutInput(actorKey));
-    await manager.remove(actorKey, new Date(baseTime.getTime() + 1));
-    const second = await manager.put(
-      actorPutInput(actorKey, {
+    const first = await manager.getOrCreate(actorBootstrapInput(actorKey));
+    const second = await manager.replace(
+      actorBootstrapInput(actorKey, {
         now: new Date(baseTime.getTime() + 2),
-        encodedObjectBytes: new Uint8Array([9]),
+        encodedBootstrapBytes: new Uint8Array([9]),
+        actorImplementationIdentity: 'implementation:chat:v2',
       })
     );
     const staleAccept = await manager.acceptExecution({
@@ -165,6 +184,10 @@ describe('ActorManager', () => {
     expect(second.epoch).toBeGreaterThan(first.epoch!);
     expect(staleAccept).toEqual({ ok: false, reason: 'EpochMismatch' });
     await expect(manager.find(actorKey)).resolves.toEqual(second);
+    await expect(manager.entry(actorKey)).resolves.toMatchObject({
+      actorImplementationIdentity: 'implementation:chat:v2',
+      encodedBootstrapBytes: new Uint8Array([9]),
+    });
   });
 });
 
@@ -178,18 +201,21 @@ function actorKeyInput(): ActorKeyInput {
   };
 }
 
-function actorPutInput(
+function actorBootstrapInput(
   actorKey: ActorKeyInput,
   overrides: {
     now?: Date;
-    encodedObjectBytes?: Uint8Array;
+    encodedBootstrapBytes?: Uint8Array;
+    actorImplementationIdentity?: string;
   } = {}
 ) {
   return {
     actorKey,
-    objectSchemaIdentity: 'schema:ThreadActorState:v1',
-    objectEncodingVersion: 'json-v1',
-    encodedObjectBytes: overrides.encodedObjectBytes ?? new Uint8Array([1, 2, 3]),
+    actorAbiIdentity: 'actor-abi:ThreadActor:v1',
+    actorImplementationIdentity:
+      overrides.actorImplementationIdentity ?? 'implementation:chat:v1',
+    bootstrapEncodingVersion: 'skiff-canonical-v1',
+    encodedBootstrapBytes: overrides.encodedBootstrapBytes ?? new Uint8Array([1, 2, 3]),
     now: overrides.now ?? baseTime,
   };
 }

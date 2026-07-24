@@ -18,10 +18,11 @@ use crate::{
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context as capability_contract;
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, CancellationToken, ExecutionControlResult, FileCapabilityError,
-    FileCapabilityFuture, RequestEffectDoubleControl, SpawnSubmitControlRequest, StreamPoll,
-    StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken,
+    ExecutionControlResult, FileCapabilityError, FileCapabilityFuture, RequestEffectDoubleControl,
+    SpawnSubmitControlRequest, StreamPoll, StreamPullSource, StreamRuntimeError,
+    StreamRuntimeResult,
 };
 use skiff_runtime_eval::{
     capabilities as eval_capabilities,

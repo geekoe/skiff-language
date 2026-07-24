@@ -32,9 +32,12 @@ const runtimeFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
   'runtime.health',
-  'actor.put.request',
-  'actor.put.response',
-  'actor.put.error',
+  'actor.getOrCreate.request',
+  'actor.getOrCreate.response',
+  'actor.getOrCreate.error',
+  'actor.replace.request',
+  'actor.replace.response',
+  'actor.replace.error',
   'actor.find.request',
   'actor.find.response',
   'actor.find.error',
@@ -73,7 +76,8 @@ const runtimeToRouterFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
   'runtime.health',
-  'actor.put.request',
+  'actor.getOrCreate.request',
+  'actor.replace.request',
   'actor.find.request',
   'actor.remove.request',
   'spawn.submit.request',
@@ -94,8 +98,10 @@ const routerToRuntimeFrameHeaderTypes = [
   'runtime.registered',
   'router.bootstrap',
   'router.control',
-  'actor.put.response',
-  'actor.put.error',
+  'actor.getOrCreate.response',
+  'actor.getOrCreate.error',
+  'actor.replace.response',
+  'actor.replace.error',
   'actor.find.response',
   'actor.find.error',
   'actor.remove.response',
@@ -209,8 +215,17 @@ describe('runtime protocol fixtures and schemas', () => {
     expect(validateRuntimeToRouterFrameHeader({ type: 'not.real' })).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error'
     });
+  });
+
+  it('hard-cuts the ambiguous actor.put wire operation', () => {
+    expect(
+      validateRuntimeToRouterFrameHeader({
+        ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+        type: 'actor.put.request'
+      })
+    ).toMatchObject({ ok: false });
   });
 
   it('accepts and rejects service-independent runtime capability frames', () => {
@@ -1005,7 +1020,7 @@ describe('runtime binary frame foundations', () => {
     expect(
       validateRuntimeToRouterFrameHeader({
         ...runtimeFrameHeaderFixtures['spawn.submit.request'],
-        actorRef: runtimeFrameHeaderFixtures['actor.put.response'].actorRef,
+        actorRef: runtimeFrameHeaderFixtures['actor.getOrCreate.response'].actorRef,
         methodName: 'receive'
       })
     ).toEqual({
@@ -1016,7 +1031,8 @@ describe('runtime binary frame foundations', () => {
 
   it('enforces the shared structured activation identity corpus on every actor/spawn request', () => {
     const requestTypes = [
-      'actor.put.request',
+      'actor.getOrCreate.request',
+      'actor.replace.request',
       'actor.find.request',
       'actor.remove.request',
       'spawn.submit.request',

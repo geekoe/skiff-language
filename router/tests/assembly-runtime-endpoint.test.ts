@@ -141,21 +141,51 @@ describe('unified RuntimeEndpoint assembly bootstrap', () => {
     await until(() => fixture.assemblyRegistry.healthyParticipantReplicaIds().length === 1);
     const activationIdentity = activation(ASSEMBLY_A, 1);
 
-    const actorPut = nextRuntimeFrame(ws, 'actor.put.response');
+    const actorGetOrCreate = nextRuntimeFrame(ws, 'actor.getOrCreate.response');
     ws.send(encodeRuntimeFrame({
-      ...runtimeFrameHeaderFixtures['actor.put.request'],
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
       rpcId: 'actor-active-put',
       runtimeId: RUNTIME_ID,
       activationIdentity,
       actorKey: actorKey()
     }, new Uint8Array([1, 2, 3])));
-    await expect(actorPut).resolves.toMatchObject({
+    const created = await actorGetOrCreate;
+    expect(created).toMatchObject({
       header: {
-        type: 'actor.put.response',
+        type: 'actor.getOrCreate.response',
         rpcId: 'actor-active-put',
         actorRef: { serviceId: SERVICE_ID }
       }
     });
+
+    const actorGetAgain = nextRuntimeFrame(ws, 'actor.getOrCreate.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
+      rpcId: 'actor-active-get-again',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      actorKey: actorKey()
+    }, new Uint8Array([9])));
+    const existing = await actorGetAgain;
+    expect(existing.header).toMatchObject({
+      type: 'actor.getOrCreate.response',
+      actorRef: { epoch: 1 }
+    });
+
+    const actorReplace = nextRuntimeFrame(ws, 'actor.replace.response');
+    ws.send(encodeRuntimeFrame({
+      ...runtimeFrameHeaderFixtures['actor.replace.request'],
+      rpcId: 'actor-active-replace',
+      runtimeId: RUNTIME_ID,
+      activationIdentity,
+      actorKey: actorKey()
+    }, new Uint8Array([4, 5, 6])));
+    const replaced = await actorReplace;
+    expect(replaced.header).toMatchObject({
+      type: 'actor.replace.response',
+      actorRef: { epoch: 2 }
+    });
+    expect(created.header).toMatchObject({ actorRef: { epoch: 1 } });
 
     const submit = nextRuntimeFrame(ws, 'spawn.submit.response');
     ws.send(encodeRuntimeFrame({

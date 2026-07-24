@@ -103,6 +103,7 @@ fn ordinary_in_process_keeps_lane_specific_type_arguments_out_of_shared_planner(
         args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     };
     call.type_args.insert(
         "T".to_string(),

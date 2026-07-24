@@ -459,7 +459,8 @@ export class RuntimeEndpoint
           });
         }
         return;
-      case 'actor.put.request':
+      case 'actor.getOrCreate.request':
+      case 'actor.replace.request':
       case 'actor.find.request':
       case 'actor.remove.request':
       case 'spawn.submit.request':

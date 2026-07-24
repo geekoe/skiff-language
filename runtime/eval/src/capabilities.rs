@@ -38,13 +38,13 @@ pub type EvalCapabilityFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 
 
 pub use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorClient,
-    ActorFindControlRequest, ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError,
-    CapabilityFuture, CapabilityResult, ConfigCapabilityApi, ConfigCapabilityContext,
-    DbCapabilityContext,
-    DbCapabilityContextApi, DbCapabilityError, DbCapabilityFuture, DbCapabilityLeaseHandle,
-    DbCapabilityLeaseHold, DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore,
-    DbCapabilityStoreApi, DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
-    DbRuntimeChange, DbRuntimeSetOp, ExecutionControl, ExecutionControlApi, FileCapabilityApi,
+    ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorRemoveControlRequest,
+    ActorReplaceControlRequest, CapabilityError, CapabilityFuture, CapabilityResult,
+    ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext, DbCapabilityContextApi,
+    DbCapabilityError, DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold,
+    DbCapabilityLeaseHoldHandle, DbCapabilityResult, DbCapabilityStore, DbCapabilityStoreApi,
+    DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans, DbRuntimeChange,
+    DbRuntimeSetOp, ExecutionControl, ExecutionControlApi, FileCapabilityApi,
     FileCapabilityContext, FileCapabilityError, FileCapabilityFuture, FileCapabilityRecord,
     FileCapabilityResult, FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource,
     FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
@@ -652,18 +652,35 @@ impl NativeActorCapability for RuntimeNativeActorCapabilityContext<'_> {
         self.0.service_id()
     }
 
+    fn actor_implementation_identity(&self) -> &str {
+        self.0.request_build_id()
+    }
+
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.0.activation_identity()
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             ActorClient::new(self.0.clone())
-                .put_actor(request, object_payload)
+                .get_or_create_actor(request, bootstrap_payload)
+                .await
+                .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            ActorClient::new(self.0.clone())
+                .replace_actor(request, bootstrap_payload)
                 .await
                 .map_err(|error| eval_error_to_native(RuntimeError::from(error)))
         })

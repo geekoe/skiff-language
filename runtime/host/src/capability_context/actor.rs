@@ -1,11 +1,11 @@
 use serde::de::DeserializeOwned;
 use skiff_artifact_model::validate_activation_token;
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, CancellationToken, InvocationContext, OutboundControlMessage,
-    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,
-    OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver, RequestCancelControl,
-    RouterWriterMessage, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CancellationToken, InvocationContext,
+    OutboundControlMessage, OutboundRequestCancelSendError, OutboundRequestCancelSender,
+    OutboundRequestLease, OutboundRequestRegistry, OutboundResponse, OutboundResponseReceiver,
+    RequestCancelControl, RouterWriterMessage, SpawnSubmitControlRequest,
 };
 use tokio::sync::mpsc;
 
@@ -14,11 +14,13 @@ use skiff_runtime_boundary::value::decode_base64;
 use skiff_runtime_model::runtime_value::ActorRef;
 use skiff_runtime_transport::cancel_reason::request_cancel_wire_reason_for_internal;
 use skiff_runtime_transport::protocol::{
-    ActorFindResponseFrameHeader, ActorPutResponseFrameHeader, ActorRefFrameMetadata,
-    ActorRemoveResponseFrameHeader, SpawnSubmitResponseFrameHeader,
+    ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader, ActorRefFrameMetadata,
+    ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
+    SpawnSubmitResponseFrameHeader,
 };
 
-const ACTOR_PUT_TARGET: &str = "actor.put";
+const ACTOR_GET_OR_CREATE_TARGET: &str = "actor.getOrCreate";
+const ACTOR_REPLACE_TARGET: &str = "actor.replace";
 const ACTOR_FIND_TARGET: &str = "actor.find";
 const ACTOR_REMOVE_TARGET: &str = "actor.remove";
 const SPAWN_SUBMIT_TARGET: &str = "spawn.submit";
@@ -34,21 +36,44 @@ impl<'a> ActorClient<'a> {
         }
     }
 
-    pub async fn put(
+    pub async fn get_or_create(
         &self,
-        mut request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        mut request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> Result<ActorRef> {
-        request.rpc_id = self.control_rpc_id(ACTOR_PUT_TARGET);
+        request.rpc_id = self.control_rpc_id(ACTOR_GET_OR_CREATE_TARGET);
         request.runtime_id = self.context.runtime_id().to_string();
-        request.activation_identity = self.context.current_activation_identity(ACTOR_PUT_TARGET)?;
+        request.activation_identity = self
+            .context
+            .current_activation_identity(ACTOR_GET_OR_CREATE_TARGET)?;
         let rpc_id = request.rpc_id.clone();
-        let command = OutboundControlMessage::ActorPut {
+        let command = OutboundControlMessage::ActorGetOrCreate {
             request,
-            payload: object_payload,
+            payload: bootstrap_payload,
         };
-        let response: ActorPutResponseFrameHeader = self
-            .send_control_request(ACTOR_PUT_TARGET, &rpc_id, command)
+        let response: ActorGetOrCreateResponseFrameHeader = self
+            .send_control_request(ACTOR_GET_OR_CREATE_TARGET, &rpc_id, command)
+            .await?;
+        Ok(actor_ref_from_metadata(response.actor_ref)?)
+    }
+
+    pub async fn replace(
+        &self,
+        mut request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> Result<ActorRef> {
+        request.rpc_id = self.control_rpc_id(ACTOR_REPLACE_TARGET);
+        request.runtime_id = self.context.runtime_id().to_string();
+        request.activation_identity = self
+            .context
+            .current_activation_identity(ACTOR_REPLACE_TARGET)?;
+        let rpc_id = request.rpc_id.clone();
+        let command = OutboundControlMessage::ActorReplace {
+            request,
+            payload: bootstrap_payload,
+        };
+        let response: ActorReplaceResponseFrameHeader = self
+            .send_control_request(ACTOR_REPLACE_TARGET, &rpc_id, command)
             .await?;
         Ok(actor_ref_from_metadata(response.actor_ref)?)
     }

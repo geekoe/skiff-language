@@ -48,10 +48,10 @@ pub use operation_context::{
     RequestOperationContext, RequestServiceMetadata, RuntimeOperation, RuntimeOperationParameter,
 };
 pub use outbound::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata,
-    ActorPutControlRequest, ActorRemoveControlRequest, ConnectionSendControl,
-    OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry, OutboundResponse,
-    OutboundResponseReceiver, RequestCancelControl, RequestEffectDoubleControl,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
+    OutboundResponse, OutboundResponseReceiver, RequestCancelControl, RequestEffectDoubleControl,
     RequestStartControl, RouterWriterMessage, RuntimeCallerControl, RuntimeDeadlineControl,
     RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,
     SpawnFailControlRequest, SpawnRenewControlRequest, SpawnSubmitControlRequest,

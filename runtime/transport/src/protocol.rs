@@ -992,7 +992,7 @@ impl<'de> Deserialize<'de> for ActivationIdentityFrameMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActorPutRequestFrameHeader {
+pub struct ActorGetOrCreateRequestFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
     pub envelope_type: String,
@@ -1000,13 +1000,39 @@ pub struct ActorPutRequestFrameHeader {
     pub runtime_id: String,
     pub activation_identity: ActivationIdentityFrameMetadata,
     pub actor_key: ActorKeyFrameMetadata,
-    pub object_schema_identity: String,
-    pub object_encoding_version: String,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActorPutResponseFrameHeader {
+pub struct ActorGetOrCreateResponseFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub rpc_id: String,
+    pub actor_ref: ActorRefFrameMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorReplaceRequestFrameHeader {
+    pub schema_version: String,
+    #[serde(rename = "type")]
+    pub envelope_type: String,
+    pub rpc_id: String,
+    pub runtime_id: String,
+    pub activation_identity: ActivationIdentityFrameMetadata,
+    pub actor_key: ActorKeyFrameMetadata,
+    pub actor_abi_identity: String,
+    pub actor_implementation_identity: String,
+    pub bootstrap_encoding_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorReplaceResponseFrameHeader {
     pub schema_version: String,
     #[serde(rename = "type")]
     pub envelope_type: String,

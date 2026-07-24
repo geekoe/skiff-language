@@ -65,9 +65,12 @@ export type RuntimeFrameHeaderName =
   | 'runtime.registered'
   | 'router.bootstrap'
   | 'router.control'
-  | 'actor.put.request'
-  | 'actor.put.response'
-  | 'actor.put.error'
+  | 'actor.getOrCreate.request'
+  | 'actor.getOrCreate.response'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.request'
+  | 'actor.replace.response'
+  | 'actor.replace.error'
   | 'actor.find.request'
   | 'actor.find.response'
   | 'actor.find.error'
@@ -614,15 +617,27 @@ export interface RuntimeControlRequestFrameHeaderBase<TType extends RuntimeFrame
   activationIdentity: ActivationIdentityFrameMetadata;
 }
 
-export interface ActorPutRequestFrameHeader
-  extends RuntimeControlRequestFrameHeaderBase<'actor.put.request'> {
+export interface ActorBootstrapRequestFrameHeader<
+  TType extends 'actor.getOrCreate.request' | 'actor.replace.request'
+> extends RuntimeControlRequestFrameHeaderBase<TType> {
   actorKey: ActorKeyFrameMetadata;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
 }
 
-export interface ActorPutResponseFrameHeader
-  extends RuntimeRpcFrameHeaderBase<'actor.put.response'> {
+export type ActorGetOrCreateRequestFrameHeader =
+  ActorBootstrapRequestFrameHeader<'actor.getOrCreate.request'>;
+export type ActorReplaceRequestFrameHeader =
+  ActorBootstrapRequestFrameHeader<'actor.replace.request'>;
+
+export interface ActorGetOrCreateResponseFrameHeader
+  extends RuntimeRpcFrameHeaderBase<'actor.getOrCreate.response'> {
+  actorRef: ActorRefFrameMetadata;
+}
+
+export interface ActorReplaceResponseFrameHeader
+  extends RuntimeRpcFrameHeaderBase<'actor.replace.response'> {
   actorRef: ActorRefFrameMetadata;
 }
 
@@ -751,7 +766,8 @@ export interface SpawnFailResponseFrameHeader
 }
 
 export type ActorSpawnRuntimeRequestFrameHeader =
-  | ActorPutRequestFrameHeader
+  | ActorGetOrCreateRequestFrameHeader
+  | ActorReplaceRequestFrameHeader
   | ActorFindRequestFrameHeader
   | ActorRemoveRequestFrameHeader
   | SpawnSubmitRequestFrameHeader
@@ -761,7 +777,8 @@ export type ActorSpawnRuntimeRequestFrameHeader =
   | SpawnFailRequestFrameHeader;
 
 export type ActorSpawnRuntimeResponseFrameHeader =
-  | ActorPutResponseFrameHeader
+  | ActorGetOrCreateResponseFrameHeader
+  | ActorReplaceResponseFrameHeader
   | ActorFindResponseFrameHeader
   | ActorRemoveResponseFrameHeader
   | SpawnSubmitResponseFrameHeader
@@ -771,7 +788,8 @@ export type ActorSpawnRuntimeResponseFrameHeader =
   | SpawnFailResponseFrameHeader;
 
 export type ActorSpawnRuntimeErrorFrameHeaderName =
-  | 'actor.put.error'
+  | 'actor.getOrCreate.error'
+  | 'actor.replace.error'
   | 'actor.find.error'
   | 'actor.remove.error'
   | 'spawn.submit.error'

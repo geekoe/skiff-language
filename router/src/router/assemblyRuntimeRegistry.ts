@@ -374,7 +374,8 @@ function actorSpawnServiceId(
   header: ActorSpawnRuntimeRequestFrameHeader
 ): string {
   switch (header.type) {
-    case 'actor.put.request':
+    case 'actor.getOrCreate.request':
+    case 'actor.replace.request':
     case 'actor.find.request':
     case 'actor.remove.request':
       return header.actorKey.serviceId;

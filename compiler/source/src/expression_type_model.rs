@@ -2918,7 +2918,7 @@ impl<'a> OwnerChecker<'a> {
         }
         match path {
             "std.actor.find" => Some(nullable_type(actor.ty)),
-            "std.actor.remove" => self.resolve_builtin("void"),
+            "std.actor.remove" => self.resolve_builtin("bool"),
             _ => Some(actor.ty),
         }
     }
@@ -4321,6 +4321,7 @@ mod tests {
                 )
                 const label: string = actor.label()
                 const found: UserActor? = std.actor.find<UserActor>(id)
+                const removed: bool = std.actor.remove<UserActor>(id)
                 return actor
               }
             "#,

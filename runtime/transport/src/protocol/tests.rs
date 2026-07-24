@@ -6,8 +6,9 @@ use serde_json::{json, Value};
 use crate::protocol::decode_router_bootstrap_frame_header;
 use crate::protocol::{
     decode_binary_frame, decode_typed_binary_frame, encode_binary_frame,
-    ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader, ActorPutRequestFrameHeader,
-    ActorRemoveRequestFrameHeader, ConnectionSendEnvelope, ConnectionSendFrameHeader,
+    ActivationIdentityFrameMetadata, ActorFindRequestFrameHeader,
+    ActorGetOrCreateRequestFrameHeader, ActorRemoveRequestFrameHeader,
+    ActorReplaceRequestFrameHeader, ConnectionSendEnvelope, ConnectionSendFrameHeader,
     PackageTestStartFrameHeader, RequestCancelFrameHeader, RequestStartFrameHeader,
     RequestTestEffectDouble, ResponseEndFrameHeader, ResponseErrorFrameHeader,
     ResponseStartFrameHeader, RouterControlEnvelope, RuntimeCallerFrameHeader,
@@ -61,8 +62,9 @@ fn router_bootstrap_shared_corpus_has_strict_parity() {
     for test_case in corpus.cases {
         let encoded = encode_binary_frame(&test_case.header, &[])
             .unwrap_or_else(|error| panic!("{} must encode: {error}", test_case.name));
-        let decoded = decode_binary_frame(&encoded)
-            .unwrap_or_else(|error| panic!("{} must decode binary framing: {error}", test_case.name));
+        let decoded = decode_binary_frame(&encoded).unwrap_or_else(|error| {
+            panic!("{} must decode binary framing: {error}", test_case.name)
+        });
         assert!(decoded.payload_bytes.is_empty());
         let result = decode_router_bootstrap_frame_header(decoded.header);
         match test_case.outcome.as_str() {
@@ -174,10 +176,21 @@ fn actor_spawn_requests_share_strict_activation_identity_corpus() {
         merge_json(
             &base,
             json!({
-                "type": "actor.put.request",
+                "type": "actor.getOrCreate.request",
                 "actorKey": actor_key,
-                "objectSchemaIdentity": "schema.example.Thread",
-                "objectEncodingVersion": "json-v1"
+                "actorAbiIdentity": "actor-abi:thread",
+                "actorImplementationIdentity": "build:thread:v1",
+                "bootstrapEncodingVersion": "canonical-value-v1"
+            }),
+        ),
+        merge_json(
+            &base,
+            json!({
+                "type": "actor.replace.request",
+                "actorKey": actor_key,
+                "actorAbiIdentity": "actor-abi:thread",
+                "actorImplementationIdentity": "build:thread:v2",
+                "bootstrapEncodingVersion": "canonical-value-v1"
             }),
         ),
         merge_json(
@@ -304,8 +317,11 @@ fn merge_json(base: &Value, overlay: Value) -> Value {
 
 fn decode_actor_spawn_request(value: Value) -> Result<(), serde_json::Error> {
     match value.get("type").and_then(Value::as_str) {
-        Some("actor.put.request") => {
-            serde_json::from_value::<ActorPutRequestFrameHeader>(value).map(drop)
+        Some("actor.getOrCreate.request") => {
+            serde_json::from_value::<ActorGetOrCreateRequestFrameHeader>(value).map(drop)
+        }
+        Some("actor.replace.request") => {
+            serde_json::from_value::<ActorReplaceRequestFrameHeader>(value).map(drop)
         }
         Some("actor.find.request") => {
             serde_json::from_value::<ActorFindRequestFrameHeader>(value).map(drop)
@@ -440,7 +456,9 @@ fn runtime_register_frame_header_rejects_legacy_protocol_version() {
     .expect_err("legacy protocolVersion must be rejected");
 
     assert!(
-        error.to_string().contains("unknown field `protocolVersion`"),
+        error
+            .to_string()
+            .contains("unknown field `protocolVersion`"),
         "unexpected error: {error}"
     );
 }

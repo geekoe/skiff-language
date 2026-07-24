@@ -15,13 +15,19 @@ pub struct RuntimeNativeInvocation {
 pub struct RuntimeActorNativeMetadata {
     actor_type_identity: String,
     actor_id_type_identity: String,
+    actor_abi_identity: String,
 }
 
 impl RuntimeActorNativeMetadata {
-    pub fn new(actor_type_identity: String, actor_id_type_identity: String) -> Self {
+    pub fn new(
+        actor_type_identity: String,
+        actor_id_type_identity: String,
+        actor_abi_identity: String,
+    ) -> Self {
         Self {
             actor_type_identity,
             actor_id_type_identity,
+            actor_abi_identity,
         }
     }
 
@@ -31,6 +37,10 @@ impl RuntimeActorNativeMetadata {
 
     pub fn actor_id_type_identity(&self) -> &str {
         &self.actor_id_type_identity
+    }
+
+    pub fn actor_abi_identity(&self) -> &str {
+        &self.actor_abi_identity
     }
 }
 

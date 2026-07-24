@@ -1241,6 +1241,7 @@ mod tests {
             source_map: Default::default(),
             declarations: FileDeclarations::default(),
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
             executables: Vec::new(),

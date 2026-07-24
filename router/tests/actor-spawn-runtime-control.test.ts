@@ -49,10 +49,10 @@ afterEach(closeTrackedResources);
 
 describe('actor/spawn runtime control protocol', () => {
   it('validates actor and spawn runtime control frames', () => {
-    expect(validateRuntimeToRouterFrameHeader(runtimeFrameHeaderFixtures['actor.put.request']))
+    expect(validateRuntimeToRouterFrameHeader(runtimeFrameHeaderFixtures['actor.getOrCreate.request']))
       .toEqual({
         ok: true,
-        envelope: runtimeFrameHeaderFixtures['actor.put.request'],
+        envelope: runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
       });
     expect(validateRouterToRuntimeFrameHeader(runtimeFrameHeaderFixtures['spawn.submit.response']))
       .toEqual({
@@ -61,16 +61,16 @@ describe('actor/spawn runtime control protocol', () => {
       });
     expect(
       validateRuntimeToRouterFrameHeader({
-        ...runtimeFrameHeaderFixtures['actor.put.request'],
+        ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
         actorKey: {
-          ...runtimeFrameHeaderFixtures['actor.put.request'].actorKey,
+          ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'].actorKey,
           canonicalActorIdKeyBytesBase64: 'not base64',
         },
       })
     ).toEqual({
       ok: false,
       error:
-        'invalid actor.put.request envelope: actorKey.canonicalActorIdKeyBytesBase64 must be a non-empty base64 string',
+        'invalid actor.getOrCreate.request envelope: actorKey.canonicalActorIdKeyBytesBase64 must be a non-empty base64 string',
     });
     expect(
       validateRuntimeToRouterFrameHeader({
@@ -87,14 +87,14 @@ describe('actor/spawn runtime control protocol', () => {
     const { ws } = await openRuntime();
 
     sendRuntimeFrame(ws, {
-      ...runtimeFrameHeaderFixtures['actor.put.request'],
+      ...runtimeFrameHeaderFixtures['actor.getOrCreate.request'],
       rpcId: 'rpc-actor-put-ws',
       runtimeId,
       actorKey: actorKeyFrame(),
     }, new Uint8Array([1, 2, 3]));
-    const put = await waitForRpcFrame(ws, 'actor.put.error', 'rpc-actor-put-ws');
+    const put = await waitForRpcFrame(ws, 'actor.getOrCreate.error', 'rpc-actor-put-ws');
     expect(put.header).toMatchObject({
-      type: 'actor.put.error',
+      type: 'actor.getOrCreate.error',
       rpcId: 'rpc-actor-put-ws',
       error: { code: 'RuntimeActivationMismatch', status: 403 },
     });
@@ -257,7 +257,7 @@ describe('actor/spawn runtime control protocol', () => {
     ).toEqual({
       ok: false,
       error:
-        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.put.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error',
+        'invalid runtime frame header envelope: type must be one of runtime.register, runtime.capabilities, runtime.health, actor.getOrCreate.request, actor.replace.request, actor.find.request, actor.remove.request, spawn.submit.request, spawn.claim.request, spawn.renew.request, spawn.complete.request, spawn.fail.request, request.start, request.cancel, connection.send, response.start, response.chunk, response.end, response.error',
     });
   });
 

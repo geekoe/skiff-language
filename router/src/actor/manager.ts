@@ -6,7 +6,7 @@ import {
   type ActorExecutionDraft,
   type ActorRegistryEntry,
   type ActorRegistryStore,
-  type PutActorInput,
+  type ActorBootstrapInput,
 } from './registryStore.js';
 
 export class ActorManager {
@@ -16,12 +16,22 @@ export class ActorManager {
     return this.store;
   }
 
-  async put(input: Omit<PutActorInput, 'actorKey'> & { actorKey: ActorKeyInput }): Promise<ActorRef> {
+  async getOrCreate(
+    input: Omit<ActorBootstrapInput, 'actorKey'> & { actorKey: ActorKeyInput }
+  ): Promise<ActorRef> {
     const actorKey = makeActorKey(input.actorKey);
-    const entry = await this.store.put({
+    const entry = await this.store.getOrCreate({
       ...input,
       actorKey,
     });
+    return actorRefFromKey(entry.actorKey, entry.epoch);
+  }
+
+  async replace(
+    input: Omit<ActorBootstrapInput, 'actorKey'> & { actorKey: ActorKeyInput }
+  ): Promise<ActorRef> {
+    const actorKey = makeActorKey(input.actorKey);
+    const entry = await this.store.replace({ ...input, actorKey });
     return actorRefFromKey(entry.actorKey, entry.epoch);
   }
 

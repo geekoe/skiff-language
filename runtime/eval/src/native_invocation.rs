@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_runtime_linked_program::{
-    type_ref_to_value, CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeRef,
-    NativeTarget, TypeAddr,
+    type_ref_to_value, CallIr, ExecutableAddr, FileAddr, LinkedActorDeclaration,
+    LinkedActorDeclarationOwner, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
+    TypeAddr, UnitAddr,
 };
 use skiff_runtime_linked_type_plan::{self as linked_type_plan, ProgramTypeView};
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
@@ -81,7 +82,7 @@ fn resolve_runtime_native_invocation_in_type_view(
                 return Err(RuntimeError::InvalidArtifact(message));
             }
         };
-    let actor_metadata = resolve_actor_native_metadata(binding_key, &target_name, call)?;
+    let actor_metadata = resolve_actor_native_metadata(program, binding_key, &target_name, call)?;
     let resource_owner = (runtime_shared_native_route(binding_key)
         == Some(RuntimeNativeRoute::Resource))
     .then(|| current_addr.unit.clone());
@@ -136,6 +137,7 @@ pub fn resolve_config_builtin_type_arg_plan(
 }
 
 fn resolve_actor_native_metadata(
+    program: ProgramTypeView<'_>,
     binding_key: &str,
     diagnostic_target: &str,
     call: &CallIr,
@@ -144,20 +146,170 @@ fn resolve_actor_native_metadata(
         return Ok(None);
     }
     validate_actor_native_call_arg_count(binding_key, diagnostic_target, call)?;
-    let actor_type = call.type_args.get("T0").ok_or_else(|| {
+    let linked_metadata = call.actor_metadata.as_ref().ok_or_else(|| {
         RuntimeError::InvalidArtifact(format!(
-            "{diagnostic_target} call is missing actor typeArgs[0]"
+            "{diagnostic_target} call is missing linked actor declaration metadata"
         ))
     })?;
-    let actor_id_type = call.type_args.get("T1").ok_or_else(|| {
-        RuntimeError::InvalidArtifact(format!(
-            "{diagnostic_target} call is missing actor id typeArgs[1]"
-        ))
-    })?;
+    let declaration = actor_declaration_for_owner(program, &linked_metadata.declaration_owner)?;
+    if declaration.actor_abi_identity != linked_metadata.actor_abi_identity {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{diagnostic_target} actor declaration ABI identity does not match call metadata"
+        )));
+    }
+    let expected_actor_type = LinkedTypeRef::ServiceSymbol {
+        symbol: declaration.actor_type.clone(),
+    };
+    if call.type_args.get("T0") != Some(&expected_actor_type) {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{diagnostic_target} actor typeArgs[0] does not match linked actor declaration"
+        )));
+    }
+    if call.type_args.get("T1") != Some(&declaration.actor_id_type) {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{diagnostic_target} actor typeArgs[1] does not match linked actor id declaration"
+        )));
+    }
+    if matches!(binding_key, "std.actor.getOrCreate" | "std.actor.replace") {
+        let expected_bootstrap = LinkedTypeRef::Record {
+            fields: declaration
+                .fields
+                .iter()
+                .map(|field| (field.name.clone(), field.ty.clone()))
+                .collect(),
+        };
+        if call.type_args.get("T2") != Some(&expected_bootstrap) {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "{diagnostic_target} actor typeArgs[2] does not match linked bootstrap declaration"
+            )));
+        }
+    } else if call.type_args.contains_key("T2") {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "{diagnostic_target} actor call must not carry bootstrap typeArgs[2]"
+        )));
+    }
     Ok(Some(RuntimeActorNativeMetadata::new(
-        type_identity(actor_type)?,
-        type_identity(actor_id_type)?,
+        type_identity(&expected_actor_type)?,
+        type_identity(&declaration.actor_id_type)?,
+        declaration.actor_abi_identity.as_str().to_string(),
     )))
+}
+
+fn actor_declaration_for_owner<'a>(
+    program: ProgramTypeView<'a>,
+    owner: &LinkedActorDeclarationOwner,
+) -> Result<&'a LinkedActorDeclaration> {
+    let files = match &owner.unit {
+        UnitAddr::Service => program.service_files,
+        UnitAddr::Package(slot) => program.package_files.get(*slot).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "actor declaration owner package slot {slot} is not loaded"
+            ))
+        })?,
+    };
+    let file = match &owner.file {
+        FileAddr::LoadedFileIndex(index) => files.get(*index),
+        FileAddr::FileIrIdentity(identity) => {
+            files.iter().find(|file| file.file_ir_identity == *identity)
+        }
+    }
+    .ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "actor declaration owner file {:?} is not loaded",
+            owner.file
+        ))
+    })?;
+    let mut matches = file.actor_declarations.iter().filter(|declaration| {
+        declaration.implementation_owner.as_ref() == Some(owner)
+            && declaration.actor_type.symbol == owner.actor_symbol
+    });
+    let declaration = matches.next().ok_or_else(|| {
+        RuntimeError::InvalidArtifact(format!(
+            "actor declaration owner {:?} does not resolve to an actor declaration",
+            owner
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(RuntimeError::InvalidArtifact(format!(
+            "actor declaration owner {:?} resolves ambiguously",
+            owner
+        )));
+    }
+    Ok(declaration)
+}
+
+#[cfg(test)]
+mod actor_declaration_resolution_tests {
+    use std::sync::Arc;
+
+    use skiff_artifact_model::{ActorAbiIdentity, ACTOR_RUNTIME_ABI_VERSION_V1};
+    use skiff_runtime_linked_program::{
+        ExternalRefTable, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedActorDeclaration,
+        LinkedActorDeclarationOwner, LinkedFileUnit, RuntimeTypeContext, ServiceSymbolRef,
+        SourceMapDto,
+    };
+
+    use super::*;
+
+    fn actor_file(owner: &LinkedActorDeclarationOwner) -> LinkedFileUnit {
+        LinkedFileUnit {
+            schema_version: "skiff-file-ir-v3".to_string(),
+            file_ir_identity: "file:actors".to_string(),
+            source_ast_hash: "source:actors".to_string(),
+            module_path: "actors".to_string(),
+            ir_format_version: None,
+            opcode_table_version: None,
+            source_map: SourceMapDto::default(),
+            declarations: FileDeclarations::default(),
+            link_targets: FileLinkTargets::default(),
+            actor_declarations: vec![LinkedActorDeclaration {
+                actor_type: ServiceSymbolRef {
+                    module_path: "actors".to_string(),
+                    symbol: "DocHub".to_string(),
+                },
+                implementation_owner: Some(owner.clone()),
+                actor_abi_identity: ActorAbiIdentity::new("actor-abi:doc-hub"),
+                actor_name: "DocHub".to_string(),
+                actor_id_type: LinkedTypeRef::Native {
+                    name: "string".to_string(),
+                    args: Vec::new(),
+                },
+                fields: Vec::new(),
+                public_methods: Vec::new(),
+                actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+            }],
+            types: Vec::new(),
+            constants: Vec::new(),
+            executables: Vec::new(),
+            external_refs: ExternalRefTable::default(),
+        }
+    }
+
+    #[test]
+    fn actor_declaration_owner_resolves_exact_loaded_file_and_symbol() {
+        let owner = LinkedActorDeclarationOwner {
+            unit: UnitAddr::Package(0),
+            file: FileAddr::LoadedFileIndex(0),
+            actor_symbol: "DocHub".to_string(),
+        };
+        let package_files = vec![vec![Arc::new(actor_file(&owner))]];
+        let packages = Vec::new();
+        let service_files = Vec::new();
+        let overlay = LinkOverlay::default();
+        let types = RuntimeTypeContext::default();
+        let program =
+            ProgramTypeView::new(&service_files, &packages, &package_files, &overlay, &types);
+
+        let declaration =
+            actor_declaration_for_owner(program, &owner).expect("exact owner resolves");
+        assert_eq!(declaration.actor_name, "DocHub");
+
+        let forged = LinkedActorDeclarationOwner {
+            actor_symbol: "Other".to_string(),
+            ..owner
+        };
+        assert!(actor_declaration_for_owner(program, &forged).is_err());
+    }
 }
 
 fn validate_actor_native_call_arg_count(
@@ -370,17 +522,17 @@ mod tests {
         )
     }
 
-    fn actor_get_target() -> NativeTarget {
+    fn actor_find_target() -> NativeTarget {
         NativeTarget {
             namespace: "std.actor".to_string(),
-            symbol: "get".to_string(),
-            binding_key: Some("actor.get".to_string()),
+            symbol: "find".to_string(),
+            binding_key: Some("std.actor.find".to_string()),
             metadata: BTreeMap::new(),
         }
     }
 
-    fn actor_get_call(type_args: BTreeMap<String, LinkedTypeRef>) -> CallIr {
-        let target = actor_get_target();
+    fn actor_find_call(type_args: BTreeMap<String, LinkedTypeRef>) -> CallIr {
+        let target = actor_find_target();
         CallIr {
             target: LinkedCallTarget::Native { target },
             args: vec![ExprRefIr { expression: 0 }],
@@ -408,8 +560,8 @@ mod tests {
         let interpreter = empty_interpreter();
         let addr = ExecutableAddr::service(0, 0);
         let env = Env::default();
-        let target = actor_get_target();
-        let call = actor_get_call(BTreeMap::new());
+        let target = actor_find_target();
+        let call = actor_find_call(BTreeMap::new());
 
         let error =
             match resolve_runtime_native_invocation(&interpreter, &addr, &env, &call, &target) {
@@ -419,7 +571,7 @@ mod tests {
 
         assert_eq!(
             invalid_artifact_message(error),
-            "std.actor.get call is missing actor typeArgs[0]"
+            "std.actor.find call is missing actor typeArgs[0]"
         );
     }
 
@@ -428,8 +580,8 @@ mod tests {
         let interpreter = empty_interpreter();
         let addr = ExecutableAddr::service(0, 0);
         let env = Env::default();
-        let target = actor_get_target();
-        let call = actor_get_call(BTreeMap::from([("T0".to_string(), builtin_type("Json"))]));
+        let target = actor_find_target();
+        let call = actor_find_call(BTreeMap::from([("T0".to_string(), builtin_type("Json"))]));
 
         let error =
             match resolve_runtime_native_invocation(&interpreter, &addr, &env, &call, &target) {
@@ -439,7 +591,7 @@ mod tests {
 
         assert_eq!(
             invalid_artifact_message(error),
-            "std.actor.get call is missing actor id typeArgs[1]"
+            "std.actor.find call is missing actor id typeArgs[1]"
         );
     }
 

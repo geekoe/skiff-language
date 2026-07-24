@@ -500,6 +500,7 @@ mod recoverable_spawn_payload_tests {
             source_map: Default::default(),
             declarations,
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: vec![TypeDeclIr {
                 name: "ProviderImpl".to_string(),
                 descriptor: LinkedTypeDescriptor::Alias {

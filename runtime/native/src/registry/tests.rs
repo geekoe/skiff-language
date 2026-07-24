@@ -451,7 +451,8 @@ fn receiver_callable_semantics_registry_rejects_registry_handler() {
 fn native_callable_semantics_registry_keeps_unaudited_non_websocket_capabilities_unregistered() {
     for binding_key in [
         "std.file.readText",
-        "actor.put",
+        "std.actor.getOrCreate",
+        "std.actor.replace",
         "std.telemetry.emit",
         "std.resource.text",
     ] {

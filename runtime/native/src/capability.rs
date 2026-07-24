@@ -4,9 +4,9 @@ use bytes::Bytes;
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, FileCapabilityFuture, FileChunkFuture, FileChunkSource,
-    StreamConsumerCleanup,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, FileCapabilityFuture, FileChunkFuture,
+    FileChunkSource, StreamConsumerCleanup,
 };
 use skiff_runtime_model::addr::ExecutableAddr;
 use skiff_runtime_model::{PublicationResourceTable, RuntimeProgramResourceView};
@@ -32,12 +32,19 @@ pub trait NativeConfigCapability {
 
 pub trait NativeActorCapability {
     fn service_id(&self) -> &str;
+    fn actor_implementation_identity(&self) -> &str;
     fn activation_identity(&self) -> Option<&ActivationIdentityControl>;
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ActorRef>;
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef>;
 
     fn find_actor<'a>(

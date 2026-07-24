@@ -1,7 +1,7 @@
 pub use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorKeyControlMetadata,
-    ActorPutControlRequest, ActorRemoveControlRequest, ConnectionSendControl,
-    OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    ConnectionSendControl, OutboundControlMessage, OutboundRequestLease, OutboundRequestRegistry,
     OutboundResponseReceiver, RequestCancelControl, RequestEffectDoubleControl,
     RequestStartControl, RouterWriterMessage, RuntimeCallerControl, RuntimeDeadlineControl,
     RuntimeTraceContextControl, SpawnClaimControlRequest, SpawnCompleteControlRequest,

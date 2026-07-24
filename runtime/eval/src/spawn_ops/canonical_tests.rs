@@ -19,8 +19,8 @@ use skiff_runtime_activation::{
 };
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
-    ActorPutControlRequest, ActorRemoveControlRequest, CapabilityError, CapabilityFuture,
-    OwnedActorCapabilityContext, SpawnSubmitControlRequest,
+    ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    CapabilityError, CapabilityFuture, OwnedActorCapabilityContext, SpawnSubmitControlRequest,
 };
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -97,12 +97,28 @@ impl ActorCapabilityApi for RecordingActor {
         Some("trace:canonical-spawn")
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        _request: ActorPutControlRequest,
-        _object_payload: Vec<u8>,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
     ) -> CapabilityFuture<'a, ActorRef> {
-        Box::pin(async { Err(CapabilityError::unsupported("actor put is not under test")) })
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "actor getOrCreate is not under test",
+            ))
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "actor replace is not under test",
+            ))
+        })
     }
 
     fn find_actor<'a>(

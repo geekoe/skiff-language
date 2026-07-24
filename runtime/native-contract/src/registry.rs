@@ -183,7 +183,8 @@ mod tests {
     fn native_required_context_is_explicit_for_contextful_std_bindings() {
         let registry = NativeSignatureRegistry::builtins();
         let cases = [
-            ("actor.put", NativeRequiredContext::Actor),
+            ("std.actor.getOrCreate", NativeRequiredContext::Actor),
+            ("std.actor.replace", NativeRequiredContext::Actor),
             ("std.file.create", NativeRequiredContext::File),
             ("core.date.now", NativeRequiredContext::Time),
             ("std.time.sleep", NativeRequiredContext::Time),

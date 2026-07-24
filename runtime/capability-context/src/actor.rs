@@ -3,8 +3,9 @@ use std::sync::Arc;
 use skiff_runtime_model::runtime_value::ActorRef;
 
 use crate::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, CapabilityFuture, CapabilityResult, SpawnSubmitControlRequest,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, CapabilityFuture, CapabilityResult,
+    SpawnSubmitControlRequest,
 };
 
 pub trait ActorCapabilityApi: Send + Sync {
@@ -25,10 +26,16 @@ pub trait ActorCapabilityApi: Send + Sync {
     fn trace_id(&self) -> Option<&str>;
 
     // Actor storage and spawn control operations provided by the host/runtime.
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> CapabilityFuture<'a, ActorRef>;
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> CapabilityFuture<'a, ActorRef>;
 
     fn find_actor<'a>(
@@ -113,12 +120,22 @@ impl<'a> ActorCapabilityContext<'a> {
         self.inner.trace_id()
     }
 
-    pub async fn put_actor(
+    pub async fn get_or_create_actor(
         &self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> CapabilityResult<ActorRef> {
-        self.inner.put_actor(request, object_payload).await
+        self.inner
+            .get_or_create_actor(request, bootstrap_payload)
+            .await
+    }
+
+    pub async fn replace_actor(
+        &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> CapabilityResult<ActorRef> {
+        self.inner.replace_actor(request, bootstrap_payload).await
     }
 
     pub async fn find_actor(
@@ -152,12 +169,22 @@ impl<'a> ActorClient<'a> {
         Self { context }
     }
 
-    pub async fn put_actor(
+    pub async fn get_or_create_actor(
         &self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> CapabilityResult<ActorRef> {
-        self.context.put_actor(request, object_payload).await
+        self.context
+            .get_or_create_actor(request, bootstrap_payload)
+            .await
+    }
+
+    pub async fn replace_actor(
+        &self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> CapabilityResult<ActorRef> {
+        self.context.replace_actor(request, bootstrap_payload).await
     }
 
     pub async fn find_actor(

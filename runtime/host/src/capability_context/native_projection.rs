@@ -20,8 +20,8 @@ use promoted_runtime::{
 use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, ActorFindControlRequest, ActorPutControlRequest,
-    ActorRemoveControlRequest, FileCapabilityFuture,
+    ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
+    ActorRemoveControlRequest, ActorReplaceControlRequest, FileCapabilityFuture,
     NativeFileCapabilityContext as ContractNativeFileCapabilityContext,
     NativeHttpClientCapabilityContext as ContractNativeHttpClientCapabilityContext,
     NativeHttpResponseStreamCapabilityContext as ContractNativeHttpResponseStreamCapabilityContext,
@@ -333,18 +333,35 @@ impl<'execution> NativeActorCapability for ActorCapabilityContext<'execution> {
         self.service_id()
     }
 
+    fn actor_implementation_identity(&self) -> &str {
+        self.request_build_id()
+    }
+
     fn activation_identity(&self) -> Option<&ActivationIdentityControl> {
         self.activation_identity()
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        request: ActorPutControlRequest,
-        object_payload: Vec<u8>,
+        request: ActorGetOrCreateControlRequest,
+        bootstrap_payload: Vec<u8>,
     ) -> NativeCapabilityFuture<'a, ActorRef> {
         Box::pin(async move {
             ActorClient::new(self.clone())
-                .put(request, object_payload)
+                .get_or_create(request, bootstrap_payload)
+                .await
+                .into_native_result()
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        request: ActorReplaceControlRequest,
+        bootstrap_payload: Vec<u8>,
+    ) -> NativeCapabilityFuture<'a, ActorRef> {
+        Box::pin(async move {
+            ActorClient::new(self.clone())
+                .replace(request, bootstrap_payload)
                 .await
                 .into_native_result()
         })

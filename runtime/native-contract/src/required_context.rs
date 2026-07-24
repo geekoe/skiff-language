@@ -16,7 +16,10 @@ pub enum NativeRequiredContext {
 impl NativeRequiredContext {
     pub fn for_binding_key(binding_key: &str) -> Option<Self> {
         Some(match binding_key {
-            "actor.put" | "actor.get" | "actor.find" | "actor.remove" => Self::Actor,
+            "std.actor.getOrCreate"
+            | "std.actor.replace"
+            | "std.actor.find"
+            | "std.actor.remove" => Self::Actor,
             "core.array.empty"
             | "core.map.empty"
             | "core.date.fromEpochMilliseconds"

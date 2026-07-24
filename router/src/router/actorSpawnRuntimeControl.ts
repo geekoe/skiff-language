@@ -119,8 +119,10 @@ export class ActorSpawnRuntimeControl {
     try {
       this.assertActivationIdentity(header.activationIdentity, source.activationIdentity);
       switch (header.type) {
-        case 'actor.put.request':
-          return await this.handleActorPut(header, payloadBytes, source);
+        case 'actor.getOrCreate.request':
+          return await this.handleActorBootstrap('getOrCreate', header, payloadBytes, source);
+        case 'actor.replace.request':
+          return await this.handleActorBootstrap('replace', header, payloadBytes, source);
         case 'actor.find.request':
           return await this.handleActorFind(header, payloadBytes, source);
         case 'actor.remove.request':
@@ -148,26 +150,33 @@ export class ActorSpawnRuntimeControl {
     }
   }
 
-  private async handleActorPut(
-    header: Extract<ActorSpawnRuntimeRequestFrameHeader, { type: 'actor.put.request' }>,
+  private async handleActorBootstrap(
+    operation: 'getOrCreate' | 'replace',
+    header: Extract<
+      ActorSpawnRuntimeRequestFrameHeader,
+      { type: 'actor.getOrCreate.request' | 'actor.replace.request' }
+    >,
     payloadBytes: Uint8Array,
     source: RuntimeControlSource
   ): Promise<ActorSpawnRuntimeControlResult> {
     this.assertRuntime(header.runtimeId, source);
     this.assertActorService(header.actorKey, source);
 
-    const actorRef = await this.actorManager.put({
+    const actorRef = await this.actorManager[operation]({
       actorKey: decodeActorKey(header.actorKey),
-      objectSchemaIdentity: header.objectSchemaIdentity,
-      objectEncodingVersion: header.objectEncodingVersion,
-      encodedObjectBytes: payloadBytes,
+      actorAbiIdentity: header.actorAbiIdentity,
+      actorImplementationIdentity: header.actorImplementationIdentity,
+      bootstrapEncodingVersion: header.bootstrapEncodingVersion,
+      encodedBootstrapBytes: payloadBytes,
       now: this.now(),
     });
 
     return {
       header: {
         schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-        type: 'actor.put.response',
+        type: operation === 'getOrCreate'
+          ? 'actor.getOrCreate.response'
+          : 'actor.replace.response',
         rpcId: header.rpcId,
         actorRef: encodeActorRef(actorRef),
       },
@@ -875,8 +884,10 @@ function errorTypeForRequest(
   type: ActorSpawnRuntimeRequestFrameHeader['type']
 ): ActorSpawnRuntimeErrorFrameHeaderName {
   switch (type) {
-    case 'actor.put.request':
-      return 'actor.put.error';
+    case 'actor.getOrCreate.request':
+      return 'actor.getOrCreate.error';
+    case 'actor.replace.request':
+      return 'actor.replace.error';
     case 'actor.find.request':
       return 'actor.find.error';
     case 'actor.remove.request':

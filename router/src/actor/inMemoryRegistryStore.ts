@@ -14,18 +14,36 @@ import {
   type FinishActorExecutionInput,
   type FinishActorExecutionResult,
   type FinishSpawnActorExecutionInput,
-  type PutActorInput,
+  type ActorBootstrapInput,
 } from './registryStore.js';
 
 export class InMemoryActorRegistryStore implements ActorRegistryStore {
   private readonly entries = new Map<string, ActorRegistryEntry>();
   private readonly executions = new Map<string, ActorExecution>();
 
-  async put(input: PutActorInput): Promise<ActorRegistryEntry> {
+  async getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry> {
     const now = input.now ?? new Date();
     const key = actorLogicalKey(input.actorKey);
     const existing = this.entries.get(key);
-    const epoch = existing === undefined ? 1 : existing.epoch + 1;
+    if (existing !== undefined && existing.status === 'present') {
+      return cloneEntry(existing);
+    }
+    return this.writeBootstrap(input, existing === undefined ? 1 : existing.epoch + 1, now);
+  }
+
+  async replace(input: ActorBootstrapInput): Promise<ActorRegistryEntry> {
+    const now = input.now ?? new Date();
+    const existing = this.entries.get(actorLogicalKey(input.actorKey));
+    return this.writeBootstrap(input, existing === undefined ? 1 : existing.epoch + 1, now);
+  }
+
+  private writeBootstrap(
+    input: ActorBootstrapInput,
+    epoch: number,
+    now: Date
+  ): ActorRegistryEntry {
+    const key = actorLogicalKey(input.actorKey);
+    const existing = this.entries.get(key);
     const createdAt = existing?.createdAt ?? now;
     const entry: ActorRegistryEntry = {
       actorKey: cloneActorKey(input.actorKey),
@@ -33,9 +51,10 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       epoch,
       actorTypeIdentity: input.actorKey.actorTypeIdentity,
       actorIdTypeIdentity: input.actorKey.actorIdTypeIdentity,
-      objectSchemaIdentity: input.objectSchemaIdentity,
-      objectEncodingVersion: input.objectEncodingVersion,
-      encodedObjectBytes: new Uint8Array(input.encodedObjectBytes),
+      actorAbiIdentity: input.actorAbiIdentity,
+      actorImplementationIdentity: input.actorImplementationIdentity,
+      bootstrapEncodingVersion: input.bootstrapEncodingVersion,
+      encodedBootstrapBytes: new Uint8Array(input.encodedBootstrapBytes),
       createdAt,
       updatedAt: now,
       lastIdleAt: now,
@@ -264,7 +283,7 @@ function cloneEntry(entry: ActorRegistryEntry): ActorRegistryEntry {
   return {
     ...entry,
     actorKey: cloneActorKey(entry.actorKey),
-    encodedObjectBytes: new Uint8Array(entry.encodedObjectBytes),
+    encodedBootstrapBytes: new Uint8Array(entry.encodedBootstrapBytes),
     ownerLeaseExpiresAt:
       entry.ownerLeaseExpiresAt === undefined ? undefined : new Date(entry.ownerLeaseExpiresAt),
     lastBusyAt: entry.lastBusyAt === undefined ? undefined : new Date(entry.lastBusyAt),

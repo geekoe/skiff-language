@@ -11,17 +11,18 @@ use serde_json::Value;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorCapabilityApi, ActorCapabilityContext, ActorFindControlRequest,
-    ActorPutControlRequest, ActorRemoveControlRequest, CancellationToken, CapabilityError,
-    CapabilityFuture, ConfigCapabilityApi, ConfigCapabilityContext, DbCapabilityContext,
-    ExecutionControl, ExecutionControlApi, ExecutionControlResult, FileCapabilityApi,
-    FileCapabilityContext, FileCapabilityFuture, FileCapabilitySource, FileCapabilitySourceApi,
-    FileChunkSource, FileSourceStreamApi, FileSourceStreamContext, HttpCapabilityFuture,
-    HttpClientCapabilityApi, HttpClientCapabilityContext, OwnedActorCapabilityContext,
-    OwnedConfigCapabilityContext, OwnedExecutionControl, OwnedExecutionControlApi,
-    OwnedWebsocketCapabilityContext, SpawnSubmitControlRequest, StreamCancelSignal,
-    StreamLifetimeGuard, StreamPoll, StreamPullSource, StreamRuntime, StreamRuntimeApi,
-    StreamRuntimeResult, StreamSink, TelemetryCapabilityApi, TelemetryCapabilityContext,
-    WebsocketCapabilityApi, WebsocketCapabilityContext,
+    ActorGetOrCreateControlRequest, ActorRemoveControlRequest, ActorReplaceControlRequest,
+    CancellationToken, CapabilityError, CapabilityFuture, ConfigCapabilityApi,
+    ConfigCapabilityContext, DbCapabilityContext, ExecutionControl, ExecutionControlApi,
+    ExecutionControlResult, FileCapabilityApi, FileCapabilityContext, FileCapabilityFuture,
+    FileCapabilitySource, FileCapabilitySourceApi, FileChunkSource, FileSourceStreamApi,
+    FileSourceStreamContext, HttpCapabilityFuture, HttpClientCapabilityApi,
+    HttpClientCapabilityContext, OwnedActorCapabilityContext, OwnedConfigCapabilityContext,
+    OwnedExecutionControl, OwnedExecutionControlApi, OwnedWebsocketCapabilityContext,
+    SpawnSubmitControlRequest, StreamCancelSignal, StreamLifetimeGuard, StreamPoll,
+    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeResult, StreamSink,
+    TelemetryCapabilityApi, TelemetryCapabilityContext, WebsocketCapabilityApi,
+    WebsocketCapabilityContext,
 };
 use skiff_runtime_model::{
     addr::ExecutableAddr,
@@ -414,10 +415,22 @@ impl ActorCapabilityApi for TestActor {
         None
     }
 
-    fn put_actor<'a>(
+    fn get_or_create_actor<'a>(
         &'a self,
-        _request: ActorPutControlRequest,
-        _object_payload: Vec<u8>,
+        _request: ActorGetOrCreateControlRequest,
+        _bootstrap_payload: Vec<u8>,
+    ) -> CapabilityFuture<'a, ActorRef> {
+        Box::pin(async {
+            Err(CapabilityError::unsupported(
+                "test actor capability is unavailable",
+            ))
+        })
+    }
+
+    fn replace_actor<'a>(
+        &'a self,
+        _request: ActorReplaceControlRequest,
+        _bootstrap_payload: Vec<u8>,
     ) -> CapabilityFuture<'a, ActorRef> {
         Box::pin(async {
             Err(CapabilityError::unsupported(

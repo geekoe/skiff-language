@@ -69,7 +69,8 @@ const runtimeToRouterFrameHeaderTypes = [
   'runtime.register',
   'runtime.capabilities',
   'runtime.health',
-  'actor.put.request',
+  'actor.getOrCreate.request',
+  'actor.replace.request',
   'actor.find.request',
   'actor.remove.request',
   'spawn.submit.request',
@@ -90,8 +91,10 @@ const routerToRuntimeFrameHeaderTypes = [
   'router.bootstrap',
   'router.control',
   'runtime.registered',
-  'actor.put.response',
-  'actor.put.error',
+  'actor.getOrCreate.response',
+  'actor.getOrCreate.error',
+  'actor.replace.response',
+  'actor.replace.error',
   'actor.find.response',
   'actor.find.error',
   'actor.remove.response',
@@ -788,7 +791,7 @@ export const runtimeFrameHeaderSchemas = {
     },
     additionalProperties: false
   },
-  'actor.put.request': {
+  'actor.getOrCreate.request': {
     type: 'object',
     required: [
       'schemaVersion',
@@ -797,36 +800,76 @@ export const runtimeFrameHeaderSchemas = {
       'runtimeId',
       'activationIdentity',
       'actorKey',
-      'objectSchemaIdentity',
-      'objectEncodingVersion'
+      'actorAbiIdentity',
+      'actorImplementationIdentity',
+      'bootstrapEncodingVersion'
     ],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['actor.put.request'] },
+      type: { type: 'string', enum: ['actor.getOrCreate.request'] },
       ...runtimeRpcRequestBaseProperties,
       actorKey: actorKeySchema,
-      objectSchemaIdentity: { type: 'string' },
-      objectEncodingVersion: { type: 'string' }
+      actorAbiIdentity: { type: 'string' },
+      actorImplementationIdentity: { type: 'string' },
+      bootstrapEncodingVersion: { type: 'string' }
     },
     additionalProperties: false
   },
-  'actor.put.response': {
+  'actor.getOrCreate.response': {
     type: 'object',
     required: ['schemaVersion', 'type', 'rpcId', 'actorRef'],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['actor.put.response'] },
+      type: { type: 'string', enum: ['actor.getOrCreate.response'] },
       ...runtimeRpcResponseBaseProperties,
       actorRef: actorRefSchema
     },
     additionalProperties: false
   },
-  'actor.put.error': {
+  'actor.getOrCreate.error': {
     type: 'object',
     required: ['schemaVersion', 'type', 'rpcId', 'error'],
     properties: {
       schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
-      type: { type: 'string', enum: ['actor.put.error'] },
+      type: { type: 'string', enum: ['actor.getOrCreate.error'] },
+      ...runtimeControlErrorProperties
+    },
+    additionalProperties: false
+  },
+  'actor.replace.request': {
+    type: 'object',
+    required: [
+      'schemaVersion', 'type', 'rpcId', 'runtimeId', 'activationIdentity', 'actorKey',
+      'actorAbiIdentity', 'actorImplementationIdentity', 'bootstrapEncodingVersion'
+    ],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      type: { type: 'string', enum: ['actor.replace.request'] },
+      ...runtimeRpcRequestBaseProperties,
+      actorKey: actorKeySchema,
+      actorAbiIdentity: { type: 'string' },
+      actorImplementationIdentity: { type: 'string' },
+      bootstrapEncodingVersion: { type: 'string' }
+    },
+    additionalProperties: false
+  },
+  'actor.replace.response': {
+    type: 'object',
+    required: ['schemaVersion', 'type', 'rpcId', 'actorRef'],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      type: { type: 'string', enum: ['actor.replace.response'] },
+      ...runtimeRpcResponseBaseProperties,
+      actorRef: actorRefSchema
+    },
+    additionalProperties: false
+  },
+  'actor.replace.error': {
+    type: 'object',
+    required: ['schemaVersion', 'type', 'rpcId', 'error'],
+    properties: {
+      schemaVersion: { type: 'string', enum: [RUNTIME_FRAME_SCHEMA_VERSION] },
+      type: { type: 'string', enum: ['actor.replace.error'] },
       ...runtimeControlErrorProperties
     },
     additionalProperties: false
@@ -1639,30 +1682,54 @@ export const runtimeFrameHeaderFixtures = {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
     ...routerControlFixture
   },
-  'actor.put.request': {
+  'actor.getOrCreate.request': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'actor.put.request',
+    type: 'actor.getOrCreate.request',
     rpcId: 'actor-put-rpc-fixture-1',
     runtimeId: runtimeRegisterFixture.runtimeId,
     activationIdentity: actorControlActivationIdentityFixture,
     actorKey: actorKeyFixture,
-    objectSchemaIdentity: 'schema.example.ThreadActorState',
-    objectEncodingVersion: 'json-v1'
+    actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    actorImplementationIdentity: 'skiff-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    bootstrapEncodingVersion: 'skiff-canonical-v1'
   },
-  'actor.put.response': {
+  'actor.getOrCreate.response': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'actor.put.response',
+    type: 'actor.getOrCreate.response',
     rpcId: 'actor-put-rpc-fixture-1',
     actorRef: actorRefFixture
   },
-  'actor.put.error': {
+  'actor.getOrCreate.error': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
-    type: 'actor.put.error',
+    type: 'actor.getOrCreate.error',
     rpcId: 'actor-put-rpc-fixture-1',
     error: {
-      code: 'ActorPutFixtureError',
-      message: 'fixture actor put failed'
+      code: 'ActorGetOrCreateFixtureError',
+      message: 'fixture actor getOrCreate failed'
     }
+  },
+  'actor.replace.request': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'actor.replace.request',
+    rpcId: 'actor-replace-rpc-fixture-1',
+    runtimeId: runtimeRegisterFixture.runtimeId,
+    activationIdentity: actorControlActivationIdentityFixture,
+    actorKey: actorKeyFixture,
+    actorAbiIdentity: 'skiff-actor-abi-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    actorImplementationIdentity: 'skiff-implementation-v1:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    bootstrapEncodingVersion: 'skiff-canonical-v1'
+  },
+  'actor.replace.response': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'actor.replace.response',
+    rpcId: 'actor-replace-rpc-fixture-1',
+    actorRef: actorRefFixture
+  },
+  'actor.replace.error': {
+    schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+    type: 'actor.replace.error',
+    rpcId: 'actor-replace-rpc-fixture-1',
+    error: { code: 'ActorReplaceFixtureError', message: 'fixture actor replace failed' }
   },
   'actor.find.request': {
     schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
@@ -1962,8 +2029,10 @@ export function validateRuntimeToRouterFrameHeader(
         ? validateRuntimeCapabilities(envelope)
       : type === 'runtime.health'
         ? validateRuntimeHealth(envelope)
-      : type === 'actor.put.request'
-        ? validateActorPutRequest(envelope)
+      : type === 'actor.getOrCreate.request'
+        ? validateActorBootstrapRequest(envelope, type)
+      : type === 'actor.replace.request'
+        ? validateActorBootstrapRequest(envelope, type)
       : type === 'actor.find.request'
         ? validateActorFindRequest(envelope)
       : type === 'actor.remove.request'
@@ -2020,10 +2089,14 @@ export function validateRouterToRuntimeFrameHeader(
       ? validateRouterControl(envelope)
       : type === 'runtime.registered'
         ? validateRuntimeRegistered(envelope)
-      : type === 'actor.put.response'
-        ? validateActorPutResponse(envelope)
-      : type === 'actor.put.error'
-        ? validateRuntimeControlError(envelope, 'actor.put.error')
+      : type === 'actor.getOrCreate.response'
+        ? validateActorBootstrapResponse(envelope, type)
+      : type === 'actor.getOrCreate.error'
+        ? validateRuntimeControlError(envelope, type)
+      : type === 'actor.replace.response'
+        ? validateActorBootstrapResponse(envelope, type)
+      : type === 'actor.replace.error'
+        ? validateRuntimeControlError(envelope, type)
       : type === 'actor.find.response'
         ? validateActorFindResponse(envelope)
       : type === 'actor.find.error'
@@ -2390,20 +2463,27 @@ function validateControlActivationIdentity(
   }
 }
 
-function validateActorPutRequest(envelope: Record<string, unknown>): string | null {
+function validateActorBootstrapRequest(
+  envelope: Record<string, unknown>,
+  type: 'actor.getOrCreate.request' | 'actor.replace.request'
+): string | null {
   return (
-    validateRuntimeRpcRequestBase(envelope, 'actor.put.request') ??
-    validateActorKey(envelope, 'actor.put.request', 'actorKey', false) ??
-    requireString(envelope, 'actor.put.request', 'objectSchemaIdentity') ??
-    requireString(envelope, 'actor.put.request', 'objectEncodingVersion')
+    validateRuntimeRpcRequestBase(envelope, type) ??
+    validateActorKey(envelope, type, 'actorKey', false) ??
+    requireString(envelope, type, 'actorAbiIdentity') ??
+    requireString(envelope, type, 'actorImplementationIdentity') ??
+    requireString(envelope, type, 'bootstrapEncodingVersion')
   );
 }
 
-function validateActorPutResponse(envelope: Record<string, unknown>): string | null {
+function validateActorBootstrapResponse(
+  envelope: Record<string, unknown>,
+  type: 'actor.getOrCreate.response' | 'actor.replace.response'
+): string | null {
   return (
-    validateRuntimeRpcBase(envelope, 'actor.put.response') ??
-    validateActorKey(envelope, 'actor.put.response', 'actorRef', true) ??
-    optionalPositiveInteger(envelope, 'actor.put.response', 'actorRef.epoch')
+    validateRuntimeRpcBase(envelope, type) ??
+    validateActorKey(envelope, type, 'actorRef', true) ??
+    optionalPositiveInteger(envelope, type, 'actorRef.epoch')
   );
 }
 

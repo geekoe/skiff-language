@@ -15,9 +15,10 @@ export interface ActorRegistryEntry {
   epoch: number;
   actorTypeIdentity: string;
   actorIdTypeIdentity: string;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
-  encodedObjectBytes: Uint8Array;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
   ownerRuntimeId?: string | undefined;
   ownerLeaseId?: string | undefined;
   ownerLeaseExpiresAt?: Date | undefined;
@@ -28,11 +29,12 @@ export interface ActorRegistryEntry {
   diagnostics?: Record<string, unknown> | undefined;
 }
 
-export interface PutActorInput {
+export interface ActorBootstrapInput {
   actorKey: ActorKey;
-  objectSchemaIdentity: string;
-  objectEncodingVersion: string;
-  encodedObjectBytes: Uint8Array;
+  actorAbiIdentity: string;
+  actorImplementationIdentity: string;
+  bootstrapEncodingVersion: string;
+  encodedBootstrapBytes: Uint8Array;
   now?: Date | undefined;
   diagnostics?: Record<string, unknown> | undefined;
 }
@@ -89,7 +91,8 @@ export interface FinishSpawnActorExecutionInput extends FinishActorExecutionInpu
 }
 
 export interface ActorRegistryStore {
-  put(input: PutActorInput): Promise<ActorRegistryEntry>;
+  getOrCreate(input: ActorBootstrapInput): Promise<ActorRegistryEntry>;
+  replace(input: ActorBootstrapInput): Promise<ActorRegistryEntry>;
   find(actorKey: ActorKey): Promise<ActorRegistryEntry | undefined>;
   remove(actorKey: ActorKey, now?: Date): Promise<boolean>;
   acquireOwnerLease(input: {
