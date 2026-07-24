@@ -233,7 +233,7 @@ fn canonicalize_package_symbol(
             symbol: target_symbol,
         } = target
         else {
-            // Alias to a non-package type (e.g. a local/native type): stop and
+            // Alias to a non-package type (for example, a local or builtin type): stop and
             // keep the current package-relative form.
             break;
         };

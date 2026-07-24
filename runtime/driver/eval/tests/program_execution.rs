@@ -466,7 +466,7 @@ async fn runtime_program_executes_bytes_natives_without_json_registry() {
 
 #[tokio::test]
 async fn runtime_program_executes_time_sleep_native_without_json_registry() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         time_sleep_executable(20),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -482,8 +482,8 @@ async fn runtime_program_executes_time_sleep_native_without_json_registry() {
 }
 
 #[test]
-fn std_native_package_types_resolve_to_exact_nominal_plans() {
-    let program = program_with_executable_and_std_native_types(run_executable());
+fn std_builtin_package_types_resolve_to_exact_nominal_plans() {
+    let program = program_with_executable_and_std_builtins(run_executable());
     let addr = ExecutableAddr::service(0, 0);
 
     for (type_index, expected_name) in [
@@ -501,7 +501,7 @@ fn std_native_package_types_resolve_to_exact_nominal_plans() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_negative_returns_immediately() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         time_sleep_executable(-1),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -520,7 +520,7 @@ async fn runtime_program_time_sleep_negative_returns_immediately() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_cancellation() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         time_sleep_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -547,7 +547,7 @@ async fn runtime_program_time_sleep_observes_cancellation() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_deadline() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         time_sleep_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -1917,7 +1917,7 @@ async fn runtime_program_stream_producer_cancelled_across_task_boundary_on_consu
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_prefers_producer_error_after_consumer_error() {
-    let program = Arc::new(program_with_executables_and_std_native_types(vec![
+    let program = Arc::new(program_with_executables_and_std_builtins(vec![
         create_from_stream_route_executable(),
         bytes_stream_emit_then_bad_emit_producer_executable(),
     ]));
@@ -1938,7 +1938,7 @@ async fn runtime_program_create_from_stream_prefers_producer_error_after_consume
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         emit_response_stream_helper_executable(),
     ));
     let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
@@ -2365,7 +2365,7 @@ async fn runtime_program_catches_without_type_does_not_catch_native_decode_error
 
 #[tokio::test]
 async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         catch_time_sleep_without_catch_type_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2395,7 +2395,7 @@ async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
 
 #[tokio::test]
 async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         catch_time_sleep_with_catch_type_executable(100, "CancelError"),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2433,7 +2433,7 @@ async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
 
 #[tokio::test]
 async fn runtime_program_catches_without_type_does_not_swallow_execution_budget() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         catch_time_sleep_without_catch_type_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2462,7 +2462,7 @@ async fn runtime_program_catches_without_type_does_not_swallow_execution_budget(
 
 #[tokio::test]
 async fn runtime_program_catches_timeout_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable_and_std_native_types(
+    let program = Arc::new(program_with_executable_and_std_builtins(
         catch_time_sleep_with_catch_type_executable(100, "TimeoutError"),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -4157,14 +4157,12 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
 fn program_with_executables_and_std_http_types(
     executables: Vec<LinkedExecutable>,
 ) -> RuntimeProgram {
-    program_with_executables_and_std_native_types(executables)
+    program_with_executables_and_std_builtins(executables)
 }
 
-fn program_with_executables_and_std_native_types(
-    executables: Vec<LinkedExecutable>,
-) -> RuntimeProgram {
+fn program_with_executables_and_std_builtins(executables: Vec<LinkedExecutable>) -> RuntimeProgram {
     let mut program = program_with_executables(executables);
-    install_std_native_package_types(&mut program);
+    install_std_builtin_package_types(&mut program);
     program
 }
 
@@ -4172,11 +4170,11 @@ fn program_with_executable_and_std_http_types(executable: LinkedExecutable) -> R
     program_with_executables_and_std_http_types(vec![executable])
 }
 
-fn program_with_executable_and_std_native_types(executable: LinkedExecutable) -> RuntimeProgram {
-    program_with_executables_and_std_native_types(vec![executable])
+fn program_with_executable_and_std_builtins(executable: LinkedExecutable) -> RuntimeProgram {
+    program_with_executables_and_std_builtins(vec![executable])
 }
 
-fn install_std_native_package_types(program: &mut RuntimeProgram) {
+fn install_std_builtin_package_types(program: &mut RuntimeProgram) {
     let package_slot = program.packages.len();
     assert_eq!(
         package_slot, 0,
@@ -4195,10 +4193,10 @@ fn install_std_native_package_types(program: &mut RuntimeProgram) {
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
 
-    let declarations = std_native_type_declarations(package_slot);
+    let declarations = std_builtin_type_declarations(package_slot);
     program
         .package_files
-        .push(vec![Arc::new(std_native_file_unit(
+        .push(vec![Arc::new(std_builtin_file_unit(
             declarations
                 .iter()
                 .map(|(_, declaration)| declaration.clone())
@@ -4330,7 +4328,7 @@ fn std_http_type_plan_for_test(
     .expect("std HTTP fixture type plan should build")
 }
 
-fn std_native_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
+fn std_builtin_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     LinkedFileUnit {
         schema_version: "skiff-file-ir-v3".to_string(),
         file_ir_identity: "file:std-http".to_string(),
@@ -4349,7 +4347,7 @@ fn std_native_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     }
 }
 
-fn std_native_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
+fn std_builtin_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
     let header = LinkedTypeRef::Address {
         addr: std_http_type_addr_for_package(package_slot, STD_HTTP_HEADER_TYPE_INDEX),
     };

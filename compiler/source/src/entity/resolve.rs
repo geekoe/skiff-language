@@ -311,7 +311,7 @@ fn resolve_std_symbol(path: &str, namespace: EntityNamespace) -> Option<EntityId
     let symbol = path.rsplit('.').next()?;
     let is_known = match namespace {
         EntityNamespace::Type => {
-            registry.is_native_type_name(symbol) || registry.is_prelude_type_name(symbol)
+            registry.is_builtin_type_name(symbol) || registry.is_prelude_type_name(symbol)
         }
         EntityNamespace::Value => registry.is_native_symbol(symbol),
     };

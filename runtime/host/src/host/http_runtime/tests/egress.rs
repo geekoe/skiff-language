@@ -4,10 +4,8 @@ use serde_json::{json, Value};
 use tokio::{net::TcpListener, sync::mpsc};
 
 use crate::{
-    capability_context::HttpRuntimeOptions,
-    config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-    error::RuntimeError,
-    host::http_runtime::request::request_inner,
+    capability_context::HttpRuntimeOptions, config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
+    error::RuntimeError, host::http_runtime::request::request_inner,
 };
 
 use super::helpers::{

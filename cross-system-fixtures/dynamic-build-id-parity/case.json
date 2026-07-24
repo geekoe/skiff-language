@@ -1596,7 +1596,7 @@
       "version": "2026.06.04"
     }
   },
-  "description": "Runtime program dynamicBuildId parity across compiler publish, runtime, and router; covers std normal record, std normal union, and native type refs.",
+  "description": "Runtime program dynamicBuildId parity across compiler publish, runtime, and router; covers std normal record, std normal union, and builtin type refs.",
   "expectedDynamicBuildId": "skiff-service-build-v1:sha256:88ad1295c2a757abce6f666a4f79dc588b3809906b70cb7bb6ba3cc505d7e349",
   "expectedServiceUnitIdentity": "skiff-service-unit-v1:sha256:1ecd6fa259a0795b75040876db89c0a2dee194efca7755be970b132328822be6",
   "pointerBuildId": "skiff-service-build-v1:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

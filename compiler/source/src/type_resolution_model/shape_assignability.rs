@@ -342,12 +342,7 @@ impl TypeResolutionModel {
     ) -> TypeRefIr {
         let context = TypeResolutionContext::source(module_path);
         let transparent = self.transparent_alias_ir(ty, &context);
-        self.canonicalize_package_method_type_ref(
-            module_path,
-            &transparent,
-            package_id,
-            owner,
-        )
+        self.canonicalize_package_method_type_ref(module_path, &transparent, package_id, owner)
     }
 
     fn canonicalize_package_method_type_ref(
@@ -357,29 +352,21 @@ impl TypeResolutionModel {
         package_id: &str,
         owner: PackageMethodTypeOwner,
     ) -> TypeRefIr {
-        let recurse = |ty| {
-            self.canonicalize_package_method_type_ref(
-                module_path,
-                ty,
-                package_id,
-                owner,
-            )
-        };
+        let recurse =
+            |ty| self.canonicalize_package_method_type_ref(module_path, ty, package_id, owner);
         match ty {
             TypeRefIr::LocalType { type_index }
                 if matches!(owner, PackageMethodTypeOwner::Package) =>
             {
-                self
-                .canonical_package_local_type_slot(package_id, module_path, *type_index)
-                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty))
+                self.canonical_package_local_type_slot(package_id, module_path, *type_index)
+                    .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty))
             }
             TypeRefIr::PublicationType {
                 module_path: owner_module,
                 type_index,
-            } if matches!(owner, PackageMethodTypeOwner::Package) => {
-                self.canonical_package_local_type_slot(package_id, owner_module, *type_index)
-                    .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty))
-            }
+            } if matches!(owner, PackageMethodTypeOwner::Package) => self
+                .canonical_package_local_type_slot(package_id, owner_module, *type_index)
+                .unwrap_or_else(|| self.canonicalize_type_ref_for_module(module_path, ty)),
             TypeRefIr::PackageSymbol { symbol } => {
                 let dependency_ref = match &symbol.package {
                     PackageRefIr::Dependency { dependency_ref } => dependency_ref.as_str(),

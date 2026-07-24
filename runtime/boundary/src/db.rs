@@ -543,7 +543,7 @@ fn is_plain_db_string_key(type_ref: &TypeRefIr) -> bool {
 
 fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeTypeNode {
     match type_ref {
-        TypeRefIr::Builtin { name, args } => runtime_native_type_node_from_artifact(name, args),
+        TypeRefIr::Builtin { name, args } => runtime_builtin_type_node_from_artifact(name, args),
         TypeRefIr::Record { fields } => RuntimeTypeNode::Record {
             fields: fields
                 .iter()
@@ -589,7 +589,7 @@ fn runtime_type_node_from_artifact_type_ref(type_ref: &TypeRefIr) -> RuntimeType
     }
 }
 
-fn runtime_native_type_node_from_artifact(name: &str, args: &[TypeRefIr]) -> RuntimeTypeNode {
+fn runtime_builtin_type_node_from_artifact(name: &str, args: &[TypeRefIr]) -> RuntimeTypeNode {
     if bare_type_name(name) == "Array" && args.len() == 1 {
         return RuntimeTypeNode::Array(Box::new(runtime_type_plan_from_artifact_type_ref(
             &args[0],

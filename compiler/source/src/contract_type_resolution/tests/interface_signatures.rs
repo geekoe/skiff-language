@@ -170,7 +170,7 @@ fn different_contract_identity_cannot_conform_through_alias_shaped_symbols() {
         ("accounts", "example.accounts"),
     ]);
     let error = build_interface_model(&repository_source("accounts.User"), &dependencies)
-        .expect_err("different ContractTypeId must fail exact conformance")
+        .expect_err("different package schema identities must fail exact conformance")
         .to_string();
     assert!(
         error.contains("exact signature does not match interface"),

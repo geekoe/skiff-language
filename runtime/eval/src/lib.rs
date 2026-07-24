@@ -2,8 +2,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-pub mod actor_executor;
 mod actor_dispatch;
+pub mod actor_executor;
 #[cfg(test)]
 #[path = "assembly_execution/ordinary/test_runtime.rs"]
 pub(crate) mod actor_executor_test_runtime;
@@ -71,7 +71,7 @@ pub fn provider_stream_tasks_active_for_test() -> usize {
     assembly_execution::provider_stream_tasks_active_for_test()
 }
 pub use assembly_seam::{
-    AdmittedServiceSchemaRecords, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError,
+    AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalSeamError,
     RuntimeAssemblyEvalTarget, RuntimeAssemblyServiceCallTarget,
 };
 pub use entrypoint::{

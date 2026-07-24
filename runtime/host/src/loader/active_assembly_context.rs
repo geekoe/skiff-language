@@ -14,7 +14,7 @@ use skiff_runtime_activation::{ActivationContext, ActivationId};
 use skiff_runtime_capability_context::{
     DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, DbProviderSource,
 };
-use skiff_runtime_eval::{AdmittedServiceSchemaRecords, RuntimeAssemblyEvalResolver};
+use skiff_runtime_eval::{AdmittedPackageSchemaRecords, RuntimeAssemblyEvalResolver};
 use skiff_runtime_linker::AssemblyLinkedCandidate;
 
 /// Immutable activation owners and canonical target facts published with one assembly generation.
@@ -23,7 +23,7 @@ pub(crate) struct ActiveAssemblyContextSet {
     activations: BTreeMap<ActivationId, Arc<ActivationContext>>,
     activations_by_deployment: BTreeMap<ServiceDeploymentRef, Arc<ActivationContext>>,
     contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
-    schema_records: BTreeMap<ServiceContractRef, AdmittedServiceSchemaRecords>,
+    schema_records: BTreeMap<ServiceContractRef, AdmittedPackageSchemaRecords>,
     operation_targets: BTreeMap<(ActivationId, ContractOperationId), OperationTargetRef>,
     db_sources: BTreeMap<ActivationId, DbCapabilitySource>,
 }
@@ -202,7 +202,7 @@ impl ActiveAssemblyContextSet {
     pub(crate) fn admitted_schema_records(
         &self,
         contract: &ServiceContractRef,
-    ) -> Option<AdmittedServiceSchemaRecords> {
+    ) -> Option<AdmittedPackageSchemaRecords> {
         self.schema_records.get(contract).cloned()
     }
 }
@@ -295,7 +295,7 @@ impl RuntimeAssemblyEvalResolver for ActiveAssemblyContextSet {
     fn admitted_schema_records(
         &self,
         contract: &ServiceContractRef,
-    ) -> Option<AdmittedServiceSchemaRecords> {
+    ) -> Option<AdmittedPackageSchemaRecords> {
         self.schema_records.get(contract).cloned()
     }
 

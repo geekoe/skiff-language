@@ -152,10 +152,26 @@ assert.throws(
   "typed state decoder must reject sparse participant arrays",
 );
 
-assert.deepEqual(checkpoint.authoringFields["package.yml contracts[]"], [
+assert.deepEqual(checkpoint.authoringFields["package.yml services[]"], [
   "alias",
-  "serviceId",
-  "contractVersion",
+  "id",
+  "version",
+]);
+assert.deepEqual(checkpoint.authoringFields["service.yml"], [
+  "id",
+  "http",
+  "websocket",
+  "timeout",
+]);
+assert.deepEqual(checkpoint.authoringFields["config.<profile>.yml"], [
+  "config",
+  "secrets",
+  "state",
+  "resources",
+  "timeout",
+  "quota",
+  "principal",
+  "lifecycle",
 ]);
 assert.deepEqual(checkpoint.authoringFields["assembly.yml"], [
   "environment",

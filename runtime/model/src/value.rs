@@ -378,7 +378,8 @@ impl InterfaceMethodSignature {
 }
 
 /// Linked execution-type facts used only for typed callback projection. These
-/// variants intentionally do not carry `ContractTypeId`: contract nominal
+/// Variants intentionally carry no service-owned schema identity: Package schema
+/// nominal identity is resolved before values enter the runtime model.
 /// identity and local execution identity remain separate domains.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterfaceMethodType {

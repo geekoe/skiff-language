@@ -13,11 +13,11 @@ use skiff_runtime_model::type_plan::{
 
 use super::codec_error;
 use crate::{
-    json, service_linkable::ServiceLinkableMaterializationError,
-    service_linkable_schema::resolve_record, service_schema_records::ServiceSchemaRecords,
+    json, package_schema_records::PackageSchemaRecords,
+    service_linkable::ServiceLinkableMaterializationError, service_linkable_schema::resolve_record,
 };
 
-type PackageSchema = ServiceSchemaRecords;
+type PackageSchema = PackageSchemaRecords;
 
 pub(super) fn compile(
     contract_type: &ContractTypeRef,

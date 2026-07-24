@@ -15,11 +15,11 @@ use skiff_artifact_model::{
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
 use skiff_runtime_activation::RequestStreamLease;
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
     ServiceLinkableMaterializationScope,
 };
-use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_capability_context::{
     CancellationToken, StreamCancelSignal, StreamInternalItem, StreamLifetimeGuard,
     StreamLifetimeGuardApi, StreamRuntimeError, StreamRuntimeResult,
@@ -466,7 +466,7 @@ fn provider_execution_context<'a>(
 fn materialize_value(
     stage: &str,
     ty: &ContractTypeRef,
-    schema_records: &ServiceSchemaRecords,
+    schema_records: &PackageSchemaRecords,
     value_plan: &BoundaryValuePlan,
     value: &RuntimeValue,
     source_heap: &RequestHeap,
@@ -534,7 +534,7 @@ struct BoundaryStreamSink {
     inner: StreamSink,
     item_type: ContractTypeRef,
     item_value_plan: BoundaryValuePlan,
-    schema_records: crate::AdmittedServiceSchemaRecords,
+    schema_records: crate::AdmittedPackageSchemaRecords,
     execution_item_type: Option<RuntimeTypePlan>,
     provider_context: Arc<OwnedProgramExecutionContext>,
 }

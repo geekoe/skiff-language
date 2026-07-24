@@ -129,7 +129,7 @@ async function checkSources() {
     if (relPath.startsWith('prelude/')) {
       expectNotMatches(
         source,
-        exportedNativeTypePattern(),
+        removedNativeTypeDeclarationPattern(),
         `${relPath} must not declare native types; builtin types are compiler-owned`,
       );
     }
@@ -316,7 +316,7 @@ function exportedTypePattern(name) {
   return new RegExp(`\\b(?:export\\s+)?type\\s+${escapeRegExp(name)}\\b`);
 }
 
-function exportedNativeTypePattern(name) {
+function removedNativeTypeDeclarationPattern(name) {
   const typeName = name === undefined ? '[A-Za-z_][A-Za-z0-9_]*' : escapeRegExp(name);
   return new RegExp(`\\b(?:export\\s+)?native\\s+type\\s+${typeName}\\b`);
 }

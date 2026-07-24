@@ -1117,7 +1117,7 @@ mod resolved_package_schema_tests {
     }
 
     #[test]
-    fn rejects_boundary_schema_without_api_public_path() {
+    fn rejects_package_schema_record_without_api_public_path() {
         let error = schema(None, ContractTypeNameability::ClosureOnly).unwrap_err();
         assert!(matches!(
             error,

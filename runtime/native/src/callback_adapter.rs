@@ -6,10 +6,10 @@ use std::{
 use skiff_artifact_model::{
     BoundaryCallbackOperation, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeRef,
 };
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
 };
-use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_model::{
     callback_projection::{
         CallbackContractOperationProjection, CallbackContractProjection,
@@ -164,7 +164,7 @@ pub struct InProcessCallbackAdapter {
     projection: CallbackContractProjection,
     kind: InProcessCallbackAdapterKind,
     receiver: RuntimeValue,
-    package_schema_records: ServiceSchemaRecords,
+    package_schema_records: PackageSchemaRecords,
     owner_heap: Arc<tokio::sync::Mutex<RequestHeap>>,
 }
 
@@ -173,7 +173,7 @@ impl InProcessCallbackAdapter {
         canonical_package_schema_type: PackageSchemaTypeRef,
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
-        package_schema_records: &ServiceSchemaRecords,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         Self::from_interface(
@@ -192,7 +192,7 @@ impl InProcessCallbackAdapter {
         canonical_package_schema_type: PackageSchemaTypeRef,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         interface: &InterfaceValue,
-        package_schema_records: &ServiceSchemaRecords,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
     ) -> Result<Self, CallbackAdapterError> {
         let adapter_identity = explicit_native_adapter_identity(interface)?;
@@ -234,7 +234,7 @@ impl InProcessCallbackAdapter {
         interface: &InterfaceValue,
         contract_operations: &BTreeMap<String, BoundaryCallbackOperation>,
         native_mappings: Option<&BTreeMap<String, ExplicitNativeCallbackOperation>>,
-        package_schema_records: &ServiceSchemaRecords,
+        package_schema_records: &PackageSchemaRecords,
         source_heap: &RequestHeap,
         require_native_adapter: bool,
     ) -> Result<Self, CallbackAdapterError> {
@@ -322,7 +322,7 @@ impl InProcessCallbackAdapter {
         &self.receiver
     }
 
-    pub fn package_schema_records(&self) -> &ServiceSchemaRecords {
+    pub fn package_schema_records(&self) -> &PackageSchemaRecords {
         &self.package_schema_records
     }
 
@@ -395,7 +395,7 @@ pub enum CallbackAdapterError {
 fn validate_callback_schema(
     canonical_type: &PackageSchemaTypeRef,
     operations: &BTreeMap<String, BoundaryCallbackOperation>,
-    records: &ServiceSchemaRecords,
+    records: &PackageSchemaRecords,
 ) -> Result<(), CallbackAdapterError> {
     let record = records
         .get(&canonical_type.package_schema_type_id)
@@ -505,7 +505,7 @@ mod tests {
         }
     }
 
-    fn schema() -> ServiceSchemaRecords {
+    fn schema() -> PackageSchemaRecords {
         let reference = package_schema_type();
         BTreeMap::from([(
             reference.package_schema_type_id.clone(),

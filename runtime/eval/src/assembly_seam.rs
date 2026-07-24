@@ -20,7 +20,7 @@ use crate::assembly_execution::RuntimeAssemblyExecutionProjection;
 ///
 /// Both the map and every record payload remain immutable and shared. Execution paths never
 /// receive an artifact resolver or reconstruct admission facts.
-pub type AdmittedServiceSchemaRecords =
+pub type AdmittedPackageSchemaRecords =
     Arc<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>>;
 
 /// Host-owned lookup surface needed after an activation-relative service instruction is decoded.
@@ -39,7 +39,7 @@ pub trait RuntimeAssemblyEvalResolver: Send + Sync {
     fn admitted_schema_records(
         &self,
         contract: &ServiceContractRef,
-    ) -> Option<AdmittedServiceSchemaRecords>;
+    ) -> Option<AdmittedPackageSchemaRecords>;
 
     fn operation_target(
         &self,
@@ -366,7 +366,7 @@ impl RuntimeAssemblyEvalTarget {
 pub struct RuntimeAssemblyServiceCallTarget {
     provider_request: RequestActivationContext,
     contract: Arc<ServiceContract>,
-    schema_records: AdmittedServiceSchemaRecords,
+    schema_records: AdmittedPackageSchemaRecords,
     operation: ContractOperationId,
     executable_addr: ExecutableAddr,
 }
@@ -384,7 +384,7 @@ impl RuntimeAssemblyServiceCallTarget {
         &self.contract
     }
 
-    pub fn schema_records(&self) -> &AdmittedServiceSchemaRecords {
+    pub fn schema_records(&self) -> &AdmittedPackageSchemaRecords {
         &self.schema_records
     }
 

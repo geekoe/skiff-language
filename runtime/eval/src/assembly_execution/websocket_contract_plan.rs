@@ -4,7 +4,7 @@ use skiff_artifact_model::{
     ContractTypeRef, ServiceContract, WebSocketIngressContext,
 };
 use skiff_runtime_boundary::{
-    payload::PayloadBoundary, service_schema_records::ServiceSchemaRecords,
+    package_schema_records::PackageSchemaRecords, payload::PayloadBoundary,
     service_value_plan::ServiceValuePlan,
 };
 use skiff_runtime_linked_program::{LinkedExecutable, LinkedTypeRef};
@@ -29,7 +29,7 @@ impl<'contract> PinnedWebSocketContractPlan<'contract> {
     pub(in crate::assembly_execution) fn compile(
         contract: &'contract ServiceContract,
         operation_id: &ContractOperationId,
-        package_schema_records: &ServiceSchemaRecords,
+        package_schema_records: &PackageSchemaRecords,
     ) -> Result<Self> {
         let ingress_context =
             websocket_ingress_context(contract, operation_id, package_schema_records)
@@ -233,7 +233,7 @@ fn compile_value_plan<'contract>(
     operation_id: &ContractOperationId,
     role: &str,
     ty: &'contract ContractTypeRef,
-    schema: &ServiceSchemaRecords,
+    schema: &PackageSchemaRecords,
 ) -> Result<ServiceValuePlan<'contract>> {
     ServiceValuePlan::compile(ty, schema).map_err(|error| {
         RuntimeError::InvalidArtifact(format!(
@@ -314,7 +314,7 @@ pub(crate) mod test_support {
         SERVICE_CONTRACT_SCHEMA_VERSION, WEBSOCKET_CONNECT_RESULT_TYPE,
         WEBSOCKET_INGRESS_EVENT_TYPE,
     };
-    use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
+    use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 
     pub(crate) const TEST_SERVICE_ID: &str = "example.websocket";
     pub(crate) const TEST_CONTRACT_VERSION: &str = "1.0.0";
@@ -324,7 +324,7 @@ pub(crate) mod test_support {
         pub(crate) contract: ServiceContract,
         pub(crate) operation_id: skiff_artifact_model::ContractOperationId,
         pub(crate) context_type: Option<PackageSchemaTypeRef>,
-        pub(crate) package_schema_records: ServiceSchemaRecords,
+        pub(crate) package_schema_records: PackageSchemaRecords,
     }
 
     pub(crate) fn null_contract() -> TestContract {

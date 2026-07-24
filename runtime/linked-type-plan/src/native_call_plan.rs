@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn package_native_type_uses_exact_package_id_and_public_path() {
+    fn native_signature_package_type_uses_exact_package_id_and_public_path() {
         let left_addr = package_addr(0, 0);
         let right_addr = package_addr(1, 0);
         let mut overlay = LinkOverlay {
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn package_native_type_fails_closed_for_missing_or_wrong_kind_facts() {
+    fn native_signature_package_type_fails_closed_for_missing_or_wrong_kind_facts() {
         let addr = package_addr(0, 0);
         let mut overlay = LinkOverlay {
             package_slots_by_id: [("example.pkg".to_string(), 0)].into_iter().collect(),

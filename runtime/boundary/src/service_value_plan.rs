@@ -10,9 +10,9 @@ use skiff_runtime_model::{
 use crate::{
     binary::{decode_payload_plan, encode_payload_plan},
     json_convert::{decode_wire_plan_impl, encode_wire_plan_impl, BoundaryStreamHandlePolicy},
+    package_schema_records::PackageSchemaRecords,
     payload::PayloadBoundary,
     service_linkable::ServiceLinkableMaterializationError,
-    service_schema_records::ServiceSchemaRecords,
 };
 
 /// The one expected-type plan for an ordinary value crossing a service boundary.
@@ -28,9 +28,9 @@ pub struct ServiceValuePlan<'contract> {
 impl<'contract> ServiceValuePlan<'contract> {
     pub fn compile(
         contract_type: &'contract ContractTypeRef,
-        boundary_schema: &ServiceSchemaRecords,
+        package_schema_records: &PackageSchemaRecords,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
-        let runtime_type = compile::compile(contract_type, boundary_schema)?;
+        let runtime_type = compile::compile(contract_type, package_schema_records)?;
         Ok(Self {
             contract_type,
             runtime_type,

@@ -50,7 +50,7 @@ pub struct PreludeRegistry {
     type_symbols: BTreeMap<String, String>,
     package_public_paths: BTreeSet<(String, String)>,
     source_modules: Vec<String>,
-    native_type_names: BTreeSet<String>,
+    builtin_type_names: BTreeSet<String>,
     prelude_identity_parts: Vec<String>,
 }
 
@@ -86,7 +86,7 @@ impl PreludeRegistry {
             type_symbols: BTreeMap::new(),
             package_public_paths: BTreeSet::new(),
             source_modules: Vec::new(),
-            native_type_names: BTreeSet::new(),
+            builtin_type_names: BTreeSet::new(),
             prelude_identity_parts: Vec::new(),
         }
     }
@@ -194,12 +194,12 @@ impl PreludeRegistry {
                 && !self.package_schema_type_requires_import(name))
     }
 
-    pub fn is_native_type_name(&self, name: &str) -> bool {
+    pub fn is_builtin_type_name(&self, name: &str) -> bool {
         compiler_builtin_type(name).is_some()
     }
 
-    pub fn native_type_names(&self) -> &BTreeSet<String> {
-        &self.native_type_names
+    pub fn builtin_type_names(&self) -> &BTreeSet<String> {
+        &self.builtin_type_names
     }
 
     pub fn prelude_types(&self) -> &[String] {
@@ -226,7 +226,7 @@ impl PreludeRegistry {
         self.prelude_types = LANGUAGE_PRIMITIVES
             .iter()
             .map(|s| s.to_string())
-            .chain(self.native_type_names.iter().cloned())
+            .chain(self.builtin_type_names.iter().cloned())
             .chain(["Duration"].into_iter().map(str::to_string))
             .collect();
         self.prelude_types.sort();
@@ -235,7 +235,7 @@ impl PreludeRegistry {
 
     fn install_compiler_builtin_types(&mut self) {
         for builtin in COMPILER_BUILTIN_TYPES {
-            self.native_type_names.insert(builtin.name.to_string());
+            self.builtin_type_names.insert(builtin.name.to_string());
             self.type_symbols
                 .insert(builtin.name.to_string(), builtin.symbol.to_string());
             self.type_symbols
@@ -376,7 +376,7 @@ impl PreludeRegistry {
             .map(|binding| binding.shape.return_type.clone())
     }
 
-    pub fn native_type_params(&self, symbol: &str) -> Option<&[String]> {
+    pub fn builtin_type_params(&self, symbol: &str) -> Option<&[String]> {
         self.native_bindings
             .get(symbol)
             .map(|binding| binding.shape.type_params.as_slice())

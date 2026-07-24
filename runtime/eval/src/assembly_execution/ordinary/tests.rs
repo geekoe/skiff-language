@@ -674,7 +674,7 @@ impl RuntimeAssemblyEvalResolver for TestResolver {
     fn admitted_schema_records(
         &self,
         _contract: &ServiceContractRef,
-    ) -> Option<crate::AdmittedServiceSchemaRecords> {
+    ) -> Option<crate::AdmittedPackageSchemaRecords> {
         None
     }
 

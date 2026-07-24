@@ -88,13 +88,19 @@ struct SourceTypeResolution {
 
 #[derive(Clone, Debug)]
 enum SourceTypeKind {
-    Record { fields: BTreeMap<String, String> },
+    Record {
+        fields: BTreeMap<String, String>,
+    },
     Actor {
         id_type: String,
         fields: BTreeMap<String, String>,
     },
-    Representation { target: String },
-    Alias { target: String },
+    Representation {
+        target: String,
+    },
+    Alias {
+        target: String,
+    },
     External,
 }
 
@@ -3751,10 +3757,12 @@ fn record_field_type_from_ir(ty: &TypeRefIr, field: &str) -> Option<TypeRefIr> {
             }
             Some(union_type_ir(field_types))
         }
-        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => match field {
-            "error" => Some(args[0].clone()),
-            _ => None,
-        },
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+            match field {
+                "error" => Some(args[0].clone()),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -4159,7 +4167,7 @@ fn canonical_native_prelude_type_symbol(symbol: &str) -> Option<String> {
         "JsonObject" => Some("JsonObject".to_string()),
         "Config" => Some("Config".to_string()),
         "config.DecodeError" => Some("config.DecodeError".to_string()),
-        other if prelude_registry().is_native_type_name(other) => Some(other.to_string()),
+        other if prelude_registry().is_builtin_type_name(other) => Some(other.to_string()),
         _ => None,
     }
 }
@@ -5231,7 +5239,10 @@ mod tests {
             TypeRefIr::Union { .. }
         ));
         assert_eq!(interface.methods[0].params[0].name, "self");
-        assert_eq!(interface.methods[0].params[0].ty, TypeRefIr::builtin("Self"));
+        assert_eq!(
+            interface.methods[0].params[0].ty,
+            TypeRefIr::builtin("Self")
+        );
 
         let consumer_sources = parsed_sources(
             r#"

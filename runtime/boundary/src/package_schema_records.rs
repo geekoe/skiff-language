@@ -7,4 +7,7 @@ use skiff_artifact_model::{PackageSchemaTypeId, PackageSchemaTypeRecord};
 /// The map itself is normally owned by an `Arc` at the host/eval seam. Boundary
 /// plans borrow that map and preserve the record `Arc`s without cloning record
 /// payloads.
-pub type ServiceSchemaRecords = BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>;
+/// Package-owned schema records admitted for one service contract.
+///
+/// The service selects the exact requirements but does not own these records.
+pub type PackageSchemaRecords = BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>;

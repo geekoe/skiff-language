@@ -310,7 +310,7 @@ impl PreludeRegistry {
                 .join(", ");
             return format!("{root}<{args}>");
         }
-        if name.contains('.') || self.native_type_names.contains(name) {
+        if name.contains('.') || self.builtin_type_names.contains(name) {
             return name.to_string();
         }
         if let Some(symbol) = self.type_symbols.get(name) {

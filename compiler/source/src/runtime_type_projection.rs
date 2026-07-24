@@ -120,7 +120,7 @@ fn named_type_descriptor(
 ) -> TypeRefIr {
     let canonical = canonical_package_type_name(name, runtime_bindings);
     let registry = prelude_registry();
-    if is_language_primitive(&canonical) || registry.is_native_type_name(&canonical) {
+    if is_language_primitive(&canonical) || registry.is_builtin_type_name(&canonical) {
         return TypeRefIr::Builtin {
             name: canonical,
             args,
@@ -174,7 +174,7 @@ fn canonical_native_prelude_symbol(symbol: &str) -> Option<String> {
         "Json" => Some("Json".to_string()),
         "JsonObject" => Some("JsonObject".to_string()),
         "config.Config" | "Config" => Some("Config".to_string()),
-        other if prelude_registry().is_native_type_name(other) => Some(other.to_string()),
+        other if prelude_registry().is_builtin_type_name(other) => Some(other.to_string()),
         _ => None,
     }
 }

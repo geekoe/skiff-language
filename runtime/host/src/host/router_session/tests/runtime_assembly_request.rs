@@ -145,11 +145,9 @@ async fn runtime_assembly_http_response_ceiling_uses_bootstrap_and_releases_requ
     let frame = encode_binary_frame(&header, &[]).expect("canonical request.start should encode");
     let (sender, mut receiver) = mpsc::unbounded_channel();
 
-    super::super::dispatch_router_binary_frame_with_http_response_max(
-        &host, &frame, &sender, 1,
-    )
-    .await
-    .expect("oversize request should dispatch to its response terminal");
+    super::super::dispatch_router_binary_frame_with_http_response_max(&host, &frame, &sender, 1)
+        .await
+        .expect("oversize request should dispatch to its response terminal");
 
     let Terminal::Error(response) = recv_terminal(&mut receiver).await else {
         panic!("oversize HTTP response must terminate with response.error")

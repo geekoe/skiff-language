@@ -8,11 +8,11 @@ use skiff_runtime_model::{
 };
 
 use crate::{
+    package_schema_records::PackageSchemaRecords,
     service_linkable_detached::{
         materialize_detached_graph, model_error, reject_detached_interface_graph,
     },
     service_linkable_schema::{contract_type_is_callback_interface, validate_schema_closure},
-    service_schema_records::ServiceSchemaRecords,
     service_value_plan::ServiceValuePlan,
 };
 
@@ -20,7 +20,7 @@ use crate::{
 /// It retains no File IR or runtime-inferred type descriptor.
 pub struct ServiceLinkableContractPlan<'a> {
     ty: &'a ContractTypeRef,
-    boundary_schema: &'a ServiceSchemaRecords,
+    package_schema_records: &'a PackageSchemaRecords,
     value_plan: &'a BoundaryValuePlan,
     detached_value_plan: Option<ServiceValuePlan<'a>>,
 }
@@ -28,7 +28,7 @@ pub struct ServiceLinkableContractPlan<'a> {
 impl<'a> ServiceLinkableContractPlan<'a> {
     pub fn new(
         ty: &'a ContractTypeRef,
-        boundary_schema: &'a ServiceSchemaRecords,
+        package_schema_records: &'a PackageSchemaRecords,
         value_plan: &'a BoundaryValuePlan,
     ) -> Result<Self, ServiceLinkableMaterializationError> {
         validate_value_plan_shape(value_plan)?;
@@ -36,12 +36,12 @@ impl<'a> ServiceLinkableContractPlan<'a> {
             BoundaryValuePlan::Linkable {
                 carrier: BoundaryValueCarrier::DetachedValueGraph,
                 ..
-            } => Some(ServiceValuePlan::compile(ty, boundary_schema)?),
+            } => Some(ServiceValuePlan::compile(ty, package_schema_records)?),
             BoundaryValuePlan::Linkable {
                 carrier: BoundaryValueCarrier::CallbackCapability,
                 ..
             } => {
-                validate_schema_closure(ty, boundary_schema)?;
+                validate_schema_closure(ty, package_schema_records)?;
                 None
             }
             BoundaryValuePlan::Unsupported { .. } => {
@@ -50,7 +50,7 @@ impl<'a> ServiceLinkableContractPlan<'a> {
         };
         Ok(Self {
             ty,
-            boundary_schema,
+            package_schema_records,
             value_plan,
             detached_value_plan,
         })
@@ -125,11 +125,11 @@ impl<'a> ServiceLinkableContractPlan<'a> {
                     value,
                     source_heap,
                     ty: self.ty,
-                    boundary_schema: self.boundary_schema,
+                    package_schema_records: self.package_schema_records,
                     lifetime: *lifetime,
                 };
                 let is_callback =
-                    contract_type_is_callback_interface(self.ty, self.boundary_schema)?;
+                    contract_type_is_callback_interface(self.ty, self.package_schema_records)?;
                 let projection = if is_callback {
                     hooks.project_callback_capability(request)?
                 } else {
@@ -172,7 +172,7 @@ pub struct ServiceLinkableCapabilityRequest<'a> {
     pub value: &'a RuntimeValue,
     pub source_heap: &'a RequestHeap,
     pub ty: &'a ContractTypeRef,
-    pub boundary_schema: &'a ServiceSchemaRecords,
+    pub package_schema_records: &'a PackageSchemaRecords,
     pub lifetime: BoundaryValueLifetime,
 }
 

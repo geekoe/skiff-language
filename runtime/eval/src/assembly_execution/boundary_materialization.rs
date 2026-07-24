@@ -2,11 +2,11 @@ use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationDescriptor, BoundaryValueCarrier,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef,
 };
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableCapabilityHooks, ServiceLinkableContractPlan,
     ServiceLinkableMaterializationError, ServiceLinkableMaterializationScope,
 };
-use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_model::{
     request_heap::{RequestHeap, RequestHeapLimits},
     runtime_value::RuntimeValue,
@@ -32,7 +32,7 @@ pub(crate) struct CanonicalServiceBoundaryPlan<'a> {
 impl<'a> CanonicalServiceBoundaryPlan<'a> {
     pub(crate) fn new(
         operation: &'a BoundaryOperationDescriptor,
-        schema: &'a ServiceSchemaRecords,
+        schema: &'a PackageSchemaRecords,
         arg_count: usize,
     ) -> Result<Self> {
         preflight_boundary_contract(operation, arg_count)?;
@@ -203,7 +203,7 @@ struct DirectionalMaterializationPlan<'a> {
 impl<'a> DirectionalMaterializationPlan<'a> {
     fn new(
         ty: &'a ContractTypeRef,
-        schema: &'a ServiceSchemaRecords,
+        schema: &'a PackageSchemaRecords,
         value_plan: &'a BoundaryValuePlan,
         detached_owner: BoundaryValueOwner,
         operation: &str,

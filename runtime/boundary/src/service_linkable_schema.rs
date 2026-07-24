@@ -5,11 +5,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
+    package_schema_records::PackageSchemaRecords,
     service_linkable::ServiceLinkableMaterializationError,
-    service_schema_records::ServiceSchemaRecords,
 };
 
-type PackageSchema = ServiceSchemaRecords;
+type PackageSchema = PackageSchemaRecords;
 
 pub(crate) fn validate_schema_closure(
     ty: &ContractTypeRef,

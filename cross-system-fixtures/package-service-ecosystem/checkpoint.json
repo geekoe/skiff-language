@@ -1,8 +1,8 @@
 {
   "authoringFields": {
-    "package.yml contracts[]": ["alias", "serviceId", "contractVersion"],
-    "contract.yml": ["schemaVersion", "serviceId", "contractVersion", "operations", "boundarySchema", "diagnosticText"],
-    "deployment.yml": ["schemaVersion", "contract", "deploymentRevision", "implementation", "operationBindings", "packageBindings", "serviceSelectors", "ingress", "configLiterals", "secretRefs", "stateBindings", "resourceBindings", "runtimeCapabilityBindings", "policy", "diagnosticText"],
+    "package.yml services[]": ["alias", "id", "version"],
+    "service.yml": ["id", "http", "websocket", "timeout"],
+    "config.<profile>.yml": ["config", "secrets", "state", "resources", "timeout", "quota", "principal", "lifecycle"],
     "assembly.yml": ["environment", "rootDeployments"]
   },
   "recordPaths": {

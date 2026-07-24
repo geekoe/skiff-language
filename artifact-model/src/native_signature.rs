@@ -1080,7 +1080,7 @@ mod tests {
         ] {
             assert!(
                 package_paths.contains(&expected),
-                "missing structured package native type {expected}"
+                "missing structured package type in native signature {expected}"
             );
         }
     }

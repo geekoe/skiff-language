@@ -12,13 +12,13 @@ use skiff_artifact_model::{
     PackageSchemaTypeId, PackageSchemaTypeRef,
 };
 use skiff_runtime_activation::{CallbackCapabilityError, CallbackLifetime};
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::service_linkable::{
     FailClosedServiceLinkableCapabilityHooks, ServiceLinkableCapabilityHooks,
     ServiceLinkableCapabilityProjection, ServiceLinkableCapabilityRequest,
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
     ServiceLinkableMaterializationScope,
 };
-use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -75,14 +75,15 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
             .runtime_assembly_target()
             .map_err(callback_materialization_error)?;
         let interface = interface_value(request.value, request.source_heap)?;
-        let (callback_type, operations) = callback_contract(request.ty, request.boundary_schema)?;
+        let (callback_type, operations) =
+            callback_contract(request.ty, request.package_schema_records)?;
         let adapter = if native {
             InProcessCallbackAdapter::from_registered_explicit_native_interface(
                 request.ty,
                 callback_type,
                 operations,
                 &interface,
-                request.boundary_schema,
+                request.package_schema_records,
                 request.source_heap,
             )
         } else {
@@ -90,7 +91,7 @@ impl<'context, 'execution> CallbackNativeCapabilityHooks<'context, 'execution> {
                 callback_type,
                 &interface,
                 operations,
-                request.boundary_schema,
+                request.package_schema_records,
                 request.source_heap,
             )
         }
@@ -276,7 +277,7 @@ fn interface_value(
 
 fn callback_contract<'a>(
     ty: &ContractTypeRef,
-    schema: &'a ServiceSchemaRecords,
+    schema: &'a PackageSchemaRecords,
 ) -> std::result::Result<
     (
         PackageSchemaTypeRef,
@@ -289,7 +290,7 @@ fn callback_contract<'a>(
 
 fn callback_contract_inner<'a>(
     ty: &ContractTypeRef,
-    schema: &'a ServiceSchemaRecords,
+    schema: &'a PackageSchemaRecords,
     active: &mut HashSet<PackageSchemaTypeId>,
 ) -> std::result::Result<
     (
@@ -393,7 +394,7 @@ fn validate_adapter_preimage(
 
 fn materialize_callback_value(
     ty: &ContractTypeRef,
-    schema: &ServiceSchemaRecords,
+    schema: &PackageSchemaRecords,
     value: &RuntimeValue,
     source_heap: &RequestHeap,
     destination_heap: &mut RequestHeap,

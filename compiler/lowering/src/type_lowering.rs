@@ -852,7 +852,7 @@ pub(super) fn lower_named_type(
 
 pub(super) fn is_file_ir_builtin_type(name: &str) -> bool {
     let registry = prelude_registry();
-    if registry.is_native_type_name(name) {
+    if registry.is_builtin_type_name(name) {
         return true;
     }
     matches!(
@@ -873,7 +873,7 @@ fn std_package_symbol_ref(symbol_path: impl Into<String>) -> PackageSymbolRef {
 
 fn canonical_builtin_std_type_name(name: &str) -> Option<String> {
     let name = name.trim();
-    if prelude_registry().is_native_type_name(name) {
+    if prelude_registry().is_builtin_type_name(name) {
         return Some(name.to_string());
     }
     if let Some(bare) = match name {
@@ -904,11 +904,11 @@ fn canonical_builtin_std_type_name(name: &str) -> Option<String> {
 }
 
 fn is_file_ir_native_builtin_type(name: &str) -> bool {
-    prelude_registry().is_native_type_name(name) || name == "config.DecodeError"
+    prelude_registry().is_builtin_type_name(name) || name == "config.DecodeError"
 }
 
 pub(super) fn is_file_ir_builtin_generic_type(root: &str) -> bool {
-    prelude_registry().is_native_type_name(root) || matches!(root, "DbUpsertResult")
+    prelude_registry().is_builtin_type_name(root) || matches!(root, "DbUpsertResult")
 }
 
 fn is_std_abi_generic_type_name(name: &str) -> bool {

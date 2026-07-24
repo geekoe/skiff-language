@@ -13,9 +13,7 @@ use tokio::{
 };
 
 use crate::{
-    capability_context::HttpRuntimeOptions,
-    config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
-    error::Result,
+    capability_context::HttpRuntimeOptions, config::DEFAULT_HTTP_RESPONSE_MAX_BYTES, error::Result,
     host::http_runtime::request::request_inner,
 };
 

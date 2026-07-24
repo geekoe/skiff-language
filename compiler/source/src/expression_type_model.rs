@@ -2318,7 +2318,7 @@ impl<'a> OwnerChecker<'a> {
                     &path,
                     params.iter().map(String::as_str),
                     &native_context,
-                    prelude_registry().native_type_params(&path).unwrap_or(&[]),
+                    prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                     type_args,
                 );
                 if native_context.module_path != self.module_path {
@@ -2341,7 +2341,7 @@ impl<'a> OwnerChecker<'a> {
             let resolved_return_type = self.resolve_callable_return_type(
                 &return_type,
                 &native_context,
-                prelude_registry().native_type_params(&path).unwrap_or(&[]),
+                prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
                 type_args,
             )?;
             return Some(if native_context.module_path == self.module_path {
@@ -3875,10 +3875,9 @@ pub fn runtime_receiver_root_from_type_ref(ty: &TypeRefIr) -> Option<String> {
             Some(canonical_runtime_receiver_root(&symbol.symbol_path).to_string())
         }
         TypeRefIr::ServiceSymbol { symbol }
-            if prelude_registry().known_type_symbol(&format!(
-                "{}.{}",
-                symbol.module_path, symbol.symbol
-            )) == Some(format!("{}.{}", symbol.module_path, symbol.symbol)) =>
+            if prelude_registry()
+                .known_type_symbol(&format!("{}.{}", symbol.module_path, symbol.symbol))
+                == Some(format!("{}.{}", symbol.module_path, symbol.symbol)) =>
         {
             Some(
                 canonical_runtime_receiver_root(&format!(

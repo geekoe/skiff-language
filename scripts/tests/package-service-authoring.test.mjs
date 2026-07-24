@@ -14,8 +14,6 @@ import {
 } from '../lib/package-service-authoring.mjs';
 import {
   contractCoordinate,
-  readReceiptRecord,
-  writeContractRoot,
   writePackageRoot,
 } from './package-service-fixtures.mjs';
 
@@ -163,7 +161,7 @@ test('service package build returns one stable API receipt with operation identi
   assert.equal(result.serviceApiReceipt.serviceId, 'example.com/ping');
   assert.match(
     result.serviceApiReceipt.serviceProtocolIdentity,
-    /^skiff-service-protocol-v2:sha256:/,
+    /^skiff-service-protocol-v3:sha256:/,
   );
   assert.deepEqual(
     result.serviceApiReceipt.projection.functions.map((entry) => ({
