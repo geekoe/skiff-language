@@ -25,6 +25,8 @@ export interface ActorRegistryEntry {
   ownerRuntimeId?: string | undefined;
   ownerLeaseId?: string | undefined;
   ownerLeaseExpiresAt?: Date | undefined;
+  idleEvictionRequestId?: string | undefined;
+  idleEvictionRequestedAt?: Date | undefined;
   lastBusyAt?: Date | undefined;
   lastIdleAt?: Date | undefined;
   createdAt: Date;
@@ -100,6 +102,15 @@ export interface ActorOwnerFence {
   ownerRuntimeId: string;
   ownerLeaseId: string;
   ownerLeaseExpiresAt: Date;
+}
+
+export interface ActorIdleEvictionFence extends ActorOwnerFence {
+  evictionRequestId: string;
+}
+
+export interface ExpiredActorOwner {
+  fence: ActorOwnerFence;
+  failedInvocations: ActorInvocationLedger[];
 }
 
 export type AcquireActorOwnerResult =
@@ -232,6 +243,23 @@ export interface ActorRegistryStore {
     now?: Date | undefined;
     terminalReason: string;
   }): Promise<ActorInvocationLedger[]>;
+  expireOwnerLeases(input: {
+    now: Date;
+    terminalReason: string;
+  }): Promise<ExpiredActorOwner[]>;
+  idleOwnerCandidates(input: {
+    now: Date;
+    idleTtlMs: number;
+  }): Promise<ActorOwnerFence[]>;
+  requestIdleOwnerEviction(input: {
+    fence: ActorOwnerFence;
+    evictionRequestId: string;
+    now: Date;
+  }): Promise<ActorIdleEvictionFence | undefined>;
+  acknowledgeIdleOwnerEviction(input: {
+    fence: ActorIdleEvictionFence;
+    now: Date;
+  }): Promise<boolean>;
   acceptActorExecution(
     actorKey: ActorKey,
     expectedEpoch: number,

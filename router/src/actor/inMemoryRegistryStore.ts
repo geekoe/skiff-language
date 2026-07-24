@@ -10,6 +10,8 @@ import {
   type AcceptActorExecutionResult,
   type AcquireActorOwnerResult,
   type ActorInvocationLedger,
+  type ActorIdleEvictionFence,
+  type ActorOwnerFence,
   type ActorMethodAdmissionInput,
   type ActorExecution,
   type ActorExecutionDraft,
@@ -21,6 +23,7 @@ import {
   type ActorBootstrapInput,
   type AdmitActorMethodResult,
   type RenewActorOwnerResult,
+  type ExpiredActorOwner,
   type TransitionActorInvocationResult,
 } from './registryStore.js';
 
@@ -91,6 +94,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
     entry.lifecycleState = 'inactive';
     entry.targetImplementationIdentity = undefined;
     entry.updatedAt = now;
@@ -133,6 +138,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = input.ownerRuntimeId;
     entry.ownerLeaseId = input.ownerLeaseId;
     entry.ownerLeaseExpiresAt = new Date(input.ownerLeaseExpiresAt);
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
     entry.lifecycleState = 'activating';
     entry.updatedAt = now;
     const cloned = cloneEntry(entry);
@@ -164,6 +171,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
       return false;
     }
     entry.lifecycleState = 'live';
+    entry.lastIdleAt = now;
     entry.updatedAt = now;
     return true;
   }
@@ -214,6 +222,8 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
     if (entry.status === 'present' && !wasUpgrading) {
       entry.lifecycleState = 'inactive';
     }
@@ -280,6 +290,7 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     const now = input.now ?? new Date();
     if (
       entry.lifecycleState !== 'live' ||
+      entry.idleEvictionRequestId !== undefined ||
       entry.ownerRuntimeId === undefined ||
       entry.ownerLeaseId === undefined ||
       entry.ownerLeaseExpiresAt === undefined ||
@@ -323,7 +334,26 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     terminalReason?: string | undefined;
     now?: Date | undefined;
   }): Promise<TransitionActorInvocationResult> {
-    return this.invocationLedger.transition(input);
+    const result = this.invocationLedger.transition(input);
+    if (!result.ok) {
+      return result;
+    }
+    const entry = this.entries.get(actorLogicalKey(input.actorKey));
+    if (entry !== undefined && ownerFenceMatches(entry, input)) {
+      const now = input.now ?? new Date();
+      entry.lastBusyAt = now;
+      if (
+        (input.nextState === 'completed' ||
+          input.nextState === 'cancelled' ||
+          input.nextState === 'failed') &&
+        this.invocationLedger.activeCountForActor(input.actorKey) === 0 &&
+        this.activeExecutionCountSync(input.actorKey) === 0
+      ) {
+        entry.lastIdleAt = now;
+      }
+      entry.updatedAt = now;
+    }
+    return result;
   }
 
   async actorInvocation(invocationId: string): Promise<ActorInvocationLedger | undefined> {
@@ -337,6 +367,111 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     terminalReason: string;
   }): Promise<ActorInvocationLedger[]> {
     return this.invocationLedger.failForOwner(input);
+  }
+
+  async expireOwnerLeases(input: {
+    now: Date;
+    terminalReason: string;
+  }): Promise<ExpiredActorOwner[]> {
+    const expired: ExpiredActorOwner[] = [];
+    for (const entry of this.entries.values()) {
+      if (
+        entry.status !== 'present' ||
+        entry.ownerRuntimeId === undefined ||
+        entry.ownerLeaseId === undefined ||
+        entry.ownerLeaseExpiresAt === undefined ||
+        entry.ownerLeaseExpiresAt.getTime() > input.now.getTime()
+      ) {
+        continue;
+      }
+      const fence = ownerFence(entry);
+      const failedInvocations = this.invocationLedger.failForOwner({
+        ownerRuntimeId: fence.ownerRuntimeId,
+        ownerLeaseId: fence.ownerLeaseId,
+        now: input.now,
+        terminalReason: input.terminalReason,
+      });
+      this.clearOwner(entry, input.now);
+      expired.push({ fence, failedInvocations });
+    }
+    return expired;
+  }
+
+  async idleOwnerCandidates(input: {
+    now: Date;
+    idleTtlMs: number;
+  }): Promise<ActorOwnerFence[]> {
+    const candidates: ActorOwnerFence[] = [];
+    for (const entry of this.entries.values()) {
+      const idleSince = entry.lastIdleAt ?? entry.updatedAt;
+      if (
+        entry.status === 'present' &&
+        entry.lifecycleState === 'live' &&
+        entry.ownerRuntimeId !== undefined &&
+        entry.ownerLeaseId !== undefined &&
+        entry.ownerLeaseExpiresAt !== undefined &&
+        entry.ownerLeaseExpiresAt.getTime() > input.now.getTime() &&
+        entry.idleEvictionRequestId === undefined &&
+        input.now.getTime() - idleSince.getTime() >= input.idleTtlMs &&
+        this.invocationLedger.activeCountForActor(entry.actorKey) === 0 &&
+        this.activeExecutionCountSync(entry.actorKey) === 0
+      ) {
+        candidates.push(ownerFence(entry));
+      }
+    }
+    return candidates;
+  }
+
+  async requestIdleOwnerEviction(input: {
+    fence: ActorOwnerFence;
+    evictionRequestId: string;
+    now: Date;
+  }): Promise<ActorIdleEvictionFence | undefined> {
+    const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
+    if (
+      entry === undefined ||
+      entry.status !== 'present' ||
+      entry.lifecycleState !== 'live' ||
+      !ownerFenceMatches(entry, {
+        expectedEpoch: input.fence.epoch,
+        actorImplementationIdentity: input.fence.implementationIdentity,
+        ownerRuntimeId: input.fence.ownerRuntimeId,
+        ownerLeaseId: input.fence.ownerLeaseId,
+      }) ||
+      entry.ownerLeaseExpiresAt?.getTime() !== input.fence.ownerLeaseExpiresAt.getTime() ||
+      entry.ownerLeaseExpiresAt.getTime() <= input.now.getTime() ||
+      entry.idleEvictionRequestId !== undefined ||
+      this.invocationLedger.activeCountForActor(entry.actorKey) > 0 ||
+      this.activeExecutionCountSync(entry.actorKey) > 0
+    ) {
+      return undefined;
+    }
+    entry.idleEvictionRequestId = input.evictionRequestId;
+    entry.idleEvictionRequestedAt = input.now;
+    entry.updatedAt = input.now;
+    return { ...ownerFence(entry), evictionRequestId: input.evictionRequestId };
+  }
+
+  async acknowledgeIdleOwnerEviction(input: {
+    fence: ActorIdleEvictionFence;
+    now: Date;
+  }): Promise<boolean> {
+    const entry = this.entries.get(actorLogicalKey(input.fence.actorKey));
+    if (
+      entry === undefined ||
+      entry.idleEvictionRequestId !== input.fence.evictionRequestId ||
+      !ownerFenceMatches(entry, {
+        expectedEpoch: input.fence.epoch,
+        actorImplementationIdentity: input.fence.implementationIdentity,
+        ownerRuntimeId: input.fence.ownerRuntimeId,
+        ownerLeaseId: input.fence.ownerLeaseId,
+      }) ||
+      entry.ownerLeaseExpiresAt?.getTime() !== input.fence.ownerLeaseExpiresAt.getTime()
+    ) {
+      return false;
+    }
+    this.clearOwner(entry, input.now);
+    return true;
   }
 
   async acceptActorExecution(
@@ -410,6 +545,9 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
+    entry.lifecycleState = 'inactive';
     entry.lastIdleAt = now;
     entry.updatedAt = now;
     return true;
@@ -473,6 +611,21 @@ export class InMemoryActorRegistryStore implements ActorRegistryStore {
     entry.ownerRuntimeId = undefined;
     entry.ownerLeaseId = undefined;
     entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
+    entry.lastIdleAt = now;
+    entry.updatedAt = now;
+  }
+
+  private clearOwner(entry: ActorRegistryEntry, now: Date): void {
+    entry.ownerRuntimeId = undefined;
+    entry.ownerLeaseId = undefined;
+    entry.ownerLeaseExpiresAt = undefined;
+    entry.idleEvictionRequestId = undefined;
+    entry.idleEvictionRequestedAt = undefined;
+    if (entry.status === 'present' && entry.lifecycleState !== 'upgrading') {
+      entry.lifecycleState = 'inactive';
+    }
     entry.lastIdleAt = now;
     entry.updatedAt = now;
   }
@@ -496,6 +649,10 @@ function cloneEntry(entry: ActorRegistryEntry): ActorRegistryEntry {
     encodedBootstrapBytes: new Uint8Array(entry.encodedBootstrapBytes),
     ownerLeaseExpiresAt:
       entry.ownerLeaseExpiresAt === undefined ? undefined : new Date(entry.ownerLeaseExpiresAt),
+    idleEvictionRequestedAt:
+      entry.idleEvictionRequestedAt === undefined
+        ? undefined
+        : new Date(entry.idleEvictionRequestedAt),
     lastBusyAt: entry.lastBusyAt === undefined ? undefined : new Date(entry.lastBusyAt),
     lastIdleAt: entry.lastIdleAt === undefined ? undefined : new Date(entry.lastIdleAt),
     createdAt: new Date(entry.createdAt),

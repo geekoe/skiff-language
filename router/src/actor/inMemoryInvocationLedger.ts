@@ -80,6 +80,20 @@ export class InMemoryActorInvocationLedger {
     }
     return failed;
   }
+
+  activeCountForActor(actorKey: ActorInvocationLedger['actorKey']): number {
+    const logicalKey = actorLogicalKey(actorKey);
+    let count = 0;
+    for (const invocation of this.invocations.values()) {
+      if (
+        actorLogicalKey(invocation.actorKey) === logicalKey &&
+        (invocation.state === 'admitted' || invocation.state === 'dispatched')
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
 }
 
 function isValidTransition(
