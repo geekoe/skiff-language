@@ -42,6 +42,11 @@ const STD_HTTP_CLIENT_REQUEST_TYPE_INDEX: usize = 5;
 const STD_HTTP_CLIENT_RESPONSE_TYPE_INDEX: usize = 6;
 const STD_HTTP_CLIENT_STREAM_HANDLE_TYPE_INDEX: usize = 7;
 const STD_HTTP_SSE_EVENT_TYPE_INDEX: usize = 8;
+const STD_DURATION_TYPE_INDEX: usize = 9;
+const STD_FILE_IMMUTABLE_TYPE_INDEX: usize = 10;
+const STD_FILE_CREATE_OPTIONS_TYPE_INDEX: usize = 11;
+const STD_FILE_INFO_TYPE_INDEX: usize = 12;
+const STD_RESOURCE_INFO_TYPE_INDEX: usize = 13;
 
 fn runtime_factory() -> crate::eval::capabilities::EvalRuntimeFactory {
     eval_capability_adapter::runtime_factory()
@@ -461,7 +466,9 @@ async fn runtime_program_executes_bytes_natives_without_json_registry() {
 
 #[tokio::test]
 async fn runtime_program_executes_time_sleep_native_without_json_registry() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(20)));
+    let program = Arc::new(program_with_executable_and_std_native_types(
+        time_sleep_executable(20),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -474,9 +481,29 @@ async fn runtime_program_executes_time_sleep_native_without_json_registry() {
     assert!(started_at.elapsed() >= Duration::from_millis(10));
 }
 
+#[test]
+fn std_native_package_types_resolve_to_exact_nominal_plans() {
+    let program = program_with_executable_and_std_native_types(run_executable());
+    let addr = ExecutableAddr::service(0, 0);
+
+    for (type_index, expected_name) in [
+        (STD_DURATION_TYPE_INDEX, "std.time.Duration"),
+        (STD_FILE_IMMUTABLE_TYPE_INDEX, "std.file.ImmutableFile"),
+        (STD_FILE_CREATE_OPTIONS_TYPE_INDEX, "std.file.CreateOptions"),
+        (STD_FILE_INFO_TYPE_INDEX, "std.file.FileInfo"),
+        (STD_HTTP_REQUEST_TYPE_INDEX, "std.http.HttpRequest"),
+        (STD_RESOURCE_INFO_TYPE_INDEX, "std.resource.ResourceInfo"),
+    ] {
+        let plan = std_http_type_plan_for_test(&program, &addr, type_index);
+        assert_eq!(plan.named_type_name.as_deref(), Some(expected_name));
+    }
+}
+
 #[tokio::test]
 async fn runtime_program_time_sleep_negative_returns_immediately() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(-1)));
+    let program = Arc::new(program_with_executable_and_std_native_types(
+        time_sleep_executable(-1),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
 
@@ -493,7 +520,9 @@ async fn runtime_program_time_sleep_negative_returns_immediately() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_cancellation() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(100)));
+    let program = Arc::new(program_with_executable_and_std_native_types(
+        time_sleep_executable(100),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let frame = test_invocation("svc.main.run");
     let cancellation = frame.cancellation.clone();
@@ -518,7 +547,9 @@ async fn runtime_program_time_sleep_observes_cancellation() {
 
 #[tokio::test]
 async fn runtime_program_time_sleep_observes_deadline() {
-    let program = Arc::new(program_with_executable(time_sleep_executable(100)));
+    let program = Arc::new(program_with_executable_and_std_native_types(
+        time_sleep_executable(100),
+    ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
     let mut frame = test_invocation("svc.main.run");
     frame.execution_budget = std::sync::Arc::new(crate::execution_budget::ExecutionBudget::new(
@@ -1886,7 +1917,7 @@ async fn runtime_program_stream_producer_cancelled_across_task_boundary_on_consu
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_prefers_producer_error_after_consumer_error() {
-    let program = Arc::new(program_with_executables(vec![
+    let program = Arc::new(program_with_executables_and_std_native_types(vec![
         create_from_stream_route_executable(),
         bytes_stream_emit_then_bad_emit_producer_executable(),
     ]));
@@ -1907,7 +1938,7 @@ async fn runtime_program_create_from_stream_prefers_producer_error_after_consume
 
 #[tokio::test]
 async fn runtime_program_create_from_stream_items_use_request_heap_budget() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_native_types(
         emit_response_stream_helper_executable(),
     ));
     let interpreter = Interpreter::with_program(program.clone(), runtime_factory());
@@ -2334,7 +2365,7 @@ async fn runtime_program_catches_without_type_does_not_catch_native_decode_error
 
 #[tokio::test]
 async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_native_types(
         catch_time_sleep_without_catch_type_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2364,7 +2395,7 @@ async fn runtime_program_catches_without_type_does_not_swallow_cancellation() {
 
 #[tokio::test]
 async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_native_types(
         catch_time_sleep_with_catch_type_executable(100, "CancelError"),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2402,7 +2433,7 @@ async fn runtime_program_catches_cancel_error_with_builtin_catch_type() {
 
 #[tokio::test]
 async fn runtime_program_catches_without_type_does_not_swallow_execution_budget() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_native_types(
         catch_time_sleep_without_catch_type_executable(100),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2431,7 +2462,7 @@ async fn runtime_program_catches_without_type_does_not_swallow_execution_budget(
 
 #[tokio::test]
 async fn runtime_program_catches_timeout_error_with_builtin_catch_type() {
-    let program = Arc::new(program_with_executable(
+    let program = Arc::new(program_with_executable_and_std_native_types(
         catch_time_sleep_with_catch_type_executable(100, "TimeoutError"),
     ));
     let interpreter = Interpreter::with_program(program, runtime_factory());
@@ -2984,9 +3015,10 @@ async fn runtime_program_service_dependency_server_stream_returns_stream_handle(
             },
         })
         .expect("response.start should send");
-    let item_plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin("string"))
-            .expect("string item plan should build");
+    let item_plan = RuntimeTypePlan::from_artifact_type_ref(
+        &skiff_artifact_model::TypeRefIr::builtin("string"),
+    )
+    .expect("string item plan should build");
     let payload = encode_payload_plan(
         &RuntimeValue::String("stream-item".to_string()),
         &item_plan,
@@ -3777,9 +3809,10 @@ fn send_outbound_stream_strings<const N: usize>(
 }
 
 fn encode_string_payload(value: &str) -> Vec<u8> {
-    let plan =
-        RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin("string"))
-            .expect("string payload plan should build");
+    let plan = RuntimeTypePlan::from_artifact_type_ref(&skiff_artifact_model::TypeRefIr::builtin(
+        "string",
+    ))
+    .expect("string payload plan should build");
     encode_payload_plan(
         &RuntimeValue::String(value.to_string()),
         &plan,
@@ -4124,8 +4157,14 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
 fn program_with_executables_and_std_http_types(
     executables: Vec<LinkedExecutable>,
 ) -> RuntimeProgram {
+    program_with_executables_and_std_native_types(executables)
+}
+
+fn program_with_executables_and_std_native_types(
+    executables: Vec<LinkedExecutable>,
+) -> RuntimeProgram {
     let mut program = program_with_executables(executables);
-    install_std_http_types(&mut program);
+    install_std_native_package_types(&mut program);
     program
 }
 
@@ -4133,7 +4172,11 @@ fn program_with_executable_and_std_http_types(executable: LinkedExecutable) -> R
     program_with_executables_and_std_http_types(vec![executable])
 }
 
-fn install_std_http_types(program: &mut RuntimeProgram) {
+fn program_with_executable_and_std_native_types(executable: LinkedExecutable) -> RuntimeProgram {
+    program_with_executables_and_std_native_types(vec![executable])
+}
+
+fn install_std_native_package_types(program: &mut RuntimeProgram) {
     let package_slot = program.packages.len();
     assert_eq!(
         package_slot, 0,
@@ -4152,13 +4195,15 @@ fn install_std_http_types(program: &mut RuntimeProgram) {
         .package_slots_by_dependency_ref
         .insert("std".to_string(), package_slot);
 
-    let declarations = std_http_type_declarations(package_slot);
-    program.package_files.push(vec![Arc::new(std_http_file_unit(
-        declarations
-            .iter()
-            .map(|(_, declaration)| declaration.clone())
-            .collect(),
-    ))]);
+    let declarations = std_native_type_declarations(package_slot);
+    program
+        .package_files
+        .push(vec![Arc::new(std_native_file_unit(
+            declarations
+                .iter()
+                .map(|(_, declaration)| declaration.clone())
+                .collect(),
+        ))]);
     for (index, (symbol_path, declaration)) in declarations.into_iter().enumerate() {
         let addr = std_http_type_addr_for_package(package_slot, index);
         program.types.descriptors.insert(addr.clone(), declaration);
@@ -4285,7 +4330,7 @@ fn std_http_type_plan_for_test(
     .expect("std HTTP fixture type plan should build")
 }
 
-fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
+fn std_native_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     LinkedFileUnit {
         schema_version: "skiff-file-ir-v3".to_string(),
         file_ir_identity: "file:std-http".to_string(),
@@ -4304,14 +4349,14 @@ fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
     }
 }
 
-fn std_http_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
+fn std_native_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDeclIr)> {
     let header = LinkedTypeRef::Address {
         addr: std_http_type_addr_for_package(package_slot, STD_HTTP_HEADER_TYPE_INDEX),
     };
     let query_param = LinkedTypeRef::Address {
         addr: std_http_type_addr_for_package(package_slot, STD_HTTP_QUERY_PARAM_TYPE_INDEX),
     };
-    vec![
+    let mut declarations = vec![
         (
             "std.http.HttpHeader",
             anonymous_type_decl(
@@ -4440,7 +4485,97 @@ fn std_http_type_declarations(package_slot: usize) -> Vec<(&'static str, TypeDec
                 },
             ),
         ),
-    ]
+    ];
+    declarations.extend([
+        (
+            "std.time.Duration",
+            anonymous_type_decl(
+                "std.time.Duration",
+                LinkedTypeDescriptor::Alias {
+                    target: linked_builtin_type("integer"),
+                },
+            ),
+        ),
+        (
+            "std.file.ImmutableFile",
+            anonymous_type_decl(
+                "std.file.ImmutableFile",
+                linked_record_descriptor(vec![
+                    ("id", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+        (
+            "std.file.CreateOptions",
+            anonymous_type_decl(
+                "std.file.CreateOptions",
+                linked_record_descriptor(vec![
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    (
+                        "purpose",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+        (
+            "std.file.FileInfo",
+            anonymous_type_decl(
+                "std.file.FileInfo",
+                linked_record_descriptor(vec![
+                    ("id", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    (
+                        "purpose",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                    ("createdAt", linked_builtin_type("string")),
+                ]),
+            ),
+        ),
+        (
+            "std.resource.ResourceInfo",
+            anonymous_type_decl(
+                "std.resource.ResourceInfo",
+                linked_record_descriptor(vec![
+                    ("path", linked_builtin_type("string")),
+                    ("size", linked_builtin_type("integer")),
+                    ("sha256", linked_builtin_type("string")),
+                    (
+                        "contentType",
+                        LinkedTypeRef::Nullable {
+                            inner: Box::new(linked_builtin_type("string")),
+                        },
+                    ),
+                ]),
+            ),
+        ),
+    ]);
+    declarations
 }
 
 fn linked_record_descriptor(fields: Vec<(&str, LinkedTypeRef)>) -> LinkedTypeDescriptor {

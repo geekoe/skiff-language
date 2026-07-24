@@ -19,6 +19,10 @@ pub struct NativeSignatureDef {
 pub enum NativeSignatureTypeExpr {
     TypeParam(usize),
     Builtin(&'static str),
+    Package {
+        package_id: &'static str,
+        public_path: &'static str,
+    },
     Array(&'static NativeSignatureTypeExpr),
     Map(
         &'static NativeSignatureTypeExpr,
@@ -107,10 +111,13 @@ const NUMBER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("number
 const INTEGER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("integer");
 const BYTES: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("bytes");
 const DATE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Date");
-const DURATION: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Duration");
 const JSON: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("Json");
 const JSON_OBJECT: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("JsonObject");
 const VOID: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("void");
+const DURATION: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.time.Duration",
+};
 const DATE_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&DATE);
 const STRING_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&STRING);
 const BYTES_ARRAY: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Array(&BYTES);
@@ -119,33 +126,58 @@ const STRING_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullab
 const HTTP_RESPONSE_NULLABLE: NativeSignatureTypeExpr =
     NativeSignatureTypeExpr::Nullable(&HTTP_RESPONSE);
 const JSON_NULLABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Nullable(&JSON);
-const HTTP_HEADER: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpHeader");
-const HTTP_REQUEST: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpRequest");
-const HTTP_RESPONSE: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpResponse");
-const HTTP_CLIENT_REQUEST: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpClientRequest");
-const HTTP_CLIENT_RESPONSE: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpClientResponse");
-const HTTP_CLIENT_STREAM_HANDLE: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpClientStreamHandle");
-const HTTP_SSE_EVENT: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpSseEvent");
-const HTTP_RESPONSE_STREAM_EVENT: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.http.HttpResponseStreamEvent");
+const HTTP_HEADER: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpHeader",
+};
+const HTTP_REQUEST: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpRequest",
+};
+const HTTP_RESPONSE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpResponse",
+};
+const HTTP_CLIENT_REQUEST: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpClientRequest",
+};
+const HTTP_CLIENT_RESPONSE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpClientResponse",
+};
+const HTTP_CLIENT_STREAM_HANDLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpClientStreamHandle",
+};
+const HTTP_SSE_EVENT: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpSseEvent",
+};
+const HTTP_RESPONSE_STREAM_EVENT: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.http.HttpResponseStreamEvent",
+};
 const HTTP_SSE_STREAM: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Stream(&HTTP_SSE_EVENT);
 const BYTE_STREAM: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Stream(&BYTES);
-const FILE_IMMUTABLE: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.file.ImmutableFile");
-const FILE_CREATE_OPTIONS: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.file.CreateOptions");
+const FILE_IMMUTABLE: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.file.ImmutableFile",
+};
+const FILE_CREATE_OPTIONS: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.file.CreateOptions",
+};
 const FILE_CREATE_OPTIONS_NULLABLE: NativeSignatureTypeExpr =
     NativeSignatureTypeExpr::Nullable(&FILE_CREATE_OPTIONS);
-const FILE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Builtin("std.file.FileInfo");
-const RESOURCE_INFO: NativeSignatureTypeExpr =
-    NativeSignatureTypeExpr::Builtin("std.resource.ResourceInfo");
+const FILE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.file.FileInfo",
+};
+const RESOURCE_INFO: NativeSignatureTypeExpr = NativeSignatureTypeExpr::Package {
+    package_id: "skiff.run/std",
+    public_path: "std.resource.ResourceInfo",
+};
 pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
     NativeSignatureDef {
         target: "std.actor.getOrCreate",
@@ -984,6 +1016,60 @@ mod tests {
         ));
         assert!(!is_runtime_receiver_native_binding_key("core.date.now"));
         assert!(!is_runtime_receiver_native_binding_key("std.time.sleep"));
+    }
+
+    #[test]
+    fn std_package_types_are_not_encoded_as_builtins() {
+        fn visit(expr: &super::NativeSignatureTypeExpr, package_paths: &mut Vec<&'static str>) {
+            match expr {
+                super::NativeSignatureTypeExpr::TypeParam(_) => {}
+                super::NativeSignatureTypeExpr::Builtin(name) => {
+                    assert!(
+                        !name.contains('.'),
+                        "package public path {name} must not masquerade as a builtin"
+                    );
+                }
+                super::NativeSignatureTypeExpr::Package {
+                    package_id,
+                    public_path,
+                } => {
+                    assert_eq!(*package_id, "skiff.run/std");
+                    package_paths.push(public_path);
+                }
+                super::NativeSignatureTypeExpr::Array(item)
+                | super::NativeSignatureTypeExpr::Nullable(item)
+                | super::NativeSignatureTypeExpr::Stream(item) => visit(item, package_paths),
+                super::NativeSignatureTypeExpr::Map(key, value) => {
+                    visit(key, package_paths);
+                    visit(value, package_paths);
+                }
+            }
+        }
+
+        let mut package_paths = Vec::new();
+        for signature in super::STD_NATIVE_SIGNATURES {
+            for expr in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.return_type))
+            {
+                visit(expr, &mut package_paths);
+            }
+        }
+        for expected in [
+            "std.time.Duration",
+            "std.file.ImmutableFile",
+            "std.file.CreateOptions",
+            "std.file.FileInfo",
+            "std.http.HttpRequest",
+            "std.http.HttpResponse",
+            "std.resource.ResourceInfo",
+        ] {
+            assert!(
+                package_paths.contains(&expected),
+                "missing structured package native type {expected}"
+            );
+        }
     }
 
     #[test]

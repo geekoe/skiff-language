@@ -33,8 +33,10 @@ struct SplitPackageManifest {
 
 #[derive(Debug, Clone)]
 struct PreludeExportMapping {
+    package_id: String,
     source_module: String,
     public_module: String,
+    public_path: String,
 }
 
 impl PreludeRegistry {
@@ -69,6 +71,11 @@ impl PreludeRegistry {
             "std".to_string(),
             root_projection_mappings("std", std_package_exports.values().flatten()),
         )]);
+        self.package_public_paths = std_package_exports
+            .values()
+            .flatten()
+            .map(|export| (export.package_id.clone(), export.public_path.clone()))
+            .collect();
         self.export_modules = vec![
             "std.collection".to_string(),
             "std.string".to_string(),
@@ -303,7 +310,7 @@ impl PreludeRegistry {
                 .join(", ");
             return format!("{root}<{args}>");
         }
-        if name.contains('.') || self.native_type_names.contains(name) || name == "Duration" {
+        if name.contains('.') || self.native_type_names.contains(name) {
             return name.to_string();
         }
         if let Some(symbol) = self.type_symbols.get(name) {
@@ -412,7 +419,8 @@ fn package_export_mappings(
         violations.push("exports has been removed; use top-level api".to_string());
     }
     let api = read_publication_api_yml(package_dir).map_err(|error| error.to_string())?;
-    let entries = validate_package_api_export_entries(&api, public_root, &mut violations);
+    let entries =
+        validate_package_api_export_entries(&api, package_id, public_root, &mut violations);
     if !violations.is_empty() {
         return Err(format!(
             "{}: {}",
@@ -425,9 +433,12 @@ fn package_export_mappings(
         left.public_module
             .cmp(&right.public_module)
             .then_with(|| left.source_module.cmp(&right.source_module))
+            .then_with(|| left.public_path.cmp(&right.public_path))
     });
     modules.dedup_by(|left, right| {
-        left.public_module == right.public_module && left.source_module == right.source_module
+        left.public_module == right.public_module
+            && left.source_module == right.source_module
+            && left.public_path == right.public_path
     });
     Ok(modules)
 }
@@ -443,15 +454,18 @@ fn std_registry_public_root(package_id: &str) -> &str {
 fn validate_package_api_export_entries(
     api: &compiler_input_model::PublicationApiSpec,
     package_id: &str,
+    public_root: &str,
     violations: &mut Vec<String>,
 ) -> Vec<PreludeExportMapping> {
     let mut entries = Vec::new();
     for entry in api.entries() {
         let public_path = entry.public_module_path_segment();
-        validate_package_api_public_path(&public_path, package_id, violations);
+        validate_package_api_public_path(&public_path, public_root, violations);
         entries.push(PreludeExportMapping {
+            package_id: package_id.to_string(),
             source_module: entry.source_module_hint().to_string(),
-            public_module: package_public_path(package_id, &public_path),
+            public_module: package_public_path(public_root, &public_path),
+            public_path: package_public_path(public_root, &entry.public_path_string()),
         });
     }
     entries

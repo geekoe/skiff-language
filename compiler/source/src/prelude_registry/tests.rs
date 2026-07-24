@@ -240,6 +240,55 @@ fn compiler_std_native_declarations_match_shared_signatures() {
 }
 
 #[test]
+fn native_signature_type_domains_are_validated_independently() {
+    use skiff_artifact_model::NativeSignatureTypeExpr;
+
+    let registry = prelude_registry();
+    registry
+        .validate_native_signature_type_expr(
+            "test.valid",
+            &NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.CreateOptions",
+            },
+        )
+        .unwrap();
+
+    for (expr, expected) in [
+        (
+            NativeSignatureTypeExpr::Builtin("std.file.CreateOptions"),
+            "unknown compiler builtin type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "example.other",
+                public_path: "std.file.CreateOptions",
+            },
+            "unknown public type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.create",
+            },
+            "is not a type",
+        ),
+        (
+            NativeSignatureTypeExpr::Package {
+                package_id: "skiff.run/std",
+                public_path: "std.file.Missing",
+            },
+            "unknown public type",
+        ),
+    ] {
+        let error = registry
+            .validate_native_signature_type_expr("test.invalid", &expr)
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn declared_std_native_aliases_match_canonical_shapes() {
     let registry = prelude_registry();
 

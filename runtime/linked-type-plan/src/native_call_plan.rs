@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{NativeSignatureDef, NativeSignatureTypeExpr};
 use skiff_runtime_linked_program::{
-    CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget, TypeAddr,
+    CallIr, ExecutableAddr, LinkedInterfaceInstantiationRef, LinkedTypeRef, NativeTarget,
+    ResolvedSymbol, TypeAddr,
 };
 use skiff_runtime_native_contract::{
     type_arg_key, validate_native_call_arg_count, validate_native_call_type_arg_refs,
@@ -174,14 +175,16 @@ fn resolve_native_type_expr_plan(
                     "native signature references missing T{index}"
                 ))
             }),
-        NativeSignatureTypeExpr::Builtin(name) => {
-            if let Some(addr) = std_package_type_addr(program, name) {
-                return RuntimeTypePlan::from_linked(
-                    &LinkedTypeRef::Address { addr },
-                    &PlanContext::from_type_view(program, current_addr),
-                );
-            }
-            native_builtin_plan(name)
+        NativeSignatureTypeExpr::Builtin(name) => native_builtin_plan(name),
+        NativeSignatureTypeExpr::Package {
+            package_id,
+            public_path,
+        } => {
+            let addr = native_package_type_addr(program, package_id, public_path)?;
+            RuntimeTypePlan::from_linked(
+                &LinkedTypeRef::Address { addr },
+                &PlanContext::from_type_view(program, current_addr),
+            )
         }
         NativeSignatureTypeExpr::Array(item) => {
             let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;
@@ -200,6 +203,168 @@ fn resolve_native_type_expr_plan(
             let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;
             Ok(RuntimeTypePlan::synthetic_stream(item))
         }
+    }
+}
+
+fn native_package_type_addr(
+    program: ProgramTypeView<'_>,
+    package_id: &str,
+    public_path: &str,
+) -> Result<TypeAddr> {
+    let package_slot = program
+        .link_overlay
+        .package_slot_for_id(package_id)
+        .ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "native signature references unknown package {package_id}"
+            ))
+        })?;
+    let addr = program
+        .types
+        .exported_package_type(package_slot, public_path)
+        .ok_or_else(|| {
+            let detail = match program
+                .link_overlay
+                .resolved_package_symbol(package_slot, public_path)
+            {
+                Some(ResolvedSymbol::Type { .. }) => "is not an admitted linked nominal type",
+                Some(_) => "does not name a type",
+                None => "is not a public type",
+            };
+            RuntimeError::InvalidArtifact(format!(
+                "native signature package type {package_id}::{public_path} {detail}"
+            ))
+        })?
+        .clone();
+    match program
+        .link_overlay
+        .resolved_package_symbol(package_slot, public_path)
+    {
+        Some(ResolvedSymbol::Type { addr: resolved }) if resolved == &addr => Ok(addr),
+        Some(ResolvedSymbol::Type { .. }) => Err(RuntimeError::InvalidArtifact(format!(
+            "native signature package type {package_id}::{public_path} has mismatched linked type addresses"
+        ))),
+        Some(_) => Err(RuntimeError::InvalidArtifact(format!(
+            "native signature package type {package_id}::{public_path} does not name a type"
+        ))),
+        None => Ok(addr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use skiff_runtime_linked_program::{
+        ExecutableAddr, FileAddr, LinkOverlay, LinkedFileUnit, PackageSymbolKey, PackageUnit,
+        ResolvedSymbol, RuntimeTypeContext, TypeAddr, UnitAddr,
+    };
+
+    use super::{native_builtin_plan, native_package_type_addr, ProgramTypeView};
+
+    fn package_addr(slot: usize, index: usize) -> TypeAddr {
+        TypeAddr {
+            unit: UnitAddr::Package(slot),
+            file: FileAddr::loaded_file(0),
+            type_index: index,
+        }
+    }
+
+    fn view<'a>(
+        overlay: &'a LinkOverlay,
+        types: &'a RuntimeTypeContext,
+        package_files: &'a [Vec<Arc<LinkedFileUnit>>],
+        packages: &'a [Arc<PackageUnit>],
+    ) -> ProgramTypeView<'a> {
+        ProgramTypeView::new(&[], packages, package_files, overlay, types)
+    }
+
+    #[test]
+    fn package_native_type_uses_exact_package_id_and_public_path() {
+        let left_addr = package_addr(0, 0);
+        let right_addr = package_addr(1, 0);
+        let mut overlay = LinkOverlay {
+            package_slots_by_id: [
+                ("example.left".to_string(), 0),
+                ("example.right".to_string(), 1),
+            ]
+            .into_iter()
+            .collect(),
+            ..LinkOverlay::default()
+        };
+        overlay.symbols.insert_package(
+            PackageSymbolKey::new(0, "api.Options"),
+            ResolvedSymbol::Type {
+                addr: left_addr.clone(),
+            },
+        );
+        overlay.symbols.insert_package(
+            PackageSymbolKey::new(1, "api.Options"),
+            ResolvedSymbol::Type {
+                addr: right_addr.clone(),
+            },
+        );
+        let mut types = RuntimeTypeContext::default();
+        types
+            .exported_types
+            .insert_package(PackageSymbolKey::new(0, "api.Options"), left_addr.clone());
+        types
+            .exported_types
+            .insert_package(PackageSymbolKey::new(1, "api.Options"), right_addr.clone());
+        let package_files = vec![Vec::new(), Vec::new()];
+        let packages = Vec::new();
+        let program = view(&overlay, &types, &package_files, &packages);
+
+        assert_eq!(
+            native_package_type_addr(program, "example.left", "api.Options").unwrap(),
+            left_addr
+        );
+        assert_eq!(
+            native_package_type_addr(program, "example.right", "api.Options").unwrap(),
+            right_addr
+        );
+    }
+
+    #[test]
+    fn package_native_type_fails_closed_for_missing_or_wrong_kind_facts() {
+        let addr = package_addr(0, 0);
+        let mut overlay = LinkOverlay {
+            package_slots_by_id: [("example.pkg".to_string(), 0)].into_iter().collect(),
+            ..LinkOverlay::default()
+        };
+        overlay.symbols.insert_package(
+            PackageSymbolKey::new(0, "api.NotAType"),
+            ResolvedSymbol::Executable {
+                addr: ExecutableAddr::package(0, 0, 0),
+            },
+        );
+        let mut types = RuntimeTypeContext::default();
+        types
+            .exported_types
+            .insert_package(PackageSymbolKey::new(0, "api.NotAType"), addr);
+        let package_files = vec![Vec::new()];
+        let packages = Vec::new();
+        let program = view(&overlay, &types, &package_files, &packages);
+
+        for (package_id, public_path, expected) in [
+            ("missing.pkg", "api.NotAType", "unknown package"),
+            ("example.pkg", "api.Missing", "is not a public type"),
+            ("example.pkg", "api.NotAType", "does not name a type"),
+        ] {
+            let error = native_package_type_addr(program, package_id, public_path).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn package_public_path_cannot_masquerade_as_builtin() {
+        let error = native_builtin_plan("std.file.CreateOptions").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown builtin type std.file.CreateOptions"),
+            "{error}"
+        );
     }
 }
 
@@ -305,37 +470,4 @@ fn unresolved_type_param_name<'a>(
         | LinkedTypeRef::Literal { .. }
         | LinkedTypeRef::DbObjectSymbol { .. } => None,
     }
-}
-
-fn std_package_type_addr(program: ProgramTypeView<'_>, name: &str) -> Option<TypeAddr> {
-    let name = name.trim();
-    if name == "Duration" {
-        return std_duration_type_addr(program);
-    }
-    if !name.starts_with("std.") {
-        return None;
-    }
-    std_package_exported_type_addr(program, name).or_else(|| {
-        name.strip_prefix("std.")
-            .and_then(|symbol_path| std_package_exported_type_addr(program, symbol_path))
-    })
-}
-
-fn std_duration_type_addr(program: ProgramTypeView<'_>) -> Option<TypeAddr> {
-    std_package_exported_type_addr(program, "std.time.Duration")
-        .or_else(|| std_package_exported_type_addr(program, "time.Duration"))
-}
-
-fn std_package_exported_type_addr(
-    program: ProgramTypeView<'_>,
-    symbol_path: &str,
-) -> Option<TypeAddr> {
-    let package_slot = program
-        .link_overlay
-        .package_slot_for_id("skiff.run/std")
-        .or_else(|| program.link_overlay.package_slot_for_dependency_ref("std"))?;
-    program
-        .types
-        .exported_package_type(package_slot, symbol_path)
-        .cloned()
 }

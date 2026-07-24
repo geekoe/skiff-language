@@ -48,6 +48,7 @@ pub struct PreludeRegistry {
     type_aliases: BTreeMap<String, AliasDecl>,
     type_aliases_by_symbol: BTreeMap<String, AliasDecl>,
     type_symbols: BTreeMap<String, String>,
+    package_public_paths: BTreeSet<(String, String)>,
     source_modules: Vec<String>,
     native_type_names: BTreeSet<String>,
     prelude_identity_parts: Vec<String>,
@@ -83,6 +84,7 @@ impl PreludeRegistry {
             type_aliases: BTreeMap::new(),
             type_aliases_by_symbol: BTreeMap::new(),
             type_symbols: BTreeMap::new(),
+            package_public_paths: BTreeSet::new(),
             source_modules: Vec::new(),
             native_type_names: BTreeSet::new(),
             prelude_identity_parts: Vec::new(),
@@ -97,6 +99,7 @@ impl PreludeRegistry {
         registry.load_std_registry(platform_sources)?;
         registry.install_compiler_builtin_types();
         registry.load_split_sources(source_snapshot)?;
+        registry.validate_shared_native_signature_types()?;
         registry.derive_prelude_types();
         registry.canonicalize_prelude_type_symbols();
         registry.native_bindings = registry.declared_native_bindings.clone();
@@ -237,6 +240,68 @@ impl PreludeRegistry {
                 .insert(builtin.name.to_string(), builtin.symbol.to_string());
             self.type_symbols
                 .insert(builtin.symbol.to_string(), builtin.symbol.to_string());
+        }
+    }
+
+    fn validate_shared_native_signature_types(&self) -> Result<(), String> {
+        for signature in STD_NATIVE_SIGNATURES {
+            for expr in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.return_type))
+            {
+                self.validate_native_signature_type_expr(signature.target, expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_native_signature_type_expr(
+        &self,
+        target: &str,
+        expr: &skiff_artifact_model::NativeSignatureTypeExpr,
+    ) -> Result<(), String> {
+        use skiff_artifact_model::NativeSignatureTypeExpr;
+
+        match expr {
+            NativeSignatureTypeExpr::TypeParam(_) => Ok(()),
+            NativeSignatureTypeExpr::Builtin(name) => {
+                if compiler_builtin_type(name).is_some() || is_language_builtin_type_name(name) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "native signature {target} references unknown compiler builtin type {name}"
+                    ))
+                }
+            }
+            NativeSignatureTypeExpr::Package {
+                package_id,
+                public_path,
+            } => {
+                if !self
+                    .package_public_paths
+                    .contains(&(package_id.to_string(), public_path.to_string()))
+                {
+                    return Err(format!(
+                        "native signature {target} references unknown public type {package_id}::{public_path}"
+                    ));
+                }
+                if self.type_decl(public_path).is_none() && self.type_alias(public_path).is_none() {
+                    return Err(format!(
+                        "native signature {target} public path {package_id}::{public_path} is not a type"
+                    ));
+                }
+                Ok(())
+            }
+            NativeSignatureTypeExpr::Array(item)
+            | NativeSignatureTypeExpr::Nullable(item)
+            | NativeSignatureTypeExpr::Stream(item) => {
+                self.validate_native_signature_type_expr(target, item)
+            }
+            NativeSignatureTypeExpr::Map(key, value) => {
+                self.validate_native_signature_type_expr(target, key)?;
+                self.validate_native_signature_type_expr(target, value)
+            }
         }
     }
 
@@ -439,6 +504,7 @@ fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeSignatureTypeExp
     match expr {
         NativeSignatureTypeExpr::TypeParam(index) => format!("T{index}"),
         NativeSignatureTypeExpr::Builtin(name) => name.to_string(),
+        NativeSignatureTypeExpr::Package { public_path, .. } => public_path.to_string(),
         NativeSignatureTypeExpr::Array(item) => {
             format!("Array<{}>", native_type_expr_def_name(item))
         }
