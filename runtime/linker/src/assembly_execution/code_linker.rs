@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use skiff_runtime_linked_program::{
-    executable_type_param_names, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody,
+    executable_type_param_names, LinkedActorDeclaration, LinkedActorDeclarationOwner,
+    LinkedActorNativeMetadata, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody,
     LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
     LinkedInterfaceMethodTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
 };
@@ -10,6 +11,21 @@ use skiff_runtime_linked_program::{
 use super::{
     address_resolver::AssemblyAddressResolver, call_semantics::AssemblyCallSemanticDelegate,
 };
+
+fn actor_registry_target_name(target: &LinkedCallTarget) -> Option<String> {
+    let LinkedCallTarget::Native { target } = target else {
+        return None;
+    };
+    let name = target
+        .binding_key
+        .clone()
+        .unwrap_or_else(|| format!("{}.{}", target.namespace, target.symbol));
+    matches!(
+        name.as_str(),
+        "std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove"
+    )
+    .then_some(name)
+}
 use crate::linker::call_semantic_validation::validate_call_semantics;
 
 pub(super) fn link_execution_files(
@@ -60,6 +76,23 @@ impl<'a> AssemblyCodeLinker<'a> {
         file_index: usize,
         file: &mut LinkedFileUnit,
     ) -> anyhow::Result<()> {
+        for actor in &mut file.actor_declarations {
+            actor.implementation_owner = Some(LinkedActorDeclarationOwner {
+                unit: skiff_runtime_linked_program::UnitAddr::Package(code_slot),
+                file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(file_index),
+                actor_symbol: actor.actor_type.symbol.clone(),
+            });
+            self.link_type_ref(code_slot, file_index, &mut actor.actor_id_type)?;
+            for field in &mut actor.fields {
+                self.link_type_ref(code_slot, file_index, &mut field.ty)?;
+            }
+            for method in &mut actor.public_methods {
+                for parameter in &mut method.parameters {
+                    self.link_type_ref(code_slot, file_index, &mut parameter.ty)?;
+                }
+                self.link_type_ref(code_slot, file_index, &mut method.return_type)?;
+            }
+        }
         for ty in &mut file.types {
             self.link_descriptor(code_slot, file_index, &mut ty.descriptor)?;
             for implemented in &mut ty.implements {
@@ -291,9 +324,15 @@ impl<'a> AssemblyCodeLinker<'a> {
                 }
                 LinkedExprIr::Call { call } => {
                     self.link_call_target(code_slot, file_index, &mut call.target)?;
-                    for type_arg in call.type_args.values_mut() {
+                    let is_actor_registry = actor_registry_target_name(&call.target).is_some();
+                    for (name, type_arg) in &mut call.type_args {
+                        if is_actor_registry && name == "T0" {
+                            continue;
+                        }
                         self.link_type_ref(code_slot, file_index, type_arg)?;
                     }
+                    call.actor_metadata =
+                        self.validate_actor_registry_call(code_slot, file_index, call)?;
                     validate_call_semantics(
                         &AssemblyCallSemanticDelegate::new(self, code_slot, file_index),
                         context,
@@ -336,6 +375,102 @@ impl<'a> AssemblyCodeLinker<'a> {
             }
         }
         Ok(())
+    }
+
+    fn validate_actor_registry_call(
+        &self,
+        code_slot: usize,
+        file_index: usize,
+        call: &skiff_runtime_linked_program::CallIr,
+    ) -> anyhow::Result<Option<LinkedActorNativeMetadata>> {
+        let Some(target_name) = actor_registry_target_name(&call.target) else {
+            return Ok(None);
+        };
+        let needs_bootstrap = match target_name.as_str() {
+            "std.actor.getOrCreate" | "std.actor.replace" => true,
+            "std.actor.find" | "std.actor.remove" => false,
+            _ => return Ok(None),
+        };
+        let expected_keys: &[&str] = if needs_bootstrap {
+            &["T0", "T1", "T2"]
+        } else {
+            &["T0", "T1"]
+        };
+        if call.type_args.len() != expected_keys.len()
+            || expected_keys
+                .iter()
+                .any(|key| !call.type_args.contains_key(*key))
+        {
+            anyhow::bail!(
+                "{target_name} must carry exactly type arguments {}",
+                expected_keys.join(", ")
+            );
+        }
+        let actor_type = &call.type_args["T0"];
+        let LinkedTypeRef::ServiceSymbol { symbol } = actor_type else {
+            anyhow::bail!("{target_name} T0 must be a nominal actor ServiceSymbol");
+        };
+        let declaration = self.actor_declaration_for_symbol(code_slot, symbol)?;
+        let actor_id_type = &call.type_args["T1"];
+        if actor_id_type != &declaration.actor_id_type {
+            anyhow::bail!(
+                "{target_name} T1 does not match actor {} id type",
+                declaration.actor_name
+            );
+        }
+        if let Some(bootstrap) = call.type_args.get("T2") {
+            let expected_bootstrap = LinkedTypeRef::Record {
+                fields: declaration
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.clone()))
+                    .collect(),
+            };
+            if bootstrap != &expected_bootstrap {
+                anyhow::bail!(
+                    "{target_name} T2 does not match actor {} bootstrap field shape",
+                    declaration.actor_name
+                );
+            }
+        }
+        let _ = (code_slot, file_index);
+        Ok(Some(LinkedActorNativeMetadata {
+            declaration_owner: declaration.implementation_owner.clone().ok_or_else(|| {
+                anyhow::anyhow!("Actor declaration is missing implementation owner")
+            })?,
+            actor_abi_identity: declaration.actor_abi_identity,
+        }))
+    }
+
+    fn actor_declaration_for_symbol(
+        &self,
+        code_slot: usize,
+        symbol: &skiff_runtime_linked_program::ServiceSymbolRef,
+    ) -> anyhow::Result<LinkedActorDeclaration> {
+        let mut matches = self
+            .addresses
+            .package_files(code_slot)?
+            .iter()
+            .enumerate()
+            .flat_map(|(file_index, file)| {
+                file.actor_declarations
+                    .iter()
+                    .map(move |declaration| (file_index, declaration))
+            })
+            .filter(|(_, declaration)| declaration.actor_type == *symbol);
+        let (file_index, declaration) = matches.next().ok_or_else(|| {
+            anyhow::anyhow!("actor registry T0 resolves to a type without an Actor declaration")
+        })?;
+        if matches.next().is_some() {
+            anyhow::bail!("actor registry T0 resolves to ambiguous Actor declarations");
+        }
+        let mut declaration = declaration.clone();
+        declaration.implementation_owner = Some(LinkedActorDeclarationOwner {
+            unit: skiff_runtime_linked_program::UnitAddr::Package(code_slot),
+            file: skiff_runtime_linked_program::FileAddr::LoadedFileIndex(file_index),
+            actor_symbol: declaration.actor_type.symbol.clone(),
+        });
+        Ok(declaration)
     }
 
     fn link_method_table(

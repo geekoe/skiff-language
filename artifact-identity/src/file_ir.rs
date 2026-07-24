@@ -1,8 +1,8 @@
 use serde::Serialize;
 use serde_json::Value;
 use skiff_artifact_model::{
-    validate_file_ir_package_calls, validate_file_ir_service_calls, ConstIr, ExecutableIr,
-    ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets, SourceMapSource,
+    validate_file_ir_package_calls, validate_file_ir_service_calls, ActorDeclarationIr, ConstIr,
+    ExecutableIr, ExternalRefTable, FileDeclarations, FileIrUnit, FileLinkTargets, SourceMapSource,
     SourceMapSpan, TypeDeclIr,
 };
 
@@ -66,6 +66,8 @@ struct FileIrIdentityPayload<'a> {
     #[serde(skip_serializing_if = "is_zero_u32")]
     required_receiver_builtin_capability_version: u32,
     source_map: SourceMapIdentityPayload<'a>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    actor_declarations: &'a Vec<ActorDeclarationIr>,
     declarations: &'a FileDeclarations,
     link_targets: &'a FileLinkTargets,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -87,6 +89,7 @@ impl<'a> FileIrIdentityPayload<'a> {
             required_receiver_builtin_capability_version: unit
                 .required_receiver_builtin_capability_version,
             source_map: SourceMapIdentityPayload::from_unit(unit),
+            actor_declarations: &unit.actor_declarations,
             declarations: &unit.declarations,
             link_targets: &unit.link_targets,
             type_table: &unit.type_table,

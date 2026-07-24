@@ -81,6 +81,39 @@ fn encrypted_db_field_storage_participates_in_file_ir_identity() {
 }
 
 #[test]
+fn actor_declaration_abi_participates_in_file_ir_identity() {
+    let mut unit = FileIrUnit::empty("internal.example", "source-ast-hash-a");
+    let abi = ActorAbiInput {
+        actor_name: "DocHub".to_string(),
+        actor_id_type: TypeRefIr::builtin("string"),
+        fields: vec![ActorFieldIr {
+            name: "nextSeq".to_string(),
+            ty: TypeRefIr::builtin("number"),
+            encoding: ActorFieldEncodingIr::CanonicalValueV1,
+        }],
+        public_methods: Vec::new(),
+        actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+    };
+    unit.actor_declarations.push(ActorDeclarationIr {
+        actor_abi_identity: actor_abi_identity(&abi).expect("actor ABI identity"),
+        abi,
+    });
+    let baseline = file_ir_identity(&unit).expect("actor File IR identity");
+
+    unit.actor_declarations[0].abi.actor_id_type = TypeRefIr::builtin("integer");
+    unit.actor_declarations[0].actor_abi_identity =
+        actor_abi_identity(&unit.actor_declarations[0].abi).expect("changed actor ABI identity");
+    let changed_id = file_ir_identity(&unit).expect("changed actor id File IR identity");
+    assert_ne!(baseline, changed_id);
+
+    unit.actor_declarations[0].abi.fields[0].ty = TypeRefIr::builtin("integer");
+    unit.actor_declarations[0].actor_abi_identity =
+        actor_abi_identity(&unit.actor_declarations[0].abi).expect("changed actor ABI identity");
+    let changed_field = file_ir_identity(&unit).expect("changed actor field File IR identity");
+    assert_ne!(changed_id, changed_field);
+}
+
+#[test]
 fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() {
     let base = service_call_file_ir_fixture();
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");

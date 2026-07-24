@@ -497,6 +497,7 @@ fn linked_call(
             .collect(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -567,6 +568,166 @@ fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
         format!("{error:#}").contains("expected 2 args, got 1"),
         "unexpected error: {error:#}"
     );
+}
+
+fn append_actor_registry_call(
+    file: &mut FileIrUnit,
+    binding_key: &str,
+    actor_id_type: skiff_artifact_model::TypeRefIr,
+    bootstrap_type: Option<skiff_artifact_model::TypeRefIr>,
+) {
+    use skiff_artifact_model::{
+        ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, CallIr,
+        CallTargetIr, ExprIr, ExprRefIr, NativeTarget, ServiceSymbolRef, TypeRefIr,
+        ACTOR_RUNTIME_ABI_VERSION_V1,
+    };
+
+    if file.actor_declarations.is_empty() {
+        let abi = ActorAbiInput {
+            actor_name: "DocHub".to_string(),
+            actor_id_type: TypeRefIr::builtin("string"),
+            fields: vec![ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: TypeRefIr::builtin("number"),
+                encoding: ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            public_methods: Vec::new(),
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        };
+        file.actor_declarations.push(ActorDeclarationIr {
+            actor_abi_identity: skiff_artifact_identity::actor_abi_identity(&abi).unwrap(),
+            abi,
+        });
+    }
+    let mut type_args = BTreeMap::from([
+        (
+            "T0".to_string(),
+            TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: file.module_path.clone(),
+                    symbol: "DocHub".to_string(),
+                },
+            },
+        ),
+        ("T1".to_string(), actor_id_type),
+    ]);
+    if let Some(bootstrap_type) = bootstrap_type {
+        type_args.insert("T2".to_string(), bootstrap_type);
+    }
+    file.executables[0].body.expressions.push(ExprIr::Call {
+        call: CallIr {
+            target: CallTargetIr::Native {
+                target: NativeTarget {
+                    namespace: "std.actor".to_string(),
+                    symbol: binding_key
+                        .strip_prefix("std.actor.")
+                        .unwrap_or(binding_key)
+                        .to_string(),
+                    binding_key: Some(binding_key.to_string()),
+                    metadata: BTreeMap::new(),
+                },
+            },
+            args: vec![ExprRefIr { expression: 0 }, ExprRefIr { expression: 0 }],
+            type_args,
+            metadata: BTreeMap::new(),
+        },
+    });
+}
+
+#[test]
+fn assembly_execution_links_actor_registry_call_to_declaration_owner() {
+    use skiff_artifact_model::TypeRefIr;
+    use skiff_runtime_linked_program::{LinkedExprIr, UnitAddr};
+
+    let image = link_identity_valid_execution_image(|file| {
+        append_actor_registry_call(
+            file,
+            "std.actor.getOrCreate",
+            TypeRefIr::builtin("string"),
+            Some(TypeRefIr::Record {
+                fields: BTreeMap::from([("nextSeq".to_string(), TypeRefIr::builtin("number"))]),
+            }),
+        );
+    })
+    .expect("canonical Actor registry call should link");
+    let code = image.code_slots()[0].as_ref();
+    let file = code.files()[0].as_ref();
+    let LinkedExprIr::Call { call } = file.executables[0]
+        .body
+        .expressions
+        .last()
+        .expect("Actor call")
+    else {
+        panic!("last expression must be Actor call")
+    };
+    let metadata = call
+        .actor_metadata
+        .as_ref()
+        .expect("linker-proven Actor metadata");
+    assert_eq!(metadata.declaration_owner.unit, UnitAddr::Package(0));
+    assert_eq!(metadata.declaration_owner.actor_symbol, "DocHub");
+    assert_eq!(
+        file.actor_declarations[0].implementation_owner.as_ref(),
+        Some(&metadata.declaration_owner)
+    );
+}
+
+#[test]
+fn assembly_execution_rejects_actor_registry_id_and_bootstrap_mismatch() {
+    use skiff_artifact_model::TypeRefIr;
+
+    let id_error = link_identity_valid_execution_image(|file| {
+        append_actor_registry_call(file, "std.actor.find", TypeRefIr::builtin("integer"), None);
+        file.executables[0]
+            .body
+            .expressions
+            .last_mut()
+            .and_then(|expression| match expression {
+                skiff_artifact_model::ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .unwrap()
+            .args
+            .truncate(1);
+    })
+    .expect_err("Actor id mismatch must fail");
+    assert!(format!("{id_error:#}").contains("T1 does not match"));
+
+    let bootstrap_error = link_identity_valid_execution_image(|file| {
+        append_actor_registry_call(
+            file,
+            "std.actor.replace",
+            TypeRefIr::builtin("string"),
+            Some(TypeRefIr::Record {
+                fields: BTreeMap::from([("nextSeq".to_string(), TypeRefIr::builtin("string"))]),
+            }),
+        );
+    })
+    .expect_err("Actor bootstrap mismatch must fail");
+    assert!(format!("{bootstrap_error:#}").contains("T2 does not match"));
+}
+
+#[test]
+fn assembly_execution_rejects_missing_actor_declaration() {
+    use skiff_artifact_model::TypeRefIr;
+
+    let error = link_identity_valid_execution_image(|file| {
+        append_actor_registry_call(file, "std.actor.find", TypeRefIr::builtin("string"), None);
+        file.actor_declarations.clear();
+        file.executables[0]
+            .body
+            .expressions
+            .last_mut()
+            .and_then(|expression| match expression {
+                skiff_artifact_model::ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .unwrap()
+            .args
+            .truncate(1);
+    })
+    .expect_err("missing Actor declaration must fail");
+    assert!(format!("{error:#}").contains("without an Actor declaration"));
 }
 
 #[test]

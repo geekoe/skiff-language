@@ -406,6 +406,7 @@ mod tests {
                 .collect(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
+            actor_metadata: None,
         }
     }
 

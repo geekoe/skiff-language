@@ -4,6 +4,10 @@ use std::{
 };
 
 use crate::file_ir::{assign_file_ir_identity, FileIrUnit};
+use skiff_artifact_model::{
+    ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
+};
 use skiff_compiler_source::{
     parsed_sources::{parse_publication_sources, ParsedCompilerSource},
     publication_db_metadata_index,
@@ -423,6 +427,16 @@ fn lower_source_file_ir_unit(
         &mut unit,
         &mut next_span_id,
     )?;
+    lower_actor_declarations(
+        ast,
+        &type_indices,
+        &local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+        &mut unit,
+    )?;
     let local_type_fields = local_type_field_index(&unit);
     let db_metadata = lower_db_declarations(
         &db_attachments,
@@ -494,6 +508,65 @@ fn lower_source_file_ir_unit(
         CompileError::Semantic(format!("invalid service call File IR: {error}"))
     })?;
     Ok(unit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_actor_declarations(
+    ast: &SourceFile,
+    type_indices: &BTreeMap<String, u32>,
+    local_db_objects: &LocalDbObjectIndex,
+    publication_db_metadata: &PublicationDbMetadataIndex,
+    package_aliases: &BTreeMap<String, Vec<String>>,
+    external_type_symbols: &PublicationTypeSymbolIndex,
+    source_alias_targets: &BTreeMap<String, String>,
+    unit: &mut FileIrUnit,
+) -> Result<()> {
+    for actor in &ast.actors {
+        let actor_id_type = crate::type_lowering::lower_type_ref(
+            &actor.id_type,
+            type_indices,
+            local_db_objects,
+            publication_db_metadata,
+            package_aliases,
+            external_type_symbols,
+            source_alias_targets,
+            crate::type_lowering::TypeLoweringContext::value(),
+        )?;
+        let fields = actor
+            .fields
+            .iter()
+            .map(|field| {
+                Ok(ActorFieldIr {
+                    name: field.name.clone(),
+                    ty: crate::type_lowering::lower_type_ref(
+                        &field.ty,
+                        type_indices,
+                        local_db_objects,
+                        publication_db_metadata,
+                        package_aliases,
+                        external_type_symbols,
+                        source_alias_targets,
+                        crate::type_lowering::TypeLoweringContext::value(),
+                    )?,
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let abi = ActorAbiInput {
+            actor_name: actor.name.clone(),
+            actor_id_type,
+            fields,
+            public_methods: Vec::new(),
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        };
+        let actor_abi_identity = skiff_artifact_identity::actor_abi_identity(&abi)
+            .map_err(|error| CompileError::Semantic(error.to_string()))?;
+        unit.actor_declarations.push(ActorDeclarationIr {
+            actor_abi_identity,
+            abi,
+        });
+    }
+    Ok(())
 }
 
 fn validate_supported_top_level(ast: &SourceFile) -> Result<()> {
@@ -585,11 +658,12 @@ mod tests {
         validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
         PackageCallableId, PackageLocalAbiIdentity, ReceiverCallAbi, ServiceProtocolIdentity,
     };
+    use skiff_compiler_input::CompilerPlatformSources;
     use skiff_compiler_source::{
         api::PublicTypeKind, build_package_from_parsed_sources,
-        parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-        CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageDependency,
-        PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
+        parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+        source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
+        PackageDependency, PublicationApiEntry, PublicationApiSpec, SourceCompilePackageFacts,
     };
 
     use super::*;
@@ -897,6 +971,101 @@ mod tests {
             executable.symbol
         );
         boxes[0]
+    }
+
+    #[test]
+    fn emits_actor_declaration_and_exact_registry_type_arguments() {
+        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        initialize_prelude_registry(
+            &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
+        )
+        .expect("prelude registry should initialize");
+        let unit = lowered_unit(
+            r#"
+              actor UserActor id string {
+                displayName: string,
+                loginCount: number,
+              }
+
+              function load(id: string) -> UserActor {
+                const actor = std.actor.getOrCreate<UserActor>(
+                  id,
+                  { displayName: "Ada", loginCount: 1 }
+                )
+                const found = std.actor.find<UserActor>(id)
+                return actor
+              }
+            "#,
+        );
+
+        let declaration = unit
+            .actor_declarations
+            .first()
+            .expect("actor declaration should be emitted in its owner file");
+        assert_eq!(declaration.abi.actor_name, "UserActor");
+        assert_eq!(declaration.abi.actor_id_type, TypeRefIr::builtin("string"));
+        assert_eq!(
+            declaration
+                .abi
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["displayName", "loginCount"]
+        );
+
+        let load = executable(&unit, "load");
+        let calls = load
+            .body
+            .expressions
+            .iter()
+            .filter_map(|expression| match expression {
+                ExprIr::Call { call } => Some(call),
+                _ => None,
+            })
+            .filter(|call| {
+                matches!(
+                    &call.target,
+                    CallTargetIr::Native { target }
+                        if target.binding_key.as_deref().is_some_and(|key| key.starts_with("std.actor."))
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+
+        let get_or_create = calls
+            .iter()
+            .find(|call| {
+                matches!(
+                    &call.target,
+                    CallTargetIr::Native { target }
+                        if target.binding_key.as_deref() == Some("std.actor.getOrCreate")
+                )
+            })
+            .expect("getOrCreate call should be lowered");
+        assert_eq!(get_or_create.type_args["T1"], TypeRefIr::builtin("string"));
+        assert!(matches!(
+            &get_or_create.type_args["T2"],
+            TypeRefIr::Record { fields }
+                if fields["displayName"] == TypeRefIr::builtin("string")
+                    && fields["loginCount"] == TypeRefIr::builtin("number")
+        ));
+
+        let find = calls
+            .iter()
+            .find(|call| {
+                matches!(
+                    &call.target,
+                    CallTargetIr::Native { target }
+                        if target.binding_key.as_deref() == Some("std.actor.find")
+                )
+            })
+            .expect("find call should be lowered");
+        assert_eq!(find.type_args["T1"], TypeRefIr::builtin("string"));
+        assert!(!find.type_args.contains_key("T2"));
     }
 
     #[test]

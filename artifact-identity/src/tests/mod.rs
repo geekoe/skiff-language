@@ -2,21 +2,22 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
-    CanonicalPublicCallableSignature, ConfigAndEffectMetadata, ContractOperationId,
-    DbDeclarationIr, DbFieldStorageIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExprIr,
-    FileIrRef, FileIrUnit, FunctionTypeParamIr, InterfaceInstantiationRef, MetadataValue,
-    OperationAbiRef, OperationCallableKind, OperationTargetRef, PackageCallableId,
-    PackageCallableRef, PackageDependencyConstraint, PackageDependencyPublicLinkScope,
-    PackageOperationTarget, PackageProductionLinkScope, PackageRefIr, PackageTestAssembly,
-    PackageTestAssemblyKind, PackageTestEntrypoint, PackageTestEntrypointKind,
-    PackageTestExecutableRef, PackageTestFileIrRef, PackageTestFileLinkScope,
-    PackageTestLinkPolicy, PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit,
-    PublicationAbiUnit, PublicationOperationAbi, PublicationOperationKind,
-    PublicationPublicInstanceExport, PublicationResourceRef, PublicationSchemaType,
-    PublicationSchemaTypeNameability, ServiceCallRef, ServiceCallRefIndex, ServiceOperation,
-    ServiceProtocolIdentity, ServiceUnit, SourceCallMethodIndexEntry,
-    SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
+    ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr, CallIr, CallTargetIr,
+    CallableEffectSummary, CallableMayEffects, CanonicalPublicCallableSignature,
+    ConfigAndEffectMetadata, ContractOperationId, DbDeclarationIr, DbFieldStorageIr,
+    DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, ExprIr, FileIrRef, FileIrUnit,
+    FunctionTypeParamIr, InterfaceInstantiationRef, MetadataValue, OperationAbiRef,
+    OperationCallableKind, OperationTargetRef, PackageCallableId, PackageCallableRef,
+    PackageDependencyConstraint, PackageDependencyPublicLinkScope, PackageOperationTarget,
+    PackageProductionLinkScope, PackageRefIr, PackageTestAssembly, PackageTestAssemblyKind,
+    PackageTestEntrypoint, PackageTestEntrypointKind, PackageTestExecutableRef,
+    PackageTestFileIrRef, PackageTestFileLinkScope, PackageTestLinkPolicy,
+    PackageTestPackageUnitRef, PackageTestRuntimeExpectedError, PackageUnit, PublicationAbiUnit,
+    PublicationOperationAbi, PublicationOperationKind, PublicationPublicInstanceExport,
+    PublicationResourceRef, PublicationSchemaType, PublicationSchemaTypeNameability,
+    ServiceCallRef, ServiceCallRefIndex, ServiceOperation, ServiceProtocolIdentity, ServiceUnit,
+    SourceCallMethodIndexEntry, SourceCallOperationIndexEntry, SourceMapSource, TypeRefIr,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 
 use super::*;

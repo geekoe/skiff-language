@@ -3,12 +3,15 @@ use std::collections::BTreeMap;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 pub use skiff_artifact_model::{
-    BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue, NativeTarget, OperationAbiRef,
-    PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
-    SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    ActorAbiIdentity, ActorFieldEncodingIr, BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue,
+    NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
+    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+    RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
-use super::addr::{ConstAddr, ExecutableAddr, ExecutableIndex, TypeAddr, TypeIndex};
+use super::addr::{
+    ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, TypeAddr, TypeIndex, UnitAddr,
+};
 
 pub type FileIrIdentity = String;
 pub type SourceAstHash = String;
@@ -28,6 +31,8 @@ pub struct LinkedFileUnit {
     pub source_map: SourceMapDto,
     pub declarations: FileDeclarations,
     pub link_targets: FileLinkTargets,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actor_declarations: Vec<LinkedActorDeclaration>,
     #[serde(rename = "typeTable", default)]
     pub types: Vec<TypeDeclIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -35,6 +40,61 @@ pub struct LinkedFileUnit {
     #[serde(default)]
     pub executables: Vec<LinkedExecutable>,
     pub external_refs: ExternalRefTable,
+}
+
+/// Canonical Actor ABI facts owned by this linked file. Actor declarations are
+/// not entries in the ordinary type table: their source-level nominal identity
+/// is the service symbol and their runtime owner is filled by assembly linking.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorDeclaration {
+    pub actor_type: ServiceSymbolRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_owner: Option<LinkedActorDeclarationOwner>,
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_name: String,
+    pub actor_id_type: LinkedTypeRef,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<LinkedActorField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_methods: Vec<LinkedActorPublicMethod>,
+    pub actor_runtime_abi_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorDeclarationOwner {
+    pub unit: UnitAddr,
+    pub file: FileAddr,
+    pub actor_symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorField {
+    pub name: String,
+    pub ty: LinkedTypeRef,
+    pub encoding: ActorFieldEncodingIr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorPublicMethod {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<LinkedFunctionTypeParamIr>,
+    pub return_type: LinkedTypeRef,
+    pub may_suspend: bool,
+}
+
+/// A call-site reference to the single declaration that proved the registry
+/// intrinsic's actor/id/bootstrap type arguments. Field and method tables stay
+/// on `LinkedActorDeclaration`; calls never duplicate them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorNativeMetadata {
+    pub declaration_owner: LinkedActorDeclarationOwner,
+    pub actor_abi_identity: ActorAbiIdentity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1001,6 +1061,8 @@ pub struct CallIr {
     pub type_args: BTreeMap<String, LinkedTypeRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_metadata: Option<LinkedActorNativeMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

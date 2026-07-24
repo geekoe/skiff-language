@@ -38,6 +38,7 @@ fn linked_file_unit_from_artifact_with_canonical_calls(
         source_map: linked_source_map(&unit.source_map)?,
         declarations: linked_declarations(&unit.declarations),
         link_targets: linked_link_targets(&unit.link_targets),
+        actor_declarations: linked_actor_declarations(unit)?,
         types: unit.type_table.iter().map(linked_type_decl).collect(),
         constants: unit
             .constants
@@ -51,6 +52,78 @@ fn linked_file_unit_from_artifact_with_canonical_calls(
             .collect::<anyhow::Result<Vec<_>>>()?,
         external_refs: linked_external_refs(&unit.external_refs),
     })
+}
+
+fn linked_actor_declarations(
+    unit: &artifact::FileIrUnit,
+) -> anyhow::Result<Vec<LinkedActorDeclaration>> {
+    let mut names = std::collections::BTreeSet::new();
+    unit.actor_declarations
+        .iter()
+        .map(|declaration| {
+            let computed_identity = skiff_artifact_identity::actor_abi_identity(&declaration.abi)
+                .with_context(|| {
+                format!(
+                    "failed to compute actor ABI identity for File IR {} actor {}",
+                    unit.file_ir_identity, declaration.abi.actor_name
+                )
+            })?;
+            if computed_identity != declaration.actor_abi_identity {
+                anyhow::bail!(
+                    "File IR {} actor declaration {} ABI identity does not match its canonical ABI",
+                    unit.file_ir_identity,
+                    declaration.abi.actor_name
+                );
+            }
+            let actor_name = declaration.abi.actor_name.as_str();
+            if !names.insert(actor_name) {
+                anyhow::bail!(
+                    "File IR {} has duplicate actor declaration {}",
+                    unit.file_ir_identity,
+                    actor_name
+                );
+            }
+            Ok(LinkedActorDeclaration {
+                actor_type: artifact::ServiceSymbolRef {
+                    module_path: unit.module_path.clone(),
+                    symbol: declaration.abi.actor_name.clone(),
+                },
+                implementation_owner: None,
+                actor_abi_identity: declaration.actor_abi_identity.clone(),
+                actor_name: declaration.abi.actor_name.clone(),
+                actor_id_type: linked_type_ref(&declaration.abi.actor_id_type),
+                fields: declaration
+                    .abi
+                    .fields
+                    .iter()
+                    .map(|field| LinkedActorField {
+                        name: field.name.clone(),
+                        ty: linked_type_ref(&field.ty),
+                        encoding: field.encoding,
+                    })
+                    .collect(),
+                public_methods: declaration
+                    .abi
+                    .public_methods
+                    .iter()
+                    .map(|method| LinkedActorPublicMethod {
+                        name: method.name.clone(),
+                        parameters: method
+                            .parameters
+                            .iter()
+                            .map(|parameter| LinkedFunctionTypeParamIr {
+                                name: parameter.name.clone(),
+                                ty: linked_type_ref(&parameter.ty),
+                            })
+                            .collect(),
+                        return_type: linked_type_ref(&method.return_type),
+                        may_suspend: method.may_suspend,
+                    })
+                    .collect(),
+                actor_runtime_abi_version: declaration.abi.actor_runtime_abi_version.clone(),
+            })
+        })
+        .collect()
 }
 
 fn validate_receiver_builtin_ops(unit: &artifact::FileIrUnit) -> anyhow::Result<()> {
@@ -895,6 +968,7 @@ fn linked_call(
             .map(|(name, ty)| (name.clone(), linked_type_ref(ty)))
             .collect(),
         metadata: call.metadata.clone(),
+        actor_metadata: None,
     })
 }
 
@@ -1113,6 +1187,71 @@ mod tests {
         assert_eq!(
             linked.declarations.db["Credential"].fields[0].storage,
             DbFieldStorageIr::Encrypted
+        );
+    }
+
+    fn actor_file() -> artifact::FileIrUnit {
+        let mut file = artifact::FileIrUnit::empty("actors", "source");
+        let abi = artifact::ActorAbiInput {
+            actor_name: "DocHub".to_string(),
+            actor_id_type: artifact::TypeRefIr::builtin("string"),
+            fields: vec![artifact::ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: artifact::TypeRefIr::builtin("number"),
+                encoding: artifact::ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            public_methods: Vec::new(),
+            actor_runtime_abi_version: artifact::ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        };
+        file.actor_declarations.push(artifact::ActorDeclarationIr {
+            actor_abi_identity: skiff_artifact_identity::actor_abi_identity(&abi).unwrap(),
+            abi,
+        });
+        file
+    }
+
+    #[test]
+    fn linked_file_conversion_preserves_actor_declaration_owner_and_encoding() {
+        let artifact = actor_file();
+        let linked = linked_file_unit_from_assembly_artifact(&artifact, &|target| {
+            anyhow::bail!("unexpected canonical call target {target:?}")
+        })
+        .unwrap();
+        let actor = &linked.actor_declarations[0];
+        assert_eq!(actor.actor_type.module_path, "actors");
+        assert_eq!(actor.actor_type.symbol, "DocHub");
+        assert!(actor.implementation_owner.is_none());
+        assert_eq!(actor.actor_name, "DocHub");
+        assert_eq!(
+            actor.fields[0].encoding,
+            artifact::ActorFieldEncodingIr::CanonicalValueV1
+        );
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_duplicate_actor_owner() {
+        let mut duplicate = actor_file();
+        duplicate
+            .actor_declarations
+            .push(duplicate.actor_declarations[0].clone());
+        assert!(
+            linked_file_unit_from_assembly_artifact(&duplicate, &|_| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate actor declaration")
+        );
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_tampered_actor_abi_identity() {
+        let mut artifact = actor_file();
+        artifact.actor_declarations[0].actor_abi_identity =
+            artifact::ActorAbiIdentity::new("tampered");
+        assert!(
+            linked_file_unit_from_assembly_artifact(&artifact, &|_| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("ABI identity does not match")
         );
     }
 }

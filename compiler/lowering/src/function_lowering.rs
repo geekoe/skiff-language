@@ -1218,7 +1218,7 @@ impl<'a> FunctionLowerer<'a> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        self.infer_native_call_type_args(&target, &mut type_args, args);
+        self.infer_native_call_type_args(&target, &mut type_args, args)?;
         let metadata = match &target {
             CallTargetIr::Builtin { op } if is_db_builtin_op(op) => self.lower_db_call_metadata(
                 op,
@@ -1374,20 +1374,82 @@ impl<'a> FunctionLowerer<'a> {
         target: &CallTargetIr,
         type_args: &mut BTreeMap<String, TypeRefIr>,
         args: &[Expr],
-    ) {
-        if type_args.contains_key("T0") {
-            return;
-        }
+    ) -> Result<()> {
         let CallTargetIr::Native { target } = target else {
-            return;
+            return Ok(());
         };
+        if is_std_actor_registry_native_target(target) {
+            return self.complete_actor_registry_type_args(target, type_args);
+        }
+        if type_args.contains_key("T0") {
+            return Ok(());
+        }
         if !is_std_http_json_native_target(target) {
-            return;
+            return Ok(());
         }
         let Some(payload_type) = self.native_http_json_payload_type(args) else {
-            return;
+            return Ok(());
         };
         type_args.insert("T0".to_string(), payload_type);
+        Ok(())
+    }
+
+    fn complete_actor_registry_type_args(
+        &self,
+        target: &NativeTarget,
+        type_args: &mut BTreeMap<String, TypeRefIr>,
+    ) -> Result<()> {
+        let actor_ty = type_args.get("T0").cloned().ok_or_else(|| {
+            unsupported(format!(
+                "actor registry intrinsic `{}` requires exact actor type argument T0",
+                target
+                    .binding_key
+                    .as_deref()
+                    .unwrap_or(target.symbol.as_str())
+            ))
+        })?;
+        let resolved_actor_ty = ResolvedTypeRef {
+            source_text: type_ref_ir_type_text(&actor_ty),
+            ir: actor_ty,
+        };
+        let actor = self
+            .type_resolution
+            .actor_type_resolution(&resolved_actor_ty, &self.type_resolution_context())
+            .ok_or_else(|| {
+                unsupported(format!(
+                    "actor registry intrinsic `{}` T0 is not an actor declaration",
+                    target
+                        .binding_key
+                        .as_deref()
+                        .unwrap_or(target.symbol.as_str())
+                ))
+            })?;
+        insert_exact_native_type_arg(type_args, "T1", actor.id_type.ir)?;
+        if matches!(
+            target.binding_key.as_deref(),
+            Some("std.actor.getOrCreate" | "std.actor.replace")
+        ) {
+            insert_exact_native_type_arg(
+                type_args,
+                "T2",
+                TypeRefIr::Record {
+                    fields: actor
+                        .fields
+                        .into_iter()
+                        .map(|(name, ty)| (name, ty.ir))
+                        .collect(),
+                },
+            )?;
+        } else if type_args.contains_key("T2") {
+            return Err(unsupported(format!(
+                "actor registry intrinsic `{}` must not carry bootstrap type argument T2",
+                target
+                    .binding_key
+                    .as_deref()
+                    .unwrap_or(target.symbol.as_str())
+            )));
+        }
+        Ok(())
     }
 
     fn native_http_json_payload_type(&self, args: &[Expr]) -> Option<TypeRefIr> {
@@ -2050,6 +2112,30 @@ fn is_std_http_json_native_target(target: &NativeTarget) -> bool {
         Some("std.http.response.json" | "std.http.response.jsonWithHeaders")
     ) || (target.namespace == "std.http"
         && matches!(target.symbol.as_str(), "json" | "jsonWithHeaders"))
+}
+
+fn is_std_actor_registry_native_target(target: &NativeTarget) -> bool {
+    matches!(
+        target.binding_key.as_deref(),
+        Some("std.actor.getOrCreate" | "std.actor.replace" | "std.actor.find" | "std.actor.remove")
+    )
+}
+
+fn insert_exact_native_type_arg(
+    type_args: &mut BTreeMap<String, TypeRefIr>,
+    key: &str,
+    expected: TypeRefIr,
+) -> Result<()> {
+    if let Some(actual) = type_args.get(key) {
+        if actual != &expected {
+            return Err(unsupported(format!(
+                "native type argument {key} does not match its canonical declaration type"
+            )));
+        }
+        return Ok(());
+    }
+    type_args.insert(key.to_string(), expected);
+    Ok(())
 }
 
 fn expr_preorder_node_count(expr: &Expr) -> u32 {

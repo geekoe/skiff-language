@@ -11,6 +11,7 @@ use crate::{
     symbols::{PackageCallableRef, PackageSymbolRef, ServiceDependencySymbolRef, ServiceSymbolRef},
     targets::NativeTarget,
     types::{InterfaceDeclIr, TypeDeclIr, TypeRefIr},
+    ActorDeclarationIr,
 };
 
 mod package_calls;
@@ -88,6 +89,8 @@ pub struct FileIrUnit {
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub required_receiver_builtin_capability_version: u32,
     pub source_map: SourceMapDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actor_declarations: Vec<ActorDeclarationIr>,
     pub declarations: FileDeclarations,
     pub link_targets: FileLinkTargets,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -388,6 +391,7 @@ impl FileIrUnit {
             opcode_table_version: FILE_IR_OPCODE_TABLE_VERSION.to_string(),
             required_receiver_builtin_capability_version: 0,
             source_map: SourceMapDto::empty(),
+            actor_declarations: Vec::new(),
             declarations: FileDeclarations::default(),
             link_targets: FileLinkTargets::default(),
             type_table: Vec::new(),

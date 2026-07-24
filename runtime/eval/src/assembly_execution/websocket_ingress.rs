@@ -76,6 +76,7 @@ pub async fn dispatch_websocket_ingress_via_in_process_boundary(
         args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     };
     let value = {
         let mut eval_context = EvalContext::new(
