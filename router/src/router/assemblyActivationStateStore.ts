@@ -29,7 +29,7 @@ export interface AssemblyActivationStateStore {
   ): Promise<EnvironmentActivationState>;
 }
 
-/** Direct-test fake. Production must use EcosystemStoreClient. */
+/** Direct-test fake. Production uses MongoAssemblyActivationStateStore. */
 export class MemoryAssemblyActivationStateStore implements AssemblyActivationStateStore {
   private state: EnvironmentActivationState;
 

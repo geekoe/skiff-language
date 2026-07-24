@@ -10,7 +10,6 @@ import { loadRouterConfig } from '../src/router/config.js';
 
 const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
-const originalEcosystemStoreCliEnv = process.env.SKIFF_ECOSYSTEM_STORE_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
 
 async function writeRouterConfigFixture(path: string, contents: string): Promise<void> {
@@ -27,7 +26,6 @@ async function writeRouterConfigFixture(path: string, contents: string): Promise
 
 beforeEach(() => {
   delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
-  delete process.env.SKIFF_ECOSYSTEM_STORE_CLI;
   delete process.env.SKIFF_DEV_HOME;
 });
 
@@ -39,15 +37,14 @@ afterEach(async () => {
     }
   }
   restoreEnv('SKIFF_ARTIFACT_IDENTITY_CLI', originalIdentityCliEnv);
-  restoreEnv('SKIFF_ECOSYSTEM_STORE_CLI', originalEcosystemStoreCliEnv);
   restoreEnv('SKIFF_DEV_HOME', originalDevHomeEnv);
 });
 
 describe('router config', () => {
-  it('keeps the checked-in example explicit about the ecosystem store adapter', async () => {
+  it('keeps the checked-in example explicit about the shared artifact path', async () => {
     const examplePath = fileURLToPath(new URL('../router.example.yml', import.meta.url));
     await expect(loadRouterConfig(examplePath)).resolves.toMatchObject({
-      ecosystemStoreCliPath: '/opt/skiff/bin/skiff-compiler'
+      artifactsPath: resolve(fileURLToPath(new URL('..', import.meta.url)), '../var/skiff-artifacts')
     });
   });
 
@@ -260,101 +257,6 @@ describe('router config', () => {
     );
 
     await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty('identityCliPath');
-  });
-
-  it('accepts only explicit absolute ecosystem store adapter paths', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    const configuredPath = join(dir, 'bin', 'skiff-compiler');
-    await writeRouterConfigFixture(
-      configPath,
-      ['profile: dev', `ecosystemStoreCliPath: ${JSON.stringify(configuredPath)}`, ''].join('\n')
-    );
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      ecosystemStoreCliPath: configuredPath
-    });
-
-    const overridePath = join(dir, 'override', 'skiff-compiler');
-    await expect(loadRouterConfig(configPath, {
-      ecosystemStoreCliPath: overridePath
-    })).resolves.toMatchObject({
-      ecosystemStoreCliPath: overridePath
-    });
-
-    await writeRouterConfigFixture(configPath, 'profile: dev\n');
-    process.env.SKIFF_ECOSYSTEM_STORE_CLI = 'env/skiff-compiler';
-    process.env.SKIFF_DEV_HOME = join(dir, 'hostile-dev-home');
-    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
-      'ecosystemStoreCliPath'
-    );
-
-    await writeRouterConfigFixture(
-      configPath,
-      'profile: dev\necosystemStoreCliPath: bin/skiff-compiler\n'
-    );
-    await expect(loadRouterConfig(configPath)).rejects.toThrow(
-      /ecosystemStoreCliPath must be an absolute executable path/
-    );
-    await writeRouterConfigFixture(configPath, 'profile: dev\n');
-    await expect(loadRouterConfig(configPath, {
-      ecosystemStoreCliPath: 'override/skiff-compiler'
-    })).rejects.toThrow(
-      /ecosystemStoreCliPath must be an absolute executable path/
-    );
-  });
-
-  it('does not invent an ecosystem store adapter when it is omitted', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    await writeRouterConfigFixture(configPath, 'profile: prod\nreleaseMode: true\n');
-
-    await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
-      'ecosystemStoreCliPath'
-    );
-  });
-
-  it('loads only an explicit strict activation backend command', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
-    tempDirs.push(dir);
-    const configPath = join(dir, 'router.yml');
-    const executablePath = join(dir, 'bin', 'activation-backend');
-    await writeRouterConfigFixture(configPath, [
-      'profile: prod',
-      'activationBackend:',
-      `  executablePath: ${JSON.stringify(executablePath)}`,
-      '  args:',
-      '    - serve-router',
-      ''
-    ].join('\n'));
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      activationBackend: {
-        executablePath,
-        args: ['serve-router']
-      }
-    });
-
-    await writeRouterConfigFixture(configPath, [
-      'profile: prod',
-      'activationBackend:',
-      '  executablePath: relative/backend',
-      ''
-    ].join('\n'));
-    await expect(loadRouterConfig(configPath)).rejects.toThrow(
-      /activationBackend.executablePath must be an absolute executable path/
-    );
-
-    await writeRouterConfigFixture(configPath, [
-      'profile: prod',
-      'activationBackend:',
-      `  executablePath: ${JSON.stringify(executablePath)}`,
-      '  artifactRoot: /forbidden',
-      ''
-    ].join('\n'));
-    await expect(loadRouterConfig(configPath)).rejects.toThrow(
-      /activationBackend has unknown fields/
-    );
   });
 
   it('loads telemetry config with router-owned defaults', async () => {

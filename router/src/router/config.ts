@@ -23,10 +23,8 @@ const IDENTITY_CLI_BINARY = process.platform === 'win32'
   : 'skiff-artifact-identity';
 
 export interface RouterConfig {
-  activationBackend?: RouterActivationBackendConfig;
   artifactsPath: string;
   devReload?: boolean;
-  ecosystemStoreCliPath?: string;
   environment?: string;
   host: string;
   httpBodyLimitBytes?: number;
@@ -45,15 +43,9 @@ export interface RouterConfig {
   websocketPath: string;
 }
 
-export interface RouterActivationBackendConfig {
-  executablePath: string;
-  args: string[];
-}
-
 export interface RouterConfigOverrides {
   artifactsPath?: string;
   devReload?: boolean;
-  ecosystemStoreCliPath?: string;
   environment?: string;
   host?: string;
   httpBodyLimitBytes?: string;
@@ -69,11 +61,9 @@ export interface RouterConfigOverrides {
 }
 
 interface RawRouterConfig {
-  activationBackend?: unknown;
   artifactsPath?: unknown;
   artifactRoots?: unknown;
   devReload?: unknown;
-  ecosystemStoreCliPath?: unknown;
   environment?: unknown;
   host?: unknown;
   hosts?: unknown;
@@ -145,12 +135,6 @@ export async function loadRouterConfig(
       : {}),
     ...(releaseMode !== undefined ? { releaseMode } : {}),
   });
-  const ecosystemStoreCliPath = readEcosystemStoreCliPath({
-    raw: raw.ecosystemStoreCliPath,
-    ...(overrides.ecosystemStoreCliPath !== undefined
-      ? { override: overrides.ecosystemStoreCliPath }
-      : {})
-  });
   rejectRemovedValuesConfig(raw.values);
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
   const profile = readRequiredProfile(overrides.profile ?? rawProfile, 'profile');
@@ -185,10 +169,6 @@ export async function loadRouterConfig(
       '/ws'
     )
   };
-  const activationBackend = readActivationBackendConfig(raw.activationBackend);
-  if (activationBackend !== undefined) {
-    config.activationBackend = activationBackend;
-  }
   const environment = readOptionalNonEmptyString(
     overrides.environment ?? raw.environment,
     'environment'
@@ -215,9 +195,6 @@ export async function loadRouterConfig(
   if (identityCliPath !== undefined) {
     config.identityCliPath = identityCliPath;
   }
-  if (ecosystemStoreCliPath !== undefined) {
-    config.ecosystemStoreCliPath = ecosystemStoreCliPath;
-  }
   const fileBackend = readFileBackendConfig(raw.fileBackend, configDir);
   if (fileBackend !== undefined) {
     config.fileBackend = fileBackend;
@@ -227,32 +204,6 @@ export async function loadRouterConfig(
     config.telemetry = telemetry;
   }
   return config;
-}
-
-function readActivationBackendConfig(value: unknown): RouterActivationBackendConfig | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!isRecord(value)) {
-    throw new Error('router config activationBackend must be an object');
-  }
-  const keys = Object.keys(value);
-  if (keys.some((key) => key !== 'executablePath' && key !== 'args')) {
-    throw new Error('router config activationBackend has unknown fields');
-  }
-  const executablePath = readAbsoluteExecutablePath(
-    value.executablePath,
-    'activationBackend.executablePath'
-  );
-  const args = value.args === undefined
-    ? []
-    : readStringArray(value.args, 'activationBackend.args');
-  return { executablePath, args };
-}
-
-function readStringArray(value: unknown, name: string): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`router config ${name} must be a string array`);
-  }
-  return value.map((entry, index) => readString(entry, `${name}[${index}]`, String(entry)));
 }
 
 function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput {
@@ -431,33 +382,6 @@ function readIdentityCliPath(input: {
 
 function defaultDevIdentityCliPath(): string {
   return join(defaultDevBinDir(), IDENTITY_CLI_BINARY);
-}
-
-function readEcosystemStoreCliPath(input: {
-  override?: string;
-  raw: unknown;
-}): string | undefined {
-  if (input.override !== undefined) {
-    return readAbsoluteExecutablePath(
-      input.override,
-      'ecosystemStoreCliPath'
-    );
-  }
-  if (input.raw !== undefined && input.raw !== null) {
-    return readAbsoluteExecutablePath(
-      input.raw,
-      'ecosystemStoreCliPath'
-    );
-  }
-  return undefined;
-}
-
-function readAbsoluteExecutablePath(value: unknown, name: string): string {
-  const path = readString(value, name, String(value));
-  if (!isAbsolute(path)) {
-    throw new Error(`router config ${name} must be an absolute executable path`);
-  }
-  return path;
 }
 
 function defaultDevBinDir(): string {

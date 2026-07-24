@@ -7,22 +7,20 @@ import { AssemblyHttpGateway } from './assemblyHttpGateway.js';
 import { AssemblyRuntimeRegistry } from './assemblyRuntimeRegistry.js';
 import {
   loadRouterConfig,
-  type RouterConfig,
   type RouterConfigOverrides
 } from './config.js';
-import { EcosystemStoreClient } from './ecosystemStoreClient.js';
+import { FilesystemRuntimeAssemblySnapshotLoader } from './filesystemRuntimeAssemblySnapshotLoader.js';
+import { connectMongoAssemblyActivationStateStore } from './mongoAssemblyActivationStateStore.js';
 import { RuntimeDispatcher } from './runtimeDispatcher.js';
 import { RuntimeEndpoint } from './runtimeEndpoint.js';
 import { RuntimeRegistry } from './runtimeRegistry.js';
 import { RouterActiveAssemblySnapshotStore } from './runtimeAssemblySnapshot.js';
-import { RouterActivationBackendClient } from './routerActivationBackendClient.js';
 import { WebSocketGenerationLifecycleRouter } from './webSocketGenerationLifecycleRouter.js';
 
 const args = parseArgs({
   options: {
     config: { type: 'string', default: 'router.yml' },
     'artifacts-path': { type: 'string' },
-    'ecosystem-store-cli': { type: 'string' },
     environment: { type: 'string' },
     host: { type: 'string' },
     'http-body-limit-bytes': { type: 'string' },
@@ -36,9 +34,6 @@ const args = parseArgs({
 const overrides: RouterConfigOverrides = {};
 if (args.values['artifacts-path'] !== undefined) {
   overrides.artifactsPath = args.values['artifacts-path'];
-}
-if (args.values['ecosystem-store-cli'] !== undefined) {
-  overrides.ecosystemStoreCliPath = args.values['ecosystem-store-cli'];
 }
 if (args.values.environment !== undefined) {
   overrides.environment = args.values.environment;
@@ -70,19 +65,11 @@ if (config.rewrite.length > 0) {
   throw new Error('router rewrite-to-service rules are not supported by RuntimeAssembly ingress');
 }
 const snapshots = new RouterActiveAssemblySnapshotStore();
-const production = config.profile === 'prod';
-if (production && config.activationBackend === undefined) {
-  throw new Error('production router requires an explicit activationBackend');
-}
-if (production && config.ecosystemStoreCliPath !== undefined) {
-  throw new Error('production router forbids filesystem/compiler activation fallback');
-}
-const backend = config.activationBackend === undefined
-  ? createLocalStore(config)
-  : new RouterActivationBackendClient(config.activationBackend);
-if (backend instanceof EcosystemStoreClient) {
-  await backend.ensureEnvironmentBootstrap(config.environment);
-}
+const activation = await connectMongoAssemblyActivationStateStore({
+  mongoUrl: config.serviceDb.mongoUrl
+});
+await activation.store.ensureIndexes();
+const assemblyLoader = new FilesystemRuntimeAssemblySnapshotLoader(config.artifactsPath);
 const registry = new AssemblyRuntimeRegistry(snapshots);
 const runtimeRegistry = new RuntimeRegistry();
 const runtimeEndpoint = new RuntimeEndpoint({
@@ -95,8 +82,8 @@ const runtimeEndpoint = new RuntimeEndpoint({
 });
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
-  stateStore: backend,
-  assemblyLoader: backend,
+  stateStore: activation.store,
+  assemblyLoader,
   snapshots,
   registry,
   participants: runtimeRegistry,
@@ -173,7 +160,7 @@ async function shutdown(): Promise<void> {
     () => webSocketGateway.close(),
     () => httpGateway.close(),
     () => runtimeEndpoint.close(),
-    () => 'close' in backend ? backend.close() : Promise.resolve()
+    () => activation.client.close()
   ]) {
     try {
       await close();
@@ -184,17 +171,6 @@ async function shutdown(): Promise<void> {
   if (failures.length > 0) {
     throw new AggregateError(failures, 'router shutdown failed');
   }
-}
-
-function createLocalStore(config: RouterConfig): EcosystemStoreClient {
-  if (config.ecosystemStoreCliPath === undefined) {
-    throw new Error('local router activation requires explicit ecosystemStoreCliPath');
-  }
-  return new EcosystemStoreClient({
-    compilerPath: config.ecosystemStoreCliPath,
-    artifactRoot: config.artifactsPath,
-    timeoutMs: config.requestTimeoutMs
-  });
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

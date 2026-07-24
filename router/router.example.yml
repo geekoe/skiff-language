@@ -4,10 +4,9 @@ host: 127.0.0.1
 artifactsPath: ../var/skiff-artifacts
 serviceDb:
   mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
-ecosystemStoreCliPath: /opt/skiff/bin/skiff-compiler
-# The router reads environments/<environment>/activation.json and only routes
-# the committed RuntimeAssembly. globalIngress (protocol, Host, method, path)
-# is the sole public selector.
+# The router reads immutable RuntimeAssembly and ServiceContract records from
+# artifactsPath. Activation state and audit are stored transactionally in the
+# configured MongoDB. globalIngress is the sole public selector.
 requestTimeoutMs: 20000
 
 http:
