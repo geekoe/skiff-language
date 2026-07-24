@@ -258,6 +258,7 @@ fn contract_type_matches_execution(contract: &ContractTypeRef, execution: &Linke
         (ContractTypeRef::Contract { .. }, LinkedTypeRef::Native { name, args }) => {
             name == "unknown" && args.is_empty()
         }
+        (ContractTypeRef::PackagePublic { .. } | ContractTypeRef::TypeParam { .. }, _) => false,
         (ContractTypeRef::Record { fields }, LinkedTypeRef::Record { fields: execution }) => {
             fields.len() == execution.len()
                 && fields.iter().all(|(name, contract)| {
@@ -469,6 +470,27 @@ mod tests {
             .contains("does not match the contract execution projection"));
     }
 
+    #[test]
+    fn unresolved_contract_refs_have_no_websocket_execution_projection() {
+        let erased_execution = LinkedTypeRef::Native {
+            name: "unknown".to_string(),
+            args: Vec::new(),
+        };
+
+        assert!(!contract_type_matches_execution(
+            &ContractTypeRef::PackagePublic {
+                local_type_id: "package-type:Context".to_string(),
+            },
+            &erased_execution,
+        ));
+        assert!(!contract_type_matches_execution(
+            &ContractTypeRef::TypeParam {
+                name: "Context".to_string(),
+            },
+            &erased_execution,
+        ));
+    }
+
     fn execution_projection(contract: &ContractTypeRef) -> LinkedTypeRef {
         match contract {
             ContractTypeRef::Builtin { name, arguments } => LinkedTypeRef::Native {
@@ -479,6 +501,12 @@ mod tests {
                 name: "unknown".to_string(),
                 args: Vec::new(),
             },
+            ContractTypeRef::PackagePublic { local_type_id } => {
+                panic!("unresolved package public type {local_type_id} has no execution projection")
+            }
+            ContractTypeRef::TypeParam { name } => {
+                panic!("unresolved contract type parameter {name} has no execution projection")
+            }
             ContractTypeRef::Record { fields } => LinkedTypeRef::Record {
                 fields: fields
                     .iter()
