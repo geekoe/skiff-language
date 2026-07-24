@@ -1,7 +1,7 @@
 use super::*;
 
 impl AssemblyAdmissionController {
-    /// Rebuilds exactly the durable committed tuple before a Router socket is opened.
+    /// Rebuilds exactly the durable committed tuple after connection bootstrap.
     ///
     /// Pending activation data is validated by the canonical store reader but is not
     /// activated here. Any staged heap state from the previous session is discarded.
@@ -11,6 +11,7 @@ impl AssemblyAdmissionController {
         generation: u64,
         assembly: &RuntimeAssemblyRef,
         resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<Arc<ActiveAssembly>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -38,7 +39,7 @@ impl AssemblyAdmissionController {
                 assembly,
                 resolver,
                 "committed RuntimeAssembly recovery resolution failed",
-                None,
+                service_db,
             )
             .await
             .map_err(|(_, error)| error)?;

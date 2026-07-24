@@ -9,7 +9,6 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
-    error::Result,
     loader::assembly_admission::AssemblyAdmissionController,
 };
 
@@ -30,7 +29,6 @@ pub struct RuntimeConfig {
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
     pub environment: String,
-    pub artifact_root: PathBuf,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -38,7 +36,7 @@ pub struct RuntimeConfig {
 /// Production startup input for the canonical committed-assembly lifecycle.
 ///
 /// Unlike the focused host-test configuration, this surface cannot carry legacy service
-/// definitions. Startup recovers the exact environment tuple from the canonical artifact root.
+/// definitions. Router bootstrap supplies the connection-scoped artifact path and DB transport.
 #[derive(Clone)]
 #[cfg(not(test))]
 pub struct RuntimeProductionConfig {
@@ -47,7 +45,6 @@ pub struct RuntimeProductionConfig {
     pub base_runtime_id: String,
     pub runtime_home: PathBuf,
     pub environment: String,
-    pub artifact_root: PathBuf,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
@@ -58,7 +55,6 @@ pub struct RuntimeHost {
     pub(super) base_runtime_id: String,
     pub(super) runtime_home: PathBuf,
     pub(super) environment: String,
-    pub(super) artifact_root: PathBuf,
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
@@ -81,7 +77,6 @@ impl RuntimeHost {
             base_runtime_id: config.base_runtime_id,
             runtime_home: config.runtime_home,
             environment: config.environment,
-            artifact_root: config.artifact_root,
             http_response_max_bytes: config.http_response_max_bytes,
             http_egress_proxy: config.http_egress_proxy,
         })
@@ -90,14 +85,8 @@ impl RuntimeHost {
     pub fn new(config: RuntimeConfig) -> anyhow::Result<Self> {
         let db_provider = config.db_provider.clone();
         let http_runtime_options = runtime_http_options_from_config(config.http_egress_proxy)?;
-        let (environment, artifact_root) = {
-            skiff_artifact_model::validate_activation_environment(&config.environment)
-                .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
-            if config.artifact_root.as_os_str().is_empty() {
-                anyhow::bail!("runtime artifact root must be a non-empty path");
-            }
-            (config.environment.clone(), config.artifact_root.clone())
-        };
+        skiff_artifact_model::validate_activation_environment(&config.environment)
+            .map_err(|error| anyhow::anyhow!("runtime environment is invalid: {error}"))?;
         let producer_id = format!(
             "{}:proc:{}",
             config.base_runtime_id,
@@ -116,8 +105,7 @@ impl RuntimeHost {
             router_url: config.router_url,
             base_runtime_id: config.base_runtime_id.clone(),
             runtime_home: config.runtime_home,
-            environment,
-            artifact_root,
+            environment: config.environment,
             default_http_response_max_bytes: config.http_response_max_bytes,
             http_runtime_options,
             memory_budgets: RuntimeMemoryBudgets::default(),
@@ -157,19 +145,6 @@ impl RuntimeHost {
         let mut limits = RequestHeapLimits::default();
         limits.max_estimated_bytes = self.memory_budgets.request_heap_bytes;
         limits
-    }
-
-    pub(super) fn production_assembly_resolver(
-        &self,
-    ) -> Result<skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver> {
-        if self.artifact_root.as_os_str().is_empty() {
-            return Err(crate::error::RuntimeError::invalid_artifact(
-                "whole-assembly activation requires exactly one configured canonical artifact root"
-                    .to_string(),
-            ));
-        }
-        skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(&self.artifact_root)
-            .map_err(|error| crate::error::RuntimeError::invalid_artifact(error.to_string()))
     }
 }
 

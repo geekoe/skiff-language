@@ -1,6 +1,8 @@
 # Runtime MVP
 
-This crate is the Rust MVP runtime for published service assemblies. It keeps a local artifact load path, then loads services on request cache misses:
+This crate is the Rust runtime for published service assemblies. Each Router connection starts
+with one strict `router.bootstrap` frame that fixes the shared absolute artifact path and DB
+transport binding for that connection. Runtime config does not own either value.
 
 - dev reload pointers under `dev/services/<storage-projected-service-id>.json`, or service version pointers under `versions/services/<storage-projected-service-id>/<version>.json` plus build records under `builds/services/<storage-projected-service-id>/<buildHash>.json`;
 - service assemblies with `schemaVersion: "skiff-assembly-v1"` and `kind: "service"`;
@@ -17,7 +19,11 @@ cd router
 pnpm exec tsx src/router/server.ts --config router.yml
 ```
 
-Runtime config may include `artifactRoots`, a local load path list used before any roots sent by `router.control`. In development, the router can still send the local dev artifact root in `router.control`; in deployed environments, an external distributor should place artifacts under the runtime's configured local roots. A root must contain `dev/services/**/*.json` pointers when `devReload: true`, otherwise service version pointers, build records, referenced service assemblies, service units, package units, and the typed file IR units referenced by those units.
+The Router and Runtime must observe the same string and content semantics for the bootstrapped
+`artifactsPath`; current production deployments use a shared network filesystem. Runtime rejects
+activation and registration until bootstrap succeeds, and rejects every duplicate bootstrap.
+The bootstrapped Mongo URL remains host-only: only activations with an exact database requirement
+and binding receive `std.db`, and service code never sees the URL.
 
 Regenerate and publish a service project when needed. For router/compiler
 WebSocket coverage, use the small neutral fixture under

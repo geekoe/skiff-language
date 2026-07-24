@@ -40,14 +40,13 @@ pub struct RuntimeFileConfig {
     pub router: String,
     pub runtime_home: PathBuf,
     pub environment: String,
-    pub artifact_root: PathBuf,
     pub service_db_encryption_keyring_file: Option<PathBuf>,
     pub http_response_max_bytes: usize,
     pub http_egress_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeFileConfig {
     router: String,
     #[serde(alias = "runtime-home")]
@@ -55,22 +54,20 @@ struct RawRuntimeFileConfig {
     #[serde(default)]
     environment: Option<String>,
     #[serde(default)]
-    artifact_root: Option<PathBuf>,
-    #[serde(default)]
     service_db: Option<RawRuntimeServiceDbConfig>,
     #[serde(default)]
     services: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeServiceDbConfig {
     #[serde(default)]
     encryption: Option<RawRuntimeServiceDbEncryptionConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRuntimeServiceDbEncryptionConfig {
     #[serde(default)]
     keyring_file: Option<String>,
@@ -87,6 +84,7 @@ impl RuntimeFileConfig {
         reject_unsupported_top_level_key(&value, "artifacts")?;
         reject_unsupported_top_level_key(&value, "artifactRoots")?;
         reject_unsupported_top_level_key(&value, "artifact-roots")?;
+        reject_unsupported_top_level_key(&value, "artifactRoot")?;
         let mut raw_value = value.clone();
         remove_top_level_key(&mut raw_value, "http");
         let raw: RawRuntimeFileConfig = serde_yaml::from_value(raw_value).map_err(|error| {
@@ -98,10 +96,9 @@ impl RuntimeFileConfig {
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let runtime_home = resolve_relative_path(base_dir, raw.runtime_home);
         let environment = required_runtime_environment(raw.environment)?;
-        let artifact_root = required_runtime_artifact_root(base_dir, raw.artifact_root)?;
         if raw.services.is_some() {
             anyhow::bail!(
-                "runtime config no longer supports services; use exact environment and artifactRoot committed assembly recovery"
+                "runtime config no longer supports services; Router bootstrap owns artifact loading"
             );
         }
 
@@ -109,7 +106,6 @@ impl RuntimeFileConfig {
             router: raw.router,
             runtime_home,
             environment,
-            artifact_root,
             service_db_encryption_keyring_file: runtime_service_db_encryption_keyring_file(
                 base_dir,
                 raw.service_db,
@@ -126,18 +122,6 @@ fn required_runtime_environment(environment: Option<String>) -> anyhow::Result<S
     validate_activation_environment(&environment)
         .map_err(|error| anyhow::anyhow!("runtime config environment is invalid: {error}"))?;
     Ok(environment)
-}
-
-fn required_runtime_artifact_root(
-    base_dir: &Path,
-    artifact_root: Option<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    let artifact_root =
-        artifact_root.ok_or_else(|| anyhow::anyhow!("runtime config artifactRoot is required"))?;
-    if artifact_root.as_os_str().is_empty() {
-        anyhow::bail!("runtime config artifactRoot must be a non-empty path");
-    }
-    Ok(resolve_relative_path(base_dir, artifact_root))
 }
 
 fn runtime_service_db_encryption_keyring_file(
@@ -236,7 +220,7 @@ fn reject_unsupported_top_level_key(value: &serde_yaml::Value, key: &str) -> any
     };
     if mapping.contains_key(serde_yaml::Value::String(key.to_string())) {
         anyhow::bail!(
-            "runtime config no longer supports {key}; use exact environment and singular artifactRoot"
+            "runtime config no longer supports {key}; Router bootstrap owns artifactsPath"
         );
     }
     Ok(())

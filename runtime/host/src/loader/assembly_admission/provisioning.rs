@@ -10,6 +10,7 @@ impl AssemblyAdmissionController {
         &self,
         control: AssemblyActivationControl,
         resolver: &R,
+        bootstrap_service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<Option<AssemblyActivationControl>>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -25,6 +26,11 @@ impl AssemblyAdmissionController {
                 replica_id,
                 service_db,
             } => {
+                if service_db.is_some() {
+                    anyhow::bail!(
+                        "assembly activation serviceDb is not supported; use connection bootstrap"
+                    );
+                }
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
                     environment,
@@ -32,9 +38,11 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
-                    service_db,
                 };
-                let reply = match self.prepare_transition(&transition, resolver).await {
+                let reply = match self
+                    .prepare_transition(&transition, resolver, bootstrap_service_db)
+                    .await
+                {
                     Ok(()) => transition.prepared_control(replica_id),
                     Err((reason, error)) => {
                         warn!(
@@ -58,6 +66,11 @@ impl AssemblyAdmissionController {
                 replica_id,
                 service_db,
             } => {
+                if service_db.is_some() {
+                    anyhow::bail!(
+                        "assembly activation serviceDb is not supported; use connection bootstrap"
+                    );
+                }
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
                     environment,
@@ -65,9 +78,11 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
-                    service_db,
                 };
-                let reply = match self.commit_transition(&transition, resolver).await {
+                let reply = match self
+                    .commit_transition(&transition, resolver, bootstrap_service_db)
+                    .await
+                {
                     Ok(()) => transition.register_control(replica_id),
                     Err((reason, error)) => {
                         warn!(
@@ -97,7 +112,6 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
-                    service_db: None,
                 })
                 .await?;
                 Ok(None)
@@ -130,6 +144,7 @@ impl AssemblyAdmissionController {
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -182,7 +197,7 @@ impl AssemblyAdmissionController {
                 &transition.assembly,
                 resolver,
                 "exact RuntimeAssembly record resolution failed",
-                transition.service_db.as_ref(),
+                service_db,
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)
@@ -199,6 +214,7 @@ impl AssemblyAdmissionController {
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -236,7 +252,7 @@ impl AssemblyAdmissionController {
 
         // A fresh process has no staged heap state. An exact commit replay is
         // the durable recovery signal, so rebuild it before registering.
-        self.prepare_recovery_transition(transition, resolver)
+        self.prepare_recovery_transition(transition, resolver, service_db)
             .await?;
         self.commit_staged(transition)
             .map(|_| ())
@@ -247,6 +263,7 @@ impl AssemblyAdmissionController {
         &self,
         transition: &AssemblyTransition,
         resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<(), (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -260,7 +277,7 @@ impl AssemblyAdmissionController {
                 &transition.assembly,
                 resolver,
                 "committed RuntimeAssembly recovery resolution failed",
-                transition.service_db.as_ref(),
+                service_db,
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)

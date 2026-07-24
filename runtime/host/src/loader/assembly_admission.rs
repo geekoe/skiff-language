@@ -52,7 +52,6 @@ struct AssemblyTransition {
     expected_generation: u64,
     candidate_generation: u64,
     assembly: RuntimeAssemblyRef,
-    service_db: Option<AssemblyActivationServiceDb>,
 }
 
 #[derive(Debug)]
@@ -560,8 +559,22 @@ impl RuntimeHost {
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
     {
+        self.apply_bootstrapped_assembly_activation_control(control, resolver, None)
+            .await
+    }
+
+    /// Production activation with the connection bootstrap's fixed DB transport binding.
+    pub async fn apply_bootstrapped_assembly_activation_control<R>(
+        &self,
+        control: AssemblyActivationControl,
+        resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
+    ) -> anyhow::Result<Option<AssemblyActivationControl>>
+    where
+        R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
+    {
         self.assembly_admission
-            .apply_activation_control(control, resolver)
+            .apply_activation_control(control, resolver, service_db)
             .await
     }
 

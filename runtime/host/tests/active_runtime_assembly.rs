@@ -88,7 +88,6 @@ fn runtime_host(replica_id: &str) -> RuntimeHost {
         base_runtime_id: replica_id.to_string(),
         runtime_home: std::env::temp_dir().join(replica_id),
         environment: "prod".to_string(),
-        artifact_root: std::env::temp_dir().join("skiff-runtime-host-test-artifacts"),
         http_response_max_bytes: skiff_runtime_host::config::DEFAULT_HTTP_RESPONSE_MAX_BYTES,
         http_egress_proxy: None,
     })

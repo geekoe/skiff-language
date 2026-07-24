@@ -14,11 +14,11 @@ use skiff_runtime_transport::{
     control_mapper::encode_outbound_control_message,
     control_response_mapper::spawn_claim_response_control_payload,
     protocol::{
-        decode_typed_binary_frame, ActorFindResponseFrameHeader, ActorPutResponseFrameHeader,
-        ActorRemoveResponseFrameHeader, ActorSpawnRuntimeErrorFrameHeader,
-        RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
-        ResponseErrorFrameHeader, ResponseStartFrameHeader, RuntimeErrorFramePayload,
-        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        decode_router_bootstrap_frame_header, decode_typed_binary_frame,
+        ActorFindResponseFrameHeader, ActorPutResponseFrameHeader, ActorRemoveResponseFrameHeader,
+        ActorSpawnRuntimeErrorFrameHeader, RequestCancelFrameHeader, ResponseChunkFrameHeader,
+        ResponseEndFrameHeader, ResponseErrorFrameHeader, ResponseStartFrameHeader,
+        RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
         SpawnClaimResponseFrameHeader, SpawnCompleteResponseFrameHeader,
         SpawnFailResponseFrameHeader, SpawnRenewResponseFrameHeader,
         SpawnSubmitResponseFrameHeader, TypedEnvelope,
@@ -52,12 +52,12 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
     let router_session_id = format!("skiff-router-session-v1:opaque:{}", uuid::Uuid::new_v4());
 
-    host.queue_connection_registration(sender.clone())?;
     host.websocket_generations.connect(&router_session_id)?;
     let writer_task = tokio::spawn(run_writer_loop(writer, receiver));
 
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
+        let mut bootstrap = None;
         let mut health_interval = tokio::time::interval(Duration::from_secs(1));
         health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut health_zero_transition_interval = tokio::time::interval(Duration::from_millis(50));
@@ -82,6 +82,7 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
                                 &bytes,
                                 &sender,
                                 &mut health_reporter,
+                                &mut bootstrap,
                             )
                             .await?;
                         }
@@ -105,6 +106,37 @@ pub(super) async fn run_once(host: super::RuntimeHost) -> Result<()> {
     drop(sender);
     let _ = writer_task.await;
     session_result.and(disconnect_result)
+}
+
+struct ConnectionBootstrap {
+    resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+    service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+}
+
+fn decode_connection_bootstrap(
+    typed: TypedEnvelope,
+    payload: &[u8],
+) -> Result<ConnectionBootstrap> {
+    if !payload.is_empty() {
+        return Err(RuntimeError::Decode(
+            "router.bootstrap binary frame payload must be empty".to_string(),
+        ));
+    }
+    let mut value = typed.rest;
+    value.insert("type".to_string(), Value::String(typed.envelope_type));
+    let header = decode_router_bootstrap_frame_header(Value::Object(value))
+        .map_err(super::transport_error_into_runtime_error)?;
+    let resolver = skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+        &header.artifacts_path,
+    )
+    .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let service_db = skiff_artifact_model::AssemblyActivationServiceDb {
+        mongo_url: header.service_db.mongo_url.clone(),
+    };
+    Ok(ConnectionBootstrap {
+        resolver,
+        service_db,
+    })
 }
 
 #[derive(Default)]
@@ -222,12 +254,25 @@ async fn dispatch_router_binary_frame(
     artifact_fingerprint: &mut Option<String>,
 ) -> Result<()> {
     let _ = (control, artifact_fingerprint);
+    let artifact_path = std::env::temp_dir().join("skiff-runtime-test-artifacts");
+    std::fs::create_dir_all(&artifact_path)
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
+    let mut bootstrap = Some(ConnectionBootstrap {
+        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+            &artifact_path,
+        )
+        .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
+        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
+            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
+        },
+    });
     dispatch_router_binary_frame_inner(
         host,
         "skiff-router-session-v1:opaque:test-session",
         bytes,
         sender,
         None,
+        &mut bootstrap,
     )
     .await
 }
@@ -238,6 +283,7 @@ async fn dispatch_router_binary_frame_with_health(
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
+    bootstrap: &mut Option<ConnectionBootstrap>,
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
         host,
@@ -245,6 +291,7 @@ async fn dispatch_router_binary_frame_with_health(
         bytes,
         sender,
         Some(health_reporter),
+        bootstrap,
     )
     .await
 }
@@ -255,19 +302,40 @@ async fn dispatch_router_binary_frame_inner(
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
+    bootstrap: &mut Option<ConnectionBootstrap>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
     match typed.envelope_type.as_str() {
+        "router.bootstrap" => {
+            if bootstrap.is_some() {
+                return Err(RuntimeError::Decode(
+                    "router.bootstrap must appear exactly once per connection".to_string(),
+                ));
+            }
+            let installed = decode_connection_bootstrap(typed, &payload)?;
+            host.recover_durable_committed(&installed.resolver, &installed.service_db)
+                .await?;
+            host.queue_connection_registration(sender.clone())?;
+            *bootstrap = Some(installed);
+        }
         ASSEMBLY_ACTIVATION_FRAME_TYPE => {
+            let bootstrap = bootstrap.as_ref().ok_or_else(|| {
+                RuntimeError::Decode(
+                    "assembly activation requires router.bootstrap first".to_string(),
+                )
+            })?;
             let control = decode_assembly_activation_frame(
                 AssemblyActivationFrameDirection::RouterToRuntime,
                 bytes,
             )
             .map_err(super::transport_error_into_runtime_error)?;
-            let resolver = host.production_assembly_resolver()?;
             if let Some(reply) = host
-                .apply_assembly_activation_control(control, &resolver)
+                .apply_bootstrapped_assembly_activation_control(
+                    control,
+                    &bootstrap.resolver,
+                    Some(&bootstrap.service_db),
+                )
                 .await
                 .map_err(|error| RuntimeError::Decode(error.to_string()))?
             {
@@ -279,6 +347,11 @@ async fn dispatch_router_binary_frame_inner(
                 .dispatch_router_control(router_session_id, bytes, sender)?;
         }
         "runtime.registered" => {
+            if bootstrap.is_none() {
+                return Err(RuntimeError::Decode(
+                    "runtime.registered requires router.bootstrap first".to_string(),
+                ));
+            }
             let (header, payload) =
                 decode_typed_binary_frame::<RuntimeRegisteredFrameHeader>(bytes)
                     .map_err(super::transport_error_into_runtime_error)?;
@@ -308,6 +381,11 @@ async fn dispatch_router_binary_frame_inner(
             ));
         }
         "request.start" => {
+            if bootstrap.is_none() {
+                return Err(RuntimeError::Decode(
+                    "request.start requires router.bootstrap first".to_string(),
+                ));
+            }
             let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
             host.spawn_runtime_assembly_request(router_session_id, header, payload, sender.clone())

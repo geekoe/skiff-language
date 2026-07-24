@@ -307,9 +307,12 @@ async fn committed_recovery_nonempty_generation_survives_restart_with_exact_regi
     let fixture = FullChainFixture::new();
     let reference = skiff_artifact_identity::runtime_assembly_ref(&fixture.assembly).unwrap();
 
-    let first = AssemblyAdmissionController::new("runtime-a");
+    let first = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
     let first_active = first
-        .recover_committed("prod", 7, &reference, &fixture.resolver)
+        .recover_committed("prod", 7, &reference, &fixture.resolver, None)
         .await
         .expect("non-empty committed generation must recover");
     let first_reads = fixture.resolver.reads.load(Ordering::SeqCst);
@@ -326,9 +329,12 @@ async fn committed_recovery_nonempty_generation_survives_restart_with_exact_regi
         }) if assembly == reference && replica_id == "runtime-a"
     ));
 
-    let restarted = AssemblyAdmissionController::new("runtime-a");
+    let restarted = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
     let restarted_active = restarted
-        .recover_committed("prod", 7, &reference, &fixture.resolver)
+        .recover_committed("prod", 7, &reference, &fixture.resolver, None)
         .await
         .expect("restart must rebuild the same non-empty committed generation");
     assert_eq!(restarted_active.generation(), 7);

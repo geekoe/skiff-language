@@ -263,7 +263,10 @@ async fn active_generation_context_pins_route_across_reload_and_failed_candidate
         .expect("fixture should expose canonical ingress")
         .selector
         .clone();
-    let controller = AssemblyAdmissionController::new("active-generation-context-replica");
+    let controller = AssemblyAdmissionController::new(
+        "active-generation-context-replica",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
     let generation_n = controller
         .admit(projected.assembly.clone(), &projected.resolver)
         .await
@@ -326,7 +329,10 @@ async fn in_process_request_entry_and_internal_call_share_dispatcher_symbol() {
         .expect("fixture should expose canonical ingress")
         .selector
         .clone();
-    let controller = AssemblyAdmissionController::new("in-process-request-entry-replica");
+    let controller = AssemblyAdmissionController::new(
+        "in-process-request-entry-replica",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
     controller
         .admit(projected.assembly, &projected.resolver)
         .await

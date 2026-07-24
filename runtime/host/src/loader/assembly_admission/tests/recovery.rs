@@ -123,7 +123,6 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             candidate_generation,
             assembly,
             replica_id,
-            service_db: None,
         },
         (
             "commit",
@@ -142,6 +141,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             candidate_generation,
             assembly,
             replica_id,
+            service_db: None,
         },
         _ => unreachable!(),
     }
@@ -151,14 +151,17 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
 async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transaction_rules() {
     let resolver = EmptyRecordResolver::new(empty_assembly());
     let reference = skiff_artifact_identity::runtime_assembly_ref(&resolver.assembly).unwrap();
-    let controller = AssemblyAdmissionController::new("runtime-a");
+    let controller = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
 
     let first = controller
-        .recover_committed("prod", 0, &reference, &resolver)
+        .recover_committed("prod", 0, &reference, &resolver, None)
         .await
         .expect("canonical generation zero must recover");
     let second = controller
-        .recover_committed("prod", 0, &reference, &resolver)
+        .recover_committed("prod", 0, &reference, &resolver, None)
         .await
         .expect("every reconnect must rebuild the exact durable record");
     assert_eq!(first.generation(), 0);
@@ -172,7 +175,7 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     let prepare = generation_one_control("prepare", reference.clone());
     assert!(matches!(
         controller
-            .apply_activation_control(prepare.clone(), &resolver)
+            .apply_activation_control(prepare.clone(), &resolver, None)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Prepared { .. })
@@ -185,6 +188,7 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
         .apply_activation_control(
             generation_one_control("abort", reference.clone()),
             &resolver,
+            None,
         )
         .await
         .unwrap();
@@ -194,13 +198,13 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     ));
 
     controller
-        .apply_activation_control(prepare, &resolver)
+        .apply_activation_control(prepare, &resolver, None)
         .await
         .unwrap();
     let commit = generation_one_control("commit", reference.clone());
     assert!(matches!(
         controller
-            .apply_activation_control(commit.clone(), &resolver)
+            .apply_activation_control(commit.clone(), &resolver, None)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })
@@ -208,14 +212,17 @@ async fn committed_recovery_generation_zero_rebuilds_and_preserves_online_transa
     assert_eq!(controller.active().unwrap().unwrap().generation(), 1);
     assert_eq!(resolver.record_reads.load(Ordering::SeqCst), 4);
 
-    let replayed = AssemblyAdmissionController::new("runtime-a");
+    let replayed = AssemblyAdmissionController::new(
+        "runtime-a",
+        skiff_runtime_capability_context::DbProviderSource::unavailable(),
+    );
     replayed
-        .recover_committed("prod", 0, &reference, &resolver)
+        .recover_committed("prod", 0, &reference, &resolver, None)
         .await
         .unwrap();
     assert!(matches!(
         replayed
-            .apply_activation_control(commit, &resolver)
+            .apply_activation_control(commit, &resolver, None)
             .await
             .unwrap(),
         Some(AssemblyActivationControl::Register { generation: 1, .. })

@@ -37,11 +37,14 @@ impl RuntimeHost {
     }
 
     async fn run_router_session_once(&self) -> Result<()> {
-        self.recover_durable_committed().await?;
         router_session::run_once(self.clone()).await
     }
 
-    async fn recover_durable_committed(&self) -> Result<()> {
+    pub(super) async fn recover_durable_committed(
+        &self,
+        resolver: &skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
+        service_db: &skiff_artifact_model::AssemblyActivationServiceDb,
+    ) -> Result<()> {
         self.assembly_admission
             .discard_transient_for_reconnect()
             .map_err(|error| {
@@ -49,7 +52,6 @@ impl RuntimeHost {
                     "committed recovery staging reset failed: {error}"
                 ))
             })?;
-        let resolver = self.production_assembly_resolver()?;
         let state = resolver
             .store()
             .read_environment_activation(&self.environment)
@@ -63,7 +65,8 @@ impl RuntimeHost {
                 &state.environment,
                 state.committed.generation,
                 &state.committed.assembly,
-                &resolver,
+                resolver,
+                Some(service_db),
             )
             .await
             .map_err(|error| {
