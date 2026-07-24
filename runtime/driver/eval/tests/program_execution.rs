@@ -4096,6 +4096,7 @@ fn program_with_executables(executables: Vec<LinkedExecutable>) -> RuntimeProgra
             source_map: Default::default(),
             declarations: FileDeclarations::default(),
             link_targets: FileLinkTargets::default(),
+            actor_declarations: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
             executables,
@@ -4295,6 +4296,7 @@ fn std_http_file_unit(types: Vec<TypeDeclIr>) -> LinkedFileUnit {
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types,
         constants: Vec::new(),
         executables: Vec::new(),
@@ -4536,6 +4538,7 @@ fn program_with_service_and_package_executables(
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types: Vec::new(),
         constants: Vec::new(),
         executables: vec![package_executable],
@@ -4577,6 +4580,7 @@ fn outbound_service_dependency_call(
         args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -5803,6 +5807,7 @@ fn telemetry_emit_native_direct_call_executable() -> LinkedExecutable {
                         ],
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
+                        actor_metadata: None,
                     },
                 },
             ],
@@ -6980,6 +6985,7 @@ fn emit_response_stream_call_ir() -> CallIr {
         args: vec![ExprRefIr { expression: 0 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -6996,6 +7002,7 @@ fn create_from_stream_call_ir() -> CallIr {
         args: vec![ExprRefIr { expression: 0 }, ExprRefIr { expression: 1 }],
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
+        actor_metadata: None,
     }
 }
 
@@ -8026,6 +8033,7 @@ fn package_file_unit(
         source_map: Default::default(),
         declarations: FileDeclarations::default(),
         link_targets: FileLinkTargets::default(),
+        actor_declarations: Vec::new(),
         types: Vec::new(),
         constants: Vec::new(),
         executables: vec![executable],
