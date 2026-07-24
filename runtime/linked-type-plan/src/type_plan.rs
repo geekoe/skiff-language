@@ -698,10 +698,6 @@ impl RuntimeTypePlanLinkedExt for RuntimeTypePlan {
                     })
                     .collect::<Result<Vec<_>>>()?,
             ),
-            // `external` descriptors are not recognised by from_descriptor.
-            LinkedTypeDescriptor::Native { .. } => {
-                return Ok(unknown_plan_for_descriptor(descriptor));
-            }
         };
         Ok(Self {
             label: linked_type_descriptor_label(descriptor).to_string(),
@@ -1052,9 +1048,6 @@ fn recoverable_expected_from_linked_descriptor(
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
-        LinkedTypeDescriptor::Native { .. } => {
-            return Ok(unresolved_recoverable_expected_from_descriptor(descriptor));
-        }
     };
     Ok(RuntimeRecoverableExpectedTypePlan {
         label: linked_type_descriptor_label(descriptor).to_string(),
@@ -1271,7 +1264,6 @@ fn linked_type_descriptor_label(descriptor: &LinkedTypeDescriptor) -> &'static s
         LinkedTypeDescriptor::Record { .. } => "record",
         LinkedTypeDescriptor::Alias { .. } => "alias",
         LinkedTypeDescriptor::Union { .. } => "union",
-        LinkedTypeDescriptor::Native { .. } => "external",
     }
 }
 
@@ -1706,7 +1698,7 @@ fn std_runtime_builtin_node_from_linked_parts<'a>(
     std_runtime_builtin_node(name, &args)
 }
 
-pub(crate) fn native_builtin_fallback_plan(name: &str) -> Result<RuntimeTypePlan> {
+pub(crate) fn native_builtin_plan(name: &str) -> Result<RuntimeTypePlan> {
     if name == "Duration" || name == "std.time.Duration" {
         return Ok(RuntimeTypePlan {
             label: "representation".to_string(),
@@ -1721,21 +1713,23 @@ pub(crate) fn native_builtin_fallback_plan(name: &str) -> Result<RuntimeTypePlan
     if let Some(node) = std_runtime_builtin_node(name, &[]) {
         return Ok(builtin_plan(name, node?));
     }
-    Ok(builtin_plan(
-        name,
-        match bare_type_name(name) {
-            "Json" => RuntimeTypeNode::Json,
-            "JsonObject" => RuntimeTypeNode::JsonObject,
-            "bytes" => RuntimeTypeNode::Bytes,
-            "Date" => RuntimeTypeNode::Date,
-            "string" => RuntimeTypeNode::String,
-            "bool" | "boolean" => RuntimeTypeNode::Bool,
-            "integer" => RuntimeTypeNode::Integer,
-            "number" => RuntimeTypeNode::Number,
-            "null" | "void" => RuntimeTypeNode::Null,
-            _ => RuntimeTypeNode::Unknown,
-        },
-    ))
+    let node = match bare_type_name(name) {
+        "Json" => RuntimeTypeNode::Json,
+        "JsonObject" => RuntimeTypeNode::JsonObject,
+        "bytes" => RuntimeTypeNode::Bytes,
+        "Date" => RuntimeTypeNode::Date,
+        "string" => RuntimeTypeNode::String,
+        "bool" | "boolean" => RuntimeTypeNode::Bool,
+        "integer" => RuntimeTypeNode::Integer,
+        "number" => RuntimeTypeNode::Number,
+        "null" | "void" => RuntimeTypeNode::Null,
+        _ => {
+            return Err(RuntimeError::InvalidArtifact(format!(
+                "native signature references unknown builtin type {name}"
+            )))
+        }
+    };
+    Ok(builtin_plan(name, node))
 }
 
 fn db_result_node_from_parts(
@@ -1932,6 +1926,16 @@ mod recoverable_expected_plan_tests {
             name: "string".to_string(),
             args: Vec::new(),
         }
+    }
+
+    #[test]
+    fn native_builtin_plan_rejects_unknown_builtin_instead_of_using_opaque_fallback() {
+        let error = native_builtin_plan("example.Unknown")
+            .expect_err("unknown native signature builtin must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("native signature references unknown builtin type example.Unknown"));
     }
 
     #[test]

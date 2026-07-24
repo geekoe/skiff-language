@@ -149,7 +149,6 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.link_type_ref(code_slot, file_index, variant)?;
                 }
             }
-            LinkedTypeDescriptor::Native { .. } => {}
         }
         Ok(())
     }

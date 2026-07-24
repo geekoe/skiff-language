@@ -126,7 +126,7 @@ fn collect_catch_type_leaves(
                 )));
             }
             match descriptor {
-                LinkedTypeDescriptor::Record { .. } | LinkedTypeDescriptor::Native { .. } => {
+                LinkedTypeDescriptor::Record { .. } => {
                     push_catch_leaf(TypeIdentity::address(addr.clone()), leaves);
                 }
                 LinkedTypeDescriptor::Alias { target } => {

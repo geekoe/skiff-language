@@ -306,9 +306,6 @@ fn linked_type_decl(declaration: &artifact::TypeDeclIr) -> TypeDeclIr {
             artifact::TypeDescriptorIr::Union { variants } => LinkedTypeDescriptor::Union {
                 variants: variants.iter().map(linked_type_ref).collect(),
             },
-            artifact::TypeDescriptorIr::Native { symbol } => LinkedTypeDescriptor::Native {
-                symbol: symbol.clone(),
-            },
         },
         type_params: declaration.type_params.clone(),
         discriminator: declaration.discriminator.clone(),

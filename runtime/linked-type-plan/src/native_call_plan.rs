@@ -12,8 +12,8 @@ use skiff_runtime_native_contract::{
 use crate::{
     error::{Error as RuntimeError, Result},
     type_plan::{
-        native_builtin_fallback_plan, PlanContext, ProgramTypeView, RuntimeTypeNode,
-        RuntimeTypePlan, RuntimeTypePlanLinkedExt,
+        native_builtin_plan, PlanContext, ProgramTypeView, RuntimeTypePlan,
+        RuntimeTypePlanLinkedExt,
     },
 };
 
@@ -181,7 +181,7 @@ fn resolve_native_type_expr_plan(
                     &PlanContext::from_type_view(program, current_addr),
                 );
             }
-            native_builtin_fallback_plan(name)
+            native_builtin_plan(name)
         }
         NativeSignatureTypeExpr::Array(item) => {
             let item = resolve_native_type_expr_plan(item, type_args, program, current_addr)?;

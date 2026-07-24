@@ -1,7 +1,5 @@
 use skiff_runtime_boundary::type_descriptor::bare_type_name;
-use skiff_runtime_linked_program::{
-    ExecutableAddr, LinkedTypeDescriptor, LinkedTypeRef, PackageRefIr, UnitAddr,
-};
+use skiff_runtime_linked_program::{ExecutableAddr, LinkedTypeRef, PackageRefIr, UnitAddr};
 use skiff_runtime_model::type_plan::{RuntimeTypeNode, RuntimeTypePlan};
 
 use crate::{
@@ -174,10 +172,7 @@ fn linked_address_resolves_to_std_http_package_type(
     if declaration.name == http_type_short_name(expected) {
         return true;
     }
-    matches!(
-        &declaration.descriptor,
-        LinkedTypeDescriptor::Native { symbol } if symbol == expected
-    )
+    false
 }
 
 fn http_type_short_name(expected: &str) -> &str {

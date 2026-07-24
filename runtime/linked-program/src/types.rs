@@ -72,7 +72,6 @@ impl LinkedTypeDescriptor {
             Self::Record { fields } => fields.values().collect(),
             Self::Alias { target } => vec![target],
             Self::Union { variants } => variants.iter().collect(),
-            Self::Native { .. } => Vec::new(),
         }
     }
 }
@@ -93,10 +92,6 @@ pub fn type_descriptor_to_value(descriptor: &LinkedTypeDescriptor) -> Value {
         LinkedTypeDescriptor::Union { variants } => json!({
             "kind": "union",
             "variants": variants.iter().map(type_ref_to_value).collect::<Vec<_>>(),
-        }),
-        LinkedTypeDescriptor::Native { symbol } => json!({
-            "kind": "external",
-            "symbol": symbol,
         }),
     }
 }

@@ -250,10 +250,6 @@ pub enum LinkedTypeDescriptor {
     Union {
         variants: Vec<LinkedTypeRef>,
     },
-    #[serde(rename = "external")]
-    Native {
-        symbol: String,
-    },
 }
 
 impl Default for LinkedTypeDescriptor {
