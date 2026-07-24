@@ -102,8 +102,9 @@ enum HeapNode {
   子。若将来确有此需要，它是一次独立的 runtime 内部优化提案，且必须满足：id 是整数
   newtype、不是 source name、不存在从该 id 反查 source name 的表、不参与任何 boundary
   输出或语言语义。在该提案落地前，目标态 object 没有 shape id。
-- `ActorRef` 是被祝福的例外（见 Core Rule 第二节白名单）。它是主动建模的 dynamic
-  value，不是普通 erased value。它携带 actor type 和 actor id，承载真实运行时语义
+- Runtime内部`ActorRef`是被祝福的例外（见 Core Rule 第二节白名单）。源码层使用具体actor
+  声明类型，不暴露`ActorRef<T>`包装；内部值仍是主动建模的dynamic value，不是普通erased
+  value。它携带actor type和actor id，承载真实运行时语义
   （method table lookup、actor manager routing），不是被擦除的 source nominal type。
   详见「Interface And Method Dispatch」。
 - `HeapHandle` 是 request-local id，不是 ABI，不得跨 request、artifact、service 或
@@ -295,7 +296,7 @@ method dispatch 分层：
 - built-in receiver method：按 physical variant 分派，例如 `Array`/`String`/`Date`/
   `Bytes`。"physical variant" 指 runtime value 的物理 enum tag，不是 name string——
   dispatch 直接 match variant，不查任何类型名。
-- actor method：按 `ActorRef` 分派，等价于按 actor type 查 RuntimeProgram 的 actor method
+- actor method：按源码actor名义类型对应的内部`ActorRef`分派，等价于按actor type查RuntimeProgram的actor method
   table，并按 actor id 交给 actor manager 路由。`ActorRef` 的 actor type 和 id 因此是必须
   保留的运行时 identity，不是被擦除的 source nominal type。这是 Core Rule 白名单允许的
   dynamic value nominal identity，不构成普通值带 source type name。

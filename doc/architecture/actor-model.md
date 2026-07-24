@@ -91,6 +91,11 @@ handler 纪律：
 
 ## 边界规则
 
-- `ActorRef` 只能用于调用 actor 方法：不能读写字段，不能写入 DB，不能进入公开 API payload，不能手写构造。
+- actor声明产生的名义类型本身就是外部可持有的actor句柄类型；源码不存在额外的
+  `ActorRef<T>`包装。例如`UserActor`既用于方法签名中的类型声明，也表示一个具体
+  `UserActor`实例的可路由句柄。
+- actor句柄只能用于调用actor方法：不能在外部读写actor字段，不能按普通值构造，不能写入DB，
+  不能进入公开API payload。Runtime可以继续用内部`ActorRef`结构保存actor type、actor id和路由
+  capability，但该结构不是Skiff源码类型。
 - 方法参数与返回值必须可编码，不能携带 request-local handle。
 - actor 不承担：持久状态容器、业务互斥锁、长工作宿主、可靠消息投递。

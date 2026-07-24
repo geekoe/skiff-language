@@ -105,7 +105,7 @@ runtime error 可以携带诊断帧。帧应引用当前 build / assembly 内的
 
 因果归属包括 trace id、request id、span id、parent span id 和 client request id。运行归属包括 source、runtime id、provider id / revision、build id 和 activation identity。service / 权限归属包括 service id、revision id、stable target id、actor ref 摘要和可选 tenant id。
 
-`userId` 不作为平台硬编码字段。业务身份应先映射成 ActorRef 或等价摘要，观测事件只记录可审计且可脱敏的摘要。
+`userId` 不作为平台硬编码字段。业务身份应先映射成actor句柄identity或等价摘要，观测事件只记录可审计且可脱敏的摘要。
 
 ## Query
 

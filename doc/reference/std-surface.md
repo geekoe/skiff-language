@@ -34,7 +34,7 @@ runtime prelude 类型包括 `Array<T>`、`Map<K,V>`、`Stream<T>`、`Config`、
 
 `Date` static surface 包括 `Date.now()`、`Date.fromEpochMilliseconds(ms)`、`Date.parse(value)` 和 `Date.requireParse(value)`。`parse` 对非法或越界文本返回 `null`；`requireParse` 抛 `std.time.DecodeError`。receiver surface 包括 `toEpochMilliseconds()`、`toISOString()`、`addMilliseconds(ms)`、`diffMilliseconds(other)`、`compare(other)`、`isBefore(other)` 和 `isAfter(other)`。
 
-HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。WebSocket message 类型在 `std.websocket.*` 下，包括 `ConnectionMessage`、`TextConnectionMessage` 和 `BinaryConnectionMessage`。Gateway/actor prelude 类型包括 `ActorRef`、`ActorBinding`、`std.actor.Actor<Id>`、`ClientSessionRef` 和 `ClientCapability`。
+HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.HttpHeader`、`std.http.HttpQueryParam`、`std.http.HttpRequest`、`std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpClientResponse`、`std.http.HttpClientStreamHandle`、`std.http.HttpSseEvent`、`std.http.HttpResponseStreamEvent` 和 `std.http.HttpError`（均不拍平到 `std` root，见 §11）。WebSocket message 类型在 `std.websocket.*` 下，包括 `ConnectionMessage`、`TextConnectionMessage` 和 `BinaryConnectionMessage`。Gateway/actor prelude不声明`ActorRef<T>`；每个actor声明的名义类型本身就是actor句柄类型。`ActorBinding`、`std.actor.Actor<Id>`、`ClientSessionRef`和`ClientCapability`仍按各自surface定义。
 
 这些 prelude 名字不能被用户声明、import alias 或局部绑定 shadow。
 

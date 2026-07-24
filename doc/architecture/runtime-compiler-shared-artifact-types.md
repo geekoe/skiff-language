@@ -425,7 +425,21 @@ JSON 的地方。
 - 把 `__skiffType`、representation envelope 或 artifact descriptor 当成普通
   runtime-local object metadata。JSON decode/encode 必须由 expected type descriptor
   驱动；legacy envelope 只能作为显式拒绝边界或迁移期测试 fixture 存在，不能进入
-  production path。
+production path。
+
+## Builtin与native function类型边界
+
+- Skiff源码不提供`native type`声明。自定义record、union、interface、representation和actor均直接
+  以各自声明的名义类型用于类型位置。
+- actor声明的名义类型在外部值位置表示该actor实例的类型安全句柄；Runtime内部可以使用
+  `ActorRef`结构实现，但artifact/source type system不暴露`ActorRef<T>`。
+- `TypeRefIr`中语言已知的`string`、`bool`、`integer`、`bytes`、`Date`、`Duration`、`Json`
+  等使用`Builtin`分支；不得继续用含义过宽的`Native`分支混合builtin与opaque声明。
+- `TypeDescriptorIr`不存在`Native`分支。没有字段/variant/representation等公开结构的运行时句柄
+  不能伪装成普通Package schema named type。
+- `native function`继续存在：它表示callable由Runtime实现，不表示其参数或返回类型是opaque
+  native type。native callable签名使用独立的`NativeSignatureTypeExpr`模型表达builtin、容器、
+  stream和类型参数。
 
 ## 审计目标
 

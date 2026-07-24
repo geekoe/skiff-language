@@ -545,7 +545,7 @@ lane 按“值必须可恢复”处理；离开 owner service trust domain 的�
 
 ## Relationship To Type Erasure
 
-`any I` 不推翻 runtime type erasure。它是主动建模的 dynamic wrapper，与 `ActorRef` 和 exception envelope 同属
+`any I` 不推翻 runtime type erasure。它是主动建模的dynamic wrapper，与actor句柄的Runtime内部表示和exception envelope同属
 白名单机制：
 
 - ordinary record/object 仍然 unshaped，不携带 source nominal type。
