@@ -148,7 +148,7 @@ impl ActiveAssemblyContextSet {
         if activations.len() != candidate.activations().len() {
             anyhow::bail!("activation context set does not exactly match linked activations");
         }
-        let contracts = candidate
+        let contracts: BTreeMap<ServiceContractRef, Arc<ServiceContract>> = candidate
             .contract_store()
             .contracts()
             .map(|(reference, contract)| (reference.clone(), Arc::clone(contract)))
