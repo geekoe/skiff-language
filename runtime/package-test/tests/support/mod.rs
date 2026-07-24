@@ -18,8 +18,8 @@ use skiff_artifact_model::{
     PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PackageTypeRef, PublicationResourceRef, ResourcePolicy, RuntimeAssembly, ServiceCallRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef, ResourcePolicy, RuntimeAssembly,
+    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
     ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
     SlotLayout, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
@@ -489,7 +489,7 @@ fn contract(service_id: &str) -> ServiceContract {
         contract_version: contract_version.to_string(),
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations: BTreeMap::from([(operation_id, descriptor)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
             operations: BTreeMap::new(),
@@ -597,6 +597,15 @@ fn base_package(
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements,

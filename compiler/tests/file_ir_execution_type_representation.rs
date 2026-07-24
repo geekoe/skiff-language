@@ -6,13 +6,10 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
     BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
     BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, ExecutableIr, TypeRefIr,
+    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef, ExecutableIr,
+    PackageSchemaCanonicalDescriptor, PackageTypeRequirement, TypeRefIr,
 };
-use skiff_compiler::{
-    definition_contract_type_ref, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
-};
+use skiff_compiler::{ServiceContractDefinition, ServiceContractDefinitionDiagnosticText};
 
 use common::{
     artifacts::module_artifact,
@@ -64,11 +61,7 @@ fn contract_typed_executables_have_one_opaque_execution_representation() {
     assert_eq!(consume.return_type, opaque_unknown());
 
     assert!(baseline.unit.external_refs.service_symbols.is_empty());
-    let ContractTypeRef::Contract { contract_type_id } =
-        definition_contract_type_ref(SERVICE_ID, VERSION, "Request").unwrap()
-    else {
-        panic!("definition contract type helper must return a nominal reference");
-    };
+    let (_, contract_type_id) = request_type();
     let executable_wire = serde_json::to_string(&baseline.unit.executables).unwrap();
     assert!(!executable_wire.contains(contract_type_id.as_str()));
     assert!(!executable_wire.contains("serviceSymbol"));
@@ -123,11 +116,13 @@ fn compile_fixture(
         "package.yml",
         format!("id: {PACKAGE_ID}\nversion: {VERSION}\n"),
     );
-    temp.write("api.yml", "wrapper: main.wrapper\n");
+    temp.write("api.yml", "Request: main.Request\nwrapper: main.wrapper\n");
     temp.write(
         "main.skiff",
         format!(
             r#"{unrelated_type}
+type Request {{ message: string }}
+
 function wrapper(label: string, request: payments.Request) -> payments.Request {{
   return request
 }}
@@ -150,7 +145,7 @@ fn contract_dependencies() -> BTreeMap<
     skiff_compiler_input::package_config::PackageManifestKey,
     Vec<skiff_compiler::PackageContractCompileDependency>,
 > {
-    let request = definition_contract_type_ref(SERVICE_ID, VERSION, "Request").unwrap();
+    let (request, request_id) = request_type();
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: VERSION.to_string(),
@@ -181,23 +176,14 @@ fn contract_dependencies() -> BTreeMap<
                 },
             },
         )]),
-        boundary_schema: BTreeMap::from([(
-            "Request".to_string(),
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                type_params: Vec::new(),
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "message".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    )]),
-                },
-            },
-        )]),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: PACKAGE_ID.to_string(),
+            required_type_ids: vec![request_id.clone()],
+        }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Payments".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),
-            types: BTreeMap::from([("Request".to_string(), "Request".to_string())]),
+            types: BTreeMap::from([(request_id, "Request".to_string())]),
         },
     })
     .unwrap();
@@ -205,6 +191,21 @@ fn contract_dependencies() -> BTreeMap<
         (PACKAGE_ID.to_string(), VERSION.to_string()),
         vec![package_contract_dependency("payments", contract)],
     )])
+}
+
+fn request_type() -> (ContractTypeRef, skiff_artifact_model::PackageSchemaTypeId) {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    let id = skiff_artifact_identity::package_schema_type_id(PACKAGE_ID, "Request", &descriptor)
+        .unwrap();
+    (
+        ContractTypeRef::package_schema(PACKAGE_ID, "Request", id.clone()),
+        id,
+    )
 }
 
 fn executable<'a>(executables: &'a [ExecutableIr], name: &str) -> &'a ExecutableIr {

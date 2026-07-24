@@ -124,7 +124,7 @@ fn explicit_contract_lane_compiles_without_provider_source() {
         service_id: "example.probe".to_string(),
         contract_version: "1.0.0".to_string(),
         operations: BTreeMap::from([("echo".to_string(), operation)]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Probe".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),

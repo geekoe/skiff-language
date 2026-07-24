@@ -14,6 +14,36 @@ const CALLBACK_INTERFACE_SYMBOL: &str = "CallbackProbe";
 const CALLBACK_INTERFACE_METHOD: &str = "invoke";
 const CALLBACK_OWNER_EXECUTABLE_INDEX: u32 = 3;
 const CALLBACK_STREAM_OWNER_EXECUTABLE_INDEX: u32 = 2;
+const PROVIDER_PACKAGE_ID: &str = "example.phase-four-provider";
+
+fn package_schema_type(
+    stable_schema_key: &str,
+    descriptor: ContractTypeDescriptor,
+) -> (PackageSchemaTypeRef, PackageSchemaTypeRecord) {
+    let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor,
+    };
+    let package_schema_type_id = skiff_artifact_identity::package_schema_type_id(
+        PROVIDER_PACKAGE_ID,
+        stable_schema_key,
+        &canonical_descriptor,
+    )
+    .expect("fixture Package schema identity should be canonical");
+    (
+        PackageSchemaTypeRef {
+            package_id: PROVIDER_PACKAGE_ID.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        PackageSchemaTypeRecord {
+            package_id: PROVIDER_PACKAGE_ID.to_string(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id,
+            canonical_descriptor,
+        },
+    )
+}
 
 #[derive(Clone, Copy)]
 enum ProviderBehavior {
@@ -46,9 +76,9 @@ enum ImplementationRole {
 #[derive(Clone)]
 pub(super) struct TypedExecutionContract {
     consumer_operation: BoundaryOperationContract,
-    consumer_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    consumer_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     provider_operation: BoundaryOperationContract,
-    provider_boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    provider_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     consumer_behavior: ConsumerBehavior,
     provider_behavior: ProviderBehavior,
 }
@@ -56,14 +86,14 @@ pub(super) struct TypedExecutionContract {
 impl TypedExecutionContract {
     fn with_provider_behavior(
         operation: BoundaryOperationContract,
-        boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
         provider_behavior: ProviderBehavior,
     ) -> Self {
         Self {
             consumer_operation: operation.clone(),
-            consumer_boundary_schema: boundary_schema.clone(),
+            consumer_schema_records: schema_records.clone(),
             provider_operation: operation,
-            provider_boundary_schema: boundary_schema,
+            provider_schema_records: schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior,
         }
@@ -79,18 +109,13 @@ impl TypedExecutionContract {
 
     pub(super) fn returning_null(
         operation: BoundaryOperationContract,
-        boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+        schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     ) -> Self {
-        Self::with_provider_behavior(operation, boundary_schema, ProviderBehavior::ReturnNull)
+        Self::with_provider_behavior(operation, schema_records, ProviderBehavior::ReturnNull)
     }
 
     pub(super) fn async_typed_error() -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "asyncError";
-        let payload_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("async error fixture ContractTypeId should be canonical");
         let payload_fields = BTreeMap::from([(
             "messages".to_string(),
             ContractTypeRef::Builtin {
@@ -98,9 +123,19 @@ impl TypedExecutionContract {
                 arguments: vec![ContractTypeRef::builtin("string")],
             },
         )]);
+        let (payload_type, payload_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::Record {
+                fields: payload_fields,
+            },
+        );
         let mut operation = unary_contract();
         operation.errors = BoundaryErrorContract::Typed {
-            payload_type: ContractTypeRef::contract(payload_type_id.clone()),
+            payload_type: ContractTypeRef::package_schema(
+                payload_type.package_id,
+                payload_type.stable_schema_key,
+                payload_type.package_schema_type_id.clone(),
+            ),
             value_plan: BoundaryValuePlan::Linkable {
                 carrier: BoundaryValueCarrier::DetachedValueGraph,
                 encoding: BoundaryValueEncoding::CanonicalValue,
@@ -110,25 +145,15 @@ impl TypedExecutionContract {
         };
         operation.cancellation = BoundaryCancellationContract::Cooperative;
         operation.may_suspend = true;
-        let provider_boundary_schema = BTreeMap::from([(
-            payload_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: payload_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    type_params: Vec::new(),
-                    descriptor: ContractTypeDescriptor::Record {
-                        fields: payload_fields,
-                    },
-                },
-            },
+        let provider_schema_records = BTreeMap::from([(
+            payload_record.package_schema_type_id.clone(),
+            payload_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
+            consumer_schema_records: BTreeMap::new(),
             provider_operation: operation,
-            provider_boundary_schema,
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::ReturnCall,
             provider_behavior: ProviderBehavior::ThrowTypedError,
         }
@@ -139,13 +164,20 @@ impl TypedExecutionContract {
     }
 
     pub(super) fn callback_with_operation_key(contract_operation: &str) -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "callbackProbe";
-        let callback_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("callback fixture ContractTypeId should be canonical");
-        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let (callback_type, callback_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    contract_operation.to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: Vec::new(),
+                        return_type: ContractTypeRef::builtin("bool"),
+                        may_suspend: false,
+                    },
+                )]),
+            },
+        );
         let callback_plan = BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::CallbackCapability,
             encoding: BoundaryValueEncoding::OpaqueCapability,
@@ -155,40 +187,27 @@ impl TypedExecutionContract {
         let mut provider_operation = unary_contract();
         provider_operation.parameters = vec![BoundaryParameter {
             name: "callback".to_string(),
-            ty: callback_type,
+            ty: ContractTypeRef::package_schema(
+                callback_type.package_id.clone(),
+                callback_type.stable_schema_key.clone(),
+                callback_type.package_schema_type_id.clone(),
+            ),
             value_plan: callback_plan,
         }];
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
-            interface_type_ids: vec![callback_type_id.clone()],
+            interface_types: vec![callback_type],
             lifetime: BoundaryCallbackLifetime::TopLevelRequest,
             expiration_error: BoundaryCallbackExpirationError::CapabilityUnavailable,
         };
-        let provider_boundary_schema = BTreeMap::from([(
-            callback_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: callback_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    type_params: Vec::new(),
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: BTreeMap::from([(
-                            contract_operation.to_string(),
-                            BoundaryCallbackOperation {
-                                parameters: Vec::new(),
-                                return_type: ContractTypeRef::builtin("bool"),
-                                may_suspend: false,
-                            },
-                        )]),
-                    },
-                },
-            },
+        let provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
+            consumer_schema_records: BTreeMap::new(),
             provider_operation,
-            provider_boundary_schema,
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::InvokeCallback,
             provider_behavior: ProviderBehavior::InvokeCallback,
         }
@@ -236,31 +255,61 @@ impl TypedExecutionContract {
 
     pub(super) fn callback_stream_wrong_tuple() -> Self {
         let mut fixture = Self::callback_stream();
-        let ContractTypeDescriptor::CallbackInterface { operations } = &mut fixture
-            .provider_boundary_schema
-            .values_mut()
+        let mut descriptor = fixture
+            .provider_schema_records
+            .values()
             .next()
             .expect("callback stream schema should contain its interface")
-            .shape
+            .canonical_descriptor
             .descriptor
-        else {
+            .clone();
+        let ContractTypeDescriptor::CallbackInterface { operations } = &mut descriptor else {
             panic!("callback stream schema should retain its callback descriptor")
         };
         operations
             .get_mut(CALLBACK_INTERFACE_METHOD)
             .expect("callback stream descriptor should contain invoke")
             .return_type = ContractTypeRef::builtin("string");
+        let (callback_type, callback_record) = package_schema_type("callbackProbe", descriptor);
+        fixture.provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
+        )]);
+        let BoundaryStreamContract::ServerStream { item_type, .. } =
+            &mut fixture.provider_operation.stream
+        else {
+            panic!("callback stream fixture must remain a server stream")
+        };
+        *item_type = ContractTypeRef::package_schema(
+            callback_type.package_id.clone(),
+            callback_type.stable_schema_key.clone(),
+            callback_type.package_schema_type_id.clone(),
+        );
+        let BoundaryCallbackContract::RequestScoped {
+            interface_types, ..
+        } = &mut fixture.provider_operation.callbacks
+        else {
+            panic!("callback stream fixture must retain callback declarations")
+        };
+        *interface_types = vec![callback_type];
         fixture
     }
 
     pub(super) fn callback_stream_with_operation_key(contract_operation: &str) -> Self {
-        let service_id = "example.phase-four.provider";
-        let contract_version = "1.0.0";
         let stable_key = "callbackProbe";
-        let callback_type_id =
-            skiff_artifact_identity::contract_type_id(service_id, contract_version, stable_key)
-                .expect("callback stream fixture ContractTypeId should be canonical");
-        let callback_type = ContractTypeRef::contract(callback_type_id.clone());
+        let (callback_type, callback_record) = package_schema_type(
+            stable_key,
+            ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    contract_operation.to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: Vec::new(),
+                        return_type: ContractTypeRef::builtin("bool"),
+                        may_suspend: false,
+                    },
+                )]),
+            },
+        );
         let callback_plan = BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::CallbackCapability,
             encoding: BoundaryValueEncoding::OpaqueCapability,
@@ -269,42 +318,29 @@ impl TypedExecutionContract {
         };
         let mut provider_operation = unary_contract();
         provider_operation.stream = BoundaryStreamContract::ServerStream {
-            item_type: callback_type,
+            item_type: ContractTypeRef::package_schema(
+                callback_type.package_id.clone(),
+                callback_type.stable_schema_key.clone(),
+                callback_type.package_schema_type_id.clone(),
+            ),
             item_value_plan: callback_plan,
         };
         provider_operation.callbacks = BoundaryCallbackContract::RequestScoped {
-            interface_type_ids: vec![callback_type_id.clone()],
+            interface_types: vec![callback_type],
             lifetime: BoundaryCallbackLifetime::Stream,
             expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
         };
         provider_operation.cancellation = BoundaryCancellationContract::Cooperative;
         provider_operation.may_suspend = true;
-        let provider_boundary_schema = BTreeMap::from([(
-            callback_type_id.clone(),
-            ContractSchemaType {
-                contract_type_id: callback_type_id,
-                stable_key: stable_key.to_string(),
-                shape: ContractTypeShape {
-                    nameability: ContractTypeNameability::PublicNameable,
-                    type_params: Vec::new(),
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: BTreeMap::from([(
-                            contract_operation.to_string(),
-                            BoundaryCallbackOperation {
-                                parameters: Vec::new(),
-                                return_type: ContractTypeRef::builtin("bool"),
-                                may_suspend: false,
-                            },
-                        )]),
-                    },
-                },
-            },
+        let provider_schema_records = BTreeMap::from([(
+            callback_record.package_schema_type_id.clone(),
+            callback_record,
         )]);
         Self {
             consumer_operation: unary_contract(),
-            consumer_boundary_schema: BTreeMap::new(),
+            consumer_schema_records: BTreeMap::new(),
             provider_operation,
-            provider_boundary_schema,
+            provider_schema_records,
             consumer_behavior: ConsumerBehavior::ConsumeCallbackStream {
                 break_after_item: false,
             },
@@ -334,23 +370,23 @@ impl ProjectedFixture {
         consumer_service_id: &str,
     ) -> Self {
         let consumer_operation_contract = contract_fixture.consumer_operation;
-        let consumer_boundary_schema = contract_fixture.consumer_boundary_schema;
+        let consumer_schema_records = contract_fixture.consumer_schema_records;
         let provider_operation_contract = contract_fixture.provider_operation;
-        let provider_boundary_schema = contract_fixture.provider_boundary_schema;
+        let provider_schema_records = contract_fixture.provider_schema_records;
         let consumer_behavior = contract_fixture.consumer_behavior;
         let provider_behavior = contract_fixture.provider_behavior;
         let (provider_contract, provider_operation) = service_contract(
             "example.phase-four.provider",
             "provide",
             provider_operation_contract.clone(),
-            provider_boundary_schema,
+            &provider_schema_records,
         );
         let provider_contract_ref = contract_ref(&provider_contract);
         let (consumer_contract, consumer_operation) = service_contract(
             consumer_service_id,
             "consume",
             consumer_operation_contract.clone(),
-            consumer_boundary_schema,
+            &consumer_schema_records,
         );
         let consumer_contract_ref = contract_ref(&consumer_contract);
 
@@ -368,6 +404,7 @@ impl ProjectedFixture {
             provider_callable.clone(),
             &provider_file,
             provider_operation_contract,
+            &provider_schema_records,
             None,
             None,
         );
@@ -403,6 +440,7 @@ impl ProjectedFixture {
             PackageCallableId::new("callable:phase-four-consumer"),
             &consumer_file,
             consumer_operation_contract,
+            &consumer_schema_records,
             Some((provider_requirement, service_call)),
             Some(("providerPackage".to_string(), provider_package_ref.clone())),
         );
@@ -421,6 +459,7 @@ impl ProjectedFixture {
             ),
             &provider_contract,
             std::slice::from_ref(&provider_package),
+            &provider_schema_records,
         )
         .expect("provider deployment should project from typed contract/package artifacts");
         let provider_deployment =
@@ -459,6 +498,7 @@ impl ProjectedFixture {
             ),
             &consumer_contract,
             &[consumer_package.clone(), provider_package.clone()],
+            &consumer_schema_records,
         )
         .expect("consumer deployment should project from typed contract/package artifacts");
         let consumer_deployment =
@@ -504,6 +544,19 @@ impl ProjectedFixture {
                     Arc::new(provider_file),
                 ),
             ],
+            package_schema_records: consumer_schema_records
+                .values()
+                .chain(provider_schema_records.values())
+                .map(|record| {
+                    (
+                        PackageSchemaTypeRecordRef {
+                            package_id: record.package_id.clone(),
+                            package_schema_type_id: record.package_schema_type_id.clone(),
+                        },
+                        Arc::new(record.clone()),
+                    )
+                })
+                .collect(),
         };
         Self {
             assembly,
@@ -557,7 +610,7 @@ fn service_contract(
     service_id: &str,
     stable_key: &str,
     operation_contract: BoundaryOperationContract,
-    boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
+    schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> (ServiceContract, ContractOperationId) {
     let contract_version = "1.0.0";
     let operation_id =
@@ -576,11 +629,21 @@ fn service_contract(
                 contract: operation_contract,
             },
         )]),
-        boundary_schema,
+        package_type_requirements: if schema_records.is_empty() {
+            Vec::new()
+        } else {
+            vec![PackageTypeRequirement {
+                package_id: PROVIDER_PACKAGE_ID.to_string(),
+                required_type_ids: schema_records.keys().cloned().collect(),
+            }]
+        },
         diagnostic_text: ContractDiagnosticText {
             service: "Phase four typed execution fixture".to_string(),
             operations: BTreeMap::new(),
-            types: BTreeMap::new(),
+            types: schema_records
+                .iter()
+                .map(|(id, record)| (id.clone(), record.stable_schema_key.clone()))
+                .collect(),
         },
     };
     skiff_artifact_identity::assign_service_contract_identities(&mut contract)
@@ -1332,6 +1395,7 @@ fn implementation_package(
     callable_id: PackageCallableId,
     file: &FileIrUnit,
     operation_contract: BoundaryOperationContract,
+    schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     service_dependency: Option<(ContractRequirement, ServiceCallRef)>,
     package_dependency: Option<(String, PackageArtifactRef)>,
 ) -> PackageArtifact {
@@ -1364,6 +1428,19 @@ fn implementation_package(
             expected_local_abi: package.package_local_abi_identity,
         })
         .collect();
+    let schema_types = schema_records
+        .values()
+        .map(|record| {
+            (
+                record.stable_schema_key.clone(),
+                PackageSchemaIndexEntry {
+                    package_schema_type_id: record.package_schema_type_id.clone(),
+                    public_path: Some(record.stable_schema_key.clone()),
+                    nameability: ContractTypeNameability::PublicNameable,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut package = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
@@ -1388,6 +1465,26 @@ fn implementation_package(
                 },
             )]),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &schema_types,
+            )
+            .expect("fixture Package schema index should be canonical"),
+        },
+        package_schema_type_records: schema_records
+            .values()
+            .map(|record| {
+                (
+                    record.package_schema_type_id.clone(),
+                    PackageSchemaTypeRecordRef {
+                        package_id: record.package_id.clone(),
+                        package_schema_type_id: record.package_schema_type_id.clone(),
+                    },
+                )
+            })
+            .collect(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::from([(
             callable_id.clone(),

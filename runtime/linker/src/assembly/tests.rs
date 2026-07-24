@@ -83,6 +83,13 @@ where
         self.inner.resolve_contract(reference)
     }
 
+    fn resolve_package_schema_type(
+        &self,
+        reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
+    ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
+        self.inner.resolve_package_schema_type(reference)
+    }
+
     fn resolve_package(
         &self,
         reference: &PackageArtifactRef,

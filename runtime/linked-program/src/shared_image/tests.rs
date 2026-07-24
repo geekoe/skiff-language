@@ -10,8 +10,9 @@ use skiff_artifact_model::{
     PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
-    PublicationResourceRef, RuntimeAssembly, ServiceCallRef, ServiceProtocolIdentity,
-    ServiceRequirement, SlotLayout, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageSchemaIndexRef, PublicationResourceRef, RuntimeAssembly, ServiceCallRef,
+    ServiceProtocolIdentity, ServiceRequirement, SlotLayout, TypeRefIr,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -607,6 +608,15 @@ fn artifact(
             local_abi_identity: local_abi(local_abi_identity),
             public_symbols: BTreeMap::new(),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
         package_requirements: Vec::new(),

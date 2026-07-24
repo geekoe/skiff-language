@@ -12,6 +12,10 @@ pub(super) struct TypedResolver {
     pub(super) contracts: Vec<(ServiceContractRef, Arc<ServiceContract>)>,
     pub(super) packages: Vec<(PackageArtifactRef, Arc<PackageArtifact>)>,
     pub(super) files: Vec<(PackageArtifactRef, FileIrRef, Arc<FileIrUnit>)>,
+    pub(super) package_schema_records: Vec<(
+        skiff_artifact_model::PackageSchemaTypeRecordRef,
+        Arc<skiff_artifact_model::PackageSchemaTypeRecord>,
+    )>,
 }
 
 impl RuntimeAssemblyContentResolver for TypedResolver {
@@ -41,7 +45,11 @@ impl RuntimeAssemblyContentResolver for TypedResolver {
         &self,
         reference: &skiff_artifact_model::PackageSchemaTypeRecordRef,
     ) -> anyhow::Result<Arc<skiff_artifact_model::PackageSchemaTypeRecord>> {
-        anyhow::bail!("typed execution fixture missing package schema record {reference:?}")
+        self.package_schema_records
+            .iter()
+            .find(|(candidate, _)| candidate == reference)
+            .map(|(_, record)| Arc::clone(record))
+            .ok_or_else(|| anyhow::anyhow!("typed execution fixture missing package schema record"))
     }
 
     fn resolve_package(

@@ -20,12 +20,12 @@ use skiff_artifact_model::{
     PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
     PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
-    PackageRuntimeRequirements, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
-    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
-    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SlotLayout, StateBinding, StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
+    ResolvedServiceBinding, ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding,
+    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, SlotLayout, StateBinding, StateBindingKind, TypeDeclIr,
+    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -66,7 +66,7 @@ impl CycleFixture {
                     contract: operation_contract.clone(),
                 },
             )]),
-            boundary_schema: BTreeMap::new(),
+            package_type_requirements: Vec::new(),
             diagnostic_text: ContractDiagnosticText {
                 service: "Cycle".to_string(),
                 operations: BTreeMap::from([(operation_id.clone(), "Call".to_string())]),
@@ -654,6 +654,15 @@ fn package(
                 },
             )]),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::from([(
             callable_id.clone(),

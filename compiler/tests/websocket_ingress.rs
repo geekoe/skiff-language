@@ -8,14 +8,15 @@ use skiff_artifact_model::{
     BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
     BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
-    ContractTypeShape, DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentPolicy,
-    DeploymentRevision, IngressProtocol, IngressSelector, PackageBinding, PackageLocalAbiSymbol,
-    PackageRequirementKey, ResourcePolicy, ServiceDeploymentInput, ServiceDeploymentOperationInput,
-    TypeRefIr, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef, DeploymentDiagnosticText,
+    DeploymentIngressBinding, DeploymentPolicy, DeploymentRevision, IngressProtocol,
+    IngressSelector, PackageBinding, PackageLocalAbiSymbol, PackageRequirementKey,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    PackageTypeRequirement, ResourcePolicy, ServiceDeploymentInput,
+    ServiceDeploymentOperationInput, TypeRefIr, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
-    definition_contract_operation_id, definition_contract_type_ref, ServiceContractDefinition,
+    definition_contract_operation_id, ServiceContractDefinition,
     ServiceContractDefinitionDiagnosticText,
 };
 use skiff_deployment::projection::project_service_deployment;
@@ -38,7 +39,7 @@ fn websocket_ingress_contract_first_source_projects_and_deploys_exactly() {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
         operations: BTreeMap::from([("websocket".to_string(), expected.clone())]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "canonical websocket ingress probe".to_string(),
             operations: BTreeMap::new(),
@@ -108,33 +109,43 @@ function websocket(event: std.websocket.WebSocketIngressEvent<null>) -> std.webs
         &project.package.artifact,
         operation_id,
         "probe",
+        &BTreeMap::new(),
     );
     assert_eq!(deployment.operation_bindings.len(), 1);
 }
 
 #[test]
 fn websocket_nominal_context_normal_source_reaches_exact_deployment_and_erased_execution() {
-    let context = definition_contract_type_ref(SERVICE_ID, CONTRACT_VERSION, "Context")
-        .expect("nominal Context identity should derive before provider compile");
+    let context_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    };
+    let context_id =
+        skiff_artifact_identity::package_schema_type_id(PACKAGE_ID, "Context", &context_descriptor)
+            .expect("nominal Context identity should derive before provider compile");
+    let context = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
+    let context_record = PackageSchemaTypeRecord {
+        package_id: PACKAGE_ID.to_string(),
+        stable_schema_key: "Context".to_string(),
+        package_schema_type_id: context_id.clone(),
+        canonical_descriptor: context_descriptor,
+    };
+    let schema_records = BTreeMap::from([(context_id.clone(), context_record)]);
     let expected = websocket_operation(context);
     let contract = compile_service_contract(ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
         operations: BTreeMap::from([("websocket".to_string(), expected.clone())]),
-        boundary_schema: BTreeMap::from([(
-            "Context".to_string(),
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                type_params: Vec::new(),
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::new(),
-                },
-            },
-        )]),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: PACKAGE_ID.to_string(),
+            required_type_ids: vec![context_id.clone()],
+        }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "canonical nominal websocket ingress probe".to_string(),
             operations: BTreeMap::new(),
-            types: BTreeMap::from([("Context".to_string(), "empty persisted Context".to_string())]),
+            types: BTreeMap::from([(context_id, "empty persisted Context".to_string())]),
         },
     })
     .expect("code-free nominal WebSocket contract should compile");
@@ -143,12 +154,17 @@ fn websocket_nominal_context_normal_source_reaches_exact_deployment_and_erased_e
 
     let temp = TestDir::new("skiff-compiler", "websocket-nominal-context-normal-source");
     temp.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
-    temp.write("api.yml", "websocket: main.websocket\n");
+    temp.write(
+        "api.yml",
+        "Context: main.Context\nwebsocket: main.websocket\n",
+    );
     temp.write(
         "main.skiff",
         r#"import std
 
-function websocket(event: std.websocket.WebSocketIngressEvent<gateway.Context>) -> std.websocket.WebSocketConnectResult<gateway.Context>? {
+type Context {}
+
+function websocket(event: std.websocket.WebSocketIngressEvent<Context>) -> std.websocket.WebSocketConnectResult<Context>? {
   return null
 }
 "#,
@@ -203,6 +219,7 @@ function websocket(event: std.websocket.WebSocketIngressEvent<gateway.Context>) 
         &project.package.artifact,
         operation_id.clone(),
         "nominal-probe",
+        &schema_records,
     );
     assert_eq!(
         deployment.operation_bindings[0].contract_operation_id,
@@ -216,6 +233,7 @@ fn project_websocket_fixture_deployment(
     implementation: &skiff_artifact_model::PackageArtifact,
     operation_id: skiff_artifact_model::ContractOperationId,
     fixture: &str,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
 ) -> skiff_artifact_model::ServiceDeployment {
     project_service_deployment(
         ServiceDeploymentInput {
@@ -262,6 +280,7 @@ fn project_websocket_fixture_deployment(
         },
         contract,
         packages,
+        package_schema_records,
     )
     .expect("deployment must consume the exact normal-source WebSocket projection")
 }

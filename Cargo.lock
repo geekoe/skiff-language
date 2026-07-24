@@ -2460,6 +2460,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-model",
 ]

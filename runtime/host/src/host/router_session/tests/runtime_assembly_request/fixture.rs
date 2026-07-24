@@ -183,6 +183,7 @@ fn void_fixture(may_suspend: bool, submits_spawn: bool) -> VoidFixture {
             contracts: vec![(contract_ref, Arc::new(contract))],
             packages: vec![(package_ref.clone(), Arc::new(package))],
             files: vec![(package_ref, file_ref, Arc::new(file))],
+            package_schema_records: Vec::new(),
         },
     }
 }
@@ -208,7 +209,7 @@ fn void_contract(
                 contract: operation_contract.clone(),
             },
         )]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "Canonical void fixture".to_string(),
             operations: BTreeMap::new(),
@@ -350,6 +351,15 @@ fn void_package(
                 },
             )]),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "example.canonical-void-package".to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                "example.canonical-void-package",
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::from([(
             callable_id.clone(),
@@ -455,6 +465,7 @@ fn void_deployment(
         deployment_input,
         contract,
         std::slice::from_ref(package),
+        &BTreeMap::new(),
     )
     .expect("void deployment should project");
     deployment

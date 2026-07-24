@@ -206,6 +206,7 @@ impl FullChainFixture {
             },
             &provider_contract,
             std::slice::from_ref(&provider_package),
+            &BTreeMap::new(),
         )
         .unwrap();
         let provider_deployment_ref =
@@ -245,6 +246,7 @@ impl FullChainFixture {
             },
             &consumer_contract,
             std::slice::from_ref(&consumer_package),
+            &BTreeMap::new(),
         )
         .unwrap();
         let consumer_deployment_ref =
@@ -501,7 +503,7 @@ fn service_contract(
                 contract: operation_contract,
             },
         )]),
-        boundary_schema: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: display_name.to_string(),
             operations: BTreeMap::new(),
@@ -598,6 +600,15 @@ fn implementation_package(
                 },
             )]),
         },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &BTreeMap::new(),
+            )
+            .expect("empty Package schema index is canonical"),
+        },
+        package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::from([(
             callable_id.clone(),

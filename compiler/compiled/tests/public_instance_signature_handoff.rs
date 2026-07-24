@@ -5,7 +5,9 @@ use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationContract, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, ContractRequirement, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol, PackageTypeRef, TypeRefIr,
+    ContractTypeRef, PackageBuildId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
+    PackageSchemaTypeRecord, PackageTypeRef, PackageTypeRequirement, TypeRefIr,
 };
 use skiff_compiler_compiled::{projection_input::build_projection_input, CompiledPackage};
 use skiff_compiler_contract::{
@@ -16,6 +18,7 @@ use skiff_compiler_input::{PublicationApiPublicInstanceEntry, ResolvedContractDe
 use skiff_compiler_projection::package_artifact::{
     project_compiled_package_artifact, PackageArtifactProjectionInput,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_compiler_source::{
     build_package_from_parsed_sources_with_dependency_analysis,
     parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
@@ -127,18 +130,18 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
     );
     assert!(matches!(
         &signature.parameters[0].ty,
-        PackageTypeRef::Contract { .. }
+        PackageTypeRef::PackageSchema { .. }
     ));
     assert!(matches!(
         &signature.parameters[1].ty,
         PackageTypeRef::Nullable { inner }
             if matches!(inner.as_ref(), PackageTypeRef::Container { arguments, .. }
                 if matches!(arguments.as_slice(), [PackageTypeRef::Nullable { inner }]
-                    if matches!(inner.as_ref(), PackageTypeRef::Contract { .. })))
+                    if matches!(inner.as_ref(), PackageTypeRef::PackageSchema { .. })))
     ));
     assert!(matches!(
         &signature.return_type,
-        PackageTypeRef::Contract { .. }
+        PackageTypeRef::PackageSchema { .. }
     ));
     assert!(!signature.may_suspend);
 
@@ -162,15 +165,63 @@ fn public_instance_exact_signature_reaches_package_local_abi() {
 fn contract_dependency() -> ResolvedContractDependency {
     let service_id = "example.payments";
     let version = "1.0.0";
+    let package_id = "example.com/payments-schema";
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("value".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    let user_id =
+        skiff_artifact_identity::package_schema_type_id(package_id, "User", &descriptor).unwrap();
+    let user = ContractTypeRef::package_schema(package_id, "User", user_id.clone());
+    let schema_types = BTreeMap::from([(
+        "User".to_string(),
+        PackageSchemaIndexEntry {
+            package_schema_type_id: user_id.clone(),
+            public_path: Some("User".to_string()),
+            nameability: ContractTypeNameability::PublicNameable,
+        },
+    )]);
+    let package_schema = ResolvedPackageSchema::new(
+        "paymentsSchema".to_string(),
+        package_id.to_string(),
+        version.to_string(),
+        PackageBuildId::new("payments-schema-build"),
+        PackageLocalAbiIdentity::new("payments-schema-abi"),
+        PackageSchemaIndex {
+            package_id: package_id.to_string(),
+            package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+                package_id,
+                &schema_types,
+            )
+            .unwrap(),
+            types: schema_types,
+        },
+        BTreeMap::from([(
+            user_id.clone(),
+            PackageSchemaTypeRecord {
+                package_id: package_id.to_string(),
+                stable_schema_key: "User".to_string(),
+                package_schema_type_id: user_id.clone(),
+                canonical_descriptor: descriptor,
+            },
+        )]),
+    )
+    .unwrap();
     let contract = compile_service_contract_definition(ServiceContractDefinition {
         service_id: service_id.to_string(),
         contract_version: version.to_string(),
         operations: BTreeMap::from([(
             "ping".to_string(),
             BoundaryOperationContract {
-                parameters: Vec::new(),
+                parameters: vec![skiff_artifact_model::BoundaryParameter {
+                    name: "user".to_string(),
+                    ty: user.clone(),
+                    value_plan: linkable(BoundaryValueOwner::Caller),
+                }],
                 return_value: BoundaryReturn {
-                    ty: ContractTypeRef::builtin("string"),
+                    ty: user,
                     value_plan: linkable(BoundaryValueOwner::Provider),
                 },
                 errors: BoundaryErrorContract::None,
@@ -188,23 +239,14 @@ fn contract_dependency() -> ResolvedContractDependency {
                 },
             },
         )]),
-        boundary_schema: BTreeMap::from([(
-            "User".to_string(),
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                type_params: Vec::new(),
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "value".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    )]),
-                },
-            },
-        )]),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: package_id.to_string(),
+            required_type_ids: vec![user_id.clone()],
+        }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "payments".to_string(),
             operations: BTreeMap::new(),
-            types: BTreeMap::new(),
+            types: BTreeMap::from([(user_id, "User".to_string())]),
         },
     })
     .unwrap();
@@ -216,6 +258,7 @@ fn contract_dependency() -> ResolvedContractDependency {
             expected_protocol_identity: contract.service_protocol_identity.clone(),
         },
         contract,
+        &[package_schema],
     )
     .unwrap()
 }

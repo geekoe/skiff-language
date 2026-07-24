@@ -11,12 +11,12 @@ use skiff_artifact_model::{
     BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, ContractRequirement, ContractTypeDescriptor,
-    ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageLocalAbiSymbol,
-    PackageTypeRef, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
+    ContractTypeRef, PackageLocalAbiSymbol, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+    PackageTypeRef, PackageTypeRequirement, ServiceCallRef, ServiceRequirement, ValueEscapeLane,
 };
 use skiff_compiler::{
-    definition_contract_operation_id, definition_contract_type_id, definition_contract_type_ref,
-    ContractDefinitionError, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
+    definition_contract_operation_id, ContractDefinitionError, ServiceContractDefinition,
+    ServiceContractDefinitionDiagnosticText,
 };
 use skiff_compiler_contract::project_service_api;
 
@@ -29,6 +29,7 @@ use common::{
 
 const SERVICE_ID: &str = "example.echo";
 const CONTRACT_VERSION: &str = "1.0.0";
+const SCHEMA_PACKAGE_ID: &str = "example.com/echo-schema";
 
 #[test]
 fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
@@ -40,13 +41,15 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
     let operation_id =
         definition_contract_operation_id("example.com/generated-stream", "1.0.0", "events")
             .unwrap();
-    let event_type_id =
-        definition_contract_type_id("example.com/generated-stream", "1.0.0", "Event").unwrap();
-    let event_type = ContractTypeRef::contract(event_type_id.clone());
-    let request_type_id =
-        definition_contract_type_id("example.com/generated-stream", "1.0.0", "Request").unwrap();
-    let request_type = ContractTypeRef::contract(request_type_id.clone());
     let operation = &contract.operations[&operation_id];
+    let request_type = operation.contract.parameters[0].ty.clone();
+    let BoundaryStreamContract::ServerStream {
+        item_type: event_type,
+        ..
+    } = &operation.contract.stream
+    else {
+        panic!("generated operation must stream")
+    };
 
     assert_eq!(operation.contract.parameters[0].ty, request_type);
     assert_eq!(
@@ -61,10 +64,9 @@ fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
                 owner: BoundaryValueOwner::Provider,
                 ..
             },
-        } if item_type == &event_type
+        } if item_type == event_type
     ));
-    assert!(contract.boundary_schema.contains_key(&event_type_id));
-    assert!(contract.boundary_schema.contains_key(&request_type_id));
+    assert_eq!(contract.package_type_requirements.len(), 1);
 
     let consumer = TestDir::new("skiff-compiler", "generated-service-stream-consumer");
     write_package(
@@ -173,31 +175,26 @@ fn generated_service_stream_consumer_rejects_an_undeclared_alias() {
 fn explicit_definition_compiles_to_a_code_free_service_contract() {
     let definition = contract_definition();
     let expected_operation = definition.operations["echo"].clone();
-    let expected_schema = definition.boundary_schema["Request"].clone();
+    let (_, type_id) = request_type();
 
     let contract = compile_service_contract(definition).expect("explicit contract should compile");
     validate_service_contract_identities(&contract).expect("contract identities should be valid");
 
     let operation_id =
         definition_contract_operation_id(SERVICE_ID, CONTRACT_VERSION, "echo").unwrap();
-    let type_id = definition_contract_type_id(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
     let operation = contract
         .operations
         .get(&operation_id)
         .expect("stable operation key should derive a contract-owned identity");
-    let schema = contract
-        .boundary_schema
-        .get(&type_id)
-        .expect("stable type key should derive a contract-owned identity");
-
     assert_eq!(contract.service_id, SERVICE_ID);
     assert_eq!(contract.contract_version, CONTRACT_VERSION);
     assert_eq!(operation.operation_id, operation_id);
     assert_eq!(operation.stable_key, "echo");
     assert_eq!(operation.contract, expected_operation);
-    assert_eq!(schema.contract_type_id, type_id);
-    assert_eq!(schema.stable_key, "Request");
-    assert_eq!(schema.shape, expected_schema);
+    assert_eq!(
+        contract.package_type_requirements[0].required_type_ids,
+        vec![type_id.clone()]
+    );
     assert_eq!(contract.diagnostic_text.operations[&operation_id], "Echo");
     assert_eq!(contract.diagnostic_text.types[&type_id], "Echo request");
 }
@@ -233,7 +230,11 @@ fn definition_wire_rejects_provider_and_deployment_state() {
 fn missing_contract_schema_reference_fails_closed() {
     let mut definition = contract_definition();
     definition.operations.get_mut("echo").unwrap().parameters[0].ty =
-        definition_contract_type_ref(SERVICE_ID, CONTRACT_VERSION, "missing").unwrap();
+        ContractTypeRef::package_schema(
+            SCHEMA_PACKAGE_ID,
+            "Missing",
+            PackageSchemaTypeId::new("missing"),
+        );
 
     assert!(matches!(
         compile_service_contract(definition),
@@ -254,7 +255,7 @@ fn protocol_identity_tracks_semantics_but_not_diagnostic_text() {
     renamed
         .diagnostic_text
         .types
-        .insert("Request".to_string(), "Renamed type".to_string());
+        .insert(request_type().1, "Renamed type".to_string());
     let renamed = compile_service_contract(renamed).unwrap();
     assert_eq!(
         baseline.service_protocol_identity,
@@ -275,8 +276,7 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
     let contract = compile_service_contract(contract_definition()).unwrap();
     let operation_id =
         definition_contract_operation_id(SERVICE_ID, CONTRACT_VERSION, "echo").unwrap();
-    let request_type_id =
-        definition_contract_type_id(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
+    let request_type_id = request_type().1;
     let operation_body = contract.operations[&operation_id].contract.clone();
     let expected_requirement = ContractRequirement {
         alias: "payments".to_string(),
@@ -340,8 +340,10 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
     assert_eq!(signature.parameters[0].name, "request");
     assert_eq!(
         signature.parameters[0].ty,
-        PackageTypeRef::Contract {
-            contract_type_id: request_type_id.clone(),
+        PackageTypeRef::PackageSchema {
+            package_id: SCHEMA_PACKAGE_ID.to_string(),
+            stable_schema_key: "Request".to_string(),
+            package_schema_type_id: request_type_id.clone(),
         }
     );
     assert_eq!(
@@ -418,8 +420,10 @@ fn provider_and_consumer_compile_against_the_same_contract_without_provider_bind
     };
     assert_eq!(
         signature.parameters[0].ty,
-        PackageTypeRef::Contract {
-            contract_type_id: request_type_id,
+        PackageTypeRef::PackageSchema {
+            package_id: SCHEMA_PACKAGE_ID.to_string(),
+            stable_schema_key: "Request".to_string(),
+            package_schema_type_id: request_type_id,
         }
     );
     assert_eq!(
@@ -719,7 +723,7 @@ packages:
 }
 
 fn contract_definition() -> ServiceContractDefinition {
-    let request = definition_contract_type_ref(SERVICE_ID, CONTRACT_VERSION, "Request").unwrap();
+    let (request, request_id) = request_type();
     ServiceContractDefinition {
         service_id: SERVICE_ID.to_string(),
         contract_version: CONTRACT_VERSION.to_string(),
@@ -750,25 +754,32 @@ fn contract_definition() -> ServiceContractDefinition {
                 },
             },
         )]),
-        boundary_schema: BTreeMap::from([(
-            "Request".to_string(),
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                type_params: Vec::new(),
-                descriptor: ContractTypeDescriptor::Record {
-                    fields: BTreeMap::from([(
-                        "message".to_string(),
-                        ContractTypeRef::builtin("string"),
-                    )]),
-                },
-            },
-        )]),
+        package_type_requirements: vec![PackageTypeRequirement {
+            package_id: SCHEMA_PACKAGE_ID.to_string(),
+            required_type_ids: vec![request_id.clone()],
+        }],
         diagnostic_text: ServiceContractDefinitionDiagnosticText {
             service: "Echo service".to_string(),
             operations: BTreeMap::from([("echo".to_string(), "Echo".to_string())]),
-            types: BTreeMap::from([("Request".to_string(), "Echo request".to_string())]),
+            types: BTreeMap::from([(request_id, "Echo request".to_string())]),
         },
     }
+}
+
+fn request_type() -> (ContractTypeRef, PackageSchemaTypeId) {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    };
+    let id =
+        skiff_artifact_identity::package_schema_type_id(SCHEMA_PACKAGE_ID, "Request", &descriptor)
+            .unwrap();
+    (
+        ContractTypeRef::package_schema(SCHEMA_PACKAGE_ID, "Request", id.clone()),
+        id,
+    )
 }
 
 fn linkable(owner: BoundaryValueOwner) -> BoundaryValuePlan {
@@ -821,9 +832,15 @@ fn compile_generated_stream_contract(
         public_callable_projection(&provider_project.package.artifact, "events")
     );
     assert_no_provider_binding_wire(&provider_project.package.artifact);
-    project_service_api(service_id, &provider_project.package.artifact)
-        .expect("public stream API should project through the real contract pipeline")
-        .contract
+    project_service_api(
+        service_id,
+        &provider_project.package.artifact,
+        &provider_project
+            .package
+            .resolved_package_schema_type_records,
+    )
+    .expect("public stream API should project through the real contract pipeline")
+    .contract
 }
 
 fn public_callable_projection<'a>(
