@@ -2824,6 +2824,17 @@ impl<'a> OwnerChecker<'a> {
                 arg_types,
             );
         }
+        if receiver_root.as_deref() == Some("JsonObject") && method_name == "has" {
+            self.validate_resolved_call_params(
+                "JsonObject.has",
+                vec![(
+                    "field".to_string(),
+                    resolved_type_from_ir(&builtin_type("string")),
+                )],
+                args,
+                arg_types,
+            );
+        }
         if let Some(projected) =
             self.expression_projection_at_offset(key, offset)
                 .and_then(|receiver| {

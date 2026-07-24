@@ -477,6 +477,74 @@ fn json_object_receiver_call_lowers_to_receiver_builtin() {
 }
 
 #[test]
+fn json_object_has_enforces_exact_receiver_and_arity() {
+    let artifact = compile_package_file_ir(
+        r#"
+            function jsonObjectField(value: JsonObject, field: string) -> bool {
+                return value.has(field)
+            }
+        "#,
+        "internal/json_object_has.skiff",
+        "internal.json_object_has",
+    )
+    .expect("JsonObject.has with one string argument should compile");
+    let artifact_value = artifact.value();
+    let function = executable_entry(&artifact_value, "jsonObjectField");
+    assert!(
+        receiver_builtin_call(function, "JsonObject", "has").is_some(),
+        "JsonObject.has should lower to its exact receiver builtin target"
+    );
+
+    for (name, source, expected) in [
+        (
+            "wrong_receiver",
+            r#"
+                function run(value: string) -> bool {
+                    return value.has("field")
+                }
+            "#,
+            "receiver method `has`",
+        ),
+        (
+            "missing_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has()
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "extra_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has("field", "other")
+                }
+            "#,
+            "expected 1 arguments",
+        ),
+        (
+            "wrong_argument",
+            r#"
+                function run(value: JsonObject) -> bool {
+                    return value.has(1)
+                }
+            "#,
+            "call `JsonObject.has` argument 1",
+        ),
+    ] {
+        let error = compile_package_file_ir(
+            source,
+            format!("internal/json_object_has_{name}.skiff"),
+            format!("internal.json_object_has_{name}"),
+        )
+        .expect_err("invalid JsonObject.has call must fail closed")
+        .to_string();
+        assert!(error.contains(expected), "unexpected {name} error: {error}");
+    }
+}
+
+#[test]
 fn explicitly_typed_json_object_local_in_transaction_lowers_set_to_receiver_builtin() {
     let artifact = compile_package_file_ir(
         r#"
