@@ -225,6 +225,7 @@ impl Evaluator<'_, '_> {
         if !actuals[0].contains_caller_reference() && !actuals[0].unknown {
             callee.effects.writes_caller_reachable = false;
             callee.effects.requires_same_heap_identity = false;
+            callee.same_heap_identity_parameters.clear();
         }
         self.apply_callee(&callee, &actuals, return_reference, None)
     }
@@ -272,9 +273,29 @@ impl Evaluator<'_, '_> {
             .any(|value| value.contains_caller_value() || value.unknown);
         self.state.effects.writes_caller_reachable |=
             callee.effects.writes_caller_reachable && any_caller_reference;
-        self.state.effects.requires_same_heap_identity |=
-            callee.effects.requires_same_heap_identity
-                && (any_caller_reference || callee.effects.invokes_unknown_target);
+        if callee.effects.requires_same_heap_identity {
+            let identity_actuals = indexed_actuals(&callee.same_heap_identity_parameters, actuals);
+            let identity_is_observable = if callee.same_heap_identity_parameters.is_empty() {
+                any_caller_reference || callee.effects.invokes_unknown_target
+            } else {
+                identity_actuals
+                    .iter()
+                    .any(|actual| actual.contains_caller_reference() || actual.unknown)
+            };
+            self.state.effects.requires_same_heap_identity |= identity_is_observable;
+            if identity_is_observable {
+                let relevant_actuals = if callee.same_heap_identity_parameters.is_empty() {
+                    actuals.iter().collect::<Vec<_>>()
+                } else {
+                    identity_actuals
+                };
+                for actual in relevant_actuals {
+                    self.state
+                        .same_heap_identity_parameters
+                        .extend(actual.caller_references.iter().copied());
+                }
+            }
+        }
         self.state.effects.invokes_unknown_target |= callee.effects.invokes_unknown_target;
         self.state.effects.may_suspend |= callee.effects.may_suspend;
 
@@ -295,7 +316,9 @@ impl Evaluator<'_, '_> {
             return_reference,
             callee.effects.returns_caller_alias,
         );
-        if callee.effects.returns_caller_alias && any_caller_reference {
+        let return_formals = caller_parameter_indices(&callee.return_origins);
+        if callee.effects.returns_caller_alias && return_formals.is_empty() && any_caller_reference
+        {
             for actual in actuals {
                 returned
                     .caller_references
@@ -394,6 +417,9 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
     if let Some(semantics) = builtin_receiver_callable_semantics(op) {
         let mut state = CallableState::bottom();
         state.effects = semantics.effects;
+        if state.effects.requires_same_heap_identity {
+            state.same_heap_identity_parameters.insert(0);
+        }
         state
             .return_origins
             .insert(Origin::from(semantics.return_provenance.clone()));
@@ -470,6 +496,29 @@ fn map_origins(
     }
     mapped.reference = reference;
     mapped
+}
+
+fn caller_parameter_indices(
+    origins: &std::collections::BTreeSet<Origin>,
+) -> std::collections::BTreeSet<u32> {
+    origins
+        .iter()
+        .filter_map(|origin| match origin {
+            Origin::CallerParameter(index) => Some(*index),
+            _ => None,
+        })
+        .collect()
+}
+
+fn indexed_actuals<'a>(
+    indices: &std::collections::BTreeSet<u32>,
+    actuals: &'a [AbstractValue],
+) -> Vec<&'a AbstractValue> {
+    indices
+        .iter()
+        .filter_map(|index| usize::try_from(*index).ok())
+        .filter_map(|index| actuals.get(index))
+        .collect()
 }
 
 fn receiver_object_index(callee_start: u32, mut callee: &Expr) -> Option<u32> {

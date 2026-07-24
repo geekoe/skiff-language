@@ -974,6 +974,93 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
 }
 
 #[test]
+fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
+    let model = analyze(
+        r#"
+            function withRequestCors(
+              request: JsonObject,
+              settings: JsonObject,
+              response: JsonObject
+            ) -> JsonObject {
+              const same = response == response
+              return response
+            }
+
+            function thirdHop(
+              first: JsonObject,
+              second: JsonObject,
+              value: JsonObject
+            ) -> JsonObject {
+              return withRequestCors(first, second, value)
+            }
+
+            function freshThird(input: JsonObject) -> JsonObject {
+              return thirdHop(input, {}, {})
+            }
+
+            function first(
+              value: JsonObject,
+              second: JsonObject,
+              third: JsonObject
+            ) -> JsonObject {
+              const same = value == value
+              return value
+            }
+
+            function callerFirst(input: JsonObject) -> JsonObject {
+              return first(input, {}, {})
+            }
+
+            function branch(
+              chooseFirst: bool,
+              firstValue: JsonObject,
+              thirdValue: JsonObject
+            ) -> JsonObject {
+              if chooseFirst {
+                const same = firstValue == firstValue
+                return firstValue
+              }
+              const same = thirdValue == thirdValue
+              return thirdValue
+            }
+
+            function eitherFormal(
+              chooseFirst: bool,
+              input: JsonObject
+            ) -> JsonObject {
+              return branch(chooseFirst, input, {})
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "freshThird"), no_effects());
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+        provenance(&model, "freshThird")
+    else {
+        panic!("fresh third actual must retain analyzed provenance");
+    };
+    assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
+
+    for (callable, expected_parameter) in [("callerFirst", 0), ("eitherFormal", 1)] {
+        let effects = effects(&model, callable);
+        assert!(effects.returns_caller_alias, "{callable}");
+        assert!(effects.requires_same_heap_identity, "{callable}");
+        let CallableProvenanceSummary::Analyzed { return_origins, .. } =
+            provenance(&model, callable)
+        else {
+            panic!("{callable} must retain analyzed provenance");
+        };
+        assert!(
+            return_origins.contains(&ValueProvenance::CallerParameter {
+                index: expected_parameter
+            }),
+            "{callable}: {return_origins:?}"
+        );
+    }
+}
+
+#[test]
 fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
     let model = analyze_named(
         r#"

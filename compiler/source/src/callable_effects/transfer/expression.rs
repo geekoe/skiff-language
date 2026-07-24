@@ -35,7 +35,9 @@ impl Evaluator<'_, '_> {
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
                     && (value.contains_caller_reference() || right.contains_caller_reference())
                 {
-                    self.state.effects.requires_same_heap_identity = true;
+                    let mut compared = value.clone();
+                    compared.join(&right);
+                    self.state.record_same_heap_identity(&compared);
                 }
                 value.join(&right);
                 value.reference = reference;
@@ -57,7 +59,7 @@ impl Evaluator<'_, '_> {
             Expr::InterfaceBox { value, .. } => {
                 let mut value = self.eval_expr(value, env);
                 value.reference = true;
-                self.state.effects.requires_same_heap_identity = true;
+                self.state.record_same_heap_identity(&value);
                 self.state.record_escape(&value, EscapeLane::Callback);
                 value
             }
