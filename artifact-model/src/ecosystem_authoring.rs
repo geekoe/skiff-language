@@ -71,24 +71,41 @@ impl From<serde_yaml::Error> for EcosystemAuthoringError {
     }
 }
 
-/// One `package.yml` compile dependency on an independently published contract.
-///
-/// Protocol identity is deliberately absent: the compiler obtains it from the
-/// selected, validated ServiceContract record before constructing its
-/// `ContractRequirement`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageContractAuthoring {
-    pub alias: String,
-    pub service_id: String,
-    pub contract_version: String,
-}
-
-/// Strict projection of the `contracts` field in `package.yml`.
+/// Service-only source manifest. A service source root remains a normal package
+/// root; this DTO deliberately has no version, dependency or API surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageContractsAuthoring {
-    pub contracts: Vec<PackageContractAuthoring>,
+pub struct ServiceManifestAuthoring {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<serde_json::Value>,
+}
+
+/// One environment profile. Profiles bind already-declared runtime
+/// requirements and never own code dependencies.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceConfigProfileAuthoring {
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default)]
+    pub secrets: serde_json::Value,
+    #[serde(default)]
+    pub state: serde_json::Value,
+    #[serde(default)]
+    pub resources: serde_json::Value,
+    #[serde(default)]
+    pub timeout: serde_json::Value,
+    #[serde(default)]
+    pub quota: serde_json::Value,
+    #[serde(default)]
+    pub principal: serde_json::Value,
+    #[serde(default)]
+    pub lifecycle: serde_json::Value,
 }
 
 /// Diagnostic strings keyed by authoring stable keys. They never enter protocol identity.
@@ -126,16 +143,6 @@ pub struct RuntimeAssemblyAuthoring {
     pub root_deployments: Vec<ServiceDeploymentRef>,
 }
 
-pub fn parse_package_contracts_yml(
-    source: &str,
-) -> Result<PackageContractsAuthoring, EcosystemAuthoringError> {
-    let authoring = serde_yaml::from_str::<PackageContractsAuthoring>(source)?;
-    authoring
-        .validate()
-        .map_err(EcosystemAuthoringError::Validation)?;
-    Ok(authoring)
-}
-
 pub fn parse_service_contract_definition_yml(
     source: &str,
 ) -> Result<ServiceContractDefinition, EcosystemAuthoringError> {
@@ -162,38 +169,6 @@ pub fn parse_runtime_assembly_yml(
         .validate()
         .map_err(EcosystemAuthoringError::Validation)?;
     Ok(assembly)
-}
-
-impl PackageContractsAuthoring {
-    pub fn validate(&self) -> Result<(), String> {
-        let mut aliases = BTreeSet::new();
-        for dependency in &self.contracts {
-            for (label, value) in [
-                ("alias", dependency.alias.as_str()),
-                ("serviceId", dependency.service_id.as_str()),
-                ("contractVersion", dependency.contract_version.as_str()),
-            ] {
-                if value.trim().is_empty() {
-                    return Err(format!(
-                        "package.yml contracts entry {label} must not be empty"
-                    ));
-                }
-            }
-            if !is_dependency_alias_valid(&dependency.alias) {
-                return Err(format!(
-                    "package.yml contract alias {} must match [a-z][A-Za-z0-9_]* and not be reserved",
-                    dependency.alias
-                ));
-            }
-            if !aliases.insert(dependency.alias.as_str()) {
-                return Err(format!(
-                    "package.yml contracts contains duplicate alias {}",
-                    dependency.alias
-                ));
-            }
-        }
-        Ok(())
-    }
 }
 
 impl ServiceContractDefinition {
@@ -346,35 +321,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn package_contract_section_is_strict_and_provider_free() {
-        let source = r#"
-contracts:
-  - alias: accounts
-    serviceId: skiff.run/account
-    contractVersion: 1.0.0
-"#;
-        let parsed = parse_package_contracts_yml(source).expect("contracts section");
-        parsed.validate().expect("valid contracts section");
-        assert_eq!(parsed.contracts[0].alias, "accounts");
-
-        for forbidden in [
-            "expectedProtocolIdentity",
-            "providerPackageId",
-            "providerBuildId",
-            "deploymentRevision",
-        ] {
-            let invalid = source.replace(
-                "    contractVersion: 1.0.0",
-                &format!("    contractVersion: 1.0.0\n    {forbidden}: forbidden"),
-            );
-            assert!(
-                parse_package_contracts_yml(&invalid).is_err(),
-                "{forbidden}"
-            );
-        }
-    }
-
-    #[test]
     fn dependency_alias_vectors_have_one_shared_leaf_owner() {
         for alias in DEPENDENCY_ALIAS_POSITIVE_VECTORS {
             assert!(is_dependency_alias_lexically_valid(alias), "{alias}");
@@ -390,18 +336,6 @@ contracts:
             assert!(is_dependency_alias_reserved(alias), "{alias}");
             assert!(!is_dependency_alias_valid(alias), "{alias}");
         }
-    }
-
-    #[test]
-    fn authoring_parsers_reject_unknown_missing_and_duplicate_fields() {
-        assert!(parse_package_contracts_yml("contracts: []\nlegacy: true\n").is_err());
-        assert!(parse_package_contracts_yml(
-            "contracts:\n  - alias: a\n    alias: b\n    serviceId: s\n    contractVersion: v\n"
-        )
-        .is_err());
-        assert!(
-            parse_package_contracts_yml("contracts:\n  - alias: a\n    serviceId: s\n").is_err()
-        );
     }
 
     #[test]

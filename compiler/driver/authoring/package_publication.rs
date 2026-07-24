@@ -245,7 +245,7 @@ fn exact_official_std_manifest(
             "official std manifest is not compiler-owned source provenance",
         ));
     }
-    if !manifest.dependencies.is_empty() || !manifest.contracts.is_empty() {
+    if !manifest.dependencies.is_empty() || !manifest.services.is_empty() {
         return Err(invalid_input(
             "official std manifest must not declare package or contract dependencies",
         ));

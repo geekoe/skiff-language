@@ -1,10 +1,5 @@
 use std::{collections::BTreeSet, path::Path};
 
-use serde::Deserialize;
-use serde_json::Value;
-use serde_yaml::Value as YamlValue;
-use skiff_artifact_model::{PackageContractAuthoring, PackageContractsAuthoring};
-
 use super::{
     is_enabled_standard_package_id, is_reserved_package_alias, is_standard_package_id,
     PackageConfigError, PackageDependency, PackageManifest,
@@ -17,6 +12,9 @@ use crate::{
     validate_publication_version_field, ManifestOwner, ManifestProvenance, PublicationApiSpec,
     PublicationManifest, PublicationResourceSpec,
 };
+use serde::Deserialize;
+use serde_json::Value;
+use serde_yaml::Value as YamlValue;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +26,7 @@ pub(super) struct RawPackageManifest {
     #[serde(default)]
     packages: Vec<PackageDependency>,
     #[serde(default)]
-    contracts: Vec<PackageContractAuthoring>,
+    services: Vec<PackageDependency>,
     #[serde(default)]
     resources: Vec<PublicationResourceSpec>,
     requires: Option<RawPackageRequires>,
@@ -82,7 +80,10 @@ pub(super) fn validate_package_manifest(
         .as_ref()
         .is_some_and(|dependencies| dependencies.services.is_some())
     {
-        violations.push("dependencies.services has been removed; service dependencies are only valid in service.yml top-level services".to_string());
+        violations.push(
+            "dependencies.services has been removed; use package.yml top-level services"
+                .to_string(),
+        );
     }
     validate_removed_requires(raw.requires, &mut violations);
     collect_publication_resource_spec_violations(&raw.resources, &mut violations);
@@ -114,19 +115,30 @@ pub(super) fn validate_package_manifest(
             &mut violations,
         );
     }
-    if let Err(message) = (PackageContractsAuthoring {
-        contracts: raw.contracts.clone(),
-    })
-    .validate()
-    {
-        violations.push(message);
+    let mut services = raw.services;
+    services.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.version.cmp(&right.version))
+            .then_with(|| left.alias.cmp(&right.alias))
+    });
+    services.dedup();
+    for dependency in &services {
+        collect_package_dependency_violations(
+            dependency,
+            "services",
+            &mut dependency_aliases,
+            &mut violations,
+        );
     }
-    for contract in &raw.contracts {
-        if dependency_aliases.contains(&contract.alias) {
-            violations.push(format!(
-                "dependency alias {} is assigned to both a package and a contract",
-                contract.alias
-            ));
+    for (field, dependencies) in [("packages", &dependencies), ("services", &services)] {
+        for dependency in dependencies {
+            if !is_exact_version_selector(&dependency.version) {
+                violations.push(format!(
+                    "{field} entry {} version {} must be an exact version",
+                    dependency.id, dependency.version
+                ));
+            }
         }
     }
 
@@ -185,7 +197,14 @@ pub(super) fn validate_package_manifest(
         raw.resources,
         ManifestProvenance::file(path, owner),
     );
-    Ok(PackageManifest::new(publication, raw.contracts))
+    Ok(PackageManifest::new(publication, services))
+}
+
+fn is_exact_version_selector(version: &str) -> bool {
+    !version.is_empty()
+        && !version
+            .chars()
+            .any(|character| matches!(character, '*' | '^' | '~' | '<' | '>' | '=' | ',' | ' '))
 }
 
 fn validate_removed_requires(requires: Option<RawPackageRequires>, violations: &mut Vec<String>) {
@@ -193,7 +212,9 @@ fn validate_removed_requires(requires: Option<RawPackageRequires>, violations: &
         return;
     };
     if requires.services.is_some() {
-        violations.push("requires.services has been removed; package source cannot declare service dependencies".to_string());
+        violations.push(
+            "requires.services has been removed; use package.yml top-level services".to_string(),
+        );
     }
     if requires.bindings.is_some() {
         violations.push(

@@ -11,6 +11,7 @@ pub mod package_source_helpers;
 pub mod package_sources;
 pub mod platform_sources;
 pub mod resources;
+pub mod service_config;
 pub mod source_tree;
 pub mod test_rules;
 
@@ -41,6 +42,9 @@ pub use resources::{
     collect_publication_resource_spec_violations, read_publication_resources,
     validate_publication_resource_logical_path, MAX_PUBLICATION_RESOURCES,
     MAX_PUBLICATION_RESOURCE_BYTE_LEN, MAX_PUBLICATION_RESOURCE_TOTAL_BYTE_LEN,
+};
+pub use service_config::{
+    read_service_package_root, ServiceConfigProfile, ServicePackageRoot, ServiceSourceConfigError,
 };
 pub use skiff_compiler_input_model::{
     CompilerRawSourceFile, PublicationResourceInput, PublicationResourceSpec,

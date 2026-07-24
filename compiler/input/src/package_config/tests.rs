@@ -814,6 +814,80 @@ resources:
 }
 
 #[test]
+fn package_manifest_accepts_exact_package_and_service_dependencies() {
+    let manifest = read_temp_manifest(
+        "package-and-service-dependencies",
+        r#"
+id: example.com/app
+version: release-2026-07-24
+packages:
+  - id: example.com/library
+    version: 1.2.3
+    alias: library
+services:
+  - id: example.com/payment
+    version: 3.0.0
+    alias: payment
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(manifest.dependencies[0].effective_alias(), "library");
+    assert_eq!(manifest.services[0].effective_alias(), "payment");
+}
+
+#[test]
+fn package_and_service_dependency_aliases_share_one_namespace() {
+    let error = read_temp_manifest(
+        "shared-dependency-alias",
+        r#"
+id: example.com/app
+version: 1.0.0
+packages:
+  - id: example.com/library
+    version: 1.0.0
+    alias: shared
+services:
+  - id: example.com/payment
+    version: 1.0.0
+    alias: shared
+"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("services alias shared"), "{error}");
+}
+
+#[test]
+fn package_manifest_rejects_contracts_and_non_exact_dependency_versions() {
+    for (name, field) in [
+        (
+            "contracts",
+            "contracts:\n  - alias: payment\n    serviceId: example.com/payment\n    contractVersion: 1.0.0",
+        ),
+        (
+            "package-range",
+            "packages:\n  - id: example.com/library\n    version: ^1.0.0\n    alias: library",
+        ),
+        (
+            "service-range",
+            "services:\n  - id: example.com/payment\n    version: '>=3.0.0'\n    alias: payment",
+        ),
+    ] {
+        let error = read_temp_manifest(
+            name,
+            &format!("id: example.com/app\nversion: 1.0.0\n{field}\n"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown field") || error.contains("must be an exact version"),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_package_manifest_invalid_resources() {
     let error = read_temp_manifest(
         "invalid-resources",
