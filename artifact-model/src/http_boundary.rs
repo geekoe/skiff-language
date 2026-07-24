@@ -1,10 +1,21 @@
 use std::collections::BTreeMap;
 
-use crate::{ContractLiteral, ContractTypeRef};
+use crate::{ContractLiteral, ContractTypeRef, PackageRefIr, PackageSymbolRef};
 
+pub const HTTP_BOUNDARY_PACKAGE_ID: &str = "skiff.run/std";
 pub const HTTP_REQUEST_TYPE: &str = "std.http.HttpRequest";
 pub const HTTP_RESPONSE_TYPE: &str = "std.http.HttpResponse";
 pub const HTTP_RESPONSE_STREAM_EVENT_TYPE: &str = "std.http.HttpResponseStreamEvent";
+
+pub fn canonical_http_boundary_symbol(symbol: &PackageSymbolRef) -> Option<&str> {
+    let PackageRefIr::PackageId { package_id } = &symbol.package else {
+        return None;
+    };
+    if package_id != HTTP_BOUNDARY_PACKAGE_ID {
+        return None;
+    }
+    canonical_http_boundary_type(&symbol.symbol_path).map(|_| symbol.symbol_path.as_str())
+}
 
 pub fn canonical_http_boundary_type(name: &str) -> Option<ContractTypeRef> {
     match name {
@@ -91,5 +102,28 @@ mod tests {
         };
         assert_eq!(variants.len(), 3);
         assert!(canonical_http_boundary_type("std.http.HttpClientRequest").is_none());
+    }
+
+    #[test]
+    fn canonical_imported_http_identity_requires_the_official_package_and_symbol() {
+        let symbol = |package: &str, symbol_path: &str| PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: package.to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: None,
+        };
+        assert_eq!(
+            canonical_http_boundary_symbol(&symbol(HTTP_BOUNDARY_PACKAGE_ID, HTTP_REQUEST_TYPE)),
+            Some(HTTP_REQUEST_TYPE)
+        );
+        assert!(
+            canonical_http_boundary_symbol(&symbol("example.com/std", HTTP_REQUEST_TYPE)).is_none()
+        );
+        assert!(canonical_http_boundary_symbol(&symbol(
+            HTTP_BOUNDARY_PACKAGE_ID,
+            "std.http.HttpClientRequest"
+        ))
+        .is_none());
     }
 }

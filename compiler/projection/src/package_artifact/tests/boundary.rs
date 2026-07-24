@@ -5,7 +5,8 @@ use skiff_artifact_model::{
     BoundaryUnavailableReason, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, CallableTargetFact,
     ContractTypeId, ContractTypeRef, LiteralIr, PackageCallableParameter, PackageCallableSignature,
-    PackageRuntimeRequirements, PackageTypeRef, TypeRefIr, ValueEscapeLane, ValueProvenance,
+    PackageRefIr, PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    ValueEscapeLane, ValueProvenance,
 };
 
 use super::fixtures::{runtime_requirements, safe_facts, signature};
@@ -552,6 +553,118 @@ fn canonical_http_ingress_types_are_boundary_available_and_exact() {
 }
 
 #[test]
+fn official_imported_http_symbols_project_to_the_existing_boundary_types() {
+    let signature = PackageCallableSignature {
+        parameters: vec![
+            PackageCallableParameter {
+                name: "request".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: official_std_symbol(
+                        skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE,
+                    ),
+                },
+            },
+            PackageCallableParameter {
+                name: "response".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: official_std_symbol(
+                        skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE,
+                    ),
+                },
+            },
+        ],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::Native {
+                name: "Stream".to_string(),
+                args: vec![official_std_symbol(
+                    skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
+                )],
+            },
+        },
+        throw_types: Vec::new(),
+        may_suspend: true,
+    };
+    let projection = project_boundary_callable(
+        "api",
+        &signature,
+        &safe_facts(),
+        &empty_runtime_requirements(),
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = projection
+    else {
+        panic!("official imported HTTP symbols must be boundary available")
+    };
+    assert!(matches!(
+        &operation_contract.parameters[0].ty,
+        ContractTypeRef::Builtin { name, arguments }
+            if name == skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
+                && arguments.is_empty()
+    ));
+    assert!(matches!(
+        &operation_contract.parameters[1].ty,
+        ContractTypeRef::Builtin { name, arguments }
+            if name == skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
+                && arguments.is_empty()
+    ));
+    assert!(matches!(
+        &operation_contract.stream,
+        BoundaryStreamContract::ServerStream {
+            item_type: ContractTypeRef::Builtin { name, arguments },
+            ..
+        } if name == skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE
+            && arguments.is_empty()
+    ));
+}
+
+#[test]
+fn imported_http_symbol_admission_is_exact_and_fail_closed() {
+    for local_type in [
+        package_symbol(
+            "example.com/std",
+            skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE,
+        ),
+        package_symbol("skiff.run/std", "std.http.HttpClientRequest"),
+        package_symbol("skiff.run/std", "example.http.HttpRequest"),
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::Dependency {
+                    dependency_ref: "std".to_string(),
+                },
+                symbol_path: skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE.to_string(),
+                abi_expectation: None,
+            },
+        },
+        TypeRefIr::Native {
+            name: skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE.to_string(),
+            args: vec![TypeRefIr::native("string")],
+        },
+    ] {
+        assert_reasons(
+            signature(local_type),
+            safe_facts(),
+            &[BoundaryUnavailableReason::UnsupportedBoundaryType],
+        );
+    }
+
+    assert_reasons(
+        signature(TypeRefIr::Native {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::Function {
+                params: Vec::new(),
+                return_type: Box::new(TypeRefIr::native("void")),
+            }],
+        }),
+        safe_facts(),
+        &[BoundaryUnavailableReason::CallbackAdapterUnavailable],
+    );
+}
+
+#[test]
 fn http_stream_event_is_available_but_arbitrary_native_handles_remain_rejected() {
     let projection = project_boundary_callable(
         "api",
@@ -612,5 +725,24 @@ fn empty_runtime_requirements() -> PackageRuntimeRequirements {
         config: Vec::new(),
         resources: Vec::new(),
         runtime_capabilities: Vec::new(),
+    }
+}
+
+fn official_std_symbol(symbol_path: &str) -> TypeRefIr {
+    package_symbol(
+        skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID,
+        symbol_path,
+    )
+}
+
+fn package_symbol(package_id: &str, symbol_path: &str) -> TypeRefIr {
+    TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: package_id.to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: None,
+        },
     }
 }

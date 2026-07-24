@@ -224,6 +224,12 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
                 Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
             }
+            TypeRefIr::PackageSymbol { symbol }
+                if skiff_artifact_model::http_boundary::canonical_http_boundary_symbol(symbol)
+                    .is_some() =>
+            {
+                Ok(TypeClosureControl::Prune)
+            }
             TypeRefIr::ServiceSymbol { symbol }
                 if self
                     .public_type_ids
@@ -296,9 +302,13 @@ fn project_local_type(
             .cloned()
             .map(|local_type_id| ContractTypeRef::PackagePublic { local_type_id })
             .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType),
+        TypeRefIr::PackageSymbol { symbol } => {
+            skiff_artifact_model::http_boundary::canonical_http_boundary_symbol(symbol)
+                .map(ContractTypeRef::builtin)
+                .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::PackageSymbol { .. }
         | TypeRefIr::DbObjectSymbol { .. }
         | TypeRefIr::TypeParam { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
     }
