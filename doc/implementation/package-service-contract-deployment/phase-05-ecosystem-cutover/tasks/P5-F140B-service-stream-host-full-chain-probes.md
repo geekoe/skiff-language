@@ -2,20 +2,25 @@
 
 状态：Ready（替代 owner 错配的 P5-F140）
 
-## 权威设计与 DAG
+## 父节点与 DAG
 
-- 权威设计：`doc/architecture/package-service-contract-deployment.md`。
-- 稳定语言语义参考：`doc/reference/runtime.md` 的普通 service `Stream<T>` 生命周期。
+- 直接父节点：`P5-D82-service-call-stream-capability-audit-result.md`。
+- 父节点已向上引用审计合同和唯一权威设计；需要公共语义依据时沿该链读取。
 - 节点：C1 Runtime 证据 D；前置 P5-D82、P5-F138。
 - 完成后解除：AIHub → Agine consumer 重验的 Runtime 证据。
+
+父节点确认 production lifecycle owner 在 `runtime/eval`，但真实 admitted/full-chain fixture owner 在
+`runtime/host/src/loader/assembly_admission/tests/execution/`；本任务必须使用后者，不能构造 eval-only runtime。
 
 ## 写入范围
 
 - `runtime/host/src/loader/assembly_admission/tests/execution/async_stream_cancel.rs`
 - 必要时 `artifacts.rs`、`runtime.rs` 测试 fixture。
 - 只有精确证明 provider task cleanup 无现有观测点时，允许在
-  `runtime/eval/src/assembly_execution/{async_stream_cancel.rs,mod.rs}` 增加 `test-support` counter accessor/re-export。
+  `runtime/eval/src/assembly_execution/{async_stream_cancel.rs,mod.rs}` 和 `runtime/eval/src/lib.rs` 增加
+  `test-support` counter accessor/re-export。
 - 不改 wire、公共生命周期、compiler 或 production dispatch。
+- 禁止修改其他 Runtime 测试或因 workspace formatting 产生无关文件漂移。
 
 ## 完成标准
 
@@ -28,6 +33,7 @@
 ## 验证
 
 - Runtime host execution/stream 聚焦测试、目标文件格式与 `git diff --check`；不运行完整 gate。
+- selector 必须列出并实际运行目标测试，零测试不算证据。
 - 若公共语义或跨 owner production 修复必需，返回 `TASK_NOT_EXECUTABLE`。
 
 ## Worktree
@@ -35,4 +41,3 @@
 - `/Users/geek/workspace/skiff-p5-f140b`
 - branch `codex/p5-f140b-service-stream-host-probes`
 - 一次性新开发会话；提交、不 push、不操作 stable。
-
