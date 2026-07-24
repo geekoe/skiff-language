@@ -194,7 +194,10 @@ fn builtin_map_and_discriminator_grammar_fail_closed_with_paths() {
     );
     assert_invalid_contains(
         &alias_map_key,
-        &["fields[lookup].arguments[0]", "transparent alias"],
+        &[
+            "boundarySchema[stringAlias].descriptor",
+            "transparent alias",
+        ],
     );
 
     let mut non_string_representation_key = schema_fidelity_fixture();

@@ -142,8 +142,8 @@ pub struct BoundaryOperationContract {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BoundaryOperationDescriptor {
-    /// Real service-contract operation identity derived from its service
-    /// coordinate, contract version, and stable key.
+    /// Real service-contract operation identity derived from its service id
+    /// and stable public API key. Human-readable version labels are excluded.
     pub operation_id: ContractOperationId,
     pub stable_key: String,
     pub contract: BoundaryOperationContract,

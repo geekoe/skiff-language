@@ -11,11 +11,11 @@ fn package_artifact_assign_validate_and_golden_identities() {
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(
         artifact.package_build_id.as_str(),
-        "skiff-package-build-v4:sha256:5405b0e5e9d77172d4bb0461622c314743c138dddfed4d7b3740ad664a00eb2d"
+        "skiff-package-build-v4:sha256:e7ced079509f144be9dc68121d7cc6336b33b5cc06652299bcfafeee6f84da07"
     );
     assert_eq!(
         artifact.package_local_abi.local_abi_identity.as_str(),
-        "skiff-package-local-abi-v3:sha256:8cf4c0e293f59b22fd3d4d249d0b1f1c76e2dd33deca32f5defb7918bac7611c"
+        "skiff-package-local-abi-v3:sha256:78ace6509d9fb5271377ff08be6250f77249f70c0f11e3653f34e919236c8055"
     );
 }
 

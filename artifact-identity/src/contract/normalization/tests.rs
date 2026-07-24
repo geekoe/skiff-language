@@ -124,7 +124,7 @@ fn websocket_contract_identity_remains_bit_identical() {
     assert_eq!(assigned, service_protocol_identity(&contract).unwrap());
     assert_eq!(
         assigned.as_str(),
-        "skiff-service-protocol-v2:sha256:5a07570b89a795bc95b0af57141c5d66d1df1bee24c224abc1d75a0babd00e98"
+        "skiff-service-protocol-v2:sha256:dcd43002feeeed67b8f98cf6c159f934e03b91f8191ccedb7c2abdc0eb6f0004"
     );
 }
 

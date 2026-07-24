@@ -13,19 +13,40 @@ fn contract_assign_validate_and_golden_identities() {
 
     assert_eq!(
         contract.service_protocol_identity.as_str(),
-        "skiff-service-protocol-v2:sha256:5cce28acb838365cdb9bc093ad2abbca5adec82520b2f145ab444866dcdd7d9a"
+        "skiff-service-protocol-v2:sha256:f1ab6fae4aec7d876892647f094fd28cf13f30fe140ffbed785948e317ccea20"
     );
     assert_eq!(
         contract_operation_id("example.echo", "1.0.0", "echo")
             .unwrap()
             .as_str(),
-        "skiff-contract-operation-v1:sha256:9662ad94d43bc4f9b4465193744fd1db363b3837f3d8c2a6ed57556075f04e2b"
+        "skiff-contract-operation-v1:sha256:e66aed0b87717b3767ad8bebbb8a8b53572d8966287966d5beb35934b90455d6"
     );
     assert_eq!(
         contract_type_id("example.echo", "1.0.0", "payload")
             .unwrap()
             .as_str(),
-        "skiff-contract-type-v1:sha256:225ce35885dbb1d09d6a6a9a07626a6ca59649d42900d9890de2ecd7301000fc"
+        "skiff-contract-type-v1:sha256:8b0490eda75300f7fba6df6167721059d564b7e648c2a190c4fc547ef27807fb"
+    );
+}
+
+#[test]
+fn human_version_label_is_not_a_service_api_identity_input() {
+    let first = contract_fixture();
+    let mut relabeled = first.clone();
+    relabeled.contract_version = "99.4.0".to_string();
+    assign_service_contract_identities(&mut relabeled).unwrap();
+
+    assert_eq!(
+        first.service_protocol_identity,
+        relabeled.service_protocol_identity
+    );
+    assert_eq!(
+        contract_operation_id("example.echo", "1.0.0", "echo").unwrap(),
+        contract_operation_id("example.echo", "99.4.0", "echo").unwrap()
+    );
+    assert_eq!(
+        contract_type_id("example.echo", "1.0.0", "payload").unwrap(),
+        contract_type_id("example.echo", "99.4.0", "payload").unwrap()
     );
 }
 

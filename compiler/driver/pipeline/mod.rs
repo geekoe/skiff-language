@@ -4,7 +4,8 @@ use skiff_artifact_model::{
     ServiceContract,
 };
 use skiff_compiler_contract::{
-    compile_service_contract_definition, ContractDefinitionError, ServiceContractDefinition,
+    compile_service_contract_definition, project_service_api, ContractDefinitionError,
+    ServiceApiProjection, ServiceContractDefinition,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::{
@@ -78,6 +79,34 @@ pub fn compile_package(
         &projected,
         &file_ir_units,
     )?)
+}
+
+#[derive(Debug)]
+pub struct CompiledServicePackage {
+    pub package: PublishedPackageArtifact,
+    pub service_api: ServiceApiProjection,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServicePackageCompileError {
+    #[error(transparent)]
+    Package(#[from] PackageCompileError),
+    #[error(transparent)]
+    ServiceApi(#[from] ContractDefinitionError),
+}
+
+/// Compiles a service exactly once as a package, then deterministically
+/// projects its service API from that canonical package result.
+pub fn compile_service_package(
+    input: PackageCompileInput<'_>,
+    service_id: &str,
+) -> Result<CompiledServicePackage, ServicePackageCompileError> {
+    let package = compile_package(input)?;
+    let service_api = project_service_api(service_id, &package.artifact)?;
+    Ok(CompiledServicePackage {
+        package,
+        service_api,
+    })
 }
 
 /// The code-free contract pipeline. No package/provider source is accepted.

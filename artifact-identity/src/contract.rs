@@ -29,7 +29,6 @@ pub use normalization::{normalize_contract_operation_contract, normalize_contrac
 struct ContractTypeIdentityInput<'a> {
     schema: &'static str,
     service_id: &'a str,
-    contract_version: &'a str,
     stable_type_key: &'a str,
 }
 
@@ -38,7 +37,6 @@ struct ContractTypeIdentityInput<'a> {
 struct ContractOperationIdentityInput<'a> {
     schema: &'static str,
     service_id: &'a str,
-    contract_version: &'a str,
     stable_operation_key: &'a str,
 }
 
@@ -49,24 +47,21 @@ struct ContractOperationIdentityInput<'a> {
 pub struct ServiceProtocolIdentityProjection {
     schema: &'static str,
     service_id: String,
-    contract_version: String,
     operations: BTreeMap<ContractOperationId, BoundaryOperationDescriptor>,
     boundary_schema: BTreeMap<ContractTypeId, ContractSchemaType>,
 }
 
 pub fn contract_type_id(
     service_id: &str,
-    contract_version: &str,
+    _package_version_label: &str,
     stable_type_key: &str,
 ) -> Result<ContractTypeId> {
     validation::validate_coordinate_part("serviceId", service_id)?;
-    validation::validate_coordinate_part("contractVersion", contract_version)?;
     validation::validate_stable_key("contract type", stable_type_key)?;
     let bytes = canonical_ir_bytes(
         &ContractTypeIdentityInput {
             schema: CONTRACT_TYPE_IDENTITY_SCHEMA_MARKER,
             service_id,
-            contract_version,
             stable_type_key,
         },
         ArtifactIdentityError::SerializeContractTypeIdentity,
@@ -79,17 +74,15 @@ pub fn contract_type_id(
 
 pub fn contract_operation_id(
     service_id: &str,
-    contract_version: &str,
+    _package_version_label: &str,
     stable_operation_key: &str,
 ) -> Result<ContractOperationId> {
     validation::validate_coordinate_part("serviceId", service_id)?;
-    validation::validate_coordinate_part("contractVersion", contract_version)?;
     validation::validate_stable_key("contract operation", stable_operation_key)?;
     let bytes = canonical_ir_bytes(
         &ContractOperationIdentityInput {
             schema: CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER,
             service_id,
-            contract_version,
             stable_operation_key,
         },
         ArtifactIdentityError::SerializeContractOperationIdentity,
@@ -107,7 +100,6 @@ pub fn service_protocol_identity_projection(
     Ok(ServiceProtocolIdentityProjection {
         schema: SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
         service_id: contract.service_id.clone(),
-        contract_version: contract.contract_version.clone(),
         operations: contract.operations.clone(),
         boundary_schema: contract.boundary_schema.clone(),
     })
