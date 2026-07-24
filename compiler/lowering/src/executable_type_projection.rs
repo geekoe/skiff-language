@@ -5,7 +5,7 @@ use skiff_artifact_model::{PackageTypeRef, TypeRefIr};
 pub(crate) fn execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
     match ty {
         PackageTypeRef::Local { local_type } => local_type.clone(),
-        PackageTypeRef::Contract { .. } => TypeRefIr::native("unknown"),
+        PackageTypeRef::PackageSchema { .. } => TypeRefIr::native("unknown"),
         PackageTypeRef::Container { name, arguments } => TypeRefIr::Native {
             name: name.clone(),
             args: arguments.iter().map(execution_type_ref).collect(),
@@ -18,18 +18,20 @@ pub(crate) fn execution_type_ref(ty: &PackageTypeRef) -> TypeRefIr {
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_model::ContractTypeId;
+    use skiff_artifact_model::PackageSchemaTypeId;
 
     use super::*;
 
     #[test]
     fn nested_contract_leaf_becomes_only_opaque_unknown() {
-        let contract_id = ContractTypeId::new("contract-type:request");
+        let package_schema_type_id = PackageSchemaTypeId::new("package-type:request");
         let source = PackageTypeRef::Container {
             name: "Array".to_string(),
             arguments: vec![PackageTypeRef::Nullable {
-                inner: Box::new(PackageTypeRef::Contract {
-                    contract_type_id: contract_id.clone(),
+                inner: Box::new(PackageTypeRef::PackageSchema {
+                    package_id: "example.types".to_string(),
+                    stable_schema_key: "Request".to_string(),
+                    package_schema_type_id: package_schema_type_id.clone(),
                 }),
             }],
         };
@@ -46,8 +48,9 @@ mod tests {
             }
         );
         let wire = serde_json::to_string(&projected).unwrap();
-        assert!(!wire.contains(contract_id.as_str()));
-        assert!(!wire.contains("contractType"));
+        assert!(!wire.contains(package_schema_type_id.as_str()));
+        assert!(!wire.contains("packageSchema"));
+        assert!(!wire.contains("example.types"));
         assert!(!wire.contains("serviceSymbol"));
     }
 

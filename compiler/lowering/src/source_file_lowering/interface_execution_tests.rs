@@ -1,11 +1,13 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use skiff_artifact_model::{ContractTypeId, FileIrUnit, TypeRefIr};
+use skiff_artifact_model::{FileIrUnit, PackageSchemaTypeId, TypeRefIr};
+use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     build_package_from_parsed_sources_with_dependency_analysis,
-    parsed_sources::parse_publication_sources, source_graph::CompilerSourceFile,
-    CompileParsedPackageSourcesInput, PackageCompilePolicy, PackageSourceModel,
-    PublicationTypeSymbolIndex, SourceDependencyAnalysisInput, SourceSymbolKey,
+    parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+    source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
+    PackageDependencyAnalysisFacts, PackageSourceModel, PublicationTypeSymbolIndex,
+    SourceDependencyAnalysisInput, SourceSymbolKey,
 };
 
 use super::{
@@ -23,7 +25,7 @@ const MODULE: &str = "internal.interface_execution";
 
 #[test]
 fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
-    let (model, contract_type_id) = contract_interface_model();
+    let (model, package_schema_type_id) = contract_interface_model();
     let empty_external_types = PublicationTypeSymbolIndex::default();
     let empty = lower_model_with_external_types(&model, &empty_external_types);
     let mut unrelated_external_types = PublicationTypeSymbolIndex::default();
@@ -63,7 +65,11 @@ fn exact_interface_and_impl_contract_types_share_opaque_execution_projection() {
     let wire = serde_json::to_string(&empty).unwrap();
     for forbidden in [
         "payments",
-        contract_type_id.as_str(),
+        "example.types",
+        "types.User",
+        "payments.User",
+        package_schema_type_id.as_str(),
+        "packageSchemaTypeId",
         "contractTypeId",
         "serviceSymbol",
     ] {
@@ -90,9 +96,23 @@ fn standalone_interface_lowering_without_exact_facts_fails_closed() {
     );
 }
 
-fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
-    let (dependency, contract_type_id) = contract_dependency();
-    let dependency_analysis = SourceDependencyAnalysisInput::new(Vec::new(), [dependency]).unwrap();
+fn contract_interface_model() -> (PackageSourceModel, PackageSchemaTypeId) {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    initialize_prelude_registry(
+        &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
+    )
+    .expect("prelude registry initializes");
+    let (dependency, package_type_record, package_local_abi) = contract_dependency();
+    let package_schema_type_id = package_type_record.package_schema_type_id.clone();
+    let dependency_analysis = SourceDependencyAnalysisInput::new(
+        [(
+            "types".to_string(),
+            PackageDependencyAnalysisFacts::new(package_local_abi, BTreeMap::new())
+                .with_schema_records([package_type_record]),
+        )],
+        [dependency],
+    )
+    .unwrap();
     let root = PathBuf::from("/contract-interface");
     let source = CompilerSourceFile::parse(
         PathBuf::from("internal/interface_execution.skiff"),
@@ -104,7 +124,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             function echo(
               self: Self,
               input: Array<payments.User?>?
-            ) -> Array<payments.User?>?
+            ) -> Array<types.User?>?
           }
 
           type Handler implements Gateway {}
@@ -112,7 +132,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
             function echo(
               self: Handler,
               input: Array<payments.User?>?
-            ) -> Array<payments.User?>? {
+            ) -> Array<types.User?>? {
               return input
             }
           }
@@ -140,7 +160,7 @@ fn contract_interface_model() -> (PackageSourceModel, ContractTypeId) {
         &dependency_analysis,
     )
     .expect("contract interface source model should build");
-    (model, contract_type_id)
+    (model, package_schema_type_id)
 }
 
 fn lower_model_with_external_types(
