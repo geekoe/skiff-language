@@ -9,7 +9,7 @@ use std::{
 use skiff_artifact_model::{
     BoundaryCallbackOperation, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeRef,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRef,
+    PackageSchemaTypeId, PackageSchemaTypeRef,
 };
 use skiff_runtime_activation::{CallbackCapabilityError, CallbackLifetime};
 use skiff_runtime_boundary::service_linkable::{
@@ -18,6 +18,7 @@ use skiff_runtime_boundary::service_linkable::{
     ServiceLinkableContractPlan, ServiceLinkableMaterializationError,
     ServiceLinkableMaterializationScope,
 };
+use skiff_runtime_boundary::service_schema_records::ServiceSchemaRecords;
 use skiff_runtime_linked_program::CallIr;
 use skiff_runtime_model::{
     request_heap::RequestHeap,
@@ -275,7 +276,7 @@ fn interface_value(
 
 fn callback_contract<'a>(
     ty: &ContractTypeRef,
-    schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    schema: &'a ServiceSchemaRecords,
 ) -> std::result::Result<
     (
         PackageSchemaTypeRef,
@@ -288,7 +289,7 @@ fn callback_contract<'a>(
 
 fn callback_contract_inner<'a>(
     ty: &ContractTypeRef,
-    schema: &'a BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    schema: &'a ServiceSchemaRecords,
     active: &mut HashSet<PackageSchemaTypeId>,
 ) -> std::result::Result<
     (
@@ -392,7 +393,7 @@ fn validate_adapter_preimage(
 
 fn materialize_callback_value(
     ty: &ContractTypeRef,
-    schema: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    schema: &ServiceSchemaRecords,
     value: &RuntimeValue,
     source_heap: &RequestHeap,
     destination_heap: &mut RequestHeap,
@@ -429,7 +430,7 @@ fn materialize_callback_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::PackageSchemaCanonicalDescriptor;
+    use skiff_artifact_model::{PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord};
 
     #[test]
     fn in_process_callback_resolves_only_declared_callback_contract_operations() {
@@ -447,20 +448,19 @@ mod tests {
                 may_suspend: false,
             },
         )]);
-        let schema = BTreeMap::from([(
-            callback_id.clone(),
-            PackageSchemaTypeRecord {
-                package_id: "example.callback".to_string(),
-                stable_schema_key: "api.Callback".to_string(),
-                package_schema_type_id: callback_id,
-                canonical_descriptor: PackageSchemaCanonicalDescriptor {
-                    type_params: Vec::new(),
-                    descriptor: ContractTypeDescriptor::CallbackInterface {
-                        operations: operations.clone(),
-                    },
+        let callback_record = Arc::new(PackageSchemaTypeRecord {
+            package_id: "example.callback".to_string(),
+            stable_schema_key: "api.Callback".to_string(),
+            package_schema_type_id: callback_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::CallbackInterface {
+                    operations: operations.clone(),
                 },
             },
-        )]);
+        });
+        let schema = BTreeMap::from([(callback_id, Arc::clone(&callback_record))]);
+        let strong_count_before = Arc::strong_count(&callback_record);
         let (resolved_id, resolved_operations) = callback_contract(&callback_ty, &schema).unwrap();
         assert_eq!(resolved_id.package_id, "example.callback");
         assert_eq!(resolved_id.stable_schema_key, "api.Callback");
@@ -469,6 +469,7 @@ mod tests {
             "package-schema:callback"
         );
         assert_eq!(resolved_operations, &operations);
+        assert_eq!(Arc::strong_count(&callback_record), strong_count_before);
         assert!(matches!(
             callback_contract(&ContractTypeRef::builtin("string"), &schema),
             Err(ServiceLinkableMaterializationError::TypeMismatch)
@@ -511,7 +512,10 @@ mod tests {
         {
             let mut record = callback_record();
             mutate(&mut record);
-            assert!(callback_contract(&ty, &BTreeMap::from([(type_id.clone(), record)])).is_err());
+            assert!(
+                callback_contract(&ty, &BTreeMap::from([(type_id.clone(), Arc::new(record))]))
+                    .is_err()
+            );
         }
 
         let mut non_callback = callback_record();
@@ -519,7 +523,10 @@ mod tests {
             variants: vec!["value".to_string()],
         };
         assert!(matches!(
-            callback_contract(&ty, &BTreeMap::from([(type_id.clone(), non_callback)])),
+            callback_contract(
+                &ty,
+                &BTreeMap::from([(type_id.clone(), Arc::new(non_callback))])
+            ),
             Err(ServiceLinkableMaterializationError::TypeMismatch)
         ));
 
@@ -540,7 +547,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            callback_contract(&ty, &BTreeMap::from([(type_id, alias)])),
+            callback_contract(&ty, &BTreeMap::from([(type_id, Arc::new(alias))])),
             Err(ServiceLinkableMaterializationError::MissingSchema { .. })
         ));
     }
