@@ -494,6 +494,21 @@ RuntimeAssembly
   assemblyIdentity
 ```
 
+Package link与service binding使用不同的可变性边界：
+
+- package requirement在link完成后绑定到不可变`PackageArtifact` identity。最终linked image记录精确
+  `PackageArtifactId`；`packageBuildId`可以作为构建过程与诊断标识，但不能成为允许原地覆盖内容的引用。
+  package升级必须重新link/build consumer。
+- service requirement在consumer compile/link时只绑定`serviceId + contractVersion +
+  expectedProtocolIdentity`，不绑定provider package或deployment revision。
+- assembly projection为每个service requirement选择一个精确`ServiceDeployment` revision及其不可变
+  implementation `PackageArtifactId`。service owner可以在protocol identity不变时发布并激活新的deployment
+  revision，不要求consumer重新编译；已经生成的RuntimeAssembly仍记录原选择，不能随pointer漂移。
+
+因此“service version可更新”表示同一contract version下的active deployment pointer可以切换到新的
+deployment revision，不表示ServiceContract或任何不可变artifact可以被覆盖。破坏protocol的变化必须发布新的
+contract version。
+
 第一版每个environment只有一个active assembly，root set是该环境全部active services。每个runtime
 replica加载完整相同assembly：
 
@@ -528,6 +543,20 @@ service/build inference。
 可能影响同replica内其它service。第一版明确接受这一限制，并要求assembly admission、health、drain和
 atomic reload在runtime层可观测。
 
+Router与Runtime只通过共享artifact文件系统装载上述不可变记录，不依赖或感知registry service：
+
+- Router配置唯一`artifactsPath`，并在runtime连接/装配控制面把同一个规范化路径下发给Runtime；
+- Router与Runtime可以位于不同机器，但该路径在所有机器上具有相同字符串和内容语义；当前生产部署以网络文件
+  系统共享该路径；
+- Router从该路径读取release/assembly routing projection，只持有请求路由、generation与activation协调所需
+  的事实，不解析或链接package executable；
+- Runtime从同一路径读取选定RuntimeAssembly及其精确PackageArtifact/ServiceDeployment闭包，完成link与加载；
+- 路径中的immutable record必须先完整写入并校验identity，再原子更新pointer。Router reload只观察已经完成的
+  pointer，不接受半写入record。
+
+`artifactsPath`是部署拓扑配置，不进入PackageArtifact、ServiceContract、ServiceDeployment或
+RuntimeAssembly identity。Runtime不得另设会产生不同artifact namespace的独立路径配置。
+
 未来若需要独立扩缩容，平台可以为不同root set生成多个assembly。届时assembly projection把当前完整
 本地闭包拆成`LocalExecutableClosure`与`RemoteBindingRefs`；只有跨assembly service edge选择
 `RemoteBoundary`，远端provider不进入本地code closure。ServiceContract与PackageArtifact不需要改变。
@@ -543,6 +572,11 @@ release pointer可以选择contract-compatible deployment revision和active asse
 语言、compiler和runtime在没有该service时仍然完整可用。调用者通过普通typed ServiceContract调用registry；
 compiler不得为`skiff.run/registry`保留package id、注入native declaration、授予特殊capability或要求外部
 authoring descriptor。
+
+Router和Runtime不知道registry service，也不通过它读取artifact。正式环境中，registry负责把已经验证和编译
+完成的immutable records/materialized artifacts发布到部署配置的共享`artifactsPath`，并原子更新pointer；
+开发环境由compiler相关CLI/tooling完成同一文件布局的编译与发布。当前阶段只冻结该owner和文件边界，不要求先
+实现registry到共享路径的生产发布流程。
 
 `skiff.run/registry`以Platform DB作为四类immutable record及typed release pointer current/history的唯一
 production durable source of truth。它和其它需要数据库的service一样声明DB/state requirement，并只通过
