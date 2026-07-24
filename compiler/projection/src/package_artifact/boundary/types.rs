@@ -34,7 +34,7 @@ pub(super) fn project_operation_contract(
                 .ok()
         })
         .collect::<Vec<_>>();
-    let return_type = project_package_type(
+    let return_projection = project_return(
         owner_module,
         &signature.return_type,
         file_ir_units,
@@ -52,7 +52,7 @@ pub(super) fn project_operation_contract(
         })
         .collect::<Vec<_>>();
     if parameters.len() != signature.parameters.len()
-        || return_type.is_none()
+        || return_projection.is_none()
         || throw_types.len() != signature.throw_types.len()
     {
         return None;
@@ -71,14 +71,12 @@ pub(super) fn project_operation_contract(
             value_plan: linkable_plan(BoundaryValueOwner::Provider),
         },
     };
+    let (return_value, stream) = return_projection.expect("checked complete return projection");
     Some(BoundaryOperationContract {
         parameters,
-        return_value: BoundaryReturn {
-            ty: return_type.expect("checked complete return type"),
-            value_plan: linkable_plan(BoundaryValueOwner::Provider),
-        },
+        return_value,
         errors,
-        stream: BoundaryStreamContract::Unary,
+        stream,
         cancellation: if signature.may_suspend {
             BoundaryCancellationContract::Cooperative
         } else {
@@ -94,6 +92,62 @@ pub(super) fn project_operation_contract(
             no_caller_value_escape: true,
             no_same_heap_identity: true,
         },
+    })
+}
+
+fn project_return(
+    owner_module: &str,
+    ty: &PackageTypeRef,
+    file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), String>,
+) -> Result<(BoundaryReturn, BoundaryStreamContract), BoundaryUnavailableReason> {
+    let stream_item = match ty {
+        PackageTypeRef::Container { name, arguments } if name == "Stream" => {
+            let [item] = arguments.as_slice() else {
+                return Err(BoundaryUnavailableReason::UnsupportedStream);
+            };
+            Some(project_package_type(
+                owner_module,
+                item,
+                file_ir_units,
+                public_type_ids,
+            )?)
+        }
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::Native { name, args },
+        } if name == "Stream" => {
+            let [item] = args.as_slice() else {
+                return Err(BoundaryUnavailableReason::UnsupportedStream);
+            };
+            validate_local_type_closure(owner_module, item, file_ir_units, public_type_ids)?;
+            Some(project_local_type(
+                owner_module,
+                item,
+                file_ir_units,
+                public_type_ids,
+            )?)
+        }
+        _ => None,
+    };
+    let provider_plan = linkable_plan(BoundaryValueOwner::Provider);
+    Ok(match stream_item {
+        Some(item_type) => (
+            BoundaryReturn {
+                ty: ContractTypeRef::builtin("void"),
+                value_plan: provider_plan.clone(),
+            },
+            BoundaryStreamContract::ServerStream {
+                item_type,
+                item_value_plan: provider_plan,
+            },
+        ),
+        None => (
+            BoundaryReturn {
+                ty: project_package_type(owner_module, ty, file_ir_units, public_type_ids)?,
+                value_plan: provider_plan,
+            },
+            BoundaryStreamContract::Unary,
+        ),
     })
 }
 
