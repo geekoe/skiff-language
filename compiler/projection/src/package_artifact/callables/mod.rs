@@ -10,7 +10,7 @@ use skiff_artifact_model::{
     PackageRuntimeRequirements,
 };
 use skiff_compiler_projection_input::{
-    ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts,
+    ProjectionExecutableKey, ProjectionPackageCallableSignatureFacts, ResolvedPackageSchema,
 };
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
     package_artifact::{api_exports::PackageExports, export_links::ProjectedPackageExportLinks},
 };
 
-use super::boundary::project_boundary_callable;
+use super::boundary::project_boundary_callable_with_package_schemas;
 
 pub(super) struct ProjectedPackageCallableSurface {
     pub public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
@@ -38,6 +38,7 @@ pub(super) fn project_package_callable_surface(
     signatures: &ProjectionPackageCallableSignatureFacts,
     runtime_requirements: &PackageRuntimeRequirements,
     package_schema_refs: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<ProjectedPackageCallableSurface, ProjectionError> {
     let mut local_surface =
         surface::project_local_surface(package_id, api_exports, exports, signatures)?;
@@ -68,13 +69,14 @@ pub(super) fn project_package_callable_surface(
                 )
             })?;
         let facts = normalization::normalize_semantic_facts(facts);
-        let projection = project_boundary_callable(
+        let projection = project_boundary_callable_with_package_schemas(
             &callable.owner_module,
             &callable.signature,
             &facts,
             runtime_requirements,
             file_ir_units,
             package_schema_refs,
+            resolved_package_schemas,
         )?;
         insert_callable_entry(
             &mut callable_links,

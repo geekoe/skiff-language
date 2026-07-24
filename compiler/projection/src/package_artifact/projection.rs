@@ -80,6 +80,7 @@ pub fn project_compiled_package_artifact(
         package_schema_type_records: schema.records,
         resolved_package_schema_type_records,
         package_schema_refs_by_source: schema.refs_by_source,
+        resolved_package_schemas: input.resolved_package_schemas,
         service_call_refs: input.service_call_refs,
     })?;
     Ok(projected)
@@ -109,6 +110,7 @@ pub(super) struct ProjectedPackageFacts<'a> {
     >,
     pub package_schema_refs_by_source:
         BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
+    pub resolved_package_schemas: &'a [skiff_compiler_projection_input::ResolvedPackageSchema],
     pub service_call_refs: Vec<ServiceCallRef>,
 }
 
@@ -124,6 +126,7 @@ pub(super) fn project_package_artifact_facts(
         &input.callable_signatures,
         &input.runtime_requirements,
         &input.package_schema_refs_by_source,
+        input.resolved_package_schemas,
     )?;
     validate_canonical_config_projection(
         input.package_id,

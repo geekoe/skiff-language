@@ -243,10 +243,7 @@ fn is_boundary_builtin(name: &str, arity: usize) -> bool {
                 | "Bytes"
                 | "bytes"
                 | "Json"
-                | "JsonObject"
-                | "std.http.HttpRequest"
-                | "std.http.HttpResponse"
-                | "std.http.HttpResponseStreamEvent",
+                | "JsonObject",
             0
         ) | ("Array", 1)
             | ("Map", 2)

@@ -3,12 +3,13 @@ use skiff_artifact_model::{
     BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
     BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, ContractTypeRef, LiteralIr, PackageCallableSignature,
-    PackageTypeRef, TypeRefIr,
+    PackageRefIr, PackageSymbolRef, PackageTypeRef, TypeRefIr,
 };
 use skiff_compiler_core::type_closure::{
     ArtifactNominalTypeSource, NoTypeClosureGuards, TypeClosureControl, TypeClosurePolicy,
     TypeClosureVisit, TypeClosureWalker,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use std::collections::BTreeMap;
 
 use super::eligibility::push_reason;
@@ -18,20 +19,27 @@ pub(super) fn project_operation_contract(
     signature: &PackageCallableSignature,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) -> Option<BoundaryOperationContract> {
     let parameters = signature
         .parameters
         .iter()
         .filter_map(|parameter| {
-            project_package_type(owner_module, &parameter.ty, file_ir_units, public_type_ids)
-                .map(|ty| BoundaryParameter {
-                    name: parameter.name.clone(),
-                    ty,
-                    value_plan: linkable_plan(BoundaryValueOwner::Caller),
-                })
-                .map_err(|reason| push_reason(reasons, reason))
-                .ok()
+            project_package_type(
+                owner_module,
+                &parameter.ty,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )
+            .map(|ty| BoundaryParameter {
+                name: parameter.name.clone(),
+                ty,
+                value_plan: linkable_plan(BoundaryValueOwner::Caller),
+            })
+            .map_err(|reason| push_reason(reasons, reason))
+            .ok()
         })
         .collect::<Vec<_>>();
     let return_projection = project_return(
@@ -39,6 +47,7 @@ pub(super) fn project_operation_contract(
         &signature.return_type,
         file_ir_units,
         public_type_ids,
+        resolved_package_schemas,
     )
     .map_err(|reason| push_reason(reasons, reason))
     .ok();
@@ -46,9 +55,15 @@ pub(super) fn project_operation_contract(
         .throw_types
         .iter()
         .filter_map(|ty| {
-            project_package_type(owner_module, ty, file_ir_units, public_type_ids)
-                .map_err(|reason| push_reason(reasons, reason))
-                .ok()
+            project_package_type(
+                owner_module,
+                ty,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )
+            .map_err(|reason| push_reason(reasons, reason))
+            .ok()
         })
         .collect::<Vec<_>>();
     if parameters.len() != signature.parameters.len()
@@ -100,6 +115,7 @@ fn project_return(
     ty: &PackageTypeRef,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<(BoundaryReturn, BoundaryStreamContract), BoundaryUnavailableReason> {
     let stream_item = match ty {
         PackageTypeRef::Container { name, arguments } if name == "Stream" => {
@@ -111,6 +127,7 @@ fn project_return(
                 item,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?)
         }
         PackageTypeRef::Local {
@@ -119,12 +136,19 @@ fn project_return(
             let [item] = args.as_slice() else {
                 return Err(BoundaryUnavailableReason::UnsupportedStream);
             };
-            validate_local_type_closure(owner_module, item, file_ir_units, public_type_ids)?;
+            validate_local_type_closure(
+                owner_module,
+                item,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )?;
             Some(project_local_type(
                 owner_module,
                 item,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?)
         }
         _ => None,
@@ -143,7 +167,13 @@ fn project_return(
         ),
         None => (
             BoundaryReturn {
-                ty: project_package_type(owner_module, ty, file_ir_units, public_type_ids)?,
+                ty: project_package_type(
+                    owner_module,
+                    ty,
+                    file_ir_units,
+                    public_type_ids,
+                    resolved_package_schemas,
+                )?,
                 value_plan: provider_plan,
             },
             BoundaryStreamContract::Unary,
@@ -156,6 +186,7 @@ fn project_package_type(
     ty: &PackageTypeRef,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match ty {
         PackageTypeRef::PackageSchema {
@@ -173,6 +204,7 @@ fn project_package_type(
             arguments,
             file_ir_units,
             public_type_ids,
+            resolved_package_schemas,
         ),
         PackageTypeRef::Nullable { inner } => Ok(ContractTypeRef::Nullable {
             inner: Box::new(project_package_type(
@@ -180,11 +212,24 @@ fn project_package_type(
                 inner,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?),
         }),
         PackageTypeRef::Local { local_type } => {
-            validate_local_type_closure(owner_module, local_type, file_ir_units, public_type_ids)?;
-            project_local_type(owner_module, local_type, file_ir_units, public_type_ids)
+            validate_local_type_closure(
+                owner_module,
+                local_type,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )?;
+            project_local_type(
+                owner_module,
+                local_type,
+                file_ir_units,
+                public_type_ids,
+                resolved_package_schemas,
+            )
         }
     }
 }
@@ -194,11 +239,15 @@ fn validate_local_type_closure(
     ty: &TypeRefIr,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<(), BoundaryUnavailableReason> {
     let resolver = ArtifactNominalTypeSource::new(file_ir_units, &[]);
     let guards = NoTypeClosureGuards;
     let walker = TypeClosureWalker::new(&resolver, &guards);
-    let mut policy = BoundaryProjectionTypePolicy { public_type_ids };
+    let mut policy = BoundaryProjectionTypePolicy {
+        public_type_ids,
+        resolved_package_schemas,
+    };
     walker
         .walk(owner_module, ty, &mut policy)
         .map_err(|failure| failure.error)
@@ -206,6 +255,7 @@ fn validate_local_type_closure(
 
 struct BoundaryProjectionTypePolicy<'a> {
     public_type_ids: &'a BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &'a [ResolvedPackageSchema],
 }
 
 impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
@@ -237,10 +287,13 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
             {
                 Ok(TypeClosureControl::Prune)
             }
+            TypeRefIr::PackageSymbol { symbol } => {
+                project_package_symbol(symbol, self.resolved_package_schemas)?;
+                Ok(TypeClosureControl::Prune)
+            }
             TypeRefIr::LocalType { .. }
             | TypeRefIr::PublicationType { .. }
             | TypeRefIr::ServiceSymbol { .. }
-            | TypeRefIr::PackageSymbol { .. }
             | TypeRefIr::DbObjectSymbol { .. }
             | TypeRefIr::TypeParam { .. } => {
                 Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
@@ -254,6 +307,7 @@ fn project_local_type(
     ty: &TypeRefIr,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match ty {
         TypeRefIr::Builtin { name, args } => {
@@ -263,7 +317,13 @@ fn project_local_type(
                 arguments: args
                     .iter()
                     .map(|arg| {
-                        project_local_type(owner_module, arg, file_ir_units, public_type_ids)
+                        project_local_type(
+                            owner_module,
+                            arg,
+                            file_ir_units,
+                            public_type_ids,
+                            resolved_package_schemas,
+                        )
                     })
                     .collect::<Result<_, _>>()?,
             })
@@ -274,7 +334,13 @@ fn project_local_type(
                 .map(|(name, field)| {
                     Ok((
                         name.clone(),
-                        project_local_type(owner_module, field, file_ir_units, public_type_ids)?,
+                        project_local_type(
+                            owner_module,
+                            field,
+                            file_ir_units,
+                            public_type_ids,
+                            resolved_package_schemas,
+                        )?,
                     ))
                 })
                 .collect::<Result<_, BoundaryUnavailableReason>>()?,
@@ -282,7 +348,15 @@ fn project_local_type(
         TypeRefIr::Union { items } => Ok(ContractTypeRef::StructuralUnion {
             variants: items
                 .iter()
-                .map(|item| project_local_type(owner_module, item, file_ir_units, public_type_ids))
+                .map(|item| {
+                    project_local_type(
+                        owner_module,
+                        item,
+                        file_ir_units,
+                        public_type_ids,
+                        resolved_package_schemas,
+                    )
+                })
                 .collect::<Result<_, _>>()?,
         }),
         TypeRefIr::Nullable { inner } => Ok(ContractTypeRef::Nullable {
@@ -291,6 +365,7 @@ fn project_local_type(
                 inner,
                 file_ir_units,
                 public_type_ids,
+                resolved_package_schemas,
             )?),
         }),
         TypeRefIr::Literal { value } => project_literal(value),
@@ -301,7 +376,9 @@ fn project_local_type(
             .get(&(symbol.module_path.clone(), symbol.symbol.clone()))
             .cloned()
             .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType),
-        TypeRefIr::PackageSymbol { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
+        TypeRefIr::PackageSymbol { symbol } => {
+            project_package_symbol(symbol, resolved_package_schemas)
+        }
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -315,6 +392,7 @@ fn project_container(
     arguments: &[PackageTypeRef],
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     classify_native(name, arguments.len())?;
     Ok(ContractTypeRef::Builtin {
@@ -322,10 +400,40 @@ fn project_container(
         arguments: arguments
             .iter()
             .map(|argument| {
-                project_package_type(owner_module, argument, file_ir_units, public_type_ids)
+                project_package_type(
+                    owner_module,
+                    argument,
+                    file_ir_units,
+                    public_type_ids,
+                    resolved_package_schemas,
+                )
             })
             .collect::<Result<_, _>>()?,
     })
+}
+
+fn project_package_symbol(
+    symbol: &PackageSymbolRef,
+    resolved_package_schemas: &[ResolvedPackageSchema],
+) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
+    let matches = resolved_package_schemas
+        .iter()
+        .filter(|schema| match &symbol.package {
+            PackageRefIr::Dependency { dependency_ref } => schema.alias() == dependency_ref,
+            PackageRefIr::PackageId { package_id } => schema.package_id() == package_id,
+        })
+        .collect::<Vec<_>>();
+    let [schema] = matches.as_slice() else {
+        return Err(BoundaryUnavailableReason::UnsupportedBoundaryType);
+    };
+    let (type_id, record) = schema
+        .public_type(&symbol.symbol_path)
+        .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType)?;
+    Ok(ContractTypeRef::package_schema(
+        &record.package_id,
+        &record.stable_schema_key,
+        type_id.clone(),
+    ))
 }
 
 fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnavailableReason> {
@@ -333,12 +441,6 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
         (
             "string" | "integer" | "number" | "bool" | "boolean" | "null" | "void" | "Date"
             | "Duration" | "Bytes" | "bytes" | "Json" | "JsonObject",
-            0,
-        )
-        | (
-            skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
-            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
-            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE,
             0,
         )
         | ("Array", 1)
@@ -350,9 +452,6 @@ fn classify_native(name: &str, argument_count: usize) -> Result<(), BoundaryUnav
         (
             "Array"
             | "Map"
-            | skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE
-            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_TYPE
-            | skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE
             | "std.websocket.WebSocketIngressEvent"
             | "std.websocket.WebSocketConnectResult",
             _,
@@ -376,5 +475,143 @@ fn linkable_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
         encoding: BoundaryValueEncoding::CanonicalValue,
         owner,
         lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::{
+        ContractTypeDescriptor, ContractTypeNameability, PackageBuildId, PackageLocalAbiIdentity,
+        PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
+        PackageSchemaTypeId, PackageSchemaTypeRecord,
+    };
+
+    fn dependency_schema() -> ResolvedPackageSchema {
+        let type_id = PackageSchemaTypeId::new("package-schema-type:http-request");
+        let record = PackageSchemaTypeRecord {
+            package_id: "skiff.run/std".to_string(),
+            stable_schema_key: "std.http.HttpRequest".to_string(),
+            package_schema_type_id: type_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Record {
+                    fields: BTreeMap::from([(
+                        "method".to_string(),
+                        ContractTypeRef::builtin("string"),
+                    )]),
+                },
+            },
+        };
+        ResolvedPackageSchema::new(
+            "std".to_string(),
+            "skiff.run/std".to_string(),
+            "1.0.0".to_string(),
+            PackageBuildId::new("package-build:std"),
+            PackageLocalAbiIdentity::new("package-local-abi:std"),
+            PackageSchemaIndex {
+                package_id: "skiff.run/std".to_string(),
+                package_schema_index_identity:
+                    skiff_artifact_model::PackageSchemaIndexIdentity::new(
+                        "package-schema-index:std",
+                    ),
+                types: BTreeMap::from([(
+                    "std.http.HttpRequest".to_string(),
+                    PackageSchemaIndexEntry {
+                        package_schema_type_id: type_id.clone(),
+                        public_path: Some("std.http.HttpRequest".to_string()),
+                        nameability: ContractTypeNameability::PublicNameable,
+                    },
+                )]),
+            },
+            BTreeMap::from([(type_id, record)]),
+        )
+        .unwrap()
+    }
+
+    fn package_symbol(package: PackageRefIr, symbol_path: &str) -> TypeRefIr {
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package,
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: None,
+            },
+        }
+    }
+
+    #[test]
+    fn verified_public_package_symbol_projects_as_package_schema() {
+        let schema = dependency_schema();
+        let projected = project_local_type(
+            "api",
+            &package_symbol(
+                PackageRefIr::Dependency {
+                    dependency_ref: "std".to_string(),
+                },
+                "std.http.HttpRequest",
+            ),
+            &[],
+            &BTreeMap::new(),
+            &[schema],
+        )
+        .unwrap();
+        assert!(matches!(
+            projected,
+            ContractTypeRef::PackageSchema {
+                package_id,
+                stable_schema_key,
+                ..
+            } if package_id == "skiff.run/std"
+                && stable_schema_key == "std.http.HttpRequest"
+        ));
+    }
+
+    #[test]
+    fn package_symbol_projection_is_exact_and_fail_closed() {
+        let schema = dependency_schema();
+        for ty in [
+            package_symbol(
+                PackageRefIr::Dependency {
+                    dependency_ref: "missing".to_string(),
+                },
+                "std.http.HttpRequest",
+            ),
+            package_symbol(
+                PackageRefIr::Dependency {
+                    dependency_ref: "std".to_string(),
+                },
+                "std.http.NotPublic",
+            ),
+        ] {
+            assert_eq!(
+                project_local_type("api", &ty, &[], &BTreeMap::new(), &[schema.clone()]),
+                Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+            );
+        }
+        assert_eq!(
+            project_local_type(
+                "api",
+                &TypeRefIr::builtin(skiff_artifact_model::http_boundary::HTTP_REQUEST_TYPE),
+                &[],
+                &BTreeMap::new(),
+                &[],
+            ),
+            Err(BoundaryUnavailableReason::NativeAdapterUnavailable)
+        );
+        assert_eq!(
+            project_local_type(
+                "api",
+                &package_symbol(
+                    PackageRefIr::PackageId {
+                        package_id: "skiff.run/std".to_string(),
+                    },
+                    "std.http.HttpRequest",
+                ),
+                &[],
+                &BTreeMap::new(),
+                &[schema.clone(), schema],
+            ),
+            Err(BoundaryUnavailableReason::UnsupportedBoundaryType)
+        );
     }
 }

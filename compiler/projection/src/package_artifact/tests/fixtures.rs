@@ -174,6 +174,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         package_schema_type_records: BTreeMap::new(),
         resolved_package_schema_type_records: BTreeMap::new(),
         package_schema_refs_by_source: BTreeMap::new(),
+        resolved_package_schemas: &[],
         service_call_refs: vec![ServiceCallRef {
             service_requirement_slot: 3,
             contract_operation_id: operation_id,

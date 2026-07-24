@@ -7,6 +7,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, CallableEffectSummary, CallableSemanticFacts,
     PackageCallableSignature, PackageRuntimeRequirements,
 };
+use skiff_compiler_projection_input::ResolvedPackageSchema;
 use std::collections::BTreeMap;
 
 use crate::error::ProjectionError;
@@ -19,12 +20,34 @@ pub fn project_boundary_callable(
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
     public_type_ids: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
 ) -> Result<BoundaryCallableProjection, ProjectionError> {
+    project_boundary_callable_with_package_schemas(
+        owner_module,
+        signature,
+        facts,
+        runtime_requirements,
+        file_ir_units,
+        public_type_ids,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn project_boundary_callable_with_package_schemas(
+    owner_module: &str,
+    signature: &PackageCallableSignature,
+    facts: &CallableSemanticFacts,
+    runtime_requirements: &PackageRuntimeRequirements,
+    file_ir_units: &[skiff_artifact_model::FileIrUnit],
+    public_type_ids: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
+    resolved_package_schemas: &[ResolvedPackageSchema],
+) -> Result<BoundaryCallableProjection, ProjectionError> {
     let mut reasons = eligibility::semantic_unavailable_reasons(facts);
     let operation_contract = types::project_operation_contract(
         owner_module,
         signature,
         file_ir_units,
         public_type_ids,
+        resolved_package_schemas,
         &mut reasons,
     );
     eligibility::normalize_reasons(&mut reasons);
