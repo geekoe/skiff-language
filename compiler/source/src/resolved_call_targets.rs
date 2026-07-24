@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     PackageLocalAbiIdentity,
 };
 
-use crate::{semantic::impl_method_declaration_name, ExpressionKey, SourceSymbolKey};
+use crate::{ExpressionKey, SourceSymbolKey};
 
 mod builder;
 mod dependency_diagnostics;
@@ -22,13 +22,10 @@ mod dependency_diagnostics;
 )]
 pub enum ResolvedCallTarget {
     LocalFunction {
-        module_path: String,
-        function_name: String,
+        source_callable: SourceSymbolKey,
     },
     LocalImplMethod {
-        module_path: String,
-        type_name: String,
-        method_name: String,
+        source_callable: SourceSymbolKey,
     },
     NativeFunction {
         binding_key: String,
@@ -55,18 +52,9 @@ impl ResolvedCallTarget {
     /// SourceCallableEffectFacts and the T02 SCC graph.
     pub fn source_callable_key(&self) -> Option<SourceSymbolKey> {
         match self {
-            Self::LocalFunction {
-                module_path,
-                function_name,
-            } => Some(SourceSymbolKey::new(module_path, function_name)),
-            Self::LocalImplMethod {
-                module_path,
-                type_name,
-                method_name,
-            } => Some(SourceSymbolKey::new(
-                module_path,
-                impl_method_declaration_name(type_name, method_name),
-            )),
+            Self::LocalFunction { source_callable } | Self::LocalImplMethod { source_callable } => {
+                Some(source_callable.clone())
+            }
             Self::NativeFunction { .. }
             | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
@@ -141,30 +129,30 @@ mod tests {
     #[test]
     fn all_target_kinds_are_explicit_strict_tagged_facts() {
         let local_function = ResolvedCallTarget::LocalFunction {
-            module_path: "api".to_string(),
-            function_name: "run".to_string(),
+            source_callable: SourceSymbolKey::new("api", "run"),
         };
         assert_target_wire(
             local_function,
             json!({
                 "kind": "localFunction",
-                "modulePath": "api",
-                "functionName": "run"
+                "sourceCallable": {
+                    "modulePath": "api",
+                    "symbol": "run"
+                }
             }),
         );
 
         let local_impl_method = ResolvedCallTarget::LocalImplMethod {
-            module_path: "api".to_string(),
-            type_name: "Worker".to_string(),
-            method_name: "handle".to_string(),
+            source_callable: SourceSymbolKey::new("api", "Worker.handle"),
         };
         assert_target_wire(
             local_impl_method,
             json!({
                 "kind": "localImplMethod",
-                "modulePath": "api",
-                "typeName": "Worker",
-                "methodName": "handle"
+                "sourceCallable": {
+                    "modulePath": "api",
+                    "symbol": "Worker.handle"
+                }
             }),
         );
 
@@ -290,8 +278,7 @@ mod tests {
     #[test]
     fn local_targets_project_to_source_callable_effect_owner_keys() {
         let function = ResolvedCallTarget::LocalFunction {
-            module_path: "api".to_string(),
-            function_name: "run".to_string(),
+            source_callable: SourceSymbolKey::new("api", "run"),
         };
         assert_eq!(
             function.source_callable_key(),
@@ -299,9 +286,7 @@ mod tests {
         );
 
         let method = ResolvedCallTarget::LocalImplMethod {
-            module_path: "workers".to_string(),
-            type_name: "Worker<Job>".to_string(),
-            method_name: "handle".to_string(),
+            source_callable: SourceSymbolKey::new("workers", "Worker<Job>.handle"),
         };
         assert_eq!(
             method.source_callable_key(),

@@ -76,9 +76,110 @@ fn simple_detached_wrapper_is_safe_and_direct_transitive_calls_resolve() {
         matches!(
             target,
             ResolvedCallTarget::LocalFunction {
-                module_path,
-                function_name
-            } if module_path == "api" && function_name == "detach"
+                source_callable
+            } if source_callable == &SourceSymbolKey::new("api", "detach")
+        )
+    }));
+}
+
+#[test]
+fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
+    let model = analyze(
+        r#"
+            type Input { value: string }
+            type Output { value: string }
+
+            function detach(input: Input) -> Output {
+              return Output { value: input.value }
+            }
+
+            function rootWrapper(input: Input) -> Output {
+              return root.api.detach(input)
+            }
+
+            function catchWrapper(input: Input) -> Output? {
+              const attempted = catch<string>(detach(input))
+              if attempted.tag == "ok" { return attempted.value }
+              return null
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    for callable in ["rootWrapper", "catchWrapper"] {
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { .. }
+        ));
+    }
+}
+
+#[test]
+fn relay_shaped_cross_module_root_calls_keep_exact_targets() {
+    let model = analyze_sources(&[
+        (
+            "relay",
+            r#"
+                type Input { value: string }
+                type Output { value: string }
+
+                function handler(input: Input) -> Output {
+                  return root.helpers.detach(input)
+                }
+            "#,
+        ),
+        (
+            "helpers",
+            r#"
+                function detach(input: root.relay.Input) -> root.relay.Output {
+                  return root.relay.Output { value: input.value }
+                }
+            "#,
+        ),
+    ]);
+
+    assert_eq!(effects_in(&model, "relay", "handler"), no_effects());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::LocalFunction {
+                source_callable,
+            } if source_callable == &SourceSymbolKey::new("helpers", "detach")
+        )
+    }));
+}
+
+#[test]
+fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
+    let model = analyze(
+        r#"
+            interface Provider {
+              function read(self: Self, value: string) -> string
+            }
+
+            type ExactProvider implements Provider {}
+
+            impl ExactProvider {
+              function read(value: string) -> string {
+                return value.concat("-detached")
+              }
+            }
+
+            function wrapper(provider: ExactProvider, value: string) -> string {
+              return provider.read(value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "wrapper"), no_effects());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::LocalImplMethod {
+                source_callable,
+            } if source_callable == &SourceSymbolKey::new("api", "ExactProvider.read")
         )
     }));
 }
@@ -1016,11 +1117,11 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
 
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
-            target,
-            ResolvedCallTarget::LocalFunction {
-                module_path,
-                function_name,
-            } if module_path == "std.effect_test" && function_name == "customNative"
+                target,
+                ResolvedCallTarget::LocalFunction {
+                    source_callable,
+                } if source_callable
+                    == &SourceSymbolKey::new("std.effect_test", "customNative")
         )
     }));
     for binding_key in [
@@ -1041,6 +1142,14 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             target,
             ResolvedCallTarget::ReceiverBuiltin { op }
                 if op.canonical_key == "receiver:Array.push@1"
+        )
+    }));
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::Unknown {
+                reason: crate::UnknownCallTargetReason::UnsupportedDynamicDispatch
+            }
         )
     }));
 }
@@ -1432,6 +1541,51 @@ fn analyze_named_result(
         },
         &dependency_analysis,
     )
+}
+
+fn analyze_sources(sources: &[(&str, &str)]) -> PackageSourceModel {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("workspace root resolves");
+    let platform_sources =
+        CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load");
+    initialize_prelude_registry(&platform_sources).expect("prelude registry initializes");
+
+    let production_sources = sources
+        .iter()
+        .map(|(module_path, source)| {
+            CompilerSourceFile::parse(
+                PathBuf::from(format!("{module_path}.skiff")),
+                (*module_path).to_string(),
+                true,
+                false,
+                (*source).to_string(),
+                format!("{module_path}.skiff"),
+            )
+            .expect("fixture parses")
+        })
+        .collect::<Vec<_>>();
+    let parsed_sources =
+        parse_publication_sources(Path::new("/tmp/effect-provenance"), &production_sources)
+            .expect("fixture source facts build");
+    let package_aliases = BTreeMap::new();
+    let package_dependencies = Vec::new();
+    build_package_from_parsed_sources_with_dependency_analysis(
+        CompileParsedPackageSourcesInput {
+            parsed_sources,
+            production_sources,
+            diagnostic_root: Path::new("/tmp/effect-provenance"),
+            publication_api: None,
+            package_aliases: &package_aliases,
+            package_dependencies: &package_dependencies,
+            package_facts: None,
+            package_artifacts: None,
+            policy: PackageCompilePolicy::new("skiff.run/effect-test"),
+        },
+        &SourceDependencyAnalysisInput::default(),
+    )
+    .expect("multi-source model builds")
 }
 
 fn effects(model: &PackageSourceModel, symbol: &str) -> CallableMayEffects {

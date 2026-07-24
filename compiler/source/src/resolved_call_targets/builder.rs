@@ -411,17 +411,17 @@ impl LocalCallTarget {
                 module_path,
                 function_name,
             } => ResolvedCallTarget::LocalFunction {
-                module_path,
-                function_name,
+                source_callable: SourceSymbolKey::new(module_path, function_name),
             },
             Self::ImplMethod {
                 module_path,
                 type_name,
                 method_name,
             } => ResolvedCallTarget::LocalImplMethod {
-                module_path,
-                type_name,
-                method_name,
+                source_callable: SourceSymbolKey::new(
+                    module_path,
+                    crate::semantic::impl_method_declaration_name(&type_name, &method_name),
+                ),
             },
         }
     }

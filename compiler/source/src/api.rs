@@ -9,7 +9,8 @@ use compiler_input_model::{
     SourceSymbolSelector,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSymbolKey {
     module_path: String,
     symbol: String,
