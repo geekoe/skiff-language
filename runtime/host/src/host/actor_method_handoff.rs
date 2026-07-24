@@ -112,6 +112,15 @@ pub trait ActorMethodExecutor: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ActorExecutorOutput> + Send + '_>>;
 }
 
+pub async fn execute_admitted_actor_method(
+    local_runtime_id: &str,
+    input: AdmittedActorMethodInput,
+    executor: &impl ActorMethodExecutor,
+) -> Result<ActorExecutorOutput, ActorMethodAdmissionError> {
+    let request = prepare_admitted_actor_execution(local_runtime_id, input)?;
+    validate_actor_executor_output(executor.execute(request).await)
+}
+
 pub fn prepare_admitted_actor_execution(
     local_runtime_id: &str,
     input: AdmittedActorMethodInput,
@@ -238,6 +247,11 @@ pub enum ActorMethodAdmissionError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
+
     use skiff_runtime_transport::{
         actor_method::{
             encode_actor_method_frame, ActorMethodDeadlineFrameHeader, ActorOwnerFileFrameHeader,
@@ -307,6 +321,36 @@ mod tests {
                 encoding_version: ACTOR_BOOTSTRAP_ENCODING_V1.into(),
                 payload: br#"{"count":0}"#.to_vec(),
             }),
+        }
+    }
+
+    struct RecordingExecutor {
+        calls: AtomicUsize,
+        output: Mutex<Option<ActorExecutorOutput>>,
+    }
+
+    impl RecordingExecutor {
+        fn new(output: ActorExecutorOutput) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                output: Mutex::new(Some(output)),
+            }
+        }
+    }
+
+    impl ActorMethodExecutor for RecordingExecutor {
+        fn execute(
+            &self,
+            _request: ActorExecutorRequest,
+        ) -> Pin<Box<dyn Future<Output = ActorExecutorOutput> + Send + '_>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let output = self
+                .output
+                .lock()
+                .expect("recording executor lock poisoned")
+                .take()
+                .expect("recording executor should be called once");
+            Box::pin(async move { output })
         }
     }
 
@@ -414,5 +458,42 @@ mod tests {
             validate_actor_executor_output(ActorExecutorOutput::CoroutineNotImplemented).unwrap(),
             ActorExecutorOutput::CoroutineNotImplemented
         );
+    }
+
+    #[tokio::test]
+    async fn admitted_execution_calls_only_the_dedicated_executor() {
+        let expected = ActorExecutorOutput::Returned {
+            encoding_version: ACTOR_RETURN_ENCODING_V1.into(),
+            payload: vec![9],
+        };
+        let executor = RecordingExecutor::new(expected.clone());
+        let actual = execute_admitted_actor_method("runtime-1", admitted(), &executor)
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_admission_never_calls_the_executor() {
+        let executor = RecordingExecutor::new(ActorExecutorOutput::CoroutineNotImplemented);
+        let error = execute_admitted_actor_method("wrong-runtime", admitted(), &executor)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ActorMethodAdmissionError::RuntimeMismatch);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_executor_return_encoding_fails_closed() {
+        let executor = RecordingExecutor::new(ActorExecutorOutput::Returned {
+            encoding_version: "unsupported".into(),
+            payload: vec![9],
+        });
+        let error = execute_admitted_actor_method("runtime-1", admitted(), &executor)
+            .await
+            .unwrap_err();
+        assert_eq!(error, ActorMethodAdmissionError::ReturnEncodingMismatch);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }
 }
