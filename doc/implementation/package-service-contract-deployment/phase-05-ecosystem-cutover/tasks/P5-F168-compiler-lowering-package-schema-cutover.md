@@ -4,7 +4,7 @@
 
 ## 直接父任务
 
-- `P5-F164-compiler-package-schema-import-result.md`
+- `P5-F164-package-schema-consumer-import-result.md`
 
 ## 当前断点
 
