@@ -1,6 +1,7 @@
 use skiff_artifact_identity::{
     assign_runtime_assembly_identity, assign_service_deployment_identity,
-    runtime_assembly_identity, service_deployment_identity, validate_runtime_assembly_identity,
+    runtime_assembly_identity, runtime_assembly_identity_projection, service_deployment_identity,
+    service_deployment_identity_projection, validate_runtime_assembly_identity,
     validate_runtime_assembly_surface, validate_service_deployment_identity,
     validate_service_deployment_ref,
 };
@@ -197,7 +198,10 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
         ),
         (
             "package dependency",
-            Box::new(|value| value.package_bindings[0].package.package_version = "2.0.1".into()),
+            Box::new(|value| {
+                value.package_bindings[0].package.package_build_id =
+                    PackageBuildId::new("dependency-build-changed")
+            }),
         ),
         (
             "service selector",
@@ -244,6 +248,89 @@ fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
             expected,
             "{label} must enter deployment identity"
         );
+    }
+}
+
+#[test]
+fn human_version_labels_are_preserved_in_records_but_excluded_from_all_identity_preimages() {
+    let deployment = rich_deployment();
+    let deployment_identity = service_deployment_identity(&deployment).unwrap();
+    let mut relabeled_deployment = serde_json::to_value(&deployment).unwrap();
+    relabel_human_versions(&mut relabeled_deployment);
+    let relabeled_deployment: ServiceDeployment =
+        serde_json::from_value(relabeled_deployment).unwrap();
+    assert_ne!(
+        deployment.contract.contract_version,
+        relabeled_deployment.contract.contract_version
+    );
+    assert_eq!(
+        deployment_identity,
+        service_deployment_identity(&relabeled_deployment).unwrap()
+    );
+
+    let assembly = runtime_assembly_fixture().unwrap();
+    let assembly_identity = runtime_assembly_identity(&assembly).unwrap();
+    let mut relabeled_assembly = serde_json::to_value(&assembly).unwrap();
+    relabel_human_versions(&mut relabeled_assembly);
+    let relabeled_assembly: RuntimeAssembly = serde_json::from_value(relabeled_assembly).unwrap();
+    assert_ne!(
+        assembly.resolved_packages[0].package_version,
+        relabeled_assembly.resolved_packages[0].package_version
+    );
+    assert_eq!(
+        assembly_identity,
+        runtime_assembly_identity(&relabeled_assembly).unwrap()
+    );
+
+    assert_no_human_version_keys(
+        &serde_json::to_value(service_deployment_identity_projection(&deployment).unwrap())
+            .unwrap(),
+    );
+    assert_no_human_version_keys(
+        &serde_json::to_value(runtime_assembly_identity_projection(&assembly).unwrap()).unwrap(),
+    );
+}
+
+fn relabel_human_versions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                relabel_human_versions(value);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for key in ["packageVersion", "contractVersion", "exactVersion"] {
+                if fields.contains_key(key) {
+                    fields.insert(key.to_string(), serde_json::json!("99.99.99"));
+                }
+            }
+            for value in fields.values_mut() {
+                relabel_human_versions(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn assert_no_human_version_keys(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                assert_no_human_version_keys(value);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for key in fields.keys() {
+                assert!(
+                    !["packageVersion", "contractVersion", "exactVersion"].contains(&key.as_str()),
+                    "identity preimage contains human version label key {key}"
+                );
+            }
+            for value in fields.values() {
+                assert_no_human_version_keys(value);
+            }
+        }
+        _ => {}
     }
 }
 

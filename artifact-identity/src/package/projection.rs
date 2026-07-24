@@ -26,7 +26,6 @@ use crate::{
 pub struct PackageLocalAbiIdentityProjection {
     schema: &'static str,
     package_id: String,
-    package_version: String,
     public_surface_identity: String,
     abi_identity_facts: AbiIdentityFacts,
 }
@@ -36,7 +35,6 @@ impl PackageLocalAbiIdentityProjection {
         Self {
             schema: PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,
             package_id: unit.package_id.clone(),
-            package_version: unit.version.clone(),
             public_surface_identity: unit.publication_abi.abi_identity.clone(),
             abi_identity_facts: unit.abi_identity_projection.clone(),
         }
@@ -135,7 +133,6 @@ impl ResourceIdentityProjection {
 #[serde(rename_all = "camelCase")]
 struct PackageDependencyIdentityProjection {
     id: String,
-    version: String,
     alias: String,
     config: Value,
 }
@@ -144,7 +141,6 @@ impl PackageDependencyIdentityProjection {
     fn from_constraint(dependency: &PackageDependencyConstraint) -> Self {
         Self {
             id: dependency.id.clone(),
-            version: dependency.version.clone(),
             alias: dependency.alias.clone(),
             config: if dependency.config.is_null() {
                 Value::Object(Map::new())

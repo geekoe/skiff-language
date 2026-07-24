@@ -169,6 +169,37 @@ fn compatible_rebuild_changes_package_identity_not_service_api_identity() {
     );
 }
 
+#[test]
+fn generated_service_package_and_deployment_identities_ignore_human_version_relabeling() {
+    let (base, base_api) = compile_fixture("generated-version-base", "\"ok\"");
+    let base_deployment = generate(&base.package.artifact, &[], &base_api);
+
+    let mut relabeled_artifact = base.package.artifact.clone();
+    relabeled_artifact.package_version = "99.0.0".to_string();
+    let mut relabeled_api = base_api.clone();
+    relabeled_api.contract.contract_version = "99.0.0".to_string();
+    skiff_artifact_identity::assign_service_contract_identities(&mut relabeled_api.contract)
+        .unwrap();
+    let relabeled_deployment = generate(&relabeled_artifact, &[], &relabeled_api);
+
+    assert_eq!(
+        base.package.artifact.package_build_id,
+        relabeled_artifact.package_build_id
+    );
+    assert_eq!(
+        base.package.artifact.package_local_abi.local_abi_identity,
+        relabeled_artifact.package_local_abi.local_abi_identity
+    );
+    assert_eq!(
+        base_deployment.deployment_artifact_identity,
+        relabeled_deployment.deployment_artifact_identity
+    );
+    assert_ne!(
+        base_deployment.contract.contract_version,
+        relabeled_deployment.contract.contract_version
+    );
+}
+
 fn generate(
     artifact: &skiff_artifact_model::PackageArtifact,
     closure: &[skiff_artifact_model::PackageArtifact],

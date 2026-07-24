@@ -11,12 +11,34 @@ fn package_artifact_assign_validate_and_golden_identities() {
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(
         artifact.package_build_id.as_str(),
-        "skiff-package-build-v4:sha256:1b0f689e1aeff2f85881e6914ae0fab10d1d27cf08cb4e62d1de5dbbdadc6570"
+        "skiff-package-build-v4:sha256:a817111a3e1dcd836c56d466de1d6f6452a117f442fac9b60c855879e69410e0"
     );
     assert_eq!(
         artifact.package_local_abi.local_abi_identity.as_str(),
-        "skiff-package-local-abi-v3:sha256:78ace6509d9fb5271377ff08be6250f77249f70c0f11e3653f34e919236c8055"
+        "skiff-package-local-abi-v3:sha256:222c6357adf8a2dddc349d8fd771379aab6128a081545d4a1263a61daa3b9411"
     );
+}
+
+#[test]
+fn human_package_and_dependency_version_labels_do_not_change_artifact_identities() {
+    let base = package_artifact_fixture();
+    let mut relabeled = base.clone();
+    relabeled.package_version = "99.0.0".to_string();
+    relabeled.package_requirements[0].exact_version = "88.0.0".to_string();
+    relabeled.contract_requirements[0].contract_version = "77.0.0".to_string();
+    relabeled.service_requirements[0]
+        .contract_requirement
+        .contract_version = "77.0.0".to_string();
+
+    assert_eq!(
+        package_artifact_local_abi_identity(&base).unwrap(),
+        package_artifact_local_abi_identity(&relabeled).unwrap()
+    );
+    assert_eq!(
+        package_artifact_build_identity(&base).unwrap(),
+        package_artifact_build_identity(&relabeled).unwrap()
+    );
+    assert_ne!(base.package_version, relabeled.package_version);
 }
 
 #[test]
@@ -136,7 +158,6 @@ fn build_identity_includes_every_canonical_package_artifact_fact() {
                 .target
                 .executable_index = 7
         },
-        |artifact| artifact.package_requirements[0].exact_version = "1.5.0".to_string(),
         |artifact| {
             artifact.runtime_requirements.runtime_capabilities.push(
                 PackageRuntimeCapabilityRequirement {

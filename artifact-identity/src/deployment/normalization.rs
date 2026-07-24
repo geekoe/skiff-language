@@ -6,12 +6,8 @@ pub(super) fn normalize_projection(projection: &mut DeploymentArtifactIdentityPr
     projection
         .operation_bindings
         .sort_by(|left, right| left.contract_operation_id.cmp(&right.contract_operation_id));
-    projection
-        .package_bindings
-        .sort_by(|left, right| left.key.cmp(&right.key));
-    projection
-        .service_selectors
-        .sort_by(|left, right| left.key.cmp(&right.key));
+    sort_json_array(&mut projection.package_bindings);
+    sort_json_array(&mut projection.service_selectors);
     projection
         .ingress
         .sort_by(|left, right| left.selector.cmp(&right.selector));
@@ -26,6 +22,12 @@ pub(super) fn normalize_projection(projection: &mut DeploymentArtifactIdentityPr
                 .cmp(&right.capability)
                 .then_with(|| left.version.cmp(&right.version))
         });
+}
+
+fn sort_json_array(value: &mut serde_json::Value) {
+    if let serde_json::Value::Array(values) = value {
+        values.sort_by_key(|value| serde_json::to_string(value).expect("JSON value serializes"));
+    }
 }
 
 pub(crate) fn normalize_config_literals(bindings: &mut [ConfigLiteralBinding]) {

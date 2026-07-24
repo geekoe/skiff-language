@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn resolver_rejects_same_package_id_with_different_builds() {
+    fn resolver_accepts_two_labels_for_the_same_immutable_build() {
         let root = TempArtifactRoot::new("conflict");
         let first = write_package(root.path(), "example.com/shared", "1.0.0", []);
         let second = write_package(root.path(), "example.com/shared", "2.0.0", []);
@@ -548,19 +548,10 @@ mod tests {
             dependency("example.com/shared", "2.0.0"),
         ];
 
-        let error = ordered_package_build_identities_from_artifact_root(root.path(), &service)
-            .expect_err("conflict must fail");
-
-        assert!(matches!(
-            error,
-            ArtifactIdentityError::PackageDependencyConflict {
-                package_id,
-                existing_build,
-                new_build,
-            } if package_id == "example.com/shared"
-                && existing_build == first.build_identity
-                && new_build == second.build_identity
-        ));
+        let builds = ordered_package_build_identities_from_artifact_root(root.path(), &service)
+            .expect("labels resolving to the same immutable build are not a conflict");
+        assert_eq!(first.build_identity, second.build_identity);
+        assert_eq!(builds, vec![first.build_identity]);
     }
 
     #[test]

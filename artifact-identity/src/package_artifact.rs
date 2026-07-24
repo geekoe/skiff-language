@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use serde_json::Value;
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, ContractRequirement, PackageArtifact,
-    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRequirement, PackageRuntimeRequirements, ServiceCallRef,
-    ServiceRequirement,
+    BoundaryCallableProjection, CallableSemanticFacts, PackageArtifact, PackageArtifactRef,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, ServiceCallRef,
 };
 
 use crate::{
@@ -27,7 +27,6 @@ mod validation;
 pub struct PackageArtifactLocalAbiIdentityProjection {
     schema: &'static str,
     package_id: String,
-    package_version: String,
     public_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
 }
 
@@ -37,15 +36,14 @@ pub struct PackageArtifactLocalAbiIdentityProjection {
 pub struct PackageArtifactBuildIdentityProjection {
     schema: &'static str,
     package_id: String,
-    package_version: String,
     local_abi_identity: PackageLocalAbiIdentity,
     files: Vec<FileIrOwnerIdentityProjection>,
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,
     callable_links: BTreeMap<PackageCallableId, CallableLinkIdentityProjection>,
-    package_requirements: Vec<PackageRequirement>,
-    contract_requirements: Vec<ContractRequirement>,
-    service_requirements: Vec<ServiceRequirement>,
+    package_requirements: Value,
+    contract_requirements: Value,
+    service_requirements: Value,
     runtime_requirements: PackageRuntimeRequirements,
     callable_semantic_facts: BTreeMap<PackageCallableId, CallableSemanticFacts>,
     boundary_projections: BTreeMap<PackageCallableId, BoundaryCallableProjection>,

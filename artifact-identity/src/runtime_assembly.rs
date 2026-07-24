@@ -1,9 +1,6 @@
 use serde::Serialize;
-use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, GlobalIngressBinding,
-    PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
-    ServiceContractRef, ServiceDeploymentRef,
-};
+use serde_json::Value;
+use skiff_artifact_model::{AssemblyIdentity, RuntimeAssembly, RuntimeAssemblyRef};
 
 use crate::{
     framing::{canonical_ir_bytes, sha256_hex},
@@ -18,14 +15,14 @@ mod validation;
 #[serde(rename_all = "camelCase")]
 pub struct AssemblyIdentityProjection {
     schema: &'static str,
-    roots: Vec<ServiceDeploymentRef>,
-    resolved_deployments: Vec<ServiceDeploymentRef>,
-    resolved_contracts: Vec<ServiceContractRef>,
-    resolved_packages: Vec<PackageArtifactRef>,
-    package_link_plan: CanonicalPackageLinkPlan,
-    service_binding_templates: Vec<ServiceBindingTemplate>,
-    activation_templates: Vec<ActivationTemplate>,
-    global_ingress: Vec<GlobalIngressBinding>,
+    roots: Value,
+    resolved_deployments: Value,
+    resolved_contracts: Value,
+    resolved_packages: Value,
+    package_link_plan: Value,
+    service_binding_templates: Value,
+    activation_templates: Value,
+    global_ingress: Value,
 }
 
 pub use validation::validate_runtime_assembly_surface;
@@ -36,17 +33,24 @@ pub fn runtime_assembly_identity_projection(
     validate_runtime_assembly_surface(assembly)?;
     let mut projection = AssemblyIdentityProjection {
         schema: ASSEMBLY_IDENTITY_SCHEMA_MARKER,
-        roots: assembly.roots.clone(),
-        resolved_deployments: assembly.resolved_deployments.clone(),
-        resolved_contracts: assembly.resolved_contracts.clone(),
-        resolved_packages: assembly.resolved_packages.clone(),
-        package_link_plan: assembly.package_link_plan.clone(),
-        service_binding_templates: assembly.service_binding_templates.clone(),
-        activation_templates: assembly.activation_templates.clone(),
-        global_ingress: assembly.global_ingress.clone(),
+        roots: identity_value(&assembly.roots)?,
+        resolved_deployments: identity_value(&assembly.resolved_deployments)?,
+        resolved_contracts: identity_value(&assembly.resolved_contracts)?,
+        resolved_packages: identity_value(&assembly.resolved_packages)?,
+        package_link_plan: identity_value(&assembly.package_link_plan)?,
+        service_binding_templates: identity_value(&assembly.service_binding_templates)?,
+        activation_templates: identity_value(&assembly.activation_templates)?,
+        global_ingress: identity_value(&assembly.global_ingress)?,
     };
     normalization::normalize_projection(&mut projection);
     Ok(projection)
+}
+
+fn identity_value<T: Serialize>(value: &T) -> Result<Value> {
+    crate::identity_labels::without_human_version_labels(
+        value,
+        ArtifactIdentityError::SerializeAssemblyIdentity,
+    )
 }
 
 pub fn runtime_assembly_identity(assembly: &RuntimeAssembly) -> Result<AssemblyIdentity> {

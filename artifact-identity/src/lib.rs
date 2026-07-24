@@ -8,6 +8,7 @@ mod ecosystem_paths;
 mod error;
 mod file_ir;
 mod framing;
+mod identity_labels;
 mod legacy_service;
 mod operation;
 mod package;

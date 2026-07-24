@@ -166,8 +166,8 @@ fn complex_artifact_identity_outputs_match_exact_golden() {
                 "skiff-operation-abi-v1:sha256:9892d2509d863917a3e61934a7b3b86600e2bc0283a1055c6c11c1cae9bf1561".to_string(),
                 "skiff-operation-abi-v1:sha256:53c0d16e4d2cf8a8060438bd1c194e3e9da67b08612ec48ba138dcff0fb79c91".to_string(),
                 "skiff-publication-abi-v1:sha256:7ed04a2c64c00aea4b06bc0b7917a6deb984990315b4f7c92909e03853ea6d15".to_string(),
-                "skiff-package-build-v2:sha256:2658fe2eec17aaf96575033304ce4c519d8b6846bca49b4d20a7c93105e9ae5d".to_string(),
-                "skiff-package-local-abi-v2:sha256:79b65afcf856048977eb82178be147f1a24269274a838827af0cca4859ae64b5".to_string(),
+                "skiff-package-build-v2:sha256:077255278d2bcae165d9b132295a6ea993424d714704c8df11261a95e39642d4".to_string(),
+                "skiff-package-local-abi-v2:sha256:b3928914f6f60c00492125baf1216d57223710310acc0b24702847e61f7dea9b".to_string(),
                 "skiff-service-unit-v1:sha256:fc2e8c19ca5e801761dfc4ca90d24f6eec7a1f93b1c1be88bbfdef34ec4875b8".to_string(),
             ],
         );

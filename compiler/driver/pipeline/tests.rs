@@ -160,18 +160,14 @@ fn used_std_fails_closed_without_one_valid_same_round_artifact() {
 
     let mut invalid_version = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "1.0.0");
     invalid_version.package_version = "9.9.9".to_string();
-    let version_error = complete_package_requirement_closure(
+    let requirements = complete_package_requirement_closure(
         "example.com/app",
         Vec::new(),
         &[file],
         std::slice::from_ref(&invalid_version),
     )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        version_error.contains("identity validation failed"),
-        "{version_error}"
-    );
+    .expect("human version relabeling does not invalidate immutable identity");
+    assert_eq!(requirements[0].exact_version, "9.9.9");
 }
 
 fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {

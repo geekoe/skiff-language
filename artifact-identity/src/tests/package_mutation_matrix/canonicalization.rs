@@ -72,7 +72,6 @@ fn typed_preimages_expose_only_the_declared_inclusion_matrix() {
         [
             "abiIdentityFacts",
             "packageId",
-            "packageVersion",
             "publicSurfaceIdentity",
             "schema",
         ]

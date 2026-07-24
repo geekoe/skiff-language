@@ -26,23 +26,18 @@ fn nominal_facts_change_local_abi_and_build_identities() {
 }
 
 #[test]
-fn coordinate_changes_local_abi_and_build_even_when_public_surface_is_equal() {
+fn package_id_changes_identity_but_human_version_label_does_not() {
     let base = package_fixture("hello");
 
-    for (package_id, version) in [
-        ("example.com/pkg-renamed", "1.0.0"),
-        ("example.com/pkg", "2.0.0"),
-    ] {
-        let mut changed = base.clone();
-        changed.package_id = package_id.to_string();
-        changed.version = version.to_string();
-        assign_package_unit_identities(&mut changed).expect("coordinate identities");
-        assert_eq!(
-            base.publication_abi.abi_identity, changed.publication_abi.abi_identity,
-            "legacy public surface identity intentionally excludes the owner coordinate"
-        );
-        assert_both_change(&base, &changed);
-    }
+    let mut renamed = base.clone();
+    renamed.package_id = "example.com/pkg-renamed".to_string();
+    assign_package_unit_identities(&mut renamed).expect("renamed identities");
+    assert_both_change(&base, &renamed);
+
+    let mut relabeled = base.clone();
+    relabeled.version = "2.0.0".to_string();
+    assign_package_unit_identities(&mut relabeled).expect("relabeled identities");
+    assert_eq!(identities(&base), identities(&relabeled));
 }
 
 #[test]
