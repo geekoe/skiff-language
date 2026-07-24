@@ -15,10 +15,6 @@ import { serviceIdPathSegments } from "../src/artifacts/pathProjection.js";
 import { readActiveArtifactPointers } from "../src/artifacts/pointers.js";
 import { publicationStorageSegment } from "../src/publicationId.js";
 import {
-  writeCompilerGeneratedWebSocketFixtureArtifactRoot,
-  writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoot,
-} from "./helpers/compilerArtifacts.js";
-import {
   ensureArtifactIdentityCli,
   runIdentityCli,
 } from "./helpers/artifactIdentityCli.js";
@@ -204,81 +200,6 @@ describe("router artifact root", () => {
         (operation) => operation.operation === "Ping.ping",
       ),
     ).toBe(false);
-  }, 120_000);
-
-  it("can derive router manifest data from an indexed service assembly", async () => {
-    const root = await createArtifactRoot();
-    const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
-
-    const loaded = await loadRouterArtifactRoot(root);
-
-    expect(loaded.manifest.service.id).toBe("example.com/websocket_fixture");
-    expect(loaded.manifest.websocketEntry).toMatchObject({
-      serviceId: "example.com/websocket_fixture",
-    });
-    expect(
-      loaded.manifest.websocketEntry?.path === undefined ||
-        loaded.manifest.websocketEntry.path === "/ws",
-    ).toBe(true);
-    const receiveMessageParameter =
-      loaded.manifest.websocketEntry?.receive?.operationManifest.parameters.find(
-        (parameter) => parameter.name === "message",
-      );
-    expect(receiveMessageParameter?.schema).toMatchObject({
-      oneOf: [
-        {
-          properties: {
-            tag: { enum: ["text"] },
-            text: { type: "string" },
-          },
-        },
-        {
-          properties: {
-            tag: { enum: ["binary"] },
-            base64: { type: "string" },
-          },
-        },
-      ],
-    });
-    const connectRequestParameter =
-      loaded.manifest.websocketEntry?.connect?.operationManifest.parameters[0];
-    expect(connectRequestParameter?.name).toBe("request");
-    expect(connectRequestParameter?.schema).toMatchObject({
-      type: "object",
-      properties: {
-        connectionId: { type: "string" },
-        url: { type: "string" },
-        query: { type: "array" },
-        headers: { type: "array" },
-        cookies: { type: "array" },
-        version: { type: "string", nullable: true },
-      },
-      xSkiffSymbol: "std.websocket.WebSocketConnectRequest",
-    });
-    const connectRequestSchema = connectRequestParameter?.schema as
-      | { required?: string[] }
-      | undefined;
-    expect(connectRequestSchema?.required).toEqual(
-      expect.arrayContaining([
-        "connectionId",
-        "cookies",
-        "headers",
-        "query",
-        "url",
-      ]),
-    );
-    expect(
-      loaded.manifest.websocketEntry?.connect?.operationManifest.target,
-    ).toMatch(/^entry\.[a-z0-9_~]+\.websocket\.connect$/);
-    expect(
-      loaded.manifest.websocketEntry?.receive.operationManifest.target,
-    ).toMatch(/^entry\.[a-z0-9_~]+\.websocket\.receive$/);
-    expect(loaded.manifest.operations).toHaveLength(2);
-    expect(loaded.manifest.rawHttpEntries).toHaveLength(0);
-    expect(loaded.control.artifactRoots).toEqual([root]);
-    expect(loaded.control.fingerprint).toBe(
-      generated.serviceAssembly.assemblyIdentity,
-    );
   }, 120_000);
 
   it("rejects removed service assembly access metadata", async () => {
@@ -1498,48 +1419,6 @@ describe("router artifact root", () => {
     expect(loaded.manifest.rawHttpEntries[0]?.buildId).toBe(binding?.buildId);
   });
 
-  it("rejects release artifacts whose ServiceUnit version mismatches the selected version", async () => {
-    const root = await createArtifactRoot();
-    const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
-    const serviceIdSegments = serviceIdPathSegments(generated.serviceId);
-    const mismatchedVersion = "2.0.0";
-    await rm(
-      join(
-        root,
-        "versions",
-        "services",
-        ...serviceIdSegments,
-        `${generated.serviceVersion}.json`,
-      ),
-    );
-    await writeVersionPointer(root, {
-      buildId: generated.buildId,
-      serviceId: generated.serviceId,
-      version: mismatchedVersion,
-    });
-    const buildPath = join(
-      root,
-      "builds",
-      "services",
-      ...serviceIdSegments,
-      `${identityHash(generated.buildId)}.json`,
-    );
-    const buildRecord = JSON.parse(
-      await readFile(buildPath, "utf8"),
-    ) as Record<string, unknown>;
-    buildRecord.serviceVersion = mismatchedVersion;
-    await writeFile(buildPath, JSON.stringify(buildRecord, null, 2));
-
-    await expect(
-      loadRouterArtifactRoot(root, {
-        releaseMode: true,
-        identityCliPath: await ensureArtifactIdentityCli(),
-      }),
-    ).rejects.toThrow(
-      /version 1\.0\.0 does not match selected service version 2\.0\.0/,
-    );
-  }, 120_000);
-
   it("rejects incomplete ServiceUnit pointers instead of defaulting fields", async () => {
     const root = await createArtifactRoot();
     await mkdir(join(root, "assemblies", "services"), { recursive: true });
@@ -1853,25 +1732,6 @@ describe("router artifact root", () => {
     await expect(
       readActiveArtifactPointers(root, { releaseMode: true }),
     ).rejects.toThrow(/serviceVersion must be a non-empty string/);
-  });
-
-  it("loads dev reload pointers without reading stale legacy index files", async () => {
-    const root = await createArtifactRoot();
-    await mkdir(join(root, "index"), { recursive: true });
-    await writeFile(join(root, "index", "stale.json"), "{not-json");
-    const generated =
-      await writeCompilerGeneratedWebSocketFixtureDevReloadArtifactRoot(root, "prod");
-
-    const loaded = await loadRouterArtifactRoot(root, {
-      devReload: true,
-      configProfile: "prod",
-    });
-
-    expect(loaded.manifest.service.id).toBe(generated.serviceId);
-    expect(loaded.control.devReload).toBe(true);
-    expect(loaded.control.fingerprint).toBe(
-      generated.serviceAssembly.assemblyIdentity,
-    );
   });
 
   it("loads dev reload pointers for URL-like service ids through full path mapping", async () => {

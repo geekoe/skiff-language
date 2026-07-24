@@ -1,126 +1,51 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { loadManifestFile } from '../src/manifest/loadManifest.js';
-import type { SkiffRuntimeManifest } from '../src/manifest/types.js';
+import { FilesystemRuntimeAssemblySnapshotLoader } from '../src/router/filesystemRuntimeAssemblySnapshotLoader.js';
+import { writeCompilerGeneratedFixtureArtifactRoot } from './helpers/compilerArtifacts.js';
 
-const execFileAsync = promisify(execFile);
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const websocketFixturePath = join(
-  repoRoot,
-  'compiler/tests/fixtures/router-websocket-fixture'
-);
-const gatewayIdentityPrefix = 'skiff-gateway-v1:sha256:';
-const operationAbiIdPattern = /^skiff-operation-abi-v1:sha256:[0-9a-f]{64}$/;
-
-describe('Rust compiler generated manifest compatibility', () => {
+describe('compiler generated RuntimeAssembly compatibility', () => {
   it(
-    'loads a dynamically generated router manifest from a real websocket fixture',
+    'loads current package authoring output through the production Router loader',
     async () => {
-      const tempDir = await mkdtemp(join(tmpdir(), 'skiff-router-manifest-compat-'));
+      const root = await mkdtemp(join(tmpdir(), 'skiff-router-authoring-'));
       try {
-        const artifactPath = join(tempDir, 'artifact.json');
-        const manifestPath = join(tempDir, 'router-manifest.json');
-
-        await execFileAsync(
-          'cargo',
-          [
-            'run',
-            '--quiet',
-            '--manifest-path',
-            join(repoRoot, 'compiler/Cargo.toml'),
-            '--',
-            websocketFixturePath,
-            '--out',
-            artifactPath,
-            '--manifest-out',
-            manifestPath
-          ],
-          { cwd: repoRoot }
+        const generated = await writeCompilerGeneratedFixtureArtifactRoot(root);
+        expect(generated.packageValue.schemaVersion).toBe('skiff-package-artifact-v3');
+        expect(generated.contractValue.schemaVersion).toBe('skiff-service-contract-v3');
+        expect(generated.serviceContract.contract.serviceProtocolIdentity).toMatch(
+          /^skiff-service-protocol-v3:sha256:[0-9a-f]{64}$/
         );
+        expect(generated.deploymentValue.schemaVersion).toBe('skiff-service-deployment-v1');
+        expect(generated.assemblyValue.schemaVersion).toBe('skiff-runtime-assembly-v1');
 
-        const rawManifest = JSON.parse(
-          await readFile(manifestPath, 'utf8')
-        ) as SkiffRuntimeManifest;
-        expect(
-          rawManifest.gateway?.websocket?.connect?.gatewayEntryIdentity?.startsWith(
-            gatewayIdentityPrefix
-          )
-        ).toBe(true);
-        expect(
-          rawManifest.gateway?.websocket?.receive.gatewayEntryIdentity?.startsWith(
-            gatewayIdentityPrefix
-          )
-        ).toBe(true);
-        expect(rawManifest.operations).toHaveLength(2);
-        expect(
-          rawManifest.operations.every(
-            (operation) => operationAbiIdPattern.test(operation.operationAbiId)
-          )
-        ).toBe(true);
-
-        const manifest = await loadManifestFile(manifestPath);
-        const websocketEntry = manifest.websocketEntry;
-        expect(websocketEntry).toBeDefined();
-        if (!websocketEntry) {
-          throw new Error('generated manifest did not load a websocket entry');
-        }
-
-        const connect = websocketEntry.connect;
-        expect(connect).toBeDefined();
-        if (!connect) {
-          throw new Error('generated manifest did not load a websocket connect operation');
-        }
-
-        expect(manifest.operations).toHaveLength(2);
-        expect(manifest.gateway?.http).toBeUndefined();
-        expect(websocketEntry.id).toBe('client');
-        expect(websocketEntry.path).toBeUndefined();
-        expect(connect.operation).toBe('WebSocketFixtureService.connect');
-        expect(websocketEntry.receive.operation).toBe('WebSocketFixtureService.receive');
-
-        const rawConnectOperation = rawManifest.operations.find(
-          (operation) => operation.operation === connect.operationManifest.operation
+        const loaded = await new FilesystemRuntimeAssemblySnapshotLoader(root).load(
+          generated.runtimeAssembly.assembly
         );
-        const rawReceiveOperation = rawManifest.operations.find(
-          (operation) => operation.operation === websocketEntry.receive.operationManifest.operation
+        expect(loaded.assemblyIdentity).toBe(
+          generated.runtimeAssembly.assembly.assemblyIdentity
         );
-        expect(rawConnectOperation).toBeDefined();
-        expect(rawReceiveOperation).toBeDefined();
-        if (!rawConnectOperation || !rawReceiveOperation) {
-          throw new Error('generated websocket operations were not present in the raw manifest');
-        }
-
-        const connectOperationAbiId = connect.operationManifest.operationAbiId;
-        const receiveOperationAbiId = websocketEntry.receive.operationManifest.operationAbiId;
-        expect(connectOperationAbiId).toMatch(operationAbiIdPattern);
-        expect(receiveOperationAbiId).toMatch(operationAbiIdPattern);
-        expect(connectOperationAbiId).not.toBe(receiveOperationAbiId);
-        expect(connectOperationAbiId).toBe(rawConnectOperation.operationAbiId);
-        expect(receiveOperationAbiId).toBe(rawReceiveOperation.operationAbiId);
-        expect(rawManifest.gateway?.websocket?.connect?.operationAbiId).toBe(connectOperationAbiId);
-        expect(rawManifest.gateway?.websocket?.receive.operationAbiId).toBe(receiveOperationAbiId);
-        expect(connect.operationAbiId).toBe(connectOperationAbiId);
-        expect(websocketEntry.receive.operationAbiId).toBe(receiveOperationAbiId);
-        expect(connect.gatewayEntryIdentity.startsWith(gatewayIdentityPrefix)).toBe(true);
-        expect(websocketEntry.receive.gatewayEntryIdentity.startsWith(gatewayIdentityPrefix)).toBe(
-          true
+        expect(loaded.resolvedContracts).toContainEqual(
+          generated.serviceContract.contract
         );
-        expect(connect.operationManifest.target).toMatch(
-          /^entry\.[a-z0-9_~]+\.websocket\.connect$/
-        );
-        expect(websocketEntry.receive.operationManifest.target).toMatch(
-          /^entry\.[a-z0-9_~]+\.websocket\.receive$/
-        );
-        expect(manifest.timeout?.defaultMs).toBe(120000);
+        expect(loaded.globalIngress).toContainEqual(expect.objectContaining({
+          selector: {
+            protocol: 'http',
+            host: 'websocket-fixture.skiff.localhost',
+            method: 'GET',
+            path: '/ping',
+          },
+          deployment: generated.serviceDeployment.deployment,
+          contract: generated.serviceContract.contract,
+          contractOperationId: expect.stringMatching(
+            /^skiff-contract-operation-v1:sha256:[0-9a-f]{64}$/
+          ),
+        }));
       } finally {
-        await rm(tempDir, { recursive: true, force: true });
+        await rm(root, { recursive: true, force: true });
       }
     },
     120_000

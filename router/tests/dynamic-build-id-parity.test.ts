@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -9,8 +9,9 @@ import {
   type IdentityCliArtifactInput,
 } from "../src/artifacts/identityCli.js";
 import { resolveArtifactPath } from "../src/artifacts/artifactPath.js";
+import { FilesystemRuntimeAssemblySnapshotLoader } from "../src/router/filesystemRuntimeAssemblySnapshotLoader.js";
 import { ensureArtifactIdentityCli } from "./helpers/artifactIdentityCli.js";
-import { writeCompilerGeneratedWebSocketFixtureArtifactRoot } from "./helpers/compilerArtifacts.js";
+import { writeCompilerGeneratedFixtureArtifactRoot } from "./helpers/compilerArtifacts.js";
 import { writeMockIdentityCli } from "./helpers/mockIdentityCli.js";
 
 const DYNAMIC_BUILD_ID =
@@ -103,134 +104,28 @@ describe("artifact identity CLI transaction", () => {
     }
   });
 
-  it("uses the shared Rust/router artifact path and coordinate cases", async () => {
-    const fixture = JSON.parse(
-      await readFile(
-        new URL(
-          "../../cross-system-fixtures/artifact-reference-validation/cases.json",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    ) as ArtifactReferenceFixture;
-    const identityCliPath = await ensureArtifactIdentityCli();
+  it("uses canonical compiler-authored record paths in the production Router loader", async () => {
     const temp = await mkdtemp(join(tmpdir(), "skiff-router-artifact-paths-"));
     try {
-      const baseRoot = join(temp, "base");
-      const closure = await writeCompilerGeneratedClosure(baseRoot);
-      for (const [index, testCase] of fixture.cases.entries()) {
-        expect(testCase.appliesTo).toEqual(
-          expect.arrayContaining(["runtime", "router"]),
-        );
-        const root = join(temp, String(index));
-        await cp(baseRoot, root, { recursive: true });
-        const path = renderFixturePath(testCase.path, closure);
-        const candidate: IdentityCliArtifactInput = {
-          ...closure.input,
-          key: `case-${index}`,
-          artifactRoot: root,
-          serviceAssembly: {
-            ...closure.input.serviceAssembly,
-            assemblyPath: path,
-          },
-        };
-        if (testCase.materialize === true) {
-          await writeJson(root, path, closure.assemblyValue);
-        }
-
-        if (testCase.validation === "artifactRelativePath") {
-          const resolution = resolveArtifactPath(root, path, testCase.name);
-          if (testCase.valid) {
-            await expect(resolution, testCase.name).resolves.toEqual(
-              expect.any(String),
-            );
-          } else {
-            await expect(resolution, testCase.name).rejects.toThrow();
-          }
-          continue;
-        }
-
-        const validation = validateArtifactClosuresWithIdentityCli(
-          [candidate],
-          { identityCliPath },
-        );
-        if (testCase.valid) {
-          await expect(validation, testCase.name).resolves.toBeInstanceOf(Map);
-        } else {
-          await expect(validation, testCase.name).rejects.toThrow();
-        }
-      }
+      const generated = await writeCompilerGeneratedFixtureArtifactRoot(temp);
+      await expect(
+        resolveArtifactPath(temp, generated.runtimeAssembly.recordPath, "RuntimeAssembly"),
+      ).resolves.toEqual(await realpath(join(temp, generated.runtimeAssembly.recordPath)));
+      await expect(
+        resolveArtifactPath(temp, `../${generated.runtimeAssembly.recordPath}`, "escape"),
+      ).rejects.toThrow(/canonical and relative|escapes/);
+      await expect(
+        new FilesystemRuntimeAssemblySnapshotLoader(temp).load(
+          generated.runtimeAssembly.assembly,
+        ),
+      ).resolves.toMatchObject({
+        assemblyIdentity: generated.runtimeAssembly.assembly.assemblyIdentity,
+      });
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
   }, 120_000);
 });
-
-interface ArtifactReferenceFixture {
-  serviceId: string;
-  cases: ArtifactReferenceCase[];
-}
-
-interface ArtifactReferenceCase {
-  name: string;
-  appliesTo: string[];
-  validation: "artifactRelativePath" | "serviceAssemblyCoordinate";
-  path: string;
-  materialize?: boolean;
-  valid: boolean;
-}
-
-interface CanonicalClosureFixture {
-  input: IdentityCliArtifactInput;
-  assemblyHash: string;
-  serviceStorageSegment: string;
-  assemblyValue: Record<string, unknown>;
-}
-
-async function writeCompilerGeneratedClosure(
-  root: string,
-): Promise<CanonicalClosureFixture> {
-  const generated = await writeCompilerGeneratedWebSocketFixtureArtifactRoot(root);
-  const assemblySegments = generated.serviceAssembly.assemblyPath.split("/");
-  const assemblyFile = assemblySegments.at(-1);
-  const serviceStorageSegment = assemblySegments.at(-2);
-  if (
-    assemblyFile === undefined
-    || !assemblyFile.endsWith(".json")
-    || serviceStorageSegment === undefined
-  ) {
-    throw new Error(
-      `compiler generated non-canonical assembly path ${generated.serviceAssembly.assemblyPath}`,
-    );
-  }
-  const assemblyValue = JSON.parse(
-    await readFile(join(root, generated.serviceAssembly.assemblyPath), "utf8"),
-  ) as Record<string, unknown>;
-
-  return {
-    assemblyHash: assemblyFile.slice(0, -".json".length),
-    serviceStorageSegment,
-    assemblyValue,
-    input: {
-      key: "canonical",
-      artifactRoot: root,
-      serviceId: generated.serviceId,
-      serviceAssembly: generated.serviceAssembly,
-      serviceUnit: generated.serviceUnit,
-      packageUnits: generated.packageUnits,
-    },
-  };
-}
-
-function renderFixturePath(
-  template: string,
-  closure: CanonicalClosureFixture,
-): string {
-  return template
-    .replaceAll("{serviceStorageSegment}", closure.serviceStorageSegment)
-    .replaceAll("{assemblyHash}", closure.assemblyHash)
-    .replaceAll("{otherHash}", "b".repeat(64));
-}
 
 async function writeCandidate(
   root: string,

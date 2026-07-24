@@ -1,7 +1,8 @@
 id: example.com/websocket_fixture
-version: 1.0.0
 
-websocket: internal.websocket_fixture_service.WebSocketFixtureService
-
-timeout:
-  default: 120000
+http:
+  routes:
+    - host: websocket-fixture.skiff.localhost
+      method: GET
+      path: /ping
+      operation: ping
