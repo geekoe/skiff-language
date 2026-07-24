@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,81 @@ pub struct PackageSchemaTypeRef {
     pub package_id: String,
     pub stable_schema_key: String,
     pub package_schema_type_id: PackageSchemaTypeId,
+}
+
+/// Returns every named Package schema reference reachable directly from one
+/// canonical descriptor. The caller owns graph traversal across records.
+pub fn package_schema_descriptor_refs(
+    descriptor: &ContractTypeDescriptor,
+) -> BTreeSet<PackageSchemaTypeRef> {
+    let mut refs = BTreeSet::new();
+    collect_descriptor_package_schema_refs(descriptor, &mut refs);
+    refs
+}
+
+fn collect_descriptor_package_schema_refs(
+    descriptor: &ContractTypeDescriptor,
+    refs: &mut BTreeSet<PackageSchemaTypeRef>,
+) {
+    match descriptor {
+        ContractTypeDescriptor::Record { fields } => {
+            fields
+                .values()
+                .for_each(|ty| collect_type_package_schema_refs(ty, refs));
+        }
+        ContractTypeDescriptor::StructuralUnion { variants } => {
+            variants
+                .iter()
+                .for_each(|ty| collect_type_package_schema_refs(ty, refs));
+        }
+        ContractTypeDescriptor::DiscriminatedUnion { branches, .. } => branches
+            .iter()
+            .for_each(|branch| collect_type_package_schema_refs(&branch.branch_type, refs)),
+        ContractTypeDescriptor::Representation { target }
+        | ContractTypeDescriptor::Alias { target } => {
+            collect_type_package_schema_refs(target, refs);
+        }
+        ContractTypeDescriptor::CallbackInterface { operations } => {
+            for operation in operations.values() {
+                operation
+                    .parameters
+                    .iter()
+                    .for_each(|ty| collect_type_package_schema_refs(ty, refs));
+                collect_type_package_schema_refs(&operation.return_type, refs);
+            }
+        }
+        ContractTypeDescriptor::Enumeration { .. } => {}
+    }
+}
+
+fn collect_type_package_schema_refs(
+    ty: &ContractTypeRef,
+    refs: &mut BTreeSet<PackageSchemaTypeRef>,
+) {
+    match ty {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            refs.insert(PackageSchemaTypeRef {
+                package_id: package_id.clone(),
+                stable_schema_key: stable_schema_key.clone(),
+                package_schema_type_id: package_schema_type_id.clone(),
+            });
+        }
+        ContractTypeRef::Builtin { arguments, .. }
+        | ContractTypeRef::StructuralUnion {
+            variants: arguments,
+        } => arguments
+            .iter()
+            .for_each(|child| collect_type_package_schema_refs(child, refs)),
+        ContractTypeRef::Record { fields } => fields
+            .values()
+            .for_each(|child| collect_type_package_schema_refs(child, refs)),
+        ContractTypeRef::Nullable { inner } => collect_type_package_schema_refs(inner, refs),
+        ContractTypeRef::TypeParam { .. } | ContractTypeRef::Literal { .. } => {}
+    }
 }
 
 impl ContractTypeRef {

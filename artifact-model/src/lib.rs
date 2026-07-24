@@ -96,11 +96,11 @@ pub use config::{
     CONFIG_SHAPE_SCHEMA_VERSION,
 };
 pub use contract_types::{
-    BoundaryCallbackOperation, ContractDiscriminatedUnionBranch, ContractLiteral,
-    ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef, ContractTypeShape,
-    PackageSchemaCanonicalDescriptor, PackageSchemaIndex, PackageSchemaIndexEntry,
-    PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
+    package_schema_descriptor_refs, BoundaryCallbackOperation, ContractDiscriminatedUnionBranch,
+    ContractLiteral, ContractTypeDescriptor, ContractTypeNameability, ContractTypeRef,
+    ContractTypeShape, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PackageSchemaTypeRef, PackageTypeRef, PackageTypeRequirement,
 };
 pub use deployment::{
     ActivationPolicy, ConfigLiteralBinding, DeploymentDiagnosticText, DeploymentIngressBinding,

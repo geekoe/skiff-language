@@ -15,8 +15,8 @@ use skiff_artifact_identity::{
     RuntimeAssemblyRecordPath, ServiceContractRecordPath, ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{
-    FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
+    package_schema_descriptor_refs, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
+    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord,
     PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef,
     ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
@@ -212,11 +212,44 @@ impl CanonicalArtifactStore {
             records.insert(entry.package_schema_type_id.clone(), record);
         }
 
-        let owned_records = records
+        let mut pending = records.keys().cloned().collect::<Vec<_>>();
+        while let Some(type_id) = pending.pop() {
+            let record = records
+                .get(&type_id)
+                .expect("pending schema record must already be resolved");
+            for reference in package_schema_descriptor_refs(&record.canonical_descriptor.descriptor)
+            {
+                if records.contains_key(&reference.package_schema_type_id) {
+                    continue;
+                }
+                let child = self.read_package_schema_type_record(&PackageSchemaTypeRecordRef {
+                    package_id: reference.package_id.clone(),
+                    package_schema_type_id: reference.package_schema_type_id.clone(),
+                })?;
+                if child.package_id != reference.package_id
+                    || child.stable_schema_key != reference.stable_schema_key
+                    || child.package_schema_type_id != reference.package_schema_type_id
+                {
+                    return invalid(
+                        self.root(),
+                        format!(
+                            "Package schema child {} does not match referenced owner {} and stable key {}",
+                            reference.package_schema_type_id,
+                            reference.package_id,
+                            reference.stable_schema_key
+                        ),
+                    );
+                }
+                pending.push(child.package_schema_type_id.clone());
+                records.insert(child.package_schema_type_id.clone(), child);
+            }
+        }
+
+        let resolved_records = records
             .iter()
             .map(|(type_id, record)| (type_id.clone(), record.as_ref().clone()))
             .collect();
-        validate_package_schema_records(&owned_records)?;
+        validate_package_schema_records(&resolved_records)?;
         Ok(ResolvedPackageSchema { index, records })
     }
 
@@ -612,6 +645,37 @@ mod package_schema_tests {
         }
     }
 
+    fn record_with_child(
+        package_id: &str,
+        stable_key: &str,
+        child: &PackageSchemaTypeRecord,
+    ) -> PackageSchemaTypeRecord {
+        let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "child".to_string(),
+                    skiff_artifact_model::ContractTypeRef::package_schema(
+                        &child.package_id,
+                        &child.stable_schema_key,
+                        child.package_schema_type_id.clone(),
+                    ),
+                )]),
+            },
+        };
+        PackageSchemaTypeRecord {
+            package_id: package_id.to_string(),
+            stable_schema_key: stable_key.to_string(),
+            package_schema_type_id: package_schema_type_id(
+                package_id,
+                stable_key,
+                &canonical_descriptor,
+            )
+            .unwrap(),
+            canonical_descriptor,
+        }
+    }
+
     fn index(record: &PackageSchemaTypeRecord) -> PackageSchemaIndex {
         let types = BTreeMap::from([(
             record.stable_schema_key.clone(),
@@ -799,6 +863,65 @@ mod package_schema_tests {
                 .write_package_schema_type_record(&record)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn package_artifact_schema_resolution_loads_two_level_cross_package_closure() {
+        let test = TestStore::new();
+        let leaf = record("example.com/llm-api", "LlmApiFormat");
+        let provider = record_with_child("example.com/llm-providers", "Provider", &leaf);
+        let relay = record_with_child("example.com/relay", "RelayRequest", &provider);
+        let relay_index = index(&relay);
+
+        for record in [&leaf, &provider, &relay] {
+            test.store.write_package_schema_type_record(record).unwrap();
+        }
+        test.store.write_package_schema_index(&relay_index).unwrap();
+        let relay_artifact = artifact(
+            "1.0.0",
+            &relay_index,
+            BTreeMap::from([(relay.package_schema_type_id.clone(), record_ref(&relay))]),
+        );
+
+        let resolved = test
+            .store
+            .resolve_package_artifact_schema(&relay_artifact)
+            .unwrap();
+        assert_eq!(
+            resolved.records.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                relay.package_schema_type_id,
+                provider.package_schema_type_id,
+                leaf.package_schema_type_id,
+            ])
+        );
+    }
+
+    #[test]
+    fn cross_package_schema_resolution_fails_when_a_transitive_child_is_missing() {
+        let test = TestStore::new();
+        let leaf = record("example.com/llm-api", "LlmApiFormat");
+        let provider = record_with_child("example.com/llm-providers", "Provider", &leaf);
+        let provider_index = index(&provider);
+        test.store
+            .write_package_schema_type_record(&provider)
+            .unwrap();
+        test.store
+            .write_package_schema_index(&provider_index)
+            .unwrap();
+        let provider_artifact = artifact(
+            "1.0.0",
+            &provider_index,
+            BTreeMap::from([(
+                provider.package_schema_type_id.clone(),
+                record_ref(&provider),
+            )]),
+        );
+
+        assert!(test
+            .store
+            .resolve_package_artifact_schema(&provider_artifact)
+            .is_err());
     }
 
     #[test]

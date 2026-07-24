@@ -18,7 +18,7 @@ pub fn resolved_package_schema(
             .local_abi_identity
             .clone(),
         package.package_schema_index.clone(),
-        package.package_schema_type_records.clone(),
+        package.resolved_package_schema_type_records.clone(),
     )
 }
 

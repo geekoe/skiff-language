@@ -5,10 +5,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr, CallableSemanticFacts,
-    ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact, PackageBuildId,
-    PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageSchemaTypeId, PackageSchemaTypeRecord, TypeRefIr,
+    package_schema_descriptor_refs, AbiAliasId, AbiInterfaceId, AbiTypeId, ActorMetadataIr,
+    CallableSemanticFacts, ContractTypeNameability, DbMetadataIr, FileIrUnit, PackageArtifact,
+    PackageBuildId, PackageLocalAbiIdentity, PackageRequirement, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRecord, TypeRefIr,
 };
 use skiff_compiler_core::source_role::PublicationSourceRole;
 
@@ -70,8 +70,28 @@ pub enum ResolvedPackageSchemaError {
         alias: String,
         stable_schema_key: String,
     },
-    #[error("resolved package schema binding {alias} contains a record absent from its index")]
-    ExtraTypeRecord { alias: String },
+    #[error(
+        "resolved package schema binding {alias} closure is missing {package_id}:{stable_schema_key}:{package_schema_type_id}"
+    )]
+    MissingClosureRecord {
+        alias: String,
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error(
+        "resolved package schema binding {alias} closure record {package_schema_type_id} does not match owner {package_id} and stable key {stable_schema_key}"
+    )]
+    ClosureRecordMismatch {
+        alias: String,
+        package_id: String,
+        stable_schema_key: String,
+        package_schema_type_id: PackageSchemaTypeId,
+    },
+    #[error(
+        "resolved package schema binding {alias} contains a record outside its reachable closure"
+    )]
+    ExtraClosureRecord { alias: String },
     #[error("resolved package schema binding {alias} does not match exact requirement: {message}")]
     RequirementMismatch { alias: String, message: String },
     #[error(
@@ -125,8 +145,45 @@ impl ResolvedPackageSchema {
                 });
             }
         }
-        if records.len() != index.types.len() {
-            return Err(ResolvedPackageSchemaError::ExtraTypeRecord { alias });
+        let mut pending = index
+            .types
+            .values()
+            .map(|entry| entry.package_schema_type_id.clone())
+            .collect::<Vec<_>>();
+        let mut reachable = BTreeSet::new();
+        while let Some(type_id) = pending.pop() {
+            if !reachable.insert(type_id.clone()) {
+                continue;
+            }
+            let record = records
+                .get(&type_id)
+                .expect("index records validated above");
+            for reference in package_schema_descriptor_refs(&record.canonical_descriptor.descriptor)
+            {
+                let child = records
+                    .get(&reference.package_schema_type_id)
+                    .ok_or_else(|| ResolvedPackageSchemaError::MissingClosureRecord {
+                        alias: alias.clone(),
+                        package_id: reference.package_id.clone(),
+                        stable_schema_key: reference.stable_schema_key.clone(),
+                        package_schema_type_id: reference.package_schema_type_id.clone(),
+                    })?;
+                if child.package_id != reference.package_id
+                    || child.stable_schema_key != reference.stable_schema_key
+                    || child.package_schema_type_id != reference.package_schema_type_id
+                {
+                    return Err(ResolvedPackageSchemaError::ClosureRecordMismatch {
+                        alias,
+                        package_id: reference.package_id,
+                        stable_schema_key: reference.stable_schema_key,
+                        package_schema_type_id: reference.package_schema_type_id,
+                    });
+                }
+                pending.push(child.package_schema_type_id.clone());
+            }
+        }
+        if reachable.len() != records.len() {
+            return Err(ResolvedPackageSchemaError::ExtraClosureRecord { alias });
         }
         Ok(Self {
             alias,
@@ -1106,6 +1163,32 @@ mod resolved_package_schema_tests {
         )
     }
 
+    fn closure_schema(
+        records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+        root_id: PackageSchemaTypeId,
+    ) -> Result<ResolvedPackageSchema, ResolvedPackageSchemaError> {
+        ResolvedPackageSchema::new(
+            "providers".to_string(),
+            "example.com/providers".to_string(),
+            "1.2.3".to_string(),
+            PackageBuildId::new("build"),
+            PackageLocalAbiIdentity::new("abi"),
+            PackageSchemaIndex {
+                package_id: "example.com/providers".to_string(),
+                package_schema_index_identity: "index".into(),
+                types: BTreeMap::from([(
+                    "Provider".to_string(),
+                    PackageSchemaIndexEntry {
+                        package_schema_type_id: root_id,
+                        public_path: Some("Provider".to_string()),
+                        nameability: ContractTypeNameability::PublicNameable,
+                    },
+                )]),
+            },
+            records,
+        )
+    }
+
     #[test]
     fn exposes_only_exact_public_schema_records() {
         let schema = schema(Some("api.User"), ContractTypeNameability::PublicNameable).unwrap();
@@ -1179,6 +1262,80 @@ mod resolved_package_schema_tests {
         assert!(matches!(
             schema.validate_exact_binding(&wrong_abi, &artifact),
             Err(ResolvedPackageSchemaError::RequirementMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn accepts_exact_cross_package_transitive_closure_and_rejects_missing_or_extra_records() {
+        let leaf_id = PackageSchemaTypeId::new("type:leaf");
+        let leaf = PackageSchemaTypeRecord {
+            package_id: "example.com/api".to_string(),
+            stable_schema_key: "Format".to_string(),
+            package_schema_type_id: leaf_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Record {
+                    fields: BTreeMap::new(),
+                },
+            },
+        };
+        let root_id = PackageSchemaTypeId::new("type:provider");
+        let root = PackageSchemaTypeRecord {
+            package_id: "example.com/providers".to_string(),
+            stable_schema_key: "Provider".to_string(),
+            package_schema_type_id: root_id.clone(),
+            canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: ContractTypeDescriptor::Record {
+                    fields: BTreeMap::from([(
+                        "format".to_string(),
+                        skiff_artifact_model::ContractTypeRef::package_schema(
+                            &leaf.package_id,
+                            &leaf.stable_schema_key,
+                            leaf_id.clone(),
+                        ),
+                    )]),
+                },
+            },
+        };
+        let exact = BTreeMap::from([
+            (root_id.clone(), root.clone()),
+            (leaf_id.clone(), leaf.clone()),
+        ]);
+        assert!(closure_schema(exact.clone(), root_id.clone()).is_ok());
+
+        let missing = BTreeMap::from([(root_id.clone(), root.clone())]);
+        assert!(matches!(
+            closure_schema(missing, root_id.clone()),
+            Err(ResolvedPackageSchemaError::MissingClosureRecord { .. })
+        ));
+
+        let extra_id = PackageSchemaTypeId::new("type:extra");
+        let mut extra = exact.clone();
+        extra.insert(
+            extra_id.clone(),
+            PackageSchemaTypeRecord {
+                package_id: "example.com/unused".to_string(),
+                stable_schema_key: "Unused".to_string(),
+                package_schema_type_id: extra_id,
+                canonical_descriptor: PackageSchemaCanonicalDescriptor {
+                    type_params: Vec::new(),
+                    descriptor: ContractTypeDescriptor::Record {
+                        fields: BTreeMap::new(),
+                    },
+                },
+            },
+        );
+        assert!(matches!(
+            closure_schema(extra, root_id.clone()),
+            Err(ResolvedPackageSchemaError::ExtraClosureRecord { .. })
+        ));
+
+        let mut wrong_owner = exact;
+        wrong_owner.get_mut(&leaf_id).unwrap().package_id = "example.com/wrong".to_string();
+        assert!(matches!(
+            closure_schema(wrong_owner, root_id),
+            Err(ResolvedPackageSchemaError::ClosureRecordMismatch { .. })
         ));
     }
 }
