@@ -164,7 +164,7 @@ type Marker { request: std.http.HttpRequest }
         CallableEffectSummary::Analyzed { .. }
     ));
 
-    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 98);
+    assert_eq!(std.artifact.package_local_abi.public_symbols.len(), 99);
     for public_path in [
         "std.actor.Actor",
         "std.bytes.DecodeError",
@@ -180,6 +180,7 @@ type Marker { request: std.http.HttpRequest }
         "std.telemetry.emit",
         "std.time.sleep",
         "std.websocket.ConnectionMessage",
+        "std.websocket.WebSocketIngressEvent",
     ] {
         assert!(
             std.artifact
