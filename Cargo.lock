@@ -2432,6 +2432,7 @@ dependencies = [
  "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-deployment",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
