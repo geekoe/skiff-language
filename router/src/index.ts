@@ -18,6 +18,7 @@ export * from './router/rewrite.js';
 export * from './router/runtimeRegistry.js';
 export * from './router/runtimeAssemblySnapshot.js';
 export * from './router/assemblyActivationStateStore.js';
+export * from './router/mongoAssemblyActivationStateStore.js';
 export * from './router/assemblyActivationCoordinator.js';
 export * from './router/assemblyRuntimeRegistry.js';
 export * from './router/assemblyControlPlane.js';
