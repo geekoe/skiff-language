@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use crate::{
@@ -440,7 +440,7 @@ impl std::error::Error for WebSocketIngressContractError {}
 pub fn websocket_ingress_context(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
 ) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
     websocket_ingress_context_with_shape_spec(
         contract,
@@ -453,7 +453,7 @@ pub fn websocket_ingress_context(
 fn websocket_ingress_context_with_shape_spec(
     contract: &ServiceContract,
     operation_id: &ContractOperationId,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     shape_spec: &CanonicalWebSocketShapeSpec,
 ) -> Result<WebSocketIngressContext, WebSocketIngressContractError> {
     let event_builtin = shape_spec.contract_builtin(WebSocketContractBuiltin::Event);
@@ -553,7 +553,7 @@ fn websocket_ingress_context_with_shape_spec(
 
 fn validate_persistable_context(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     context_type: &PackageSchemaTypeRef,
 ) -> Result<(), WebSocketIngressContractError> {
     let mut visiting = BTreeSet::new();
@@ -570,7 +570,7 @@ fn validate_persistable_context(
 
 fn visit_persistable_context_type(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     package_schema_type: &PackageSchemaTypeRef,
     path: &str,
     visiting: &mut BTreeSet<PackageSchemaTypeId>,
@@ -676,7 +676,7 @@ fn visit_persistable_context_type(
 
 fn validate_persistable_context_ref(
     contract: &ServiceContract,
-    package_schema_records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_schema_records: &BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>,
     ty: &ContractTypeRef,
     path: &str,
     visiting: &mut BTreeSet<PackageSchemaTypeId>,

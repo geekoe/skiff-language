@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
@@ -20,19 +20,15 @@ fn websocket_context_resolves_package_owned_schema_record() {
     let context_id = PackageSchemaTypeId::new("type:context");
     let context_ref = ContractTypeRef::package_schema(PACKAGE_ID, "Context", context_id.clone());
     let (contract, operation_id) = websocket_contract(context_ref);
-    let records = BTreeMap::from([(
+    let context_record = Arc::new(record(
+        "Context",
         context_id.clone(),
-        record(
-            "Context",
-            context_id.clone(),
-            ContractTypeDescriptor::Record {
-                fields: BTreeMap::from([(
-                    "session".to_string(),
-                    ContractTypeRef::builtin("string"),
-                )]),
-            },
-        ),
-    )]);
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("session".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    ));
+    let records = BTreeMap::from([(context_id.clone(), Arc::clone(&context_record))]);
+    let strong_count_before = Arc::strong_count(&context_record);
 
     assert_eq!(
         websocket_ingress_context(&contract, &operation_id, &records).unwrap(),
@@ -41,6 +37,11 @@ fn websocket_context_resolves_package_owned_schema_record() {
             stable_schema_key: "Context".to_string(),
             package_schema_type_id: context_id,
         })
+    );
+    assert_eq!(
+        Arc::strong_count(&context_record),
+        strong_count_before,
+        "WebSocket schema validation must only borrow the shared record"
     );
 }
 
@@ -62,13 +63,13 @@ fn websocket_context_fails_closed_on_package_schema_cycle() {
     let (contract, operation_id) = websocket_contract(context_ref.clone());
     let records = BTreeMap::from([(
         context_id.clone(),
-        record(
+        Arc::new(record(
             "Context",
             context_id,
             ContractTypeDescriptor::Record {
                 fields: BTreeMap::from([("self".to_string(), context_ref)]),
             },
-        ),
+        )),
     )]);
     let error = websocket_ingress_context(&contract, &operation_id, &records)
         .expect_err("v1 recursive schema must fail closed");
