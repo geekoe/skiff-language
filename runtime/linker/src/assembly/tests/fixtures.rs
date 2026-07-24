@@ -5,27 +5,29 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    ActivationPolicy, ActivationTemplate, BoundaryCallableProjection, BoundaryCallbackContract,
-    BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
-    BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryOperationDescriptor,
-    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallIr, CallTargetIr,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    CanonicalPackageLinkPlan, ConfigLiteralBinding, ContractDiagnosticText, ContractOperationId,
-    ContractRequirement, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision,
-    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit,
-    GlobalIngressBinding, IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature,
-    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef,
-    ResolvedServiceBinding, ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding,
-    ServiceBindingTemplate, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
-    ServiceSelectorBinding, SlotLayout, StateBinding, StateBindingKind, TypeDeclIr,
-    TypeDescriptorIr, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    ActivationPolicy, ActivationTemplate, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr,
+    ActorFieldIr, ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr,
+    BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCancellationContract,
+    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryImplementationRequirements,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects,
+    CallableProvenanceSummary, CallableSemanticFacts, CanonicalPackageLinkPlan,
+    ConfigLiteralBinding, ContractDiagnosticText, ContractOperationId, ContractRequirement,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentIngressBinding,
+    DeploymentOperationBinding, DeploymentPolicy, DeploymentRevision, ExecutableBody, ExecutableIr,
+    ExecutableKind, ExprIr, ExprRefIr, FileIrRef, FileIrUnit, GlobalIngressBinding,
+    IngressProtocol, IngressSelector, MetadataValue, OperationCallableKind, OperationTargetRef,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableRef, PackageCallableSignature, PackageCodeSlot,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRefIr, PackageRequirement, PackageRequirementKey, PackageRuntimeRequirements,
+    PackageSchemaIndexRef, PackageTypeRef, PublicationResourceRef, ResolvedServiceBinding,
+    ResourceBinding, ResourcePolicy, RuntimeAssembly, SecretRefBinding, ServiceBindingTemplate,
+    ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    SlotLayout, StateBinding, StateBindingKind, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_loader::RuntimeAssemblyContentResolver;
@@ -166,6 +168,52 @@ impl CycleFixture {
                         service_call_ref_index: skiff_artifact_model::ServiceCallRefIndex::new(0),
                     },
                     args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            });
+        let method_identity = ActorMethodIdentity::new("actor-method:submit");
+        let actor_abi = ActorAbiInput {
+            actor_name: "DocHub".to_string(),
+            actor_id_type: TypeRefIr::builtin("string"),
+            fields: vec![ActorFieldIr {
+                name: "nextSeq".to_string(),
+                ty: TypeRefIr::builtin("number"),
+                encoding: ActorFieldEncodingIr::CanonicalValueV1,
+            }],
+            public_methods: vec![ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "submit".to_string(),
+                parameters: Vec::new(),
+                return_type: TypeRefIr::builtin("bool"),
+                may_suspend: false,
+            }],
+            actor_runtime_abi_version: skiff_artifact_model::ACTOR_RUNTIME_ABI_VERSION_V1
+                .to_string(),
+        };
+        let actor_abi_identity = skiff_artifact_identity::actor_abi_identity(&actor_abi).unwrap();
+        let actor_implementation_identity = ActorImplementationIdentity::new("actor-impl:doc-hub");
+        shared_file.actor_declarations.push(ActorDeclarationIr {
+            actor_abi_identity: actor_abi_identity.clone(),
+            actor_implementation_identity: actor_implementation_identity.clone(),
+            abi: actor_abi,
+            method_implementations: BTreeMap::from([(method_identity.clone(), 1)]),
+        });
+        shared_file.executables[0]
+            .body
+            .expressions
+            .push(ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::ActorMethod {
+                        actor: skiff_artifact_model::ServiceSymbolRef {
+                            module_path: shared_file.module_path.clone(),
+                            symbol: "DocHub".to_string(),
+                        },
+                        actor_abi_identity,
+                        actor_implementation_identity,
+                        method_identity,
+                    },
+                    args: vec![ExprRefIr { expression: 1 }],
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },

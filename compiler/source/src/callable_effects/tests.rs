@@ -187,6 +187,76 @@ fn concrete_interface_implementation_call_uses_exact_impl_method_target() {
 }
 
 #[test]
+fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
+    let model = analyze(
+        r#"
+            actor Worker id string {
+              label: string
+            }
+
+            impl Worker {
+              function handle(self: Worker, value: string) -> string {
+                return value
+              }
+            }
+
+            function wrapper(worker: Worker, value: string) -> string {
+              return worker.handle(value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "wrapper"), no_effects());
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::ActorMethod {
+                actor,
+                source_callable,
+                method_name,
+                ..
+            } if actor == &SourceSymbolKey::new("api", "Worker")
+                && source_callable == &SourceSymbolKey::new("api", "Worker.handle")
+                && method_name == "handle"
+        )
+    }));
+}
+
+#[test]
+fn ordinary_receiver_call_does_not_use_actor_method_target() {
+    let model = analyze(
+        r#"
+            type Worker { label: string }
+
+            impl Worker {
+              function handle(self: Worker, value: string) -> string {
+                return value
+              }
+            }
+
+            function wrapper(worker: Worker, value: string) -> string {
+              return worker.handle(value)
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert!(model.resolved_call_targets().iter().any(|(_, target)| {
+        matches!(
+            target,
+            ResolvedCallTarget::LocalImplMethod {
+                source_callable,
+            } if source_callable == &SourceSymbolKey::new("api", "Worker.handle")
+        )
+    }));
+    assert!(!model
+        .resolved_call_targets()
+        .iter()
+        .any(|(_, target)| { matches!(target, ResolvedCallTarget::ActorMethod { .. }) }));
+}
+
+#[test]
 fn post_construction_store_of_caller_value_then_return_fails_closed() {
     let model = analyze(
         r#"

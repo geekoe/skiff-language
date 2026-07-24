@@ -358,6 +358,27 @@ fn assembly_execution_image_keeps_code_shared_and_call_kinds_distinct() {
         "localHelper"
     );
 
+    let LinkedExprIr::Call { call: actor } = &expressions[3] else {
+        panic!("fourth expression must be the Actor method call")
+    };
+    let LinkedCallTarget::ActorDispatch { plan } = &actor.target else {
+        panic!("Actor method call was not linked to routed Actor dispatch")
+    };
+    assert_eq!(plan.declaration_owner.actor_symbol, "DocHub");
+    assert_eq!(plan.method_identity.as_str(), "actor-method:submit");
+    let actor_declaration = &file.actor_declarations[0];
+    assert_eq!(
+        plan.actor_implementation_identity,
+        actor_declaration.actor_implementation_identity
+    );
+    let skiff_runtime_linked_program::LinkedActorMethodImplementation::Executable {
+        addr: actor_method_addr,
+    } = &actor_declaration.public_methods[0].implementation
+    else {
+        panic!("Actor method declaration entry was not linked")
+    };
+    assert_eq!(actor_method_addr.executable, 1);
+
     let type_addr = image
         .type_addr(&fixture.shared_build, &fixture.shared_file_identity, 0)
         .unwrap();
@@ -596,7 +617,11 @@ fn append_actor_registry_call(
         };
         file.actor_declarations.push(ActorDeclarationIr {
             actor_abi_identity: skiff_artifact_identity::actor_abi_identity(&abi).unwrap(),
+            actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+                "actor-impl:test",
+            ),
             abi,
+            method_implementations: BTreeMap::new(),
         });
     }
     let mut type_args = BTreeMap::from([

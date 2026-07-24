@@ -24,7 +24,7 @@ mod semantic;
 mod service_artifact_closure;
 mod service_assembly_identity;
 
-pub use actor::actor_abi_identity;
+pub use actor::{actor_abi_identity, actor_implementation_identity, actor_method_identity};
 pub use artifact_coordinates::{
     package_unit_content_hash, publication_storage_segment, validate_package_unit_artifact_path,
     validate_service_assembly_artifact_path,
@@ -35,7 +35,9 @@ pub use artifact_reference::{
     ServiceAssemblyArtifactRef, ServiceUnitArtifactRef,
 };
 pub use constants::{
-    ACTOR_ABI_IDENTITY_PREFIX, ACTOR_ABI_IDENTITY_SCHEMA_MARKER, ASSEMBLY_IDENTITY_PREFIX,
+    ACTOR_ABI_IDENTITY_PREFIX, ACTOR_ABI_IDENTITY_SCHEMA_MARKER,
+    ACTOR_IMPLEMENTATION_IDENTITY_PREFIX, ACTOR_IMPLEMENTATION_IDENTITY_SCHEMA_MARKER,
+    ACTOR_METHOD_IDENTITY_PREFIX, ACTOR_METHOD_IDENTITY_SCHEMA_MARKER, ASSEMBLY_IDENTITY_PREFIX,
     ASSEMBLY_IDENTITY_SCHEMA_MARKER, BUNDLE_IDENTITY_PREFIX, CONTRACT_OPERATION_IDENTITY_PREFIX,
     CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
     DEPLOYMENT_ARTIFACT_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX,

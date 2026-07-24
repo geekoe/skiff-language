@@ -623,7 +623,8 @@ impl SuspendContext<'_, '_> {
             ) => return true,
             Some(
                 ResolvedCallTarget::LocalFunction { .. }
-                | ResolvedCallTarget::LocalImplMethod { .. },
+                | ResolvedCallTarget::LocalImplMethod { .. }
+                | ResolvedCallTarget::ActorMethod { .. },
             )
             | None => {}
         }

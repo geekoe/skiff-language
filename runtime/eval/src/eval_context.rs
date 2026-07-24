@@ -972,12 +972,14 @@ impl<'a> EvalContext<'a> {
             }
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::PublicationExecutable { .. }
-            | LinkedCallTarget::PackageSymbol { .. } => {
-                Err(RuntimeError::InvalidArtifact(format!(
-                    "RuntimeProgram call target {} was not linked before execution",
-                    program_call_target_kind(&call.target)
-                )))
-            }
+            | LinkedCallTarget::PackageSymbol { .. }
+            | LinkedCallTarget::ActorMethod { .. } => Err(RuntimeError::InvalidArtifact(format!(
+                "RuntimeProgram call target {} was not linked before execution",
+                program_call_target_kind(&call.target)
+            ))),
+            LinkedCallTarget::ActorDispatch { .. } => Err(RuntimeError::Unsupported(
+                "Actor method dispatch requires the Actor executor".to_string(),
+            )),
             LinkedCallTarget::ExternalServiceSymbol { symbol } => {
                 Err(RuntimeError::InvalidArtifact(format!(
                     "RuntimeProgram external service call {} must use service dependency symbols",

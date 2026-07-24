@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    actor_declaration::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity},
     builtin_receiver_ops::BuiltinReceiverOp,
     compile_identity::PackageCallableId,
     file_ir::{DbIndexDirectionIr, FieldPathIr, ServiceCallRefIndex},
@@ -650,6 +651,14 @@ pub enum CallTargetIr {
     PackageCallable {
         package_ref: PackageRefIr,
         package_callable_id: PackageCallableId,
+    },
+    /// Canonical Actor boundary dispatch. The declaration and method tables
+    /// remain owned by the Actor declaration; a call only pins their identities.
+    ActorMethod {
+        actor: ServiceSymbolRef,
+        actor_abi_identity: ActorAbiIdentity,
+        actor_implementation_identity: ActorImplementationIdentity,
+        method_identity: ActorMethodIdentity,
     },
     Native {
         target: NativeTarget,

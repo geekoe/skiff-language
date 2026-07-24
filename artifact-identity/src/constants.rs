@@ -3,6 +3,11 @@ pub const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1";
 pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v5:sha256";
 pub const ACTOR_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-actor-abi-identity-v1";
 pub const ACTOR_ABI_IDENTITY_PREFIX: &str = "skiff-actor-abi-v1:sha256";
+pub const ACTOR_METHOD_IDENTITY_SCHEMA_MARKER: &str = "skiff-actor-method-identity-v1";
+pub const ACTOR_METHOD_IDENTITY_PREFIX: &str = "skiff-actor-method-v1:sha256";
+pub const ACTOR_IMPLEMENTATION_IDENTITY_SCHEMA_MARKER: &str =
+    "skiff-actor-implementation-identity-v1";
+pub const ACTOR_IMPLEMENTATION_IDENTITY_PREFIX: &str = "skiff-actor-implementation-v1:sha256";
 pub const SERVICE_UNIT_IDENTITY_PREFIX: &str = "skiff-service-unit-v1:sha256";
 pub const PACKAGE_BUILD_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-build-identity-v2";
 pub const PACKAGE_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-package-local-abi-identity-v2";

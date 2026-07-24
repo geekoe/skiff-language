@@ -162,7 +162,7 @@ fn service_spawn_target_for_call(
         // A direct package call is external to this File IR owner. Assembly
         // resolves its callable identity; spawn projection does not relink it.
         CallTargetIr::PackageCallable { .. } => Ok(None),
-        CallTargetIr::InterfaceMethod { .. } => Ok(None),
+        CallTargetIr::InterfaceMethod { .. } | CallTargetIr::ActorMethod { .. } => Ok(None),
         // A service boundary call is not a same-build executable spawn target.
         CallTargetIr::ServiceCall { .. } => Ok(None),
         CallTargetIr::ServiceDependencySymbol { .. }
@@ -245,7 +245,8 @@ fn package_spawn_target_for_call(
         | CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
         | CallTargetIr::ReceiverBuiltin { .. }
-        | CallTargetIr::InterfaceMethod { .. } => Ok(None),
+        | CallTargetIr::InterfaceMethod { .. }
+        | CallTargetIr::ActorMethod { .. } => Ok(None),
     }
 }
 

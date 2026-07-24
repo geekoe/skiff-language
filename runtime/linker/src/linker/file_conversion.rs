@@ -61,6 +61,24 @@ fn linked_actor_declarations(
     unit.actor_declarations
         .iter()
         .map(|declaration| {
+            let public_method_identities = declaration
+                .abi
+                .public_methods
+                .iter()
+                .map(|method| method.method_identity.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            let implementation_identities = declaration
+                .method_implementations
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            if public_method_identities != implementation_identities {
+                anyhow::bail!(
+                    "File IR {} actor {} method implementation table does not exactly match public methods",
+                    unit.file_ir_identity,
+                    declaration.abi.actor_name
+                );
+            }
             let computed_identity = skiff_artifact_identity::actor_abi_identity(&declaration.abi)
                 .with_context(|| {
                 format!(
@@ -90,6 +108,9 @@ fn linked_actor_declarations(
                 },
                 implementation_owner: None,
                 actor_abi_identity: declaration.actor_abi_identity.clone(),
+                actor_implementation_identity: declaration
+                    .actor_implementation_identity
+                    .clone(),
                 actor_name: declaration.abi.actor_name.clone(),
                 actor_id_type: linked_type_ref(&declaration.abi.actor_id_type),
                 fields: declaration
@@ -106,20 +127,48 @@ fn linked_actor_declarations(
                     .abi
                     .public_methods
                     .iter()
-                    .map(|method| LinkedActorPublicMethod {
-                        name: method.name.clone(),
-                        parameters: method
-                            .parameters
-                            .iter()
-                            .map(|parameter| LinkedFunctionTypeParamIr {
-                                name: parameter.name.clone(),
-                                ty: linked_type_ref(&parameter.ty),
-                            })
-                            .collect(),
-                        return_type: linked_type_ref(&method.return_type),
-                        may_suspend: method.may_suspend,
+                    .map(|method| {
+                        let executable_index = declaration
+                            .method_implementations
+                            .get(&method.method_identity)
+                            .copied()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "File IR {} actor {} public method {} has no implementation",
+                                    unit.file_ir_identity,
+                                    actor_name,
+                                    method.method_identity.as_str()
+                                )
+                            })?;
+                        if executable_index as usize >= unit.executables.len() {
+                            anyhow::bail!(
+                                "File IR {} actor {} public method {} implementation index {} is out of bounds",
+                                unit.file_ir_identity,
+                                actor_name,
+                                method.method_identity.as_str(),
+                                executable_index
+                            );
+                        }
+                        Ok(LinkedActorPublicMethod {
+                            method_identity: method.method_identity.clone(),
+                            name: method.name.clone(),
+                            parameters: method
+                                .parameters
+                                .iter()
+                                .map(|parameter| LinkedFunctionTypeParamIr {
+                                    name: parameter.name.clone(),
+                                    ty: linked_type_ref(&parameter.ty),
+                                })
+                                .collect(),
+                            return_type: linked_type_ref(&method.return_type),
+                            may_suspend: method.may_suspend,
+                            implementation:
+                                skiff_runtime_linked_program::LinkedActorMethodImplementation::LocalExecutable {
+                                    executable_index,
+                                },
+                        })
                     })
-                    .collect(),
+                    .collect::<anyhow::Result<Vec<_>>>()?,
                 actor_runtime_abi_version: declaration.abi.actor_runtime_abi_version.clone(),
             })
         })
@@ -944,6 +993,17 @@ fn linked_call(
             }
             artifact::CallTargetIr::ServiceCall { .. }
             | artifact::CallTargetIr::PackageCallable { .. } => canonical_call(&call.target)?,
+            artifact::CallTargetIr::ActorMethod {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            } => LinkedCallTarget::ActorMethod {
+                actor: actor.clone(),
+                actor_abi_identity: actor_abi_identity.clone(),
+                actor_implementation_identity: actor_implementation_identity.clone(),
+                method_identity: method_identity.clone(),
+            },
             artifact::CallTargetIr::Native { target } => LinkedCallTarget::Native {
                 target: target.clone(),
             },
@@ -1205,7 +1265,11 @@ mod tests {
         };
         file.actor_declarations.push(artifact::ActorDeclarationIr {
             actor_abi_identity: skiff_artifact_identity::actor_abi_identity(&abi).unwrap(),
+            actor_implementation_identity: artifact::ActorImplementationIdentity::new(
+                "actor-impl:test",
+            ),
             abi,
+            method_implementations: std::collections::BTreeMap::new(),
         });
         file
     }
@@ -1239,6 +1303,68 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate actor declaration")
+        );
+    }
+
+    #[test]
+    fn linked_call_preserves_actor_dispatch_identities_without_executable_address() {
+        let call = artifact::CallIr {
+            target: artifact::CallTargetIr::ActorMethod {
+                actor: artifact::ServiceSymbolRef {
+                    module_path: "actors".to_string(),
+                    symbol: "DocHub".to_string(),
+                },
+                actor_abi_identity: artifact::ActorAbiIdentity::new("actor-abi:test"),
+                actor_implementation_identity: artifact::ActorImplementationIdentity::new(
+                    "actor-impl:test",
+                ),
+                method_identity: artifact::ActorMethodIdentity::new("actor-method:submit"),
+            },
+            args: Vec::new(),
+            type_args: std::collections::BTreeMap::new(),
+            metadata: std::collections::BTreeMap::new(),
+        };
+        let linked = linked_call(&call, &|_| unreachable!()).unwrap();
+        let LinkedCallTarget::ActorMethod {
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        } = linked.target
+        else {
+            panic!("Actor call must remain a non-executable Actor target")
+        };
+        assert_eq!(actor.symbol, "DocHub");
+        assert_eq!(actor_abi_identity.as_str(), "actor-abi:test");
+        assert_eq!(actor_implementation_identity.as_str(), "actor-impl:test");
+        assert_eq!(method_identity.as_str(), "actor-method:submit");
+    }
+
+    #[test]
+    fn linked_file_conversion_rejects_actor_method_entry_out_of_bounds() {
+        let mut file = actor_file();
+        let method_identity = artifact::ActorMethodIdentity::new("actor-method:submit");
+        file.actor_declarations[0]
+            .abi
+            .public_methods
+            .push(artifact::ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "submit".to_string(),
+                parameters: Vec::new(),
+                return_type: artifact::TypeRefIr::builtin("void"),
+                may_suspend: false,
+            });
+        file.actor_declarations[0]
+            .method_implementations
+            .insert(method_identity, 0);
+        file.actor_declarations[0].actor_abi_identity =
+            skiff_artifact_identity::actor_abi_identity(&file.actor_declarations[0].abi).unwrap();
+
+        assert!(
+            linked_file_unit_from_assembly_artifact(&file, &|_| unreachable!())
+                .unwrap_err()
+                .to_string()
+                .contains("implementation index 0 is out of bounds")
         );
     }
 

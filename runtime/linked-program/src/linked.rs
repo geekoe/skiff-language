@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 pub use skiff_artifact_model::{
-    ActorAbiIdentity, ActorFieldEncodingIr, BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue,
-    NativeTarget, OperationAbiRef, PackageRefIr, PackageSymbolRef, ReceiverCallAbi,
-    ServiceDependencySymbolRef, ServiceSymbolRef, SourcePosition, SourceSpanRef,
-    RECEIVER_BUILTIN_CAPABILITY_VERSION,
+    ActorAbiIdentity, ActorFieldEncodingIr, ActorImplementationIdentity, ActorMethodIdentity,
+    BuiltinReceiverOp, FileIrRef, LiteralIr, MetadataValue, NativeTarget, OperationAbiRef,
+    PackageRefIr, PackageSymbolRef, ReceiverCallAbi, ServiceDependencySymbolRef, ServiceSymbolRef,
+    SourcePosition, SourceSpanRef, RECEIVER_BUILTIN_CAPABILITY_VERSION,
 };
 
 use super::addr::{
@@ -52,6 +52,7 @@ pub struct LinkedActorDeclaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementation_owner: Option<LinkedActorDeclarationOwner>,
     pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
     pub actor_name: String,
     pub actor_id_type: LinkedTypeRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -80,11 +81,39 @@ pub struct LinkedActorField {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedActorPublicMethod {
+    pub method_identity: ActorMethodIdentity,
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<LinkedFunctionTypeParamIr>,
     pub return_type: LinkedTypeRef,
     pub may_suspend: bool,
+    pub implementation: LinkedActorMethodImplementation,
+}
+
+/// The private code entry owned by an Actor declaration. This address is
+/// deliberately absent from [`LinkedActorMethodDispatchPlan`]: callers route
+/// by logical Actor identity and the owner runtime performs this final lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum LinkedActorMethodImplementation {
+    LocalExecutable { executable_index: u32 },
+    Executable { addr: ExecutableAddr },
+}
+
+/// A linked Actor call contains only the identities needed for routed dispatch.
+/// It is not an ordinary executable call and cannot bypass Actor ownership,
+/// epoch fencing, or the per-instance executor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedActorMethodDispatchPlan {
+    pub declaration_owner: LinkedActorDeclarationOwner,
+    pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
+    pub method_identity: ActorMethodIdentity,
 }
 
 /// A call-site reference to the single declaration that proved the registry
@@ -1081,6 +1110,18 @@ pub enum LinkedCallTarget {
     },
     Executable {
         addr: ExecutableAddr,
+    },
+    /// Artifact-level Actor method facts awaiting declaration-owner resolution.
+    ActorMethod {
+        actor: ServiceSymbolRef,
+        actor_abi_identity: ActorAbiIdentity,
+        actor_implementation_identity: ActorImplementationIdentity,
+        method_identity: ActorMethodIdentity,
+    },
+    /// Canonical routed Actor invocation. It never contains an executable
+    /// address; the owner runtime resolves the method in its declaration table.
+    ActorDispatch {
+        plan: LinkedActorMethodDispatchPlan,
     },
     ExternalServiceSymbol {
         symbol: ServiceSymbolRef,

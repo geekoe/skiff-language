@@ -3,9 +3,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use skiff_runtime_linked_program::{
     executable_type_param_names, LinkedActorDeclaration, LinkedActorDeclarationOwner,
-    LinkedActorNativeMetadata, LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody,
-    LinkedExprIr, LinkedFileUnit, LinkedInterfaceInstantiationRef,
-    LinkedInterfaceMethodTablePlanIr, LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
+    LinkedActorMethodDispatchPlan, LinkedActorMethodImplementation, LinkedActorNativeMetadata,
+    LinkedBoxSourceIr, LinkedCallTarget, LinkedExecutableBody, LinkedExprIr, LinkedFileUnit,
+    LinkedInterfaceInstantiationRef, LinkedInterfaceMethodTablePlanIr, LinkedStmtIr,
+    LinkedTypeDescriptor, LinkedTypeRef, PatternIr,
 };
 
 use super::{
@@ -91,6 +92,20 @@ impl<'a> AssemblyCodeLinker<'a> {
                     self.link_type_ref(code_slot, file_index, &mut parameter.ty)?;
                 }
                 self.link_type_ref(code_slot, file_index, &mut method.return_type)?;
+                match &method.implementation {
+                    LinkedActorMethodImplementation::LocalExecutable { executable_index } => {
+                        method.implementation = LinkedActorMethodImplementation::Executable {
+                            addr: self.addresses.executable_addr(
+                                code_slot,
+                                file_index,
+                                *executable_index as usize,
+                            )?,
+                        };
+                    }
+                    LinkedActorMethodImplementation::Executable { addr } => {
+                        self.addresses.validate_executable_addr(addr)?;
+                    }
+                }
             }
         }
         for ty in &mut file.types {
@@ -324,6 +339,7 @@ impl<'a> AssemblyCodeLinker<'a> {
                 }
                 LinkedExprIr::Call { call } => {
                     self.link_call_target(code_slot, file_index, &mut call.target)?;
+                    self.validate_actor_dispatch_call(call)?;
                     let is_actor_registry = actor_registry_target_name(&call.target).is_some();
                     for (name, type_arg) in &mut call.type_args {
                         if is_actor_registry && name == "T0" {
@@ -442,6 +458,38 @@ impl<'a> AssemblyCodeLinker<'a> {
         }))
     }
 
+    fn validate_actor_dispatch_call(
+        &self,
+        call: &skiff_runtime_linked_program::CallIr,
+    ) -> anyhow::Result<()> {
+        let LinkedCallTarget::ActorDispatch { plan } = &call.target else {
+            return Ok(());
+        };
+        let declaration = self
+            .addresses
+            .actor_declaration_by_owner(&plan.declaration_owner)?;
+        if declaration.actor_abi_identity != plan.actor_abi_identity
+            || declaration.actor_implementation_identity != plan.actor_implementation_identity
+        {
+            anyhow::bail!("Actor dispatch plan identities do not match declaration owner");
+        }
+        let method = declaration
+            .public_methods
+            .iter()
+            .find(|method| method.method_identity == plan.method_identity)
+            .ok_or_else(|| anyhow::anyhow!("Actor dispatch method is not declared by owner"))?;
+        let expected = method.parameters.len() + 1;
+        if call.args.len() != expected {
+            anyhow::bail!(
+                "Actor method {} expects {} arguments including receiver, got {}",
+                method.name,
+                expected,
+                call.args.len()
+            );
+        }
+        Ok(())
+    }
+
     fn actor_declaration_for_symbol(
         &self,
         code_slot: usize,
@@ -539,6 +587,73 @@ impl<'a> AssemblyCodeLinker<'a> {
                 self.addresses.validate_executable_addr(addr)?;
                 None
             }
+            LinkedCallTarget::ActorMethod {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            } => {
+                let (owner, declaration) = self.addresses.actor_declaration(code_slot, actor)?;
+                if declaration.actor_abi_identity != *actor_abi_identity {
+                    anyhow::bail!(
+                        "Actor method call ABI identity does not match declaration {}",
+                        declaration.actor_name
+                    );
+                }
+                if declaration.actor_implementation_identity != *actor_implementation_identity {
+                    anyhow::bail!(
+                        "Actor method call implementation identity does not match declaration {}",
+                        declaration.actor_name
+                    );
+                }
+                let mut methods = declaration
+                    .public_methods
+                    .iter()
+                    .filter(|method| method.method_identity == *method_identity);
+                let Some(method) = methods.next() else {
+                    anyhow::bail!(
+                        "Actor method identity {} is not declared by {}",
+                        method_identity.as_str(),
+                        declaration.actor_name
+                    );
+                };
+                if methods.next().is_some() {
+                    anyhow::bail!(
+                        "Actor method identity {} is ambiguous in {}",
+                        method_identity.as_str(),
+                        declaration.actor_name
+                    );
+                }
+                match &method.implementation {
+                    LinkedActorMethodImplementation::LocalExecutable { executable_index } => {
+                        self.addresses.executable_addr(
+                            code_slot,
+                            match owner.file {
+                                skiff_runtime_linked_program::FileAddr::LoadedFileIndex(index) => {
+                                    index
+                                }
+                                _ => {
+                                    anyhow::bail!("Actor declaration owner is not an assembly file")
+                                }
+                            },
+                            *executable_index as usize,
+                        )?;
+                    }
+                    LinkedActorMethodImplementation::Executable { addr } => {
+                        self.addresses.validate_executable_addr(addr)?;
+                    }
+                }
+                *target = LinkedCallTarget::ActorDispatch {
+                    plan: LinkedActorMethodDispatchPlan {
+                        declaration_owner: owner,
+                        actor_abi_identity: actor_abi_identity.clone(),
+                        actor_implementation_identity: actor_implementation_identity.clone(),
+                        method_identity: method_identity.clone(),
+                    },
+                };
+                return Ok(());
+            }
+            LinkedCallTarget::ActorDispatch { .. } => None,
             LinkedCallTarget::InterfaceMethod { .. }
             | LinkedCallTarget::LocalConstReceiverExecutable { .. } => None,
             LinkedCallTarget::ExternalServiceSymbol { .. }

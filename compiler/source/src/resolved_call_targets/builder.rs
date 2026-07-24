@@ -37,6 +37,12 @@ enum LocalCallTarget {
         type_name: String,
         method_name: String,
     },
+    ActorMethod {
+        actor: SourceSymbolKey,
+        module_path: String,
+        type_name: String,
+        method_name: String,
+    },
 }
 
 #[derive(Default)]
@@ -338,6 +344,16 @@ fn exact_native_binding_key(path: &str) -> Option<&'static str> {
 impl LocalCallTargetIndex {
     fn build(parsed_sources: &[ParsedCompilerSource]) -> Self {
         let mut index = Self::default();
+        let actor_symbols =
+            parsed_sources
+                .iter()
+                .filter(|parsed| !parsed.source().is_test_file)
+                .flat_map(|parsed| {
+                    parsed.ast().actors.iter().map(|actor| {
+                        SourceSymbolKey::new(parsed.module_path(), actor.name.as_str())
+                    })
+                })
+                .collect::<BTreeSet<_>>();
         for parsed in parsed_sources
             .iter()
             .filter(|parsed| !parsed.source().is_test_file)
@@ -354,12 +370,27 @@ impl LocalCallTargetIndex {
             }
             for implementation in &parsed.ast().impls {
                 let receiver_name = nominal_root(&implementation.target);
+                let actor = resolve_actor_symbol(
+                    &actor_symbols,
+                    module_path,
+                    implementation.target.as_str(),
+                );
                 for method in &implementation.method_bodies {
-                    let target = LocalCallTarget::ImplMethod {
+                    let target = if !method.is_static {
+                        actor.clone().map(|actor| LocalCallTarget::ActorMethod {
+                            actor,
+                            module_path: module_path.to_string(),
+                            type_name: implementation.target.clone(),
+                            method_name: method.name.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                    .unwrap_or_else(|| LocalCallTarget::ImplMethod {
                         module_path: module_path.to_string(),
                         type_name: implementation.target.clone(),
                         method_name: method.name.clone(),
-                    };
+                    });
                     index.insert_path(
                         format!("{module_path}.{}.{}", implementation.target, method.name),
                         target.clone(),
@@ -423,8 +454,41 @@ impl LocalCallTarget {
                     crate::semantic::impl_method_declaration_name(&type_name, &method_name),
                 ),
             },
+            Self::ActorMethod {
+                actor,
+                module_path,
+                type_name,
+                method_name,
+            } => ResolvedCallTarget::ActorMethod {
+                method_identity: skiff_artifact_identity::actor_method_identity(
+                    actor.module_path(),
+                    actor.symbol(),
+                    &method_name,
+                )
+                .expect("indexed actor method identity inputs are non-empty"),
+                actor,
+                source_callable: SourceSymbolKey::new(
+                    module_path,
+                    crate::semantic::impl_method_declaration_name(&type_name, &method_name),
+                ),
+                method_name,
+            },
         }
     }
+}
+
+fn resolve_actor_symbol(
+    actors: &BTreeSet<SourceSymbolKey>,
+    module_path: &str,
+    raw_target: &str,
+) -> Option<SourceSymbolKey> {
+    let target = nominal_root(raw_target);
+    let target = target.strip_prefix("root.").unwrap_or(&target);
+    let candidate = target
+        .rsplit_once('.')
+        .map(|(module, symbol)| SourceSymbolKey::new(module, symbol))
+        .unwrap_or_else(|| SourceSymbolKey::new(module_path, target));
+    actors.contains(&candidate).then_some(candidate)
 }
 
 fn unique_target(targets: Option<&Vec<LocalCallTarget>>) -> Option<ResolvedCallTarget> {

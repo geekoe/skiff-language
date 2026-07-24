@@ -6,6 +6,7 @@ use std::{
 use crate::file_ir::{assign_file_ir_identity, FileIrUnit};
 use skiff_artifact_model::{
     ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorImplementationIdentity, ActorPublicMethodIr, FunctionTypeParamIr,
     ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_source::{
@@ -209,7 +210,7 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         ctx,
         &expression_types,
     )?;
-    compile_package_source_file_ir_unit(PackageSourceLoweringInput {
+    let mut unit = compile_package_source_file_ir_unit(PackageSourceLoweringInput {
         source,
         role: &role,
         package_aliases: ctx.package_aliases,
@@ -225,7 +226,10 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         executable_signatures: &executable_signatures,
         interface_signatures: None,
         service_calls: ctx.service_calls,
-    })
+    })?;
+    finalize_actor_identities(std::slice::from_mut(&mut unit))?;
+    assign_file_ir_identity(&mut unit);
+    Ok(unit)
 }
 
 fn standalone_executable_signatures(
@@ -429,6 +433,9 @@ fn lower_source_file_ir_unit(
     )?;
     lower_actor_declarations(
         ast,
+        module_path,
+        executable_index,
+        &executable_signatures,
         &type_indices,
         &local_db_objects,
         publication_db_metadata,
@@ -510,9 +517,115 @@ fn lower_source_file_ir_unit(
     Ok(unit)
 }
 
+pub(super) fn finalize_actor_identities(units: &mut [FileIrUnit]) -> Result<()> {
+    let actors = units
+        .iter()
+        .flat_map(|unit| {
+            unit.actor_declarations.iter().map(|actor| {
+                (
+                    unit.module_path.clone(),
+                    actor.abi.actor_name.clone(),
+                    actor.actor_abi_identity.clone(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let abi_facts = actors
+        .iter()
+        .map(|(module, actor, abi)| ((module.clone(), actor.clone()), abi.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for unit in units.iter_mut() {
+        visit_actor_call_targets(unit, |actor, abi, implementation| {
+            *abi = abi_facts
+                .get(&(actor.module_path.clone(), actor.symbol.clone()))
+                .ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "Actor method target {} has no Actor declaration",
+                        actor.symbol_path()
+                    ))
+                })?
+                .clone();
+            *implementation = ActorImplementationIdentity::new("pending-actor-implementation");
+            Ok(())
+        })?;
+    }
+
+    let mut facts = BTreeMap::new();
+    for (module_path, actor_name, actor_abi_identity) in actors {
+        let implementation = skiff_artifact_identity::actor_implementation_identity(
+            units,
+            &module_path,
+            &actor_name,
+        )
+        .map_err(|error| CompileError::Semantic(error.to_string()))?;
+        facts.insert(
+            (module_path, actor_name),
+            (actor_abi_identity, implementation),
+        );
+    }
+    for unit in units.iter_mut() {
+        for declaration in &mut unit.actor_declarations {
+            declaration.actor_implementation_identity = facts
+                .get(&(unit.module_path.clone(), declaration.abi.actor_name.clone()))
+                .expect("Actor identity fact was collected from this declaration")
+                .1
+                .clone();
+        }
+        visit_actor_call_targets(unit, |actor, abi, implementation| {
+            let (canonical_abi, canonical_implementation) = facts
+                .get(&(actor.module_path.clone(), actor.symbol.clone()))
+                .expect("Actor target was validated before identity computation");
+            *abi = canonical_abi.clone();
+            *implementation = canonical_implementation.clone();
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn visit_actor_call_targets(
+    unit: &mut FileIrUnit,
+    mut visit: impl FnMut(
+        &skiff_artifact_model::ServiceSymbolRef,
+        &mut skiff_artifact_model::ActorAbiIdentity,
+        &mut ActorImplementationIdentity,
+    ) -> Result<()>,
+) -> Result<()> {
+    for body in unit
+        .constants
+        .iter_mut()
+        .map(|constant| &mut constant.body)
+        .chain(
+            unit.executables
+                .iter_mut()
+                .map(|executable| &mut executable.body),
+        )
+    {
+        for expression in &mut body.expressions {
+            let skiff_artifact_model::ExprIr::Call { call } = expression else {
+                continue;
+            };
+            let skiff_artifact_model::CallTargetIr::ActorMethod {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                ..
+            } = &mut call.target
+            else {
+                continue;
+            };
+            visit(actor, actor_abi_identity, actor_implementation_identity)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_actor_declarations(
     ast: &SourceFile,
+    module_path: &str,
+    executable_index: &skiff_compiler_source::semantic::ExecutableIndex,
+    executable_signatures: &BTreeMap<u32, super::function_lowering::LoweredExecutableSignature>,
     type_indices: &BTreeMap<String, u32>,
     local_db_objects: &LocalDbObjectIndex,
     publication_db_metadata: &PublicationDbMetadataIndex,
@@ -552,18 +665,79 @@ fn lower_actor_declarations(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let actor_methods = ast
+            .impls
+            .iter()
+            .filter(|implementation| implementation.target == actor.name)
+            .flat_map(|implementation| implementation.method_bodies.iter())
+            .filter(|method| !method.is_static)
+            .map(|method| {
+                let declaration_name = impl_method_declaration_name(&actor.name, &method.name);
+                let executable_index = executable_index
+                    .entry(&declaration_name)
+                    .ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "missing semantic executable index for Actor method `{declaration_name}`"
+                        ))
+                    })?
+                    .executable_index;
+                let signature = executable_signatures.get(&executable_index).ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "missing lowered signature for Actor method `{declaration_name}`"
+                    ))
+                })?;
+                let method_identity =
+                    skiff_artifact_identity::actor_method_identity(
+                        module_path,
+                        &actor.name,
+                        &method.name,
+                    )
+                    .map_err(|error| CompileError::Semantic(error.to_string()))?;
+                Ok((
+                    ActorPublicMethodIr {
+                        method_identity: method_identity.clone(),
+                        name: method.name.clone(),
+                        parameters: signature
+                            .params
+                            .iter()
+                            .skip(1)
+                            .map(|parameter| FunctionTypeParamIr {
+                                name: parameter.name.clone(),
+                                ty: parameter.ty.clone(),
+                            })
+                            .collect(),
+                        return_type: signature.return_type.clone(),
+                        may_suspend: signature.may_suspend,
+                    },
+                    method_identity,
+                    executable_index,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let abi = ActorAbiInput {
             actor_name: actor.name.clone(),
             actor_id_type,
             fields,
-            public_methods: Vec::new(),
+            public_methods: actor_methods
+                .iter()
+                .map(|(method, _, _)| method.clone())
+                .collect(),
             actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
         };
         let actor_abi_identity = skiff_artifact_identity::actor_abi_identity(&abi)
             .map_err(|error| CompileError::Semantic(error.to_string()))?;
         unit.actor_declarations.push(ActorDeclarationIr {
             actor_abi_identity,
+            // Package lowering replaces this private transient value after all
+            // File IR units are available and the reachable graph can be hashed.
+            actor_implementation_identity: ActorImplementationIdentity::new(
+                "pending-actor-implementation",
+            ),
             abi,
+            method_implementations: actor_methods
+                .into_iter()
+                .map(|(_, identity, executable_index)| (identity, executable_index))
+                .collect(),
         });
     }
     Ok(())
@@ -990,6 +1164,12 @@ mod tests {
                 loginCount: number,
               }
 
+              impl UserActor {
+                function rename(self: UserActor, value: string) -> string {
+                  return value
+                }
+              }
+
               function load(id: string) -> UserActor {
                 const actor = std.actor.getOrCreate<UserActor>(
                   id,
@@ -997,6 +1177,10 @@ mod tests {
                 )
                 const found = std.actor.find<UserActor>(id)
                 return actor
+              }
+
+              function invoke(actor: UserActor) -> string {
+                return actor.rename("Grace")
               }
             "#,
         );
@@ -1016,6 +1200,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["displayName", "loginCount"]
         );
+        assert_eq!(declaration.abi.public_methods.len(), 1);
+        let rename = &declaration.abi.public_methods[0];
+        assert_eq!(rename.name, "rename");
+        assert_eq!(rename.parameters.len(), 1);
+        assert_eq!(rename.parameters[0].name, "value");
+        assert_eq!(rename.return_type, TypeRefIr::builtin("string"));
+        assert!(!rename.may_suspend);
+        assert_eq!(
+            declaration
+                .method_implementations
+                .get(&rename.method_identity),
+            unit.declarations
+                .executables
+                .get("UserActor.rename")
+                .map(|entry| &entry.executable_index)
+        );
+        assert!(!declaration
+            .actor_implementation_identity
+            .as_str()
+            .contains("pending"));
 
         let load = executable(&unit, "load");
         let calls = load
@@ -1035,6 +1239,40 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(calls.len(), 2);
+
+        let invoke = executable(&unit, "invoke");
+        let actor_call = invoke
+            .body
+            .expressions
+            .iter()
+            .find_map(|expression| match expression {
+                ExprIr::Call {
+                    call:
+                        call @ skiff_artifact_model::CallIr {
+                            target: CallTargetIr::ActorMethod { .. },
+                            ..
+                        },
+                } => Some(call),
+                _ => None,
+            })
+            .expect("Actor receiver call should keep its dedicated target");
+        let CallTargetIr::ActorMethod {
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        } = &actor_call.target
+        else {
+            unreachable!("find_map only returns ActorMethod");
+        };
+        assert_eq!(actor.module_path, MODULE);
+        assert_eq!(actor.symbol, "UserActor");
+        assert_eq!(actor_abi_identity, &declaration.actor_abi_identity);
+        assert_eq!(
+            actor_implementation_identity,
+            &declaration.actor_implementation_identity
+        );
+        assert_eq!(method_identity, &rename.method_identity);
 
         let get_or_create = calls
             .iter()

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{PackageBuildId, PackageRefIr};
 use skiff_runtime_linked_program::{
-    ExecutableAddr, FileAddr, LinkedFileUnit, PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr,
-    UnitAddr,
+    ExecutableAddr, FileAddr, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedFileUnit,
+    PackageCodeSlotIndex, ServiceSymbolRef, TypeAddr, UnitAddr,
 };
 
 pub(super) struct AssemblyAddressResolver<'a> {
@@ -128,6 +128,77 @@ impl<'a> AssemblyAddressResolver<'a> {
                 symbol.symbol
             )
         })
+    }
+
+    pub(super) fn actor_declaration(
+        &self,
+        code_slot: usize,
+        symbol: &ServiceSymbolRef,
+    ) -> anyhow::Result<(LinkedActorDeclarationOwner, &LinkedActorDeclaration)> {
+        let mut resolved = None;
+        for (file_index, file) in self.package_files(code_slot)?.iter().enumerate() {
+            if file.module_path != symbol.module_path {
+                continue;
+            }
+            for declaration in &file.actor_declarations {
+                if declaration.actor_type != *symbol {
+                    continue;
+                }
+                if resolved.is_some() {
+                    anyhow::bail!(
+                        "Actor declaration {}.{} is ambiguous",
+                        symbol.module_path,
+                        symbol.symbol
+                    );
+                }
+                resolved = Some((
+                    LinkedActorDeclarationOwner {
+                        unit: UnitAddr::Package(code_slot),
+                        file: FileAddr::LoadedFileIndex(file_index),
+                        actor_symbol: symbol.symbol.clone(),
+                    },
+                    declaration,
+                ));
+            }
+        }
+        resolved.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Actor method resolves to a type without an Actor declaration: {}.{}",
+                symbol.module_path,
+                symbol.symbol
+            )
+        })
+    }
+
+    pub(super) fn actor_declaration_by_owner(
+        &self,
+        owner: &LinkedActorDeclarationOwner,
+    ) -> anyhow::Result<&LinkedActorDeclaration> {
+        let UnitAddr::Package(code_slot) = owner.unit else {
+            anyhow::bail!("Actor declaration owner cannot use a service unit");
+        };
+        let file_index = self.file_index(code_slot, &owner.file)?;
+        let file = self
+            .package_files(code_slot)?
+            .get(file_index)
+            .expect("validated Actor owner file");
+        let mut declarations = file
+            .actor_declarations
+            .iter()
+            .filter(|declaration| declaration.actor_type.symbol == owner.actor_symbol);
+        let declaration = declarations.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Actor declaration owner references missing symbol {}",
+                owner.actor_symbol
+            )
+        })?;
+        if declarations.next().is_some() {
+            anyhow::bail!(
+                "Actor declaration owner references ambiguous symbol {}",
+                owner.actor_symbol
+            );
+        }
+        Ok(declaration)
     }
 
     pub(super) fn package_symbol_type_addr(

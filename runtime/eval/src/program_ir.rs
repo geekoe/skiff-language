@@ -137,6 +137,8 @@ pub fn program_call_target_kind(target: &LinkedCallTarget) -> &'static str {
         LinkedCallTarget::ReceiverBuiltin { .. } => "receiverBuiltin",
         LinkedCallTarget::InterfaceMethod { .. } => "interfaceMethod",
         LinkedCallTarget::LocalConstReceiverExecutable { .. } => "localConstReceiverExecutable",
+        LinkedCallTarget::ActorMethod { .. } => "actorMethod",
+        LinkedCallTarget::ActorDispatch { .. } => "actorDispatch",
     }
 }
 

@@ -164,6 +164,7 @@ fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFac
         ResolvedCallTarget::Unknown { .. } => Some(CallableTargetFact::Unknown),
         ResolvedCallTarget::LocalFunction { .. }
         | ResolvedCallTarget::LocalImplMethod { .. }
+        | ResolvedCallTarget::ActorMethod { .. }
         | ResolvedCallTarget::NativeFunction { .. }
         | ResolvedCallTarget::ReceiverBuiltin { .. } => None,
     }

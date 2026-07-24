@@ -1181,7 +1181,11 @@ impl<'a> FunctionLowerer<'a> {
                 service_call_ref_index,
             }
         } else if let Expr::Field { object, field } = callee {
-            if let Some(target) =
+            if let Some(target) = self.actor_method_call_target(expression_key)? {
+                self.next_expression_key();
+                lowered_args.push(self.lower_expr(object)?);
+                target
+            } else if let Some(target) =
                 self.resolved_receiver_builtin_call_target(expression_key, object, field)?
             {
                 self.next_expression_key();
@@ -1571,6 +1575,34 @@ impl<'a> FunctionLowerer<'a> {
         Err(CompileError::Semantic(format!(
             "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, or interface receiver root"
         )))
+    }
+
+    fn actor_method_call_target(
+        &self,
+        expression_key: Option<&ExpressionKey>,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(ResolvedCallTarget::ActorMethod {
+            actor,
+            method_identity,
+            ..
+        }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
+        else {
+            return Ok(None);
+        };
+        Ok(Some(CallTargetIr::ActorMethod {
+            actor: ServiceSymbolRef {
+                module_path: actor.module_path().to_string(),
+                symbol: actor.symbol().to_string(),
+            },
+            // These two identities require the full cross-file execution graph.
+            // LoweredPackage::lower replaces both transient values before an
+            // artifact can leave the compiler.
+            actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new("pending-actor-abi"),
+            actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+                "pending-actor-implementation",
+            ),
+            method_identity: method_identity.clone(),
+        }))
     }
 
     fn lower_any_interface_receiver_call_target(
@@ -2080,6 +2112,7 @@ fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
     match target {
         ResolvedCallTarget::LocalFunction { .. } => "LocalFunction",
         ResolvedCallTarget::LocalImplMethod { .. } => "LocalImplMethod",
+        ResolvedCallTarget::ActorMethod { .. } => "ActorMethod",
         ResolvedCallTarget::NativeFunction { .. } => "NativeFunction",
         ResolvedCallTarget::ReceiverBuiltin { .. } => "ReceiverBuiltin",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",

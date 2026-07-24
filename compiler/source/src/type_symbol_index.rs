@@ -74,6 +74,7 @@ pub fn publication_type_symbols(
                     .iter()
                     .map(|decl| decl.name.as_str()),
             )
+            .chain(parsed.ast().actors.iter().map(|decl| decl.name.as_str()))
         {
             symbols.insert(&parsed.source().module_path, name);
         }

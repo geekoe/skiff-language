@@ -265,6 +265,9 @@ fn collect_call_target_external_refs(target: &CallTargetIr, refs: &mut ExternalR
         CallTargetIr::ExternalServiceSymbol { symbol } => {
             push_unique(&mut refs.service_symbols, symbol.clone());
         }
+        CallTargetIr::ActorMethod { actor, .. } => {
+            push_unique(&mut refs.service_symbols, actor.clone());
+        }
         CallTargetIr::ServiceDependencySymbol { symbol } => {
             push_unique(&mut refs.service_dependency_symbols, symbol.clone());
         }

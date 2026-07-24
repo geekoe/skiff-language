@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +20,84 @@ impl ActorAbiIdentity {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ActorMethodIdentity(String);
+
+impl ActorMethodIdentity {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ActorImplementationIdentity(String);
+
+impl ActorImplementationIdentity {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "ActorDeclarationIrWire"
+)]
 pub struct ActorDeclarationIr {
     pub actor_abi_identity: ActorAbiIdentity,
+    pub actor_implementation_identity: ActorImplementationIdentity,
     pub abi: ActorAbiInput,
+    pub method_implementations: BTreeMap<ActorMethodIdentity, u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ActorDeclarationIrWire {
+    actor_abi_identity: ActorAbiIdentity,
+    actor_implementation_identity: ActorImplementationIdentity,
+    abi: ActorAbiInput,
+    method_implementations: BTreeMap<ActorMethodIdentity, u32>,
+}
+
+impl TryFrom<ActorDeclarationIrWire> for ActorDeclarationIr {
+    type Error = String;
+
+    fn try_from(wire: ActorDeclarationIrWire) -> Result<Self, Self::Error> {
+        let public = wire
+            .abi
+            .public_methods
+            .iter()
+            .map(|method| method.method_identity.clone())
+            .collect::<BTreeSet<_>>();
+        let implementations = wire
+            .method_implementations
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if public != implementations {
+            return Err(
+                "actor methodImplementations must match publicMethods methodIdentity values"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            actor_abi_identity: wire.actor_abi_identity,
+            actor_implementation_identity: wire.actor_implementation_identity,
+            abi: wire.abi,
+            method_implementations: wire.method_implementations,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,9 +148,16 @@ impl TryFrom<ActorAbiInputWire> for ActorAbiInput {
             reject_actor_ref(&field.ty)?;
         }
         let mut method_names = BTreeSet::new();
+        let mut method_identities = BTreeSet::new();
         for method in &wire.public_methods {
             if !method_names.insert(method.name.as_str()) {
                 return Err(format!("duplicate actor public method {}", method.name));
+            }
+            if !method_identities.insert(method.method_identity.as_str()) {
+                return Err(format!(
+                    "duplicate actor public method identity {}",
+                    method.method_identity.as_str()
+                ));
             }
             for parameter in &method.parameters {
                 reject_actor_ref(&parameter.ty)?;
@@ -195,6 +275,45 @@ mod tests {
             .to_string()
             .contains("duplicate actor field"));
     }
+
+    #[test]
+    fn actor_declaration_requires_exact_public_method_implementation_map() {
+        let method = ActorMethodIdentity::new("skiff-actor-method-v1:sha256:append");
+        let declaration = ActorDeclarationIr {
+            actor_abi_identity: ActorAbiIdentity::new("actor-abi"),
+            actor_implementation_identity: ActorImplementationIdentity::new("actor-impl"),
+            abi: ActorAbiInput {
+                actor_name: "DocHub".to_string(),
+                actor_id_type: TypeRefIr::builtin("string"),
+                fields: Vec::new(),
+                public_methods: vec![ActorPublicMethodIr {
+                    method_identity: method.clone(),
+                    name: "append".to_string(),
+                    parameters: Vec::new(),
+                    return_type: TypeRefIr::builtin("void"),
+                    may_suspend: false,
+                }],
+                actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+            },
+            method_implementations: BTreeMap::from([(method, 0)]),
+        };
+        let wire = serde_json::to_value(declaration).unwrap();
+        assert!(serde_json::from_value::<ActorDeclarationIr>(wire.clone()).is_ok());
+
+        let mut missing = wire.clone();
+        missing["methodImplementations"] = json!({});
+        assert!(serde_json::from_value::<ActorDeclarationIr>(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("must match"));
+
+        let mut orphan = wire;
+        orphan["methodImplementations"] = json!({"orphan": 1});
+        assert!(serde_json::from_value::<ActorDeclarationIr>(orphan)
+            .unwrap_err()
+            .to_string()
+            .contains("must match"));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +333,7 @@ pub enum ActorFieldEncodingIr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActorPublicMethodIr {
+    pub method_identity: ActorMethodIdentity,
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<FunctionTypeParamIr>,

@@ -96,7 +96,11 @@ fn actor_declaration_abi_participates_in_file_ir_identity() {
     };
     unit.actor_declarations.push(ActorDeclarationIr {
         actor_abi_identity: actor_abi_identity(&abi).expect("actor ABI identity"),
+        actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity::new(
+            "skiff-actor-implementation-v1:sha256:placeholder",
+        ),
         abi,
+        method_implementations: Default::default(),
     });
     let baseline = file_ir_identity(&unit).expect("actor File IR identity");
 

@@ -43,7 +43,8 @@ impl Evaluator<'_, '_> {
         }
         match target {
             Some(ResolvedCallTarget::LocalFunction { .. })
-            | Some(ResolvedCallTarget::LocalImplMethod { .. }) => {
+            | Some(ResolvedCallTarget::LocalImplMethod { .. })
+            | Some(ResolvedCallTarget::ActorMethod { .. }) => {
                 let target = target.expect("matched local target");
                 let Some(callee_key) = target.source_callable_key() else {
                     return self.apply_unknown_call_with_callee(

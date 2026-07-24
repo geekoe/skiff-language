@@ -4,7 +4,9 @@ use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
     publication_local_refs::rewrite_publication_local_refs,
-    source_file_lowering::{compile_package_source_file_ir_unit, PackageSourceLoweringInput},
+    source_file_lowering::{
+        compile_package_source_file_ir_unit, finalize_actor_identities, PackageSourceLoweringInput,
+    },
     type_ref_ir_source_text_with_local_types, CompiledPackageSource, EntryFunctionSignature,
     EntryParamSpec, EntryTypeSpec, EntrypointAbiIndex,
 };
@@ -141,6 +143,14 @@ impl LoweredPackage {
         // reachable from a re-exported symbol's signature must be LINKABLE even if
         // it is not itself a public writable name.
         derive_file_ir_link_targets(&mut file_ir_units, model.publication_api().seed());
+        finalize_actor_identities(&mut file_ir_units).map_err(|error| {
+            PublicationError::ContractValidation {
+                message: format!("Actor identity finalization failed: {error}"),
+            }
+        })?;
+        for unit in &mut file_ir_units {
+            assign_file_ir_identity(unit);
+        }
 
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)

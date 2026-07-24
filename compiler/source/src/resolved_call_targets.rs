@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
-    BuiltinReceiverOp, ContractOperationId, ContractRequirement, PackageCallableId,
-    PackageLocalAbiIdentity,
+    ActorMethodIdentity, BuiltinReceiverOp, ContractOperationId, ContractRequirement,
+    PackageCallableId, PackageLocalAbiIdentity,
 };
 
 use crate::{ExpressionKey, SourceSymbolKey};
@@ -26,6 +26,12 @@ pub enum ResolvedCallTarget {
     },
     LocalImplMethod {
         source_callable: SourceSymbolKey,
+    },
+    ActorMethod {
+        actor: SourceSymbolKey,
+        source_callable: SourceSymbolKey,
+        method_name: String,
+        method_identity: ActorMethodIdentity,
     },
     NativeFunction {
         binding_key: String,
@@ -52,9 +58,11 @@ impl ResolvedCallTarget {
     /// SourceCallableEffectFacts and the T02 SCC graph.
     pub fn source_callable_key(&self) -> Option<SourceSymbolKey> {
         match self {
-            Self::LocalFunction { source_callable } | Self::LocalImplMethod { source_callable } => {
-                Some(source_callable.clone())
-            }
+            Self::LocalFunction { source_callable }
+            | Self::LocalImplMethod { source_callable }
+            | Self::ActorMethod {
+                source_callable, ..
+            } => Some(source_callable.clone()),
             Self::NativeFunction { .. }
             | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
@@ -156,6 +164,31 @@ mod tests {
             }),
         );
 
+        let method_identity =
+            skiff_artifact_identity::actor_method_identity("api", "Worker", "handle").unwrap();
+        let actor_method = ResolvedCallTarget::ActorMethod {
+            actor: SourceSymbolKey::new("api", "Worker"),
+            source_callable: SourceSymbolKey::new("api", "Worker.handle"),
+            method_name: "handle".to_string(),
+            method_identity: method_identity.clone(),
+        };
+        assert_target_wire(
+            actor_method,
+            json!({
+                "kind": "actorMethod",
+                "actor": {
+                    "modulePath": "api",
+                    "symbol": "Worker"
+                },
+                "sourceCallable": {
+                    "modulePath": "api",
+                    "symbol": "Worker.handle"
+                },
+                "methodName": "handle",
+                "methodIdentity": method_identity.as_str()
+            }),
+        );
+
         let native = ResolvedCallTarget::NativeFunction {
             binding_key: "std.string.truncateUtf8Bytes".to_string(),
         };
@@ -251,6 +284,18 @@ mod tests {
                 "typeName": "Worker"
             }),
             json!({
+                "kind": "actorMethod",
+                "actor": {
+                    "modulePath": "api",
+                    "symbol": "Worker"
+                },
+                "sourceCallable": {
+                    "modulePath": "api",
+                    "symbol": "Worker.handle"
+                },
+                "methodName": "handle"
+            }),
+            json!({
                 "kind": "dependencyPackageFunction",
                 "packageCallableId": "callable:format",
                 "expectedLocalAbi": "abi:util"
@@ -291,6 +336,20 @@ mod tests {
         assert_eq!(
             method.source_callable_key(),
             Some(SourceSymbolKey::new("workers", "Worker<Job>.handle"))
+        );
+
+        let actor_method = ResolvedCallTarget::ActorMethod {
+            actor: SourceSymbolKey::new("workers", "Worker"),
+            source_callable: SourceSymbolKey::new("workers", "Worker.handle"),
+            method_name: "handle".to_string(),
+            method_identity: skiff_artifact_identity::actor_method_identity(
+                "workers", "Worker", "handle",
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            actor_method.source_callable_key(),
+            Some(SourceSymbolKey::new("workers", "Worker.handle"))
         );
 
         let dependency = ResolvedCallTarget::DependencyPackageFunction {
