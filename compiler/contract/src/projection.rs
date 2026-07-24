@@ -315,35 +315,6 @@ fn project_boundary_schema(
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let mut shapes = BTreeMap::new();
-    for (public_path, (descriptor, is_interface, type_params, interface_methods)) in public_types {
-        let descriptor = if is_interface {
-            project_interface_descriptor(
-                public_path.as_str(),
-                interface_methods,
-                &source_to_public,
-                &type_sources,
-                &type_ids,
-            )?
-        } else {
-            project_type_descriptor(
-                public_path.as_str(),
-                descriptor,
-                &source_to_public,
-                &type_sources,
-                &type_ids,
-            )?
-        };
-        shapes.insert(
-            public_path,
-            ContractTypeShape {
-                nameability: ContractTypeNameability::PublicNameable,
-                type_params: type_params.to_vec(),
-                descriptor,
-            },
-        );
-    }
-
     let mut reachable = BTreeSet::new();
     for operation in operations.values() {
         collect_operation_type_ids(operation, &mut reachable);
@@ -354,6 +325,7 @@ fn project_boundary_schema(
         .collect::<BTreeMap<_, _>>();
     let mut pending = reachable.into_iter().collect::<Vec<_>>();
     let mut closed_keys = BTreeSet::new();
+    let mut shapes = BTreeMap::new();
     while let Some(type_id) = pending.pop() {
         let key = ids_to_keys.get(&type_id).ok_or_else(|| {
             ContractDefinitionError::MissingReachablePackageType {
@@ -363,9 +335,26 @@ fn project_boundary_schema(
         if !closed_keys.insert(key.clone()) {
             continue;
         }
-        collect_shape_type_ids(&shapes[key], &mut pending);
+        let (descriptor, is_interface, type_params, interface_methods) = public_types[key];
+        let descriptor = if is_interface {
+            project_interface_descriptor(
+                key,
+                interface_methods,
+                &source_to_public,
+                &type_sources,
+                &type_ids,
+            )?
+        } else {
+            project_type_descriptor(key, descriptor, &source_to_public, &type_sources, &type_ids)?
+        };
+        let shape = ContractTypeShape {
+            nameability: ContractTypeNameability::PublicNameable,
+            type_params: type_params.to_vec(),
+            descriptor,
+        };
+        collect_shape_type_ids(&shape, &mut pending);
+        shapes.insert(key.clone(), shape);
     }
-    shapes.retain(|key, _| closed_keys.contains(key));
     let diagnostic_text = shapes
         .keys()
         .map(|key| (key.clone(), key.clone()))
@@ -942,6 +931,93 @@ mod tests {
     }
 
     #[test]
+    fn unreachable_public_interface_does_not_enter_or_block_service_schema() {
+        let mut package = package_fixture("1.0.0");
+        insert_public_interface(
+            &mut package,
+            "ProxyClient",
+            4,
+            InterfaceMethodSignature {
+                name: "send".to_string(),
+                type_params: Vec::new(),
+                params: vec![FunctionTypeParamIr {
+                    name: "transform".to_string(),
+                    ty: TypeRefIr::Function {
+                        params: Vec::new(),
+                        return_type: Box::new(TypeRefIr::native("string")),
+                    },
+                }],
+                return_type: TypeRefIr::native("void"),
+                may_suspend: true,
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: Some(TypeRefIr::LocalType { type_index: 4 }),
+            },
+        );
+
+        let projected = project_service_api("example.registry", &package).unwrap();
+
+        assert_eq!(projected.available.keys().collect::<Vec<_>>(), vec!["read"]);
+        assert!(!projected
+            .contract
+            .boundary_schema
+            .values()
+            .any(|schema| schema.stable_key == "ProxyClient"));
+    }
+
+    #[test]
+    fn reachable_callback_interface_is_strict_and_duplicate_seeds_close_once() {
+        let mut package = package_fixture("1.0.0");
+        insert_public_interface(
+            &mut package,
+            "ProxyClient",
+            4,
+            InterfaceMethodSignature {
+                name: "send".to_string(),
+                type_params: Vec::new(),
+                params: vec![FunctionTypeParamIr {
+                    name: "transform".to_string(),
+                    ty: TypeRefIr::Function {
+                        params: Vec::new(),
+                        return_type: Box::new(TypeRefIr::native("string")),
+                    },
+                }],
+                return_type: TypeRefIr::native("void"),
+                may_suspend: true,
+                is_native: false,
+                is_provider: false,
+                is_static: false,
+                implicit_self: Some(TypeRefIr::LocalType { type_index: 4 }),
+            },
+        );
+        let callback_id =
+            definition_contract_type_id("example.registry", "1.0.0", "ProxyClient").unwrap();
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = package
+            .boundary_projections
+            .get_mut(&callable("read"))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        operation_contract.callbacks = BoundaryCallbackContract::RequestScoped {
+            interface_type_ids: vec![callback_id.clone(), callback_id],
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+        };
+
+        assert!(matches!(
+            project_service_api("example.registry", &package),
+            Err(ContractDefinitionError::UnsupportedPackageSchemaType {
+                public_path,
+                kind: "non-materializable",
+            }) if public_path == "ProxyClient"
+        ));
+    }
+
+    #[test]
     fn missing_duplicate_and_unclosed_inputs_fail_closed() {
         let mut missing = package_fixture("1.0.0");
         missing.boundary_projections.remove(&callable("read"));
@@ -1341,6 +1417,39 @@ mod tests {
             type_params: Vec::new(),
             interface_methods: Vec::new(),
         }
+    }
+
+    fn insert_public_interface(
+        package: &mut PackageArtifact,
+        name: &str,
+        type_index: u32,
+        method: InterfaceMethodSignature,
+    ) {
+        let descriptor = TypeDescriptorIr::Native {
+            symbol: format!("interface:{name}"),
+        };
+        package.package_local_abi.public_symbols.insert(
+            name.to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: format!("type:{name}"),
+                descriptor: descriptor.clone(),
+                is_interface: true,
+                type_params: Vec::new(),
+                interface_methods: vec![method.clone()],
+            },
+        );
+        package.implementation_links.types.insert(
+            name.to_string(),
+            TypeExport {
+                file: skiff_artifact_model::FileIrRef::new("file:model", "model"),
+                type_index,
+                symbol: name.to_string(),
+                is_interface: true,
+                descriptor: Some(descriptor),
+                type_params: Vec::new(),
+                interface_methods: vec![method],
+            },
+        );
     }
 
     fn type_export(name: &str, type_index: u32, descriptor: TypeDescriptorIr) -> TypeExport {
