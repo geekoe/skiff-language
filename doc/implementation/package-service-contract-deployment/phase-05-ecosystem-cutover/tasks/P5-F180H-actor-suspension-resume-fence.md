@@ -15,7 +15,7 @@
 ## 范围
 
 - runtime/eval continuation 与 Actor executor/scheduler；
-- Host capability/stream/timer/send/yield 的 Actor suspension handoff；
+- Host capability/stream/timer 的 Actor suspension handoff；
 - 取消、deadline 与恢复错误映射；
 - 聚焦并发测试。
 
@@ -25,10 +25,10 @@
 
 - 以下边界会让出实例执行权：
   - async service call；
-  - stream next/顺序消费等待；
+  - stream next/顺序消费在下一项尚未就绪时的真实等待；
   - timer/sleep；
-  - connection/send 等异步 capability；
-  - 显式 `yield`；
+- `connection.send` 同步写入本地发送队列，不让出执行权；
+- Runtime 不提供显式 `yield`，也不在同步指令之间自动抢占；
 - 让出前提交当前同步片段的合法字段写入并使 execution token 失效；
 - continuation 只能保存普通局部值和可重建执行位置，不得持有：
   - 裸字段引用；
@@ -53,10 +53,10 @@
 - 方法写字段→挂起→另一方法改字段→恢复读取新值；
 - 同实例同步片段不交错，挂起期间允许另一方法执行；
 - 两个不同实例并行；
-- service call、stream next、timer、send、显式 yield 各有让出探针；
+- service call、等待中的 stream next、timer 各有让出探针；
+- 已缓冲的 stream next 与 `connection.send` 均有“不让出”的探针；
 - continuation 不含 field/token/guard 的结构与行为负例；
 - replace/remove/新 epoch 后 stale resume 精确失败；
 - 挂起取消与 deadline 清理无泄漏；
 - eval/host 聚焦测试、`cargo check --workspace`、`git diff --check`；
 - 独立提交并写 `P5-F180H-actor-suspension-resume-fence-result.md`。
-
