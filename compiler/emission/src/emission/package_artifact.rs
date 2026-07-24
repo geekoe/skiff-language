@@ -1,6 +1,9 @@
 use skiff_artifact_identity::validate_package_artifact_identities;
-use skiff_artifact_model::PackageArtifact;
+use skiff_artifact_model::{
+    PackageArtifact, PackageSchemaIndex, PackageSchemaTypeId, PackageSchemaTypeRecord,
+};
 use skiff_compiler_core::{id::PublicationId, json_utils::value_sha256};
+use std::collections::BTreeMap;
 
 use crate::{
     emission::{
@@ -21,6 +24,10 @@ pub struct MaterializedPackageArtifact {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishedPackageArtifact {
     pub artifact: PackageArtifact,
+    pub package_schema_index: PackageSchemaIndex,
+    pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    pub resolved_package_schema_type_records:
+        BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     pub published: PublishedJsonArtifact,
     pub file_ir_units: Vec<PublishedFileIrArtifact>,
     pub resource_blobs: Vec<PublishedResourceArtifact>,
@@ -66,6 +73,11 @@ pub fn publish_projected_package_artifact(
     let materialized = materialize_package_artifact(&projected.artifact, files, &resource_blobs)?;
     Ok(PublishedPackageArtifact {
         artifact: materialized.artifact,
+        package_schema_index: projected.package_schema_index.clone(),
+        package_schema_type_records: projected.package_schema_type_records.clone(),
+        resolved_package_schema_type_records: projected
+            .resolved_package_schema_type_records
+            .clone(),
         published: materialized.published,
         file_ir_units: files.to_vec(),
         resource_blobs: materialized.resource_blobs,

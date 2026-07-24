@@ -17,7 +17,7 @@ pub fn project_boundary_callable(
     facts: &CallableSemanticFacts,
     runtime_requirements: &PackageRuntimeRequirements,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
 ) -> Result<BoundaryCallableProjection, ProjectionError> {
     let mut reasons = eligibility::semantic_unavailable_reasons(facts);
     let operation_contract = types::project_operation_contract(

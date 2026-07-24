@@ -17,7 +17,7 @@ pub(super) fn project_operation_contract(
     owner_module: &str,
     signature: &PackageCallableSignature,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
     reasons: &mut Vec<BoundaryUnavailableReason>,
 ) -> Option<BoundaryOperationContract> {
     let parameters = signature
@@ -99,7 +99,7 @@ fn project_return(
     owner_module: &str,
     ty: &PackageTypeRef,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<(BoundaryReturn, BoundaryStreamContract), BoundaryUnavailableReason> {
     let stream_item = match ty {
         PackageTypeRef::Container { name, arguments } if name == "Stream" => {
@@ -155,12 +155,18 @@ fn project_package_type(
     owner_module: &str,
     ty: &PackageTypeRef,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match ty {
-        PackageTypeRef::Contract { contract_type_id } => {
-            Ok(ContractTypeRef::contract(contract_type_id.clone()))
-        }
+        PackageTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(ContractTypeRef::package_schema(
+            package_id,
+            stable_schema_key,
+            package_schema_type_id.clone(),
+        )),
         PackageTypeRef::Container { name, arguments } => project_container(
             owner_module,
             name,
@@ -187,7 +193,7 @@ fn validate_local_type_closure(
     owner_module: &str,
     ty: &TypeRefIr,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<(), BoundaryUnavailableReason> {
     let resolver = ArtifactNominalTypeSource::new(file_ir_units, &[]);
     let guards = NoTypeClosureGuards;
@@ -199,7 +205,7 @@ fn validate_local_type_closure(
 }
 
 struct BoundaryProjectionTypePolicy<'a> {
-    public_type_ids: &'a BTreeMap<(String, String), String>,
+    public_type_ids: &'a BTreeMap<(String, String), ContractTypeRef>,
 }
 
 impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
@@ -224,12 +230,6 @@ impl TypeClosurePolicy for BoundaryProjectionTypePolicy<'_> {
             TypeRefIr::AnyInterface { .. } | TypeRefIr::Function { .. } => {
                 Err(BoundaryUnavailableReason::CallbackAdapterUnavailable)
             }
-            TypeRefIr::PackageSymbol { symbol }
-                if skiff_artifact_model::http_boundary::canonical_http_boundary_symbol(symbol)
-                    .is_some() =>
-            {
-                Ok(TypeClosureControl::Prune)
-            }
             TypeRefIr::ServiceSymbol { symbol }
                 if self
                     .public_type_ids
@@ -253,7 +253,7 @@ fn project_local_type(
     owner_module: &str,
     ty: &TypeRefIr,
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     match ty {
         TypeRefIr::Native { name, args } => {
@@ -300,13 +300,8 @@ fn project_local_type(
         TypeRefIr::ServiceSymbol { symbol } => public_type_ids
             .get(&(symbol.module_path.clone(), symbol.symbol.clone()))
             .cloned()
-            .map(|local_type_id| ContractTypeRef::PackagePublic { local_type_id })
             .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType),
-        TypeRefIr::PackageSymbol { symbol } => {
-            skiff_artifact_model::http_boundary::canonical_http_boundary_symbol(symbol)
-                .map(ContractTypeRef::builtin)
-                .ok_or(BoundaryUnavailableReason::UnsupportedBoundaryType)
-        }
+        TypeRefIr::PackageSymbol { .. } => Err(BoundaryUnavailableReason::UnsupportedBoundaryType),
         TypeRefIr::LocalType { .. }
         | TypeRefIr::PublicationType { .. }
         | TypeRefIr::DbObjectSymbol { .. }
@@ -319,7 +314,7 @@ fn project_container(
     name: &str,
     arguments: &[PackageTypeRef],
     file_ir_units: &[skiff_artifact_model::FileIrUnit],
-    public_type_ids: &BTreeMap<(String, String), String>,
+    public_type_ids: &BTreeMap<(String, String), ContractTypeRef>,
 ) -> Result<ContractTypeRef, BoundaryUnavailableReason> {
     classify_native(name, arguments.len())?;
     Ok(ContractTypeRef::Builtin {

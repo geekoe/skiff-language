@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use skiff_artifact_model::{
-    ContractRequirement, FileIrUnit, PackageArtifact, PackageRequirement, ServiceCallRef,
-    ServiceRequirement,
+    ContractRequirement, FileIrUnit, PackageArtifact, PackageRequirement, PackageSchemaIndex,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, ServiceCallRef, ServiceRequirement,
 };
 use skiff_compiler_projection_input::{ProjectionView, ResolvedPackageSchema};
+use std::collections::BTreeMap;
 
 use super::api_exports::PackageExports;
 
@@ -33,6 +34,10 @@ pub(super) struct PackageExportLinkProjectionInput<'a> {
 #[derive(Debug, Clone)]
 pub struct ProjectedPackageArtifact {
     pub artifact: PackageArtifact,
+    pub package_schema_index: PackageSchemaIndex,
+    pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    pub resolved_package_schema_type_records:
+        BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     pub file_ir_units: Vec<FileIrUnit>,
     pub resources: Vec<ProjectedPackageResource>,
 }

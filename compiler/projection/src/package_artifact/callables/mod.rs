@@ -37,21 +37,8 @@ pub(super) fn project_package_callable_surface(
     semantic_facts_by_executable: &BTreeMap<ProjectionExecutableKey, CallableSemanticFacts>,
     signatures: &ProjectionPackageCallableSignatureFacts,
     runtime_requirements: &PackageRuntimeRequirements,
+    package_schema_refs: &BTreeMap<(String, String), skiff_artifact_model::ContractTypeRef>,
 ) -> Result<ProjectedPackageCallableSurface, ProjectionError> {
-    let public_type_ids = exports
-        .exports
-        .types
-        .iter()
-        .map(|(qualified_path, export)| {
-            let public_path = qualified_path
-                .strip_prefix(&format!("{package_id}/"))
-                .unwrap_or(qualified_path);
-            (
-                (export.file.module_path.clone(), export.symbol.clone()),
-                format!("type:{public_path}"),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
     let mut local_surface =
         surface::project_local_surface(package_id, api_exports, exports, signatures)?;
     let mut callable_links = BTreeMap::new();
@@ -87,7 +74,7 @@ pub(super) fn project_package_callable_surface(
             &facts,
             runtime_requirements,
             file_ir_units,
-            &public_type_ids,
+            package_schema_refs,
         )?;
         insert_callable_entry(
             &mut callable_links,

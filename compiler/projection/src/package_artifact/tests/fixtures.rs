@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
-    ConstExport, ContractOperationId, ContractRequirement, ContractTypeId, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, PackageCallableParameter, PackageCallableSignature,
-    PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement,
-    PackageResourceRequirement, PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements,
-    PackageTypeRef, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr,
-    ValueProvenance,
+    ConstExport, ContractOperationId, ContractRequirement, ExecutableExport, ExecutableSignatureIr,
+    FileIrRef, PackageCallableParameter, PackageCallableSignature, PackageExportIndex,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRequirement, PackageResourceRequirement,
+    PackageRuntimeCapabilityRequirement, PackageRuntimeRequirements, PackageTypeRef,
+    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -136,6 +135,16 @@ pub(super) fn project_fixture_with_runtime_requirements(
         contract_version: "1.0.0".to_string(),
         expected_protocol_identity: protocol_identity.clone(),
     };
+    let schema_types = BTreeMap::new();
+    let schema_index = skiff_artifact_model::PackageSchemaIndex {
+        package_id: "example.pkg".to_string(),
+        package_schema_index_identity: skiff_artifact_identity::package_schema_index_identity(
+            "example.pkg",
+            &schema_types,
+        )
+        .unwrap(),
+        types: schema_types,
+    };
     Ok(project_package_artifact_facts(ProjectedPackageFacts {
         package_id: "example.pkg",
         package_version: "1.0.0",
@@ -161,6 +170,10 @@ pub(super) fn project_fixture_with_runtime_requirements(
         runtime_requirements,
         callable_semantic_facts: semantic_facts,
         callable_signatures: signatures,
+        package_schema_index: schema_index,
+        package_schema_type_records: BTreeMap::new(),
+        resolved_package_schema_type_records: BTreeMap::new(),
+        package_schema_refs_by_source: BTreeMap::new(),
         service_call_refs: vec![ServiceCallRef {
             service_requirement_slot: 3,
             contract_operation_id: operation_id,
@@ -249,8 +262,10 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
 }
 
 pub(super) fn exact_typed_signature() -> PackageCallableSignature {
-    let contract = PackageTypeRef::Contract {
-        contract_type_id: ContractTypeId::new("contract-type:example.payments:User"),
+    let contract = PackageTypeRef::PackageSchema {
+        package_id: "example.payments".to_string(),
+        stable_schema_key: "User".to_string(),
+        package_schema_type_id: "package-type:user".into(),
     };
     PackageCallableSignature {
         parameters: vec![PackageCallableParameter {

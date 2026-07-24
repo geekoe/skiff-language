@@ -203,7 +203,11 @@ pub fn compile_service_package(
     service_id: &str,
 ) -> Result<CompiledServicePackage, ServicePackageCompileError> {
     let package = compile_package(input)?;
-    let service_api = project_service_api(service_id, &package.artifact)?;
+    let service_api = project_service_api(
+        service_id,
+        &package.artifact,
+        &package.resolved_package_schema_type_records,
+    )?;
     Ok(CompiledServicePackage {
         package,
         service_api,

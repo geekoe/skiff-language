@@ -14,7 +14,7 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete, "async").unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v2");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v3");
     assert!(artifact
         .package_build_id
         .as_str()

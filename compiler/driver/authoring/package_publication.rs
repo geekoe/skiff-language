@@ -112,6 +112,10 @@ pub fn publish_package_artifact_records(
     {
         store.write_static_resource(&plan.reference, resource_ref, bytes)?;
     }
+    for record in published.package_schema_type_records.values() {
+        store.write_package_schema_type_record(record)?;
+    }
+    store.write_package_schema_index(&published.package_schema_index)?;
     store.write_package_artifact(&plan.artifact)?;
 
     Ok(plan.receipt)

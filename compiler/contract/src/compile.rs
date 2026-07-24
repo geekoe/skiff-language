@@ -1,13 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::{
-    assign_service_contract_identities, contract_operation_id, contract_type_id,
-    normalize_contract_definition_surface,
+    assign_service_contract_identities, contract_operation_id,
+    normalize_contract_operation_contract,
 };
 use skiff_artifact_model::{
-    BoundaryOperationDescriptor, ContractDiagnosticText, ContractOperationId, ContractSchemaType,
-    ContractTypeId, ContractTypeRef, ServiceContract, ServiceProtocolIdentity,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryOperationDescriptor, ContractDiagnosticText, ContractOperationId, ServiceContract,
+    ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use crate::{
@@ -18,118 +17,52 @@ use crate::{
 pub fn compile_service_contract_definition(
     mut definition: ServiceContractDefinition,
 ) -> Result<ServiceContract> {
-    validate_definition_keys(&definition)?;
-    normalize_definition(&mut definition)?;
-    let type_ids = definition
-        .boundary_schema
-        .keys()
-        .map(|stable_key| {
-            Ok((
-                stable_key.clone(),
-                contract_type_id(
-                    &definition.service_id,
-                    &definition.contract_version,
-                    stable_key,
-                )?,
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    validate_definition(&definition)?;
     let operation_ids = definition
         .operations
         .keys()
-        .map(|stable_key| {
+        .map(|key| {
             Ok((
-                stable_key.clone(),
-                contract_operation_id(
-                    &definition.service_id,
-                    &definition.contract_version,
-                    stable_key,
-                )?,
+                key.clone(),
+                contract_operation_id(&definition.service_id, &definition.contract_version, key)?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let diagnostic_text =
-        project_diagnostic_text(definition.diagnostic_text, &operation_ids, &type_ids)?;
-
     let operations = definition
         .operations
         .into_iter()
         .map(|(stable_key, contract)| {
             let operation_id = operation_ids[&stable_key].clone();
-            (
+            let contract = normalize_contract_operation_contract(contract, &stable_key)?;
+            Ok((
                 operation_id.clone(),
                 BoundaryOperationDescriptor {
                     operation_id,
                     stable_key,
                     contract,
                 },
-            )
+            ))
         })
-        .collect();
-    let boundary_schema = definition
-        .boundary_schema
-        .into_iter()
-        .map(|(stable_key, shape)| {
-            let contract_type_id = type_ids[&stable_key].clone();
-            (
-                contract_type_id.clone(),
-                ContractSchemaType {
-                    contract_type_id,
-                    stable_key,
-                    shape,
-                },
-            )
-        })
-        .collect();
+        .collect::<Result<_>>()?;
+    definition
+        .package_type_requirements
+        .sort_by(|a, b| a.package_id.cmp(&b.package_id));
+    for requirement in &mut definition.package_type_requirements {
+        requirement.required_type_ids.sort();
+        requirement.required_type_ids.dedup();
+    }
+    let diagnostic_text = project_diagnostic_text(definition.diagnostic_text, &operation_ids)?;
     let mut contract = ServiceContract {
         schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
         service_id: definition.service_id,
         contract_version: definition.contract_version,
         service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
         operations,
-        boundary_schema,
+        package_type_requirements: definition.package_type_requirements,
         diagnostic_text,
     };
     assign_service_contract_identities(&mut contract)?;
     Ok(contract)
-}
-
-fn normalize_definition(definition: &mut ServiceContractDefinition) -> Result<()> {
-    let service_id = definition.service_id.clone();
-    let contract_version = definition.contract_version.clone();
-    normalize_contract_definition_surface(
-        &service_id,
-        &contract_version,
-        &mut definition.operations,
-        &mut definition.boundary_schema,
-    )?;
-    Ok(())
-}
-
-/// Identity helper for typed definition producers that need to reference a
-/// schema entry before the final ServiceContract map is materialized.
-pub fn definition_contract_type_id(
-    service_id: &str,
-    contract_version: &str,
-    stable_type_key: &str,
-) -> Result<ContractTypeId> {
-    Ok(contract_type_id(
-        service_id,
-        contract_version,
-        stable_type_key,
-    )?)
-}
-
-pub fn definition_contract_type_ref(
-    service_id: &str,
-    contract_version: &str,
-    stable_type_key: &str,
-) -> Result<ContractTypeRef> {
-    Ok(ContractTypeRef::contract(definition_contract_type_id(
-        service_id,
-        contract_version,
-        stable_type_key,
-    )?))
 }
 
 pub fn definition_contract_operation_id(
@@ -144,19 +77,31 @@ pub fn definition_contract_operation_id(
     )?)
 }
 
-fn validate_definition_keys(definition: &ServiceContractDefinition) -> Result<()> {
+fn validate_definition(definition: &ServiceContractDefinition) -> Result<()> {
     if definition.operations.is_empty() {
         return Err(ContractDefinitionError::EmptyOperations);
     }
-    for key in definition.operations.keys() {
-        if key.trim().is_empty() {
-            return Err(ContractDefinitionError::EmptyStableKey { kind: "operation" });
-        }
+    if definition
+        .operations
+        .keys()
+        .any(|key| key.trim().is_empty())
+    {
+        return Err(ContractDefinitionError::EmptyStableKey { kind: "operation" });
     }
-    for key in definition.boundary_schema.keys() {
-        if key.trim().is_empty() {
-            return Err(ContractDefinitionError::EmptyStableKey { kind: "type" });
-        }
+    let required = definition
+        .package_type_requirements
+        .iter()
+        .flat_map(|requirement| requirement.required_type_ids.iter())
+        .collect::<BTreeSet<_>>();
+    if let Some(type_id) = definition
+        .diagnostic_text
+        .types
+        .keys()
+        .find(|type_id| !required.contains(type_id))
+    {
+        return Err(ContractDefinitionError::UnknownDiagnosticType {
+            key: type_id.to_string(),
+        });
     }
     Ok(())
 }
@@ -164,33 +109,21 @@ fn validate_definition_keys(definition: &ServiceContractDefinition) -> Result<()
 fn project_diagnostic_text(
     diagnostic: ServiceContractDefinitionDiagnosticText,
     operation_ids: &BTreeMap<String, ContractOperationId>,
-    type_ids: &BTreeMap<String, ContractTypeId>,
 ) -> Result<ContractDiagnosticText> {
     let operations = diagnostic
         .operations
         .into_iter()
-        .map(|(stable_key, text)| {
-            let Some(operation_id) = operation_ids.get(&stable_key) else {
-                return Err(ContractDefinitionError::UnknownDiagnosticOperation {
-                    key: stable_key,
-                });
-            };
-            Ok((operation_id.clone(), text))
-        })
-        .collect::<Result<_>>()?;
-    let types = diagnostic
-        .types
-        .into_iter()
-        .map(|(stable_key, text)| {
-            let Some(type_id) = type_ids.get(&stable_key) else {
-                return Err(ContractDefinitionError::UnknownDiagnosticType { key: stable_key });
-            };
-            Ok((type_id.clone(), text))
+        .map(|(key, text)| {
+            operation_ids
+                .get(&key)
+                .cloned()
+                .map(|id| (id, text))
+                .ok_or(ContractDefinitionError::UnknownDiagnosticOperation { key })
         })
         .collect::<Result<_>>()?;
     Ok(ContractDiagnosticText {
         service: diagnostic.service,
         operations,
-        types,
+        types: diagnostic.types,
     })
 }
