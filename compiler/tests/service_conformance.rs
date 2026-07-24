@@ -18,6 +18,7 @@ use skiff_compiler::{
     definition_contract_operation_id, definition_contract_type_id, definition_contract_type_ref,
     ContractDefinitionError, ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
+use skiff_compiler_contract::project_service_api;
 
 use common::{
     artifacts::module_artifact,
@@ -28,6 +29,145 @@ use common::{
 
 const SERVICE_ID: &str = "example.echo";
 const CONTRACT_VERSION: &str = "1.0.0";
+
+#[test]
+fn generated_service_stream_contract_compiles_through_consumer_file_ir() {
+    let contract = compile_generated_stream_contract(
+        "generated-service-stream-provider",
+        "example.com/generated-service-stream-provider",
+        "example.com/generated-stream",
+    );
+    let operation_id =
+        definition_contract_operation_id("example.com/generated-stream", "1.0.0", "events")
+            .unwrap();
+    let event_type_id =
+        definition_contract_type_id("example.com/generated-stream", "1.0.0", "Event").unwrap();
+    let event_type = ContractTypeRef::contract(event_type_id.clone());
+    let request_type_id =
+        definition_contract_type_id("example.com/generated-stream", "1.0.0", "Request").unwrap();
+    let request_type = ContractTypeRef::contract(request_type_id.clone());
+    let operation = &contract.operations[&operation_id];
+
+    assert_eq!(operation.contract.parameters[0].ty, request_type);
+    assert_eq!(
+        operation.contract.return_value.ty,
+        ContractTypeRef::builtin("void")
+    );
+    assert!(matches!(
+        &operation.contract.stream,
+        BoundaryStreamContract::ServerStream {
+            item_type,
+            item_value_plan: BoundaryValuePlan::Linkable {
+                owner: BoundaryValueOwner::Provider,
+                ..
+            },
+        } if item_type == &event_type
+    ));
+    assert!(contract.boundary_schema.contains_key(&event_type_id));
+    assert!(contract.boundary_schema.contains_key(&request_type_id));
+
+    let consumer = TestDir::new("skiff-compiler", "generated-service-stream-consumer");
+    write_package(
+        &consumer,
+        "example.com/generated-service-stream-consumer",
+        "run: main.run\n",
+        r#"function run(input: feed.Request) -> string {
+  for event in feed/events(input) {
+    return event.message
+  }
+  return ""
+}
+"#,
+    );
+    let dependencies = BTreeMap::from([(
+        (
+            "example.com/generated-service-stream-consumer".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("feed", contract.clone())],
+    )]);
+    let consumer_project =
+        compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
+            .expect("consumer should type and lower a generated service stream contract call");
+    let expected_call_ref = ServiceCallRef {
+        service_requirement_slot: 0,
+        contract_operation_id: operation_id.clone(),
+        expected_protocol_identity: contract.service_protocol_identity.clone(),
+    };
+    assert_eq!(
+        consumer_project.package.artifact.service_call_refs,
+        vec![expected_call_ref.clone()]
+    );
+    assert_eq!(
+        consumer_project.package.artifact.service_requirements,
+        vec![ServiceRequirement {
+            contract_requirement: ContractRequirement {
+                alias: "feed".to_string(),
+                service_id: contract.service_id.clone(),
+                contract_version: contract.contract_version.clone(),
+                expected_protocol_identity: contract.service_protocol_identity.clone(),
+            },
+            service_binding_slot: 0,
+            used_operations: BTreeSet::from([operation_id]),
+        }]
+    );
+
+    let main = module_artifact(&consumer_project.package, "main");
+    validate_file_ir_service_calls(&main.unit)
+        .expect("stream consumer File IR service-call refs must be internally valid");
+    assert_eq!(
+        main.unit.external_refs.service_call_refs,
+        vec![expected_call_ref.clone()]
+    );
+    let call_sites = file_ir_service_call_sites(&main.unit).collect::<Vec<_>>();
+    assert_eq!(call_sites.len(), 1);
+    assert_eq!(
+        main.unit
+            .external_refs
+            .service_call_ref(call_sites[0].service_call_ref_index),
+        Some(&expected_call_ref)
+    );
+    assert_no_provider_binding_wire(&consumer_project.package.artifact);
+}
+
+#[test]
+fn generated_service_stream_consumer_rejects_an_undeclared_alias() {
+    let contract = compile_generated_stream_contract(
+        "generated-service-stream-wrong-alias-provider",
+        "example.com/generated-service-stream-wrong-alias-provider",
+        "example.com/generated-stream-wrong-alias",
+    );
+
+    let consumer = TestDir::new(
+        "skiff-compiler",
+        "generated-service-stream-wrong-alias-consumer",
+    );
+    write_package(
+        &consumer,
+        "example.com/generated-service-stream-wrong-alias-consumer",
+        "run: main.run\n",
+        r#"function run(input: feed.Request) -> void {
+  for event in wrong/events(input) {
+    return
+  }
+}
+"#,
+    );
+    let dependencies = BTreeMap::from([(
+        (
+            "example.com/generated-service-stream-wrong-alias-consumer".to_string(),
+            "1.0.0".to_string(),
+        ),
+        vec![package_contract_dependency("feed", contract)],
+    )]);
+    let error = compile_package_project_with_contract_dependencies(consumer.path(), &dependencies)
+        .expect_err("an undeclared service alias must fail the package compile trust boundary")
+        .to_string();
+    assert!(
+        error.contains("for iterable must be Array, Stream, or Map"),
+        "wrong alias must not produce a typed stream iterable: {error}"
+    );
+}
 
 #[test]
 fn explicit_definition_compiles_to_a_code_free_service_contract() {
@@ -647,6 +787,43 @@ fn write_package(temp: &TestDir, package_id: &str, api: &str, source: &str) {
     );
     temp.write("api.yml", api);
     temp.write("main.skiff", source);
+}
+
+fn compile_generated_stream_contract(
+    fixture_name: &str,
+    package_id: &str,
+    service_id: &str,
+) -> skiff_artifact_model::ServiceContract {
+    let provider = TestDir::new("skiff-compiler", fixture_name);
+    write_package(
+        &provider,
+        package_id,
+        "Event: model.Event\nRequest: model.Request\nevents: main.events\n",
+        r#"function events(input: root.model.Request) -> Stream<root.model.Event> {
+  emit(root.model.Event { message: "event" })
+  return
+}
+"#,
+    );
+    provider.write(
+        "model.skiff",
+        "type Event { message: string }\ntype Request { topic: string }\n",
+    );
+    let provider_project =
+        compile_package_project_with_contract_dependencies(provider.path(), &BTreeMap::new())
+            .expect("stream provider package should compile through the real package pipeline");
+    assert!(
+        matches!(
+            public_callable_projection(&provider_project.package.artifact, "events"),
+            BoundaryCallableProjection::Available { .. }
+        ),
+        "stream projection: {:?}",
+        public_callable_projection(&provider_project.package.artifact, "events")
+    );
+    assert_no_provider_binding_wire(&provider_project.package.artifact);
+    project_service_api(service_id, &provider_project.package.artifact)
+        .expect("public stream API should project through the real contract pipeline")
+        .contract
 }
 
 fn public_callable_projection<'a>(
