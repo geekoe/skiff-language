@@ -249,6 +249,9 @@ impl RuntimeHost {
                 runtime_id: self.base_runtime_id.clone(),
                 activation: Arc::clone(route.activation()),
                 execution_image: Arc::clone(route.execution_image()),
+                db_source: route
+                    .db_source()
+                    .map_err(|error| RuntimeError::Decode(error.to_string()))?,
                 file_source: crate::capability_context::FileCapabilitySource::new(
                     self.file_runtime(),
                 ),

@@ -2,10 +2,10 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use skiff_artifact_model::{
-    AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyIdentity,
-    BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding, IngressSelector,
-    OperationTargetRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract, ServiceContractRef,
-    ServiceDeploymentRef,
+    AssemblyActivationControl, AssemblyActivationRejectReason, AssemblyActivationServiceDb,
+    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GlobalIngressBinding,
+    IngressSelector, OperationTargetRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
+    ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
@@ -22,6 +22,7 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::active_assembly_context::ActiveAssemblyContextSet;
+use crate::capability_context::DbProviderSource;
 use crate::host::RuntimeHost;
 
 mod candidate;
@@ -51,6 +52,7 @@ struct AssemblyTransition {
     expected_generation: u64,
     candidate_generation: u64,
     assembly: RuntimeAssemblyRef,
+    service_db: Option<AssemblyActivationServiceDb>,
 }
 
 #[derive(Debug)]
@@ -127,6 +129,15 @@ impl ActiveAssemblyRoute {
         &self,
     ) -> &Arc<skiff_runtime_linked_program::AssemblyExecutionImage> {
         self.active.candidate.execution_image()
+    }
+
+    pub(crate) fn db_source(
+        &self,
+    ) -> anyhow::Result<skiff_runtime_capability_context::DbCapabilitySource> {
+        self.active
+            .contexts
+            .db_source(self.activation.activation_id())
+            .ok_or_else(|| anyhow::anyhow!("active activation has no DB capability source"))
     }
 }
 
@@ -224,20 +235,25 @@ struct AssemblyAdmissionState {
 #[derive(Debug)]
 pub(crate) struct AssemblyAdmissionController {
     runtime_replica_id: String,
+    db_provider: DbProviderSource,
     reload: Mutex<()>,
     state: RwLock<AssemblyAdmissionState>,
 }
 
 impl Default for AssemblyAdmissionController {
     fn default() -> Self {
-        Self::new("runtime-replica")
+        Self::new("runtime-replica", DbProviderSource::unavailable())
     }
 }
 
 impl AssemblyAdmissionController {
-    pub(crate) fn new(runtime_replica_id: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        runtime_replica_id: impl Into<String>,
+        db_provider: DbProviderSource,
+    ) -> Self {
         Self {
             runtime_replica_id: runtime_replica_id.into(),
+            db_provider,
             reload: Mutex::new(()),
             state: RwLock::new(AssemblyAdmissionState::default()),
         }
@@ -265,7 +281,7 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(generation, &identity, assembly, resolver)
+            .build_started_candidate(generation, &identity, assembly, resolver, None)
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -282,6 +298,7 @@ impl AssemblyAdmissionController {
         identity: &AssemblyIdentity,
         assembly: Arc<RuntimeAssembly>,
         resolver: &R,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> anyhow::Result<PreparedAssembly>
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
@@ -333,6 +350,8 @@ impl AssemblyAdmissionController {
             &candidate,
             generation,
             &self.runtime_replica_id,
+            &self.db_provider,
+            service_db,
         ) {
             Ok(contexts) => Arc::new(contexts),
             Err(error) => {

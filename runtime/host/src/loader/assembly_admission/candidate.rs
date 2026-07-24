@@ -53,6 +53,7 @@ impl AssemblyAdmissionController {
         reference: &RuntimeAssemblyRef,
         resolver: &R,
         resolution_context: &'static str,
+        service_db: Option<&AssemblyActivationServiceDb>,
     ) -> Result<PreparedAssembly, (AssemblyActivationRejectReason, anyhow::Error)>
     where
         R: RuntimeAssemblyRecordResolver + Sync + ?Sized,
@@ -81,7 +82,7 @@ impl AssemblyAdmissionController {
                 return Err((AssemblyActivationRejectReason::Resolve, error.into()));
             }
         }
-        self.build_started_candidate(generation, &identity, assembly, resolver)
+        self.build_started_candidate(generation, &identity, assembly, resolver, service_db)
             .await
             .map_err(|error| {
                 let reason = self

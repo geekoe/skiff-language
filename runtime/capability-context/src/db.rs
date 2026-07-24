@@ -415,6 +415,15 @@ pub struct DbCapabilitySource {
     factory: Option<Arc<dyn DbCapabilityFactory>>,
 }
 
+impl fmt::Debug for DbCapabilitySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DbCapabilitySource")
+            .field("configured", &self.factory.is_some())
+            .finish()
+    }
+}
+
 impl DbCapabilitySource {
     pub fn new<T>(factory: Option<T>) -> Self
     where
@@ -468,6 +477,15 @@ pub trait DbProviderFactory: Send + Sync {
 #[derive(Clone)]
 pub struct DbProviderSource {
     factory: Option<Arc<dyn DbProviderFactory>>,
+}
+
+impl fmt::Debug for DbProviderSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DbProviderSource")
+            .field("configured", &self.factory.is_some())
+            .finish()
+    }
 }
 
 impl DbProviderSource {

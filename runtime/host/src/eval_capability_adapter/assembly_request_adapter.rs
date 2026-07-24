@@ -11,6 +11,7 @@ pub(crate) struct RuntimeAssemblyRequestEvalAdapterInput {
     pub(crate) runtime_id: String,
     pub(crate) activation: Arc<ActivationContext>,
     pub(crate) execution_image: Arc<skiff_runtime_linked_program::AssemblyExecutionImage>,
+    pub(crate) db_source: concrete::DbCapabilitySource,
     pub(crate) file_source: concrete::FileCapabilitySource,
     pub(crate) http_options: concrete::HttpRuntimeOptions,
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
@@ -57,6 +58,7 @@ pub(crate) fn assembly_request_eval_adapter(
         config,
         package_configs,
         runtime_activation,
+        db_source: input.db_source,
         file_source: input.file_source,
         http_options: input.http_options,
         outbound_requests: input.outbound_requests,
@@ -74,6 +76,7 @@ struct RuntimeAssemblyRequestEvalAdapter {
     config: crate::config_view::RuntimeConfigView,
     package_configs: Vec<crate::config_view::RuntimeConfigView>,
     runtime_activation: Arc<RuntimeActivation>,
+    db_source: concrete::DbCapabilitySource,
     file_source: concrete::FileCapabilitySource,
     http_options: concrete::HttpRuntimeOptions,
     outbound_requests: Arc<OutboundRequestRegistry>,
@@ -109,7 +112,10 @@ impl AssemblyRequestEvalAdapter for RuntimeAssemblyRequestEvalAdapter {
             target.eval().activation_context()
         ));
         let execution = execution_control(execution);
-        let db = concrete::DbCapabilityContext::unavailable();
+        let db = self.db_source.context_for_request(
+            self.activation.activation_id().as_str(),
+            &request.request_id,
+        );
         let file = file_source(self.file_source.clone()).context_for_request(db.clone());
         let effects = effects(effect_dispatch_context_from_request(
             request,

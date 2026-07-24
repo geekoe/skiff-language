@@ -23,7 +23,7 @@ impl AssemblyAdmissionController {
                 candidate_generation,
                 assembly,
                 replica_id,
-                service_db: _,
+                service_db,
             } => {
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
@@ -32,6 +32,7 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    service_db,
                 };
                 let reply = match self.prepare_transition(&transition, resolver).await {
                     Ok(()) => transition.prepared_control(replica_id),
@@ -55,7 +56,7 @@ impl AssemblyAdmissionController {
                 candidate_generation,
                 assembly,
                 replica_id,
-                service_db: _,
+                service_db,
             } => {
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
@@ -64,6 +65,7 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    service_db,
                 };
                 let reply = match self.commit_transition(&transition, resolver).await {
                     Ok(()) => transition.register_control(replica_id),
@@ -95,6 +97,7 @@ impl AssemblyAdmissionController {
                     expected_generation,
                     candidate_generation,
                     assembly,
+                    service_db: None,
                 })
                 .await?;
                 Ok(None)
@@ -179,6 +182,7 @@ impl AssemblyAdmissionController {
                 &transition.assembly,
                 resolver,
                 "exact RuntimeAssembly record resolution failed",
+                transition.service_db.as_ref(),
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)
@@ -256,6 +260,7 @@ impl AssemblyAdmissionController {
                 &transition.assembly,
                 resolver,
                 "committed RuntimeAssembly recovery resolution failed",
+                transition.service_db.as_ref(),
             )
             .await?;
         self.stage_prepared(transition.clone(), prepared)
@@ -269,7 +274,7 @@ impl AssemblyAdmissionController {
             .write()
             .map_err(|_| anyhow::anyhow!("assembly admission state lock is poisoned"))?;
         match state.staged.as_ref() {
-            Some(staged) if staged.transition == *transition => {
+            Some(staged) if staged.transition.same_tuple(transition) => {
                 state.staged = None;
                 info!(
                     event = "runtime.assembly_staging_aborted",
@@ -365,6 +370,14 @@ impl AssemblyAdmissionController {
 }
 
 impl AssemblyTransition {
+    fn same_tuple(&self, other: &Self) -> bool {
+        self.environment == other.environment
+            && self.activation_id == other.activation_id
+            && self.expected_generation == other.expected_generation
+            && self.candidate_generation == other.candidate_generation
+            && self.assembly == other.assembly
+    }
+
     fn prepared_control(&self, replica_id: String) -> AssemblyActivationControl {
         AssemblyActivationControl::Prepared {
             environment: self.environment.clone(),
