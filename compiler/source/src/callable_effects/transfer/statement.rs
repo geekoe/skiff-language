@@ -16,7 +16,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    fn eval_stmt(&mut self, statement: &Stmt, env: &mut Environment) {
+    pub(super) fn eval_stmt(&mut self, statement: &Stmt, env: &mut Environment) {
         match statement {
             Stmt::Assert { condition, .. } => {
                 self.eval_expr(condition, env);

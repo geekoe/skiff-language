@@ -1,8 +1,8 @@
 use skiff_artifact_model::CallableProvenanceUnknownReason;
 
 use crate::shared::ast::{
-    BinaryOp, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector, DbWhereClause, Expr,
-    PatchOperation,
+    BinaryOp, DbBlockMode, DbBody, DbChangeOp, DbOperation, DbQueryBlock, DbSelector,
+    DbWhereClause, Expr, PatchOperation, Stmt,
 };
 
 use super::{
@@ -128,12 +128,34 @@ impl Evaluator<'_, '_> {
             }
             Expr::DbTransaction(transaction) => {
                 let mut body_env = env.clone();
-                self.eval_block(&transaction.body, &mut body_env);
+                let result = match transaction.mode {
+                    DbBlockMode::Effect => {
+                        self.eval_block(&transaction.body, &mut body_env);
+                        AbstractValue::constant(false)
+                    }
+                    DbBlockMode::Value => {
+                        let Some((last, prefix)) = transaction.body.statements.split_last() else {
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            return AbstractValue::unknown(reference);
+                        };
+                        for statement in prefix {
+                            self.eval_stmt(statement, &mut body_env);
+                        }
+                        let Stmt::Expr(result) = last else {
+                            self.eval_stmt(last, &mut body_env);
+                            self.state.mark_unknown(
+                                CallableProvenanceUnknownReason::UnsupportedControlFlow,
+                            );
+                            return AbstractValue::unknown(reference);
+                        };
+                        self.eval_expr(result, &mut body_env)
+                    }
+                };
                 join_environments(env, &body_env);
                 self.state.effects.may_suspend = true;
-                self.state
-                    .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
-                AbstractValue::unknown(reference)
+                result
             }
             Expr::DbLeaseClaim(claim) => {
                 self.eval_expr(&claim.key, env);
@@ -175,10 +197,12 @@ impl Evaluator<'_, '_> {
             match body {
                 DbBody::ObjectFields { fields } => {
                     for field in fields {
-                        persisted.join(&self.eval_expr(&field.value, env));
+                        persisted.join(&self.eval_db_write_value(&field.value, env));
                     }
                 }
-                DbBody::Values { value } => persisted.join(&self.eval_expr(value, env)),
+                DbBody::Values { value } => {
+                    persisted.join(&self.eval_db_write_value(value, env));
+                }
             }
         }
         if let Some(change) = &operation.change {
@@ -188,13 +212,25 @@ impl Evaluator<'_, '_> {
                     | DbChangeOp::Inc { value, .. }
                     | DbChangeOp::AddToSet { value, .. }
                     | DbChangeOp::Remove { value, .. } => {
-                        persisted.join(&self.eval_expr(value, env));
+                        persisted.join(&self.eval_db_write_value(value, env));
                     }
                     DbChangeOp::Unset { .. } => {}
                 }
             }
         }
         persisted
+    }
+
+    fn eval_db_write_value(&mut self, expression: &Expr, env: &mut Environment) -> AbstractValue {
+        let mut value = self.eval_expr(expression, env);
+        // A statically resolved field projection is encoded into the database
+        // write payload, so the stored value is detached from the source
+        // object's heap graph. Keep direct caller-owned values conservative:
+        // `payload = input` is still an observable database escape.
+        if is_static_field_projection(expression) && !value.unknown {
+            value.caller_references.clear();
+        }
+        value
     }
 
     fn eval_db_selector(&mut self, selector: &DbSelector, env: &mut Environment) -> AbstractValue {
@@ -233,5 +269,20 @@ impl Evaluator<'_, '_> {
         join_effects(&mut self.state.effects, &all_effects());
         self.state
             .mark_unknown(CallableProvenanceUnknownReason::UnsupportedControlFlow);
+    }
+}
+
+fn is_static_field_projection(expression: &Expr) -> bool {
+    match expression {
+        Expr::Field { object, .. } => is_static_projection_root(object),
+        _ => false,
+    }
+}
+
+fn is_static_projection_root(expression: &Expr) -> bool {
+    match expression {
+        Expr::Identifier(_) => true,
+        Expr::Field { object, .. } => is_static_projection_root(object),
+        _ => false,
     }
 }

@@ -610,6 +610,128 @@ fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
 }
 
 #[test]
+fn database_value_transactions_transfer_the_exact_final_value() {
+    let model = analyze(
+        r#"
+            type Pointer { target: string }
+            type Input { pointer: Pointer }
+            type Receipt { sequence: integer, pointer: Pointer }
+
+            function receipt(input: Input) -> Receipt {
+              return db transaction value {
+                const pointer = input.pointer
+                Receipt { sequence: 1, pointer: pointer }
+              }
+            }
+
+            function direct(input: Input) -> Input {
+              return db transaction value {
+                input
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    let receipt = effects(&model, "receipt");
+    assert!(receipt.may_suspend);
+    assert!(receipt.returns_caller_alias);
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "receipt")
+    else {
+        panic!("transaction result must retain analyzed provenance");
+    };
+    assert_eq!(
+        return_origins,
+        &vec![
+            ValueProvenance::Fresh,
+            ValueProvenance::Constant,
+            ValueProvenance::CallerParameter { index: 0 }
+        ]
+    );
+
+    let direct = effects(&model, "direct");
+    assert!(direct.may_suspend);
+    assert!(direct.returns_caller_alias);
+    let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "direct")
+    else {
+        panic!("direct caller result should retain exact caller provenance");
+    };
+    assert_eq!(
+        return_origins,
+        &vec![ValueProvenance::CallerParameter { index: 0 }]
+    );
+}
+
+#[test]
+fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_values() {
+    let model = analyze(
+        r#"
+            interface Provider {
+              function value(self: Self) -> string
+            }
+
+            type Pointer { target: string }
+            type Input { id: string, pointer: Pointer }
+            type Stored { id: string, pointer: Pointer }
+
+            db object Stored {
+              primary key(id)
+            }
+
+            function projected(input: Input) -> Stored {
+              const result = db upsert Stored(input.id) {
+                id = input.id
+                pointer = input.pointer
+              } {
+                pointer = input.pointer
+              }
+              return result.value
+            }
+
+            function direct(input: Input, pointer: Pointer) -> Stored {
+              return db insert Stored {
+                id = input.id
+                pointer = pointer
+              }
+            }
+
+            function unknownPredicate(input: Input, provider: any Provider) -> void {
+              db update many Stored {
+                where id == provider.value()
+              } {
+                pointer = input.pointer
+              }
+              return null
+            }
+
+            function unknownUpdate(input: Input, provider: any Provider) -> Stored? {
+              return db update Stored(input.id) {
+                id = provider.value()
+              }
+            }
+        "#,
+        SourceDependencyAnalysisInput::default(),
+    );
+
+    assert_eq!(effects(&model, "projected"), suspend_only_effects());
+    let direct = effects(&model, "direct");
+    assert!(direct.may_suspend);
+    assert!(direct.escapes_caller_value);
+    assert_escape_lane(&model, "direct", ValueEscapeLane::Database);
+
+    for callable in ["unknownPredicate", "unknownUpdate"] {
+        let callable_effects = effects(&model, callable);
+        assert!(callable_effects.invokes_unknown_target, "{callable}");
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Unknown {
+                reason: CallableProvenanceUnknownReason::UnknownCallTarget
+            }
+        ));
+    }
+}
+
+#[test]
 fn exact_context_free_native_uses_shared_callable_semantics() {
     let model = analyze(
         r#"
