@@ -69,9 +69,9 @@ Package source由`.skiff`源码、`package.yml`、`api.yml`和静态资源组成
 运算。
 
 Service仍走同一个package compiler入口；存在`service.yml`时，compiler/tooling再执行service projection。
-`service.yml`只拥有service id、HTTP/WebSocket ingress及其它service独有声明，不含version、dependency、
-API type/function映射或实现artifact binding。`config.*.yml`只绑定已经声明的config/secret/state/resource
-requirement，不改变package/service dependency graph。
+`service.yml`只拥有service id与HTTP/WebSocket ingress，不含version、dependency、API type/function映射、
+实现artifact binding、平台组织角色或request/response大小策略。`config.*.yml`只绑定已经声明的
+config/secret/state/resource requirement，不改变package/service dependency graph。
 
 PackageArtifact至少包含：
 
@@ -546,8 +546,9 @@ atomic reload在runtime层可观测。
 Router与Runtime只通过共享artifact文件系统装载上述不可变记录，不依赖或感知registry service：
 
 - Router配置唯一`artifactsPath`与`serviceDb.mongoUrl`。Runtime连接后，Router必须先发送一次连接级
-  bootstrap control，其中包含规范化的绝对`artifactsPath`和`serviceDb: { mongoUrl }`；Runtime在任何
-  activation/register之前固定二者，同一连接内缺失、重复冲突或变更一律fail closed；
+  bootstrap control，其中包含规范化的绝对`artifactsPath`、`serviceDb: { mongoUrl }`和
+  `http: { maxResponseBytes }`；Runtime在任何activation/register之前固定这些值，同一连接内缺失、重复
+  冲突或变更一律fail closed；
 - Router与Runtime可以位于不同机器，但该路径在所有机器上具有相同字符串和内容语义；当前生产部署以网络文件
   系统共享该路径；
 - Router从该路径读取release/assembly routing projection，只持有请求路由、generation与activation协调所需
@@ -560,6 +561,20 @@ Router与Runtime只通过共享artifact文件系统装载上述不可变记录�
 ServiceDeployment或RuntimeAssembly identity。Runtime不得为二者另设独立文件配置、环境变量或默认值。
 Runtime持有bootstrap DB transport binding不表示所有activation获得DB：只有声明并被deployment绑定DB
 requirement的activation才能得到`std.db` capability，service代码始终看不到URL。
+
+Router配置的HTTP形状固定为：
+
+```text
+http:
+  port: positive integer
+  maxRequestBytes: positive integer
+  maxResponseBytes: positive integer
+```
+
+两项大小都是整个Router实例的必填规则，不存在隐藏默认值或per-service override。Router在读取完整request
+body前执行`maxRequestBytes`；Runtime按bootstrap中的`maxResponseBytes`尽早停止生成过大response，Router在
+外部HTTP边界再次校验。对HTTP streaming，`maxResponseBytes`按同一response生命周期累计，不能通过拆chunk
+绕过。WebSocket不复用这两个字段。
 
 未来若需要独立扩缩容，平台可以为不同root set生成多个assembly。届时assembly projection把当前完整
 本地闭包拆成`LocalExecutableClosure`与`RemoteBindingRefs`；只有跨assembly service edge选择
