@@ -373,6 +373,7 @@ mod tests {
         assert_eq!(session.symbol, "std.session.ClientSessionRef");
         assert_eq!(session.arity, 0);
         assert_eq!(session.kind, CompilerBuiltinTypeKind::OpaqueHandle);
+        assert!(compiler_builtin_type("ActorRef").is_none());
         assert!(compiler_builtin_type("NotABuiltin").is_none());
     }
 

@@ -105,6 +105,11 @@ async function main() {
     "  active: bool,",
     "  legacyFlag: boolean,",
     "}",
+    "actor UserActor id string {",
+    "  name: string,",
+    "}",
+    "const actor: UserActor = std.actor.find<UserActor, string>(\"user-1\")",
+    "const legacyActor: ActorRef = actor",
     "export impl Service {",
     "  native static function empty() -> Service",
     "  provider function save<T>(doc: T) -> bool",
@@ -163,6 +168,8 @@ async function main() {
   expectScope(findToken(collected, "integer"), "support.type.primitive.skiff");
   expectScope(findToken(collected, "bool"), "support.type.primitive.skiff");
   expectScope(findToken(collected, "boolean"), "support.type.primitive.legacy.skiff");
+  expectScope(findToken(collected, "UserActor"), "entity.name.type.skiff");
+  expectNoScope(findToken(collected, "ActorRef"), "support.type.core.skiff");
   expectScope(findToken(collected, "impl"), "storage.type.impl.skiff");
   expectScope(findToken(collected, "native"), "keyword.other.modifier.skiff");
   expectScope(findToken(collected, "static"), "keyword.other.modifier.skiff");

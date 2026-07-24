@@ -20,12 +20,55 @@ console.log('Skiff source layout checks passed.');
 async function checkManifests() {
   const preludeRoot = join(root, 'prelude');
   const stdRoot = join(root, 'std');
+  const compilerBuiltinRegistryPath = join(root, 'compiler', 'core', 'src', 'prelude_registry.rs');
 
   const legacyRoot = join(root, 'stdlib');
   expect(!(await pathExists(legacyRoot)), 'root legacy standard library dir must not remain');
 
   const preludeManifestPath = join(preludeRoot, 'prelude.yml');
-  expect(!(await pathExists(preludeManifestPath)), 'prelude.yml must not exist; native types are declared via export native type in .skiff source files');
+  expect(
+    !(await pathExists(preludeManifestPath)),
+    'prelude.yml must not exist; builtin type identity is owned by the compiler registry',
+  );
+
+  const compilerBuiltinRegistry = await readText(compilerBuiltinRegistryPath);
+  expectContains(
+    compilerBuiltinRegistry,
+    'pub const COMPILER_BUILTIN_TYPES:',
+    'compiler/core prelude registry must define COMPILER_BUILTIN_TYPES',
+  );
+  for (const builtin of [
+    'bytes',
+    'Array',
+    'Map',
+    'Config',
+    'Date',
+    'Json',
+    'JsonObject',
+    'Stream',
+    'ErrorPayload',
+    'Exception',
+    'CatchResult',
+    'SourceLocation',
+    'StackTrace',
+    'StackFrame',
+    'TimeoutError',
+    'CancelError',
+    'InternalError',
+    'ClientSessionRef',
+    'ClientCapability',
+  ]) {
+    expectMatches(
+      compilerBuiltinRegistry,
+      compilerBuiltinNamePattern(builtin),
+      `compiler builtin registry must own ${builtin}`,
+    );
+  }
+  expectNotMatches(
+    compilerBuiltinRegistry,
+    compilerBuiltinNamePattern('ActorRef'),
+    'compiler builtin registry must not expose legacy ActorRef',
+  );
 
   for (const required of ['collection', 'stream', 'actor', 'session', 'error', 'date', 'bytes', 'json', 'config']) {
     const skiffPath = join(preludeRoot, `${required}.skiff`);
@@ -83,6 +126,18 @@ async function checkSources() {
     for (const legacy of ['SecretString', 'std.values', 'values.']) {
       expectNotContains(source, legacy, `${relPath} must not contain legacy values surface ${legacy}`);
     }
+    if (relPath.startsWith('prelude/')) {
+      expectNotMatches(
+        source,
+        exportedNativeTypePattern(),
+        `${relPath} must not declare native types; builtin types are compiler-owned`,
+      );
+    }
+    expectNotMatches(
+      source,
+      /\bActorRef\b/,
+      `${relPath} must not expose legacy ActorRef in Skiff source`,
+    );
 
     checkKnownSource(relPath, source);
   }
@@ -182,12 +237,11 @@ function checkKnownSource(relPath, source) {
       expectExportedNativeFunction(source, 'sleep', relPath);
       return;
     case 'prelude/config.skiff':
-      expectExportedNativeType(source, 'Config', relPath);
+      expectExportedType(source, 'DecodeError', relPath);
       expectNotMatches(source, exportedNativeFunctionPattern('get'), `${relPath} must not export native get`);
       expectNotMatches(source, exportedFunctionPattern('get'), `${relPath} must not expose config.get`);
       return;
     case 'prelude/date.skiff':
-      expectExportedNativeType(source, 'Date', relPath);
       expectContains(source, 'impl Date', `${relPath} must define impl Date`);
       for (const name of ['now', 'fromEpochMilliseconds', 'parse', 'requireParse']) {
         expectMatches(source, staticNativeFunctionPattern(name), `${relPath} must export native static ${name}`);
@@ -198,39 +252,21 @@ function checkKnownSource(relPath, source) {
       return;
     case 'prelude/collection.skiff':
       for (const typeName of ['Array', 'Map']) {
-        expectExportedNativeType(source, typeName, relPath);
+        expectContains(source, `impl ${typeName}`, `${relPath} must define impl ${typeName}`);
       }
       return;
     case 'prelude/stream.skiff':
-      expectExportedNativeType(source, 'Stream', relPath);
       return;
     case 'prelude/actor.skiff':
-      expectExportedNativeType(source, 'ActorRef', relPath);
+      for (const name of ['getOrCreate', 'replace', 'find', 'remove']) {
+        expectMatches(source, nativeFunctionPattern(name), `${relPath} must define native function ${name}`);
+      }
       return;
     case 'prelude/session.skiff':
-      for (const typeName of ['ClientSessionRef', 'ClientCapability']) {
-        expectExportedNativeType(source, typeName, relPath);
-      }
       return;
     case 'prelude/error.skiff':
-      for (const typeName of [
-        'ErrorPayload',
-        'Exception',
-        'CatchResult',
-        'SourceLocation',
-        'StackTrace',
-        'StackFrame',
-        'TimeoutError',
-        'CancelError',
-        'InternalError',
-      ]) {
-        expectExportedNativeType(source, typeName, relPath);
-      }
       return;
     case 'prelude/json.skiff':
-      for (const typeName of ['Json', 'JsonObject']) {
-        expectExportedNativeType(source, typeName, relPath);
-      }
       return;
     case 'prelude/number.skiff':
       expectContains(source, 'impl number', `${relPath} must define impl number`);
@@ -239,7 +275,6 @@ function checkKnownSource(relPath, source) {
       }
       return;
     case 'prelude/bytes.skiff':
-      expectExportedNativeType(source, 'bytes', relPath);
       expectContains(source, 'impl bytes', `${relPath} must define impl bytes`);
       expectMatches(source, staticNativeFunctionPattern('concat'), `${relPath} must export native static concat`);
       return;
@@ -268,10 +303,6 @@ function expectExportedType(source, name, relPath) {
   expectMatches(source, exportedTypePattern(name), `${relPath} must export type ${name}`);
 }
 
-function expectExportedNativeType(source, name, relPath) {
-  expectMatches(source, exportedNativeTypePattern(name), `${relPath} must export native type ${name}`);
-}
-
 function expectExportedNativeFunction(source, name, relPath) {
   expectMatches(source, exportedNativeFunctionPattern(name), `${relPath} must export native function ${name}`);
 }
@@ -286,7 +317,8 @@ function exportedTypePattern(name) {
 }
 
 function exportedNativeTypePattern(name) {
-  return new RegExp(`\\b(?:export\\s+)?native\\s+type\\s+${escapeRegExp(name)}\\b`);
+  const typeName = name === undefined ? '[A-Za-z_][A-Za-z0-9_]*' : escapeRegExp(name);
+  return new RegExp(`\\b(?:export\\s+)?native\\s+type\\s+${typeName}\\b`);
 }
 
 function exportedFunctionPattern(name) {
@@ -295,6 +327,14 @@ function exportedFunctionPattern(name) {
 
 function exportedNativeFunctionPattern(name) {
   return new RegExp(`\\b(?:export\\s+)?native\\s+function\\s+${escapeRegExp(name)}\\b`);
+}
+
+function nativeFunctionPattern(name) {
+  return new RegExp(`\\bnative\\s+function\\s+${escapeRegExp(name)}\\b`);
+}
+
+function compilerBuiltinNamePattern(name) {
+  return new RegExp(`\\bname:\\s*"${escapeRegExp(name)}"\\s*,`);
 }
 
 function staticNativeFunctionPattern(name) {
