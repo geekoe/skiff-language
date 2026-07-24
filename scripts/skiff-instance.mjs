@@ -477,7 +477,7 @@ function routerConfigText(config) {
     profile: 'dev',
     host: '127.0.0.1',
     environment: config.environment,
-    artifactRoots: [config.paths.artifactRoot],
+    artifactsPath: config.paths.artifactRoot,
     ecosystemStoreCliPath: config.paths.ecosystemStoreCli,
     identityCliPath: config.paths.identityCli,
     devReload: true,
@@ -495,7 +495,6 @@ function runtimeConfigText(config) {
     routerUrl: config.urls.routerRuntime,
     runtimeHome: config.paths.runtimeHome,
     environment: config.environment,
-    artifactRoot: config.paths.artifactRoot,
     serviceDbEncryptionKeyringFile: config.paths.serviceDbEncryptionKeyringFile,
   });
 }

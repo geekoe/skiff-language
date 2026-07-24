@@ -61,13 +61,16 @@ test('instance init writes the configured environment and root into router/runti
       routerConfig,
       new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(expectedCompiler)}$`, 'm'),
     );
+    assert.match(
+      routerConfig,
+      new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'),
+    );
+    assert.match(routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017/m);
+    assert.doesNotMatch(routerConfig, /^artifactRoots?:/m);
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);
-    assert.match(
-      runtimeConfig,
-      new RegExp(`^artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'),
-    );
-    assert.doesNotMatch(runtimeConfig, /^artifactRoots:/m);
+    assert.doesNotMatch(runtimeConfig, /^artifactRoots?:/m);
+    assert.doesNotMatch(runtimeConfig, /mongoUrl/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

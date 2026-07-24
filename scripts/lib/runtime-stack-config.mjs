@@ -1,8 +1,10 @@
+import { isAbsolute } from 'node:path';
+
 export function renderRouterConfig({
   profile,
   host,
   environment,
-  artifactRoots,
+  artifactsPath,
   ecosystemStoreCliPath,
   identityCliPath,
   devReload,
@@ -21,12 +23,21 @@ export function renderRouterConfig({
   if (typeof ecosystemStoreCliPath !== 'string' || ecosystemStoreCliPath.trim().length === 0) {
     throw new Error('router ecosystemStoreCliPath is required');
   }
+  if (
+    typeof artifactsPath !== 'string'
+    || artifactsPath.trim().length === 0
+    || !isAbsolute(artifactsPath)
+  ) {
+    throw new Error('router artifactsPath must be an absolute path');
+  }
+  if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
+    throw new Error('router serviceDb.mongoUrl is required');
+  }
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
     `environment: ${quoteYamlString(environment)}`,
-    'artifactRoots:',
-    ...artifactRoots.map((artifactRoot) => `  - ${quoteYamlString(artifactRoot)}`),
+    `artifactsPath: ${quoteYamlString(artifactsPath)}`,
     `ecosystemStoreCliPath: ${quoteYamlString(ecosystemStoreCliPath)}`,
     `identityCliPath: ${quoteYamlString(identityCliPath)}`,
   ];
@@ -44,13 +55,11 @@ export function renderRouterConfig({
     `  port: ${runtimePort}`,
     `  path: ${runtimePath}`,
   );
-  if (serviceDbMongoUrl !== undefined) {
-    lines.push(
-      '',
-      'serviceDb:',
-      `  mongoUrl: ${quoteYamlString(serviceDbMongoUrl)}`,
-    );
-  }
+  lines.push(
+    '',
+    'serviceDb:',
+    `  mongoUrl: ${quoteYamlString(serviceDbMongoUrl)}`,
+  );
   if (telemetryEndpoint !== undefined) {
     lines.push(
       '',
@@ -76,21 +85,16 @@ export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
   environment,
-  artifactRoot,
   serviceDbEncryptionKeyringFile,
   httpResponseMaxBytes,
 }) {
   if (typeof environment !== 'string' || environment.trim().length === 0) {
     throw new Error('runtime environment is required');
   }
-  if (typeof artifactRoot !== 'string' || artifactRoot.trim().length === 0) {
-    throw new Error('runtime artifactRoot is required');
-  }
   const lines = [
     `router: ${quoteYamlString(routerUrl)}`,
     `runtime-home: ${quoteYamlString(runtimeHome)}`,
     `environment: ${quoteYamlString(environment)}`,
-    `artifactRoot: ${quoteYamlString(artifactRoot)}`,
   ];
   if (serviceDbEncryptionKeyringFile !== undefined) {
     lines.push(

@@ -76,6 +76,11 @@ const serviceDbMongoUrl =
   args.serviceDbMongoUrl ||
   process.env.SKIFF_SERVICE_DB_MONGO_URL ||
   process.env.SERVICE_DB_MONGO_URL;
+if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
+  throw new Error(
+    'service DB Mongo URL is required; pass --service-db-mongo-url or set SKIFF_SERVICE_DB_MONGO_URL',
+  );
+}
 const serviceDbEncryptionKeyringFile = readRemoteAbsolutePath(
   args.serviceDbEncryptionKeyringFile ||
     process.env.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE,
@@ -330,7 +335,7 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     profile: 'prod',
     host: '127.0.0.1',
     environment: 'prod',
-    artifactRoots: [`${remoteSkiff}/artifacts`],
+    artifactsPath: `${remoteSkiff}/artifacts`,
     ecosystemStoreCliPath: `${remoteSkiff}/bin/skiff-compiler`,
     identityCliPath: `${remoteSkiff}/bin/skiff-artifact-identity`,
     releaseMode: true,
@@ -350,7 +355,6 @@ async function writeRuntimeConfig(file, remoteSkiff, options) {
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: `${remoteSkiff}/runtime-home`,
     environment: 'prod',
-    artifactRoot: `${remoteSkiff}/artifacts`,
     serviceDbEncryptionKeyringFile: options.serviceDbEncryptionKeyringFile,
     httpResponseMaxBytes: 8388608,
   }));

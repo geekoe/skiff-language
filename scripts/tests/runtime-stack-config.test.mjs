@@ -18,20 +18,20 @@ const routerConfig = {
   profile: 'dev',
   host: '127.0.0.1',
   environment: 'f04-host-test',
-  artifactRoots: ['/tmp/skiff/artifacts'],
+  artifactsPath: '/tmp/skiff/artifacts',
   ecosystemStoreCliPath: '/tmp/skiff/bin/skiff-compiler',
   identityCliPath: '/tmp/skiff/bin/artifact-identity',
   devReload: true,
   releaseMode: false,
   httpPort: 4100,
   runtimePort: 4101,
+  serviceDbMongoUrl: 'mongodb://127.0.0.1:27017/skiff',
 };
 
 const runtimeConfig = {
   routerUrl: 'ws://127.0.0.1:4101/runtime',
   runtimeHome: '/tmp/skiff/runtime-home',
   environment: 'f10-runtime-test',
-  artifactRoot: '/tmp/skiff/artifacts',
 };
 
 test('router config renders an explicit environment', () => {
@@ -43,6 +43,9 @@ test('router config renders an explicit environment', () => {
     /^ecosystemStoreCliPath: "\/tmp\/skiff\/bin\/skiff-compiler"$/m,
   );
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
+  assert.match(rendered, /^artifactsPath: "\/tmp\/skiff\/artifacts"$/m);
+  assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
+  assert.doesNotMatch(rendered, /^artifactRoots?:/m);
 });
 
 test('router config fails closed when environment is omitted or empty', () => {
@@ -69,19 +72,42 @@ test('router config fails closed when ecosystemStoreCliPath is omitted or empty'
   );
 });
 
-test('runtime config renders one exact environment and singular artifactRoot', () => {
+test('router config fails closed when artifact path or Mongo URL is omitted', () => {
+  const { artifactsPath: _artifactsPath, ...withoutArtifactsPath } = routerConfig;
+  const { serviceDbMongoUrl: _serviceDbMongoUrl, ...withoutMongoUrl } = routerConfig;
+  assert.throws(
+    () => renderRouterConfig(withoutArtifactsPath),
+    /router artifactsPath must be an absolute path/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, artifactsPath: '   ' }),
+    /router artifactsPath must be an absolute path/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, artifactsPath: 'relative/artifacts' }),
+    /router artifactsPath must be an absolute path/,
+  );
+  assert.throws(
+    () => renderRouterConfig(withoutMongoUrl),
+    /router serviceDb\.mongoUrl is required/,
+  );
+  assert.throws(
+    () => renderRouterConfig({ ...routerConfig, serviceDbMongoUrl: '' }),
+    /router serviceDb\.mongoUrl is required/,
+  );
+});
+
+test('runtime config renders one exact environment without deployment bootstrap ownership', () => {
   const rendered = renderRuntimeConfig(runtimeConfig);
 
   assert.match(rendered, /^environment: "f10-runtime-test"$/m);
-  assert.match(rendered, /^artifactRoot: "\/tmp\/skiff\/artifacts"$/m);
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
-  assert.equal(rendered.match(/^artifactRoot:/gm)?.length, 1);
-  assert.doesNotMatch(rendered, /^artifactRoots:/m);
+  assert.doesNotMatch(rendered, /^artifactRoots?:/m);
+  assert.doesNotMatch(rendered, /mongoUrl/);
 });
 
-test('runtime config fails closed on missing or empty bootstrap fields', () => {
+test('runtime config fails closed on missing or empty environment', () => {
   const { environment: _environment, ...withoutEnvironment } = runtimeConfig;
-  const { artifactRoot: _artifactRoot, ...withoutArtifactRoot } = runtimeConfig;
   assert.throws(
     () => renderRuntimeConfig(withoutEnvironment),
     /runtime environment is required/,
@@ -98,32 +124,9 @@ test('runtime config fails closed on missing or empty bootstrap fields', () => {
     () => renderRuntimeConfig({ ...runtimeConfig, environment: '   ' }),
     /runtime environment is required/,
   );
-  assert.throws(
-    () => renderRuntimeConfig(withoutArtifactRoot),
-    /runtime artifactRoot is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, artifactRoot: '' }),
-    /runtime artifactRoot is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, artifactRoot: null }),
-    /runtime artifactRoot is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({ ...runtimeConfig, artifactRoot: '   ' }),
-    /runtime artifactRoot is required/,
-  );
-  assert.throws(
-    () => renderRuntimeConfig({
-      ...withoutArtifactRoot,
-      artifactRoots: ['/tmp/a', '/tmp/b'],
-    }),
-    /runtime artifactRoot is required/,
-  );
 });
 
-test('local dev config caller writes dev and one canonical artifact root', async () => {
+test('local dev config writes bootstrap ownership only to router', async () => {
   const devHome = await mkdtemp(join(tmpdir(), 'skiff-f10-dev-config-'));
   try {
     await execFileAsync(process.execPath, [
@@ -138,8 +141,11 @@ test('local dev config caller writes dev and one canonical artifact root', async
     const router = await readFile(join(devHome, 'router.yml'), 'utf8');
 
     assert.match(rendered, /^environment: "dev"$/m);
-    assert.match(rendered, new RegExp(`^artifactRoot: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
-    assert.doesNotMatch(rendered, /^artifactRoots:/m);
+    assert.doesNotMatch(rendered, /^artifactRoots?:/m);
+    assert.doesNotMatch(rendered, /mongoUrl/);
+    assert.match(router, new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
+    assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
+    assert.doesNotMatch(router, /^artifactRoots?:/m);
     assert.match(
       router,
       new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(join(devHome, 'bin', process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler'))}$`, 'm'),

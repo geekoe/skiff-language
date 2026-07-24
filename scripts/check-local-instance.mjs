@@ -60,6 +60,15 @@ try {
   assert.match(configText, /^  mongo: 27017$/m);
 
   const runtimeConfigText = await readFile(expected.paths.runtimeConfig, 'utf8');
+  const routerConfigText = await readFile(expected.paths.routerConfig, 'utf8');
+  assert.match(
+    routerConfigText,
+    new RegExp(`^artifactsPath: ${escapeRegExp(JSON.stringify(expected.paths.artifactRoot))}$`, 'm'),
+  );
+  assert.match(routerConfigText, /^  mongoUrl: /m);
+  assert.doesNotMatch(routerConfigText, /^artifactRoots?:/m);
+  assert.doesNotMatch(runtimeConfigText, /^artifactRoots?:/m);
+  assert.doesNotMatch(runtimeConfigText, /mongoUrl/);
   assert.match(runtimeConfigText, /^serviceDb:$/m);
   assert.match(runtimeConfigText, /^  encryption:$/m);
   assert.match(

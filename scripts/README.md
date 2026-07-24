@@ -198,7 +198,7 @@ node deploy-runtime-stack.mjs --remote <user@host>
 
 `deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router, runtime, and telemetry process, then writes config, installs router/telemetry dependencies, and reloads the selected components. It does not deploy the compiler. The legacy `--runtime-binary` flag is still accepted, but the build manifest is preferred. Telemetry is a separate Node process that listens on `127.0.0.1:4002`, receives runtime telemetry at `ws://127.0.0.1:4002/telemetry`, and persists events to Mongo. The deploy script writes telemetry settings to `${remoteSkiff}/config/telemetry.yml`.
 
-Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables.
+Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables. The generated Router config owns the absolute shared `artifactsPath` (`${remoteSkiff}/artifacts`) and the required `serviceDb.mongoUrl`; Runtime receives both through its Router bootstrap and neither value is written to `runtime.yml`.
 
 Telemetry deployment options:
 
@@ -219,7 +219,7 @@ node deploy-runtime-stack.mjs \
 
 Useful environment overrides are `SKIFF_TELEMETRY_MONGO_URL` or `MONGO_URL`, `SKIFF_TELEMETRY_DB`, `SKIFF_TELEMETRY_PORT`, `SKIFF_TELEMETRY_CONFIG`, and `SKIFF_TELEMETRY_ENDPOINT`. Set `--telemetry-memory true` or `SKIFF_TELEMETRY_IN_MEMORY=true` when deploying to a host without MongoDB; the generated `telemetry.yml` will contain `memory: true` and omit the `mongo:` block.
 
-Set `--service-db-mongo-url`, `SKIFF_SERVICE_DB_MONGO_URL`, or `SERVICE_DB_MONGO_URL` to include a router `serviceDb.mongoUrl` in `${remoteSkiff}/config/router.yml`; the router forwards it to runtime service activations for Skiff DB-backed services.
+Set `--service-db-mongo-url`, `SKIFF_SERVICE_DB_MONGO_URL`, or `SERVICE_DB_MONGO_URL` to provide the required Router `serviceDb.mongoUrl` in `${remoteSkiff}/config/router.yml`. Deployment fails closed when it is missing. Router sends it together with the exact shared `artifactsPath` to Runtime during connection bootstrap.
 
 Set `--service-db-encryption-keyring-file` or `SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE` to an absolute path on the remote runtime host to include `serviceDb.encryption.keyringFile` in `${remoteSkiff}/config/runtime.yml`. Provision the keyring separately on that host before deployment. The deploy script never reads, validates, creates, copies, rsyncs, or backs up the keyring itself; it transfers only the generated runtime config containing the mount path. Its JSON summary reports only whether a keyring path was configured, never the path or key material. Omitting both settings omits the runtime encryption block.
 

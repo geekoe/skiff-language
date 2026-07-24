@@ -186,8 +186,9 @@ node scripts/deploy-runtime-stack.mjs \
 示例 router/runtime 配置：
 
 ```yaml
-artifacts:
-  root: /opt/skiff/artifacts
+artifactsPath: /opt/skiff/artifacts
+serviceDb:
+  mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
 releaseMode: true
 http:
   port: 4000

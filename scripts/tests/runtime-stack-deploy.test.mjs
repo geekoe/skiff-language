@@ -18,7 +18,6 @@ test('runtime config renders an optional host keyring mount path', () => {
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: '/srv/skiff/runtime-home',
     environment: 'prod',
-    artifactRoot: '/srv/skiff/artifacts',
     httpResponseMaxBytes: 8388608,
   };
 
@@ -40,8 +39,8 @@ test('deploy CLI writes only the remote keyring path to runtime.yml', async () =
   try {
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.runtimeConfig, /^environment: "prod"$/m);
-    assert.match(result.runtimeConfig, /^artifactRoot: "\/srv\/skiff\/artifacts"$/m);
-    assert.doesNotMatch(result.runtimeConfig, /^artifactRoots:/m);
+    assert.doesNotMatch(result.runtimeConfig, /^artifactRoots?:/m);
+    assert.doesNotMatch(result.runtimeConfig, /mongoUrl/);
     assert.match(result.runtimeConfig, new RegExp(`keyringFile: ${JSON.stringify(mountPath)}`));
 
     const summary = JSON.parse(result.stdout);
@@ -97,6 +96,17 @@ test('deploy CLI rejects a relative remote keyring path before running commands'
   }
 });
 
+test('deploy CLI fails closed without the Router-owned Mongo URL', async () => {
+  const result = await runDeploy({ includeServiceDbMongoUrl: false });
+  try {
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /service DB Mongo URL is required/);
+    assert.equal(result.commandLog, '');
+  } finally {
+    await result.cleanup();
+  }
+});
+
 test('router deploy provisions the manifest compiler and writes only supported PM2 args', async () => {
   const result = await runDeploy({ only: 'router' });
   try {
@@ -105,6 +115,9 @@ test('router deploy provisions the manifest compiler and writes only supported P
       result.routerConfig,
       /^ecosystemStoreCliPath: "\/srv\/skiff\/bin\/skiff-compiler"$/m,
     );
+    assert.match(result.routerConfig, /^artifactsPath: "\/srv\/skiff\/artifacts"$/m);
+    assert.match(result.routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
+    assert.doesNotMatch(result.routerConfig, /^artifactRoots?:/m);
     assert.match(
       result.ecosystemConfig,
       /args: '--config \/srv\/skiff\/config\/router\.yml'/,
@@ -143,6 +156,7 @@ async function runDeploy({
   env = {},
   only = 'runtime',
   omitCompiler = false,
+  includeServiceDbMongoUrl = true,
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'skiff-deploy-test-'));
   const fakeBin = path.join(root, 'bin');
@@ -189,6 +203,8 @@ async function runDeploy({
     SKIFF_DEPLOY_TEST_ECOSYSTEM_CONFIG: ecosystemConfigPath,
   };
   delete childEnv.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE;
+  delete childEnv.SKIFF_SERVICE_DB_MONGO_URL;
+  delete childEnv.SERVICE_DB_MONGO_URL;
   Object.assign(childEnv, env);
 
   const child = await spawnCapture(process.execPath, [
@@ -201,6 +217,9 @@ async function runDeploy({
     '/srv/skiff',
     '--build-manifest',
     manifestPath,
+    ...(includeServiceDbMongoUrl
+      ? ['--service-db-mongo-url', 'mongodb://127.0.0.1:27017/skiff']
+      : []),
     ...args,
   ], childEnv);
 

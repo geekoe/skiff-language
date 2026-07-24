@@ -337,7 +337,6 @@ async function devInit(rawArgs) {
     serviceDbMongoUrl,
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'runtime.yml'), runtimeDevConfig({
-    artifactRoot,
     runtimeHome,
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'telemetry.yml'), telemetryDevConfig({
@@ -685,7 +684,7 @@ function routerDevConfig(options) {
     profile: 'dev',
     host: '0.0.0.0',
     environment: 'dev',
-    artifactRoots: [options.artifactRoot],
+    artifactsPath: options.artifactRoot,
     ecosystemStoreCliPath: options.ecosystemStoreCliPath,
     identityCliPath: options.identityCliPath,
     devReload: true,
@@ -703,7 +702,6 @@ function runtimeDevConfig(options) {
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: options.runtimeHome,
     environment: 'dev',
-    artifactRoot: options.artifactRoot,
   });
 }
 
