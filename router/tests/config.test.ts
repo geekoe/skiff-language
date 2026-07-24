@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile as writeFileRaw } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,18 @@ const tempDirs: string[] = [];
 const originalIdentityCliEnv = process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
 const originalEcosystemStoreCliEnv = process.env.SKIFF_ECOSYSTEM_STORE_CLI;
 const originalDevHomeEnv = process.env.SKIFF_DEV_HOME;
+
+async function writeRouterConfigFixture(path: string, contents: string): Promise<void> {
+  const required = [
+    contents,
+    /^artifactsPath:/m.test(contents) ? '' : 'artifactsPath: ./artifacts',
+    /^serviceDb:/m.test(contents)
+      ? ''
+      : 'serviceDb:\n  mongoUrl: mongodb://127.0.0.1:27017/skiff',
+    ''
+  ].filter((line) => line.length > 0).join('\n');
+  await writeFileRaw(path, required);
+}
 
 beforeEach(() => {
   delete process.env.SKIFF_ARTIFACT_IDENTITY_CLI;
@@ -43,13 +55,12 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
         'host: 0.0.0.0',
-        'artifactRoots:',
-        '  - ../var/skiff-artifacts',
+        'artifactsPath: ../var/skiff-artifacts',
         'releaseMode: true',
         'manifest: manifests/router-manifest.json',
         'requestTimeoutMs: 7000',
@@ -82,7 +93,10 @@ describe('router config', () => {
     );
 
     await expect(loadRouterConfig(configPath)).resolves.toEqual({
-      artifactRoots: [join(dir, '..', 'var/skiff-artifacts')],
+      artifactsPath: join(dir, '..', 'var/skiff-artifacts'),
+      serviceDb: {
+        mongoUrl: 'mongodb://127.0.0.1:27017/skiff',
+      },
       host: '0.0.0.0',
       httpBodyLimitBytes: 16777216,
       httpPort: 5010,
@@ -124,12 +138,12 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['profile: base', 'manifest: base.json', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['profile: base', 'manifest: base.json', ''].join('\n'));
 
     await expect(
       loadRouterConfig(configPath, {
         host: '127.0.0.2',
-        artifactRoots: ['artifact-override'],
+        artifactsPath: 'artifact-override',
         httpBodyLimitBytes: '33554432',
         httpPort: '6010',
         manifest: 'override.json',
@@ -141,7 +155,7 @@ describe('router config', () => {
         releaseMode: true,
       })
     ).resolves.toMatchObject({
-      artifactRoots: [join(dir, 'artifact-override')],
+      artifactsPath: join(dir, 'artifact-override'),
       host: '127.0.0.2',
       httpBodyLimitBytes: 33554432,
       httpPort: 6010,
@@ -159,7 +173,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'profile: staging\n');
+    await writeRouterConfigFixture(configPath, 'profile: staging\n');
 
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
       profile: 'staging',
@@ -178,7 +192,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', 'devReload: true', ''].join('\n')
     );
@@ -200,7 +214,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', 'identityCliPath: bin/skiff-artifact-identity', ''].join('\n')
     );
@@ -217,7 +231,7 @@ describe('router config', () => {
       identityCliPath: resolve('override/skiff-artifact-identity'),
     });
 
-    await writeFile(configPath, ['profile: dev', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['profile: dev', ''].join('\n'));
     process.env.SKIFF_ARTIFACT_IDENTITY_CLI = 'env/skiff-artifact-identity';
     await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
       identityCliPath: resolve('env/skiff-artifact-identity'),
@@ -240,7 +254,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: prod', 'releaseMode: true', ''].join('\n')
     );
@@ -253,7 +267,7 @@ describe('router config', () => {
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
     const configuredPath = join(dir, 'bin', 'skiff-compiler');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', `ecosystemStoreCliPath: ${JSON.stringify(configuredPath)}`, ''].join('\n')
     );
@@ -268,21 +282,21 @@ describe('router config', () => {
       ecosystemStoreCliPath: overridePath
     });
 
-    await writeFile(configPath, 'profile: dev\n');
+    await writeRouterConfigFixture(configPath, 'profile: dev\n');
     process.env.SKIFF_ECOSYSTEM_STORE_CLI = 'env/skiff-compiler';
     process.env.SKIFF_DEV_HOME = join(dir, 'hostile-dev-home');
     await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
       'ecosystemStoreCliPath'
     );
 
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       'profile: dev\necosystemStoreCliPath: bin/skiff-compiler\n'
     );
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /ecosystemStoreCliPath must be an absolute executable path/
     );
-    await writeFile(configPath, 'profile: dev\n');
+    await writeRouterConfigFixture(configPath, 'profile: dev\n');
     await expect(loadRouterConfig(configPath, {
       ecosystemStoreCliPath: 'override/skiff-compiler'
     })).rejects.toThrow(
@@ -294,7 +308,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'profile: prod\nreleaseMode: true\n');
+    await writeRouterConfigFixture(configPath, 'profile: prod\nreleaseMode: true\n');
 
     await expect(loadRouterConfig(configPath)).resolves.not.toHaveProperty(
       'ecosystemStoreCliPath'
@@ -306,7 +320,7 @@ describe('router config', () => {
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
     const executablePath = join(dir, 'bin', 'activation-backend');
-    await writeFile(configPath, [
+    await writeRouterConfigFixture(configPath, [
       'profile: prod',
       'activationBackend:',
       `  executablePath: ${JSON.stringify(executablePath)}`,
@@ -321,7 +335,7 @@ describe('router config', () => {
       }
     });
 
-    await writeFile(configPath, [
+    await writeRouterConfigFixture(configPath, [
       'profile: prod',
       'activationBackend:',
       '  executablePath: relative/backend',
@@ -331,7 +345,7 @@ describe('router config', () => {
       /activationBackend.executablePath must be an absolute executable path/
     );
 
-    await writeFile(configPath, [
+    await writeRouterConfigFixture(configPath, [
       'profile: prod',
       'activationBackend:',
       `  executablePath: ${JSON.stringify(executablePath)}`,
@@ -347,7 +361,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -375,7 +389,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -396,7 +410,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const envConfig = join(dir, 'file-env.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       envConfig,
       [
         'profile: dev',
@@ -421,7 +435,7 @@ describe('router config', () => {
     });
 
     const directConfig = join(dir, 'file-direct.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       directConfig,
       [
         'profile: dev',
@@ -448,13 +462,13 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const emptyConfig = join(dir, 'file-empty.yml');
-    await writeFile(emptyConfig, ['profile: dev', 'fileBackend: {}', ''].join('\n'));
+    await writeRouterConfigFixture(emptyConfig, ['profile: dev', 'fileBackend: {}', ''].join('\n'));
     await expect(loadRouterConfig(emptyConfig)).rejects.toThrow(
       /router config fileBackend must configure local or oss/
     );
 
     const missingCredential = join(dir, 'file-missing-credential.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       missingCredential,
       [
         'profile: dev',
@@ -475,7 +489,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -496,7 +510,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const missingService = join(dir, 'missing-service.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       missingService,
       [
         'profile: dev',
@@ -510,7 +524,7 @@ describe('router config', () => {
     );
 
     const invalidPath = join(dir, 'invalid-path.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidPath,
       [
         'profile: dev',
@@ -526,7 +540,7 @@ describe('router config', () => {
     );
 
     const invalidService = join(dir, 'invalid-service.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidService,
       [
         'profile: dev',
@@ -541,7 +555,7 @@ describe('router config', () => {
     );
 
     const invalidVersion = join(dir, 'invalid-version.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidVersion,
       [
         'profile: dev',
@@ -557,7 +571,7 @@ describe('router config', () => {
     );
 
     const unknownField = join(dir, 'unknown-field.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       unknownField,
       [
         'profile: dev',
@@ -574,7 +588,7 @@ describe('router config', () => {
     );
 
     const duplicate = join(dir, 'duplicate.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       duplicate,
       [
         'profile: dev',
@@ -597,7 +611,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const disabledConfig = join(dir, 'disabled.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       disabledConfig,
       [
         'profile: dev',
@@ -610,7 +624,7 @@ describe('router config', () => {
     await expect(loadRouterConfig(disabledConfig)).resolves.not.toHaveProperty('telemetry');
 
     const noEndpointConfig = join(dir, 'no-endpoint.yml');
-    await writeFile(noEndpointConfig, ['profile: dev', 'telemetry:', '  enabled: true', ''].join('\n'));
+    await writeRouterConfigFixture(noEndpointConfig, ['profile: dev', 'telemetry:', '  enabled: true', ''].join('\n'));
     await expect(loadRouterConfig(noEndpointConfig)).resolves.not.toHaveProperty('telemetry');
   });
 
@@ -619,7 +633,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const invalidProtocol = join(dir, 'invalid-protocol.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidProtocol,
       [
         'profile: dev',
@@ -634,7 +648,7 @@ describe('router config', () => {
     );
 
     const duplicateTopic = join(dir, 'duplicate-topic.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       duplicateTopic,
       [
         'profile: dev',
@@ -649,7 +663,7 @@ describe('router config', () => {
     );
 
     const emptyTopics = join(dir, 'empty-topics.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       emptyTopics,
       [
         'profile: dev',
@@ -664,7 +678,7 @@ describe('router config', () => {
     );
 
     const invalidTopic = join(dir, 'invalid-topic.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidTopic,
       [
         'profile: dev',
@@ -679,7 +693,7 @@ describe('router config', () => {
     );
 
     const invalidNumber = join(dir, 'invalid-number.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       invalidNumber,
       [
         'profile: dev',
@@ -699,7 +713,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const badConfig = join(dir, 'bad-dev-reload.yml');
-    await writeFile(badConfig, ['profile: dev', 'devReload: latest', ''].join('\n'));
+    await writeRouterConfigFixture(badConfig, ['profile: dev', 'devReload: latest', ''].join('\n'));
     await expect(loadRouterConfig(badConfig)).rejects.toThrow(
       /router config devReload must be a boolean/
     );
@@ -710,7 +724,7 @@ describe('router config', () => {
     tempDirs.push(dir);
 
     const zeroConfig = join(dir, 'zero-body-limit.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       zeroConfig,
       ['profile: dev', 'http:', '  bodyLimitBytes: 0', ''].join('\n')
     );
@@ -719,7 +733,7 @@ describe('router config', () => {
     );
 
     const fractionalConfig = join(dir, 'fractional-body-limit.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       fractionalConfig,
       ['profile: dev', 'http:', '  bodyLimitBytes: 1.5', ''].join('\n')
     );
@@ -732,7 +746,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'manifest: base.json\n');
+    await writeRouterConfigFixture(configPath, 'manifest: base.json\n');
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config profile is required/
@@ -743,7 +757,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['values:', '  profile: prod', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['values:', '  profile: prod', ''].join('\n'));
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config values\.profile is no longer supported/
@@ -754,7 +768,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, 'profile: prod-us\n');
+    await writeRouterConfigFixture(configPath, 'profile: prod-us\n');
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
       /router config profile must match \[A-Za-z_\]\[A-Za-z0-9_\]\*/
@@ -765,7 +779,7 @@ describe('router config', () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -789,18 +803,18 @@ describe('router config', () => {
     tempDirs.push(dir);
     await mkdir(join(dir, 'artifacts'));
     const configPath = join(dir, 'router.yml');
-    await writeFile(configPath, ['profile: dev', 'artifacts: artifacts', ''].join('\n'));
+    await writeRouterConfigFixture(configPath, ['profile: dev', 'artifacts: artifacts', ''].join('\n'));
 
     await expect(loadRouterConfig(configPath)).rejects.toThrow(
-      /router config artifacts is no longer supported; use artifactRoots/
+      /router config artifacts is no longer supported; use artifactsPath/
     );
   });
 
-  it('loads ordered artifact roots from top-level config', async () => {
+  it('rejects plural artifact roots', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       [
         'profile: dev',
@@ -811,16 +825,16 @@ describe('router config', () => {
       ].join('\n')
     );
 
-    await expect(loadRouterConfig(configPath)).resolves.toMatchObject({
-      artifactRoots: [join(dir, 'artifacts/base'), join(dir, 'artifacts/test')],
-    });
+    await expect(loadRouterConfig(configPath)).rejects.toThrow(
+      /router config artifactRoots is no longer supported; use artifactsPath/
+    );
   });
 
   it('rejects old host-to-service mappings', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'skiff-router-config-'));
     tempDirs.push(dir);
     const configPath = join(dir, 'router.yml');
-    await writeFile(
+    await writeRouterConfigFixture(
       configPath,
       ['profile: dev', 'hosts:', '  localhost:3011: sample', ''].join('\n')
     );

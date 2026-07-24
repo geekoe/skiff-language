@@ -24,7 +24,7 @@ const IDENTITY_CLI_BINARY = process.platform === 'win32'
 
 export interface RouterConfig {
   activationBackend?: RouterActivationBackendConfig;
-  artifactRoots?: string[];
+  artifactsPath: string;
   devReload?: boolean;
   ecosystemStoreCliPath?: string;
   environment?: string;
@@ -40,7 +40,7 @@ export interface RouterConfig {
   runtimePath: string;
   runtimePort: number;
   fileBackend?: FileBackendControlConfig;
-  serviceDb?: RuntimeServiceDbConfigInput;
+  serviceDb: RuntimeServiceDbConfigInput;
   telemetry?: TelemetryControlConfig;
   websocketPath: string;
 }
@@ -51,7 +51,7 @@ export interface RouterActivationBackendConfig {
 }
 
 export interface RouterConfigOverrides {
-  artifactRoots?: string[];
+  artifactsPath?: string;
   devReload?: boolean;
   ecosystemStoreCliPath?: string;
   environment?: string;
@@ -70,6 +70,7 @@ export interface RouterConfigOverrides {
 
 interface RawRouterConfig {
   activationBackend?: unknown;
+  artifactsPath?: unknown;
   artifactRoots?: unknown;
   devReload?: unknown;
   ecosystemStoreCliPath?: unknown;
@@ -126,9 +127,10 @@ export async function loadRouterConfig(
   const raw = parsed as RawRouterConfig;
   const configDir = dirname(absoluteConfigPath);
   const manifests = readManifests(overrides.manifest ?? raw.manifests ?? raw.manifest);
-  const artifactRoots = readOptionalArtifactRoots(
-    overrides.artifactRoots ?? raw.artifactRoots,
-    configDir
+  rejectRemovedArtifactRootConfig(raw);
+  const artifactsPath = resolve(
+    configDir,
+    readRequiredString(overrides.artifactsPath ?? raw.artifactsPath, 'artifactsPath')
   );
   const devReload = readOptionalBoolean(overrides.devReload ?? raw.devReload, 'devReload');
   const releaseMode = readOptionalBoolean(
@@ -150,12 +152,12 @@ export async function loadRouterConfig(
       : {})
   });
   rejectRemovedValuesConfig(raw.values);
-  rejectRemovedArtifactRootConfig(raw);
   const rawProfile = readRequiredProfile(raw.profile, 'profile');
   const profile = readRequiredProfile(overrides.profile ?? rawProfile, 'profile');
   rejectRemovedHosts(raw.hosts);
 
   const config: RouterConfig = {
+    artifactsPath,
     host: readString(overrides.host ?? raw.host, 'host', '127.0.0.1'),
     httpPort: readPort(overrides.httpPort ?? raw.httpPort ?? raw.http?.port, 'http.port', 4000),
     manifests: manifests.map((manifest) => resolveConfigPath(configDir, manifest)),
@@ -176,6 +178,7 @@ export async function loadRouterConfig(
       'runtime.port',
       4001
     ),
+    serviceDb: readServiceDbConfig(raw.serviceDb),
     websocketPath: readPath(
       overrides.websocketPath ?? raw.websocket?.path,
       'websocket.path',
@@ -195,9 +198,6 @@ export async function loadRouterConfig(
       throw new Error('router config environment is invalid');
     }
     config.environment = environment;
-  }
-  if (artifactRoots !== undefined) {
-    config.artifactRoots = artifactRoots;
   }
   if (devReload !== undefined) {
     config.devReload = devReload;
@@ -225,10 +225,6 @@ export async function loadRouterConfig(
   const telemetry = readTelemetryConfig(raw.telemetry);
   if (telemetry !== undefined) {
     config.telemetry = telemetry;
-  }
-  const serviceDb = readServiceDbConfig(raw.serviceDb);
-  if (serviceDb !== undefined) {
-    config.serviceDb = serviceDb;
   }
   return config;
 }
@@ -259,10 +255,7 @@ function readStringArray(value: unknown, name: string): string[] {
   return value.map((entry, index) => readString(entry, `${name}[${index}]`, String(entry)));
 }
 
-function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
+function readServiceDbConfig(value: unknown): RuntimeServiceDbConfigInput {
   if (!isRecord(value)) {
     throw new Error('router config serviceDb must be an object');
   }
@@ -365,10 +358,13 @@ function readFileBackendOssConfig(
 
 function rejectRemovedArtifactRootConfig(raw: RawRouterConfig): void {
   if (Object.prototype.hasOwnProperty.call(raw, 'artifactRoot')) {
-    throw new Error('router config artifactRoot is no longer supported; use artifactRoots');
+    throw new Error('router config artifactRoot is no longer supported; use artifactsPath');
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'artifactRoots')) {
+    throw new Error('router config artifactRoots is no longer supported; use artifactsPath');
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'artifacts')) {
-    throw new Error('router config artifacts is no longer supported; use artifactRoots');
+    throw new Error('router config artifacts is no longer supported; use artifactsPath');
   }
 }
 
@@ -406,24 +402,6 @@ function readManifests(value: unknown): string[] {
 
 function resolveConfigPath(configDir: string, value: string): string {
   return isAbsolute(value) ? value : resolve(configDir, value);
-}
-
-function readOptionalArtifactRoots(value: unknown, configDir: string): string[] | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      throw new Error('router config artifactRoots must be a non-empty string array');
-    }
-    return value.map((item, index) =>
-      resolveConfigPath(
-        configDir,
-        readString(item, `artifactRoots[${index}]`, String(item))
-      )
-    );
-  }
-  throw new Error('router config artifactRoots must be a non-empty string array');
 }
 
 function readIdentityCliPath(input: {

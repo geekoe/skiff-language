@@ -328,6 +328,10 @@ async function createHarness(): Promise<ProductionHarness> {
   const endpoint = new RuntimeEndpoint({
     registry: new RuntimeRegistry(),
     assemblyRegistry,
+    bootstrap: {
+      artifactsPath: '/tmp/skiff-test-artifacts',
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+    },
     observeConnectionSend: (observation) => observations.push(observation)
   });
   const dispatcher = new RuntimeDispatcher({ registry: assemblyRegistry, frameSender: endpoint });

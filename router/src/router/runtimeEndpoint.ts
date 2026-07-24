@@ -21,6 +21,7 @@ import {
   RUNTIME_FRAME_SCHEMA_VERSION,
   type ConnectionSendEnvelope,
   type RequestCancelEnvelope,
+  type RouterBootstrapEnvelope,
   type RouterControlEnvelope,
   type RouterControlFrameHeader,
   type RouterToRuntimeFrameHeader
@@ -119,11 +120,21 @@ export interface RuntimeControlBroadcaster {
   broadcastControl(control: Omit<RouterControlEnvelope, 'type'>): void;
 }
 
-export interface RuntimeEndpointOptions {
+interface RuntimeEndpointBaseOptions {
   registry: RuntimeRegistry;
-  assemblyRegistry?: AssemblyRuntimeRegistry;
   observeConnectionSend?(observation: RuntimeConnectionSendObservation): void;
 }
+
+export type RuntimeEndpointOptions = RuntimeEndpointBaseOptions & (
+  | {
+      assemblyRegistry: AssemblyRuntimeRegistry;
+      bootstrap: Omit<RouterBootstrapEnvelope, 'type'>;
+    }
+  | {
+      assemblyRegistry?: undefined;
+      bootstrap?: Omit<RouterBootstrapEnvelope, 'type'>;
+    }
+);
 
 export class RuntimeEndpoint
   implements
@@ -202,6 +213,13 @@ export class RuntimeEndpoint
     });
 
     webSocketServer.on('connection', (ws) => {
+      if (this.options.bootstrap !== undefined) {
+        this.sendFrame(ws, {
+          schemaVersion: RUNTIME_FRAME_SCHEMA_VERSION,
+          type: 'router.bootstrap',
+          ...this.options.bootstrap
+        });
+      }
       if (this.control) {
         this.sendFrame(ws, routerControlFrameHeader(this.control));
       }

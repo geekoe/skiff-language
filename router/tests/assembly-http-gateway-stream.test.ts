@@ -149,7 +149,11 @@ async function createFixture(): Promise<StreamFixture> {
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const endpoint = new RuntimeEndpoint({
     registry: new RuntimeRegistry(),
-    assemblyRegistry
+    assemblyRegistry,
+    bootstrap: {
+      artifactsPath: '/tmp/skiff-test-artifacts',
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+    }
   });
   const dispatcher = new RuntimeDispatcher({
     registry: assemblyRegistry,

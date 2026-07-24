@@ -547,7 +547,14 @@ async function createFixture(
   const snapshots = new RouterActiveAssemblySnapshotStore();
   const assemblyRegistry = new AssemblyRuntimeRegistry(snapshots);
   const runtimeRegistry = new RuntimeRegistry();
-  const endpoint = new RuntimeEndpoint({ registry: runtimeRegistry, assemblyRegistry });
+  const endpoint = new RuntimeEndpoint({
+    registry: runtimeRegistry,
+    assemblyRegistry,
+    bootstrap: {
+      artifactsPath: '/tmp/skiff-test-artifacts',
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+    }
+  });
   const coordinator = new AssemblyActivationCoordinator({
     environment: 'test',
     stateStore: new MemoryAssemblyActivationStateStore(initialActivationState({

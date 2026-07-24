@@ -21,7 +21,7 @@ import { WebSocketGenerationLifecycleRouter } from './webSocketGenerationLifecyc
 const args = parseArgs({
   options: {
     config: { type: 'string', default: 'router.yml' },
-    'artifact-root': { type: 'string', multiple: true },
+    'artifacts-path': { type: 'string' },
     'ecosystem-store-cli': { type: 'string' },
     environment: { type: 'string' },
     host: { type: 'string' },
@@ -34,8 +34,8 @@ const args = parseArgs({
 });
 
 const overrides: RouterConfigOverrides = {};
-if (args.values['artifact-root'] !== undefined) {
-  overrides.artifactRoots = args.values['artifact-root'];
+if (args.values['artifacts-path'] !== undefined) {
+  overrides.artifactsPath = args.values['artifacts-path'];
 }
 if (args.values['ecosystem-store-cli'] !== undefined) {
   overrides.ecosystemStoreCliPath = args.values['ecosystem-store-cli'];
@@ -74,7 +74,7 @@ const production = config.profile === 'prod';
 if (production && config.activationBackend === undefined) {
   throw new Error('production router requires an explicit activationBackend');
 }
-if (production && (config.artifactRoots !== undefined || config.ecosystemStoreCliPath !== undefined)) {
+if (production && config.ecosystemStoreCliPath !== undefined) {
   throw new Error('production router forbids filesystem/compiler activation fallback');
 }
 const backend = config.activationBackend === undefined
@@ -87,7 +87,11 @@ const registry = new AssemblyRuntimeRegistry(snapshots);
 const runtimeRegistry = new RuntimeRegistry();
 const runtimeEndpoint = new RuntimeEndpoint({
   registry: runtimeRegistry,
-  assemblyRegistry: registry
+  assemblyRegistry: registry,
+  bootstrap: {
+    artifactsPath: config.artifactsPath,
+    serviceDb: config.serviceDb
+  }
 });
 const coordinator = new AssemblyActivationCoordinator({
   environment: config.environment,
@@ -183,14 +187,12 @@ async function shutdown(): Promise<void> {
 }
 
 function createLocalStore(config: RouterConfig): EcosystemStoreClient {
-  if (config.artifactRoots?.length !== 1 || config.ecosystemStoreCliPath === undefined) {
-    throw new Error(
-      'local router activation requires one artifactRoot and explicit ecosystemStoreCliPath'
-    );
+  if (config.ecosystemStoreCliPath === undefined) {
+    throw new Error('local router activation requires explicit ecosystemStoreCliPath');
   }
   return new EcosystemStoreClient({
     compilerPath: config.ecosystemStoreCliPath,
-    artifactRoot: config.artifactRoots[0]!,
+    artifactRoot: config.artifactsPath,
     timeoutMs: config.requestTimeoutMs
   });
 }

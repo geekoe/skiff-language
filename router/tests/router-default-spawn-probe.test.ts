@@ -142,6 +142,10 @@ async function openRuntime(
   const endpoint = trackResource(new RuntimeEndpoint({
     registry: runtimeRegistry,
     assemblyRegistry,
+    bootstrap: {
+      artifactsPath: '/tmp/skiff-test-artifacts',
+      serviceDb: { mongoUrl: 'mongodb://127.0.0.1:27017/skiff-test' }
+    },
   }));
   endpoint.setDispatcher(new RuntimeDispatcher({
     registry: assemblyRegistry,
