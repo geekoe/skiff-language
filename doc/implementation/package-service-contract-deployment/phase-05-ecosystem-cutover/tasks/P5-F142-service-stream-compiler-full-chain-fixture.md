@@ -38,7 +38,9 @@
 
 ## 验证与证据
 
-- 先用 `--list` 确认 selector 命中，再运行 service conformance 聚焦测试；零测试无效。
+- 先运行
+  `cargo test -p skiff-compiler --test service_conformance -- --list`
+  确认 selector 命中，再运行该 test target 的聚焦测试；零测试无效。
 - 目标文件格式与 `git diff --check`；不运行完整 gate。
 - 风险：高，共享 compiler full-chain probe。
 - 若需要改变公共 schema、stream lifecycle 或跨 production owner，返回 `TASK_NOT_EXECUTABLE`。
@@ -48,4 +50,3 @@
 - `/Users/geek/workspace/skiff-p5-f142`
 - branch `codex/p5-f142-service-stream-compiler-fixture`
 - 新的一次性开发会话；提交、不 push、不操作 stable。
-
