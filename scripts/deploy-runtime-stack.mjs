@@ -81,6 +81,18 @@ if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length ===
     'service DB Mongo URL is required; pass --service-db-mongo-url or set SKIFF_SERVICE_DB_MONGO_URL',
   );
 }
+const httpMaxRequestBytes = readRequiredPositiveSafeInteger(
+  args.httpMaxRequestBytes ?? process.env.SKIFF_HTTP_MAX_REQUEST_BYTES,
+  args.httpMaxRequestBytes !== undefined
+    ? '--http-max-request-bytes'
+    : 'SKIFF_HTTP_MAX_REQUEST_BYTES',
+);
+const httpMaxResponseBytes = readRequiredPositiveSafeInteger(
+  args.httpMaxResponseBytes ?? process.env.SKIFF_HTTP_MAX_RESPONSE_BYTES,
+  args.httpMaxResponseBytes !== undefined
+    ? '--http-max-response-bytes'
+    : 'SKIFF_HTTP_MAX_RESPONSE_BYTES',
+);
 const serviceDbEncryptionKeyringFile = readRemoteAbsolutePath(
   args.serviceDbEncryptionKeyringFile ||
     process.env.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE,
@@ -98,6 +110,8 @@ try {
   await writeRouterConfig(path.join(configDir, 'router.yml'), remoteSkiff, {
     telemetryEndpoint,
     serviceDbMongoUrl,
+    httpMaxRequestBytes,
+    httpMaxResponseBytes,
   });
   await writeRuntimeConfig(path.join(configDir, 'runtime.yml'), remoteSkiff, {
     serviceDbEncryptionKeyringFile,
@@ -342,6 +356,8 @@ async function writeRouterConfig(file, remoteSkiff, options) {
     devReload: false,
     requestTimeoutMs: 20000,
     httpPort: 4000,
+    httpMaxRequestBytes: options.httpMaxRequestBytes,
+    httpMaxResponseBytes: options.httpMaxResponseBytes,
     runtimePort: 4001,
     runtimePath: '/runtime',
     telemetryEndpoint: options.telemetryEndpoint,
@@ -356,7 +372,6 @@ async function writeRuntimeConfig(file, remoteSkiff, options) {
     runtimeHome: `${remoteSkiff}/runtime-home`,
     environment: 'prod',
     serviceDbEncryptionKeyringFile: options.serviceDbEncryptionKeyringFile,
-    httpResponseMaxBytes: 8388608,
   }));
 }
 
@@ -585,6 +600,10 @@ function optionKey(arg) {
       return 'telemetryMongoUrl';
     case '--service-db-mongo-url':
       return 'serviceDbMongoUrl';
+    case '--http-max-request-bytes':
+      return 'httpMaxRequestBytes';
+    case '--http-max-response-bytes':
+      return 'httpMaxResponseBytes';
     case '--service-db-encryption-keyring-file':
       return 'serviceDbEncryptionKeyringFile';
     case '--telemetry-db':
@@ -624,6 +643,14 @@ function readOptionalBoolean(value, name) {
     return false;
   }
   throw new Error(`${name} must be true or false`);
+}
+
+function readRequiredPositiveSafeInteger(value, name) {
+  const integer = Number(value);
+  if (value === undefined || !Number.isSafeInteger(integer) || integer <= 0) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return integer;
 }
 
 function readRemoteAbsolutePath(value, name) {

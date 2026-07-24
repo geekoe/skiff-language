@@ -193,12 +193,21 @@ debug supervisor. `skiff instance run` remains only as a deprecated alias for
 
 ```bash
 node build-runtime-stack.mjs
-node deploy-runtime-stack.mjs --remote <user@host>
+node deploy-runtime-stack.mjs \
+  --remote <user@host> \
+  --service-db-mongo-url <mongodb-url> \
+  --http-max-request-bytes 67108864 \
+  --http-max-response-bytes 8388608
 ```
 
 `deploy-runtime-stack.mjs` reads that build manifest by default, publishes the router, runtime, and telemetry process, then writes config, installs router/telemetry dependencies, and reloads the selected components. It does not deploy the compiler. The legacy `--runtime-binary` flag is still accepted, but the build manifest is preferred. Telemetry is a separate Node process that listens on `127.0.0.1:4002`, receives runtime telemetry at `ws://127.0.0.1:4002/telemetry`, and persists events to Mongo. The deploy script writes telemetry settings to `${remoteSkiff}/config/telemetry.yml`.
 
 Deployment targets are intentionally explicit. Pass `--remote <user@host>` or set `SKIFF_DEPLOY_REMOTE`; optional defaults can be overridden with `--remote-home`, `--remote-skiff`, `--node-bin`, or the matching `SKIFF_DEPLOY_REMOTE_HOME`, `SKIFF_DEPLOY_REMOTE_SKIFF`, and `SKIFF_DEPLOY_NODE_BIN` environment variables. The generated Router config owns the absolute shared `artifactsPath` (`${remoteSkiff}/artifacts`) and the required `serviceDb.mongoUrl`; Runtime receives both through its Router bootstrap and neither value is written to `runtime.yml`.
+
+Every deployment must provide positive safe integers through
+`--http-max-request-bytes` and `--http-max-response-bytes`, or the matching
+`SKIFF_HTTP_MAX_REQUEST_BYTES` and `SKIFF_HTTP_MAX_RESPONSE_BYTES` environment
+variables. They are written only to the generated Router `http` block.
 
 Telemetry deployment options:
 

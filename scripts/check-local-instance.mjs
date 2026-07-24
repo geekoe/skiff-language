@@ -42,6 +42,8 @@ try {
   assert.equal(expected.ports.routerControl, defaultInstancePorts.routerControl);
   assert.equal(expected.ports.telemetry, defaultInstancePorts.telemetry);
   assert.equal(expected.ports.mongo, defaultInstancePorts.mongo);
+  assert.equal(expected.http.maxRequestBytes, 67108864);
+  assert.equal(expected.http.maxResponseBytes, 8388608);
   assert.equal(expected.paths.configPath, configPath);
   assert.equal(expected.paths.instanceRoot, instanceRoot);
   assert.equal(expected.paths.devHome, join(instanceRoot, 'dev-home'));
@@ -58,6 +60,8 @@ try {
   assert.match(configText, /^devHome: /m);
   assert.match(configText, /^  base: 4100$/m);
   assert.match(configText, /^  mongo: 27017$/m);
+  assert.match(configText, /^  maxRequestBytes: 67108864$/m);
+  assert.match(configText, /^  maxResponseBytes: 8388608$/m);
 
   const runtimeConfigText = await readFile(expected.paths.runtimeConfig, 'utf8');
   const routerConfigText = await readFile(expected.paths.routerConfig, 'utf8');
@@ -66,6 +70,10 @@ try {
     new RegExp(`^artifactsPath: ${escapeRegExp(JSON.stringify(expected.paths.artifactRoot))}$`, 'm'),
   );
   assert.match(routerConfigText, /^  mongoUrl: /m);
+  assert.match(routerConfigText, /^  maxRequestBytes: 67108864$/m);
+  assert.match(routerConfigText, /^  maxResponseBytes: 8388608$/m);
+  assert.doesNotMatch(routerConfigText, /bodyLimitBytes/);
+  assert.doesNotMatch(runtimeConfigText, /maxRequestBytes|maxResponseBytes|bodyLimitBytes/);
   assert.doesNotMatch(routerConfigText, /^artifactRoots?:/m);
   assert.doesNotMatch(runtimeConfigText, /^artifactRoots?:/m);
   assert.doesNotMatch(runtimeConfigText, /mongoUrl/);
@@ -113,6 +121,8 @@ try {
   assert.equal(paths.routerControlPort, 4101);
   assert.equal(paths.telemetryPort, 4102);
   assert.equal(paths.mongoPort, 27017);
+  assert.equal(paths.httpMaxRequestBytes, 67108864);
+  assert.equal(paths.httpMaxResponseBytes, 8388608);
   assert.equal(paths.routerReloadUrl, 'http://127.0.0.1:4101/__skiff/reload-artifacts');
 
   const status = JSON.parse(await runCapture('node', [skiffCli, 'instance', 'status', configPath, '--json']));

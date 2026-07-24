@@ -33,7 +33,7 @@ const usage = `usage:
   skiff test <package-root-or-file> --artifact-root <dir> [--base-assembly <identity>] [--test-config-literals <json-file>] [--live --activation-url <url> --ingress-url <url> --environment <id> --expected-generation <n>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
-  skiff dev init [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
+  skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
   skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
@@ -324,6 +324,14 @@ async function devInit(rawArgs) {
     process.env.SKIFF_TELEMETRY_DB ??
     'skiff_telemetry';
   const force = args.flags.has('--force');
+  const httpMaxRequestBytes = readRequiredPositiveSafeInteger(
+    args.options.httpMaxRequestBytes,
+    '--http-max-request-bytes',
+  );
+  const httpMaxResponseBytes = readRequiredPositiveSafeInteger(
+    args.options.httpMaxResponseBytes,
+    '--http-max-response-bytes',
+  );
 
   await mkdir(artifactRoot, { recursive: true });
   await mkdir(runtimeHome, { recursive: true });
@@ -335,6 +343,8 @@ async function devInit(rawArgs) {
     ecosystemStoreCliPath: runtimePaths.ecosystemStoreCli,
     identityCliPath: runtimePaths.identityCli,
     serviceDbMongoUrl,
+    httpMaxRequestBytes,
+    httpMaxResponseBytes,
   }), force));
   writes.push(await writeDevInitFile(join(devHome, 'runtime.yml'), runtimeDevConfig({
     runtimeHome,
@@ -562,6 +572,8 @@ function parseDevInitArgs(rawArgs) {
     optionsWithValues: new Set([
       '--bin-dir',
       '--dev-home',
+      '--http-max-request-bytes',
+      '--http-max-response-bytes',
       '--service-db-mongo-url',
       '--telemetry-db',
       '--telemetry-mongo-url',
@@ -690,11 +702,21 @@ function routerDevConfig(options) {
     devReload: true,
     requestTimeoutMs: 20000,
     httpPort: 4000,
+    httpMaxRequestBytes: options.httpMaxRequestBytes,
+    httpMaxResponseBytes: options.httpMaxResponseBytes,
     runtimePort: 4001,
     runtimePath: '/runtime',
     serviceDbMongoUrl: options.serviceDbMongoUrl,
     telemetryEndpoint: 'ws://127.0.0.1:4002/telemetry',
   });
+}
+
+function readRequiredPositiveSafeInteger(value, option) {
+  const integer = Number(value);
+  if (value === undefined || !Number.isSafeInteger(integer) || integer <= 0) {
+    throw new Error(`${option} must be a positive safe integer`);
+  }
+  return integer;
 }
 
 function runtimeDevConfig(options) {

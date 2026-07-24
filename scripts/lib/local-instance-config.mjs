@@ -21,6 +21,10 @@ export const defaultInstancePorts = {
   telemetry: defaultInstanceBasePort + 2,
   mongo: 27017,
 };
+export const defaultInstanceHttp = {
+  maxRequestBytes: 64 * 1024 * 1024,
+  maxResponseBytes: 8 * 1024 * 1024,
+};
 export function defaultInstanceConfigPath(repoRoot = skiffRoot) {
   return join(repoRoot, '.skiff-instance', 'config.yml');
 }
@@ -46,6 +50,10 @@ export function defaultInstanceConfigText() {
     `  # telemetry: ${derived.telemetry}`,
     '  # MongoDB is shared across local instances and is not derived from base.',
     `  mongo: ${defaultInstancePorts.mongo}`,
+    '',
+    'http:',
+    `  maxRequestBytes: ${defaultInstanceHttp.maxRequestBytes}`,
+    `  maxResponseBytes: ${defaultInstanceHttp.maxResponseBytes}`,
     '',
     'components:',
     '  telemetry: managed',
@@ -124,6 +132,8 @@ export function instanceSummary(config) {
     routerControlPort: config.ports.routerControl,
     telemetryPort: config.ports.telemetry,
     mongoPort: config.ports.mongo,
+    httpMaxRequestBytes: config.http.maxRequestBytes,
+    httpMaxResponseBytes: config.http.maxResponseBytes,
     routerHttpUrl: config.urls.routerHttp,
     routerControlUrl: config.urls.routerControl,
     routerRuntimeUrl: config.urls.routerRuntime,
@@ -146,6 +156,7 @@ function normalizeInstanceConfig(raw, context) {
     '~/.cache/skiff/cargo-target',
   ));
   const ports = normalizePorts(raw.ports);
+  const http = normalizeHttp(raw.http);
   const components = normalizeComponents(raw.components);
   const telemetry = normalizeTelemetry(raw.telemetry);
   const mongo = normalizeMongo(raw.mongo, devHome);
@@ -183,6 +194,7 @@ function normalizeInstanceConfig(raw, context) {
       cargoTargetDir,
     },
     ports,
+    http,
     components,
     packageDirs,
     telemetry,
@@ -195,6 +207,16 @@ function normalizeInstanceConfig(raw, context) {
       routerReload: `http://127.0.0.1:${ports.routerControl}/__skiff/reload-artifacts`,
       telemetry: `ws://127.0.0.1:${ports.telemetry}/telemetry`,
     },
+  };
+}
+
+function normalizeHttp(value) {
+  if (!isRecord(value)) {
+    throw new Error('http must be a mapping with explicit maxRequestBytes and maxResponseBytes');
+  }
+  return {
+    maxRequestBytes: readPositiveSafeInteger(value.maxRequestBytes, 'http.maxRequestBytes'),
+    maxResponseBytes: readPositiveSafeInteger(value.maxResponseBytes, 'http.maxResponseBytes'),
   };
 }
 
@@ -340,6 +362,14 @@ function readPort(value, label, fallback) {
     throw new Error(`${label} must be a TCP port`);
   }
   return port;
+}
+
+function readPositiveSafeInteger(value, label) {
+  const integer = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(integer) || integer <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return integer;
 }
 
 function readEnum(value, label, allowed, fallback) {

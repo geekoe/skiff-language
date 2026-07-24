@@ -66,6 +66,9 @@ test('instance init writes the configured environment and root into router/runti
       new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'),
     );
     assert.match(routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017/m);
+    assert.match(routerConfig, /^  maxRequestBytes: 67108864$/m);
+    assert.match(routerConfig, /^  maxResponseBytes: 8388608$/m);
+    assert.doesNotMatch(routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(routerConfig, /^artifactRoots?:/m);
     const runtimeConfig = await readFile(join(devHome, 'runtime.yml'), 'utf8');
     assert.match(runtimeConfig, /^environment: "f04-host-test"$/m);
@@ -107,11 +110,50 @@ test('instance config rejects invalid environment names', async () => {
   }
 });
 
-function instanceConfigText({ environment, devHome }) {
+test('instance config requires explicit positive safe HTTP byte ceilings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-instance-invalid-http-'));
+  try {
+    const missingPath = join(root, 'missing.yml');
+    await writeFile(missingPath, [
+      'environment: dev',
+      `devHome: ${JSON.stringify(join(root, 'dev-home'))}`,
+      '',
+    ].join('\n'));
+    await assert.rejects(
+      readInstanceConfig({ configPath: missingPath, repoRoot: skiffRoot }),
+      /http must be a mapping with explicit maxRequestBytes and maxResponseBytes/,
+    );
+
+    for (const [index, value] of ['0', '-1', '1.5'].entries()) {
+      const configPath = join(root, `invalid-${index}.yml`);
+      await writeFile(configPath, instanceConfigText({
+        environment: 'dev',
+        devHome: join(root, `dev-home-${index}`),
+        maxResponseBytes: value,
+      }));
+      await assert.rejects(
+        readInstanceConfig({ configPath, repoRoot: skiffRoot }),
+        /http\.maxResponseBytes must be a positive safe integer/,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function instanceConfigText({
+  environment,
+  devHome,
+  maxRequestBytes = '67108864',
+  maxResponseBytes = '8388608',
+}) {
   return [
     `environment: ${environment}`,
     `devHome: ${JSON.stringify(devHome)}`,
     `cargoTargetDir: ${JSON.stringify(join(devHome, 'cargo-target'))}`,
+    'http:',
+    `  maxRequestBytes: ${maxRequestBytes}`,
+    `  maxResponseBytes: ${maxResponseBytes}`,
     'components:',
     '  telemetry: disabled',
     '  mongo: disabled',

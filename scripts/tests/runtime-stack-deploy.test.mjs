@@ -18,10 +18,9 @@ test('runtime config renders an optional host keyring mount path', () => {
     routerUrl: 'ws://127.0.0.1:4001/runtime',
     runtimeHome: '/srv/skiff/runtime-home',
     environment: 'prod',
-    httpResponseMaxBytes: 8388608,
   };
 
-  assert.doesNotMatch(renderRuntimeConfig(common), /serviceDb|keyringFile/);
+  assert.doesNotMatch(renderRuntimeConfig(common), /serviceDb|keyringFile|maxRequestBytes|maxResponseBytes/);
   assert.match(
     renderRuntimeConfig({
       ...common,
@@ -41,6 +40,7 @@ test('deploy CLI writes only the remote keyring path to runtime.yml', async () =
     assert.match(result.runtimeConfig, /^environment: "prod"$/m);
     assert.doesNotMatch(result.runtimeConfig, /^artifactRoots?:/m);
     assert.doesNotMatch(result.runtimeConfig, /mongoUrl/);
+    assert.doesNotMatch(result.runtimeConfig, /maxRequestBytes|maxResponseBytes|bodyLimitBytes/);
     assert.match(result.runtimeConfig, new RegExp(`keyringFile: ${JSON.stringify(mountPath)}`));
 
     const summary = JSON.parse(result.stdout);
@@ -107,6 +107,31 @@ test('deploy CLI fails closed without the Router-owned Mongo URL', async () => {
   }
 });
 
+test('deploy CLI requires explicit positive HTTP byte ceilings', async () => {
+  const missing = await runDeploy({ includeHttpByteCeilings: false });
+  try {
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.stderr, /SKIFF_HTTP_MAX_REQUEST_BYTES must be a positive safe integer/);
+    assert.equal(missing.commandLog, '');
+  } finally {
+    await missing.cleanup();
+  }
+
+  for (const [option, value] of [
+    ['--http-max-request-bytes', '0'],
+    ['--http-max-response-bytes', '1.5'],
+  ]) {
+    const invalid = await runDeploy({ args: [option, value] });
+    try {
+      assert.notEqual(invalid.code, 0);
+      assert.match(invalid.stderr, new RegExp(`${option} must be a positive safe integer`));
+      assert.equal(invalid.commandLog, '');
+    } finally {
+      await invalid.cleanup();
+    }
+  }
+});
+
 test('router deploy provisions the manifest compiler and writes only supported PM2 args', async () => {
   const result = await runDeploy({ only: 'router' });
   try {
@@ -117,6 +142,9 @@ test('router deploy provisions the manifest compiler and writes only supported P
     );
     assert.match(result.routerConfig, /^artifactsPath: "\/srv\/skiff\/artifacts"$/m);
     assert.match(result.routerConfig, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
+    assert.match(result.routerConfig, /^  maxRequestBytes: 67108864$/m);
+    assert.match(result.routerConfig, /^  maxResponseBytes: 8388608$/m);
+    assert.doesNotMatch(result.routerConfig, /bodyLimitBytes/);
     assert.doesNotMatch(result.routerConfig, /^artifactRoots?:/m);
     assert.match(
       result.ecosystemConfig,
@@ -157,6 +185,7 @@ async function runDeploy({
   only = 'runtime',
   omitCompiler = false,
   includeServiceDbMongoUrl = true,
+  includeHttpByteCeilings = true,
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'skiff-deploy-test-'));
   const fakeBin = path.join(root, 'bin');
@@ -205,6 +234,8 @@ async function runDeploy({
   delete childEnv.SKIFF_SERVICE_DB_ENCRYPTION_KEYRING_FILE;
   delete childEnv.SKIFF_SERVICE_DB_MONGO_URL;
   delete childEnv.SERVICE_DB_MONGO_URL;
+  delete childEnv.SKIFF_HTTP_MAX_REQUEST_BYTES;
+  delete childEnv.SKIFF_HTTP_MAX_RESPONSE_BYTES;
   Object.assign(childEnv, env);
 
   const child = await spawnCapture(process.execPath, [
@@ -219,6 +250,14 @@ async function runDeploy({
     manifestPath,
     ...(includeServiceDbMongoUrl
       ? ['--service-db-mongo-url', 'mongodb://127.0.0.1:27017/skiff']
+      : []),
+    ...(includeHttpByteCeilings
+      ? [
+          '--http-max-request-bytes',
+          '67108864',
+          '--http-max-response-bytes',
+          '8388608',
+        ]
       : []),
     ...args,
   ], childEnv);

@@ -483,6 +483,8 @@ function routerConfigText(config) {
     devReload: true,
     requestTimeoutMs: 20000,
     httpPort: config.ports.routerHttp,
+    httpMaxRequestBytes: config.http.maxRequestBytes,
+    httpMaxResponseBytes: config.http.maxResponseBytes,
     runtimePort: config.ports.routerControl,
     runtimePath: '/runtime',
     serviceDbMongoUrl: `mongodb://127.0.0.1:${config.ports.mongo}/?directConnection=true&replicaSet=rs0&retryWrites=false`,

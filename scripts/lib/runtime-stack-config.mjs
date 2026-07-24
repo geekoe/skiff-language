@@ -11,6 +11,8 @@ export function renderRouterConfig({
   releaseMode,
   requestTimeoutMs = 20000,
   httpPort,
+  httpMaxRequestBytes,
+  httpMaxResponseBytes,
   runtimePort,
   runtimePath = '/runtime',
   serviceDbMongoUrl,
@@ -33,6 +35,8 @@ export function renderRouterConfig({
   if (typeof serviceDbMongoUrl !== 'string' || serviceDbMongoUrl.trim().length === 0) {
     throw new Error('router serviceDb.mongoUrl is required');
   }
+  requirePositiveSafeInteger(httpMaxRequestBytes, 'router http.maxRequestBytes');
+  requirePositiveSafeInteger(httpMaxResponseBytes, 'router http.maxResponseBytes');
   const lines = [
     `profile: ${profile}`,
     `host: ${host}`,
@@ -50,6 +54,8 @@ export function renderRouterConfig({
     '',
     'http:',
     `  port: ${httpPort}`,
+    `  maxRequestBytes: ${httpMaxRequestBytes}`,
+    `  maxResponseBytes: ${httpMaxResponseBytes}`,
     '',
     'runtime:',
     `  port: ${runtimePort}`,
@@ -86,7 +92,6 @@ export function renderRuntimeConfig({
   runtimeHome,
   environment,
   serviceDbEncryptionKeyringFile,
-  httpResponseMaxBytes,
 }) {
   if (typeof environment !== 'string' || environment.trim().length === 0) {
     throw new Error('runtime environment is required');
@@ -103,15 +108,14 @@ export function renderRuntimeConfig({
       `    keyringFile: ${quoteYamlString(serviceDbEncryptionKeyringFile)}`,
     );
   }
-  if (httpResponseMaxBytes !== undefined) {
-    lines.push(
-      'http:',
-      '  response:',
-      `    maxBytes: ${httpResponseMaxBytes}`,
-    );
-  }
   lines.push('');
   return lines.join('\n');
+}
+
+function requirePositiveSafeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
 }
 
 export function renderTelemetryConfig({

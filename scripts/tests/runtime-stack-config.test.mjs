@@ -24,6 +24,8 @@ const routerConfig = {
   devReload: true,
   releaseMode: false,
   httpPort: 4100,
+  httpMaxRequestBytes: 67108864,
+  httpMaxResponseBytes: 8388608,
   runtimePort: 4101,
   serviceDbMongoUrl: 'mongodb://127.0.0.1:27017/skiff',
 };
@@ -45,7 +47,26 @@ test('router config renders an explicit environment', () => {
   assert.equal(rendered.match(/^environment:/gm)?.length, 1);
   assert.match(rendered, /^artifactsPath: "\/tmp\/skiff\/artifacts"$/m);
   assert.match(rendered, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\/skiff"$/m);
+  assert.match(rendered, /^  maxRequestBytes: 67108864$/m);
+  assert.match(rendered, /^  maxResponseBytes: 8388608$/m);
+  assert.doesNotMatch(rendered, /bodyLimitBytes/);
   assert.doesNotMatch(rendered, /^artifactRoots?:/m);
+});
+
+test('router config requires explicit positive safe HTTP byte ceilings', () => {
+  for (const key of ['httpMaxRequestBytes', 'httpMaxResponseBytes']) {
+    const { [key]: _value, ...missing } = routerConfig;
+    assert.throws(
+      () => renderRouterConfig(missing),
+      new RegExp(`router http\\.${key === 'httpMaxRequestBytes' ? 'maxRequestBytes' : 'maxResponseBytes'} must be a positive safe integer`),
+    );
+    for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '8388608']) {
+      assert.throws(
+        () => renderRouterConfig({ ...routerConfig, [key]: value }),
+        /must be a positive safe integer/,
+      );
+    }
+  }
 });
 
 test('router config fails closed when environment is omitted or empty', () => {
@@ -135,6 +156,10 @@ test('local dev config writes bootstrap ownership only to router', async () => {
       'init',
       '--dev-home',
       devHome,
+      '--http-max-request-bytes',
+      '67108864',
+      '--http-max-response-bytes',
+      '8388608',
       '--no-bin',
     ]);
     const rendered = await readFile(join(devHome, 'runtime.yml'), 'utf8');
@@ -145,12 +170,49 @@ test('local dev config writes bootstrap ownership only to router', async () => {
     assert.doesNotMatch(rendered, /mongoUrl/);
     assert.match(router, new RegExp(`^artifactsPath: ${JSON.stringify(join(devHome, 'artifacts'))}$`, 'm'));
     assert.match(router, /^  mongoUrl: "mongodb:\/\/127\.0\.0\.1:27017\//m);
+    assert.match(router, /^  maxRequestBytes: 67108864$/m);
+    assert.match(router, /^  maxResponseBytes: 8388608$/m);
+    assert.doesNotMatch(router, /bodyLimitBytes/);
     assert.doesNotMatch(router, /^artifactRoots?:/m);
     assert.match(
       router,
       new RegExp(`^ecosystemStoreCliPath: ${JSON.stringify(join(devHome, 'bin', process.platform === 'win32' ? 'skiff-compiler.exe' : 'skiff-compiler'))}$`, 'm'),
     );
     assert.doesNotMatch(router, /^rewrite:/m);
+  } finally {
+    await rm(devHome, { recursive: true, force: true });
+  }
+});
+
+test('local dev init requires explicit positive HTTP byte ceilings', async () => {
+  const devHome = await mkdtemp(join(tmpdir(), 'skiff-f135-dev-config-'));
+  try {
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        fileURLToPath(new URL('../skiff.mjs', import.meta.url)),
+        'dev',
+        'init',
+        '--dev-home',
+        devHome,
+        '--no-bin',
+      ]),
+      /--http-max-request-bytes must be a positive safe integer/,
+    );
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        fileURLToPath(new URL('../skiff.mjs', import.meta.url)),
+        'dev',
+        'init',
+        '--dev-home',
+        devHome,
+        '--http-max-request-bytes',
+        '67108864',
+        '--http-max-response-bytes',
+        '0',
+        '--no-bin',
+      ]),
+      /--http-max-response-bytes must be a positive safe integer/,
+    );
   } finally {
     await rm(devHome, { recursive: true, force: true });
   }
