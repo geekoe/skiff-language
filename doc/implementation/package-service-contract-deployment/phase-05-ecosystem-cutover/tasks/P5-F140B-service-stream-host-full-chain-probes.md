@@ -40,4 +40,8 @@
 
 - `/Users/geek/workspace/skiff-p5-f140b`
 - branch `codex/p5-f140b-service-stream-host-probes`
-- 一次性新开发会话；提交、不 push、不操作 stable。
+- 当前 worktree 包含前一会话未提交的六文件 recovery patch，范围精确为上述三个 Host 文件与三个允许的 Eval
+  test-support 文件；七个误格式化文件已经由主 Agent 按精确清单还原。
+- 新开发会话必须把现有 patch 当作未验证输入，先读 diff 判断是否满足本合同，不依赖聊天交接。已知最后一个
+  provider-error probe 修改后尚未重跑；不得沿用此前部分 PASS 作为最终证据。
+- 完成后提交，不 push、不操作 stable。
