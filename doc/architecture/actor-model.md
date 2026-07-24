@@ -49,7 +49,9 @@ impl DocHub {
 - 需要跨实例存活的事实必须显式写 service-owned database。
 - 一个 actor 类型有且只有一个 id 类型；id 必须可稳定 canonical 编码。声明形式让编译器在所有访问点强制这一点。
 - actor 可以声明任意满足边界编码要求的成员方法。`stop`、`supersede` 等名字没有平台特殊语义，只是具体 actor 的普通方法。
-- `ActorRef` 成员调用与 service function 调用使用相同的类型化调用体验；router 根据 actor identity 和 incarnation epoch 位置透明地路由到 owner runtime。
+- actor声明的具体名义类型就是外部句柄类型；例如`DocHub`变量只能调用`DocHub`成员方法，
+  不能作为普通对象读取字段。成员调用与service function调用使用相同的类型化体验；router根据
+  actor identity和incarnation epoch位置透明地路由到owner runtime。
 
 ## Identity 与注册
 
@@ -57,12 +59,15 @@ actor identity 由 service id、actor 类型、id 类型和 id 的 canonical 编
 
 注册由 router control plane 维护：
 
-- `ensure(id, bootstrap)`：put-if-absent。entry 已存在时返回现有引用，不替换、不打扰现有实例。这是常规入口。
-- `put(id, bootstrap)`：原子创建或替换 entry。替换推进 epoch 并逐出现有实例。
+- `getOrCreate(id, bootstrap)`：put-if-absent。entry已存在时返回现有句柄，不替换bootstrap、
+  不打扰现有实例。这是常规入口；不用含义模糊的`ensure`。
+- `replace(id, bootstrap)`：原子创建或替换entry。替换推进epoch并逐出现有实例；不用容易与
+  普通值存储混淆的`put`。
 - `find(id)`：存在则返回引用，不存在返回 `null`。
 - `remove(id)`：删除 entry，逐出实例。
 
-registry entry 保存 bootstrap 值，只用于实例激活。registry 不是持久层：router 重启后 entry 丢失，业务在入口路径用 `ensure` 从业务事实重建。
+registry entry保存bootstrap值，只用于实例激活。registry不是持久层：router重启后entry丢失，
+业务在入口路径用`getOrCreate`从业务事实重建。
 
 ## 常驻实例与协程并发
 

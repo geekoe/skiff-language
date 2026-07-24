@@ -15,6 +15,8 @@
 - 当前真实源码中除`ActorRef<T>`外没有opaque `native type`使用者，因此删除`native type`
   语言功能，不保留未使用扩展点。
 - `native function`保留。
+- actor registry常规入口命名为`getOrCreate`，明确表达已存在时返回原句柄且不替换bootstrap；
+  强制替换入口命名为`replace`。删除含义不清的`ensure`与易和普通存储混淆的`put`。
 - 删除`TypeDescriptorIr::Native`；将`TypeRefIr::Native`收窄并重命名为`Builtin`。
 - 将native callable签名中的`NativeTypeExprDef`改为不与opaque native type混淆的
   `NativeSignatureTypeExpr`。
@@ -24,8 +26,11 @@
 - actor句柄只能调用actor方法；外部不能读取actor字段、普通构造、按普通值复制、写入DB或进入
   service boundary payload。
 - actor方法内部的`self`仍拥有actor状态访问权。
-- actor manager操作返回actor声明类型本身；编译器必须证明类型参数/目标确为actor，不靠
+- actor manager的`getOrCreate/replace/find`返回actor声明类型本身；编译器必须证明类型参数/
+  目标确为actor，不靠
   `ActorRef<T>`包装提供证明。
+- actor字段不是可传递的actor状态值；bootstrap只在registry创建/替换入口的专用构造上下文中
+  提供初始字段快照，不能作为普通actor值持有。
 - builtin是语言闭集，每种builtin分别定义assignability、runtime layout和boundary能力；
   `Builtin`不意味着一律可序列化。例如`string`可作为普通boundary value，`Stream<T>`只允许在
   专门stream位置。
