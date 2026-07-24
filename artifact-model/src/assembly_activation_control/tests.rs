@@ -76,3 +76,71 @@ fn assembly_activation_typed_leafs_reject_non_ascii_and_expected_max() {
     )
     .is_err());
 }
+
+#[test]
+fn service_db_is_strict_and_only_allowed_on_router_provisioning_controls() {
+    let transition = serde_json::json!({
+        "type": "prepare",
+        "environment": "test",
+        "activationId": "activation-1",
+        "expectedGeneration": 0,
+        "candidateGeneration": 1,
+        "assembly": {
+            "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "replicaId": "runtime-a",
+        "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test?replicaSet=rs0" }
+    });
+    for kind in ["prepare", "commit"] {
+        let mut value = transition.clone();
+        value["type"] = Value::String(kind.to_owned());
+        let control: AssemblyActivationControl =
+            serde_json::from_value(value.clone()).expect("provisioning control");
+        assert_eq!(serde_json::to_value(control).unwrap(), value);
+    }
+
+    for invalid in [
+        serde_json::json!({ "mongoUrl": "" }),
+        serde_json::json!({ "mongoUrl": "   " }),
+        serde_json::json!({ "mongoUrl": 42 }),
+        serde_json::json!({ "mongoUrl": "mongodb://db", "storageNamespace": "legacy" }),
+        serde_json::json!({ "mongoUrl": "mongodb://db", "retryWrites": true }),
+    ] {
+        let mut value = transition.clone();
+        value["serviceDb"] = invalid;
+        assert!(serde_json::from_value::<AssemblyActivationControl>(value).is_err());
+    }
+
+    for kind in ["prepared", "reject", "abort", "register"] {
+        let mut value = transition.clone();
+        value["type"] = Value::String(kind.to_owned());
+        if kind == "reject" {
+            value["reason"] = Value::String("admission".to_owned());
+        }
+        if kind == "register" {
+            value.as_object_mut().unwrap().remove("activationId");
+            value.as_object_mut().unwrap().remove("expectedGeneration");
+            value.as_object_mut().unwrap().remove("candidateGeneration");
+            value["generation"] = Value::from(1);
+        }
+        assert!(
+            serde_json::from_value::<AssemblyActivationControl>(value).is_err(),
+            "{kind} must reject serviceDb"
+        );
+    }
+}
+
+#[test]
+fn public_activation_request_cannot_supply_service_db() {
+    let request = serde_json::json!({
+        "schemaVersion": ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
+        "environment": "test",
+        "activationId": "activation-1",
+        "expectedGeneration": 0,
+        "assembly": {
+            "assemblyIdentity": "skiff-runtime-assembly-v1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "serviceDb": { "mongoUrl": "mongodb://127.0.0.1:45123/test" }
+    });
+    assert!(serde_json::from_value::<AssemblyActivationRequest>(request).is_err());
+}

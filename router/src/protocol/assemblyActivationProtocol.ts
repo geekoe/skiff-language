@@ -17,6 +17,10 @@ export type RuntimeAssemblyRef = Readonly<{
   assemblyIdentity: string;
 }>;
 
+export type AssemblyActivationServiceDb = Readonly<{
+  mongoUrl: string;
+}>;
+
 export type AssemblyActivationRequest = Readonly<{
   schemaVersion: typeof ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION;
   environment: string;
@@ -52,11 +56,22 @@ export type AssemblyActivationRejectReason =
   | "admission"
   | "participantDisconnected";
 
-type TransitionType = "prepare" | "prepared" | "commit" | "abort";
+type ProvisioningTransitionType = "prepare" | "commit";
+type ResponseTransitionType = "prepared" | "abort";
 
 export type AssemblyActivationControl =
   | Readonly<{
-      type: TransitionType;
+      type: ProvisioningTransitionType;
+      environment: string;
+      activationId: string;
+      expectedGeneration: number;
+      candidateGeneration: number;
+      assembly: RuntimeAssemblyRef;
+      replicaId: string;
+      serviceDb?: AssemblyActivationServiceDb;
+    }>
+  | Readonly<{
+      type: ResponseTransitionType;
       environment: string;
       activationId: string;
       expectedGeneration: number;
@@ -91,6 +106,7 @@ const transitionFields = [
   "assembly",
   "replicaId",
 ] as const;
+const provisioningTransitionFields = [...transitionFields, "serviceDb"] as const;
 const rejectReasons = new Set<AssemblyActivationRejectReason>([
   "resolve",
   "load",
@@ -209,8 +225,19 @@ export function decodeAssemblyActivationControl(
   ) {
     throw new Error(`unknown assembly activation control type ${type}`);
   }
-  exactFields(value, transitionFields, "assembly activation control");
-  return decodeTransition(value, type);
+  const provisioning = type === "prepare" || type === "commit";
+  exactOptionalFields(
+    value,
+    provisioning ? provisioningTransitionFields : transitionFields,
+    provisioning ? ["serviceDb"] : [],
+    "assembly activation control",
+  );
+  return {
+    ...decodeTransition(value, type),
+    ...(provisioning && value.serviceDb !== undefined
+      ? { serviceDb: decodeServiceDb(value.serviceDb) }
+      : {}),
+  };
 }
 
 export function decodeAssemblyActivationControls(
@@ -261,7 +288,9 @@ function decodePendingActivation(input: unknown): PendingActivation {
   };
 }
 
-function decodeTransition<T extends TransitionType | "reject">(
+function decodeTransition<
+  T extends ProvisioningTransitionType | ResponseTransitionType | "reject",
+>(
   value: Record<string, unknown>,
   type: T,
 ) {
@@ -280,6 +309,16 @@ function decodeTransition<T extends TransitionType | "reject">(
     assembly: decodeAssemblyRef(value.assembly),
     replicaId: requiredToken(value, "replicaId"),
   };
+}
+
+function decodeServiceDb(input: unknown): AssemblyActivationServiceDb {
+  const value = exactObject(input, "serviceDb");
+  exactFields(value, ["mongoUrl"], "serviceDb");
+  const mongoUrl = requiredString(value, "mongoUrl");
+  if (mongoUrl.trim().length === 0) {
+    throw new Error("serviceDb.mongoUrl must be a non-empty string");
+  }
+  return { mongoUrl };
 }
 
 function decodeAssemblyRef(input: unknown): RuntimeAssemblyRef {
@@ -339,6 +378,24 @@ function exactFields(
   ) {
     throw new Error(
       `${label} fields must be exactly ${canonical.join(",")}; got ${actual.join(",")}`,
+    );
+  }
+}
+
+function exactOptionalFields(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  optional: readonly string[],
+  label: string,
+) {
+  const required = allowed.filter((field) => !optional.includes(field));
+  const actual = Object.keys(value);
+  if (
+    required.some((field) => !Object.hasOwn(value, field)) ||
+    actual.some((field) => !allowed.includes(field))
+  ) {
+    throw new Error(
+      `${label} fields must be exactly ${required.join(",")} with optional ${optional.join(",")}; got ${actual.sort().join(",")}`,
     );
   }
 }

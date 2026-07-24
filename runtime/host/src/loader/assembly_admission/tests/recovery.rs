@@ -104,6 +104,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             candidate_generation,
             assembly,
             replica_id,
+            service_db: None,
         },
         (
             "abort",
@@ -122,6 +123,7 @@ fn generation_one_control(kind: &str, assembly: RuntimeAssemblyRef) -> AssemblyA
             candidate_generation,
             assembly,
             replica_id,
+            service_db: None,
         },
         (
             "commit",

@@ -23,6 +23,7 @@ impl AssemblyAdmissionController {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db: _,
             } => {
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {
@@ -54,6 +55,7 @@ impl AssemblyAdmissionController {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db: _,
             } => {
                 self.ensure_replica(&replica_id)?;
                 let transition = AssemblyTransition {

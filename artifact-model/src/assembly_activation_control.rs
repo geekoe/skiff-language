@@ -74,6 +74,13 @@ pub enum AssemblyActivationRejectReason {
     ParticipantDisconnected,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssemblyActivationServiceDb {
+    #[serde(deserialize_with = "deserialize_non_empty_mongo_url")]
+    pub mongo_url: String,
+}
+
 /// Exact router <-> runtime control wire for whole-assembly activation.
 ///
 /// Transition messages are intentionally assembly-scoped. Service ids, build
@@ -92,6 +99,8 @@ pub enum AssemblyActivationControl {
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
         replica_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_db: Option<AssemblyActivationServiceDb>,
     },
     Prepared {
         environment: String,
@@ -117,6 +126,8 @@ pub enum AssemblyActivationControl {
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
         replica_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service_db: Option<AssemblyActivationServiceDb>,
     },
     Abort {
         environment: String,
@@ -151,6 +162,8 @@ enum RawAssemblyActivationControl {
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
         replica_id: String,
+        #[serde(default)]
+        service_db: Option<AssemblyActivationServiceDb>,
     },
     Prepared {
         environment: String,
@@ -182,6 +195,8 @@ enum RawAssemblyActivationControl {
         candidate_generation: u64,
         assembly: RuntimeAssemblyRef,
         replica_id: String,
+        #[serde(default)]
+        service_db: Option<AssemblyActivationServiceDb>,
     },
     Abort {
         environment: String,
@@ -205,6 +220,17 @@ enum RawAssemblyActivationControl {
 impl AssemblyActivationControl {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Prepare { service_db, .. } | Self::Commit { service_db, .. } => {
+                if service_db
+                    .as_ref()
+                    .is_some_and(|value| value.mongo_url.trim().is_empty())
+                {
+                    return Err("serviceDb.mongoUrl must be a non-empty string".to_string());
+                }
+            }
+            _ => {}
+        }
+        match self {
             Self::Prepare {
                 environment,
                 activation_id,
@@ -212,6 +238,7 @@ impl AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                ..
             }
             | Self::Prepared {
                 environment,
@@ -237,6 +264,7 @@ impl AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                ..
             }
             | Self::Abort {
                 environment,
@@ -281,6 +309,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db,
             } => Self::Prepare {
                 environment,
                 activation_id,
@@ -288,6 +317,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db,
             },
             RawAssemblyActivationControl::Prepared {
                 environment,
@@ -328,6 +358,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db,
             } => Self::Commit {
                 environment,
                 activation_id,
@@ -335,6 +366,7 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
                 candidate_generation,
                 assembly,
                 replica_id,
+                service_db,
             },
             RawAssemblyActivationControl::Abort {
                 environment,
@@ -366,6 +398,19 @@ impl<'de> Deserialize<'de> for AssemblyActivationControl {
         control.validate().map_err(de::Error::custom)?;
         Ok(control)
     }
+}
+
+fn deserialize_non_empty_mongo_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.trim().is_empty() {
+        return Err(de::Error::custom(
+            "serviceDb.mongoUrl must be a non-empty string",
+        ));
+    }
+    Ok(value)
 }
 
 pub fn validate_runtime_assembly_ref(assembly: &RuntimeAssemblyRef) -> Result<(), String> {

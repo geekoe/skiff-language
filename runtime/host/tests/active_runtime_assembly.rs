@@ -126,6 +126,7 @@ fn transition(
             candidate_generation,
             assembly,
             replica_id,
+            service_db: None,
         },
         (
             "commit",
@@ -144,6 +145,7 @@ fn transition(
             candidate_generation,
             assembly,
             replica_id,
+            service_db: None,
         },
         (
             "abort",
@@ -260,6 +262,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
         candidate_generation: 2,
         assembly: reference.clone(),
         replica_id: "runtime-a".to_string(),
+        service_db: None,
     };
     assert!(matches!(
         first
@@ -281,6 +284,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
             candidate_generation,
             assembly,
             replica_id,
+            ..
         } => AssemblyActivationControl::Abort {
             environment,
             activation_id,
@@ -319,6 +323,7 @@ async fn rejected_exact_ref_preserves_committed_generation_and_two_replicas_are_
                 candidate_generation: 2,
                 assembly: unknown,
                 replica_id: "runtime-a".to_string(),
+                service_db: None,
             },
             &resolver,
         )

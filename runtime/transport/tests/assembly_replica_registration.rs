@@ -69,6 +69,7 @@ fn activation_control_rejects_payload_and_legacy_service_fields() {
         candidate_generation: 42,
         assembly: assembly_ref('b'),
         replica_id: "runtime-a".to_string(),
+        service_db: None,
     };
     let payload_frame = encode_binary_frame(&prepare, b"legacy payload").unwrap();
     assert!(decode_assembly_activation_frame(

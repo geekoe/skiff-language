@@ -48,7 +48,8 @@ pub use activation_lexical::{
 };
 pub use assembly_activation_control::{
     validate_runtime_assembly_ref, AssemblyActivationControl, AssemblyActivationRejectReason,
-    AssemblyActivationRequest, ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
+    AssemblyActivationRequest, AssemblyActivationServiceDb,
+    ASSEMBLY_ACTIVATION_REQUEST_SCHEMA_VERSION,
 };
 pub use boundary::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryCallbackExpirationError,
