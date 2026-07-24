@@ -1,4 +1,3 @@
-native type bytes
 
 impl bytes {
   native static function concat(parts: Array<bytes>) -> bytes

@@ -70,21 +70,6 @@ fn builtin_type_helper_includes_prelude_date_and_language_aliases() {
 }
 
 #[test]
-fn std_exported_interfaces_have_known_symbols_without_schema_stability() {
-    let registry = prelude_registry();
-
-    assert_eq!(
-        registry.known_type_symbol("std.actor.Actor").as_deref(),
-        Some("std.actor.Actor")
-    );
-    assert_eq!(
-        registry.known_type_symbol("Actor").as_deref(),
-        Some("std.actor.Actor")
-    );
-    assert!(!registry.is_schema_stable_type("Actor"));
-}
-
-#[test]
 fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
     let registry = prelude_registry();
 

@@ -17,8 +17,6 @@ use crate::{
 
 use super::SemanticPublication;
 
-const ACTOR_INTERFACE_MODULE: &str = "std.actor";
-const ACTOR_INTERFACE_SYMBOL: &str = "Actor";
 const ERROR_PAYLOAD_INTERFACE_MODULE: &str = "std.error";
 const ERROR_PAYLOAD_INTERFACE_SYMBOL: &str = "ErrorPayload";
 
@@ -95,7 +93,6 @@ pub struct InterfaceSemantics {
     types_by_bare: BTreeMap<String, Vec<SourceSymbolKey>>,
     conformances: Vec<InterfaceConformanceFact>,
     conformances_by_receiver: BTreeMap<SourceSymbolKey, Vec<usize>>,
-    actor_conformances_by_receiver: BTreeMap<SourceSymbolKey, usize>,
 }
 
 /// Validated declaration owner recorded by interface semantics.
@@ -148,7 +145,6 @@ impl InterfaceSemantics {
         let impl_methods = ImplMethodIndex::build(publication, &index)?;
         let mut conformances: Vec<InterfaceConformanceFact> = Vec::new();
         let mut conformances_by_receiver = BTreeMap::<SourceSymbolKey, Vec<usize>>::new();
-        let mut actor_conformances_by_receiver = BTreeMap::<SourceSymbolKey, usize>::new();
         let mut seen = BTreeSet::<(SourceSymbolKey, SourceSymbolKey)>::new();
 
         for source in &publication.sources {
@@ -188,20 +184,6 @@ impl InterfaceSemantics {
                     };
                     validate_conformance_requirements(&index, &impl_methods, &fact)?;
                     let index_in_vec = conformances.len();
-                    if fact.interface.symbol == actor_interface_symbol_key() {
-                        if let Some(existing) = actor_conformances_by_receiver
-                            .insert(receiver_symbol.clone(), index_in_vec)
-                        {
-                            let previous = &conformances[existing];
-                            return Err(CompileError::Semantic(format!(
-                                "actor type {}.{} implements both {} and {}; an actor type can only implement one std.actor.Actor<Id> instantiation",
-                                source.module_path,
-                                ty.name,
-                                interface_instantiation_display(&previous.interface),
-                                interface_instantiation_display(&fact.interface)
-                            )));
-                        }
-                    }
                     conformances_by_receiver
                         .entry(receiver_symbol.clone())
                         .or_default()
@@ -218,7 +200,6 @@ impl InterfaceSemantics {
             types_by_bare: index.types_by_bare,
             conformances,
             conformances_by_receiver,
-            actor_conformances_by_receiver,
         })
     }
 
@@ -248,20 +229,6 @@ impl InterfaceSemantics {
             .map(|index| &self.conformances[*index])
     }
 
-    pub fn actor_conformance_for_receiver(
-        &self,
-        receiver: &SourceSymbolKey,
-    ) -> Option<&InterfaceConformanceFact> {
-        self.actor_conformances_by_receiver
-            .get(receiver)
-            .map(|index| &self.conformances[*index])
-    }
-
-    pub fn actor_conformances(&self) -> impl Iterator<Item = &InterfaceConformanceFact> {
-        self.actor_conformances_by_receiver
-            .values()
-            .map(|index| &self.conformances[*index])
-    }
 
     pub fn is_nominal_source_type(&self, symbol: &SourceSymbolKey) -> bool {
         self.source_types
@@ -553,10 +520,6 @@ impl InterfaceIndex {
             interfaces_by_bare: BTreeMap::new(),
             types_by_bare: BTreeMap::new(),
         };
-        index.insert_compiler_known_interface(
-            actor_interface_symbol_key(),
-            vec!["Id".to_string()],
-        )?;
         index.insert_compiler_known_interface(
             SourceSymbolKey::new(
                 ERROR_PAYLOAD_INTERFACE_MODULE,
@@ -1635,16 +1598,12 @@ fn is_builtin_type(name: &str) -> bool {
 fn is_builtin_generic_type(name: &str) -> bool {
     matches!(
         name.rsplit('.').next().unwrap_or(name),
-        "Array" | "Map" | "Set" | "Result" | "Stream" | "ActorRef"
+        "Array" | "Map" | "Set" | "Result" | "Stream"
     )
 }
 
 fn is_probable_external_interface(name: &str) -> bool {
     !name.starts_with("root.") && name.contains('.')
-}
-
-pub fn actor_interface_symbol_key() -> SourceSymbolKey {
-    SourceSymbolKey::new(ACTOR_INTERFACE_MODULE, ACTOR_INTERFACE_SYMBOL)
 }
 
 pub fn interface_instantiation_display(interface: &InterfaceInstantiation) -> String {

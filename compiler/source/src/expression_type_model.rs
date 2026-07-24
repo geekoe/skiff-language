@@ -1441,7 +1441,16 @@ impl<'a> OwnerChecker<'a> {
                     self.check_callee_expr(object)
                 };
                 object_ty.and_then(|object_ty| {
-                    let field_ty = self.record_field_type(&object_ty, field);
+                    let field_ty = if matches!(object.as_ref(), Expr::Identifier(name) if name == "self")
+                    {
+                        self.type_resolution.actor_state_field_type(
+                            &object_ty,
+                            field,
+                            &self.type_context,
+                        )
+                    } else {
+                        self.record_field_type(&object_ty, field)
+                    };
                     if diagnose_unknown_field && field_ty.is_none() {
                         self.diagnostics.push(format!(
                             "{}: unknown field `{field}` on {} at {}",
@@ -2894,7 +2903,7 @@ impl<'a> OwnerChecker<'a> {
                 params.push((
                     "bootstrap".to_string(),
                     ResolvedTypeRef {
-                        source_text: format!("{} bootstrap", actor.ty.source_text),
+                        source_text: "{}".to_string(),
                         ir: TypeRefIr::Record {
                             fields: actor
                                 .fields
@@ -3086,6 +3095,17 @@ impl<'a> OwnerChecker<'a> {
             .type_resolution
             .resolve_type_ref(&operation.target, &self.type_context)
             .ok()?;
+        if self
+            .type_resolution
+            .actor_type_resolution(&target, &self.type_context)
+            .is_some()
+        {
+            self.diagnostics.push(format!(
+                "{}: actor handle type `{}` cannot be used as a database object",
+                self.module_path, target.source_text
+            ));
+            return None;
+        }
         let read = self.db_read_type(operation, &target)?;
         match operation.op {
             crate::shared::ast::DbOperationKind::Find if operation.many => Some(array_type(read)),
@@ -4206,11 +4226,8 @@ fn record_field_value_source_span(
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use skiff_compiler_input::CompilerPlatformSources;
-
     use crate::{
         parsed_sources::parse_publication_sources, publication_db_metadata_index,
-        prelude_registry::initialize_prelude_registry,
         source_graph::CompilerSourceFile, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
     };
 
@@ -4221,13 +4238,6 @@ mod tests {
     fn expression_type_result(
         source_text: &str,
     ) -> Result<ExpressionTypeModel, ExpressionTypeModelBuildError> {
-        let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root");
-        let platform_sources =
-            CompilerPlatformSources::new(&platform_root).expect("platform sources");
-        initialize_prelude_registry(&platform_sources).expect("prelude registry");
         let source = CompilerSourceFile::parse(
             PathBuf::from("internal/any_interface.skiff"),
             ANY_INTERFACE_MODULE.to_string(),
@@ -4301,7 +4311,7 @@ mod tests {
               }
 
               impl UserActor {
-                function label() -> string { return "user" }
+                function label() -> string { return self.displayName }
               }
 
               function load(id: string) -> UserActor {
@@ -4329,6 +4339,9 @@ mod tests {
                 std.actor.find<User>("u1")
                 std.actor.find<UserActor>(42)
                 std.actor.replace<UserActor>("u1", { displayName: 42 })
+                const actor = std.actor.getOrCreate<UserActor>("u1", { displayName: "Ada" })
+                const leaked = actor.displayName
+                const stored = db require UserActor("u1")
               }
             "#,
         )
@@ -4336,7 +4349,9 @@ mod tests {
         let message = error.message();
         assert!(message.contains("is not an actor declaration"), "{message}");
         assert!(message.contains("argument 1"), "{message}");
-        assert!(message.contains("bootstrap"), "{message}");
+        assert!(message.contains("argument 2 object literal field"), "{message}");
+        assert!(message.contains("unknown field `displayName`"), "{message}");
+        assert!(message.contains("cannot be used as a database object"), "{message}");
     }
 
     #[test]

@@ -799,31 +799,6 @@ fn std_http_body_bytes_receiver_chain_lowers_to_receiver_builtin() {
 }
 
 #[test]
-fn actor_ref_receiver_call_is_rejected() {
-    let error = compile_package_file_ir(
-        r#"
-            type ThreadActor {
-              id: string
-            }
-
-            function run(actor: ActorRef<ThreadActor>) -> void {
-                actor.receive("ping")
-                return
-            }
-        "#,
-        "internal/actor_receiver.skiff",
-        "internal.actor_receiver",
-    )
-    .expect_err("ActorRef receiver calls should be rejected")
-    .to_string();
-
-    assert!(
-        error.contains("ActorRef receiver method calls are no longer supported"),
-        "unexpected ActorRef receiver error: {error}"
-    );
-}
-
-#[test]
 fn nominal_match_pattern_is_rejected_before_runtime_type_lookup() {
     let error = compile_package_file_ir(
         r#"

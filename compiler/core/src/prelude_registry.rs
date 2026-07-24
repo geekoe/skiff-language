@@ -111,7 +111,6 @@ pub fn compiler_owned_type_symbol(name: &str) -> Option<&'static str> {
         "ConnectionMessage" => Some("std.websocket.ConnectionMessage"),
         "TextConnectionMessage" => Some("std.websocket.TextConnectionMessage"),
         "BinaryConnectionMessage" => Some("std.websocket.BinaryConnectionMessage"),
-        "ActorRef" => Some("ActorRef"),
         _ => None,
     }
 }

@@ -1,4 +1,3 @@
-native type Config
 
 type DecodeError implements ErrorPayload {
   target: string,

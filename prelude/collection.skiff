@@ -1,4 +1,3 @@
-native type Array<T>
 
 impl Array<T> {
   native static function empty<T>() -> Array<T>
@@ -11,7 +10,6 @@ impl Array<T> {
   native function filter(f: fn(item: T) -> bool) -> Array<T>
 }
 
-native type Map<K, V>
 
 impl Map<K, V> {
   native static function empty<K, V>() -> Map<K, V>

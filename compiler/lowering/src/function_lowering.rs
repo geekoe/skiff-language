@@ -457,7 +457,6 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn lower_spawn_stmt(&mut self, call: &Expr) -> Result<StmtIr> {
-        self.reject_spawn_actor_method_target(call)?;
         let call_ref = self.lower_expr(call)?;
         let metadata = self.spawn_function_target_metadata(call_ref)?;
         let Some(ExprIr::Call { call }) =
@@ -470,28 +469,6 @@ impl<'a> FunctionLowerer<'a> {
         call.metadata
             .insert(SPAWN_SUBMIT_METADATA_KEY.to_string(), metadata);
         Ok(StmtIr::Spawn { call: call_ref })
-    }
-
-    fn reject_spawn_actor_method_target(&self, call: &Expr) -> Result<()> {
-        let Expr::Call { callee, .. } = call else {
-            return Ok(());
-        };
-        let callee = match callee.as_ref() {
-            Expr::Generic { callee, .. } => callee.as_ref(),
-            callee => callee,
-        };
-        let Expr::Field { object, .. } = callee else {
-            return Ok(());
-        };
-        if self
-            .infer_receiver_expr_type(object)?
-            .is_some_and(|(_, ty)| Self::is_actor_ref_receiver_type(&ty))
-        {
-            return Err(CompileError::Semantic(
-                "spawn actor method calls are no longer supported".to_string(),
-            ));
-        }
-        Ok(())
     }
 
     fn spawn_function_target_metadata(&self, call_ref: ExprRefIr) -> Result<MetadataValue> {
@@ -1500,12 +1477,6 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(Some(target));
         }
 
-        if Self::is_actor_ref_receiver_type(&receiver_ty) {
-            return Err(CompileError::Semantic(format!(
-                "ActorRef receiver method calls are no longer supported: `{method_name}`; spawn a function instead"
-            )));
-        }
-
         if self.is_interface_receiver_method(&receiver_ty, method_name) {
             return Err(CompileError::Semantic(format!(
                 "interface receiver method `{method_name}` requires a controlled receiver root; ordinary interface values are not supported"
@@ -1536,7 +1507,7 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         Err(CompileError::Semantic(format!(
-            "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, interface receiver root, or ActorRef"
+            "receiver method `{method_name}` on `{receiver_text}` must resolve to a local/package executable, receiver builtin op, or interface receiver root"
         )))
     }
 
@@ -1885,14 +1856,6 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn is_actor_ref_receiver_type(ty: &TypeRefIr) -> bool {
-        match ty {
-            TypeRefIr::Builtin { name, .. } if name == "ActorRef" => true,
-            TypeRefIr::PackageSymbol { symbol } if is_actor_ref_package_symbol(symbol) => true,
-            _ => false,
-        }
-    }
-
     fn lower_object_literal_key(&mut self, key: &ObjectLiteralKey) -> Result<String> {
         match key {
             ObjectLiteralKey::Name(key) => Ok(key.clone()),
@@ -2189,16 +2152,6 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
             .unwrap_or_default(),
         Stmt::Break | Stmt::Continue => 0,
     }
-}
-
-fn is_actor_ref_package_symbol(symbol: &PackageSymbolRef) -> bool {
-    if !matches!(
-        symbol.symbol_path.as_str(),
-        "actor.ActorRef" | "std.actor.ActorRef"
-    ) {
-        return false;
-    }
-    is_official_std_package_ref(&symbol.package)
 }
 
 pub(super) fn is_builtin_call_root(root: &str) -> bool {

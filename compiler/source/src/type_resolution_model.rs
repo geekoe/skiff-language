@@ -754,6 +754,17 @@ impl TypeResolutionModel {
         Some((method.params.clone(), method.return_type.clone()))
     }
 
+    pub fn actor_state_field_type(
+        &self,
+        ty: &ResolvedTypeRef,
+        field: &str,
+        context: &TypeResolutionContext<'_>,
+    ) -> Option<ResolvedTypeRef> {
+        self.actor_type_resolution(ty, context)?
+            .fields
+            .remove(field)
+    }
+
     pub fn resolve_constructor_target_text(
         &self,
         raw: &str,
