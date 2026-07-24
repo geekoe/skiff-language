@@ -72,6 +72,7 @@ pub(crate) fn projection_visible_interface_method_signature(
             &method.return_type,
             package_type_names,
         ),
+        may_suspend: method.may_suspend,
         is_native: method.is_native,
         is_provider: method.is_provider,
         is_static: method.is_static,

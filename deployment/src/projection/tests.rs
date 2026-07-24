@@ -55,6 +55,7 @@ impl ProjectionFixture {
                     stable_key: "payload".to_string(),
                     shape: ContractTypeShape {
                         nameability: ContractTypeNameability::PublicNameable,
+                        type_params: Vec::new(),
                         descriptor: ContractTypeDescriptor::Record {
                             fields: BTreeMap::from([(
                                 "message".to_string(),

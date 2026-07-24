@@ -46,6 +46,7 @@ fn validate_schema_closure_inner(
             validate_descriptor_closure(&descriptor.shape.descriptor, schema, active)?;
             active.remove(contract_type_id);
         }
+        ContractTypeRef::TypeParam { .. } => {}
         ContractTypeRef::Record { fields } => {
             for field in fields.values() {
                 validate_schema_closure_inner(field, schema, active)?;

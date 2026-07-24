@@ -607,6 +607,7 @@ fn schema_type(
         stable_key: stable_key.to_string(),
         shape: ContractTypeShape {
             nameability: ContractTypeNameability::PublicNameable,
+            type_params: Vec::new(),
             descriptor,
         },
     }

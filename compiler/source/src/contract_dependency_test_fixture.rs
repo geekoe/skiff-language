@@ -86,6 +86,7 @@ pub(crate) fn contract_fixture(
                 stable_key: public_type_key.to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: BTreeMap::from([(
                             "value".to_string(),
@@ -102,6 +103,7 @@ pub(crate) fn contract_fixture(
                 stable_key: closure_type_key.to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::ClosureOnly,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: BTreeMap::from([(
                             "value".to_string(),

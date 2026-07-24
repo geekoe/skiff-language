@@ -263,6 +263,7 @@ fn record_shape(tag: &str, payload_field: &str) -> ContractTypeShape {
 fn shape(descriptor: ContractTypeDescriptor) -> ContractTypeShape {
     ContractTypeShape {
         nameability: ContractTypeNameability::PublicNameable,
+        type_params: Vec::new(),
         descriptor,
     }
 }

@@ -287,6 +287,7 @@ fn contract_fixture(service_id: &str, version: &str, operation_keys: &[&str]) ->
                 stable_key: "payload".to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: BTreeMap::from([(
                             "message".to_string(),
@@ -303,6 +304,7 @@ fn contract_fixture(service_id: &str, version: &str, operation_keys: &[&str]) ->
                 stable_key: "payloadClosure".to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::ClosureOnly,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: BTreeMap::from([(
                             "value".to_string(),

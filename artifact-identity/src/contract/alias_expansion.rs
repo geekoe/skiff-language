@@ -281,6 +281,7 @@ impl AliasExpander {
                 }
                 ContractTypeRef::contract(contract_type_id)
             }
+            ContractTypeRef::TypeParam { name } => ContractTypeRef::TypeParam { name },
             ContractTypeRef::Record { fields } => ContractTypeRef::Record {
                 fields: fields
                     .into_iter()

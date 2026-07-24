@@ -125,6 +125,7 @@ fn websocket_nominal_context_normal_source_reaches_exact_deployment_and_erased_e
             "Context".to_string(),
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
+                type_params: Vec::new(),
                 descriptor: ContractTypeDescriptor::Record {
                     fields: BTreeMap::new(),
                 },

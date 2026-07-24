@@ -200,6 +200,7 @@ fn project_boundary_schema(
         let PackageLocalAbiSymbol::Type {
             descriptor,
             is_interface,
+            type_params,
             interface_methods,
             ..
         } = symbol
@@ -221,7 +222,12 @@ fn project_boundary_schema(
         source_to_public.insert(source, public_path.clone());
         public_types.insert(
             public_path.clone(),
-            (descriptor, *is_interface, interface_methods.as_slice()),
+            (
+                descriptor,
+                *is_interface,
+                type_params.as_slice(),
+                interface_methods.as_slice(),
+            ),
         );
     }
 
@@ -235,7 +241,7 @@ fn project_boundary_schema(
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     let mut shapes = BTreeMap::new();
-    for (public_path, (descriptor, is_interface, interface_methods)) in public_types {
+    for (public_path, (descriptor, is_interface, type_params, interface_methods)) in public_types {
         let descriptor = if is_interface {
             project_interface_descriptor(
                 public_path.as_str(),
@@ -257,6 +263,7 @@ fn project_boundary_schema(
             public_path,
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
+                type_params: type_params.to_vec(),
                 descriptor,
             },
         );
@@ -335,7 +342,7 @@ fn project_interface_descriptor(
                 BoundaryCallbackOperation {
                     parameters,
                     return_type,
-                    may_suspend: false,
+                    may_suspend: method.may_suspend,
                 },
             ))
         })
@@ -497,6 +504,7 @@ fn project_schema_type_ref(
             })?;
             ContractTypeRef::contract(type_ids[target].clone())
         }
+        TypeRefIr::TypeParam { name } => ContractTypeRef::TypeParam { name: name.clone() },
         TypeRefIr::Literal {
             value: skiff_artifact_model::LiteralIr::String { value },
         } => ContractTypeRef::string_literal(value.clone()),
@@ -582,6 +590,7 @@ fn collect_type_ids(ty: &ContractTypeRef, out: &mut BTreeSet<ContractTypeId>) {
         ContractTypeRef::Contract { contract_type_id } => {
             out.insert(contract_type_id.clone());
         }
+        ContractTypeRef::TypeParam { .. } => {}
         ContractTypeRef::Builtin { arguments, .. } => {
             for argument in arguments {
                 collect_type_ids(argument, out);
@@ -624,12 +633,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-        BoundaryErrorContract, BoundaryImplementationRequirements, BoundaryOperationContract,
-        BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
-        BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableMayEffects,
-        CallableProvenanceSummary, PackageArtifact, PackageBuildId, PackageCallableId,
-        PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
+        BoundaryCallbackContract, BoundaryCallbackExpirationError, BoundaryCallbackLifetime,
+        BoundaryCancellationContract, BoundaryEffectGuarantee, BoundaryErrorContract,
+        BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryReturn,
+        BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+        BoundaryValueOwner, BoundaryValuePlan, CallableMayEffects, CallableProvenanceSummary,
+        FunctionTypeParamIr, InterfaceMethodSignature, PackageArtifact, PackageBuildId,
+        PackageCallableId, PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
         PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
         ServiceSymbolRef, TypeExport, TypeRefIr, ValueProvenance,
     };
@@ -724,6 +734,134 @@ mod tests {
         assert_ne!(
             first.contract.service_protocol_identity,
             schema_changed.contract.service_protocol_identity
+        );
+    }
+
+    #[test]
+    fn generic_records_and_interface_suspend_facts_project_without_erasure() {
+        let mut package = package_fixture("1.0.0");
+        let generic_descriptor = TypeDescriptorIr::Record {
+            fields: BTreeMap::from([(
+                "value".to_string(),
+                TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            )]),
+        };
+        let PackageLocalAbiSymbol::Type {
+            descriptor,
+            type_params,
+            ..
+        } = package
+            .package_local_abi
+            .public_symbols
+            .get_mut("Details")
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        *descriptor = generic_descriptor.clone();
+        *type_params = vec!["T".to_string()];
+        let details = package
+            .implementation_links
+            .types
+            .get_mut("example.registry.impl/Details")
+            .unwrap();
+        details.descriptor = Some(generic_descriptor);
+        details.type_params = vec!["T".to_string()];
+
+        let callback_method = InterfaceMethodSignature {
+            name: "observe".to_string(),
+            type_params: Vec::new(),
+            params: vec![FunctionTypeParamIr {
+                name: "value".to_string(),
+                ty: TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                },
+            }],
+            return_type: TypeRefIr::native("void"),
+            may_suspend: true,
+            is_native: false,
+            is_provider: false,
+            is_static: false,
+            implicit_self: None,
+        };
+        package.package_local_abi.public_symbols.insert(
+            "Observer".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:Observer".to_string(),
+                descriptor: TypeDescriptorIr::Native {
+                    symbol: "interface:Observer".to_string(),
+                },
+                is_interface: true,
+                type_params: vec!["T".to_string()],
+                interface_methods: vec![callback_method.clone()],
+            },
+        );
+        package.implementation_links.types.insert(
+            "example.registry.impl/Observer".to_string(),
+            TypeExport {
+                file: skiff_artifact_model::FileIrRef::new("file:model", "model"),
+                type_index: 4,
+                symbol: "Observer".to_string(),
+                is_interface: true,
+                descriptor: Some(TypeDescriptorIr::Native {
+                    symbol: "interface:Observer".to_string(),
+                }),
+                type_params: vec!["T".to_string()],
+                interface_methods: vec![callback_method],
+            },
+        );
+        let BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = package
+            .boundary_projections
+            .get_mut(&callable("read"))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        operation_contract.callbacks = BoundaryCallbackContract::RequestScoped {
+            interface_type_ids: vec![definition_contract_type_id(
+                "example.registry",
+                "1.0.0",
+                "Observer",
+            )
+            .unwrap()],
+            lifetime: BoundaryCallbackLifetime::TopLevelRequest,
+            expiration_error: BoundaryCallbackExpirationError::CapabilityExpired,
+        };
+
+        let projected = project_service_api("example.registry", &package).unwrap();
+        let details = projected
+            .contract
+            .boundary_schema
+            .values()
+            .find(|schema| schema.stable_key == "Details")
+            .unwrap();
+        assert_eq!(details.shape.type_params, vec!["T"]);
+        assert!(matches!(
+            &details.shape.descriptor,
+            ContractTypeDescriptor::Record { fields }
+                if fields["value"] == ContractTypeRef::TypeParam { name: "T".to_string() }
+        ));
+        let observer = projected
+            .contract
+            .boundary_schema
+            .values()
+            .find(|schema| schema.stable_key == "Observer")
+            .unwrap();
+        assert_eq!(observer.shape.type_params, vec!["T"]);
+        let ContractTypeDescriptor::CallbackInterface { operations } = &observer.shape.descriptor
+        else {
+            unreachable!()
+        };
+        assert!(operations["observe"].may_suspend);
+        assert_eq!(
+            operations["observe"].parameters,
+            vec![ContractTypeRef::TypeParam {
+                name: "T".to_string()
+            }]
         );
     }
 

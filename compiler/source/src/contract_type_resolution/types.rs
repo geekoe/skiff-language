@@ -189,6 +189,9 @@ pub(super) fn package_type_ref_from_validated_contract_ref(
         ContractTypeRef::Contract { contract_type_id } => Ok(PackageTypeRef::Contract {
             contract_type_id: contract_type_id.clone(),
         }),
+        ContractTypeRef::TypeParam { name } => Ok(PackageTypeRef::Local {
+            local_type: TypeRefIr::TypeParam { name: name.clone() },
+        }),
         ContractTypeRef::Nullable { inner } => Ok(PackageTypeRef::Nullable {
             inner: Box::new(package_type_ref_from_validated_contract_ref(inner)?),
         }),

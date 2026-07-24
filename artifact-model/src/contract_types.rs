@@ -39,6 +39,9 @@ pub enum ContractTypeRef {
     Contract {
         contract_type_id: ContractTypeId,
     },
+    TypeParam {
+        name: String,
+    },
     Record {
         fields: BTreeMap<String, ContractTypeRef>,
     },
@@ -178,6 +181,7 @@ pub struct BoundaryCallbackOperation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContractTypeShape {
     pub nameability: ContractTypeNameability,
+    pub type_params: Vec<String>,
     pub descriptor: ContractTypeDescriptor,
 }
 
@@ -371,6 +375,60 @@ mod tests {
                 serde_json::from_value::<ContractTypeDescriptor>(invalid.clone()).is_err(),
                 "legacy or incomplete descriptor must fail closed: {invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn generic_shape_and_type_parameter_have_strict_wire() {
+        let shape = ContractTypeShape {
+            nameability: ContractTypeNameability::PublicNameable,
+            type_params: vec!["T".to_string()],
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([(
+                    "value".to_string(),
+                    ContractTypeRef::TypeParam {
+                        name: "T".to_string(),
+                    },
+                )]),
+            },
+        };
+        let wire = json!({
+            "nameability": "publicNameable",
+            "typeParams": ["T"],
+            "descriptor": {
+                "kind": "record",
+                "fields": {
+                    "value": { "kind": "typeParam", "name": "T" }
+                }
+            }
+        });
+        assert_eq!(serde_json::to_value(&shape).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ContractTypeShape>(wire.clone()).unwrap(),
+            shape
+        );
+
+        for invalid in [
+            json!({
+                "nameability": "publicNameable",
+                "descriptor": wire["descriptor"].clone()
+            }),
+            json!({
+                "nameability": "publicNameable",
+                "typeParams": ["T"],
+                "descriptor": {
+                    "kind": "record",
+                    "fields": { "value": { "kind": "typeParam" } }
+                }
+            }),
+            json!({
+                "nameability": "publicNameable",
+                "typeParams": ["T"],
+                "descriptor": wire["descriptor"].clone(),
+                "displayType": "Box<T>"
+            }),
+        ] {
+            assert!(serde_json::from_value::<ContractTypeShape>(invalid).is_err());
         }
     }
 }

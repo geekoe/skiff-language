@@ -10,34 +10,73 @@ use crate::{
     DbMetadataIndexIr, DbMetadataIr, DbObjectFieldIr, DbObjectKeyIr, DbObjectKindIr, FieldPathIr,
     SpawnTargetIr, SpawnTargetKindIr,
 };
+
 use crate::{
     BlockIr, BoxSourceIr, CallTargetIr, ConstIr, ExecutableBody, ExecutableIr, ExecutableKind,
     ExecutableLinkTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrRef, FileIrUnit,
     FunctionTypeParamIr, GatewayConfig, GatewayRoute, InterfaceInstantiationRef,
-    InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
-    InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef, OperationAbiRef,
-    OperationCallableKind, OperationConstReceiverRef, OperationTargetRef, PackageCallableId,
-    PackageCallableRef, PackageDependencyConstraint, PackageOperationTarget, PackageRefIr,
-    PackageSymbolRef, PackageTestAssembly, PackageTestAssemblyKind, PackageTestEntrypointKind,
-    PackageUnit, PublicationAbiUnit, PublicationOperationKind, PublicationResourceRef,
-    ReceiverCallAbi, RecoverableAdapterSchemaCompatibility, RecoverableArtifactMetadata,
-    RecoverableBoundaryContext, RecoverableBoundaryKind, RecoverableBoundaryPlan,
-    RecoverableCapabilityFlag, RecoverableCustomRestorePlan, RecoverableCustomRestorePlanRef,
-    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, RecoverableFieldIdentityFact,
-    RecoverableFieldIdentityRef, RecoverableInterfaceMethodIdentityFact,
-    RecoverableInterfaceMethodIdentityRef, RecoverableInterfaceProjectionIdentityFact,
-    RecoverableInterfaceProjectionIdentityRef, RecoverableNativeAdapterOwner,
-    RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef, RecoverableRestoreCapability,
-    RecoverableStorageLane, RecoverableStorageLanePlan, RecoverableStorageLaneRef,
-    RecoverableTrustBoundary, RecoverableTypeIdentityFact, RecoverableTypeIdentityRef,
-    RecoverableUnionBranchIdentityFact, RecoverableUnionBranchIdentityRef,
-    RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ServiceConfigMetadata,
-    ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
-    ServiceOperationTarget, ServiceSymbolRef, ServiceUnit, SlotLayout, SourceMapSource,
-    SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr,
-    TypeLinkTargetIr, TypeRefIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
-    FILE_IR_SCHEMA_VERSION,
+    InterfaceMethodSignature, InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr,
+    InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr, LiteralIr, LocalReceiverExecutableRef,
+    OperationAbiRef, OperationCallableKind, OperationConstReceiverRef, OperationTargetRef,
+    PackageCallableId, PackageCallableRef, PackageDependencyConstraint, PackageOperationTarget,
+    PackageRefIr, PackageSymbolRef, PackageTestAssembly, PackageTestAssemblyKind,
+    PackageTestEntrypointKind, PackageUnit, PublicationAbiUnit, PublicationOperationKind,
+    PublicationResourceRef, ReceiverCallAbi, RecoverableAdapterSchemaCompatibility,
+    RecoverableArtifactMetadata, RecoverableBoundaryContext, RecoverableBoundaryKind,
+    RecoverableBoundaryPlan, RecoverableCapabilityFlag, RecoverableCustomRestorePlan,
+    RecoverableCustomRestorePlanRef, RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot,
+    RecoverableFieldIdentityFact, RecoverableFieldIdentityRef,
+    RecoverableInterfaceMethodIdentityFact, RecoverableInterfaceMethodIdentityRef,
+    RecoverableInterfaceProjectionIdentityFact, RecoverableInterfaceProjectionIdentityRef,
+    RecoverableNativeAdapterOwner, RecoverableNativeAdapterPlan, RecoverableNativeAdapterPlanRef,
+    RecoverableRestoreCapability, RecoverableStorageLane, RecoverableStorageLanePlan,
+    RecoverableStorageLaneRef, RecoverableTrustBoundary, RecoverableTypeIdentityFact,
+    RecoverableTypeIdentityRef, RecoverableUnionBranchIdentityFact,
+    RecoverableUnionBranchIdentityRef, RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr,
+    ServiceConfigMetadata, ServiceDependencyConstraint, ServiceDependencySymbolRef, ServiceMeta,
+    ServiceOperation, ServiceOperationTarget, ServiceSymbolRef, ServiceUnit, SlotLayout,
+    SourceMapSource, SourceMapSpan, SourcePosition, SourceSpanRef, StmtIr, StmtRefIr, TypeDeclIr,
+    TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr, FILE_IR_FORMAT_VERSION,
+    FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
 };
+
+#[test]
+fn interface_method_signature_requires_exact_suspend_flag() {
+    let method = InterfaceMethodSignature {
+        name: "load".to_string(),
+        type_params: vec!["T".to_string()],
+        params: vec![FunctionTypeParamIr {
+            name: "value".to_string(),
+            ty: TypeRefIr::TypeParam {
+                name: "T".to_string(),
+            },
+        }],
+        return_type: TypeRefIr::TypeParam {
+            name: "T".to_string(),
+        },
+        may_suspend: true,
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+    };
+    let wire = serde_json::to_value(&method).unwrap();
+    assert_eq!(wire["maySuspend"], serde_json::json!(true));
+    assert_eq!(
+        serde_json::from_value::<InterfaceMethodSignature>(wire.clone()).unwrap(),
+        method
+    );
+
+    let mut missing = wire.clone();
+    missing.as_object_mut().unwrap().remove("maySuspend");
+    assert!(serde_json::from_value::<InterfaceMethodSignature>(missing).is_err());
+    let mut unknown = wire;
+    unknown
+        .as_object_mut()
+        .unwrap()
+        .insert("suspends".to_string(), serde_json::json!(true));
+    assert!(serde_json::from_value::<InterfaceMethodSignature>(unknown).is_err());
+}
 
 fn string_type() -> TypeRefIr {
     TypeRefIr::native("string")

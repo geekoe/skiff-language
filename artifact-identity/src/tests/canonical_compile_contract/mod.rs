@@ -37,12 +37,14 @@ pub(super) fn contract_fixture() -> ServiceContract {
 
     let payload_shape = ContractTypeShape {
         nameability: ContractTypeNameability::PublicNameable,
+        type_params: Vec::new(),
         descriptor: ContractTypeDescriptor::Record {
             fields: BTreeMap::from([("message".to_string(), ContractTypeRef::builtin("string"))]),
         },
     };
     let callback_shape = ContractTypeShape {
         nameability: ContractTypeNameability::PublicNameable,
+        type_params: Vec::new(),
         descriptor: ContractTypeDescriptor::CallbackInterface {
             operations: BTreeMap::from([(
                 "observe".to_string(),

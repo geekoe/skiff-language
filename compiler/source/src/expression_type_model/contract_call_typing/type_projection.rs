@@ -289,6 +289,10 @@ pub(super) fn resolved_contract_type(
                 },
             })
         }
+        ContractTypeRef::TypeParam { name } => Ok(ResolvedTypeRef {
+            source_text: name.clone(),
+            ir: TypeRefIr::TypeParam { name: name.clone() },
+        }),
         ContractTypeRef::Nullable { inner } => {
             let inner = resolved_contract_type(inner, alias, contract)?;
             Ok(ResolvedTypeRef {

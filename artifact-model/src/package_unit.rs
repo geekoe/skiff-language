@@ -209,6 +209,7 @@ pub struct InterfaceMethodSignature {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<FunctionTypeParamIr>,
     pub return_type: TypeRefIr,
+    pub may_suspend: bool,
     pub is_native: bool,
     #[serde(default)]
     pub is_provider: bool,

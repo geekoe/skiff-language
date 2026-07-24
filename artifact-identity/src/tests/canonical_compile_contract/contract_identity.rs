@@ -13,7 +13,7 @@ fn contract_assign_validate_and_golden_identities() {
 
     assert_eq!(
         contract.service_protocol_identity.as_str(),
-        "skiff-service-protocol-v2:sha256:f1ab6fae4aec7d876892647f094fd28cf13f30fe140ffbed785948e317ccea20"
+        "skiff-service-protocol-v2:sha256:953133d6097f06a6383ad4c67d498ebb9fd7b0e1de2d72325315f2dd160832f3"
     );
     assert_eq!(
         contract_operation_id("example.echo", "1.0.0", "echo")

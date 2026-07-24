@@ -559,6 +559,7 @@ fn contract_definition() -> ServiceContractDefinition {
             "Request".to_string(),
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
+                type_params: Vec::new(),
                 descriptor: ContractTypeDescriptor::Record {
                     fields: BTreeMap::from([(
                         "message".to_string(),

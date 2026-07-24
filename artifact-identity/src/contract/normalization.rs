@@ -56,7 +56,9 @@ pub(super) fn normalize_contract_type_ref(
 ) -> Result<ContractTypeRef> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => normalize_builtin(name, arguments, path),
-        ContractTypeRef::Contract { .. } | ContractTypeRef::Literal { .. } => Ok(ty),
+        ContractTypeRef::Contract { .. }
+        | ContractTypeRef::TypeParam { .. }
+        | ContractTypeRef::Literal { .. } => Ok(ty),
         ContractTypeRef::Record { fields } => Ok(ContractTypeRef::Record {
             fields: fields
                 .into_iter()

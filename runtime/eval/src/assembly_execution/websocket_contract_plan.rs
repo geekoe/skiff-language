@@ -339,6 +339,7 @@ pub(crate) mod test_support {
                 "Context".to_string(),
                 ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor,
                 },
             )])

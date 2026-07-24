@@ -114,6 +114,7 @@ impl TypedExecutionContract {
                 stable_key: stable_key.to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: payload_fields,
                     },
@@ -166,6 +167,7 @@ impl TypedExecutionContract {
                 stable_key: stable_key.to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::CallbackInterface {
                         operations: BTreeMap::from([(
                             contract_operation.to_string(),
@@ -253,6 +255,7 @@ impl TypedExecutionContract {
                 stable_key: stable_key.to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::CallbackInterface {
                         operations: BTreeMap::from([(
                             contract_operation.to_string(),

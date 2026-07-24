@@ -39,6 +39,7 @@ pub(super) fn contract_dependency() -> (ResolvedContractDependency, ContractType
                 stable_key: "User".to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::Record {
                         fields: BTreeMap::from([(
                             "value".to_string(),

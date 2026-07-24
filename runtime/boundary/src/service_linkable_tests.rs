@@ -51,6 +51,7 @@ fn callback_schema() -> (
             stable_key: "Reader".to_string(),
             shape: ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
+                type_params: Vec::new(),
                 descriptor: ContractTypeDescriptor::CallbackInterface {
                     operations: BTreeMap::new(),
                 },

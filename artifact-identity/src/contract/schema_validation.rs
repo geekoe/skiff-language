@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     BoundaryErrorContract, BoundaryOperationContract, BoundaryStreamContract,
@@ -21,11 +21,13 @@ pub(super) fn validate_contract_schema(contract: &ServiceContract) -> Result<()>
     let mut edges = BTreeMap::new();
     for (type_id, schema_type) in &contract.boundary_schema {
         let path = format!("boundarySchema[{}]", schema_type.stable_key);
+        let type_params = validate_type_param_declarations(&schema_type.shape.type_params, &path)?;
         let mut type_edges = Vec::new();
         validate_descriptor(
             contract,
             &schema_type.shape.descriptor,
             &path,
+            &type_params,
             &mut type_edges,
         )?;
         edges.insert(type_id.clone(), type_edges);
@@ -69,12 +71,14 @@ fn validate_operation_contract(
     path: &str,
 ) -> Result<()> {
     let mut ignored_edges = Vec::new();
+    let type_params = BTreeSet::new();
     for (index, parameter) in operation.parameters.iter().enumerate() {
         validate_type_ref(
             contract,
             &parameter.ty,
             &format!("{path}.parameters[{index}].ty"),
             false,
+            &type_params,
             &mut ignored_edges,
         )?;
     }
@@ -83,6 +87,7 @@ fn validate_operation_contract(
         &operation.return_value.ty,
         &format!("{path}.returnValue.ty"),
         false,
+        &type_params,
         &mut ignored_edges,
     )?;
     if let BoundaryErrorContract::Typed { payload_type, .. } = &operation.errors {
@@ -91,6 +96,7 @@ fn validate_operation_contract(
             payload_type,
             &format!("{path}.errors.payloadType"),
             false,
+            &type_params,
             &mut ignored_edges,
         )?;
     }
@@ -100,6 +106,7 @@ fn validate_operation_contract(
             item_type,
             &format!("{path}.stream.itemType"),
             false,
+            &type_params,
             &mut ignored_edges,
         )?;
     }
@@ -130,6 +137,7 @@ fn validate_descriptor(
     contract: &ServiceContract,
     descriptor: &ContractTypeDescriptor,
     path: &str,
+    type_params: &BTreeSet<String>,
     edges: &mut Vec<SchemaEdge>,
 ) -> Result<()> {
     match descriptor {
@@ -140,6 +148,7 @@ fn validate_descriptor(
                     field,
                     &format!("{path}.descriptor.fields[{name}]"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
@@ -151,6 +160,7 @@ fn validate_descriptor(
                     variant,
                     &format!("{path}.descriptor.variants[{index}]"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
@@ -166,7 +176,14 @@ fn validate_descriptor(
             }
             for branch in branches {
                 let branch_path = format!("{path}.descriptor.branches[{}]", branch.tag);
-                validate_type_ref(contract, &branch.branch_type, &branch_path, true, edges)?;
+                validate_type_ref(
+                    contract,
+                    &branch.branch_type,
+                    &branch_path,
+                    true,
+                    type_params,
+                    edges,
+                )?;
                 let fields = branch_record_fields(contract, &branch.branch_type).ok_or_else(|| {
                     ArtifactIdentityError::InvalidServiceContract {
                         message: format!(
@@ -199,6 +216,7 @@ fn validate_descriptor(
                 target,
                 &format!("{path}.descriptor.target"),
                 false,
+                type_params,
                 edges,
             )?;
         }
@@ -211,6 +229,7 @@ fn validate_descriptor(
                         parameter,
                         &format!("{path}.descriptor.operations[{name}].parameters[{index}]"),
                         false,
+                        type_params,
                         edges,
                     )?;
                 }
@@ -219,6 +238,7 @@ fn validate_descriptor(
                     &operation.return_type,
                     &format!("{path}.descriptor.operations[{name}].returnType"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
@@ -232,6 +252,7 @@ fn validate_type_ref(
     ty: &ContractTypeRef,
     path: &str,
     allow_anonymous_record: bool,
+    type_params: &BTreeSet<String>,
     edges: &mut Vec<SchemaEdge>,
 ) -> Result<()> {
     match ty {
@@ -245,6 +266,7 @@ fn validate_type_ref(
                     argument,
                     &format!("{path}.arguments[{index}]"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
@@ -267,6 +289,11 @@ fn validate_type_ref(
                 path: path.to_string(),
             });
         }
+        ContractTypeRef::TypeParam { name } => {
+            if !type_params.contains(name) {
+                return invalid_contract(format!("{path}: unknown type parameter `{name}`"));
+            }
+        }
         ContractTypeRef::Record { fields } => {
             if !allow_anonymous_record {
                 return invalid_contract(format!(
@@ -279,6 +306,7 @@ fn validate_type_ref(
                     field,
                     &format!("{path}.fields[{name}]"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
@@ -290,16 +318,52 @@ fn validate_type_ref(
                     variant,
                     &format!("{path}.variants[{index}]"),
                     false,
+                    type_params,
                     edges,
                 )?;
             }
         }
         ContractTypeRef::Nullable { inner } => {
-            validate_type_ref(contract, inner, &format!("{path}.inner"), false, edges)?;
+            validate_type_ref(
+                contract,
+                inner,
+                &format!("{path}.inner"),
+                false,
+                type_params,
+                edges,
+            )?;
         }
         ContractTypeRef::Literal { .. } => {}
     }
     Ok(())
+}
+
+fn validate_type_param_declarations(
+    declarations: &[String],
+    path: &str,
+) -> Result<BTreeSet<String>> {
+    let mut declared = BTreeSet::new();
+    for (index, name) in declarations.iter().enumerate() {
+        let valid = name
+            .chars()
+            .next()
+            .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+            && name
+                .chars()
+                .skip(1)
+                .all(|character| character == '_' || character.is_ascii_alphanumeric());
+        if !valid {
+            return invalid_contract(format!(
+                "{path}.typeParams[{index}]: invalid type parameter `{name}`"
+            ));
+        }
+        if !declared.insert(name.clone()) {
+            return invalid_contract(format!(
+                "{path}.typeParams[{index}]: duplicate type parameter `{name}`"
+            ));
+        }
+    }
+    Ok(declared)
 }
 
 fn validate_map_key(contract: &ServiceContract, key: &ContractTypeRef, path: &str) -> Result<()> {

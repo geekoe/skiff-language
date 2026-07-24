@@ -417,6 +417,7 @@ mod tests {
                 stable_key: "Callback".to_string(),
                 shape: ContractTypeShape {
                     nameability: ContractTypeNameability::PublicNameable,
+                    type_params: Vec::new(),
                     descriptor: ContractTypeDescriptor::CallbackInterface {
                         operations: operations.clone(),
                     },

@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use serde_json::json;
 use skiff_artifact_identity::validate_service_contract_identities;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryCancellationContract, BoundaryEffectGuarantee,
-    BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor, ContractTypeNameability,
-    ContractTypeRef, ContractTypeShape,
+    BoundaryCallbackContract, BoundaryCallbackOperation, BoundaryCancellationContract,
+    BoundaryEffectGuarantee, BoundaryErrorContract, BoundaryOperationContract, BoundaryParameter,
+    BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ContractTypeDescriptor,
+    ContractTypeNameability, ContractTypeRef, ContractTypeShape,
 };
 
 use super::*;
@@ -103,6 +103,144 @@ fn operation_and_type_map_order_do_not_change_output() {
     assert_eq!(first, second);
 }
 
+#[test]
+fn generic_schema_validates_declarations_and_affects_protocol_identity() {
+    let mut definition = definition_fixture();
+    let payload = definition.boundary_schema.get_mut("payload").unwrap();
+    payload.type_params = vec!["T".to_string(), "U".to_string()];
+    let ContractTypeDescriptor::Record { fields } = &mut payload.descriptor else {
+        unreachable!()
+    };
+    fields.insert(
+        "first".to_string(),
+        ContractTypeRef::TypeParam {
+            name: "T".to_string(),
+        },
+    );
+    fields.insert(
+        "second".to_string(),
+        ContractTypeRef::TypeParam {
+            name: "U".to_string(),
+        },
+    );
+
+    let first = compile_service_contract_definition(definition.clone()).unwrap();
+    let rebuilt = compile_service_contract_definition(definition.clone()).unwrap();
+    assert_eq!(first, rebuilt);
+
+    let mut reordered = definition.clone();
+    reordered
+        .boundary_schema
+        .get_mut("payload")
+        .unwrap()
+        .type_params
+        .reverse();
+    let reordered = compile_service_contract_definition(reordered).unwrap();
+    assert_ne!(
+        first.service_protocol_identity,
+        reordered.service_protocol_identity
+    );
+
+    let mut reference_changed = definition.clone();
+    let ContractTypeDescriptor::Record { fields } = &mut reference_changed
+        .boundary_schema
+        .get_mut("payload")
+        .unwrap()
+        .descriptor
+    else {
+        unreachable!()
+    };
+    fields.insert(
+        "first".to_string(),
+        ContractTypeRef::TypeParam {
+            name: "U".to_string(),
+        },
+    );
+    let reference_changed = compile_service_contract_definition(reference_changed).unwrap();
+    assert_ne!(
+        first.service_protocol_identity,
+        reference_changed.service_protocol_identity
+    );
+
+    for type_params in [
+        vec!["T".to_string(), "T".to_string()],
+        vec!["9T".to_string()],
+        vec!["".to_string()],
+    ] {
+        let mut invalid = definition.clone();
+        invalid
+            .boundary_schema
+            .get_mut("payload")
+            .unwrap()
+            .type_params = type_params;
+        assert!(compile_service_contract_definition(invalid).is_err());
+    }
+
+    let mut unknown = definition;
+    let ContractTypeDescriptor::Record { fields } = &mut unknown
+        .boundary_schema
+        .get_mut("payload")
+        .unwrap()
+        .descriptor
+    else {
+        unreachable!()
+    };
+    fields.insert(
+        "unknown".to_string(),
+        ContractTypeRef::TypeParam {
+            name: "Missing".to_string(),
+        },
+    );
+    assert!(compile_service_contract_definition(unknown).is_err());
+}
+
+#[test]
+fn callback_suspend_semantics_affect_protocol_identity() {
+    let mut synchronous = definition_fixture();
+    synchronous.boundary_schema.insert(
+        "callback".to_string(),
+        ContractTypeShape {
+            nameability: ContractTypeNameability::PublicNameable,
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    "observe".to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: vec![ContractTypeRef::builtin("string")],
+                        return_type: ContractTypeRef::builtin("void"),
+                        may_suspend: false,
+                    },
+                )]),
+            },
+        },
+    );
+    let synchronous = compile_service_contract_definition(synchronous).unwrap();
+
+    let mut suspending = definition_fixture();
+    suspending.boundary_schema.insert(
+        "callback".to_string(),
+        ContractTypeShape {
+            nameability: ContractTypeNameability::PublicNameable,
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::CallbackInterface {
+                operations: BTreeMap::from([(
+                    "observe".to_string(),
+                    BoundaryCallbackOperation {
+                        parameters: vec![ContractTypeRef::builtin("string")],
+                        return_type: ContractTypeRef::builtin("void"),
+                        may_suspend: true,
+                    },
+                )]),
+            },
+        },
+    );
+    let suspending = compile_service_contract_definition(suspending).unwrap();
+    assert_ne!(
+        synchronous.service_protocol_identity,
+        suspending.service_protocol_identity
+    );
+}
+
 fn definition_fixture() -> ServiceContractDefinition {
     let service_id = "example.echo";
     let version = "1.0.0";
@@ -141,6 +279,7 @@ fn definition_fixture() -> ServiceContractDefinition {
             "payload".to_string(),
             ContractTypeShape {
                 nameability: ContractTypeNameability::PublicNameable,
+                type_params: Vec::new(),
                 descriptor: ContractTypeDescriptor::Record {
                     fields: BTreeMap::from([(
                         "message".to_string(),

@@ -46,6 +46,9 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
             ContractTypeRef::Contract { contract_type_id } => {
                 self.compile_contract_type(contract_type_id)
             }
+            ContractTypeRef::TypeParam { name } => {
+                invalid_contract_plan(format!("unresolved contract type parameter {name}"))
+            }
             ContractTypeRef::Record { fields } => {
                 let fields = self.compile_record_fields(fields)?;
                 Ok(plan(

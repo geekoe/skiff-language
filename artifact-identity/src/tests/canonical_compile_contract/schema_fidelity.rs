@@ -414,6 +414,7 @@ fn map_type(key: ContractTypeRef, value: ContractTypeRef) -> ContractTypeRef {
 fn shape(descriptor: ContractTypeDescriptor) -> ContractTypeShape {
     ContractTypeShape {
         nameability: ContractTypeNameability::PublicNameable,
+        type_params: Vec::new(),
         descriptor,
     }
 }
