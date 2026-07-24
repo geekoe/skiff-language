@@ -190,6 +190,10 @@ HTTP std surface 都在 `std.http.*` 模块下，属于内建 platform std，不
 
 `std.http.HttpRequest` / `std.http.HttpResponse` 是 raw HTTP entry envelope。`std.http.HttpClientRequest` / `std.http.HttpClientResponse` / `std.http.HttpClientStreamHandle` / `std.http.HttpSseEvent` 是 outbound HTTP effect 的 request / response / stream handle / SSE event schema。
 
+这些类型由`skiff.run/std` Package schema拥有。进入package/service boundary的schema-stable HTTP类型保留
+其PackageSchemaTypeId；compiler不得把它们在operation位置展开为anonymous record，也不得在每个
+ServiceContract中复制或重新生成service-owned类型。request-local handle仍不属于可远程传输schema。
+
 HTTP headers 和 query params 使用数组保留重复项和顺序。
 
 HTTP bodies 是 request-local bytes。JSON、text、form 和 multipart 都是显式 codec / helper 层，不由 router/runtime 按 content-type 自动 decode。

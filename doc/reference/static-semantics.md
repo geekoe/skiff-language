@@ -253,6 +253,11 @@ API operation signature 中的用户自定义类型必须来自当前 source set
 schema-stable 的类型。HTTP schema-stable platform types 写作 `std.http.HttpRequest`、
 `std.http.HttpResponse`、`std.http.HttpClientRequest`、`std.http.HttpResponseStreamEvent` 等模块路径名。
 
+上述类型都由声明它们的Package拥有。service operation签名保留owner Package的`PackageSchemaTypeId`；
+service id、service version label和provider implementation build不能重新定义类型identity。跨service导入只把
+ServiceContract operation与其精确Package schema requirements materialize为同一Package类型视图，不生成
+service-owned nominal type。
+
 未进入 public API graph 的 declarations 可在内部通过 `root.*` 使用；它们不能作为外部源码可写
 public name，但可以在 explicit public root 的边界形状需要时进入 ABI / schema closure。Public root
 引用到的 named type 会自动进入 schema closure；这些 closure-only named type 不会自动成为外部源码
@@ -291,6 +296,15 @@ helper 若使用 `emit`，其 effect metadata 必须标记 `emits T`，并且只
 
 必须通过 schema closure 的位置包括 service API operation 参数和返回、public API closure 中 public
 type 字段图、跨服务 payload、跨请求 / 入库 / 落盘 payload，以及平台 schema 标记的边界 payload。
+
+schema closure由逐类型`PackageSchemaTypeRecord`闭合。每个命名root以`PackageSchemaTypeId`引用owner
+Package中的canonical descriptor；descriptor引用的closure-only类型仍属于同一或其精确依赖Package。
+ServiceContract只记录实际可达的package/type ids，不记录整包schema index identity，也不复制字段定义。
+缺type record、owner/key/identity不匹配或依赖闭包不完整都不是“结构相同即可”的兼容情形，必须fail closed。
+
+第一版schema named-type依赖图必须无环；自递归和相互递归类型都不closed。projection先拒绝SCC，再按拓扑序
+计算逐类型identity。descriptor中的named child引用使用child的package id、stable schema key和已计算
+`PackageSchemaTypeId`，不能引用待计算的自身identity。
 
 模块内部可以使用 interface conformance test、本地 `any I` 能力值和 public instance receiver
 root；第一版不把裸 interface 当作普通 runtime value。package 抽象能力通过显式 `any I` 参数传递，

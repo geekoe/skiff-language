@@ -29,6 +29,10 @@ registry/release写入不可变artifact与更新pointer的动作名称。
   装配为一次不可变运行revision。
 - RuntimeAssembly：哪些deployment放在一起运行，它们的package/service依赖如何闭合。
 
+`PackageSchemaTypeRecord`与`PackageSchemaIndex`是PackageArtifact拥有并按内容寻址的schema子记录，用于
+逐类型去重、精确引用和枚举本build的schema surface；它们没有独立authoring、release pointer、version
+selector或deployment lifecycle，因此不是第五个领域对象。
+
 它们没有共同aggregate。可以共享canonical type、signature、operation、value-plan和identity
 framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 
@@ -60,6 +64,8 @@ framing等叶子类型，但不能用共享DTO重新制造隐式父模型。
 12. actor、spawn及其它跨request control必须携带当前完整ActivationIdentity；Router只按发送该frame的
     exact assembly registration及active/draining generation验证，不能按serviceId、package build、display
     name或legacy runtime registration补事实。
+13. 所有boundary命名类型由Package拥有；ServiceContract只能引用PackageSchemaTypeId，不能复制descriptor、
+    展开为anonymous root或生成service-owned nominal identity。
 
 ## 3. Package 与 PackageArtifact
 
@@ -80,6 +86,7 @@ PackageArtifact
   packageId / packageVersion / packageBuildId
   FileIrUnit refs
   PackageLocalAbi
+  PackageSchemaIndex ref
   implementation links
   package dependency requirements
   service runtime requirements
@@ -93,15 +100,59 @@ PackageArtifact
 public instance、const与executable link信息。它允许同一heap引用、alias、原地mutation和其它只在
 local code composition中成立的值。
 
+所有能进入package或service边界的命名类型都由Package拥有，Service不重新拥有或复制一套类型。
+Package从public API graph和其schema closure生成逐类型content-addressed record，并为当前artifact生成
+一个index：
+
+```text
+PackageSchemaTypeRecord
+  packageId
+  stableSchemaKey
+  packageSchemaTypeId
+  canonicalDescriptor
+
+PackageSchemaIndex
+  packageId
+  packageSchemaIndexIdentity
+  types: stableSchemaKey -> {
+    packageSchemaTypeId
+    publicPath?
+    nameability
+  }
+```
+
+`stableSchemaKey`是owner Package内的canonical nominal key。显式公开命名类型使用其canonical public API
+path；closure-only类型使用typed frontend在声明identity上分配的package-local canonical key。该key不得来自
+源码文件路径、遍历顺序、display string或某个ServiceContract的发现路径。匿名discriminator branch不是
+独立named type，没有自己的key；它只作为owner named union descriptor的一部分。closure-only类型若后来以
+public path公开，属于canonical key变化并产生新的类型identity；工具不得猜测rename或自动兼容。
+
+第一版Package boundary schema graph必须无递归环；用户递归record本来就不是SchemaClosed。projection在计算
+identity前对所有named-type引用建图并拒绝self-cycle或SCC。随后按拓扑序计算
+`PackageSchemaTypeId = hash(packageId, stableSchemaKey, canonicalDescriptor)`；descriptor中的named child
+引用包含child的`packageId + stableSchemaKey + PackageSchemaTypeId`，因此不存在循环哈希。package version
+label、PackageBuildId、service id、nameability、publicPath和deployment信息都不参与逐类型identity。
+
+`PackageSchemaIndexIdentity`只标识某个PackageArtifact的完整schema目录，其canonical preimage是packageId加
+按stableSchemaKey排序的`(stableSchemaKey, PackageSchemaTypeId, publicPath?, nameability)`列表。它可因无关
+类型、公开路径或nameability变化而改变，但不进入ServiceProtocolIdentity。公开可命名类型和closure-only
+类型使用同一逐类型identity域；index中的`nameability`只决定源码能否直接命名。
+
+同一类型内容在不同Package build中不重复生成新的类型身份；Artifact store可以按
+`PackageSchemaTypeId`去重和解析单个type record，并按`PackageSchemaIndexIdentity`去重index。
+PackageArtifact引用index，而不是把同一份类型定义复制到每个ServiceContract。类型内容不变时，
+implementation build和人类version可以变化而不改变类型identity；canonical descriptor变化必然产生新的
+类型identity。
+
 File IR executable signature与PackageLocalAbi不是同一个type owner。File IR只保存本地执行需要的
 execution type representation。Package API与Service API必须共用同一套parser、name resolution、nominal
 type、field/constructor、generic、interface conformance和typed expression机制；不得从ServiceContract
 descriptor再建立一套只支持签名、不支持普通表达式的contract type system。
 
-Service dependency导入的code-free API module是同一canonical public API representation的materialized view。
-它的nominal type identity由service API schema稳定拥有，不绑定provider build；但其语言行为与package API
-type完全一致。compiler不得用display string、结构相同的临时local type、JSON encode/decode或手写wrapper
-冒充相同identity。
+Service dependency导入的code-free API module是同一canonical Package API representation的materialized view。
+其中operation由ServiceContract选择，类型仍引用其owner Package的`PackageSchemaTypeId`，不迁移为service-owned
+类型，也不绑定provider implementation build。compiler不得用display string、结构相同的临时local type、
+JSON encode/decode、匿名record展开或手写wrapper冒充相同identity。
 
 PackageArtifact的public-instance discovery只需要`publicPath + receiver execution target`。它不得把File IR
 execution signature转成public signature、执行conformance比较或生成`OperationAbiRef`/operation protocol
@@ -131,7 +182,8 @@ artifact receipt与IDE应消费同一projection，不能静默排除。
 provenance和link facts，使deployment无需读取源码。
 
 `BoundaryOperationContract`只承载boundary可观察的signature、error/stream/cancel/callback、value plan与
-公开effect保证。ServiceContract projection在该body外增加稳定operation key/id。具体
+公开effect保证；其中所有命名类型引用都保留`PackageSchemaTypeId`及其package owner。ServiceContract
+projection在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。具体
 config/state/native capability requirement和完整may-effect属于
 `BoundaryImplementationRequirements`，不能泄漏进ServiceProtocolIdentity。
 
@@ -154,16 +206,36 @@ ServiceContract
   packageVersionLabel
   serviceProtocolIdentity
   operations: name/id -> BoundaryOperationDescriptor
-  boundary schema closure
+  packageSchemaRequirements
 ```
 
 每个operation descriptor包含canonical参数、返回、throw/error、stream、cancel、callback与value
-plan契约。Contract schema必须闭合，consumer不读取provider源码补充类型事实。
+plan契约。ServiceContract不拥有第二套boundary类型，不内嵌或复制Package字段定义。它记录精确
+`PackageTypeRequirement`：
+
+```text
+PackageTypeRequirement
+  packageId
+  requiredTypeIds: PackageSchemaTypeId[]
+```
+
+Contract closure由operations引用的Package类型及各`PackageSchemaTypeRecord`描述的传递闭包组成。
+tooling必须只按`PackageSchemaTypeId`读取content-addressed type record并闭合、校验；consumer不读取provider
+源码，也不按当前active deployment或任意同version PackageArtifact猜测类型。不同PackageSchemaIndex只要
+解析到相同type id就是同一类型，不需要整包index identity相等。缺type record、owner/key不匹配、descriptor
+重新计算出的identity不匹配或闭包不完整都fail closed。
+
+Service package自己声明的类型与依赖package声明的类型遵守同一规则：都由各自Package拥有。ServiceContract
+只拥有service operation集合及其协议身份，不拥有`ServiceType`、service-owned `ContractTypeId`或类型映射层。
 
 Service API identity由canonical boundary surface内容确定；`package.yml.version`只作为人类可读、精确解析
 label，不参与identity运算，`service.yml`没有version。新implementation build可以在identity不变时替换当前
 active revision而无需consumer同意；API内容变化必然产生新identity，即使作者未修改version label也不能
 静默绑定旧consumer。
+
+operation引用的任一`PackageSchemaTypeId`或其闭包变化都属于API内容变化。反之，只要operation与所有引用
+类型identity不变，Package内部实现、无关public function、未被该contract引用的Package类型或version label
+变化都不能机械改变ServiceProtocolIdentity。
 
 为支持循环service dependency，compiler/tooling按两阶段处理同一批service package source：
 
@@ -174,8 +246,8 @@ project/publish all service API declarations
 ```
 
 这不是第二套语言前端：declaration projection与package compile共用canonical typed API机制，只把函数体
-执行编译推迟到所有service API closure可用之后。第一版不允许ServiceContract schema通过跨contract type
-引用重新制造循环closure。
+执行编译推迟到所有service API closure可用之后。Package type requirement只能指向content-addressed
+PackageSchemaTypeRecord，不能指向另一个ServiceContract；因此不会通过跨contract type引用重新制造循环closure。
 
 ## 5. ServiceDeployment
 
@@ -213,7 +285,7 @@ Package source中的service dependency alias使用现有qualified namespace，�
   分隔符或物理local/remote binding猜测。`payments.charge(...)`不作为旧兼容拼写接受；
 - package dependency alias与service dependency alias共享一个dependency alias namespace，任何冲突在
   compile input trust boundary fail closed，不能靠type/call上下文猜测；
-- qualified alias只选择typed dependency，不进入ContractTypeId/ContractOperationId本体，也不能从provider
+- qualified alias只选择typed dependency，不进入PackageSchemaTypeId/ContractOperationId本体，也不能从provider
   package、deployment或display name补事实。
 
 依赖种类只来自`package.yml`的validated `packages`/`services` entry，不由call syntax、物理local/remote
@@ -435,6 +507,9 @@ PackageRequirement
 ServiceRequirement
   alias + serviceId + exactVersionLabel + expectedProtocolIdentity
   serviceBindingSlot + usedOperations
+
+PackageTypeRequirement
+  packageId + requiredTypeIds
 ```
 
 PackageRequirement在link阶段解析为不可变PackageArtifact。ServiceRequirement允许package解析发布后的
@@ -447,15 +522,17 @@ runtime binding slot。它不包含provider package、provider build、deploymen
 - PackageId / PackageVersion：人类可读代码发布坐标；version不参与任何identity hash。
 - PackageBuildId：具体不可变代码build。
 - PackageLocalAbiIdentity：local public code ABI。
+- PackageSchemaIndexIdentity：某个PackageArtifact完整schema目录的内容身份；不进入service protocol。
+- PackageSchemaTypeId：Package拥有的单个boundary类型内容身份；version和service id不参与。
 - ServiceId / exact PackageVersion label：consumer依赖坐标；service.yml不重复version。
 - ServiceProtocolIdentity：canonical boundary surface内容身份。
 - DeploymentRevision / DeploymentArtifactIdentity：某次implementation、配置与route revision。
 - AssemblyIdentity：完整resolved deployment/package graph。
 - RuntimeReplicaId：某个assembly实例，不进入artifact contract。
 
-任何identity都不能因为display string相同而互换。ServiceProtocolIdentity不包含provider package或
-deployment字段；AssemblyIdentity可以记录最终选择的build作为复现事实，但不能回写consumer
-requirement。
+任何identity都不能因为display string相同而互换。ServiceProtocolIdentity包含operation实际引用的
+PackageSchemaTypeId/closure identity，但不包含provider implementation build或deployment字段；
+AssemblyIdentity可以记录最终选择的build作为复现事实，但不能回写consumer requirement。
 
 ## 11. Config、State 与 Resource Owner
 

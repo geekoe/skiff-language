@@ -176,6 +176,12 @@ boundary schema closure 所需类型。
 Public root 引用到的 named types 会自动进入 ABI / schema closure，但不会自动成为外部源码可写的
 public name。外部源码可写名字只来自 public API graph 中显式声明的 public path。
 
+类型owner始终是Package。Package为public nameable与closure-only named types生成逐类型
+content-addressed record、`PackageSchemaTypeId`和当前artifact的schema index。Service projection只选择
+remote operations并引用这些Package类型，不复制descriptor，也不把它们重写成service-owned类型。依赖
+service暴露的类型在源码中仍按其owner Package的API规则解析。schema index identity只用于枚举某个
+PackageArtifact，不进入service protocol；protocol只包含operations实际可达的type ids。
+
 Public instance 是 public API graph 中可作为 binding target 和 dependency receiver root 的 explicit
 instance export。instance 自身不等于 operation；它显式 exposed 的 interface methods 才 projection 成
 public instance method operations。
@@ -286,7 +292,7 @@ canonical schema 的 roots 包括：
 - public instance / binding target receiver roots 的完整 `public_instance_key`、显式 exposed
   `InterfaceInstantiationRef`、source-call method index 和 method operations。
 - operation 参数和返回类型递归引用到的 schema closure named types。
-- lang / runtime prelude / std / package schema 类型的 canonical owner identity。
+- lang / runtime prelude / std / package schema 类型的逐类型canonical owner identity。
 - cross-service dependency lock 引入的 callee protocol identity。
 
 会改变 protocol identity 的典型变化：
@@ -307,6 +313,7 @@ implementation target、gateway path、route alias 和 display name 不属于 pr
 - 注释、空白、源码文件顺序。
 - 未进入 remote boundary 的 private helper。
 - 只影响 implementation 的 code revision。
+- 未被当前service operations的Package schema closure引用的Package类型或public callable变化。
 
 当前不定义自动兼容、字段投影、adapter 或 protocol fallback。schema closure 失败时不得生成
 protocol identity。
