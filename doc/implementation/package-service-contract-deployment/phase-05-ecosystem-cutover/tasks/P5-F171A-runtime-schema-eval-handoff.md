@@ -21,7 +21,8 @@ admission结果。
 ## 必须实现
 
 - eval seam定义自身拥有的只读record集合类型
-  `Arc<BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>>`；不得让eval依赖loader类型。
+  `Arc<BTreeMap<PackageSchemaTypeId, Arc<PackageSchemaTypeRecord>>>`；map和record均共享不可变所有权，
+  不得让eval依赖loader类型。
 - Host从已hydrated candidate/store的`ResolvedServiceSchema`取得每个contract已经admit的records，
   转成上述只读集合并与contract固定在同一assembly generation的immutable context。
 - `RuntimeAssemblyEvalResolver`提供按精确`ServiceContractRef`获取admitted record集合的typed接口。
