@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
 use skiff_compiler::CompilerPlatformSources;
 
-const USAGE: &str = "usage: skiff-compiler <package|contract|deployment|assembly> <build|publish> <root> --artifact-root <dir> [--json]";
+const USAGE: &str = "usage: skiff-compiler <package|assembly> <build|publish> <root> --artifact-root <dir> [--environment <name>] [--json]";
 
 fn main() {
     if let Err(error) = run() {
@@ -38,6 +38,7 @@ fn run_with_args(
     let root = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut artifact_root = None;
     let mut platform_source_root = None;
+    let mut environment = None;
     let mut json = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -58,6 +59,12 @@ fn run_with_args(
                         .ok_or("--platform-source-root requires a path")?,
                 ));
             }
+            "--environment" => {
+                if environment.is_some() {
+                    return Err("--environment was provided more than once".into());
+                }
+                environment = Some(args.next().ok_or("--environment requires a name")?);
+            }
             "--json" => json = true,
             _ => return Err(format!("unknown option {argument}\n{USAGE}").into()),
         }
@@ -70,6 +77,7 @@ fn run_with_args(
         object,
         &root,
         &artifact_root,
+        environment.as_deref().unwrap_or("dev"),
         publish_pointer,
     )?;
     if json {
@@ -138,14 +146,14 @@ mod tests {
     #[test]
     fn internal_actions_are_absent_from_public_help() {
         assert!(!USAGE.contains("platform-source"));
-        for object in ["package", "contract", "deployment", "assembly"] {
+        for object in ["package", "assembly"] {
             assert!(USAGE.contains(object));
         }
     }
 
     #[test]
     fn authoring_actions_require_exactly_one_platform_source_root() {
-        for object in ["package", "contract", "deployment", "assembly"] {
+        for object in ["package", "assembly"] {
             let missing = run_error(&[
                 object,
                 "build",
@@ -187,7 +195,7 @@ mod tests {
         assert!(relative.contains("must be absolute"), "{relative}");
 
         let unreadable = run_error(&[
-            "contract",
+            "package",
             "build",
             "/missing-authoring-root",
             "--artifact-root",

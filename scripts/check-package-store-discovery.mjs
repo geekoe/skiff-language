@@ -63,18 +63,22 @@ async function checkCanonicalDevRegistry() {
   await mkdir(deploymentRoot, { recursive: true });
   await writeFile(join(contractRoot, 'contract.yml'), '{}\n');
   await writeFile(join(deploymentRoot, 'deployment.yml'), '{}\n');
-  for (const root of [join(tempRoot, 'consumer'), contractRoot, deploymentRoot]) {
-    await runSkiff([
-      'dev', 'registry', 'add', root,
-      '--config', registryPath,
-      '--environment', 'checker',
-    ]);
-  }
+  await runSkiff([
+    'dev', 'registry', 'add', join(tempRoot, 'consumer'),
+    '--config', registryPath,
+    '--environment', 'checker',
+  ]);
+  await runSkiffFailure([
+    'dev', 'registry', 'add', contractRoot, '--config', registryPath,
+  ], 'must contain package.yml');
+  await runSkiffFailure([
+    'dev', 'registry', 'add', deploymentRoot, '--config', registryPath,
+  ], 'must contain package.yml');
   const registry = JSON.parse(await readFile(registryPath, 'utf8'));
   const kinds = registry.roots.map(({ kind }) => kind).sort();
   if (registry.schemaVersion !== 'skiff-package-service-dev-registry-v1'
       || registry.environment !== 'checker'
-      || JSON.stringify(kinds) !== JSON.stringify(['contract', 'deployment', 'package'])
+      || JSON.stringify(kinds) !== JSON.stringify(['package'])
       || Object.hasOwn(registry, 'services')) {
     throw new Error(`dev registry is not the canonical root registry: ${JSON.stringify(registry)}`);
   }

@@ -25,7 +25,7 @@ export async function writeContractRoot(root, {
 
 export async function writePackageRoot(root, {
   packageId = 'example.com/provider',
-  contracts = [],
+  services = [],
   api = 'health: main.health\n',
   source = 'function health() -> string { return "ok" }\n',
 } = {}) {
@@ -33,7 +33,7 @@ export async function writePackageRoot(root, {
   await writeFile(join(root, 'package.yml'), `${JSON.stringify({
     id: packageId,
     version: '1.0.0',
-    ...(contracts.length === 0 ? {} : { contracts }),
+    ...(services.length === 0 ? {} : { services }),
   }, null, 2)}\n`);
   await writeFile(join(root, 'api.yml'), api);
   await writeFile(join(root, 'main.skiff'), source);
@@ -87,8 +87,8 @@ export async function readReceiptRecord(artifactRoot, receipt) {
 export function contractCoordinate(alias = 'health') {
   return {
     alias,
-    serviceId: 'example.com/health',
-    contractVersion: '1.0.0',
+    id: 'example.com/health',
+    version: '1.0.0',
   };
 }
 

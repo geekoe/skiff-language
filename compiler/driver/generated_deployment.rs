@@ -485,7 +485,7 @@ fn generated_revision(
     ))
     .map_err(|error| invalid(error.to_string()))?;
     Ok(DeploymentRevision::new(format!(
-        "sha256:{}",
+        "sha256-{}",
         hex::encode(Sha256::digest(bytes))
     )))
 }

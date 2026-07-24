@@ -175,6 +175,7 @@ fn copied_std_remains_a_rejected_user_package_with_zero_record_writes() {
         AuthoringObject::Package,
         &copied.root().join("std"),
         &artifact_root,
+        "dev",
         false,
     )
     .unwrap_err()

@@ -36,8 +36,8 @@ const usage = `usage:
   skiff dev init [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--telemetry-db <db>] [--telemetry-mongo-url <url>] [--force] [--no-bin]
   skiff dev paths [--dev-home <dir>] [--json]
   skiff dev status [--config <path>] [--control-url <url>]
-  skiff dev sync [--root <package|contract|deployment-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
-  skiff dev watch [--root <package|contract|deployment-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
+  skiff dev sync [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--build-only] [--json]
+  skiff dev watch [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] --expected-generation <n> [--activation-url <url>] [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff dev registry list [--config <path>]
   skiff dev registry add <root> [--environment <name>] [--config <path>]
   skiff dev registry remove <root> [--config <path>]
@@ -55,10 +55,8 @@ const usage = `usage:
   skiff instance down <config>
   skiff instance sync <config> [root] --expected-generation <n> [--environment <name>] [--activation-id <id>] [--build-only] [--json]
   skiff instance watch <config> [root] --expected-generation <n> [--environment <name>] [--poll-interval-ms <ms>] [--build-only] [--json]
-  skiff package build <root> --artifact-root <dir> [--json]
-  skiff package publish <root> --artifact-root <dir> [--json]
-  skiff contract <build|publish> <root> --artifact-root <dir> [--json]
-  skiff deployment <build|publish> <root> --artifact-root <dir> [--json]
+  skiff package build <root> --artifact-root <dir> [--environment <name>] [--json]
+  skiff package publish <root> --artifact-root <dir> [--environment <name>] [--json]
   skiff assembly <build|publish> <root> --artifact-root <dir> [--json]
   skiff assembly activate <root> --artifact-root <dir> --expected-generation <n> [--activation-url <url>] [--activation-id <id>] [--json]
 `;
@@ -93,8 +91,6 @@ async function main(args) {
     case 'package':
       await packageCommand(args);
       return;
-    case 'contract':
-    case 'deployment':
     case 'assembly':
       await runAuthoringObjectCommand(command, args, { skiffRoot });
       return;

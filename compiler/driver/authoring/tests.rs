@@ -40,6 +40,7 @@ fn p5_f18b_authoring_mismatch_zero_source_reads() {
         AuthoringObject::Package,
         &different_root.root.join("missing-package"),
         &hostile_store,
+        "dev",
         false,
     )
     .unwrap_err();

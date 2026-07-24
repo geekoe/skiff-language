@@ -22,7 +22,7 @@ const defaultArtifactRoot = join(defaultDevHome, 'artifacts');
 const registrySchemaVersion = 'skiff-package-service-dev-registry-v1';
 const ignoredDirectories = new Set(['.git', 'build', 'node_modules', 'target']);
 
-const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package|contract|deployment-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--expected-generation <n>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
+const usage = `usage: node skiff-dev-sync.mjs [--watch] [--root <package-root>]... [--config <path>] [--artifact-root <dir>] [--environment <name>] [--activation-url <url>] [--expected-generation <n>] [--activation-id <id>] [--poll-interval-ms <ms>] [--build-only] [--json]`;
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
@@ -132,9 +132,6 @@ export async function runDevSyncOnce({
     );
   }
   const classified = await normalizedRoots(roots);
-  if (!classified.some(({ kind }) => kind === 'deployment')) {
-    throw new Error('dev sync requires at least one deployment root to form RuntimeAssembly roots');
-  }
   await mkdir(artifactRoot, { recursive: true });
 
   const serviceContractReceipts = [];
@@ -142,33 +139,35 @@ export async function runDevSyncOnce({
   const serviceDeploymentReceipts = [];
   const coordinateOwners = new Map();
 
-  for (const kind of ['contract', 'package', 'deployment']) {
-    for (const entry of classified.filter((root) => root.kind === kind)) {
-      const receipt = await compilerRunner({
-        skiffRoot: compilerRoot,
-        kind,
-        action: 'publish',
-        root: entry.root,
-        artifactRoot,
-      });
-      if (kind === 'contract') {
-        rejectDuplicateCoordinate(
-          coordinateOwners,
-          `contract:${coordinate(receipt.serviceContractReceipt?.contract, ['serviceId', 'contractVersion'])}`,
-          entry.root,
-        );
-        serviceContractReceipts.push(receipt.serviceContractReceipt);
-      } else if (kind === 'package') {
-        rejectDuplicateCoordinate(
-          coordinateOwners,
-          `package:${coordinate(receipt.packageArtifactReceipt?.artifact, ['packageId', 'packageVersion'])}`,
-          entry.root,
-        );
-        packageArtifactReceipts.push(receipt.packageArtifactReceipt);
-      } else {
-        serviceDeploymentReceipts.push(receipt.serviceDeploymentReceipt);
-      }
+  const buildPackage = async (entry) => compilerRunner({
+    skiffRoot: compilerRoot,
+    kind: 'package',
+    action: 'publish',
+    root: entry.root,
+    artifactRoot,
+    environment,
+  });
+  for (const { entry, receipt } of await buildDependencyOrdered(classified, buildPackage)) {
+    rejectDuplicateCoordinate(
+      coordinateOwners,
+      `package:${coordinate(receipt.packageArtifactReceipt?.artifact, ['packageId', 'packageVersion'])}`,
+      entry.root,
+    );
+    packageArtifactReceipts.push(receipt.packageArtifactReceipt);
+    if (receipt.serviceContractReceipt !== undefined) {
+      rejectDuplicateCoordinate(
+        coordinateOwners,
+        `contract:${coordinate(receipt.serviceContractReceipt?.contract, ['serviceId', 'contractVersion'])}`,
+        entry.root,
+      );
+      serviceContractReceipts.push(receipt.serviceContractReceipt);
     }
+    if (receipt.serviceDeploymentReceipt !== undefined) {
+      serviceDeploymentReceipts.push(receipt.serviceDeploymentReceipt);
+    }
+  }
+  if (serviceDeploymentReceipts.length === 0) {
+    throw new Error('dev sync requires at least one service package root to form RuntimeAssembly roots');
   }
 
   const rootDeployments = serviceDeploymentReceipts.map((receipt) => receipt?.deployment);
@@ -188,6 +187,7 @@ export async function runDevSyncOnce({
       action: 'build',
       root: temporary,
       artifactRoot,
+      environment,
     });
     assemblyReceipt = result.runtimeAssemblyReceipt;
   } finally {
@@ -218,6 +218,39 @@ export async function runDevSyncOnce({
     ...result,
     assemblyActivationReceipt: activation,
   };
+}
+
+async function buildDependencyOrdered(entries, build) {
+  const completed = [];
+  let pending = [...entries];
+  while (pending.length > 0) {
+    const deferred = [];
+    let progressed = false;
+    for (const entry of pending) {
+      try {
+        completed.push({ entry, receipt: await build(entry) });
+        progressed = true;
+      } catch (error) {
+        if (isUnpublishedExactDependency(error)) {
+          deferred.push({ entry, error });
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (!progressed) {
+      const details = deferred
+        .map(({ entry, error }) => `${entry.root}: ${formatError(error)}`)
+        .join('\n');
+      throw new Error(`dev sync could not close exact package/service dependencies:\n${details}`);
+    }
+    pending = deferred.map(({ entry }) => entry);
+  }
+  return completed;
+}
+
+function isUnpublishedExactDependency(error) {
+  return /has no published (?:PackageArtifact|ServiceContract) pointer/.test(formatError(error));
 }
 
 export async function readDevRegistry(path = defaultRegistryPath, { allowMissing = false } = {}) {
@@ -267,17 +300,12 @@ export async function writeDevRegistry(path, registry) {
 
 export async function classifyAuthoringRoot(root) {
   const absolute = resolve(root);
-  const candidates = [
-    ['package', 'package.yml'],
-    ['contract', 'contract.yml'],
-    ['deployment', 'deployment.yml'],
-  ];
-  const matches = [];
-  for (const [kind, file] of candidates) {
+  const present = [];
+  for (const file of ['package.yml', 'contract.yml', 'deployment.yml']) {
     try {
       const metadata = await stat(join(absolute, file));
       if (metadata.isFile()) {
-        matches.push(kind);
+        present.push(file);
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') {
@@ -285,10 +313,14 @@ export async function classifyAuthoringRoot(root) {
       }
     }
   }
-  if (matches.length !== 1) {
-    throw new Error(`${absolute} must contain exactly one of package.yml, contract.yml, or deployment.yml`);
+  if (!present.includes('package.yml')) {
+    throw new Error(`${absolute} must contain package.yml`);
   }
-  return { kind: matches[0], root: absolute };
+  const legacy = present.filter((file) => file !== 'package.yml');
+  if (legacy.length > 0) {
+    throw new Error(`${absolute} contains retired independent authoring file(s): ${legacy.join(', ')}`);
+  }
+  return { kind: 'package', root: absolute };
 }
 
 export function parseDevSyncArgs(rawArgs) {

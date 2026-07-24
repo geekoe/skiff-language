@@ -18,8 +18,7 @@ use skiff_artifact_identity::{
     ServiceDeploymentPointerPath,
 };
 use skiff_artifact_model::{
-    parse_runtime_assembly_yml, parse_service_contract_definition_yml,
-    parse_service_deployment_yml, ContractRequirement, PackageArtifact, PackageArtifactRef,
+    parse_runtime_assembly_yml, ContractRequirement, PackageArtifact, PackageArtifactRef,
     ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler_input::{
@@ -31,7 +30,6 @@ use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
 use skiff_deployment::{
     assembly::resolve_runtime_assembly,
-    projection::project_service_deployment,
     storage::{
         CanonicalArtifactStore, PackageArtifactPointer, RuntimeAssemblyPointer,
         ServiceContractPointer, ServiceDeploymentPointer,
@@ -39,11 +37,10 @@ use skiff_deployment::{
 };
 
 use crate::{
-    compile_contract, compile_package, compile_service_package, PackageCompileInput,
-    PackageContractCompileDependency, PackageSourceInput, ServiceContractDefinition,
-    ServiceContractDefinitionDiagnosticText,
+    compile_package, compile_service_package, generate_service_deployment,
+    GeneratedServiceDeploymentInput, PackageCompileInput, PackageContractCompileDependency,
+    PackageSourceInput,
 };
-use skiff_compiler_contract::project_package_api_visibility;
 
 mod package_publication;
 
@@ -56,8 +53,6 @@ pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoringObject {
     Package,
-    Contract,
-    Deployment,
     Assembly,
 }
 
@@ -65,11 +60,9 @@ impl AuthoringObject {
     pub fn parse(value: &str) -> AuthoringResult<Self> {
         match value {
             "package" => Ok(Self::Package),
-            "contract" => Ok(Self::Contract),
-            "deployment" => Ok(Self::Deployment),
             "assembly" => Ok(Self::Assembly),
             _ => Err(invalid_input(format!(
-                "unknown authoring object {value}; expected package, contract, deployment, or assembly"
+                "unknown authoring object {value}; expected package or assembly"
             ))),
         }
     }
@@ -80,6 +73,7 @@ pub fn build_authoring_object(
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
+    environment: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     let build_non_package: fn(&Path, &CanonicalArtifactStore, bool) -> AuthoringResult<Value> =
@@ -93,12 +87,11 @@ pub fn build_authoring_object(
                         root,
                         &manifest,
                         &store,
+                        environment,
                         publish_pointer,
                     )
                 });
             }
-            AuthoringObject::Contract => build_contract,
-            AuthoringObject::Deployment => build_deployment,
             AuthoringObject::Assembly => build_assembly,
         };
     let store = CanonicalArtifactStore::create(artifact_root)?;
@@ -118,8 +111,10 @@ fn build_package_after_platform_context_guard(
     root: &Path,
     manifest: &PackageManifest,
     store: &CanonicalArtifactStore,
+    environment: &str,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
+    reject_legacy_service_authoring(root)?;
     let dependencies = read_package_dependencies(store, &manifest)?;
     let contracts = read_contract_dependencies(store, &manifest)?;
     let aliases = package_aliases(&manifest, &dependencies);
@@ -131,7 +126,7 @@ fn build_package_after_platform_context_guard(
         .with_canonical_dependencies(&dependencies, &contracts)
         .with_available_canonical_packages(&available);
     let service_root = root.join("service.yml").is_file();
-    let (published, service_api) = if service_root {
+    let (published, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;
         let compiled = compile_service_package(input, &service.service.id)?;
         let receipt = json!({
@@ -139,28 +134,105 @@ fn build_package_after_platform_context_guard(
             "serviceProtocolIdentity": &compiled.service_api.contract.service_protocol_identity,
             "projection": &compiled.service_api.visibility,
         });
-        (compiled.package, receipt)
+        (
+            compiled.package,
+            Some((service, compiled.service_api)),
+            Some(receipt),
+        )
     } else {
         let published = compile_package(input)?;
-        let visibility = project_package_api_visibility(&published.artifact)?;
-        (
-            published,
-            json!({
-                "serviceId": null,
-                "serviceProtocolIdentity": null,
-                "projection": visibility,
-            }),
-        )
+        (published, None, None)
     };
     let receipt = publish_package_artifact_records(store, &published)?;
-    let mut output = Map::from_iter([
-        (
-            "packageArtifactReceipt".to_string(),
-            serde_json::to_value(receipt)?,
-        ),
-        ("serviceApiReceipt".to_string(), service_api),
-    ]);
+    let mut output = Map::from_iter([(
+        "packageArtifactReceipt".to_string(),
+        serde_json::to_value(receipt)?,
+    )]);
+    if let Some(service_api_receipt) = service_api_receipt {
+        output.insert("serviceApiReceipt".to_string(), service_api_receipt);
+    }
 
+    if let Some((service, service_api)) = service_data {
+        let contract = &service_api.contract;
+        let contract_path = store.write_service_contract(contract)?;
+        let contract_ref = service_contract_ref(contract)?;
+        output.insert(
+            "serviceContractReceipt".to_string(),
+            json!({
+                "contract": contract_ref,
+                "recordPath": relative_path(store, &contract_path)?,
+            }),
+        );
+
+        let profile = match service.config_profiles.get(environment) {
+            Some(profile) => &profile.authoring,
+            None => {
+                return Err(invalid_input(format!(
+                    "service package {} requires config.{environment}.yml to generate its environment-specific ServiceDeployment",
+                    root.display()
+                )))
+            }
+        };
+        let deployment = generate_service_deployment(GeneratedServiceDeploymentInput {
+            service: &service.service,
+            profile_name: environment,
+            profile,
+            service_api: &service_api,
+            implementation: &published.artifact,
+            package_closure: &dependencies,
+        })?;
+        let deployment_path = store.write_service_deployment(&deployment)?;
+        let deployment_ref = service_deployment_ref(&deployment);
+        output.insert(
+            "serviceDeploymentReceipt".to_string(),
+            json!({
+                "deployment": deployment_ref,
+                "recordPath": relative_path(store, &deployment_path)?,
+            }),
+        );
+
+        if publish_pointer {
+            let contract_candidate = ServiceContractPointer::new(contract_ref.clone())?;
+            let expected_contract = store.read_service_contract_pointer(
+                &contract_ref.service_id,
+                &contract_ref.contract_version,
+            )?;
+            store.compare_and_swap_service_contract_pointer(
+                expected_contract.as_ref(),
+                &contract_candidate,
+            )?;
+            output.insert(
+                "serviceContractPointerReceipt".to_string(),
+                json!({
+                    "pointer": contract_candidate,
+                    "pointerPath": ServiceContractPointerPath::new(
+                        &contract_ref.service_id,
+                        &contract_ref.contract_version,
+                    )?.as_str(),
+                }),
+            );
+
+            let deployment_candidate = ServiceDeploymentPointer::new(deployment_ref.clone())?;
+            let expected_deployment = store.read_service_deployment_pointer(
+                &deployment_ref.service_id,
+                &deployment_ref.contract_version,
+            )?;
+            store.compare_and_swap_service_deployment_pointer(
+                expected_deployment.as_ref(),
+                &deployment_candidate,
+            )?;
+            output.insert(
+                "serviceDeploymentPointerReceipt".to_string(),
+                json!({
+                    "pointer": deployment_candidate,
+                    "pointerPath": ServiceDeploymentPointerPath::new(
+                        &deployment_ref.service_id,
+                        &deployment_ref.contract_version,
+                    )?.as_str(),
+                }),
+            );
+        }
+    }
     if publish_pointer {
         let reference = package_artifact_ref(&published.artifact)?;
         let candidate = PackageArtifactPointer::new(reference.clone())?;
@@ -174,107 +246,6 @@ fn build_package_after_platform_context_guard(
                 "pointerPath": PackageArtifactPointerPath::new(
                     &reference.package_id,
                     &reference.package_version,
-                )?.as_str(),
-            }),
-        );
-    }
-    Ok(Value::Object(output))
-}
-
-fn build_contract(
-    root: &Path,
-    store: &CanonicalArtifactStore,
-    publish_pointer: bool,
-) -> AuthoringResult<Value> {
-    let path = authoring_path(root, "contract.yml");
-    let parsed = parse_service_contract_definition_yml(&fs::read_to_string(&path)?)?;
-    let contract = compile_contract(ServiceContractDefinition {
-        service_id: parsed.service_id,
-        contract_version: parsed.contract_version,
-        operations: parsed.operations,
-        boundary_schema: parsed.boundary_schema,
-        diagnostic_text: ServiceContractDefinitionDiagnosticText {
-            service: parsed.diagnostic_text.service,
-            operations: parsed.diagnostic_text.operations,
-            types: parsed.diagnostic_text.types,
-        },
-    })?;
-    let record_path = store.write_service_contract(&contract)?;
-    let reference = service_contract_ref(&contract)?;
-    let mut output = Map::from_iter([(
-        "serviceContractReceipt".to_string(),
-        json!({
-            "contract": reference,
-            "recordPath": relative_path(store, &record_path)?,
-        }),
-    )]);
-
-    if publish_pointer {
-        let candidate = ServiceContractPointer::new(reference.clone())?;
-        let expected = store
-            .read_service_contract_pointer(&reference.service_id, &reference.contract_version)?;
-        store.compare_and_swap_service_contract_pointer(expected.as_ref(), &candidate)?;
-        output.insert(
-            "serviceContractPointerReceipt".to_string(),
-            json!({
-                "pointer": candidate,
-                "pointerPath": ServiceContractPointerPath::new(
-                    &reference.service_id,
-                    &reference.contract_version,
-                )?.as_str(),
-            }),
-        );
-    }
-    Ok(Value::Object(output))
-}
-
-fn build_deployment(
-    root: &Path,
-    store: &CanonicalArtifactStore,
-    publish_pointer: bool,
-) -> AuthoringResult<Value> {
-    let path = authoring_path(root, "deployment.yml");
-    let input = parse_service_deployment_yml(&fs::read_to_string(&path)?)?;
-    let contract = store.read_service_contract(&input.contract)?;
-    let package_refs = std::iter::once(input.implementation.clone())
-        .chain(
-            input
-                .package_bindings
-                .iter()
-                .map(|binding| binding.package.clone()),
-        )
-        .collect::<BTreeSet<_>>();
-    let packages = package_refs
-        .iter()
-        .map(|reference| store.read_package_artifact(reference))
-        .collect::<Result<Vec<_>, _>>()?;
-    let package_values = packages
-        .iter()
-        .map(|artifact| artifact.as_ref().clone())
-        .collect::<Vec<_>>();
-    let deployment = project_service_deployment(input, &contract, &package_values)?;
-    let record_path = store.write_service_deployment(&deployment)?;
-    let reference = service_deployment_ref(&deployment);
-    let mut output = Map::from_iter([(
-        "serviceDeploymentReceipt".to_string(),
-        json!({
-            "deployment": reference,
-            "recordPath": relative_path(store, &record_path)?,
-        }),
-    )]);
-
-    if publish_pointer {
-        let candidate = ServiceDeploymentPointer::new(reference.clone())?;
-        let expected = store
-            .read_service_deployment_pointer(&reference.service_id, &reference.contract_version)?;
-        store.compare_and_swap_service_deployment_pointer(expected.as_ref(), &candidate)?;
-        output.insert(
-            "serviceDeploymentPointerReceipt".to_string(),
-            json!({
-                "pointer": candidate,
-                "pointerPath": ServiceDeploymentPointerPath::new(
-                    &reference.service_id,
-                    &reference.contract_version,
                 )?.as_str(),
             }),
         );
@@ -535,6 +506,18 @@ fn authoring_path(root: &Path, file_name: &str) -> PathBuf {
     } else {
         root.to_path_buf()
     }
+}
+
+fn reject_legacy_service_authoring(root: &Path) -> AuthoringResult<()> {
+    for file_name in ["contract.yml", "deployment.yml"] {
+        if root.join(file_name).exists() {
+            return Err(invalid_input(format!(
+                "{} is not an authoring input; ServiceContract and ServiceDeployment are generated from the service package root",
+                root.join(file_name).display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn relative_path(store: &CanonicalArtifactStore, path: &Path) -> AuthoringResult<String> {

@@ -250,10 +250,7 @@ function phaseBuilders({
     'scripts-tests': async () => scriptTestPhases(root),
     'scripts-dev-sync': async () => [
       phase(root, 'implementation:tooling:dev-sync-fixture', 'implementation:tooling', 'node', [
-        'scripts/skiff-dev-sync.mjs',
-        '--check-sync',
-        '--root',
-        'compiler/tests/fixtures/router-websocket-fixture',
+        'scripts/check-package-store-discovery.mjs',
       ]),
     ],
     'vscode-type-check': async () => [

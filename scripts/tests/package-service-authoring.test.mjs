@@ -57,8 +57,8 @@ test(
   },
 );
 
-test('public four-object CLI does not expose the internal platform trust option', () => {
-  for (const kind of ['package', 'contract', 'deployment', 'assembly']) {
+test('public package/assembly CLI does not expose the internal platform trust option', () => {
+  for (const kind of ['package', 'assembly']) {
     assert.doesNotMatch(objectUsage(kind), /platform-source-root/);
     assert.throws(
       () => parseObjectArgs(kind, 'build', [
@@ -143,6 +143,16 @@ test('service package build returns one stable API receipt with operation identi
     source: 'function ping() -> string { return "pong" }\n',
   });
   await writeFile(join(root, 'service.yml'), 'id: example.com/ping\n');
+  await writeFile(join(root, 'config.dev.yml'), [
+    'timeout: 1000',
+    'quota:',
+    '  cpuMillis: 100',
+    '  memoryBytes: 1048576',
+    'principal: service:ping',
+    'lifecycle:',
+    '  maxConcurrency: 1',
+    '',
+  ].join('\n'));
   const result = await runCompilerAuthoring({
     skiffRoot,
     kind: 'package',
@@ -163,87 +173,41 @@ test('service package build returns one stable API receipt with operation identi
     })),
     [{ path: 'ping', status: 'available', hasOperationId: true }],
   );
+  assert.ok(result.packageArtifactReceipt);
+  assert.ok(result.serviceContractReceipt);
+  assert.ok(result.serviceDeploymentReceipt);
 });
 
-test('contract-first publish compiles a consumer with no provider package', async () => {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-authoring-contract-first-'));
-  const artifactRoot = join(temp, 'artifacts');
-  const contractRoot = join(temp, 'contract');
-  const consumerRoot = join(temp, 'consumer');
-  await writeContractRoot(contractRoot);
-  await writePackageRoot(consumerRoot, {
-    packageId: 'example.com/consumer',
-    contracts: [contractCoordinate()],
-    api: 'run: main.run\n',
-    source: 'function run() -> string { return health/health() }\n',
-  });
-
-  const contract = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'contract',
-    action: 'publish',
-    root: contractRoot,
-    artifactRoot,
-  });
-  assert.ok(contract.serviceContractReceipt);
-  assert.ok(contract.serviceContractPointerReceipt);
-  assert.equal('artifactReceipt' in contract, false);
-  assert.equal('pointerReceipt' in contract, false);
-
-  const packageResult = await runCompilerAuthoring({
+test('ordinary package build emits only its PackageArtifact receipt', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-ordinary-package-receipt-'));
+  const root = join(temp, 'package');
+  await writePackageRoot(root);
+  const result = await runCompilerAuthoring({
     skiffRoot,
     kind: 'package',
     action: 'build',
-    root: consumerRoot,
-    artifactRoot,
+    root,
+    artifactRoot: join(temp, 'artifacts'),
   });
-  const artifact = await readReceiptRecord(artifactRoot, packageResult.packageArtifactReceipt);
-  assert.equal(artifact.packageId, 'example.com/consumer');
-  assert.equal(artifact.contractRequirements.length, 1);
-  assert.equal(artifact.contractRequirements[0].alias, 'health');
-  assert.equal(artifact.serviceRequirements.length, 1);
-  assert.equal(JSON.stringify(artifact).includes('providerPackageId'), false);
-  assert.equal(JSON.stringify(artifact).includes('deploymentRevision'), false);
+  assert.deepEqual(Object.keys(result), ['packageArtifactReceipt']);
 });
 
-test('missing and tampered published contracts fail at the compiler input boundary', async () => {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-authoring-contract-negative-'));
-  const contractRoot = join(temp, 'contract');
-  const packageRoot = join(temp, 'package');
-  const artifactRoot = join(temp, 'artifacts');
-  await writeContractRoot(contractRoot);
-  await writePackageRoot(packageRoot, {
-    packageId: 'example.com/consumer',
-    contracts: [contractCoordinate()],
-    api: 'run: main.run\n',
-    source: 'function run() -> string { return health/health() }\n',
-  });
-
+test('independent contract/deployment authoring objects and mixed roots fail closed', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-retired-authoring-'));
+  const root = join(temp, 'service');
+  await writePackageRoot(root);
+  await writeFile(join(root, 'contract.yml'), '{}\n');
   await assert.rejects(
-    runCompilerAuthoring({ skiffRoot, kind: 'package', action: 'build', root: packageRoot, artifactRoot }),
-    /no published ServiceContract pointer/,
+    runCompilerAuthoring({
+      skiffRoot, kind: 'contract', action: 'build', root, artifactRoot: join(temp, 'artifacts'),
+    }),
+    /unsupported authoring object contract/,
   );
-
-  const published = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'contract',
-    action: 'publish',
-    root: contractRoot,
-    artifactRoot,
-  });
-  const recordPath = join(artifactRoot, published.serviceContractReceipt.recordPath);
-  const record = JSON.parse(await readFile(recordPath, 'utf8'));
-  record.diagnosticText.service = 'tampered';
-  await writeFile(recordPath, `${JSON.stringify(record)}\n`);
   await assert.rejects(
-    runCompilerAuthoring({ skiffRoot, kind: 'package', action: 'build', root: packageRoot, artifactRoot }),
-    /canonical|identity|protocol|contract dependency/i,
-  );
-
-  await rename(recordPath, `${recordPath}.hidden`);
-  await assert.rejects(
-    runCompilerAuthoring({ skiffRoot, kind: 'package', action: 'build', root: packageRoot, artifactRoot }),
-    /read|No such file|not found/i,
+    runCompilerAuthoring({
+      skiffRoot, kind: 'package', action: 'build', root, artifactRoot: join(temp, 'artifacts'),
+    }),
+    /contract\.yml is not an authoring input/,
   );
 });
 
@@ -252,10 +216,10 @@ test('duplicate dependency aliases and retired options are rejected without comp
   const packageRoot = join(temp, 'package');
   await writePackageRoot(packageRoot, {
     packageId: 'example.com/duplicate-alias',
-    contracts: [contractCoordinate('same'), {
+    services: [contractCoordinate('same'), {
       alias: 'same',
-      serviceId: 'example.com/other',
-      contractVersion: '1.0.0',
+      id: 'example.com/other',
+      version: '1.0.0',
     }],
   });
   await assert.rejects(
@@ -266,7 +230,7 @@ test('duplicate dependency aliases and retired options are rejected without comp
       root: packageRoot,
       artifactRoot: join(temp, 'artifacts'),
     }),
-    /duplicate alias same/,
+    /alias same is assigned to more than one/,
   );
   assert.throws(
     () => parseObjectArgs('package', 'build', [packageRoot, '--artifact-root', join(temp, 'artifacts'), '--service-artifact-root', temp]),
